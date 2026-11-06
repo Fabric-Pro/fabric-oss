@@ -406,7 +406,8 @@ interface EchoCarriedFinding {
  * check the same texts: what the member's block carried, the finding's own
  * answer (which may not be in the block: an answer in Needs Review settles
  * nothing, yet the revision still started from it), and the finding's title
- * and recommendation. Every text comes with its stable key.
+ * and recommendation. Every text comes with its stable key; the
+ * recommendation is marked as one, so applying it word for word passes.
  *
  * Prompt-only, like {@link SettledDecisionsBlock.carried}.
  */
@@ -424,6 +425,7 @@ export function buildFindingEchoCarried(input: {
 		finding.title,
 		...(recommendation ? [recommendation] : []),
 	];
+	const titles = [...(carried?.findingTitles ?? []), ...ownTitles];
 	return {
 		responseTexts: [
 			...(carried?.responseTexts ?? []),
@@ -433,11 +435,12 @@ export function buildFindingEchoCarried(input: {
 			...keysFor(carried?.responseTexts, carried?.responseKeys),
 			...(answer ? [finding.stableKey] : []),
 		],
-		findingTitles: [...(carried?.findingTitles ?? []), ...ownTitles],
+		findingTitles: titles,
 		titleKeys: [
 			...keysFor(carried?.findingTitles, carried?.titleKeys),
 			...ownTitles.map(() => finding.stableKey),
 		],
+		recommendationIndexes: recommendation ? [titles.length - 1] : [],
 	};
 }
 

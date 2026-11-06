@@ -20,7 +20,11 @@
  *     next revision's review is shown and when it is saved, and kept when
  *     that revision ends with nothing to review;
  *   - an id runs once; an editor that goes away answers the request in
- *     hand as interrupted.
+ *     hand as interrupted;
+ *   - a member's instruction (Revise this section) asks for its section by
+ *     key with the instruction and no finding, shows the same review, and
+ *     its accept sends the INSTRUCTION descriptor and says no finding was
+ *     resolved.
  */
 
 import { buildSectionMap } from "@repo/utils/proposal-artifact/section-hash";
@@ -711,5 +715,102 @@ describe("a section revision (Fizzy #2946)", () => {
 			s.saveAccept.mock.calls[0][0].onAnswer({ kind: "saved" });
 		});
 		expect(s.settled).toEqual([{ id: "revision-1", result: "accepted" }]);
+	});
+});
+
+describe("a section revision on a member's instruction (Fizzy #2946)", () => {
+	const INSTRUCTION_REQUEST: SectionRevisionRequest = {
+		id: "revision-instruction-1",
+		kind: "INSTRUCTION",
+		sectionKey: PRICING_KEY,
+		instruction: "Say that both phases are covered.",
+	};
+
+	it("asks for the section by key with the instruction and no finding, and shows it in that section only", async () => {
+		const s = setup();
+		reviseSection.mockResolvedValue(candidate());
+		const { result } = mount(s, INSTRUCTION_REQUEST);
+
+		await waitFor(() => {
+			expect(result.current.isReviewing).toBe(true);
+		});
+		expect(reviseSection).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			documentId: "doc-1",
+			sectionKey: PRICING_KEY,
+			instruction: "Say that both phases are covered.",
+			baseVersion: 4,
+			baseContentHash: "hash-4",
+		});
+		const shown = read(s.editor) ?? "";
+		expect(shown).toContain("A fixed fee covers both phases.");
+		expect(otherSections(shown, "Pricing")).toBe(
+			otherSections(DOCUMENT, "Pricing"),
+		);
+		expect(s.editor.editable).toBe(false);
+		expect(s.onReviewShown).toHaveBeenCalledWith("revision-instruction-1");
+	});
+
+	it("Accept saves with the INSTRUCTION descriptor and its token, and says no finding was resolved", async () => {
+		const s = setup();
+		reviseSection.mockResolvedValue(candidate());
+		const { result } = mount(s, INSTRUCTION_REQUEST);
+		await waitFor(() => {
+			expect(result.current.isReviewing).toBe(true);
+		});
+
+		act(() => {
+			result.current.accept();
+		});
+		const accept = s.saveAccept.mock.calls[0][0] as {
+			aiReview: unknown;
+			onAnswer: (answer: SectionRevisionAcceptAnswer) => void;
+		};
+		expect(accept.aiReview).toEqual({
+			kind: "INSTRUCTION",
+			sectionKey: PRICING_KEY,
+			revisionToken: "token-example",
+		});
+
+		act(() => {
+			accept.onAnswer({ kind: "saved" });
+		});
+		expect(s.settled).toEqual([
+			{ id: "revision-instruction-1", result: "accepted" },
+		]);
+		expect(toast.success).toHaveBeenCalledWith("instruction.accepted");
+	});
+
+	it("Reject puts back the body from before the review", async () => {
+		const s = setup();
+		reviseSection.mockResolvedValue(candidate());
+		const { result } = mount(s, INSTRUCTION_REQUEST);
+		await waitFor(() => {
+			expect(result.current.isReviewing).toBe(true);
+		});
+
+		act(() => {
+			result.current.reject();
+		});
+		expect(read(s.editor)).toBe(DOCUMENT);
+		expect(s.settled).toEqual([
+			{ id: "revision-instruction-1", result: "rejected" },
+		]);
+	});
+
+	it("answers a refusal of the server with its status", async () => {
+		const s = setup();
+		reviseSection.mockResolvedValue({ status: "RESPONSE_ECHOED" });
+		mount(s, INSTRUCTION_REQUEST);
+		await waitFor(() => {
+			expect(s.settled).toEqual([
+				{
+					id: "revision-instruction-1",
+					result: "refused",
+					code: "RESPONSE_ECHOED",
+				},
+			]);
+		});
+		expect(s.editor.writes).toEqual([]);
 	});
 });

@@ -191,7 +191,8 @@ describe("editor round trip", () => {
 
 		// The save really re-serialised the body.
 		expect(saved).not.toBe(MODEL_WRITTEN);
-		expect(saved).toContain("## 1\\. Executive Summary");
+		expect(saved).toContain("_manual exports_");
+		expect(saved).toContain("## 1. Executive Summary");
 		expect(saved).toContain("```mermaid\ngraph TD");
 		expect(saved).toContain("## Appendix");
 

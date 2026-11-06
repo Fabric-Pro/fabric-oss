@@ -769,6 +769,26 @@ describe("submitChange states its base", () => {
 			changes: [{ op: "delete", path: "old.md" }],
 		});
 	});
+
+	it("sends the proposal it replaces in the body, never the query", async () => {
+		const { client, captured } = buildClient({
+			responseBody: { snapshotId: "snap-8" },
+		});
+
+		await client.instructions.submitChange(
+			"project-1",
+			"snap-7",
+			[{ op: "delete", path: "old.md" }],
+			{ supersedesSnapshotId: "snap-5" },
+		);
+
+		expect(captured[0]?.url).not.toContain("supersedesSnapshotId");
+		expect(captured[0]?.body).toEqual({
+			baseSnapshotId: "snap-7",
+			changes: [{ op: "delete", path: "old.md" }],
+			supersedesSnapshotId: "snap-5",
+		});
+	});
 });
 
 /**

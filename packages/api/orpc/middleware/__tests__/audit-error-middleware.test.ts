@@ -309,6 +309,43 @@ describe("REDACTED_BODY_FIELDS (Fizzy #2946)", () => {
 		expect(input.content).toBe(BODY);
 	});
 
+	it.each([
+		[
+			"projects.proposalArtifact.reviseSection",
+			{
+				projectId: "proj-1",
+				documentId: "doc-1",
+				sectionKey: "p1:pricing#0",
+				instruction: BODY,
+				baseVersion: 7,
+				baseContentHash: "a".repeat(64),
+			},
+		],
+		[
+			"projects.proposalArtifact.editVisual",
+			{
+				projectId: "proj-1",
+				documentId: "doc-1",
+				visualId: "visual-1",
+				fenceOrdinal: 2,
+				fenceSourceHash: "b".repeat(16),
+				instruction: BODY,
+			},
+		],
+	])(
+		"records a thrown %s instruction as its size and hash, keeping the other fields",
+		async (path, input) => {
+			const arg = await captureAt(path, input);
+
+			expect(arg.metadata.input).toEqual({
+				...input,
+				instruction: expectedSummary(BODY),
+			});
+			expect(JSON.stringify(arg)).not.toContain("internal answer");
+			expect(input.instruction).toBe(BODY);
+		},
+	);
+
 	it("keeps an over-8 KiB body's sibling fields as fields rather than a truncated string", async () => {
 		const longBody = `${BODY}\n${"Section prose. ".repeat(2000)}`;
 		expect(Buffer.byteLength(longBody, "utf8")).toBeGreaterThan(8192);

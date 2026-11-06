@@ -1,7 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	FullscreenProvider,
+	useFullscreen,
+} from "../../contexts/FullscreenContext";
 
 beforeAll(() => {
 	if (typeof globalThis.ResizeObserver === "undefined") {
@@ -147,7 +152,21 @@ vi.mock("@saas/shared/components/icons/Square3Stack3DIcon", () => ({
 }));
 
 vi.mock("@saas/shared/components/SidebarEdgeHandle", () => ({
-	SidebarEdgeHandle: () => null,
+	SidebarEdgeHandle: ({
+		isExpanded,
+		onClick,
+		expandLabel,
+		collapseLabel,
+	}: {
+		isExpanded: boolean;
+		onClick: () => void;
+		expandLabel: string;
+		collapseLabel: string;
+	}) => (
+		<button type="button" onClick={onClick}>
+			{isExpanded ? collapseLabel : expandLabel}
+		</button>
+	),
 }));
 
 vi.mock("@saas/shared/components/ThemeToggle", () => ({
@@ -208,7 +227,16 @@ import { NavBar } from "../NavBar";
  * `UNIFIED_AGENT_INTERFACE` defaults to ON, also matching production — it is
  * the registry's one default-on entry, a rollback lever rather than an opt-in.
  */
-function renderNavBar(flags: Partial<Record<FeatureFlagKey, boolean>> = {}) {
+function renderNavBar(
+	flags: Partial<Record<FeatureFlagKey, boolean>> = {},
+	{
+		forceCollapsed = false,
+		wrap = (n: ReactNode) => n,
+	}: {
+		forceCollapsed?: boolean;
+		wrap?: (node: ReactNode) => ReactNode;
+	} = {},
+) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false, gcTime: 0 } },
 	});
@@ -224,7 +252,7 @@ function renderNavBar(flags: Partial<Record<FeatureFlagKey, boolean>> = {}) {
 					} as Record<FeatureFlagKey, boolean>
 				}
 			>
-				<NavBar />
+				{wrap(<NavBar forceCollapsed={forceCollapsed} />)}
 			</FeatureFlagProvider>
 		</QueryClientProvider>,
 	);
@@ -927,5 +955,61 @@ describe("NavBar — unified agent interface rollback", () => {
 			name: /app\.menu\.aiChatbotLegacy/,
 		});
 		expect(link).toHaveAttribute("href", "/app/own-org/nexus");
+	});
+});
+
+describe("NavBar — fullscreen edge handle and shared rail state", () => {
+	function Probe() {
+		const { isRailExpanded } = useFullscreen();
+		return (
+			<span data-testid="probe-is-rail-expanded">
+				{String(isRailExpanded)}
+			</span>
+		);
+	}
+
+	it("expanding from the edge handle updates the shared rail state", async () => {
+		sessionMock.mockReturnValue({
+			user: { id: "u-1", email: "member@example.test", role: "user" },
+		});
+		orgContextMock.mockReturnValue({
+			basePath: "/app/org-1",
+			isOrgContext: true,
+			organizationId: "org-1",
+		});
+		guestMock.mockReturnValue(false);
+		getOnboardingState.mockResolvedValue(makeOnboardingStateData());
+
+		const user = userEvent.setup();
+
+		renderNavBar(
+			{},
+			{
+				forceCollapsed: true,
+				wrap: (n) => (
+					<FullscreenProvider>
+						{n}
+						<Probe />
+					</FullscreenProvider>
+				),
+			},
+		);
+
+		expect(screen.getByTestId("probe-is-rail-expanded")).toHaveTextContent(
+			"false",
+		);
+		const expandButton = screen.getByRole("button", {
+			name: "Expand sidebar",
+		});
+
+		await user.click(expandButton);
+
+		expect(screen.getByTestId("probe-is-rail-expanded")).toHaveTextContent(
+			"true",
+		);
+		expect(screen.getByText("New")).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Collapse sidebar" }),
+		).toBeInTheDocument();
 	});
 });

@@ -1124,6 +1124,13 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"Deleted a coding-instructions snapshot version, removing an immutable historical upload. `metadata.fileCount` carries how many files it held; the currently published version cannot be deleted this way.",
 	},
 	{
+		key: "project.instructions.removed",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.instructions.removed",
+		description:
+			"Removed every coding-instructions version of the project at once, the published one included, so coding agents and members have no published instructions until a new upload. `metadata.removedSnapshotCount` carries how many versions were removed and `metadata.publishedVersion` the version that was published (null when none was). Counts and a version number only: never a file path or any file content.",
+	},
+	{
 		key: "project.instructions.settings_updated",
 		categoryId: "project",
 		labelKey:
@@ -2045,6 +2052,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"settings.auditLog.actions.project.proposal_artifact.export_started",
 		description:
 			"A member or a project guest started a PDF or Word export of a client-ready Proposal. Records the format, the export id and whether the starter is a project guest, never the document's content.",
+	},
+	{
+		key: "project.proposal_artifact.section_revised",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.proposal_artifact.section_revised",
+		description:
+			"A member saved a section of a client-ready Proposal that the AI revised on their own instruction (Revise this section). Records the document version it was revised from and the version saved, never the instruction or the section's text.",
 	},
 	{
 		key: "org.company_context.metadata_updated",

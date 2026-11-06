@@ -1529,7 +1529,8 @@
 						"resolved": "Analysebefund erledigt"
 					},
 					"proposal_artifact": {
-						"export_started": "Angebotsexport gestartet"
+						"export_started": "Angebotsexport gestartet",
+						"section_revised": "Angebotsabschnitt mit Anweisungen überarbeitet"
 					},
 					"problem_log": {
 						"status_changed": "Status eines Problemprotokoll-Eintrags geändert",
@@ -1563,6 +1564,7 @@
 						"published": "Version der Coding-Instructions veröffentlicht",
 						"rejected": "Upload von Coding-Instructions abgelehnt",
 						"deleted": "Version der Coding-Instructions gelöscht",
+						"removed": "Coding-Instructions entfernt (alle Versionen)",
 						"settings_updated": "Einstellungen der Coding-Instructions aktualisiert",
 						"repository_sync_configured": "Repository-Synchronisierung für Coding-Instructions eingerichtet",
 						"repository_sync_started": "Repository-Synchronisierung für Coding-Instructions gestartet",
@@ -3781,6 +3783,9 @@
 				"downloadAllAria": "Alle Kontexte herunterladen",
 				"preparing": "Archiv wird vorbereitet…",
 				"preparingAria": "Archiv wird vorbereitet, bitte warten",
+				"preparingPdf": "{title} wird als PDF vorbereitet…",
+				"preparingDocx": "{title} wird als Word-Dokument vorbereitet…",
+				"preparingFile": "Download wird vorbereitet…",
 				"empty": "Keine Kontexte zum Herunterladen",
 				"pending": "Dieser Kontext wird noch verarbeitet",
 				"extractedTextWarning": "Lädt extrahierten Text herunter — die Originalquelle wird nicht in Fabric gespeichert",
@@ -3975,6 +3980,7 @@
 							"branchMissing": "Der Branch {ref} wurde im Repository nicht gefunden. Wählen Sie zum Speichern einen anderen Branch."
 						},
 						"contextignoreNotice": "Die eigene .contextignore jedes ausgewählten Ordners wird hier gelesen und genau so angewendet, wie `fabric context push` sie anwendet.",
+						"contextignoreNoticeUnread": "Die eigene .contextignore jedes ausgewählten Ordners kann hier ohne eine Dateiliste des Branches nicht gelesen werden. Die Synchronisierung wendet sie trotzdem an, wenn sie läuft.",
 						"pruneNotice": "Eine nicht mehr ausgewählte, ausgelassene oder aus dem Repository entfernte Datei wird bei der nächsten Synchronisierung aus Living Memory entfernt.",
 						"actingNotice": "Jede Synchronisierung nach dieser läuft als Sie, das Mitglied, das sie konfiguriert hat.",
 						"automaticLabel": "Automatisch synchron halten",
@@ -6598,6 +6604,7 @@
 					"sourceRemoved": "{label} · Quelle entfernt"
 				},
 				"revisionInProgress": "Überarbeitung läuft",
+				"applyWaitsForSectionRevision": "Auf der Hauptseite läuft eine Abschnittsüberarbeitung. Wenden Sie die Empfehlung hier an, sobald diese angenommen oder abgelehnt wurde.",
 				"revisionRejected": "Die Überarbeitung wurde abgelehnt; nichts wurde geändert.",
 				"revisionRefused": "Die Überarbeitung wurde nicht übernommen: {reason}"
 			},
@@ -6750,6 +6757,22 @@
 				"notApplied": "Die Überarbeitung wurde nicht übernommen: {reason}",
 				"chatNotApplied": "Die angenommenen Änderungen wurden nicht übernommen: {reason}",
 				"offerBack": "Der abgelehnte Text wurde aus dem Editor entfernt. Kopieren Sie ihn, wenn Sie ihn behalten möchten.",
+				"instruction": {
+					"trigger": "Diesen Abschnitt überarbeiten",
+					"triggerLabel": "Diesen Abschnitt überarbeiten: {section}",
+					"boxLabel": "„{section}“ überarbeiten",
+					"fieldLabel": "Was soll sich in diesem Abschnitt ändern?",
+					"placeholder": "Zum Beispiel: kürzer fassen und mit dem Ziel des Kunden beginnen.",
+					"hint": "Nur der Text unter dieser Überschrift bis zur nächsten Überschrift ändert sich. Sie prüfen die Änderung, bevor sie gespeichert wird.",
+					"counter": "{count} / {max}",
+					"shortcut": "Strg+Enter zum Überarbeiten · Esc zum Abbrechen",
+					"cancel": "Abbrechen",
+					"submit": "Überarbeiten",
+					"accepted": "Der überarbeitete Abschnitt wurde gespeichert.",
+					"sectionNotFound": "der Abschnitt ist nicht mehr im Dokument.",
+					"paused": "Der Editor nimmt gerade keine Änderungen an, daher kann dies noch nicht gesendet werden. Ihre Anweisung bleibt erhalten.",
+					"headingGone": "Die Überschrift des Abschnitts ist nicht mehr im Dokument, daher wurde das Überarbeitungsfeld geschlossen."
+				},
 				"reasons": {
 					"REVISION_OUTSIDE_TARGET": "sie hat einen Abschnitt außerhalb ihres Ziels geändert.",
 					"REVISION_CHANGED_DIAGRAM": "sie hat ein bestehendes Diagramm geändert.",
@@ -7157,6 +7180,15 @@
 				"regenerating": "Die Wiederherstellung ist nicht verfügbar, solange eine hier gestartete Regenerierung läuft oder auf Ihre Prüfung wartet. Danach ist sie wieder verfügbar.",
 				"proposalElsewhere": "Die Wiederherstellung ist nicht verfügbar, solange in einem anderen Tab ein Vorschlag des Assistenten für dieses Dokument geprüft wird. Sie ist wieder verfügbar, sobald er beantwortet ist.",
 				"proposalOrphaned": "Die Wiederherstellung ist nicht verfügbar, solange dieses Dokument einen Vorschlag des Assistenten enthält, den niemand prüft. Sie ist wieder verfügbar, sobald er beantwortet oder entfernt ist."
+			},
+			"change": {
+				"chatEdit": "Im Chat bearbeitet",
+				"editWithInstructions": "Mit Anweisungen bearbeitet",
+				"recommendationApplied": "Empfehlung übernommen",
+				"sectionRevised": "Abschnitt überarbeitet",
+				"updatedFromContext": "Aus dem Kontext aktualisiert",
+				"regenerated": "Neu generiert",
+				"restored": "Version {version} wiederhergestellt"
 			}
 		},
 		"updateWithContext": {

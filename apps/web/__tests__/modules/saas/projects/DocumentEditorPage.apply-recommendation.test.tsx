@@ -20,7 +20,11 @@
  *   the route can resolve what the chat may do on it, and a story names none;
  * - the Living Docs auto-refresh toggle is not offered on a client-document
  *   Proposal, to members or guests, and stays where the gate is off or the
- *   document is not a Proposal.
+ *   document is not a Proposal;
+ * - Revise this section: a member who may edit is offered it; their
+ *   instruction reaches the editor as a request on Main, one at a time, and
+ *   its outcome is said there without leaving Main; a guest or a viewer is
+ *   not offered it.
  *
  * `@tanstack/react-query` and `next-intl` (the real en.json) are real. The
  * editor, the analysis panel, the chat provider and the toggle are stand-ins
@@ -41,7 +45,15 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-type RevisionRequest = { id: string; runId: string; findingId: string };
+type RevisionRequest =
+	| { id: string; runId: string; findingId: string }
+	| {
+			id: string;
+			kind: "INSTRUCTION";
+			sectionKey: string;
+			instruction: string;
+	  };
+type InstructionRevision = { sectionKey: string; instruction: string };
 type RevisionOutcome = {
 	id: string;
 	result: "accepted" | "rejected" | "refused" | "failed";
@@ -53,15 +65,23 @@ const fixtures = vi.hoisted(() => ({
 	analysis: null as unknown,
 	flags: { PROPOSAL_ARTIFACT: true } as Record<string, boolean>,
 	isGuest: false,
+	userRole: "editor",
 	editor: {
 		lastProps: {} as {
 			sectionRevisionRequest?: RevisionRequest | null;
 			onSectionRevisionSettled?: (outcome: RevisionOutcome) => void;
 			onSectionRevisionShown?: (id: string) => void;
+			onRequestSectionRevision?: (
+				request: InstructionRevision,
+			) => boolean;
+			sectionRevisionPending?: boolean;
 		},
 	},
 	panel: {
-		lastProps: {} as { pendingRevisionFindingId?: string | null },
+		lastProps: {} as {
+			pendingRevisionFindingId?: string | null;
+			sectionRevisionPending?: boolean;
+		},
 	},
 	runtimeUrl: null as string | null,
 	api: {
@@ -125,7 +145,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 								id: "proj-1",
 								name: "Example project",
 								organizationId: "org-1",
-								userRole: "editor",
+								userRole: fixtures.userRole,
 								canUpdateProject: true,
 							},
 						}),
@@ -255,6 +275,7 @@ vi.mock(
 				stableKey: string;
 			}) => void;
 			pendingRevisionFindingId?: string | null;
+			sectionRevisionPending?: boolean;
 		}) {
 			fixtures.panel.lastProps = props;
 			const { data } = useProposalAnalysis({
@@ -302,6 +323,8 @@ vi.mock("@saas/projects/components/DocumentEditor", () => {
 		sectionRevisionRequest?: RevisionRequest | null;
 		onSectionRevisionSettled?: (outcome: RevisionOutcome) => void;
 		onSectionRevisionShown?: (id: string) => void;
+		onRequestSectionRevision?: (request: InstructionRevision) => boolean;
+		sectionRevisionPending?: boolean;
 	}) {
 		fixtures.editor.lastProps = props;
 		return (
@@ -319,6 +342,7 @@ vi.mock("@saas/projects/components/DocumentEditor", () => {
 import messages from "@repo/i18n/translations/en.json";
 import { SessionContext } from "@saas/auth/lib/session-context";
 import { DocumentEditorPage } from "@saas/projects/components/DocumentEditorPage";
+import { toast } from "sonner";
 
 const analysisCopy = messages.projects.proposalArtifact.analysis;
 const reasons = messages.projects.proposalArtifact.revision.reasons;
@@ -457,6 +481,7 @@ beforeEach(() => {
 	fixtures.analysis = twoFindings();
 	fixtures.flags = { PROPOSAL_ARTIFACT: true };
 	fixtures.isGuest = false;
+	fixtures.userRole = "editor";
 	fixtures.editor = { lastProps: {} };
 	fixtures.panel = { lastProps: {} };
 	fixtures.runtimeUrl = null;
@@ -674,6 +699,103 @@ describe("DocumentEditorPage — Apply recommendation", () => {
 		expect(fixtures.panel.lastProps.pendingRevisionFindingId).toBe(
 			"f-scope",
 		);
+	});
+});
+
+describe("DocumentEditorPage — Revise this section", () => {
+	const ASKED = {
+		sectionKey: "p1:pricing#0",
+		instruction: "Say that both phases are covered.",
+	};
+
+	function ask(request: InstructionRevision = ASKED): boolean {
+		let taken = false;
+		act(() => {
+			taken =
+				fixtures.editor.lastProps.onRequestSectionRevision?.(request) ??
+				false;
+		});
+		return taken;
+	}
+
+	it("hands the editor the member's instruction as a request on Main, one at a time", async () => {
+		renderPage();
+		await pageReady();
+		expect(fixtures.editor.lastProps.sectionRevisionPending).toBe(false);
+
+		expect(ask()).toBe(true);
+		expect(fixtures.editor.lastProps.sectionRevisionRequest).toEqual({
+			id: expect.any(String),
+			kind: "INSTRUCTION",
+			sectionKey: "p1:pricing#0",
+			instruction: "Say that both phases are covered.",
+		});
+		expect(fixtures.editor.lastProps.sectionRevisionPending).toBe(true);
+		expect(tab(tabs.main)).toHaveAttribute("aria-selected", "true");
+		// No finding is under way, but Apply waits for this revision.
+		expect(fixtures.panel.lastProps.pendingRevisionFindingId).toBeNull();
+		expect(fixtures.panel.lastProps.sectionRevisionPending).toBe(true);
+
+		// Another request waits for this one.
+		expect(ask({ ...ASKED, instruction: "Something else." })).toBe(false);
+		expect(fixtures.editor.lastProps.sectionRevisionRequest).toMatchObject({
+			instruction: "Say that both phases are covered.",
+		});
+	});
+
+	it("says the outcome on Main and stays there", async () => {
+		renderPage();
+		await pageReady();
+
+		ask();
+		settle({ result: "rejected" });
+		expect(toast.info).toHaveBeenCalledWith(
+			"The revision was rejected; nothing changed.",
+		);
+		expect(tab(tabs.main)).toHaveAttribute("aria-selected", "true");
+		expect(fixtures.editor.lastProps.sectionRevisionRequest).toBeNull();
+		expect(fixtures.editor.lastProps.sectionRevisionPending).toBe(false);
+		expect(fixtures.panel.lastProps.sectionRevisionPending).toBe(false);
+
+		ask();
+		settle({ result: "refused", code: "SECTION_NOT_FOUND" });
+		expect(toast.error).toHaveBeenCalledWith(
+			"The revision was not applied: the section is no longer in the document.",
+		);
+
+		ask();
+		settle({ result: "failed", code: "RATE_LIMITED" });
+		expect(toast.error).toHaveBeenCalledWith(
+			"The revision was not applied: too many AI requests were made. Try again in a minute.",
+		);
+
+		// An accept is said by the editor's own hook; the analysis is not
+		// read again for it.
+		ask();
+		const reads = fixtures.api.getAnalysis.mock.calls.length;
+		settle({ result: "accepted" });
+		expect(tab(tabs.main)).toHaveAttribute("aria-selected", "true");
+		expect(fixtures.api.getAnalysis.mock.calls.length).toBe(reads);
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+
+	it("is not offered to a project guest or to a viewer", async () => {
+		fixtures.isGuest = true;
+		renderPage();
+		await pageReady();
+		expect(
+			fixtures.editor.lastProps.onRequestSectionRevision,
+		).toBeUndefined();
+		cleanup();
+		client.clear();
+
+		fixtures.isGuest = false;
+		fixtures.userRole = "viewer";
+		renderPage();
+		await pageReady();
+		expect(
+			fixtures.editor.lastProps.onRequestSectionRevision,
+		).toBeUndefined();
 	});
 });
 

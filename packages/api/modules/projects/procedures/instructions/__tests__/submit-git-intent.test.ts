@@ -3,8 +3,10 @@
  * or an edit of a file only the caller's OWN accepting branch holds is
  * admitted branch-relative, freezing the blob Fabric wrote there and keeping
  * its mode; a delete of a path neither the published version nor that
- * branch holds is refused as before. The repository reads, admission and
- * storage are mocks; the change validation is the real one.
+ * branch holds is refused as before. A published file the branch also changed
+ * freezes the branch's state so a reviewer sees the change against it. The
+ * repository reads, admission and storage are mocks; the change validation is
+ * the real one.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,6 +14,7 @@ const m = vi.hoisted(() => ({
 	admitGitIntent: vi.fn(),
 	findExistingGitIntent: vi.fn(),
 	readMemberBranchWrittenPaths: vi.fn(),
+	readMemberBranchDeletedPaths: vi.fn(),
 	listDirectRepositoryFiles: vi.fn(),
 	admit: vi.fn(),
 	startAdmittedProposalPullRequest: vi.fn(),
@@ -25,6 +28,8 @@ vi.mock("@repo/database", () => ({
 	findExistingGitIntent: (...a: unknown[]) => m.findExistingGitIntent(...a),
 	readMemberBranchWrittenPaths: (...a: unknown[]) =>
 		m.readMemberBranchWrittenPaths(...a),
+	readMemberBranchDeletedPaths: (...a: unknown[]) =>
+		m.readMemberBranchDeletedPaths(...a),
 }));
 vi.mock("@repo/storage", () => ({
 	getStorageProvider: () => ({
@@ -65,6 +70,7 @@ vi.mock("../direct-commit-workflow", () => ({
 }));
 
 import type { GitIntentEntry } from "@repo/database";
+import { BRANCH_DELETED_OBJECT_ID } from "@repo/instructions";
 import { type NativeChange, submitGitIntentChange } from "../submit-git-intent";
 
 const PROJECT = "proj_example";
@@ -152,6 +158,7 @@ beforeEach(() => {
 				}),
 			),
 	);
+	m.readMemberBranchDeletedPaths.mockResolvedValue(new Set());
 	m.admit.mockResolvedValue({
 		destination: "REPOSITORY",
 		note: null,
@@ -247,8 +254,79 @@ describe("branch-relative changes", () => {
 		expect(added).toMatchObject({ path: "rules/new.md", base: null });
 		expect(added).not.toHaveProperty("branchObjectId");
 		expect(m.readMemberBranchWrittenPaths).toHaveBeenCalledWith(
-			expect.objectContaining({ paths: ["rules/new.md"] }),
+			expect.objectContaining({ paths: ["rules/a.md", "rules/new.md"] }),
 		);
+	});
+
+	it("freezes the branch's blob on an edit of a published file the branch already changed, keeping its published base and mode", async () => {
+		m.listDirectRepositoryFiles.mockResolvedValue({
+			incomplete: false,
+			refusal: null,
+			files: [
+				{
+					path: "scripts/tool.sh",
+					kind: "rule",
+					blobId: BLOB,
+					mode: "100644",
+				},
+			],
+		});
+
+		await submit([
+			{
+				op: "put",
+				path: "scripts/tool.sh",
+				content: Buffer.from("#!/bin/sh\necho edited\n"),
+			},
+		]);
+
+		expect(admittedEntries()).toEqual([
+			expect.objectContaining({
+				op: "PUT",
+				path: "scripts/tool.sh",
+				base: { objectId: BLOB, mode: 0o100644 },
+				mode: 0o100644,
+				branchObjectId: BRANCH_BLOB,
+			}),
+		]);
+	});
+
+	it("marks a put of a published file the branch deleted, which has no blob to freeze", async () => {
+		m.readMemberBranchDeletedPaths.mockResolvedValue(
+			new Set(["rules/a.md"]),
+		);
+
+		await submit([
+			{ op: "put", path: "rules/a.md", content: Buffer.from("alpha\n") },
+		]);
+
+		expect(admittedEntries()).toEqual([
+			expect.objectContaining({
+				op: "PUT",
+				path: "rules/a.md",
+				base: { objectId: BLOB, mode: 0o100644 },
+				branchObjectId: BRANCH_DELETED_OBJECT_ID,
+			}),
+		]);
+		expect(m.readMemberBranchDeletedPaths).toHaveBeenCalledWith(
+			expect.objectContaining({ userId: MEMBER, paths: ["rules/a.md"] }),
+		);
+	});
+
+	it("leaves a delete of a published file the branch deleted relative to the published version", async () => {
+		m.readMemberBranchDeletedPaths.mockResolvedValue(
+			new Set(["rules/a.md"]),
+		);
+
+		await submit([{ op: "delete", path: "rules/a.md" }]);
+
+		expect(admittedEntries()).toEqual([
+			{
+				op: "DELETE",
+				path: "rules/a.md",
+				base: { objectId: BLOB, mode: 0o100644 },
+			},
+		]);
 	});
 
 	it("reads no branch for a direct commit, which never targets a member's branch", async () => {

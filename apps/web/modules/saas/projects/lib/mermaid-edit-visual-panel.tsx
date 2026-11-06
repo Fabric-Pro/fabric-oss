@@ -12,47 +12,20 @@ import {
 	useCallback,
 	useEffect,
 	useId,
-	useRef,
-	useState,
+	useSyncExternalStore,
 } from "react";
 import { getOrpcCode } from "../components/field-mapping/orpc-error";
+import type {
+	VisualEditOutcome as Outcome,
+	VisualEditPhase as Phase,
+	VisualEditStore,
+} from "./mermaid-edit-visual-store";
 import type { MermaidVisualContextValue } from "./mermaid-visual-context";
 
 /** Where the character count starts to show. */
 const COUNTER_FROM = 450;
 
-/** What the diagram holds as the request goes: its source and position. */
-export interface VisualEditTarget {
-	/** The node's text, marker line included. */
-	code: string;
-	/** 0-based index among the document's diagrams, in document order. */
-	ordinal: number;
-	/** The marker id the request names; none for a detached diagram. */
-	visualId?: string;
-}
-
-type Outcome =
-	| "stale"
-	| "refused"
-	| "unsupported"
-	| "providerMissing"
-	| "rateLimited"
-	| "forbidden"
-	| "error";
-
-type Phase =
-	| { kind: "idle" }
-	| { kind: "generating" }
-	| {
-			kind: "candidate";
-			fence: string;
-			sentHash: string;
-			sectionFingerprint: string;
-			visualId: string;
-			svg: string | null;
-			renderFailed: boolean;
-	  }
-	| { kind: "outcome"; outcome: Outcome };
+const IDLE: Phase = { kind: "idle" };
 
 /** The outcomes whose instruction is sent again by Try again. */
 const RETRYABLE: ReadonlySet<Outcome> = new Set([
@@ -110,10 +83,18 @@ function generateLabelKey(
  * the candidate's, and its section's text against the fingerprint of the
  * section the server checked the candidate against, and only that node is
  * replaced, so the normal save (and the collaborative room) persist it.
+ *
+ * What is typed, the request and its candidate live in `visual.editStore`
+ * under `entryKey`, not here: the diagram's node view is drawn again when a
+ * collaborative editor gets its room back, and the panel it then shows is
+ * this one, a request in flight included. A candidate shown again is checked
+ * against the diagram as it is then, and reads as stale when it no longer
+ * applies.
  */
 export function MermaidEditVisualPanel({
 	visual,
-	readTarget,
+	entryKey,
+	candidateApplies,
 	applyCandidate,
 	renderCandidate,
 	onClose,
@@ -121,13 +102,19 @@ export function MermaidEditVisualPanel({
 	textareaRef,
 }: {
 	visual: MermaidVisualContextValue;
-	/** The diagram as it is now; null once it is gone from the document. */
-	readTarget: () => VisualEditTarget | null;
+	/** The diagram's panel in `visual.editStore`, open. */
+	entryKey: string;
 	/**
-	 * Replaces the node when it still holds `sentHash`'s source, still keeps
+	 * Whether the node still holds `sentHash`'s source, still keeps
 	 * `visualId` when it names one, and its section still has
 	 * `sectionFingerprint`.
 	 */
+	candidateApplies: (
+		sentHash: string,
+		sectionFingerprint: string,
+		visualId: string,
+	) => boolean;
+	/** Replaces the node when `candidateApplies`. */
 	applyCandidate: (
 		fence: string,
 		sentHash: string,
@@ -143,32 +130,35 @@ export function MermaidEditVisualPanel({
 	textareaRef: RefObject<HTMLTextAreaElement | null>;
 }) {
 	const t = useTranslations("projects.proposalArtifact.visuals");
-	const [instruction, setInstruction] = useState("");
-	const [phase, setPhase] = useState<Phase>({ kind: "idle" });
-	// Responses to an older or cancelled request are dropped.
-	const requestRef = useRef(0);
-	const abortRef = useRef<AbortController | null>(null);
+	const store: VisualEditStore = visual.editStore;
+	const readEntry = () => store.get(entryKey);
+	const entry = useSyncExternalStore(store.subscribe, readEntry, readEntry);
+	const instruction = entry?.instruction ?? "";
+	const phase = entry?.phase ?? IDLE;
+	const setInstruction = (text: string) =>
+		store.update(entryKey, { instruction: text });
+	const setPhase = useCallback(
+		(next: Phase) => store.update(entryKey, { phase: next }),
+		[store, entryKey],
+	);
 	const counterId = useId();
 	const errorId = useId();
-	// Read by the unmount cleanup, which sees only the first render's phase.
-	const generatingRef = useRef(false);
-	generatingRef.current = phase.kind === "generating";
-	const announceRef = useRef(announce);
-	announceRef.current = announce;
 
-	useEffect(
-		() => () => {
-			requestRef.current += 1;
-			abortRef.current?.abort();
-			// The live region is shared by every diagram on the page: a panel
-			// closed mid-request clears its "Generating" line, or the next
-			// request, saying the same words, would not be spoken.
-			if (generatingRef.current) {
-				announceRef.current("");
-			}
-		},
-		[],
-	);
+	// A candidate shown again, by a node view drawn anew or once the editor
+	// takes input again, is checked against the diagram as it is now.
+	useEffect(() => {
+		const shown = store.get(entryKey)?.phase;
+		if (
+			shown?.kind === "candidate" &&
+			!candidateApplies(
+				shown.sentHash,
+				shown.sectionFingerprint,
+				shown.visualId,
+			)
+		) {
+			setPhase({ kind: "outcome", outcome: "stale" });
+		}
+	}, [store, entryKey, candidateApplies, setPhase]);
 
 	const trimmed = instruction.trim();
 	const tooLong = instruction.length > VISUAL_EDIT_INSTRUCTION_MAX_CHARS;
@@ -182,25 +172,33 @@ export function MermaidEditVisualPanel({
 		) {
 			return;
 		}
-		requestRef.current += 1;
-		const request = requestRef.current;
-		abortRef.current?.abort();
-		const controller = new AbortController();
-		abortRef.current = controller;
-		const current = () => requestRef.current === request;
+		const request = store.begin(entryKey);
+		// Read, drawn and spoken through the node view drawing the diagram
+		// when each step comes: not necessarily this panel's. With none, the
+		// diagram is gone, and the progress line is only cleared.
+		const say = (message: string) => {
+			const host = store.host(entryKey);
+			(host?.announce ?? announce)(host ? message : "");
+		};
 		const settle = (outcome: Outcome) => {
+			request.finish();
 			setPhase({ kind: "outcome", outcome });
-			announce("");
+			say("");
+		};
+		const texts = {
+			generating: t("panel.generating"),
+			ready: t("panel.candidateReady"),
+			renderFailed: t("panel.candidateRenderFailed"),
 		};
 
 		setPhase({ kind: "generating" });
-		announce(t("panel.generating"));
+		say(texts.generating);
 
 		const saved = await visual.flushSave().catch(() => false);
-		if (!current()) {
+		if (!request.current()) {
 			return;
 		}
-		const target = readTarget();
+		const target = store.host(entryKey)?.readTarget() ?? null;
 		if (!saved || !target) {
 			settle("stale");
 			return;
@@ -219,15 +217,15 @@ export function MermaidEditVisualPanel({
 					fenceSourceHash: sentHash,
 					instruction: trimmed,
 				},
-				{ signal: controller.signal },
+				{ signal: request.signal },
 			);
 		} catch (error) {
-			if (current()) {
+			if (request.current()) {
 				settle(outcomeOfError(error));
 			}
 			return;
 		}
-		if (!current()) {
+		if (!request.current()) {
 			return;
 		}
 		if (result.status !== "CANDIDATE") {
@@ -237,13 +235,16 @@ export function MermaidEditVisualPanel({
 
 		let svg: string | null = null;
 		try {
-			svg = await renderCandidate(result.fence);
+			svg = await (
+				store.host(entryKey)?.renderCandidate ?? renderCandidate
+			)(result.fence);
 		} catch {
 			svg = null;
 		}
-		if (!current()) {
+		if (!request.current()) {
 			return;
 		}
+		request.finish();
 		setPhase({
 			kind: "candidate",
 			fence: result.fence,
@@ -253,25 +254,21 @@ export function MermaidEditVisualPanel({
 			svg,
 			renderFailed: svg === null,
 		});
-		announce(
-			svg === null
-				? t("panel.candidateRenderFailed")
-				: t("panel.candidateReady"),
-		);
+		say(svg === null ? texts.renderFailed : texts.ready);
 	}, [
 		instruction,
 		trimmed,
+		store,
+		entryKey,
 		visual,
-		readTarget,
 		renderCandidate,
 		announce,
+		setPhase,
 		t,
 	]);
 
 	const cancel = () => {
-		requestRef.current += 1;
-		abortRef.current?.abort();
-		abortRef.current = null;
+		store.stop(entryKey);
 		if (phase.kind === "generating") {
 			// Back to the instruction, which stays for another try.
 			setPhase({ kind: "idle" });

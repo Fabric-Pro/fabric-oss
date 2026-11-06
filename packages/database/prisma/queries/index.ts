@@ -101,6 +101,7 @@ export * from "./instruction-proposal-branch-settlement";
 export * from "./instruction-proposal-branches";
 export * from "./instruction-proposal-pull-requests";
 export * from "./instruction-publish-notifications";
+export * from "./instruction-remove-all";
 export * from "./instruction-repository-sync";
 export * from "./instructions";
 export * from "./instructions-access-grants";

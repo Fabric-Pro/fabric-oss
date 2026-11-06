@@ -5,6 +5,8 @@
  * Pure functions and data only: client components import this module.
  */
 
+import { contrastRatio } from "../../brand-colors";
+import { GRAPHIC_CONTRAST } from "../../glossy/visual-colors";
 import type { FigureKind, FigureModel, FigureNode } from "./parse";
 import {
 	charBudget,
@@ -180,6 +182,23 @@ export function isPlainProcessChain(model: FigureModel): boolean {
 	);
 }
 
+/**
+ * The rows a chain of `steps` takes: as many as rows of four need, with the
+ * steps shared out so no row holds more than one step over another, the
+ * longer rows first (Fizzy #2946). Five steps draw as three and two rather
+ * than four and a lone box, seven as four and three, nine as three rows of
+ * three. The row count, and so the figure's height, is what rows of four
+ * would give; the boxes widen to the longest row.
+ */
+function processRows(steps: number): number[] {
+	const rowCount = Math.max(1, Math.ceil(steps / PROCESS_COLUMNS));
+	const base = Math.floor(steps / rowCount);
+	const longer = steps % rowCount;
+	return Array.from({ length: rowCount }, (_, row) =>
+		row < longer ? base + 1 : base,
+	);
+}
+
 /** A step box's width in a grid of `columns`, with or without a loop. */
 function boxWidthOf(columns: number, loop: boolean): number {
 	const left = loop ? LOOP_INSET : 0;
@@ -200,9 +219,14 @@ interface ProcessBox {
 }
 
 /**
- * A numbered process: the steps in chain order, in rows of at most four,
- * each box with its number in a square. A `highlight` class gives the step
- * the tint fill and a primary square. Plain arrows join the steps of a row
+ * A numbered process: the steps in chain order, in rows of at most four
+ * that differ by one step at most, the longer first ({@link processRows}),
+ * each box with its number in a primary square, or an ink one where the
+ * primary does not hold 3:1 against the box as a graphic. A `highlight`
+ * class gives the step the tint fill and a primary outline, where the
+ * primary holds 3:1 against the tint. The neutral style
+ * (`FigurePalette.neutralPrimary`) keeps the look it had: ink squares, and a
+ * highlighted step's square in its primary, without an outline. Plain arrows join the steps of a row
  * and an elbow joins one row to the next. One dashed `-.->` back edge from a
  * step in the last row to an earlier step draws as a dashed primary loop
  * under the rows, with its label. With `dated`, each node's first label line
@@ -227,18 +251,19 @@ export function processFigureSvg(
 	if (dashed.length > 1) {
 		return null;
 	}
-	const columns = Math.min(PROCESS_COLUMNS, chain.length);
-	const rowCount = Math.ceil(chain.length / PROCESS_COLUMNS);
+	const rows = processRows(chain.length);
+	const rowCount = rows.length;
+	const columns = Math.max(...rows);
+	// Each step's row and column, row by row in chain order.
+	const cells = rows.flatMap((length, row) =>
+		Array.from({ length }, (_, column) => ({ row, column })),
+	);
 	const loopEdge = dashed[0];
 	let loop: { from: number; to: number; label: string[] } | null = null;
 	if (loopEdge) {
 		const from = position.get(loopEdge.from) ?? -1;
 		const to = position.get(loopEdge.to) ?? -1;
-		if (
-			to < 0 ||
-			from <= to ||
-			Math.floor(from / PROCESS_COLUMNS) !== rowCount - 1
-		) {
+		if (to < 0 || from <= to || cells[from]?.row !== rowCount - 1) {
 			return null;
 		}
 		loop = { from, to, label: loopEdge.label };
@@ -266,11 +291,11 @@ export function processFigureSvg(
 		);
 		const textHeight =
 			label.lineCount > 0 ? 8 + label.lineCount * LINE_HEIGHT : 0;
-		const column = index % PROCESS_COLUMNS;
+		const { row, column } = cells[index] ?? { row: 0, column: 0 };
 		return {
 			node,
 			index,
-			row: Math.floor(index / PROCESS_COLUMNS),
+			row,
 			column,
 			x: left + column * (boxWidth + PROCESS_COLUMN_GAP),
 			eyebrow,
@@ -300,19 +325,27 @@ export function processFigureSvg(
 	}
 	const gridBottom = y - PROCESS_ROW_GAP;
 
+	// The brand primary marks the numbers, and a highlighted step's
+	// outline, only where it holds as a graphic on the box's fill. The
+	// neutral style keeps its ink squares, a highlighted step's primary.
+	const neutral = palette.neutralPrimary === true;
+	const holds = (fill: string) =>
+		contrastRatio(colors.primary, fill) >= GRAPHIC_CONTRAST;
 	const arrowId = `${prefix}-arrow`;
 	const loopArrowId = `${prefix}-loop-arrow`;
 	const body: string[] = [];
 	for (const box of boxes) {
 		const boxTop = rowTops[box.row];
 		const height = rowHeights[box.row];
+		const boxFill = box.highlight ? colors.tint : colors.surface;
+		const primarySquare = neutral ? box.highlight : holds(boxFill);
 		body.push(
-			`<rect class="step" ${outlinedBox(box.x, boxTop, boxWidth, height)} rx="4" fill="${box.highlight ? colors.tint : colors.surface}" stroke="${colors.border}"/>`,
+			`<rect class="step" ${outlinedBox(box.x, boxTop, boxWidth, height)} rx="4" fill="${boxFill}" stroke="${box.highlight && !neutral && primarySquare ? colors.primary : colors.border}"/>`,
 		);
 		const squareX = box.x + PROCESS_PAD;
 		const squareY = boxTop + PROCESS_PAD;
 		body.push(
-			`<rect class="number" x="${num(squareX)}" y="${num(squareY)}" width="${PROCESS_SQUARE}" height="${PROCESS_SQUARE}" rx="3" fill="${box.highlight ? colors.primary : colors.ink}"/>`,
+			`<rect class="number" x="${num(squareX)}" y="${num(squareY)}" width="${PROCESS_SQUARE}" height="${PROCESS_SQUARE}" rx="3" fill="${primarySquare ? colors.primary : colors.ink}"/>`,
 		);
 		body.push(
 			textElement(
@@ -323,7 +356,7 @@ export function processFigureSvg(
 					className: "step-number",
 					mono: true,
 					weight: 500,
-					fill: box.highlight ? colors.onPrimary : colors.onInk,
+					fill: primarySquare ? colors.onPrimary : colors.onInk,
 					anchor: "middle",
 				},
 			),

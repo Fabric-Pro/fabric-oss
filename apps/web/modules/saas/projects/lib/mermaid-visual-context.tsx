@@ -17,6 +17,11 @@ import {
 	useState,
 } from "react";
 import { getOrpcCode } from "../components/field-mapping/orpc-error";
+import {
+	useOwnedVisualEditStore,
+	useVisualEditSession,
+	type VisualEditStore,
+} from "./mermaid-edit-visual-store";
 
 /**
  * What a diagram on a client-document Proposal's page knows of its document
@@ -48,10 +53,20 @@ export interface MermaidVisualContextValue {
 	 * fails: the diagram is then treated as changed.
 	 */
 	flushSave: () => Promise<boolean>;
-	/** After a diagram was replaced: read the spec summaries again. */
+	/**
+	 * After Edit with instructions replaced a diagram: save it as its own
+	 * version, which version history names after it, and read the spec
+	 * summaries again.
+	 */
 	onVisualReplaced: () => void;
 	/** Says a message in the diagrams' one polite live region. */
 	announce: (message: string) => void;
+	/**
+	 * The diagrams' open Edit with instructions panels, kept where a node
+	 * view drawn again finds its panel: the page's store when a
+	 * collaborative editor provides one, this provider's otherwise.
+	 */
+	editStore: VisualEditStore;
 }
 
 /** What the page hands the document editor for its diagrams. */
@@ -110,6 +125,7 @@ export function MermaidVisualProvider({
 	isMember,
 	paint,
 	flushSave,
+	saveAppliedEdit,
 	children,
 }: {
 	enabled: boolean;
@@ -118,6 +134,12 @@ export function MermaidVisualProvider({
 	isMember: boolean;
 	paint: ProposalThemePaint | null | undefined;
 	flushSave: () => Promise<boolean>;
+	/**
+	 * Saves the editor once Edit with instructions applied a diagram, with
+	 * the description that names the writer. Not saved now (a live run, a
+	 * room behind the saved body), the change goes with a later save.
+	 */
+	saveAppliedEdit: () => Promise<boolean>;
 	children: ReactNode;
 }) {
 	const queryClient = useQueryClient();
@@ -138,9 +160,13 @@ export function MermaidVisualProvider({
 	});
 	const specs = query.isError ? undefined : query.data;
 	const onVisualReplaced = useCallback(() => {
+		void saveAppliedEdit();
 		void invalidateVisualSpecs(queryClient, projectId, documentId);
-	}, [queryClient, projectId, documentId]);
+	}, [saveAppliedEdit, queryClient, projectId, documentId]);
 	const [announcement, setAnnouncement] = useState("");
+	const sessionStore = useVisualEditSession();
+	const ownStore = useOwnedVisualEditStore(documentId);
+	const editStore = sessionStore ?? ownStore;
 	const value = useMemo<MermaidVisualContextValue | null>(
 		() =>
 			enabled
@@ -153,6 +179,7 @@ export function MermaidVisualProvider({
 						flushSave,
 						onVisualReplaced,
 						announce: setAnnouncement,
+						editStore,
 					}
 				: null,
 		[
@@ -164,6 +191,7 @@ export function MermaidVisualProvider({
 			specs,
 			flushSave,
 			onVisualReplaced,
+			editStore,
 		],
 	);
 	return (

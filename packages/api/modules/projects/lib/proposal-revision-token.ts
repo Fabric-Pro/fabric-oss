@@ -151,3 +151,89 @@ export function verifyRevisionToken(
 		sectionFingerprint: payload.sectionFingerprint,
 	};
 }
+
+/**
+ * The revision token of a section revised on a member's own instruction
+ * ("Revise this section", Fizzy #2946).
+ *
+ * `reviseSection` signs one with the candidate it returns for an
+ * instruction; the accept that saves it presents it to
+ * `projects.documents.update`, so the server knows the saved section is the
+ * one it produced for this user, document and section from this base. Its
+ * own purpose keeps it from being read as a finding's token, and a finding's
+ * from being read as one of these. Ids, a version and hashes only: never the
+ * instruction.
+ */
+const INSTRUCTION_REVISION_TOKEN_PURPOSE = "fabric-proposal-section-revision";
+
+export type InstructionRevisionTokenPayload = {
+	userId: string;
+	documentId: string;
+	/** The document version the revision read. */
+	baseVersion: number;
+	sectionKey: string;
+	/** {@link revisionSectionFingerprint} of the candidate section. */
+	sectionFingerprint: string;
+};
+
+type SignedInstructionRevisionToken = InstructionRevisionTokenPayload & {
+	purpose: typeof INSTRUCTION_REVISION_TOKEN_PURPOSE;
+};
+
+export function signInstructionRevisionToken(
+	payload: InstructionRevisionTokenPayload,
+): string {
+	return signToken<SignedInstructionRevisionToken>(
+		{
+			purpose: INSTRUCTION_REVISION_TOKEN_PURPOSE,
+			userId: payload.userId,
+			documentId: payload.documentId,
+			baseVersion: payload.baseVersion,
+			sectionKey: payload.sectionKey,
+			sectionFingerprint: payload.sectionFingerprint,
+		},
+		{ ttlSec: REVISION_TOKEN_TTL_SECONDS },
+	);
+}
+
+/**
+ * The payload of a token this server signed for an instruction revision, or
+ * null when it is malformed, forged, tampered with, expired, signed for
+ * another purpose (a finding's revision included), or the signing secret is
+ * not configured.
+ */
+export function verifyInstructionRevisionToken(
+	token: string,
+): InstructionRevisionTokenPayload | null {
+	let verified: VerifyResult<unknown>;
+	try {
+		verified = verifyToken<unknown>(token);
+	} catch {
+		return null;
+	}
+	if (!verified.ok) {
+		return null;
+	}
+	const value = verified.payload;
+	if (typeof value !== "object" || value === null) {
+		return null;
+	}
+	const payload = value as Record<string, unknown>;
+	if (
+		payload.purpose !== INSTRUCTION_REVISION_TOKEN_PURPOSE ||
+		!isNonEmptyString(payload.userId) ||
+		!isNonEmptyString(payload.documentId) ||
+		!isVersion(payload.baseVersion) ||
+		!isNonEmptyString(payload.sectionKey) ||
+		!isNonEmptyString(payload.sectionFingerprint)
+	) {
+		return null;
+	}
+	return {
+		userId: payload.userId,
+		documentId: payload.documentId,
+		baseVersion: payload.baseVersion,
+		sectionKey: payload.sectionKey,
+		sectionFingerprint: payload.sectionFingerprint,
+	};
+}

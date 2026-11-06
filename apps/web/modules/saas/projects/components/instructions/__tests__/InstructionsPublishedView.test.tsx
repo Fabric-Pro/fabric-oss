@@ -339,6 +339,10 @@ vi.mock("../InstructionFileView", () => ({
 vi.mock("../InstructionReviewPolicySection", () => ({
 	InstructionReviewPolicySection: () => null,
 }));
+// Reads the project and a removal preview; covered by its own tests.
+vi.mock("../RemoveCodingInstructions", () => ({
+	RemoveCodingInstructions: () => null,
+}));
 /** The props the proposals dialog was last mounted with. */
 const proposalsProps: Array<Record<string, unknown>> = [];
 vi.mock("../InstructionProposals", () => ({

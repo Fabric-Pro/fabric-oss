@@ -1,22 +1,17 @@
 /**
- * Which context rows have an extraction lifecycle at all (Fizzy #2886).
- *
- * Deliberately import-free, like `readiness/thresholds.ts`: the Context tab is a
- * client component and reads the same predicate the capability evidence does,
- * so the two can never disagree about which rows are "in flight".
- *
- * Every context kind runs through extraction and reports its progress on
- * `extractionStatus` — except most `INTEGRATION` rows. A Slack, Teams, Notion or
- * backlog integration is a live link whose ingest is owned elsewhere, so its
- * status column is written PENDING at creation and nothing ever moves it. Read
- * as work in flight, such a row is a source "still processing" forever, and a
- * stall once the clock runs out — a banner about a source that was never going
- * to finish, on projects whose integrations are working exactly as designed.
- *
- * The one exception is Google Docs: an `INTEGRATION` row that is exported to
- * storage and run through the full extraction pipeline, with a real status that
- * can stall or fail like any upload.
+ * Import-free: a client component and capability evidence share this contract
+ * (Fizzy #2886). Live-link integrations do not settle through extraction.
+ * Google Docs run extraction; Notion pages run embedding from their saved text.
  */
+
+/**
+ * contextEmbeddingWorkflow in packages/temporal/src/workflows/context-embedding.ts:
+ * 3 attempts × 5-minute startToCloseTimeout + 1s and 2s retry backoffs
+ * (initialInterval 1s, backoffCoefficient 2, maximumInterval 30s).
+ * Keep this quiet window aligned with that policy. Queue delays are not bounded here.
+ */
+export const CONTEXT_EMBEDDING_RETRY_WINDOW_MS =
+	3 * 5 * 60 * 1000 + 1000 + 2000;
 
 /** Statuses that mean a row's extraction has not settled yet. */
 const IN_FLIGHT_EXTRACTION_STATUSES = ["PENDING", "EXTRACTING"];
@@ -28,12 +23,24 @@ const GOOGLE_DOCS_SOURCE = "google-docs";
 export function hasExtractionLifecycle(row: {
 	type: string;
 	metadata?: unknown;
+	content?: string | null;
+	contentPreview?: string | null;
+	contentLength?: number;
 }): boolean {
 	if (row.type !== "INTEGRATION") {
 		return true;
 	}
-	const metadata = row.metadata as { source?: unknown } | null | undefined;
-	return metadata?.source === GOOGLE_DOCS_SOURCE;
+	const metadata = row.metadata as
+		| { source?: unknown; provider?: unknown }
+		| null
+		| undefined;
+	return (
+		metadata?.source === GOOGLE_DOCS_SOURCE ||
+		(metadata?.provider === "notion" &&
+			(typeof row.content === "string"
+				? row.content.trim().length > 0
+				: (row.contentPreview?.trim().length ?? 0) > 0))
+	);
 }
 
 /**
@@ -64,6 +71,13 @@ export function withExtractionLifecycleOrSettled() {
 				},
 			},
 			{ metadata: { path: ["source"], equals: GOOGLE_DOCS_SOURCE } },
+			// Prisma cannot express trim(content) or a whitespace regex here.
+			// Empty rows are excluded; whitespace-only legacy rows remain a SQL
+			// filter gap relative to hasExtractionLifecycle's trimmed predicate.
+			{
+				metadata: { path: ["provider"], equals: "notion" },
+				content: { not: "" },
+			},
 		],
 	};
 }

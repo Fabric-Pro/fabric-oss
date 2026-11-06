@@ -4171,6 +4171,13 @@ async function handleGetDocument(
 		title: doc.title,
 		content: doc.content,
 		status: doc.status,
+		// Why a FAILED document failed, as the editor's failed notice shows it
+		// — for a document made from a file that could not be read, the only
+		// way an agent polling this tool can tell the file was the problem.
+		// Null for any other status, so a stale reason from an earlier failed
+		// run never reads as current.
+		generationError:
+			doc.status === "FAILED" ? (doc.generationError ?? null) : null,
 		// The base a later fabric_update_document sends back. `contentHash`
 		// is the body identity `projects.documents.get` returns; it shadows
 		// the embed-owned `contentHash` column, which no reader of this tool

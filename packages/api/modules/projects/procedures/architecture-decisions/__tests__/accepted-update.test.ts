@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({
 	getArchitectureDecision: mocks.getArchitectureDecision,
+	IN_FORCE_DECISION_STATUSES: ["ACCEPTED", "PROPOSED"],
 	livingMemoryUpdateTargetId: ({
 		sourceKind,
 		sourceMetadata,

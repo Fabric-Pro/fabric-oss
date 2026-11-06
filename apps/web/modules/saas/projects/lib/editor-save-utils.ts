@@ -346,7 +346,7 @@ function matchingCloseEnd(html: string, from: number, tag: string): number {
  * Hand the children of a deleted parent item to the item before it, which
  * is where loading the AI's document nests them; with no item before it the
  * children move up a level. Removing only the parent's text would leave an
- * empty item holding the children, saved as `-   -   child`.
+ * empty item holding the children, saved as `- - child`.
  */
 function handOverDeletedParentChildren(html: string): string {
 	let result = html;

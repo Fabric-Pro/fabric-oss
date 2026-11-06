@@ -118,6 +118,10 @@ export type HistorySnapshot = {
 		| "MERGED"
 		| "CLOSED"
 		| null;
+	/** Who decided a proposal; null on one that closed without a reviewer. */
+	reviewerUserId?: string | null;
+	/** The open proposal this one replaced when it was sent with `--rebase`. */
+	supersedesSnapshotId?: string | null;
 	/**
 	 * Publish first, scan afterwards (Fizzy #2737): the member's opt-in, the
 	 * scan's state (null for every ordinary version), and its findings in the
@@ -320,9 +324,80 @@ export function InstructionsHistory({
 		}),
 	);
 
+	// Which version replaced each proposal, among the rows this viewer sees.
+	// Only a replacement that passed its checks closes the one it supersedes;
+	// one that failed or is still being checked replaced nothing.
+	const replacedByVersion = new Map(
+		snapshots.flatMap((s) =>
+			s.supersedesSnapshotId && s.status === "READY"
+				? [[s.supersedesSnapshotId, s.version] as const]
+				: [],
+		),
+	);
+
+	/**
+	 * A proposal's own state outranks its upload status: a READY proposal is
+	 * still waiting for review or was closed, never a version to publish, so
+	 * "Ready" would misread it. Null for every row that is not a proposal, and
+	 * for an approved one, which reads as the version it became.
+	 */
+	function proposalBadge(snapshot: HistorySnapshot) {
+		const proposalStatus = snapshot.proposalStatus ?? null;
+		switch (proposalStatus) {
+			case null:
+			case "APPROVED":
+				return null;
+			case "PENDING":
+				return {
+					label: t("proposedPill"),
+					variant: "outline" as const,
+				};
+			case "REJECTED": {
+				// A reviewer's decision outranks a later replacement: closing
+				// a superseded proposal records no reviewer.
+				if (snapshot.reviewerUserId) {
+					return {
+						label: t("proposalRejectedPill"),
+						variant: "destructive" as const,
+					};
+				}
+				const replacedBy = replacedByVersion.get(snapshot.id);
+				return replacedBy !== undefined
+					? {
+							label: t("replacedPill", { version: replacedBy }),
+							variant: "outline" as const,
+						}
+					: {
+							label: t("proposalClosedPill"),
+							variant: "outline" as const,
+						};
+			}
+			case "MERGED":
+				return {
+					label: t("mergedPill"),
+					variant: "secondary" as const,
+				};
+			case "CLOSED":
+				return {
+					label: t("pullRequestClosedPill"),
+					variant: "outline" as const,
+				};
+			default: {
+				const unhandled: never = proposalStatus;
+				return unhandled;
+			}
+		}
+	}
+
 	function statusBadge(snapshot: HistorySnapshot, isPublished: boolean) {
 		if (isPublished) {
 			return { label: t("publishedPill"), variant: "success" as const };
+		}
+		if (snapshot.status === "READY") {
+			const proposal = proposalBadge(snapshot);
+			if (proposal) {
+				return proposal;
+			}
 		}
 		// An upload that stayed RECEIVING for an hour is not being checked: the
 		// browser never finished it, so no run was ever started for it.
@@ -515,24 +590,37 @@ export function InstructionsHistory({
 													</>
 												) : null}
 											</div>
+											{/* Each fact keeps its words together, so beside the
+											    action buttons the line breaks between facts. */}
 											<p className="text-muted-foreground text-xs">
-												{s.user?.name ??
-													t("anonymousUser")}
+												<span className="whitespace-nowrap">
+													{s.user?.name ??
+														t("anonymousUser")}
+												</span>
 												{" · "}
-												{formatRelativeTime(
-													s.createdAt,
-												)}
+												<span className="whitespace-nowrap">
+													{formatRelativeTime(
+														s.createdAt,
+													)}
+												</span>
 												{" · "}
-												{t("filesStored", {
-													count: s.fileCount,
-												})}
+												<span className="whitespace-nowrap">
+													{t("filesStored", {
+														count: s.fileCount,
+													})}
+												</span>
 												{typeof s.baseVersion ===
-												"number"
-													? ` · ${t("editedFrom", {
-															version:
-																s.baseVersion,
-														})}`
-													: ""}
+												"number" ? (
+													<>
+														{" · "}
+														<span className="whitespace-nowrap">
+															{t("editedFrom", {
+																version:
+																	s.baseVersion,
+															})}
+														</span>
+													</>
+												) : null}
 											</p>
 										</div>
 										<div className="flex flex-wrap gap-2 sm:justify-end">

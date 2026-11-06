@@ -17,6 +17,7 @@ import {
 	RETIRED_TYPE_MESSAGE,
 } from "@repo/utils/document-type-catalog";
 import { countDocumentWords } from "@repo/utils/document-word-count";
+import { NOTION_EMPTY_CONTENT } from "@repo/utils/notion-error-reasons";
 import { z } from "zod";
 import { emitActivity, emitContextChange } from "../../../../lib/realtime";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
@@ -84,6 +85,18 @@ export const createContextProcedure = tenantProtectedProcedure
 		if (!hasAccess) {
 			throw new ORPCError("FORBIDDEN", {
 				message: "You don't have access to this project",
+			});
+		}
+
+		if (
+			input.type === "INTEGRATION" &&
+			input.metadata?.provider === "notion" &&
+			!input.content.trim()
+		) {
+			throw new ORPCError("BAD_REQUEST", {
+				data: { reason: NOTION_EMPTY_CONTENT },
+				message:
+					"Fabric could not read any content from this Notion page",
 			});
 		}
 
@@ -317,9 +330,9 @@ export const createContextProcedure = tenantProtectedProcedure
 		}
 
 		if (hasEmbeddableContent) {
-			// Start Temporal workflow for durable embedding (fire-and-forget)
+			// Await admission so a failed start is persisted before responding.
 			// This provides retry logic, durability, and monitoring
-			(async () => {
+			await (async () => {
 				try {
 					const client = await getTemporalClient();
 					const workflowId = `context-embedding-${projectContext.id}-${Date.now()}`;
@@ -352,19 +365,31 @@ export const createContextProcedure = tenantProtectedProcedure
 						`[CreateContext] Started context embedding workflow ${workflowId}`,
 					);
 				} catch (error) {
-					// Log error but don't fail the request
+					if (
+						input.type === "INTEGRATION" &&
+						input.metadata?.provider === "notion"
+					) {
+						try {
+							await updateContextExtractionStatus(
+								projectContext.id,
+								"FAILED",
+								{
+									extractionError:
+										"Processing could not be started. Retry becomes available 15 minutes after this failure.",
+								},
+							);
+						} catch (statusError) {
+							logger.error(
+								`[CreateContext] Failed to mark Notion context FAILED (${projectContext.id}): ${statusError}`,
+							);
+						}
+					}
+
 					logger.error(
 						`[CreateContext] Failed to start context embedding workflow for ${projectContext.id}: ${error}`,
 					);
 				}
 			})();
-		} else if (
-			input.type === "INTEGRATION" &&
-			input.metadata?.provider === "notion"
-		) {
-			logger.warn(
-				`[CreateContext] Notion context ${projectContext.id} has empty content. Content can be resynced from Integrations before attaching it to the project.`,
-			);
 		}
 
 		// Emit real-time events for collaboration

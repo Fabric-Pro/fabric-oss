@@ -474,3 +474,122 @@ describe("createContextProcedure — a tagged context's document", () => {
 		});
 	});
 });
+
+describe("Notion content admission", () => {
+	it.each(["", " \n\t"])(
+		"refuses blank content %j before saving",
+		async (content) => {
+			const handler = await loadHandler();
+			await expect(
+				handler({
+					input: {
+						projectId: "proj-1",
+						type: "INTEGRATION",
+						content,
+						metadata: {
+							provider: "notion",
+							notionPageId: "page-example",
+							notionType: "page",
+							mcpConfigId: "mcp-example",
+							sourceTitle: "Example",
+							sourceUrl: "https://example.com/page",
+							contentFetchFailed: true,
+						},
+					},
+					context: orgCtx,
+				}),
+			).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+				data: { reason: "NOTION_EMPTY_CONTENT" },
+				message:
+					"Fabric could not read any content from this Notion page",
+			});
+			expect(mockCreateContext).not.toHaveBeenCalled();
+		},
+	);
+	it("marks a failed embedding start as retryable", async () => {
+		mockTemporalStart.mockImplementationOnce(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			throw new Error("unavailable");
+		});
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				projectId: "proj-1",
+				type: "INTEGRATION",
+				content: "Example content",
+				metadata: {
+					provider: "notion",
+					notionPageId: "page-example",
+					notionType: "page",
+					dataConnectionId: "connection-example",
+					sourceTitle: "Example",
+					sourceUrl: "https://example.com/page",
+				},
+			},
+			context: orgCtx,
+		});
+		expect(mockUpdateContextExtractionStatus).toHaveBeenCalledWith(
+			"ctx-new",
+			"FAILED",
+			{
+				extractionError:
+					"Processing could not be started. Retry becomes available 15 minutes after this failure.",
+			},
+		);
+	});
+});
+
+it("accepts blank non-integration text even with Notion metadata", async () => {
+	const handler = await loadHandler();
+	await expect(
+		handler({
+			input: {
+				projectId: "proj-1",
+				type: "TEXT",
+				content: "",
+				metadata: { provider: "notion" },
+			},
+			context: orgCtx,
+		}),
+	).resolves.toBeDefined();
+});
+
+it.each([
+	{ type: "TEXT", metadata: {} },
+	{ type: "TEXT", metadata: { provider: "notion" } },
+	{ type: "INTEGRATION", metadata: { provider: "CONFLUENCE" } },
+])("leaves non-Notion failed starts PENDING %j", async ({ type, metadata }) => {
+	mockTemporalStart.mockRejectedValueOnce(new Error("unavailable"));
+	const handler = await loadHandler();
+	await expect(
+		handler({
+			input: {
+				projectId: "proj-1",
+				type,
+				content: "Example content",
+				metadata,
+			},
+			context: orgCtx,
+		}),
+	).resolves.toBeDefined();
+	expect(mockUpdateContextExtractionStatus).not.toHaveBeenCalled();
+});
+it("returns the created Notion row when the FAILED status write fails", async () => {
+	mockTemporalStart.mockRejectedValueOnce(new Error("unavailable"));
+	mockUpdateContextExtractionStatus.mockRejectedValueOnce(
+		new Error("status unavailable"),
+	);
+	const handler = await loadHandler();
+	await expect(
+		handler({
+			input: {
+				projectId: "proj-1",
+				type: "INTEGRATION",
+				content: "Example content",
+				metadata: { provider: "notion" },
+			},
+			context: orgCtx,
+		}),
+	).resolves.toMatchObject({ context: { id: "ctx-new" } });
+});

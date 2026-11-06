@@ -28,6 +28,8 @@ const BRAND = "1D4ED8";
 const INK = "111827";
 /** The brand accent, which reads as text on the paper. */
 const LABEL = "475569";
+/** Text on the ink, as the paint works it out for these tokens. */
+const ON_INK = "FFFFFF";
 
 function sourced<T>(value: T) {
 	return { value, source: "MANUAL" as const };
@@ -118,6 +120,7 @@ function input(
 interface Package {
 	files: string[];
 	read(path: string): Promise<string>;
+	bytes(path: string): Promise<Buffer>;
 }
 
 async function build(source: BuildDocxInput) {
@@ -131,6 +134,13 @@ async function build(source: BuildDocxInput) {
 				throw new Error(`missing part ${path}`);
 			}
 			return file.async("string");
+		},
+		async bytes(path) {
+			const file = zip.file(path);
+			if (!file) {
+				throw new Error(`missing part ${path}`);
+			}
+			return file.async("nodebuffer");
 		},
 	};
 	return { ...result, pkg };
@@ -230,8 +240,84 @@ function isMedia(file: string): boolean {
 	return file.startsWith("word/media/") && !file.endsWith("/");
 }
 
-function tables(documentXml: string): string[] {
+/** A drawing anchored behind the text: the cover's ink. */
+function backdropAnchor(xml: string): string | undefined {
+	return /<wp:anchor\b[^>]*behindDoc="1"[\s\S]*?<\/wp:anchor>/.exec(xml)?.[0];
+}
+
+function isHeaderPart(file: string): boolean {
+	return /^word\/header\d*\.xml$/.test(file);
+}
+
+/** The relationship id a section's header reference of `type` names. */
+function headerId(section: string, type = "default"): string | null {
+	const reference = new RegExp(
+		`<w:headerReference w:type="${type}" r:id="([^"]+)"`,
+	).exec(section);
+	return reference?.[1] ?? null;
+}
+
+/** The part a relationship of `word/document.xml` points at. */
+async function documentTarget(
+	pkg: Package,
+	id: string | null,
+): Promise<string | null> {
+	const rels = await pkg.read("word/_rels/document.xml.rels");
+	const element = Array.from(
+		rels.matchAll(/<Relationship\b[^>]*\/>/g),
+		(match) => match[0],
+	).find((candidate) => attribute(candidate, "Id") === id);
+	return element ? `word/${attribute(element, "Target")}` : null;
+}
+
+/**
+ * The cover's ink: the header of the cover section, which holds it, and the
+ * picture that header embeds.
+ */
+async function backdropOf(pkg: Package) {
+	const [cover = ""] = sections(await pkg.read("word/document.xml"));
+	const header = await documentTarget(pkg, headerId(cover));
+	const xml = header ? await pkg.read(header) : "";
+	const anchor = backdropAnchor(xml);
+	const id = /r:embed="([^"]+)"/.exec(anchor ?? "")?.[1];
+	const rels = header
+		? await pkg.read(`${header.replace("word/", "word/_rels/")}.rels`)
+		: "";
+	const element = Array.from(
+		rels.matchAll(/<Relationship\b[^>]*\/>/g),
+		(match) => match[0],
+	).find((candidate) => attribute(candidate, "Id") === id);
+	return {
+		header,
+		xml,
+		anchor,
+		media: element ? `word/${attribute(element, "Target")}` : null,
+	};
+}
+
+/** The pictures the file embeds, less the cover's ink. */
+async function placedMedia(pkg: Package): Promise<string[]> {
+	const { media } = await backdropOf(pkg);
+	return pkg.files.filter((file) => isMedia(file) && file !== media);
+}
+
+/** Every table, in document order, the layout's own included. */
+function allTables(documentXml: string): string[] {
 	return documentXml.match(/<w:tbl>[\s\S]*?<\/w:tbl>/g) ?? [];
+}
+
+/** Whether a table is a section opener's ink card, which holds its heading. */
+function isOpenerCard(table: string): boolean {
+	return table.includes('<w:pStyle w:val="SectionHeading"/>');
+}
+
+/**
+ * The tables Main's blocks write: past the cover, whose logos and parties
+ * are tables of the layout's, and less the section openers' cards.
+ */
+function tables(documentXml: string): string[] {
+	const body = documentXml.slice(documentXml.indexOf("</w:sectPr>"));
+	return allTables(body).filter((table) => !isOpenerCard(table));
 }
 
 function rowsOf(table: string): string[] {
@@ -456,7 +542,7 @@ describe("buildProposalDocx", () => {
 				},
 			),
 		);
-		const media = pkg.files.filter(isMedia);
+		const media = await placedMedia(pkg);
 		expect(media).toHaveLength(2);
 		expect(media.some((file) => /\.(jpe?g)$/.test(file))).toBe(true);
 		expect(media.some((file) => file.endsWith(".png"))).toBe(true);
@@ -770,13 +856,13 @@ describe("buildProposalDocx", () => {
 		expect(hyperlink).toContain(`<w:color w:val="${BRAND}"/>`);
 	});
 
-	it("sets every heading run, the cover title and the Contents heading in ink, and bullets in the label colour", async () => {
+	it("sets heading runs on the paper and the Contents heading in ink, the cover title and an opener's heading in the light text on the ink, and bullets in the label colour", async () => {
 		const { pkg } = await build(
 			input(
 				[
 					"## Approach with [a link](https://example.com/approach)",
 					"",
-					"### Detail",
+					"### Detail with [a link](https://example.com/detail)",
 					"",
 					"- First point",
 					"- Second point",
@@ -795,17 +881,23 @@ describe("buildProposalDocx", () => {
 				color: /<w:color w:val="([0-9A-F]{6})"\/>/.exec(run[0])?.[1],
 			})).filter((run) => run.text !== "");
 
-		const [heading2] = styled("Heading2");
-		expect(colours(heading2 ?? "")).toEqual([
-			{ text: "Approach with ", color: INK },
-			// A link in a heading keeps the link colour.
+		// On the ink the heading takes the light text from its style, and a
+		// link names it over the link style's colour, as print's does.
+		const [opener] = styled("SectionHeading");
+		expect(colours(opener ?? "")).toEqual([
+			{ text: "Approach with ", color: undefined },
+			{ text: "a link", color: ON_INK },
+		]);
+		expect(
+			styleXml(await pkg.read("word/styles.xml"), "SectionHeading"),
+		).toContain(`<w:color w:val="${ON_INK}"/>`);
+		// On the paper a link in a heading keeps the link colour.
+		expect(colours(styled("Heading3")[0] ?? "")).toEqual([
+			{ text: "Detail with ", color: INK },
 			{ text: "a link", color: BRAND },
 		]);
-		expect(colours(styled("Heading3")[0] ?? "")).toEqual([
-			{ text: "Detail", color: INK },
-		]);
 		expect(colours(styled("Title")[0] ?? "")).toEqual([
-			{ text: "Example Proposal", color: INK },
+			{ text: "Example Proposal", color: ON_INK },
 		]);
 		const contents = paragraphs.find((paragraph) =>
 			paragraph.includes(">Contents</w:t>"),
@@ -882,28 +974,36 @@ describe("buildProposalDocx", () => {
 		expect(settings).toMatch(/<w:updateFields(?: w:val="(?:true|1)")?\/>/);
 	});
 
-	it("runs the title in the header and the page count in the footer, but not on the cover", async () => {
-		const { pkg } = await build(input("## Approach\n\nText."));
+	it("runs no header, as print runs none, and the footer with the page count on every page but the cover", async () => {
+		const { pkg } = await build(
+			input("## Approach\n\nText.\n\n## Pricing\n\nMore text."),
+		);
 		const documentXml = await pkg.read("word/document.xml");
 		const [cover, ...rest] = sections(documentXml);
 		expect(cover).toBeDefined();
-		expect(cover).not.toMatch(/headerReference|footerReference/);
+		expect(cover).not.toMatch(/footerReference/);
+		// The cover's only header is its ink, with no text.
+		const backdrop = await backdropOf(pkg);
+		expect(backdrop.anchor).toBeDefined();
+		expect(textOf(backdrop.xml)).toBe("");
 		expect(rest.length).toBeGreaterThan(0);
 		for (const section of rest) {
-			expect(section).toMatch(/<w:headerReference\b/);
+			// A header of its own, so the cover's ink is not inherited, and
+			// empty: no text and no picture.
+			const header = await documentTarget(pkg, headerId(section));
+			expect(header).not.toBeNull();
+			expect(header).not.toBe(backdrop.header);
+			const xml = await pkg.read(header ?? "");
+			expect(textOf(xml)).toBe("");
+			expect(xml).not.toContain("<w:drawing>");
 			expect(section).toMatch(/<w:footerReference\b/);
 		}
 
-		const headers = pkg.files.filter((file) =>
-			/^word\/header\d*\.xml$/.test(file),
-		);
 		const footers = pkg.files.filter((file) =>
 			/^word\/footer\d*\.xml$/.test(file),
 		);
-		expect(headers.length).toBeGreaterThan(0);
-		for (const header of headers) {
-			expect(await pkg.read(header)).toContain("Example Proposal");
-		}
+		expect(pkg.files.filter(isHeaderPart).length).toBeGreaterThan(0);
+		expect(footers.length).toBeGreaterThan(0);
 		for (const footer of footers) {
 			const xml = await pkg.read(footer);
 			expect(xml).toContain(
@@ -946,22 +1046,25 @@ describe("buildProposalDocx", () => {
 				}),
 			}),
 		);
-		const media = pkg.files.filter(isMedia);
+		const media = await placedMedia(pkg);
 		expect(media).toHaveLength(3);
 		const documentXml = await pkg.read("word/document.xml");
 		const cover = documentXml.slice(0, documentXml.indexOf("<w:sectPr"));
 		expect(cover).toContain("Prepared for");
 		expect(cover).toContain("Example Client");
-		expect(cover.match(/<pic:pic\b/g)).toHaveLength(3);
-		// Every drawing carries an id of its own.
+		// The logos and the hero in the flow, over the ink in the header.
+		expect(cover.match(/<wp:inline\b/g)).toHaveLength(3);
+		const backdrop = await backdropOf(pkg);
+		expect(backdrop.anchor).toBeDefined();
+		// Every drawing carries an id of its own, the ink's included.
 		const ids = Array.from(
-			documentXml.matchAll(/<wp:docPr id="(\d+)"/g),
+			(documentXml + backdrop.xml).matchAll(/<wp:docPr id="(\d+)"/g),
 			(match) => match[1],
 		);
-		expect(ids).toHaveLength(3);
-		expect(new Set(ids).size).toBe(3);
-		// A 600 x 200 logo fits the 2.75in x 0.75in box: 216 x 72 px.
-		expect(cover).toContain(`cx="${216 * 9525}" cy="${72 * 9525}"`);
+		expect(ids).toHaveLength(4);
+		expect(new Set(ids).size).toBe(4);
+		// A 600 x 200 logo fits print's 2.4in x 0.36in box: 104 x 35 px.
+		expect(cover).toContain(`cx="${104 * 9525}" cy="${35 * 9525}"`);
 	});
 
 	it("renders valid stat tiles as a table and a refused block as code", async () => {
@@ -1294,7 +1397,7 @@ describe("buildProposalDocx", () => {
 				diagrams,
 			}),
 		);
-		const media = pkg.files.filter(isMedia);
+		const media = await placedMedia(pkg);
 		expect(media).toHaveLength(1);
 		expect(media[0]).toMatch(/\.png$/);
 		const documentXml = await pkg.read("word/document.xml");
@@ -1409,6 +1512,39 @@ describe("buildProposalDocx", () => {
 		);
 	});
 
+	it("captions a figure without a caption of its own with its section's heading, as print does", async () => {
+		const png = await raster("png", 800, 400);
+		const drawn: ExportDiagram = {
+			kind: "svg",
+			svg: "<svg/>",
+			width: 400,
+			height: 200,
+			png,
+		};
+		const { pkg } = await build(
+			input(
+				[
+					"## 4. Delivery approach",
+					"",
+					"Text.",
+					"",
+					"```mermaid",
+					"flowchart LR",
+					"  A[one] --> B",
+					"```",
+				].join("\n"),
+				{ diagrams: [drawn] },
+			),
+		);
+		const documentXml = await pkg.read("word/document.xml");
+		const text = Array.from(
+			documentXml.matchAll(/<w:t(?: [^>]*)?>([^<]*)<\/w:t>/g),
+			(match) => match[1],
+		).join("|");
+
+		expect(text).toContain("Figure 1.| Delivery approach");
+	});
+
 	it("never fetches a Markdown image and reports the ones it left out", async () => {
 		const { pkg, warnings } = await build(
 			input(
@@ -1426,7 +1562,7 @@ describe("buildProposalDocx", () => {
 		]);
 		const rels = await pkg.read("word/_rels/document.xml.rels");
 		expect(rels).not.toContain("example.com");
-		expect(pkg.files.some(isMedia)).toBe(false);
+		expect(await placedMedia(pkg)).toEqual([]);
 	});
 
 	it("prints raw HTML as its literal text and a <br> as a line break", async () => {
@@ -1541,7 +1677,7 @@ describe("buildProposalDocx", () => {
 			false,
 		]);
 		// Nothing is filled as a header.
-		expect(headerless).not.toContain(`w:fill="${BRAND}"`);
+		expect(headerless).not.toContain(`w:fill="${INK}"`);
 
 		// One header cell with text keeps the header row.
 		expect(headed).toContain("<w:tblHeader/>");
@@ -1584,7 +1720,7 @@ describe("buildProposalDocx", () => {
 		expect(rowsOf(noteTable ?? "")).toHaveLength(2);
 	});
 
-	it("puts Main's leading H1 on the cover, in the header, the footer and the properties, and not in the body", async () => {
+	it("puts Main's leading H1 on the cover, in the footer and the properties, and not in the body", async () => {
 		const { pkg } = await build(
 			input("# Generated Title\n\n## Approach\n\nText.", {
 				title: "Renamed Record",
@@ -1604,12 +1740,8 @@ describe("buildProposalDocx", () => {
 					.filter((file) => pattern.test(file))
 					.map((file) => pkg.read(file)),
 			);
-		const headers = await parts(/^word\/header\d*\.xml$/);
 		const footers = await parts(/^word\/footer\d*\.xml$/);
-		expect(headers.length).toBeGreaterThan(0);
-		for (const header of headers) {
-			expect(header).toContain(">Generated Title<");
-		}
+		expect(footers.length).toBeGreaterThan(0);
 		for (const footer of footers) {
 			expect(footer).toContain(
 				"Example Org · Generated Title · October 15, 2026 · Confidential",
@@ -1618,7 +1750,7 @@ describe("buildProposalDocx", () => {
 		const core = await pkg.read("docProps/core.xml");
 		expect(core).toContain("<dc:title>Generated Title</dc:title>");
 		// The record's name is the download's, never the document's.
-		for (const part of [documentXml, core, ...headers, ...footers]) {
+		for (const part of [documentXml, core, ...footers]) {
 			expect(part).not.toContain("Renamed Record");
 		}
 	});
@@ -1679,14 +1811,20 @@ describe("buildProposalDocx: cover details", () => {
 		);
 		expect(organization).toMatch(/<w:jc w:val="(?:right|end)"\/>/);
 		expect(organization).toContain("<w:caps/>");
-		// Each party's first line in the name's style, the rest under it.
+		// Every line of a party in one style, as print sets its lines.
 		const parties = cover.slice(cover.indexOf("Prepared for"));
-		expect(runWith(parties, "Example Harbor Co")).toContain("<w:b/>");
-		expect(runWith(parties, "1 Example Quay")).not.toContain("<w:b/>");
-		expect(runWith(parties, "Example Studio")).toContain("<w:b/>");
+		for (const line of [
+			"Example Harbor Co",
+			"1 Example Quay",
+			"Example Studio",
+		]) {
+			expect(runWith(parties, line)).not.toContain("<w:b/>");
+		}
 		expect(cover).toContain(">example.com<");
 		expect(cover).not.toContain("Example Client");
-		expect(cover).toContain(">October 15, 2026 · Version 12<");
+		expect(cover).toContain(
+			">October 15, 2026 · Version 12 · Confidential<",
+		);
 		// Prepared for, then Prepared by, as before.
 		expect(cover.indexOf("Prepared for")).toBeLessThan(
 			cover.indexOf("Prepared by"),
@@ -1707,7 +1845,7 @@ describe("buildProposalDocx: cover details", () => {
 		expect(cover).toContain(">Proposal<");
 		expect(cover).toContain(">Example Client<");
 		expect(cover).toContain(">Example Org<");
-		expect(cover).toContain(">October 15, 2026 · v3<");
+		expect(cover).toContain(">October 15, 2026 · v3 · Confidential<");
 	});
 
 	it("prints the version alone when there is no date", async () => {
@@ -1718,7 +1856,7 @@ describe("buildProposalDocx: cover details", () => {
 		);
 		const [cover = ""] = sectionBodies(await pkg.read("word/document.xml"));
 
-		expect(cover).toContain(">Version 2.1<");
+		expect(cover).toContain(">Version 2.1 · Confidential<");
 	});
 
 	it("writes a refused cover fence as code in the body and keeps the cover's defaults", async () => {
@@ -1814,7 +1952,7 @@ const LETTER_MAIN = [
 ].join("\n");
 
 describe("buildProposalDocx: cover letter", () => {
-	it("writes the letter in its own section after the cover and before the contents, under the running header and footer", async () => {
+	it("writes the letter in its own section after the cover and before the contents, under the running footer", async () => {
 		const { pkg } = await build(
 			input(LETTER_MAIN, {
 				tokens: tokens({ proposerLogo: await raster("png", 600, 200) }),
@@ -1825,7 +1963,7 @@ describe("buildProposalDocx: cover letter", () => {
 		const [cover = "", letter = "", contents = "", ...body] =
 			sectionBodies(documentXml);
 
-		expect(coverProperties).not.toMatch(/headerReference|footerReference/);
+		expect(coverProperties).not.toMatch(/footerReference/);
 		expect(letterProperties).toMatch(/<w:headerReference\b/);
 		expect(letterProperties).toMatch(/<w:footerReference\b/);
 		expect(cover).toContain('<w:pStyle w:val="Title"/>');
@@ -1851,12 +1989,12 @@ describe("buildProposalDocx: cover letter", () => {
 		expect(heading).not.toContain("<w:outlineLvl");
 		expect(runWith(heading, "Cover letter")).toContain("<w:caps/>");
 		expect(
-			documentXml.match(/<w:pStyle w:val="Heading2"\/>/g),
+			documentXml.match(/<w:pStyle w:val="SectionHeading"\/>/g),
 		).toHaveLength(2);
 		for (const paragraph of documentXml.match(
 			/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g,
 		) ?? []) {
-			if (paragraph.includes('<w:pStyle w:val="Heading2"/>')) {
+			if (paragraph.includes('<w:pStyle w:val="SectionHeading"/>')) {
 				expect(paragraph).not.toContain("Cover letter");
 			}
 		}
@@ -1913,7 +2051,7 @@ describe("buildProposalDocx: cover letter", () => {
 
 		expect(sections(documentXml)).toHaveLength(3);
 		expect(paragraphWith(body.join(""), "Cover letter")).toContain(
-			'<w:pStyle w:val="Heading2"/>',
+			'<w:pStyle w:val="SectionHeading"/>',
 		);
 		expect(contents).toContain(">Cover letter<");
 	});
@@ -2005,5 +2143,311 @@ describe("buildProposalDocx: mono weights", () => {
 			expect(run).toContain(`w:ascii="${MONO_FONT}"`);
 			expect(run).not.toContain("<w:b/>");
 		}
+	});
+});
+
+/** The text of a run or paragraph, its runs joined. */
+function textOf(xml: string): string {
+	return Array.from(
+		xml.matchAll(/<w:t(?: [^>]*)?>([^<]*)<\/w:t>/g),
+		(match) => match[1] ?? "",
+	).join("");
+}
+
+describe("buildProposalDocx: print's ink", () => {
+	const paint = resolveThemePaint(tokens());
+	const hex = (color: string) => color.replace("#", "").toUpperCase();
+
+	it("lays the cover on the ink: a page-sized picture of it behind the text, light type over it, the lead and the parties at the foot", async () => {
+		const { pkg } = await build(
+			input(
+				[
+					"# Example Platform Proposal",
+					"",
+					"A short lead about the *example* engagement.",
+					"",
+					"## Approach",
+					"",
+					"Text.",
+				].join("\n"),
+			),
+		);
+		const documentXml = await pkg.read("word/document.xml");
+		const [cover = "", ...rest] = sectionBodies(documentXml);
+
+		// The ink: in the cover section's header, so every page of the cover
+		// has it, anchored to the paper's corner, behind the text, as large
+		// as the page, and taking no room in the flow.
+		const backdrop = await backdropOf(pkg);
+		expect(backdropAnchor(cover)).toBeUndefined();
+		const anchor = backdrop.anchor ?? "";
+		expect(anchor).toMatch(
+			/<wp:positionH relativeFrom="page"><wp:posOffset>0</,
+		);
+		expect(anchor).toMatch(
+			/<wp:positionV relativeFrom="page"><wp:posOffset>0</,
+		);
+		expect(anchor).toContain(
+			`<wp:extent cx="${(12240 / 15) * 9525}" cy="${(15840 / 15) * 9525}"/>`,
+		);
+		expect(anchor).toContain("<wp:wrapNone/>");
+		// Its picture is the paint's ink and nothing else.
+		const bytes = await pkg.bytes(backdrop.media ?? "");
+		const { data, info } = await sharp(bytes)
+			.raw()
+			.toBuffer({ resolveWithObject: true });
+		const ink = hex(paint.ink);
+		for (let pixel = 0; pixel < info.width * info.height; pixel++) {
+			const offset = pixel * info.channels;
+			expect(
+				[0, 1, 2]
+					.map((channel) =>
+						(data[offset + channel] ?? 0)
+							.toString(16)
+							.padStart(2, "0"),
+					)
+					.join("")
+					.toUpperCase(),
+			).toBe(ink);
+		}
+
+		// Light type: the eyebrow in the brand primary as it reads on the
+		// ink (the blue lightened, not the accent's white), the labels in the
+		// accent, the title in the light text, the lead and the party lines
+		// muted.
+		expect(paint.onInkPrimary).not.toBe(paint.onInkAccent);
+		expect(runWith(cover, "Proposal")).toContain(
+			`<w:color w:val="${hex(paint.onInkPrimary)}"/>`,
+		);
+		expect(runWith(cover, "Example Platform Proposal")).toContain(
+			`<w:color w:val="${hex(paint.onInk)}"/>`,
+		);
+		expect(runWith(cover, "A short lead about the")).toContain(
+			`<w:color w:val="${hex(paint.onInkMuted)}"/>`,
+		);
+		expect(runWith(cover, "Prepared for")).toContain(
+			`<w:color w:val="${hex(paint.onInkAccent)}"/>`,
+		);
+		expect(runWith(cover, "Example Client")).toContain(
+			`<w:color w:val="${hex(paint.onInkMuted)}"/>`,
+		);
+		// The cover takes the lead, so the body leaves it out.
+		expect(rest.join("")).not.toContain("A short lead about the");
+		// The title is no longer ruled in the brand's colour.
+		expect(
+			styleXml(await pkg.read("word/styles.xml"), "Title"),
+		).not.toContain("<w:pBdr>");
+
+		// The parties: one table, floated to the foot of the cover's margins,
+		// the date line with "Confidential" under "Prepared by".
+		const [parties] = allTables(cover).filter((table) =>
+			table.includes("Prepared for"),
+		);
+		expect(parties).toMatch(
+			/<w:tblpPr\b[^>]*w:tblpYSpec="bottom"[^>]*w:vertAnchor="margin"/,
+		);
+		const [forCell = "", byCell = ""] = cellsOf(
+			rowsOf(parties ?? "")[0] ?? "",
+		);
+		expect(textOf(forCell)).toBe("Prepared forExample Client");
+		expect(textOf(byCell)).toBe(
+			"Prepared byExample OrgOctober 15, 2026 · Confidential",
+		);
+	});
+
+	it("sets a logo that would not read on the ink on a plate of the paper, hugging it, and a boxed logo straight on the ink", async () => {
+		const dark = { ...(await raster("png", 600, 200)), luminance: 0.02 };
+		const boxed = {
+			...(await raster("png", 300, 300)),
+			luminance: 0.02,
+			boxed: true,
+		};
+		const { pkg } = await build(
+			input("Text.", {
+				tokens: tokens({
+					proposerLogo: dark,
+					recipientLogo: boxed,
+				}),
+			}),
+		);
+		const [cover = ""] = sectionBodies(await pkg.read("word/document.xml"));
+		const [brands] = allTables(cover).filter((table) =>
+			table.includes("<pic:pic"),
+		);
+		const cells = cellsOf(rowsOf(brands ?? "")[0] ?? "");
+		expect(cells).toHaveLength(3);
+		const [proposer = "", gap = "", recipient = ""] = cells;
+		// The dark mark sits on the surface; the boxed logo on the ink.
+		expect(proposer).toContain(`w:fill="${hex(paint.surface)}"`);
+		expect(proposer).toContain("<pic:pic");
+		expect(gap).not.toContain("<pic:pic");
+		expect(recipient).toContain("<pic:pic");
+		expect(recipient).not.toContain("w:fill=");
+	});
+
+	it("opens each section on a new page with an ink card holding its eyebrow, its Heading 2 and its upright subtitle", async () => {
+		const { pkg } = await build(
+			input(
+				[
+					"## Approach",
+					"",
+					"*How the work runs, in short.*",
+					"",
+					"Text.",
+					"",
+					"## Appendix A: Rates",
+					"",
+					"Rates.",
+					"",
+					"## Pricing",
+					"",
+					"> ## Quoted heading",
+					"",
+					"More text.",
+				].join("\n"),
+			),
+		);
+		const documentXml = await pkg.read("word/document.xml");
+		const body = sectionBodies(documentXml).slice(2).join("");
+		const cards = allTables(body).filter(isOpenerCard);
+		expect(cards.map((card) => textOf(card))).toEqual([
+			"Section 1ApproachHow the work runs, in short.",
+			// An appendix takes its own label, and no number.
+			"Appendix AAppendix A: Rates",
+			"Section 2Pricing",
+		]);
+		for (const card of cards) {
+			const [row = ""] = rowsOf(card);
+			expect(cellsOf(row)).toHaveLength(1);
+			expect(row).toContain("<w:cantSplit/>");
+			expect(card).toContain(`w:fill="${hex(paint.ink)}"`);
+		}
+		const [first = ""] = cards;
+		expect(runWith(first, "Section 1")).toContain(
+			`<w:color w:val="${hex(paint.onInkPrimary)}"/>`,
+		);
+		// The heading's light type is its style's, never its runs': Word
+		// copies a heading run's own formatting into the contents entry it
+		// writes, which would set it light and large on the paper.
+		const heading = paragraphWith(first, "Approach");
+		expect(heading).toContain('<w:pStyle w:val="SectionHeading"/>');
+		expect(heading).not.toMatch(/<w:color\b|<w:sz\b|<w:rFonts\b|<w:b\/>/);
+		const style =
+			styleXml(await pkg.read("word/styles.xml"), "SectionHeading") ?? "";
+		expect(style).toContain('<w:basedOn w:val="Heading2"/>');
+		expect(style).toContain('<w:outlineLvl w:val="1"/>');
+		expect(style).toContain(`<w:color w:val="${hex(paint.onInk)}"/>`);
+		expect(style).toContain('<w:sz w:val="42"/>');
+		// The contents read the openers by their outline level, and their
+		// entries, cached or written by Word, are contents entries.
+		expect(documentXml).toMatch(
+			/<w:instrText[^>]*>TOC [^<]*\\o[^<]*2-2[^<]*\\u/,
+		);
+		const cached = /<w:sdt>[\s\S]*?<\/w:sdt>/.exec(documentXml)?.[0] ?? "";
+		expect(paragraphWith(cached, "Approach")).toContain(
+			'<w:pStyle w:val="TOC2"/>',
+		);
+		expect(cached).not.toContain("SectionHeading");
+		// The subtitle is upright and muted, and leaves the body.
+		const subtitle = runWith(first, "How the work runs");
+		expect(subtitle).toContain(
+			`<w:color w:val="${hex(paint.onInkMuted)}"/>`,
+		);
+		expect(subtitle).not.toContain("<w:i/>");
+		expect(body.match(/How the work runs/g)).toHaveLength(1);
+
+		// The first opener starts the body's section, the others a page.
+		expect(body.match(/<w:pageBreakBefore\/>/g)).toHaveLength(2);
+		// A heading in a quote is a plain heading, not an opener.
+		expect(cards.some((card) => card.includes("Quoted heading"))).toBe(
+			false,
+		);
+		expect(paragraphWith(body, "Quoted heading")).toContain(
+			'<w:pStyle w:val="Heading2"/>',
+		);
+		// The TOC still lists every Heading 2, the cards' included.
+		const contents =
+			/<w:sdt>[\s\S]*?<\/w:sdt>/.exec(documentXml)?.[0] ?? "";
+		for (const title of ["Approach", "Appendix A: Rates", "Pricing"]) {
+			expect(contents).toContain(`>${title}<`);
+		}
+		// No section heading carries the old brand rule.
+		expect(
+			styleXml(await pkg.read("word/styles.xml"), "Heading2"),
+		).not.toContain("<w:pBdr>");
+	});
+
+	it("fills a table's header row with the ink and sets its labels in the light text", async () => {
+		const { pkg } = await build(
+			input("| Phase | Weeks |\n|---|---|\n| Discovery | 2 |"),
+		);
+		const [table = ""] = tables(await pkg.read("word/document.xml"));
+		const [header = "", row = ""] = rowsOf(table);
+		expect(header).toContain("<w:tblHeader/>");
+		for (const cell of cellsOf(header)) {
+			expect(cell).toContain(`w:fill="${hex(paint.ink)}"`);
+			expect(cell).not.toContain(`w:fill="${BRAND}"`);
+		}
+		expect(runWith(header, "Phase")).toContain(
+			`<w:color w:val="${hex(paint.onInk)}"/>`,
+		);
+		expect(row).not.toContain(`w:fill="${hex(paint.ink)}"`);
+	});
+
+	it("keeps the cover's ink on every page of the cover, so a long title and lead that run it onto a second page stay on the ink", async () => {
+		const title = Array.from({ length: 12 }, () => "Example").join(" ");
+		const { pkg } = await build(
+			input(
+				[
+					`# ${title}`,
+					"",
+					"A lead long enough to wrap over several lines of the cover under a long title. ".repeat(
+						3,
+					),
+					"",
+					"## Approach",
+					"",
+					"Text.",
+				].join("\n"),
+				{ tokens: tokens({ hero: await raster("jpeg", 1200, 600) }) },
+			),
+		);
+		const documentXml = await pkg.read("word/document.xml");
+		const [cover = ""] = sections(documentXml);
+		// The cover section's default header is its ink, which Word repeats
+		// on each of the section's pages; its first page takes it too.
+		expect(cover).toMatch(/<w:headerReference w:type="default"/);
+		expect(cover).not.toContain("<w:titlePg");
+		const backdrop = await backdropOf(pkg);
+		expect(backdrop.anchor).toContain('behindDoc="1"');
+		expect(backdrop.media).not.toBeNull();
+	});
+
+	it("sets the cover letter's logo on a plate of the ink when it would not read on the paper, and leaves one that reads as it is", async () => {
+		const light = { ...(await raster("png", 600, 200)), luminance: 0.95 };
+		const { pkg } = await build(
+			input(LETTER_MAIN, { tokens: tokens({ proposerLogo: light }) }),
+		);
+		const [, letter = ""] = sectionBodies(
+			await pkg.read("word/document.xml"),
+		);
+		const [head = ""] = allTables(letter);
+		const [logoCell = "", labelCell = ""] = cellsOf(rowsOf(head)[0] ?? "");
+		expect(logoCell).toContain("<pic:pic");
+		expect(logoCell).toContain(`w:fill="${hex(paint.ink)}"`);
+		expect(textOf(labelCell)).toBe("Cover letter");
+		expect(labelCell).toMatch(/<w:jc w:val="(?:right|end)"\/>/);
+
+		const dark = { ...(await raster("png", 600, 200)), luminance: 0.02 };
+		const plain = await build(
+			input(LETTER_MAIN, { tokens: tokens({ proposerLogo: dark }) }),
+		);
+		const [, plainLetter = ""] = sectionBodies(
+			await plain.pkg.read("word/document.xml"),
+		);
+		expect(allTables(plainLetter)).toEqual([]);
+		expect(paragraphWith(plainLetter, "Cover letter")).toContain(
+			"<pic:pic",
+		);
 	});
 });

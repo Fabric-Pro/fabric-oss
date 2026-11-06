@@ -1,5 +1,15 @@
 # @fabricorg/cli
 
+## 0.9.2
+
+### Patch Changes
+
+- 527efdf: Coding instructions: the CLI finds a folder's lock through a symlinked path, `init` needs only that project's sign-in, and History names a replacement only when it happened.
+- 527efdf: Coding instructions: History labels proposals by review state, file counts read "1 file", and the CLI points to the tab after a removal.
+- 527efdf: Coding instructions: `push --rebase` closes the proposal it replaces, refuses leftover markers, and reviewers see changes against the branch.
+- 527efdf: Coding instructions: a project admin can remove every version, the published one included, and start over; `sync` then reports NOTHING_PUBLISHED.
+- 527efdf: The CLI's project-knowledge rule now tells coding agents that `fabric_semantic_search` searches the project's context (documents, transcripts, notes and synced files) and not the code, so they search the code in `repos/<name>/` themselves.
+
 ## 0.9.1
 
 ### Patch Changes

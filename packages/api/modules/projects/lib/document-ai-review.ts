@@ -11,6 +11,8 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { stripResidualDiffMarkers } from "@repo/utils/diff-markers";
+import { DOCUMENT_VERSION_CHANGE_DESCRIPTIONS } from "@repo/utils/document-version-change";
+import { fnv1aHex64 } from "@repo/utils/fnv1a";
 import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
 import type { PreservationScope } from "@repo/utils/proposal-artifact/preservation";
 import {
@@ -38,14 +40,16 @@ import {
 } from "./proposal-artifact-access";
 import {
 	revisionSectionFingerprint,
+	verifyInstructionRevisionToken,
 	verifyRevisionToken,
 } from "./proposal-revision-token";
 
 /**
  * The AI accept on a client-document Proposal's Main (Fizzy #2946).
  *
- * The editor's accept of a chat proposal (`CHAT`) or of a finding-driven
- * revision (`FINDING`) names itself to `projects.documents.update` with an
+ * The editor's accept of a chat proposal (`CHAT`), of a finding-driven
+ * revision (`FINDING`) or of a section revised on a member's own instruction
+ * (`INSTRUCTION`) names itself to `projects.documents.update` with an
  * `aiReview` descriptor. Before the guarded write the server normalizes the
  * body to what the save would store, checks that it kept everything outside
  * its target and every existing diagram (`checkPreservation`), and that it
@@ -53,7 +57,8 @@ import {
  * (`checkResponseEcho`). Both checks live in `client-proposal-main-check.ts`,
  * which the MCP and v1 whole-body writes run too. A `FINDING` accept also
  * records the finding as Resolved, with its audit row, in the write's own
- * transaction.
+ * transaction; an `INSTRUCTION` accept records the revised section's audit
+ * row there.
  *
  * Refusals are `PRECONDITION_FAILED` with a `SCOPED_REVISION_REFUSAL` code;
  * their details and every log here carry keys and codes, never text.
@@ -85,19 +90,28 @@ export const documentAiReviewSchema = z.discriminatedUnion("kind", [
 		/** The token `reviseSection` returned with the candidate. */
 		revisionToken: z.string().min(1).max(REVISION_TOKEN_MAX_LENGTH),
 	}),
+	z.object({
+		kind: z.literal("INSTRUCTION"),
+		/** The section the member's instruction revised. */
+		sectionKey: z.string().min(1).max(SECTION_KEY_MAX_LENGTH),
+		/** The token `reviseSection` returned with the candidate. */
+		revisionToken: z.string().min(1).max(REVISION_TOKEN_MAX_LENGTH),
+	}),
 ]);
 
 type DocumentAiReview = z.infer<typeof documentAiReviewSchema>;
 
 /**
- * The version description of an AI accept the client sent none for. Generic
- * on purpose: version history is shown to project guests, so it never names
- * the finding or carries any internal analysis text.
+ * The version description of an AI accept the client sent none for, one per
+ * kind, so version history says which writer made it. Generic on purpose:
+ * version history is shown to project guests, so it never names the finding
+ * or carries any internal analysis text.
  */
 const AI_ACCEPT_CHANGE_DESCRIPTIONS: Record<DocumentAiReview["kind"], string> =
 	{
-		CHAT: "Assistant edit",
-		FINDING: "Applied a review recommendation",
+		CHAT: DOCUMENT_VERSION_CHANGE_DESCRIPTIONS.CHAT_EDIT,
+		FINDING: DOCUMENT_VERSION_CHANGE_DESCRIPTIONS.RECOMMENDATION_APPLIED,
+		INSTRUCTION: DOCUMENT_VERSION_CHANGE_DESCRIPTIONS.SECTION_REVISED,
 	};
 
 export interface ReviewedAiSave {
@@ -105,7 +119,10 @@ export interface ReviewedAiSave {
 	content: string;
 	/** The version description to use when the client sent none. */
 	changeDescription: string;
-	/** For `FINDING`: the Resolved write, run in the save's transaction. */
+	/**
+	 * For `FINDING`: the Resolved write; for `INSTRUCTION`: the audit row.
+	 * Run in the save's transaction.
+	 */
 	inTransaction?: (
 		tx: Prisma.TransactionClient,
 		saved: ProjectDocument,
@@ -240,6 +257,48 @@ async function loadFindingTarget(args: {
 	};
 }
 
+/** The INSTRUCTION half: who may save it, and what the token vouches for. */
+interface InstructionTarget {
+	organizationId: string;
+	sectionKey: string;
+	token: NonNullable<ReturnType<typeof verifyInstructionRevisionToken>>;
+}
+
+async function loadInstructionTarget(args: {
+	review: Extract<DocumentAiReview, { kind: "INSTRUCTION" }>;
+	projectId: string;
+	documentId: string;
+	userId: string;
+	expectedVersion: number;
+}): Promise<InstructionTarget> {
+	// As `reviseSection` itself: the document permission, edit access to the
+	// project and membership of the owning organization. A project guest is
+	// refused here, as at the revision.
+	await assertProjectPermission(
+		args.projectId,
+		args.userId,
+		Permissions.DOCUMENT_UPDATE,
+	);
+	const { organizationId } = await loadProposalArtifactDocument({
+		projectId: args.projectId,
+		documentId: args.documentId,
+		userId: args.userId,
+		write: true,
+	});
+	const token = verifyInstructionRevisionToken(args.review.revisionToken);
+	if (
+		!token ||
+		token.userId !== args.userId ||
+		token.documentId !== args.documentId ||
+		token.baseVersion !== args.expectedVersion ||
+		token.sectionKey !== args.review.sectionKey ||
+		args.review.sectionKey === DOCUMENT_SECTION_KEY
+	) {
+		throw tokenInvalid();
+	}
+	return { organizationId, sectionKey: token.sectionKey, token };
+}
+
 /**
  * Check an AI accept on a client-document Proposal and prepare its save.
  * The caller has already refused a save under a live run, required the base
@@ -277,11 +336,23 @@ export async function reviewAiAcceptedSave(args: {
 				})
 			: null;
 
+	const instruction =
+		review.kind === "INSTRUCTION"
+			? await loadInstructionTarget({
+					review,
+					projectId: args.projectId,
+					documentId: args.documentId,
+					userId,
+					expectedVersion: args.expectedVersion,
+				})
+			: null;
+
 	const next = normalizeAcceptedBody(args.stored.content, args.content);
 
 	// Structure: what the change was allowed to touch.
-	const scope: PreservationScope = finding
-		? { kind: "section", sectionKey: finding.sectionKey }
+	const signed = finding ?? instruction;
+	const scope: PreservationScope = signed
+		? { kind: "section", sectionKey: signed.sectionKey }
 		: {
 				kind: "chat",
 				...(review.kind === "CHAT" && review.patchedSectionKeys
@@ -329,7 +400,21 @@ export async function reviewAiAcceptedSave(args: {
 		}
 		const { code, violations } = verdict;
 		logger.info(
-			{ ...ids, code, violations },
+			{
+				...ids,
+				code,
+				// A section key spells its heading path: the hash and length
+				// only.
+				violations: violations.map(({ sectionKey, ...rest }) =>
+					sectionKey === undefined
+						? rest
+						: {
+								...rest,
+								sectionKeyHash: fnv1aHex64(sectionKey),
+								sectionKeyLength: sectionKey.length,
+							},
+				),
+			},
 			"[document-ai-review] accept refused: change outside its target",
 		);
 		throw refuse(
@@ -343,6 +428,16 @@ export async function reviewAiAcceptedSave(args: {
 
 	const changeDescription = AI_ACCEPT_CHANGE_DESCRIPTIONS[review.kind];
 
+	if (instruction) {
+		return reviewedInstructionSave({
+			instruction,
+			next,
+			changeDescription,
+			projectId: args.projectId,
+			documentId: args.documentId,
+			context,
+		});
+	}
 	if (!finding) {
 		return { content: next, changeDescription };
 	}
@@ -417,6 +512,63 @@ export async function reviewAiAcceptedSave(args: {
 					stableKey: response.stableKey,
 					runId: finding.runId,
 					version: response.version,
+				},
+				ipAddress: fields.ipAddress,
+				userAgent: fields.userAgent,
+				requestId: fields.requestId,
+				sessionId: fields.sessionId,
+				correlationId: fields.correlationId,
+			});
+		},
+	};
+}
+
+/**
+ * The save of a section revised on a member's own instruction: the saved
+ * section must be the one the server produced, and the audit row is written
+ * in the save's transaction. The row carries versions only: never the
+ * instruction, the section's text or its key (which holds heading anchors).
+ */
+function reviewedInstructionSave(args: {
+	instruction: InstructionTarget;
+	next: string;
+	changeDescription: string;
+	projectId: string;
+	documentId: string;
+	context: AuditRequestContext & { user: { id: string } };
+}): ReviewedAiSave {
+	const { instruction, context } = args;
+	// A hand edit of the candidate, a changed link or image destination
+	// included, is not the revision the server produced.
+	const isSignedSection = (body: string) =>
+		revisionSectionFingerprint(body, instruction.sectionKey) ===
+		instruction.token.sectionFingerprint;
+	if (!isSignedSection(args.next)) {
+		throw tokenInvalid();
+	}
+	return {
+		content: args.next,
+		changeDescription: args.changeDescription,
+		inTransaction: async (tx, saved) => {
+			if (!isSignedSection(saved.content)) {
+				throw tokenInvalid();
+			}
+			const fields = auditRequestFields(context);
+			await recordAuditTx(tx, {
+				action: "project.proposal_artifact.section_revised",
+				category: "project",
+				outcome: "success",
+				actor: resolveActor(context, undefined),
+				organizationId: instruction.organizationId,
+				projectId: args.projectId,
+				resource: {
+					type: "project_document",
+					id: args.documentId,
+					name: null,
+				},
+				metadata: {
+					baseVersion: instruction.token.baseVersion,
+					version: saved.version,
 				},
 				ipAddress: fields.ipAddress,
 				userAgent: fields.userAgent,

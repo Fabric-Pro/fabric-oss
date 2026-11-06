@@ -1,10 +1,10 @@
 /**
  * `fabric_semantic_search`: the project's RAG for a coding tool, the same
- * retrieval the Fabric chat answers from. One query searches everything the
- * project embeds: its Context (documents, transcripts, notes, synced files)
- * and its code index, ranked by similarity under the project's RAG settings.
- * A general question is answered from here without walking the repositories;
- * the agent opens a file under `repos/<name>/` only for details or proof.
+ * retrieval the Fabric chat answers from. One query searches the project's
+ * Context (documents, transcripts, notes, synced files), ranked by similarity
+ * under the project's RAG settings. The code index is not searched here: the
+ * retrieval leaves its points out, so the agent searches the code itself
+ * under `repos/<name>/`.
  *
  * `fabric_search_project_knowledge` stays the literal keyword search and
  * `fabric_knowledge_search` the knowledge hub's own entries; this one is the
@@ -48,7 +48,7 @@ const PROJECT_RAG_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_semantic_search",
 		description:
-			"Semantic (RAG) search over the project's context and code index.",
+			"Semantic (RAG) search over the project's context, not its code.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -116,12 +116,12 @@ async function handleSemanticSearch(
 			count: 0,
 			results: "",
 			message:
-				"Nothing in the project's context or code index matches. Try other words, fabric_search_project_knowledge for exact terms, or the code itself.",
+				"Nothing in the project's context matches. Try other words, fabric_search_project_knowledge for exact terms, or the code itself.",
 		});
 	}
 	const { context } = compactProjectContextPassages(
 		contexts,
-		"Project knowledge\nSimilarity-ranked matched passages from the project's context and code index; a sample, not a complete listing.",
+		"Project knowledge\nSimilarity-ranked matched passages from the project's context; a sample, not a complete listing.",
 		(ctx) =>
 			`[${ctx.type}, relevance: ${(ctx.score * 100).toFixed(1)}%]\n${contextMetaHeader(ctx)}`,
 		{

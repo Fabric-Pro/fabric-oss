@@ -620,8 +620,9 @@ describe("proposalThemeCss: both targets", () => {
 			expect(
 				declarationsFor(css, `${root} ul > li::marker`).get("color"),
 			).toBe("var(--pa-label)");
-			// The heading colour is left to links, and to the editor's own
-			// primary-ink chrome the live paper remaps.
+			// The heading colour is left to links, print's eyebrows and
+			// contents numbers, and the editor's own primary-ink chrome the
+			// live paper remaps.
 			const readers = parseCss(css).flatMap((block) =>
 				block.declarations
 					.filter(([, value]) => value.includes("var(--pa-heading)"))
@@ -630,6 +631,12 @@ describe("proposalThemeCss: both targets", () => {
 			expect(readers.sort()).toEqual(
 				[
 					`${root} a { color }`,
+					...(root === PRINT_ROOT
+						? [
+								`${root} .pa-eyebrow { color }`,
+								`${root} .pa-contents li::before { color }`,
+							]
+						: []),
 					...(root === LIVE_ROOT
 						? [
 								`${root} { --primary-ink }`,
@@ -1537,7 +1544,7 @@ describe("proposalThemeCss: print", () => {
 		const logo = rule(PROPOSAL_PRINT_CLASSES.letterLogo);
 		expect(logo.get("max-height")).toBe("0.36in");
 		expect(logo.get("object-fit")).toBe("contain");
-		// A logo drawn for a dark background sits on the ink.
+		// A mark too light to read on the paper sits on the ink.
 		expect(
 			rule(PROPOSAL_PRINT_CLASSES.letterLogoPlate).get(
 				"background-color",
@@ -1567,14 +1574,14 @@ describe("proposalThemeCss: print", () => {
 		expect(address.get("text-decoration")).toBe("none");
 	});
 
-	it("sets the cover's type: a mono eyebrow in the on-ink accent, a title clamped to three lines, a grey lead", () => {
+	it("sets the cover's type: a mono eyebrow in the on-ink primary, a title clamped to three lines, a grey lead", () => {
 		const rule = (selector: string) =>
 			declarationsFor(print, `${PRINT_ROOT} ${selector}`);
 
 		const eyebrow = rule(
 			`.${PROPOSAL_THEME_CLASSES.cover} .${PROPOSAL_PRINT_CLASSES.eyebrow}`,
 		);
-		expect(eyebrow.get("color")).toBe("var(--pa-on-ink-accent)");
+		expect(eyebrow.get("color")).toBe("var(--pa-on-ink-primary)");
 		expect(eyebrow.get("font-size")).toBe("8pt");
 
 		const title = rule(`.${PROPOSAL_PRINT_CLASSES.coverTitle}`);
@@ -1676,7 +1683,7 @@ describe("proposalThemeCss: print", () => {
 		expect(leader.has("display")).toBe(false);
 	});
 
-	it("sets the contents page as plain numbers in the label colour over a dashed rule, under an ink title", () => {
+	it("sets the contents page as plain numbers in the primary over a dashed rule, under an ink title", () => {
 		const rule = (selector: string) =>
 			declarationsFor(print, `${PRINT_ROOT} ${selector}`);
 
@@ -1687,23 +1694,24 @@ describe("proposalThemeCss: print", () => {
 		// 1, 2, 3… with no leading zero.
 		const number = rule(".pa-contents li::before");
 		expect(number.get("content")).toBe("counter(pa-contents)");
-		expect(number.get("color")).toBe("var(--pa-label)");
+		expect(number.get("color")).toBe("var(--pa-heading)");
 		expect(number.get("font-family")).toMatch(/^var\(--pa-font-mono,/);
 		expect(print).not.toMatch(/counter\(pa-contents, /);
 
 		expect(
 			rule(`.${PROPOSAL_PRINT_CLASSES.contentsTitle}`).get("color"),
 		).toBe("var(--pa-ink)");
-		// The title eyebrow over it is a label on the paper; the cover's
-		// eyebrow, on the ink, keeps its own colour.
+		// The title eyebrow over it takes the primary as it reads on the
+		// paper; the cover's eyebrow, on the ink, the primary as it reads
+		// there.
 		expect(rule(`.${PROPOSAL_PRINT_CLASSES.eyebrow}`).get("color")).toBe(
-			"var(--pa-label)",
+			"var(--pa-heading)",
 		);
 		expect(
 			rule(
 				`.${PROPOSAL_THEME_CLASSES.cover} .${PROPOSAL_PRINT_CLASSES.eyebrow}`,
 			).get("color"),
-		).toBe("var(--pa-on-ink-accent)");
+		).toBe("var(--pa-on-ink-primary)");
 	});
 
 	it("shows an appendix's label in place of a number on its opener and contents entry, and counts past it", () => {
@@ -1862,7 +1870,7 @@ describe("proposalThemeCss: print", () => {
 			"var(--pa-on-ink-muted)",
 		);
 		expect(rule(".pa-section-opener::before").get("color")).toBe(
-			"var(--pa-on-ink-accent)",
+			"var(--pa-on-ink-primary)",
 		);
 	});
 

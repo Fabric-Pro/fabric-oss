@@ -157,6 +157,34 @@ describe("the AI accept descriptor (Fizzy #2946)", () => {
 	});
 });
 
+describe("the version's writer (Fizzy #2946)", () => {
+	const base = { version: 8, contentHash: "hash-of-the-saved-body" };
+
+	it("names the writer when given, as Edit with instructions does", () => {
+		expect(
+			buildDocumentSaveInput({
+				...SAVE,
+				isManualSave: false,
+				base,
+				changeDescription: "Edit with instructions",
+			}),
+		).toEqual({
+			projectId: "proj_1",
+			id: "doc_1",
+			content: SAVE.content,
+			expectedVersion: 8,
+			expectedContentHash: "hash-of-the-saved-body",
+			changeDescription: "Edit with instructions",
+		});
+	});
+
+	it("sends none when not given", () => {
+		expect(
+			buildDocumentSaveInput({ ...SAVE, isManualSave: false, base }),
+		).not.toHaveProperty("changeDescription");
+	});
+});
+
 describe("isSaveBaseRequiredRefusal", () => {
 	it("recognizes the refusal of a save that named no base", () => {
 		expect(

@@ -2158,7 +2158,9 @@ export function listInstructionSnapshots(
 			...snapshotVisibilityFilter(visibility),
 		},
 		orderBy: { version: "desc" },
-		select: summarySelect,
+		// History labels a proposal that a later one replaced by the version
+		// that replaced it.
+		select: { ...summarySelect, supersedesSnapshotId: true },
 	});
 }
 

@@ -87,9 +87,10 @@ export {
  * Whatever the cover has nothing for is left out rather than written empty:
  * the hero, either logo, the brands row when there is neither, the lead,
  * the figures and either party. The proposer logo holds the left edge and
- * the recipient logo the right one on its own; a logo drawn for a light
- * background carries `pa-cover-logo-plate`. The "Prepared by" column, which
- * always holds the date line, keeps its place without "Prepared for".
+ * the recipient logo the right one on its own; a mark on transparency too
+ * dark to read on the ink carries `pa-cover-logo-plate`. The "Prepared by"
+ * column, which always holds the date line, keeps its place without
+ * "Prepared for".
  *
  * A `cover` fence in Main's preamble adds to it: its eyebrow in place of
  * "Proposal", its `for:` and `by:` lines as one `<dd>` each in place of the
@@ -182,7 +183,7 @@ export const PROPOSAL_PRINT_CLASSES = {
 	coverLogo: "pa-cover-logo",
 	proposerLogo: "pa-cover-logo-proposer",
 	recipientLogo: "pa-cover-logo-recipient",
-	/** A logo drawn for a light background, set on a light plate. */
+	/** A mark too dark to read on the ink, set on a plate of the paper. */
 	coverLogoPlate: "pa-cover-logo-plate",
 	coverBody: "pa-cover-body",
 	coverTitle: "pa-cover-title",
@@ -206,7 +207,7 @@ export const PROPOSAL_PRINT_CLASSES = {
 	/** The letter's top row: the proposer logo left, its label right. */
 	letterHead: "pa-letter-head",
 	letterLogo: "pa-letter-logo",
-	/** A logo drawn for a dark background, set on a plate of the ink. */
+	/** A mark too light to read on the paper, set on a plate of the ink. */
 	letterLogoPlate: "pa-letter-logo-plate",
 	/** The letter's heading, as a quiet label rather than a heading element. */
 	letterLabel: "pa-letter-label",
@@ -399,8 +400,9 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		"font-weight": "500",
 		color: "var(--pa-ink)",
 	}),
-	// An eyebrow on the paper is a label, in the label colour; the cover's,
-	// on the ink, takes its own.
+	// An eyebrow on the paper takes the brand primary where it reads as
+	// text there, else the ink; the cover's, on the ink, takes the primary
+	// as it reads there.
 	rule(dot(PRINT.eyebrow), {
 		margin: "0 0 0.9em",
 		"font-family": FONT_MONO_ROLE,
@@ -408,7 +410,7 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		"font-weight": "500",
 		"letter-spacing": "0.16em",
 		"text-transform": "uppercase",
-		color: "var(--pa-label)",
+		color: "var(--pa-heading)",
 	}),
 	// The cover: one dark page with no furniture. The hero is a darkened
 	// layer behind everything; the brands and the body flow from the top,
@@ -480,7 +482,7 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		"border-radius": "0",
 	}),
 	rule(dot(PRINT.recipientLogo), { "margin-inline-start": "auto" }),
-	// A logo drawn for a light background sits on a plate of the paper.
+	// A mark too dark to read on the ink sits on a plate of the paper.
 	rule(dot(PRINT.coverLogoPlate), {
 		padding: "7pt 10pt",
 		"border-radius": "5pt",
@@ -520,7 +522,7 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		margin: "0 0 12pt",
 		"font-size": "8pt",
 		"letter-spacing": "0.18em",
-		color: "var(--pa-on-ink-accent)",
+		color: "var(--pa-on-ink-primary)",
 	}),
 	rule(dot(PRINT.coverTitle), {
 		display: "-webkit-box",
@@ -651,7 +653,7 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		"line-height": "1.4",
 		"letter-spacing": "0.16em",
 		"text-transform": "uppercase",
-		color: "var(--pa-on-ink-accent)",
+		color: "var(--pa-on-ink-primary)",
 	}),
 	// An appendix takes no section number: its eyebrow is its own label,
 	// "Appendix A", and the sections after it keep counting from the last.
@@ -764,7 +766,7 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		"border-bottom": "1px dashed var(--pa-border)",
 	}),
 	// Fixed-width figures in a fixed-width box, so every title starts at the
-	// same edge whatever its number.
+	// same edge whatever its number; in the primary, as the eyebrow above.
 	rule(`${dot(PRINT.contents)} li::before`, {
 		content: "counter(pa-contents)",
 		flex: "0 0 2.2em",
@@ -772,7 +774,7 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		"font-size": "0.8em",
 		"font-weight": "500",
 		"font-variant-numeric": "tabular-nums",
-		color: "var(--pa-label)",
+		color: "var(--pa-heading)",
 	}),
 	// An appendix's entry shows its letter, or nothing, in the number's box,
 	// and the entries after it keep counting from the last number.

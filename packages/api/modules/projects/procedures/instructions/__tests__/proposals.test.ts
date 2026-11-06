@@ -472,6 +472,7 @@ describe("projects.instructions.proposals", () => {
 						beforeSize: 6,
 						afterSize: 5,
 						binary: false,
+						restoresBranchDeletion: false,
 					},
 				],
 			}),

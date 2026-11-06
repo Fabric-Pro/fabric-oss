@@ -336,6 +336,30 @@ third attempt.
   landed.
 - `--dry-run --prune` lists the paths it would delete under `would delete`.
 
+## Decisions found in your files
+
+Once a synced file's new version has been indexed, Fabric reads it once with AI
+and records the decisions it states. They wait as suggestions in the project's
+**Decisions** tab. Only a file's current version is offered, and a statement
+already created or dismissed from any version of the same file is not offered
+again.
+
+Fabric does not read a file marked **Store only**. It also skips the files a
+repository's first sync wrote, because reading a whole repository takes one AI
+request per file; **Scan for decisions** in the Decisions tab reads them when you
+ask. A project with no usable AI provider is skipped until a later version of the
+file, once it has one.
+
+A suggestion binds nobody. Review one, then reject it or create a decision from
+it. A created decision starts as proposed, and is not accepted until someone
+accepts it.
+
+When a suggestion reads like an existing decision that is accepted or proposed,
+the review offers **Create as update** as well as **Create as new decision**.
+Creating it as an update links the two. Accepting the new decision then marks the
+one it updates as superseded. A statement that only matches a rejected,
+deprecated or superseded decision is offered as new.
+
 ## What it will not do
 
 - Delete anything you did not ask it to. Without `--prune`, nothing is

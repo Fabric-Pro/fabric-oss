@@ -114,6 +114,39 @@ describe("instructionActionErrorKey", () => {
 		},
 	);
 
+	// A refusal that names a state the person can resolve says that state,
+	// not "this changed while you were working".
+	it.each([
+		["REPOSITORY_MODE", "repositoryMode"],
+		["SNAPSHOT_ACTIVE", "snapshotActive"],
+		["PULL_REQUEST_UNRESOLVED", "pullRequestUnresolved"],
+		["PROPOSAL_PENDING", "proposalPending"],
+		["SOMETHING_ELSE", "conflict"],
+	] as const)("words a CONFLICT with reason %s as %s", (reason, key) => {
+		expect(
+			instructionActionErrorKey({
+				code: "CONFLICT",
+				data: { reason },
+				message: "TEXT THAT MUST NOT BE SHOWN",
+			}),
+		).toBe(key);
+	});
+
+	it("reads a conflict reason only from a CONFLICT error", () => {
+		expect(
+			instructionActionErrorKey({
+				code: "NOT_FOUND",
+				data: { reason: "PROPOSAL_PENDING" },
+			}),
+		).toBe("notFound");
+		expect(
+			instructionActionErrorKey({
+				code: "CONFLICT",
+				data: { reason: 7 },
+			}),
+		).toBe("conflict");
+	});
+
 	it("reads an approval reason only from a FORBIDDEN error", () => {
 		expect(
 			instructionActionErrorKey({

@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -337,6 +338,88 @@ describe("IntegrationPageBrowser", () => {
 
 			await waitFor(() => {
 				expect(contextCreateMock).toHaveBeenCalledTimes(1);
+				expect(onResourcesAdded).toHaveBeenCalled();
+				expect(toastWarningMock).toHaveBeenCalledWith(
+					"Added 1 page, 1 failed",
+				);
+				expect(onOpenChange).not.toHaveBeenCalled();
+				expect(screen.getByText("1 page selected")).toBeInTheDocument();
+			});
+		});
+		it("counts a server rejection for empty Notion content as a per-page failure", async () => {
+			const onResourcesAdded = vi.fn();
+			const onOpenChange = vi.fn();
+
+			pagesMock.mockResolvedValueOnce({
+				pages: [
+					{
+						id: "p-success",
+						title: "Successful Page",
+						url: "https://notion.so/p-success",
+						lastEdited: "2026-10-21T00:00:00.000Z",
+						icon: null,
+					},
+					{
+						id: "p-fail",
+						title: "Failing Page",
+						url: "https://notion.so/p-fail",
+						lastEdited: "2026-10-21T00:00:00.000Z",
+						icon: null,
+					},
+				],
+				nextCursor: null,
+			});
+
+			pageContentMock.mockImplementation(
+				async ({ pageId }: { pageId: string }) => {
+					if (pageId === "p-fail") {
+						return { content: "" };
+					}
+					return { content: "# Content" };
+				},
+			);
+
+			contextCreateMock.mockImplementation(
+				async ({ content }: { content: string }) => {
+					if (!content.trim()) {
+						throw new ORPCError("BAD_REQUEST", {
+							data: { reason: "NOTION_EMPTY_CONTENT" },
+							message:
+								"Fabric could not read any content from this Notion page",
+						});
+					}
+					return { id: "ctx-example" };
+				},
+			);
+
+			renderBrowser({
+				onResourcesAdded,
+				onOpenChange,
+			});
+
+			expect(
+				await screen.findByText("Successful Page"),
+			).toBeInTheDocument();
+			expect(screen.getByText("Failing Page")).toBeInTheDocument();
+
+			const checkboxes = screen.getAllByRole("checkbox");
+			await userEvent.click(checkboxes[0]);
+			await userEvent.click(checkboxes[1]);
+
+			const addButton = screen.getByRole("button", {
+				name: "Add 2 Pages",
+			});
+			await userEvent.click(addButton);
+
+			await waitFor(() => {
+				expect(contextCreateMock).toHaveBeenCalledTimes(2);
+				expect(toastErrorMock).toHaveBeenCalledWith(
+					'Could not add "Failing Page"',
+					{
+						description:
+							"Fabric could not read any content from this Notion page.",
+					},
+				);
 				expect(onResourcesAdded).toHaveBeenCalled();
 				expect(toastWarningMock).toHaveBeenCalledWith(
 					"Added 1 page, 1 failed",

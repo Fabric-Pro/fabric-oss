@@ -73,6 +73,13 @@ vi.mock("@temporalio/activity", () => ({
 	heartbeat: vi.fn(),
 }));
 
+const { failGeneratingDocumentMock } = vi.hoisted(() => ({
+	failGeneratingDocumentMock: vi.fn(),
+}));
+vi.mock("@repo/database/prisma/queries/projects/documents", () => ({
+	failGeneratingDocument: failGeneratingDocumentMock,
+}));
+
 import { db } from "@repo/database";
 
 const FAKE_CONTEXT_ID = "ctx-1039";
@@ -338,4 +345,252 @@ describe("processProjectContext - empty extraction (#1684)", () => {
 			expect(markContextAsEmbeddedMock).not.toHaveBeenCalled();
 		},
 	);
+});
+
+/**
+ * The Documents-tab create flow records its pre-created document on the
+ * context. When content is persisted and a later step throws, the activity
+ * still returns a success, and that return must name the document like every
+ * other success does, or the workflow creates a second one and leaves the
+ * first on "generating". As-Is uploads return before any such step, so the
+ * case is a tagged upload without that usage.
+ */
+describe("processProjectContext - post-extraction recovery keeps the target document", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	it("returns the target document and usage when embedding fails after the content is persisted", async () => {
+		setupHappyContext();
+		(
+			db.projectContext.findFirst as ReturnType<typeof vi.fn>
+		).mockResolvedValue({
+			id: FAKE_CONTEXT_ID,
+			projectId: FAKE_PROJECT_ID,
+			s3Path: "s3://bucket/ctx-1039.csv",
+			s3Bucket: "bucket",
+			mimeType: "text/csv",
+			originalFilename: "Accounting (Repossessed).csv",
+			type: "SPREADSHEET",
+			sourceTitle: null,
+			metadata: {
+				documentTag: "PRD",
+				documentUsage: "CONTEXT",
+				targetDocumentId: "doc-target",
+			},
+		});
+		generateEmbeddingsMock.mockRejectedValue(
+			new Error("OpenAI rate limit exceeded"),
+		);
+
+		const { processProjectContext } = await import(
+			"../src/activities/project-context-processing"
+		);
+
+		const result = await processProjectContext(
+			FAKE_CONTEXT_ID,
+			FAKE_PROJECT_ID,
+			FAKE_USER_ID,
+			FAKE_ORG_ID,
+		);
+
+		expect(result.success).toBe(true);
+		expect(result.embeddingError).toContain("OpenAI");
+		expect(result).toMatchObject({
+			documentTag: "PRD",
+			documentUsage: "CONTEXT",
+			targetDocumentId: "doc-target",
+		});
+	});
+});
+
+describe("failContextTargetDocument", () => {
+	const REASON =
+		"The file could not be read, or contained no text. Try creating the document again with a different file.";
+	const findContext = db.projectContext.findFirst as ReturnType<typeof vi.fn>;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		failGeneratingDocumentMock.mockReset();
+	});
+
+	it("fails the context's pre-created document, held to the context's project", async () => {
+		findContext
+			.mockResolvedValueOnce({
+				projectId: FAKE_PROJECT_ID,
+				metadata: {
+					documentTag: "PRD",
+					targetDocumentId: "doc-target",
+				},
+			})
+			// No other upload for the document is still running.
+			.mockResolvedValueOnce(null);
+		failGeneratingDocumentMock.mockResolvedValue(1);
+
+		const { failContextTargetDocument } = await import(
+			"../src/activities/project-context-processing"
+		);
+		const result = await failContextTargetDocument({
+			contextId: FAKE_CONTEXT_ID,
+			projectId: FAKE_PROJECT_ID,
+			userId: FAKE_USER_ID,
+			organizationId: FAKE_ORG_ID,
+			reason: REASON,
+		});
+
+		expect(findContext).toHaveBeenCalledWith({
+			where: {
+				id: FAKE_CONTEXT_ID,
+				projectId: FAKE_PROJECT_ID,
+				organizationId: FAKE_ORG_ID,
+			},
+			select: { projectId: true, metadata: true },
+		});
+		expect(findContext).toHaveBeenLastCalledWith({
+			where: {
+				id: { not: FAKE_CONTEXT_ID },
+				projectId: FAKE_PROJECT_ID,
+				organizationId: FAKE_ORG_ID,
+				extractionStatus: { in: ["PENDING", "EXTRACTING"] },
+				metadata: { path: ["targetDocumentId"], equals: "doc-target" },
+			},
+			select: { id: true },
+		});
+		expect(failGeneratingDocumentMock).toHaveBeenCalledWith({
+			documentId: "doc-target",
+			reason: REASON,
+			projectId: FAKE_PROJECT_ID,
+		});
+		expect(result).toEqual({ applied: true });
+	});
+
+	/**
+	 * A second upload aimed at the same document is still running. Failing the
+	 * row now would stop that upload's fill, so the row is left to it.
+	 */
+	it("leaves the document to another upload for it that is still running", async () => {
+		findContext
+			.mockResolvedValueOnce({
+				projectId: FAKE_PROJECT_ID,
+				metadata: {
+					documentTag: "PRD",
+					targetDocumentId: "doc-target",
+				},
+			})
+			.mockResolvedValueOnce({ id: "ctx-newer-upload" });
+
+		const { failContextTargetDocument } = await import(
+			"../src/activities/project-context-processing"
+		);
+		const result = await failContextTargetDocument({
+			contextId: FAKE_CONTEXT_ID,
+			projectId: FAKE_PROJECT_ID,
+			userId: FAKE_USER_ID,
+			organizationId: FAKE_ORG_ID,
+			reason: REASON,
+		});
+
+		expect(failGeneratingDocumentMock).not.toHaveBeenCalled();
+		expect(result).toEqual({ applied: false });
+	});
+
+	/**
+	 * Without an organization the lookup takes the other, exclusive tenant arm
+	 * — no organization and the run's user — never both arms at once.
+	 */
+	it("looks a context up by its user when the run has no organization", async () => {
+		findContext.mockResolvedValue(null);
+
+		const { failContextTargetDocument } = await import(
+			"../src/activities/project-context-processing"
+		);
+		const result = await failContextTargetDocument({
+			contextId: FAKE_CONTEXT_ID,
+			projectId: FAKE_PROJECT_ID,
+			userId: FAKE_USER_ID,
+			organizationId: undefined,
+			reason: REASON,
+		});
+
+		expect(findContext).toHaveBeenCalledWith({
+			where: {
+				id: FAKE_CONTEXT_ID,
+				projectId: FAKE_PROJECT_ID,
+				organizationId: null,
+				userId: FAKE_USER_ID,
+			},
+			select: { projectId: true, metadata: true },
+		});
+		expect(failGeneratingDocumentMock).not.toHaveBeenCalled();
+		expect(result).toEqual({ applied: false });
+	});
+
+	/**
+	 * The write only touches a GENERATING row, so a document that was filled,
+	 * edited or already failed reports that nothing changed.
+	 */
+	it("reports nothing applied when the document is no longer generating", async () => {
+		findContext
+			.mockResolvedValueOnce({
+				projectId: FAKE_PROJECT_ID,
+				metadata: { targetDocumentId: "doc-target" },
+			})
+			.mockResolvedValueOnce(null);
+		failGeneratingDocumentMock.mockResolvedValue(0);
+
+		const { failContextTargetDocument } = await import(
+			"../src/activities/project-context-processing"
+		);
+		const result = await failContextTargetDocument({
+			contextId: FAKE_CONTEXT_ID,
+			projectId: FAKE_PROJECT_ID,
+			userId: FAKE_USER_ID,
+			organizationId: FAKE_ORG_ID,
+			reason: REASON,
+		});
+
+		expect(failGeneratingDocumentMock).toHaveBeenCalledTimes(1);
+		expect(result).toEqual({ applied: false });
+	});
+
+	it.each([
+		["no metadata", null],
+		["metadata without a target", { documentTag: "PRD" }],
+		["an empty target", { targetDocumentId: "" }],
+	])("writes nothing for a context with %s", async (_label, metadata) => {
+		findContext.mockResolvedValue({ projectId: FAKE_PROJECT_ID, metadata });
+
+		const { failContextTargetDocument } = await import(
+			"../src/activities/project-context-processing"
+		);
+		const result = await failContextTargetDocument({
+			contextId: FAKE_CONTEXT_ID,
+			projectId: FAKE_PROJECT_ID,
+			userId: FAKE_USER_ID,
+			organizationId: FAKE_ORG_ID,
+			reason: REASON,
+		});
+
+		expect(failGeneratingDocumentMock).not.toHaveBeenCalled();
+		expect(result).toEqual({ applied: false });
+	});
+
+	/** A company source's id names no project context row. */
+	it("writes nothing when no project context has the id", async () => {
+		findContext.mockResolvedValue(null);
+
+		const { failContextTargetDocument } = await import(
+			"../src/activities/project-context-processing"
+		);
+		const result = await failContextTargetDocument({
+			contextId: "company-source-1",
+			projectId: FAKE_PROJECT_ID,
+			userId: FAKE_USER_ID,
+			organizationId: FAKE_ORG_ID,
+			reason: REASON,
+		});
+
+		expect(failGeneratingDocumentMock).not.toHaveBeenCalled();
+		expect(result).toEqual({ applied: false });
+	});
 });

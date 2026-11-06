@@ -40,6 +40,10 @@ describe("withExtractionLifecycleOrSettled", () => {
 				{ type: { not: "INTEGRATION" } },
 				{ extractionStatus: { notIn: ["PENDING", "EXTRACTING"] } },
 				{ metadata: { path: ["source"], equals: "google-docs" } },
+				{
+					metadata: { path: ["provider"], equals: "notion" },
+					content: { not: "" },
+				},
 			],
 		});
 	});
@@ -50,4 +54,40 @@ describe("withExtractionLifecycleOrSettled", () => {
 		expect(first.OR).not.toBe(second.OR);
 		expect(first.OR[1]).not.toBe(second.OR[1]);
 	});
+});
+
+it("Notion pages with content have an embedding lifecycle", () => {
+	expect(
+		hasExtractionLifecycle({
+			type: "INTEGRATION",
+			metadata: { provider: "notion" },
+			content: "Example page",
+		}),
+	).toBe(true);
+});
+
+it.each(["", " \n\t"])("blank Notion %j has no lifecycle", (content) => {
+	expect(
+		hasExtractionLifecycle({
+			type: "INTEGRATION",
+			content,
+			metadata: { provider: "notion" },
+		}),
+	).toBe(false);
+});
+it("uses the list preview for the same Notion predicate", () => {
+	expect(
+		hasExtractionLifecycle({
+			type: "INTEGRATION",
+			contentPreview: "Example",
+			metadata: { provider: "notion" },
+		}),
+	).toBe(true);
+	expect(
+		hasExtractionLifecycle({
+			type: "INTEGRATION",
+			contentPreview: " ",
+			metadata: { provider: "notion" },
+		}),
+	).toBe(false);
 });

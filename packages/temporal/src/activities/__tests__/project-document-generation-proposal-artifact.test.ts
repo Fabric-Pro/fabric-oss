@@ -811,16 +811,24 @@ function projectOwnedBy(
 }
 
 /**
- * Every echo check, in order: the text checked and the inputs its guard was
- * built from. A check against a guard no `buildEchoGuard` call returned fails.
+ * Every echo check that can refuse, in order: the text checked and the
+ * inputs its guard was built from. That guard checks titles by the long runs
+ * only (`wholeTitles: false`); the check of whole titles, which only logs,
+ * is left out. A check against a guard no `buildEchoGuard` call returned
+ * fails.
  */
 function echoChecks(): ResponseEchoInput[] {
 	const built = vi.mocked(buildEchoGuard).mock;
-	return vi.mocked(checkEcho).mock.calls.map(([guard, mainText]) => {
-		const at = built.results.findIndex((result) => result.value === guard);
-		expect(at).toBeGreaterThanOrEqual(0);
-		return { ...built.calls[at][0], mainText };
-	});
+	return vi
+		.mocked(checkEcho)
+		.mock.calls.map(([guard, mainText]) => {
+			const at = built.results.findIndex(
+				(result) => result.value === guard,
+			);
+			expect(at).toBeGreaterThanOrEqual(0);
+			return { ...built.calls[at][0], mainText };
+		})
+		.filter((input) => input.wholeTitles === false);
 }
 
 /** Everything the activity logged at info level and above, as one string. */
@@ -1010,6 +1018,34 @@ describe("artifact mode — settled decisions", () => {
 			)) as ApplicationFailure;
 
 			expect(failure.type).toBe(RESPONSE_ECHOED);
+		});
+
+		it("saves a Main that holds a short finding title whole, and logs it by key only", async () => {
+			const title = "Scanner ownership is unclear";
+			const document = `${SECTION_ONE}\n\n## Risks\n\n**Scanner ownership** is unclear.\n`;
+			agentStreams([finalValues(document)]);
+			mocks.buildSettledDecisionsBlock.mockResolvedValue(
+				settledBlock({
+					responseTexts: [],
+					findingTitles: [title],
+					titleKeys: [SETTLED_KEY],
+				}),
+			);
+
+			const result = await generateArtifactWith();
+
+			expect(result.content).toBe(document);
+			expect(activityLogger.warn).toHaveBeenCalledWith(
+				"Generated Main holds a finding title whole; saving it",
+				{
+					projectId: "project-1",
+					documentId: "doc-1",
+					liveRunId: "run-2",
+					echoedTitles: 1,
+					echoedKeys: [SETTLED_KEY],
+				},
+			);
+			expect(activityLogText()).not.toContain("Scanner ownership");
 		});
 
 		it.each([

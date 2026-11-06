@@ -415,6 +415,42 @@ describe("checkPreservation: a finding-driven revision", () => {
 		});
 	});
 
+	it("refuses a duplicate reference definition in the target that would redirect another section's link", () => {
+		const previous = lines(
+			"## 1. Context",
+			"",
+			"The client asked for a pilot.",
+			"",
+			"## 2. References",
+			"",
+			"See [the brief][brief].",
+			"",
+			"[brief]: https://example.com/brief",
+		);
+		// Rendered, a reference takes the first definition: the one the
+		// target now adds above the original.
+		const next = previous.replace(
+			"The client asked for a pilot.",
+			"The client asked for a pilot.\n\n[brief]: https://example.com/other",
+		);
+
+		expect(
+			check(
+				next,
+				{ kind: "section", sectionKey: keyOf(previous, "1. Context") },
+				previous,
+			),
+		).toEqual({
+			ok: false,
+			violations: [
+				{
+					code: PRESERVATION_VIOLATION.OUTSIDE_TARGET,
+					sectionKey: keyOf(previous, "2. References"),
+				},
+			],
+		});
+	});
+
 	it("refuses a changed diagram above the first heading", () => {
 		const previous = lines(PERSON_DIAGRAM, "", SECTIONS.context, "");
 		const next = lines(

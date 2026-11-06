@@ -1189,13 +1189,14 @@ export function ProjectCreationWizard({
 
 	// Helper function to create integration contexts after project creation
 	const handleCreateIntegrationContexts = async (projectId: string) => {
-		const { successCount, failCount } = await createIntegrationContexts({
-			projectId,
-			organizationId: effectiveOrganizationId,
-			selectedTeamsChats: formData.selectedTeamsChats,
-			selectedNotionPages: formData.selectedNotionPages,
-			selectedSlackChannels: formData.selectedSlackChannels,
-		});
+		const { successCount, failCount, skippedNotionPages } =
+			await createIntegrationContexts({
+				projectId,
+				organizationId: effectiveOrganizationId,
+				selectedTeamsChats: formData.selectedTeamsChats,
+				selectedNotionPages: formData.selectedNotionPages,
+				selectedSlackChannels: formData.selectedSlackChannels,
+			});
 
 		if (successCount > 0) {
 			toast.success(
@@ -1205,6 +1206,11 @@ export function ProjectCreationWizard({
 		if (failCount > 0) {
 			toast.warning(
 				`${failCount} integration${failCount !== 1 ? "s" : ""} failed to sync`,
+				{
+					description: skippedNotionPages.length
+						? `Notion pages skipped: ${skippedNotionPages.join(", ")}`
+						: undefined,
+				},
 			);
 		}
 	};

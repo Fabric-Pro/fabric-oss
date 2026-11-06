@@ -301,7 +301,8 @@ describe("exportProposalDocumentActivity: PDF", () => {
 		expect(h.renderExportDiagrams).toHaveBeenCalledTimes(1);
 		expect(h.renderExportDiagrams).toHaveBeenCalledWith({
 			sources: [DIAGRAM_SOURCE],
-			captions: [null],
+			// An uncaptioned fence takes its section's heading.
+			captions: ["Overview"],
 			figureMaxHeight: expect.any(Function),
 			paint: expect.any(Object),
 			browser: h.fakeBrowser,
@@ -486,7 +487,8 @@ describe("exportProposalDocumentActivity: Word", () => {
 		expect(h.withExportBrowser).toHaveBeenCalledTimes(1);
 		expect(h.renderExportDiagrams).toHaveBeenCalledWith({
 			sources: [DIAGRAM_SOURCE],
-			captions: [null],
+			// An uncaptioned fence takes its section's heading.
+			captions: ["Overview"],
 			paint: expect.any(Object),
 			browser: h.fakeBrowser,
 			withPng: true,

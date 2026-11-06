@@ -21341,9 +21341,10 @@ model ProjectInstructionGitIntentEntry {
   /// the path was absent, and freeze conflict detection for a later write.
   baseObjectId   String?
   baseMode       Int?
-  /// Set only on a branch-relative entry: a change to a file the member's
-  /// proposal branch holds and the published version does not. It freezes
-  /// the blob Fabric wrote there; null for every published-relative entry.
+  /// Set only on a branch-relative entry: a change to a file Fabric wrote on
+  /// the member's proposal branch. It freezes the blob Fabric wrote there, or
+  /// holds Git's all-zero id for a PUT of a published file the branch deleted;
+  /// null for every published-relative entry.
   branchObjectId String?
   /// PUT-only immutable staged bytes. DELETE carries no blob reference.
   storageKey     String?

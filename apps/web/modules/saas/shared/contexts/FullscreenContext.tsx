@@ -3,6 +3,7 @@
 import {
 	createContext,
 	type PropsWithChildren,
+	useCallback,
 	useContext,
 	useState,
 } from "react";
@@ -10,6 +11,8 @@ import {
 interface FullscreenContextType {
 	isFullscreen: boolean;
 	setIsFullscreen: (value: boolean) => void;
+	isRailExpanded: boolean;
+	setIsRailExpanded: (value: boolean) => void;
 }
 
 const FullscreenContext = createContext<FullscreenContextType | undefined>(
@@ -17,10 +20,24 @@ const FullscreenContext = createContext<FullscreenContextType | undefined>(
 );
 
 export function FullscreenProvider({ children }: PropsWithChildren) {
-	const [isFullscreen, setIsFullscreen] = useState(false);
+	const [isFullscreen, setFullscreenState] = useState(false);
+	const [isRailExpanded, setIsRailExpanded] = useState(false);
+	const setIsFullscreen = useCallback((value: boolean) => {
+		setFullscreenState(value);
+		if (!value) {
+			setIsRailExpanded(false);
+		}
+	}, []);
 
 	return (
-		<FullscreenContext.Provider value={{ isFullscreen, setIsFullscreen }}>
+		<FullscreenContext.Provider
+			value={{
+				isFullscreen,
+				setIsFullscreen,
+				isRailExpanded,
+				setIsRailExpanded,
+			}}
+		>
 			{children}
 		</FullscreenContext.Provider>
 	);
@@ -33,6 +50,8 @@ export function useFullscreen() {
 		return {
 			isFullscreen: false,
 			setIsFullscreen: () => {},
+			isRailExpanded: false,
+			setIsRailExpanded: () => {},
 		};
 	}
 	return context;

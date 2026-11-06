@@ -98,7 +98,12 @@ interface Props {
  */
 async function loadFigureReaders() {
 	const [
-		{ cleanDiagramCaption, readDiagramCaption, withDiagramCaption },
+		{
+			cleanDiagramCaption,
+			readDiagramCaption,
+			sectionDiagramCaptions,
+			withDiagramCaption,
+		},
 		{ livePrintability },
 	] = await Promise.all([
 		import("@repo/utils/proposal-artifact/visual-identity"),
@@ -120,6 +125,20 @@ async function loadFigureReaders() {
 							scrubCitationText(caption).text,
 						),
 					);
+		},
+		/**
+		 * The caption each diagram of `markdown` takes from its section's
+		 * heading when its fence carries none, by the line the fence opens
+		 * on, as the PDF and the Word file print it, tidied as above.
+		 */
+		sectionCaptions(markdown: string): (line: number) => string | null {
+			const read = sectionDiagramCaptions(markdown);
+			return (line) => {
+				const caption = read(line);
+				return caption === null
+					? null
+					: cleanDiagramCaption(withoutStorageReferences(caption));
+			};
 		},
 		/** The fence without its caption line, which is never drawn. */
 		withoutCaption: (fence: string) => withDiagramCaption(fence, null),
@@ -368,6 +387,7 @@ export function DocumentDownloadDropdown({
 			// 1. Replace mermaid code blocks with rendered diagram images
 			const mermaidBlockRe = /```mermaid\n([\s\S]*?)```/g;
 			const readers = serverExport ? await loadFigureReaders() : null;
+			const sectionCaption = readers?.sectionCaptions(content) ?? null;
 			const parts: string[] = [];
 			let end = 0;
 			let figures = 0;
@@ -398,8 +418,14 @@ export function DocumentDownloadDropdown({
 				// Word file print it, after "Figure n." when they number it
 				// (`isLiveFigureCounted`): a diagram they leave out keeps
 				// its code and takes no number, and one they print as a
-				// placeholder keeps its code and its number.
-				const caption = readers.caption(match[1]);
+				// placeholder keeps its code and its number. A fence without
+				// a caption takes its section's heading, as they do.
+				const caption =
+					readers.caption(match[1]) ??
+					sectionCaption?.(
+						content.slice(0, match.index).split("\n").length,
+					) ??
+					null;
 				const text = caption === null ? null : literalMarkdown(caption);
 				const number = isLiveFigureCounted(
 					readers.printability(match[1]),

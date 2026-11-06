@@ -4,6 +4,7 @@ import { config } from "@repo/config";
 import { readRepositoryFileAtCommit } from "@repo/connectors";
 import { findMemberBranchWrite, loadGitIntent } from "@repo/database";
 import {
+	BRANCH_DELETED_OBJECT_ID,
 	fileTypingFor,
 	instructionTextPage,
 	SNAPSHOT_LIMITS,
@@ -148,10 +149,26 @@ async function openContent(scope: Scope) {
 			(entry) => entry.path === path,
 		);
 		if (!entry) return unavailable();
-		if (side === "before" && entry.baseObjectId === null)
-			return entry.branchObjectId === null
-				? { text: null, size: null, omitted: null }
-				: readBranchBefore(path, entry.branchObjectId, maxBytes);
+		if (side === "before") {
+			if (entry.branchObjectId === BRANCH_DELETED_OBJECT_ID)
+				return { text: null, size: null, omitted: null };
+			if (entry.branchObjectId) {
+				const onBranch = await readBranchBefore(
+					path,
+					entry.branchObjectId,
+					maxBytes,
+				);
+				// A published file still has its published base to compare with
+				// once the branch's bytes are gone.
+				if (
+					entry.baseObjectId === null ||
+					onBranch.omitted !== "SOURCE_CHANGED"
+				)
+					return onBranch;
+			} else if (entry.baseObjectId === null) {
+				return { text: null, size: null, omitted: null };
+			}
+		}
 		if (side === "after" && entry.operation === "DELETE")
 			return { text: null, size: null, omitted: null };
 		if (side === "before" && !baseReadable)
@@ -212,9 +229,11 @@ export async function buildNativeProposalChanges(scope: Scope) {
 		const binary =
 			before.omitted === "BINARY" || after.omitted === "BINARY";
 		// A branch-relative entry changes a file the proposer's branch holds:
-		// an edit or delete of that file, never an added one.
+		// an edit or delete of that file, never an added one, unless the branch
+		// deleted the file and this puts it back.
 		const hadFile =
-			entry.baseObjectId !== null || entry.branchObjectId !== null;
+			entry.branchObjectId !== BRANCH_DELETED_OBJECT_ID &&
+			(entry.baseObjectId !== null || entry.branchObjectId !== null);
 		changes.push({
 			path: entry.path,
 			op:
@@ -234,6 +253,13 @@ export async function buildNativeProposalChanges(scope: Scope) {
 					? ("BINARY" as const)
 					: after.omitted,
 			binary,
+			// The proposer's branch deleted a published file and this puts the
+			// published bytes back. The change is stated against the branch, so
+			// it reads as an addition; the reviewer is told what it really is.
+			restoresBranchDeletion:
+				entry.operation === "PUT" &&
+				entry.branchObjectId === BRANCH_DELETED_OBJECT_ID &&
+				entry.baseObjectId !== null,
 		});
 	}
 	await content.check();

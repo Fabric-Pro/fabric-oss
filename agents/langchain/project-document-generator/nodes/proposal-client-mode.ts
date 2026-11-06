@@ -42,6 +42,7 @@ import {
 	checkEcho,
 	echoedStableKeys,
 	joinSettledDecisions,
+	RESPONSE_ECHO_MIN_WORDS,
 	type ResponseEchoResult,
 } from "@repo/utils/proposal-artifact/response-echo";
 import { buildSectionMap } from "@repo/utils/proposal-artifact/section-hash";
@@ -385,10 +386,35 @@ export function guestCarriedText(
 }
 
 /**
+ * Consecutive normalised words of the bound prompt that nothing a guest
+ * reads may repeat: their reply, the arguments of an action their browser
+ * runs, and the document they are asked to review (Fizzy #2946). Lower than
+ * the shared threshold because a guest must not read the prompt's
+ * instructions even in fragments; a member keeps the shared threshold.
+ */
+export const GUEST_PROMPT_ECHO_MIN_WORDS = 8;
+
+/**
+ * The run length of each text {@link guestCarriedText} carried, for the
+ * echo check's `responseRunWords`: the bound prompt at
+ * {@link GUEST_PROMPT_ECHO_MIN_WORDS}, anything else at the usual threshold.
+ */
+export function guestRunWords(
+	carried: CarriedSettledText,
+	clientPrompt: string,
+): (index: number) => number {
+	return (index) =>
+		carried.responseTexts[index] === clientPrompt
+			? GUEST_PROMPT_ECHO_MIN_WORDS
+			: RESPONSE_ECHO_MIN_WORDS;
+}
+
+/**
  * The check of text a guest is about to read for the bound prompt
- * (Fizzy #2946): the shared echo check, at its usual word threshold, against
- * {@link guestCarriedText}. Wording already in the proposal never counts:
- * the guest can read it there.
+ * (Fizzy #2946): the shared echo check against {@link guestCarriedText}, the
+ * prompt at {@link GUEST_PROMPT_ECHO_MIN_WORDS} words and anything else
+ * carried at the usual threshold. Wording already in the proposal never
+ * counts: the guest can read it there.
  *
  * Prepared once per run and asked of each text (the reply, each tool call's
  * arguments). Each result names indexes and keys only, so it may be logged.
@@ -399,7 +425,11 @@ export function buildGuestEchoCheck(params: {
 	document: string;
 }): (text: string) => GuestReplyEcho {
 	const carried = guestCarriedText(params.clientPrompt, params.echoCarried);
-	const guard = buildEchoGuard({ carried, previousMain: params.document });
+	const guard = buildEchoGuard({
+		carried,
+		previousMain: params.document,
+		responseRunWords: guestRunWords(carried, params.clientPrompt),
+	});
 	return (text) => {
 		const echo = checkEcho(guard, text);
 		return { ...echo, stableKeys: echoedStableKeys(carried, echo) };

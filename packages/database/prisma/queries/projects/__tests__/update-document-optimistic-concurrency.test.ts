@@ -1119,6 +1119,12 @@ describe("restoreDocumentVersion", () => {
 				}),
 			}),
 		);
+		// Version history names the restore, and the version it restored.
+		expect(versionCreateMock).toHaveBeenCalledWith({
+			data: expect.objectContaining({
+				changeDescription: "Restored to version 2",
+			}),
+		});
 	});
 
 	it.each(["QUEUED", "GENERATING"])(

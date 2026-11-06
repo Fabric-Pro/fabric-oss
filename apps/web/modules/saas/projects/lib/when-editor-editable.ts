@@ -1,4 +1,5 @@
 import type { Editor } from "@tiptap/core";
+import { useCallback, useSyncExternalStore } from "react";
 
 /** The part of an editor `whenEditorEditable` reads and listens to. */
 type EditableEditor = Pick<Editor, "isEditable" | "isDestroyed" | "on" | "off">;
@@ -34,4 +35,34 @@ export function whenEditorEditable(editor: EditableEditor): Promise<boolean> {
 		editor.on("update", onUpdate);
 		editor.on("destroy", onDestroy);
 	});
+}
+
+/** The part of an editor `useEditorEditable` reads and listens to. */
+interface EditableSource {
+	isEditable: boolean;
+	on: (event: "update", listener: () => void) => unknown;
+	off: (event: "update", listener: () => void) => unknown;
+}
+
+/**
+ * Whether `editor` takes input, read again on every update (Fizzy #2946).
+ *
+ * A node view that reads `isEditable` while it renders draws its controls
+ * for the editor as it was then, and ProseMirror does not draw a node view
+ * again for `setEditable`, whose node did not change. A diagram drawn anew
+ * while a collaborative editor waited for its room, read-only, kept no menu
+ * once the editor took input again. `setEditable` emits an update.
+ */
+export function useEditorEditable(editor: EditableSource): boolean {
+	const subscribe = useCallback(
+		(onChange: () => void) => {
+			editor.on("update", onChange);
+			return () => {
+				editor.off("update", onChange);
+			};
+		},
+		[editor],
+	);
+	const read = () => editor.isEditable;
+	return useSyncExternalStore(subscribe, read, read);
 }

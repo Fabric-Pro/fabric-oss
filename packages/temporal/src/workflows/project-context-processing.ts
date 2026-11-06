@@ -17,14 +17,16 @@
  * input naming a company owner is started on COMPANY_CONTEXT_TASK_QUEUE
  * (`contextOwnerTaskQueue`), and every activity call carries the owner, so
  * each one reads and writes the company source instead of a project context.
- * The activity calls and their order are the same for both owners; the
- * import-as-document branch is project-only.
+ * The activity calls and their order are the same for both owners, except
+ * for what is project-only: the import-as-document branch, and failing the
+ * pre-created document when processing fails.
  */
 
 import {
 	ApplicationFailure,
 	executeChild,
 	log,
+	patched,
 	proxyActivities,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
@@ -42,6 +44,7 @@ import {
 const {
 	cleanupImportedContent,
 	createImportedDocument,
+	failContextTargetDocument,
 	failTargetDocument,
 	fillTargetDocument,
 	issueGenerationToken,
@@ -66,6 +69,29 @@ const { embedProjectDocumentActivity } = proxyActivities<typeof activities>({
 		maximumAttempts: 3,
 	},
 });
+
+/**
+ * Gates failing the pre-created document from the run's failure branches. A
+ * history recorded before those calls existed replays its failure without
+ * them; a run reaching one of them on a current worker records the marker.
+ */
+const FAIL_TARGET_DOCUMENT_PATCH = "context-processing-fail-target-document-v1";
+
+/** What a document says when the file it was to be made from yielded nothing. */
+const UNREADABLE_FILE_REASON =
+	"The file could not be read, or contained no text. Try creating the document again with a different file.";
+
+/**
+ * What a document says when reading its file failed for a reason the run
+ * cannot name: a corrupt file and an outage that outlasted the retries end
+ * the same way.
+ */
+const FILE_NOT_PROCESSED_REASON =
+	"The file could not be read. Try creating the document again, and use a different file if this happens again.";
+
+/** What a document says when its file was read but the document never followed. */
+const UNFINISHED_FROM_FILE_REASON =
+	"The file was read, but generating the document from it did not finish. You can try creating it again.";
 
 // ============================================================================
 // Types
@@ -166,6 +192,49 @@ export async function projectContextProcessingWorkflow(
 		},
 	});
 
+	/**
+	 * End the document a Documents-tab upload was meant to fill, when the run
+	 * fails before filling it. Without this the context row says FAILED while
+	 * the document stays on "generating" with no reason, until the
+	 * stale-generation sweep clears it half an hour later.
+	 *
+	 * Called only from the run's failure branches, which are reached once the
+	 * extraction activity has given up. Not from inside that activity: its own
+	 * catch runs on every attempt, and an attempt that a retry recovers from
+	 * must leave the document waiting to be filled.
+	 *
+	 * Project-only, since a company source has no document, and checked before
+	 * `patched()` so a company run records no marker. Best-effort: a failure
+	 * here is logged and the run goes on to fail with its own error.
+	 */
+	const failDocumentOfContext = async (reason: string): Promise<void> => {
+		if (owner.kind !== "project" || !patched(FAIL_TARGET_DOCUMENT_PATCH)) {
+			return;
+		}
+		try {
+			const { applied } = await failContextTargetDocument({
+				contextId,
+				projectId: owner.projectId,
+				userId,
+				organizationId,
+				reason,
+			});
+			if (applied) {
+				log.warn("Context processing failed; target document failed", {
+					contextId,
+				});
+			}
+		} catch (failError) {
+			log.warn("Could not fail the target document (non-fatal)", {
+				contextId,
+				error:
+					failError instanceof Error
+						? failError.message
+						: "Unknown error",
+			});
+		}
+	};
+
 	log.info("Starting project context processing workflow", {
 		contextId,
 		projectId,
@@ -220,6 +289,12 @@ export async function projectContextProcessingWorkflow(
 			} catch {
 				// Ignore errors when updating status
 			}
+
+			// The activity returned rather than threw: empty text or a broken
+			// spec, which no retry would change. The ApplicationFailure below
+			// is rethrown untouched by the outer catch, so the document is
+			// failed here once, not again there.
+			await failDocumentOfContext(UNREADABLE_FILE_REASON);
 
 			throw ApplicationFailure.nonRetryable(
 				result.error || "Project context processing failed",
@@ -327,7 +402,7 @@ export async function projectContextProcessingWorkflow(
 					if (documentContent.trim().length === 0) {
 						await failTargetDocument({
 							documentId: result.targetDocumentId,
-							reason: "The file could not be read, or contained no text. Try creating the document again with a different file.",
+							reason: UNREADABLE_FILE_REASON,
 						});
 						log.warn(
 							"No content extracted; target document failed",
@@ -437,7 +512,7 @@ export async function projectContextProcessingWorkflow(
 						});
 						await failTargetDocument({
 							documentId: result.targetDocumentId,
-							reason: "The file was read, but generating the document from it did not finish. You can try creating it again.",
+							reason: UNFINISHED_FROM_FILE_REASON,
 						});
 					}
 
@@ -529,7 +604,7 @@ export async function projectContextProcessingWorkflow(
 					// source actually needs.
 					await failTargetDocument({
 						documentId: result.targetDocumentId,
-						reason: "The file could not be read, or contained no text. Try creating the document again with a different file.",
+						reason: UNREADABLE_FILE_REASON,
 					});
 					log.warn("No content extracted; target document failed", {
 						contextId,
@@ -553,6 +628,15 @@ export async function projectContextProcessingWorkflow(
 					contextId,
 					documentTag: result.documentTag,
 				});
+				// Best-effort is right for an import nobody is waiting on. A
+				// pre-created document is being watched, and the failure
+				// swallowed here — a fill that never landed, or the write meant
+				// to fail it — would leave it generating. The file was read by
+				// this point, so the reason says the step after it did not
+				// finish.
+				if (result.targetDocumentId) {
+					await failDocumentOfContext(UNFINISHED_FROM_FILE_REASON);
+				}
 			}
 		}
 
@@ -578,12 +662,14 @@ export async function projectContextProcessingWorkflow(
 		// already COMPLETED. The activity is supposed to never throw after
 		// content is persisted, but if some future code path does, we won't
 		// regress the user-visible status.
+		let contentPersisted = false;
 		try {
 			const currentStatus = await getProjectContextStatus(
 				contextId,
 				input.owner,
 			);
-			if (currentStatus !== "COMPLETED") {
+			contentPersisted = currentStatus === "COMPLETED";
+			if (!contentPersisted) {
 				await updateProjectContextStatus(
 					contextId,
 					"FAILED",
@@ -599,6 +685,21 @@ export async function projectContextProcessingWorkflow(
 		} catch {
 			// Ignore errors when reading/updating status
 		}
+
+		// The extraction activity threw on its last attempt. Called whatever
+		// the context status turned out to be: only a document still
+		// GENERATING changes, so one that was already filled is left alone.
+		//
+		// The reason has to be true for every way of getting here. A thrown
+		// error is most often a corrupt file, but a storage or database outage
+		// that outlasted the retries looks the same from this catch, so it
+		// does not tell the user their file is bad. And when the text was
+		// stored before a later step threw, the file was read.
+		await failDocumentOfContext(
+			contentPersisted
+				? UNFINISHED_FROM_FILE_REASON
+				: FILE_NOT_PROCESSED_REASON,
+		);
 
 		throw ApplicationFailure.nonRetryable(
 			errorMessage,

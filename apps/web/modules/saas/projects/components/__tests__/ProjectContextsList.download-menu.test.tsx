@@ -161,7 +161,12 @@ vi.mock(
 );
 
 vi.mock("sonner", () => ({
-	toast: { success: vi.fn(), error: vi.fn() },
+	toast: {
+		success: vi.fn(),
+		error: vi.fn(),
+		loading: vi.fn(),
+		dismiss: vi.fn(),
+	},
 }));
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
@@ -349,11 +354,14 @@ describe("ProjectContextsList — downloading an uploaded OpenAPI file (Fizzy #2
 				download: "petstore.json",
 			}),
 		);
-		expect(createDownloadUrlMock).toHaveBeenCalledWith({
-			contextId: "ctx_spec",
-			projectId: "proj_1",
-			organizationId: "org_example",
-		});
+		expect(createDownloadUrlMock).toHaveBeenCalledWith(
+			{
+				contextId: "ctx_spec",
+				projectId: "proj_1",
+				organizationId: "org_example",
+			},
+			{ signal: expect.any(AbortSignal) },
+		);
 		expect(renderMarkdownToPdfMock).not.toHaveBeenCalled();
 		clickSpy.mockRestore();
 	});

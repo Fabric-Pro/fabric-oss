@@ -21,8 +21,9 @@ vi.mock(
 	},
 );
 
+import { sectionDiagramCaptions } from "@repo/utils/proposal-artifact/visual-identity";
 import { coverFence } from "../document-content";
-import { prepareExportMarkdown } from "../markdown";
+import { exportDiagramCaptions, prepareExportMarkdown } from "../markdown";
 
 /** A node without its source positions, so only what is printed is checked. */
 function stripPositions(node: unknown): unknown {
@@ -34,6 +35,100 @@ function stripPositions(node: unknown): unknown {
 }
 
 import { PROPOSAL_EXPORT_LIMITS } from "../types";
+
+describe("exportDiagramCaptions", () => {
+	it("captions a fence without a caption with its section's heading, past the leading title", () => {
+		const fence = (caption?: string) =>
+			[
+				"```mermaid",
+				...(caption ? [`%% caption: ${caption}`] : []),
+				"flowchart LR",
+				"  A --> B",
+				"```",
+			].join("\n");
+		const prepared = prepareExportMarkdown(
+			[
+				"# Example Proposal",
+				"",
+				fence(),
+				"",
+				"## 2. Delivery `plan`",
+				"",
+				fence(),
+				"",
+				fence("Own caption"),
+				"",
+				"### 2026 Roadmap",
+				"",
+				"- Item",
+				"",
+				`  ${fence().split("\n").join("\n  ")}`,
+			].join("\n"),
+		);
+		expect(prepared.diagramSectionCaptions).toEqual([
+			null,
+			"Delivery plan",
+			"Delivery plan",
+			"2026 Roadmap",
+		]);
+		expect(exportDiagramCaptions(prepared)).toEqual([
+			null,
+			"Delivery plan",
+			"Own caption",
+			"2026 Roadmap",
+		]);
+	});
+});
+
+describe("section captions: the export and the Markdown download agree", () => {
+	it("reads setext, quoted, empty and linked headings alike", () => {
+		const fence = ["```mermaid", "flowchart LR", "  A --> B", "```"];
+		const markdown = [
+			"# Example Proposal",
+			"",
+			...fence,
+			"",
+			"Delivery approach",
+			"-----------------",
+			"",
+			...fence,
+			"",
+			"> ## Quoted section",
+			"",
+			...fence,
+			"",
+			"##",
+			"",
+			...fence,
+			"",
+			"## Rollout with [Example Org][org]",
+			"",
+			"- Item",
+			"",
+			"  ```mermaid",
+			"  flowchart LR",
+			"  ```",
+			"",
+			"[org]: https://example.com",
+		].join("\n");
+		const exported = prepareExportMarkdown(markdown).diagramSectionCaptions;
+		const read = sectionDiagramCaptions(markdown);
+		const lines = markdown
+			.split("\n")
+			.flatMap((line, index) =>
+				line.trim() === "```mermaid" ? [index + 1] : [],
+			);
+
+		expect(exported).toEqual([
+			null,
+			"Delivery approach",
+			"Quoted section",
+			null,
+			"Rollout with Example Org",
+		]);
+		expect(lines.map(read)).toEqual(exported);
+	});
+});
 
 describe("prepareExportMarkdown", () => {
 	it("fails a 2 MB Main with DOCUMENT_TOO_LARGE before parsing it", () => {

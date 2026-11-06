@@ -12,9 +12,9 @@
  * encoded cap at its smallest edge is left off the cover, and the export
  * says so with one warning.
  *
- * Each logo is also measured, so the dark cover can tell a logo drawn for a
- * light background (set on a light plate) from one drawn for a dark one, and
- * so is the hero, so the ink laid over it is only as dense as it needs. Each
+ * Each logo is also measured, so the dark cover can tell a mark too dark to
+ * read on its ink (set on a light plate) from one that reads there or one
+ * drawn on a box of its own, and so is the hero, so the ink laid over it is only as dense as it needs. Each
  * asset is kept small enough to print, the hero with a small copy for the
  * openers.
  */
@@ -42,6 +42,7 @@ import { readStoredObjectWithin } from "../../lib/proposal-export/read-stored-ob
 import {
 	type ExportRaster,
 	type ExportThemeTokens,
+	LOGO_TONE_BUCKETS,
 	PROPOSAL_EXPORT_LIMITS,
 	type ProposalExportWarning,
 } from "../../lib/proposal-export/types";
@@ -95,42 +96,86 @@ function pixelLuminance(data: Buffer, offset: number): number {
 	);
 }
 
-/** Calls `visit` with each pixel's luminance and alpha (0 to 1). */
+/**
+ * Calls `visit` with each pixel's luminance and alpha (0 to 1), and whether
+ * the pixel lies on the middle half of one of the image's four sides: its
+ * edge away from the corners, which a rounded box leaves transparent.
+ */
 async function eachPixel(
 	image: Sharp,
-	visit: (luminance: number, alpha: number) => void,
+	visit: (luminance: number, alpha: number, edge: boolean) => void,
 ): Promise<void> {
 	const { data, info } = await image
 		.ensureAlpha()
 		.raw()
 		.toBuffer({ resolveWithObject: true });
-	const channels = info.channels;
+	const { channels, width, height } = info;
+	let index = 0;
 	for (let offset = 0; offset + channels <= data.length; offset += channels) {
-		visit(pixelLuminance(data, offset), (data[offset + 3] as number) / 255);
+		const x = index % width;
+		const y = Math.floor(index / width);
+		index++;
+		visit(
+			pixelLuminance(data, offset),
+			(data[offset + 3] as number) / 255,
+			((y === 0 || y === height - 1) &&
+				x >= width / 4 &&
+				x < (3 * width) / 4) ||
+				((x === 0 || x === width - 1) &&
+					y >= height / 4 &&
+					y < (3 * height) / 4),
+		);
 	}
 }
 
 /**
- * A logo's mean relative luminance over its opaque pixels, each weighted by
- * its alpha, and whether it has no transparent pixel at all. A logo with no
- * opaque pixel has no luminance.
+ * The mean alpha of a logo's sides, away from its corners, from which the
+ * logo counts as set on a background of its own: a solid box, or one with
+ * rounded corners.
  */
-export async function measureLogo(
-	raster: ExportRaster,
-): Promise<{ luminance?: number; opaque: boolean }> {
+const LOGO_BOXED_EDGE_ALPHA = 0.9;
+
+/**
+ * A logo's mean relative luminance over its opaque pixels, each weighted by
+ * its alpha, its tones (the share of that weight in each luminance step,
+ * `ExportRaster.tones`), and whether it was drawn on a box of its own: its
+ * sides opaque away from the corners ({@link LOGO_BOXED_EDGE_ALPHA}). A
+ * logo with no opaque pixel has neither luminance nor tones.
+ */
+export async function measureLogo(raster: ExportRaster): Promise<{
+	luminance?: number;
+	tones?: number[];
+	boxed: boolean;
+}> {
 	let weight = 0;
 	let sum = 0;
-	let opaque = true;
-	await eachPixel(sharp(raster.bytes), (luminance, alpha) => {
-		if (alpha < 1) {
-			opaque = false;
-		}
+	let edgePixels = 0;
+	let edgeAlpha = 0;
+	const buckets = new Float64Array(LOGO_TONE_BUCKETS);
+	await eachPixel(sharp(raster.bytes), (luminance, alpha, edge) => {
 		if (alpha > 0) {
 			weight += alpha;
 			sum += luminance * alpha;
+			const bucket = Math.min(
+				Math.floor(luminance * LOGO_TONE_BUCKETS),
+				LOGO_TONE_BUCKETS - 1,
+			);
+			buckets[bucket] = (buckets[bucket] as number) + alpha;
+		}
+		if (edge) {
+			edgePixels++;
+			edgeAlpha += alpha;
 		}
 	});
-	return weight > 0 ? { luminance: sum / weight, opaque } : { opaque };
+	const boxed =
+		edgePixels > 0 && edgeAlpha / edgePixels >= LOGO_BOXED_EDGE_ALPHA;
+	return weight > 0
+		? {
+				luminance: sum / weight,
+				tones: Array.from(buckets, (share) => share / weight),
+				boxed,
+			}
+		: { boxed };
 }
 
 /** The hero is measured at this longest edge: its tones, not its detail. */

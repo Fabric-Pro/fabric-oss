@@ -5,6 +5,7 @@
  * `build-theme-html`'s, which calls these in reading order.
  */
 
+import { relativeLuminance } from "@repo/utils/brand-colors";
 import {
 	PROPOSAL_LABEL_ATTRIBUTE,
 	PROPOSAL_PRINT_CLASSES,
@@ -15,6 +16,11 @@ import {
 	STAT_TILES_LANGUAGE,
 	type StatTileItem,
 } from "@repo/utils/proposal-artifact/stat-tiles";
+import {
+	GRAPHIC_CONTRAST,
+	resolveThemePaint,
+	veiledHeroEnds,
+} from "@repo/utils/proposal-artifact/theme-tokens";
 import type { Code, Nodes, Paragraph } from "mdast";
 import type {
 	BuildThemeHtmlInput,
@@ -35,11 +41,7 @@ import {
 	plainText,
 	present,
 } from "./print-markup";
-import {
-	COVER_LOGO_DARK_LUMINANCE,
-	type ExportRaster,
-	type ExportThemeTokens,
-} from "./types";
+import type { ExportRaster, ExportThemeTokens } from "./types";
 
 const THEME = PROPOSAL_THEME_CLASSES;
 const PRINT = PROPOSAL_PRINT_CLASSES;
@@ -248,26 +250,97 @@ export function bodyStyle(tokens: ExportThemeTokens): string {
 	return ` style="${escapeHtml(properties.join("; "))}"`;
 }
 
-/** Whether a logo was drawn for a light background, so needs the plate. */
-function needsPlate(raster: ExportRaster): boolean {
-	return (
-		raster.opaque === true ||
-		(raster.luminance !== undefined &&
-			raster.luminance < COVER_LOGO_DARK_LUMINANCE)
-	);
+/**
+ * The share of a logo's opaque weight that may fall short of 3:1 against
+ * its background before it takes a plate: a wordmark, or any part a reader
+ * would miss, is more than that, while the soft edge of a mark is less.
+ */
+const LOGO_PLATE_SHARE = 0.15;
+
+/**
+ * A logo's tones as luminance and share, from its measured tones, else as
+ * one tone at its mean (a logo measured before tones were kept); null when
+ * nothing opaque was measured.
+ */
+function logoTones(
+	raster: ExportRaster,
+): (readonly [luminance: number, share: number])[] | null {
+	if (raster.tones !== undefined && raster.tones.length > 0) {
+		const steps = raster.tones.length;
+		return raster.tones.map(
+			(share, index) => [(index + 0.5) / steps, share] as const,
+		);
+	}
+	return raster.luminance === undefined ? null : [[raster.luminance, 1]];
+}
+
+/** WCAG contrast between two relative luminances. */
+function luminanceContrast(a: number, b: number): number {
+	return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
 /**
- * Whether a logo was drawn for a dark background, so needs a plate of the
- * ink on the paper: the cover's plate rule turned round. A logo that is
- * opaque, or was not measured, sits on the paper as it is.
+ * Whether a logo needs a plate to read on a background of relative
+ * luminance `background`, or on every one of several (Fizzy #2946). A logo
+ * drawn on a box of its own never does: its box carries the mark, and a
+ * plate would only frame that box again. A mark on transparency does when
+ * {@link LOGO_PLATE_SHARE} or more of its opaque weight contrasts with a
+ * background less than a graphic must (3:1): a light or coloured mark on
+ * the dark cover sits straight on it, while a dark mark, or a dark wordmark
+ * beside a bright icon, is plated. A logo with nothing opaque to measure,
+ * or not measured, sits on the background as it is. Every plate decision
+ * goes through here, so the formats and pages never disagree.
  */
-function needsInkPlate(raster: ExportRaster): boolean {
-	return (
-		raster.opaque !== true &&
-		raster.luminance !== undefined &&
-		raster.luminance >= COVER_LOGO_DARK_LUMINANCE
-	);
+export function needsPlate(
+	raster: ExportRaster,
+	background: number | readonly number[],
+): boolean {
+	if (raster.boxed === true) {
+		return false;
+	}
+	const tones = logoTones(raster);
+	if (tones === null) {
+		return false;
+	}
+	const backgrounds =
+		typeof background === "number" ? [background] : background;
+	return backgrounds.some((behind) => {
+		let short = 0;
+		for (const [luminance, share] of tones) {
+			if (luminanceContrast(luminance, behind) < GRAPHIC_CONTRAST) {
+				short += share;
+			}
+		}
+		return short >= LOGO_PLATE_SHARE;
+	});
+}
+
+/**
+ * The relative luminances a logo is judged against: the ink, the paper,
+ * and what the print cover's logos sit on. That is the ink and, with a
+ * hero, both ends of the hero under its veil (`veiledHeroEnds`), since the
+ * brands row is drawn over the hero there.
+ */
+export function plateBackgrounds(tokens: ExportThemeTokens): {
+	ink: number;
+	paper: number;
+	cover: number[];
+} {
+	const heroLuminance = tokens.proposer.hero.value?.luminance;
+	const paint = resolveThemePaint(tokens, { heroLuminance });
+	const ink = relativeLuminance(paint.ink);
+	return {
+		ink,
+		paper: relativeLuminance(paint.surface),
+		cover: hasHeroImage(tokens)
+			? [
+					ink,
+					...veiledHeroEnds(paint, heroLuminance).map(
+						relativeLuminance,
+					),
+				]
+			: [ink],
+	};
 }
 
 /**
@@ -289,6 +362,7 @@ export function coverHtml(
 	const { tokens } = input;
 	const proposer = present(tokens.proposer.name.value);
 	const recipient = present(tokens.recipient.name.value);
+	const backgrounds = plateBackgrounds(tokens);
 
 	const logo = (
 		raster: ExportRaster | null,
@@ -300,7 +374,9 @@ export function coverHtml(
 		if (raster === null || src === null) {
 			return "";
 		}
-		const plate = needsPlate(raster) ? ` ${PRINT.coverLogoPlate}` : "";
+		const plate = needsPlate(raster, backgrounds.cover)
+			? ` ${PRINT.coverLogoPlate}`
+			: "";
 		return `<img class="${PRINT.coverLogo} ${role}${plate}" src="${escapeHtml(src)}" alt="${escapeHtml(name ? `${name} logo` : fallback)}">`;
 	};
 	const logos =
@@ -404,8 +480,8 @@ export interface LetterContent {
  * The cover letter's page: the proposer logo at the top left beside the
  * letter's heading as a quiet label, then the letter. No opener, no section
  * number, no contents entry and no page marker: it is not a section, so the
- * sections after it keep their numbers. A logo drawn for a dark background
- * sits on a plate of the ink, since this page is the paper.
+ * sections after it keep their numbers. A mark that would not read on the
+ * paper, a light one, sits on a plate of the ink.
  */
 export function letterHtml(
 	input: BuildThemeHtmlInput,
@@ -418,7 +494,7 @@ export function letterHtml(
 	const logo =
 		raster === null || src === null
 			? ""
-			: `<img class="${PRINT.letterLogo}${needsInkPlate(raster) ? ` ${PRINT.letterLogoPlate}` : ""}" src="${escapeHtml(src)}" alt="${escapeHtml(proposer ? `${proposer} logo` : "Proposer logo")}">`;
+			: `<img class="${PRINT.letterLogo}${needsPlate(raster, plateBackgrounds(tokens).paper) ? ` ${PRINT.letterLogoPlate}` : ""}" src="${escapeHtml(src)}" alt="${escapeHtml(proposer ? `${proposer} logo` : "Proposer logo")}">`;
 	return [
 		`<section class="${PRINT.letter}" aria-label="${escapeHtml(letter.label)}">`,
 		`<div class="${PRINT.letterHead}">${logo}<p class="${PRINT.letterLabel}">${escapeHtml(letter.label)}</p></div>`,

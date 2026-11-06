@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { BRANCH_DELETED_OBJECT_ID } from "@repo/instructions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
@@ -340,6 +341,129 @@ describe("branch-relative entries", () => {
 			before: null,
 			beforeOmitted: "SOURCE_CHANGED",
 		});
+	});
+});
+
+describe("a published file the proposer's branch also changed", () => {
+	const sha = (data: Buffer) =>
+		createHash("sha256").update(data).digest("hex");
+	const published = Buffer.from("published\n");
+	const onBranch = Buffer.from("written on the branch\n");
+	const entryOf = (branchObjectId: string) => ({
+		operation: "PUT",
+		path: "rules/a.md",
+		baseObjectId: "b".repeat(40),
+		branchObjectId,
+		storageKey: "restored/object",
+		sha256: sha(published),
+		size: published.length,
+		mimeType: "text/markdown",
+		isText: true,
+		mode: 0o100644,
+	});
+	const proposalWith = (branchObjectId: string) => ({
+		status: "READY",
+		userId: "proposer_example",
+		repositoryGeneration: 1,
+		sourceCommitSha: "a".repeat(40),
+		repositoryIntegrationId: "integration_example",
+		sourceRef: "main",
+		gitIntentEntries: [entryOf(branchObjectId)],
+	});
+	const earlier = {
+		status: "READY",
+		gitIntentEntries: [
+			{
+				operation: "PUT",
+				path: "rules/a.md",
+				storageKey: "branch/object",
+				sha256: sha(onBranch),
+				size: onBranch.length,
+				mimeType: "text/markdown",
+				isText: true,
+				mode: 0o100644,
+			},
+		],
+	};
+	const restoreWith = (branchObjectId: string) => {
+		m.intent.mockImplementation(async ({ snapshotId }) =>
+			snapshotId === scope.snapshotId
+				? proposalWith(branchObjectId)
+				: earlier,
+		);
+		m.read.mockResolvedValue({
+			ok: true,
+			state: "found",
+			bytes: published,
+		});
+		m.download.mockImplementation(async (key: string) => ({
+			data: key === "branch/object" ? onBranch : published,
+		}));
+	};
+
+	it("shows a restore as the change from the branch's bytes, not an equal published comparison", async () => {
+		restoreWith("d".repeat(40));
+		m.branchWrite.mockResolvedValue({
+			snapshotId: "proposal_earlier",
+			sha256: sha(onBranch),
+		});
+
+		const changes = await buildNativeProposalChanges(scope);
+
+		expect(changes).toMatchObject([
+			{
+				path: "rules/a.md",
+				op: "edit",
+				before: "written on the branch\n",
+				after: "published\n",
+			},
+		]);
+		expect(m.read).not.toHaveBeenCalled();
+	});
+
+	it("falls back to the published base once Fabric no longer holds the branch's bytes", async () => {
+		restoreWith("d".repeat(40));
+		m.branchWrite.mockResolvedValue(null);
+
+		const changes = await buildNativeProposalChanges(scope);
+
+		expect(changes).toMatchObject([
+			{ op: "edit", before: "published\n", beforeOmitted: null },
+		]);
+	});
+
+	it("shows a restore of a file the branch deleted as adding it back", async () => {
+		restoreWith(BRANCH_DELETED_OBJECT_ID);
+
+		const changes = await buildNativeProposalChanges(scope);
+
+		expect(changes).toMatchObject([
+			{
+				path: "rules/a.md",
+				op: "add",
+				before: null,
+				beforeOmitted: null,
+				after: "published\n",
+				// What the "add" really is, for the reviewer.
+				restoresBranchDeletion: true,
+			},
+		]);
+		expect(m.read).not.toHaveBeenCalled();
+		expect(m.branchWrite).not.toHaveBeenCalled();
+	});
+
+	it("marks only a restore of a file the branch deleted as one", async () => {
+		restoreWith("d".repeat(40));
+		m.branchWrite.mockResolvedValue({
+			snapshotId: "proposal_earlier",
+			sha256: sha(onBranch),
+		});
+
+		const changes = await buildNativeProposalChanges(scope);
+
+		expect(changes).toMatchObject([
+			{ op: "edit", restoresBranchDeletion: false },
+		]);
 	});
 });
 

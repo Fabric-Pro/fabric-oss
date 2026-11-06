@@ -651,15 +651,15 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					ORGANIZATION_ID,
 				),
 			).toEqual({ deleted: false, reason: "active" });
-			// A v2 row whose branch still owes classification is kept. (Its
-			// refusal reason is not asserted: see the Fizzy #2738 report.)
+			// A v2 row whose branch still owes classification is kept, and the
+			// refusal names the pull request its branch still holds.
 			expect(
 				await deleteInstructionSnapshot(
 					ids.branchMembershipPending!,
 					projects.branches!,
 					ORGANIZATION_ID,
 				),
-			).toMatchObject({ deleted: false });
+			).toEqual({ deleted: false, reason: "pull_request_unresolved" });
 			for (const [project, deletable] of [
 				["branches", "branchUntrackedConfirming"],
 				["branches", "branchSettled"],

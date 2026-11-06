@@ -15,6 +15,8 @@ const state = vi.hoisted(() => ({
 	calls: [] as string[],
 	filesGate: null as Promise<void> | null,
 	filesFailures: 0,
+	/** Overrides the published files `listFiles` answers. */
+	listedFiles: null as null | Array<{ path: string; kind: string }>,
 	sectionProps: null as null | {
 		onChange: () => void;
 		onChanged: () => Promise<void>;
@@ -24,6 +26,7 @@ const state = vi.hoisted(() => ({
 		onSaved?: () => void;
 	},
 	/** The member's own branch, as `useMyBranchFiles` answers it. */
+	branchPending: false,
 	branchId: null as string | null,
 	branchFiles: [] as Array<{
 		path: string;
@@ -99,7 +102,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 								throw new Error("transient");
 							}
 							return {
-								files: [
+								files: state.listedFiles ?? [
 									{ path: "AGENTS.md", kind: "INSTRUCTIONS" },
 									{ path: "CLAUDE.md", kind: "INSTRUCTIONS" },
 								],
@@ -206,6 +209,7 @@ vi.mock("../BranchFileActions", () => ({
 	useMyBranchFiles: () => ({
 		branchId: state.branchId,
 		files: state.branchFiles,
+		isPending: state.branchPending,
 	}),
 	useRestoreBranchFile: () => ({
 		request: () => undefined,
@@ -423,6 +427,74 @@ describe("DirectRepositoryInstructions — the member's proposal branch", () => 
 		} finally {
 			state.branchId = null;
 			state.branchFiles = [];
+		}
+	});
+
+	it("shows the tree, not the empty message, when nothing is published but the branch holds files", async () => {
+		state.filesGate = null;
+		state.treeProps = null;
+		state.listedFiles = [];
+		state.branchId = "branch-1";
+		state.branchFiles = [
+			{
+				path: "skills/new.md",
+				state: "written",
+				objectId: "b".repeat(40),
+			},
+		];
+		try {
+			renderDirectInstructions({ canEdit: true });
+			await waitFor(() =>
+				expect(state.treeProps?.files.map((file) => file.path)).toEqual(
+					["skills/new.md"],
+				),
+			);
+			expect(screen.queryByText("empty")).not.toBeInTheDocument();
+			act(() => state.treeProps?.onSelect("skills/new.md"));
+			expect(
+				await screen.findByTestId("branch-only-file-view"),
+			).toHaveTextContent("skills/new.md");
+		} finally {
+			state.listedFiles = null;
+			state.branchId = null;
+			state.branchFiles = [];
+		}
+	});
+
+	// The branch may hold the only files, so "empty" before it is read would
+	// flash and then give way to the tree.
+	it("shows the loading line, not the empty message, while the branch is still being read", async () => {
+		state.filesGate = null;
+		state.treeProps = null;
+		state.listedFiles = [];
+		state.branchPending = true;
+		try {
+			renderDirectInstructions({ canEdit: true });
+			// The published listing has answered: the files fact counts it.
+			expect(
+				(await screen.findAllByText("statusFiles")).length,
+			).toBeGreaterThan(0);
+			expect(
+				screen.getByText("loading", { selector: "output" }),
+			).toBeInTheDocument();
+			expect(screen.queryByText("empty")).not.toBeInTheDocument();
+			expect(state.treeProps).toBeNull();
+		} finally {
+			state.listedFiles = null;
+			state.branchPending = false;
+		}
+	});
+
+	it("keeps the empty message when neither the published version nor the branch holds a file", async () => {
+		state.filesGate = null;
+		state.treeProps = null;
+		state.listedFiles = [];
+		try {
+			renderDirectInstructions({ canEdit: true });
+			expect(await screen.findByText("empty")).toBeInTheDocument();
+			expect(state.treeProps).toBeNull();
+		} finally {
+			state.listedFiles = null;
 		}
 	});
 });

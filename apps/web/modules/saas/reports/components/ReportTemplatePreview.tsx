@@ -70,94 +70,101 @@ export function ReportTemplatePreview({
 				) : null}
 			</div>
 
-			{preview.isPending ? (
-				<p className="flex items-center gap-2 text-sm text-muted-foreground">
-					<Loader2Icon className="h-4 w-4 motion-safe:animate-spin" />
-					Looking for an earlier report...
-				</p>
-			) : preview.isError ? (
-				<div className="space-y-2">
-					<p role="alert" className="text-sm text-destructive">
-						The earlier report could not be loaded.
+			{/*
+			 * One fixed height for every state, so the form below does not move
+			 * when the earlier report or the sample arrives; shorter on a phone,
+			 * so the first field stays on screen.
+			 */}
+			<div className="flex h-44 flex-col gap-2 sm:h-96">
+				{preview.isPending ? (
+					<p className="flex items-center gap-2 text-sm text-muted-foreground">
+						<Loader2Icon className="h-4 w-4 motion-safe:animate-spin" />
+						Looking for an earlier report...
 					</p>
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						disabled={preview.isFetching}
-						onClick={() => void preview.refetch()}
-					>
-						<RotateCcwIcon className="mr-2 h-4 w-4" />
-						Try again
-					</Button>
-				</div>
-			) : run ? (
-				<>
-					<p className="text-xs text-muted-foreground">
-						From “{run.instanceName}”
-						{run.completedAt &&
-							`, generated ${formatDistanceToNow(new Date(run.completedAt), { addSuffix: true })}`}
-						.
-					</p>
-					<div className="max-h-80 overflow-auto rounded-md border bg-background">
-						<ReportArtifactContent
-							name={run.artifact.name}
-							content={run.artifact.content}
-							projectSourcePath={projectSourcePath}
-							embedded
-						/>
-					</div>
-				</>
-			) : sample.data ? (
-				<>
-					<p className="text-xs text-muted-foreground">
-						Written by AI from the template to show its layout. The
-						data is invented, not read from this project.
-					</p>
-					<div className="max-h-80 overflow-auto rounded-md border border-dashed bg-background">
-						<ReportArtifactContent
-							name={SAMPLE_ARTIFACT_NAME}
-							content={sample.data.content}
-							projectSourcePath={projectSourcePath}
-							embedded
-						/>
-					</div>
-				</>
-			) : (
-				<div className="space-y-2">
-					<p className="text-sm text-muted-foreground">
-						No report from this template has run in this project
-						yet.
-					</p>
-					{sample.isFetching ? (
-						<p className="flex items-center gap-2 text-sm text-muted-foreground">
-							<Loader2Icon
-								aria-hidden="true"
-								className="h-4 w-4 motion-safe:animate-spin"
-							/>
-							Preparing a sample with example data...
+				) : preview.isError ? (
+					<div className="space-y-2">
+						<p role="alert" className="text-sm text-destructive">
+							The earlier report could not be loaded.
 						</p>
-					) : sample.isError ? (
-						<>
-							<p
-								role="alert"
-								className="text-xs text-destructive"
-							>
-								{sample.error.message}
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							disabled={preview.isFetching}
+							onClick={() => void preview.refetch()}
+						>
+							<RotateCcwIcon className="mr-2 h-4 w-4" />
+							Try again
+						</Button>
+					</div>
+				) : run ? (
+					<>
+						<p className="text-xs text-muted-foreground">
+							From “{run.instanceName}”
+							{run.completedAt &&
+								`, generated ${formatDistanceToNow(new Date(run.completedAt), { addSuffix: true })}`}
+							.
+						</p>
+						<div className="min-h-0 flex-1 overflow-auto rounded-md border bg-background">
+							<ReportArtifactContent
+								name={run.artifact.name}
+								content={run.artifact.content}
+								projectSourcePath={projectSourcePath}
+								embedded
+							/>
+						</div>
+					</>
+				) : sample.data ? (
+					<>
+						<p className="text-xs text-muted-foreground">
+							Written by AI from the template to show its layout.
+							The data is invented, not read from this project.
+						</p>
+						<div className="min-h-0 flex-1 overflow-auto rounded-md border border-dashed bg-background">
+							<ReportArtifactContent
+								name={SAMPLE_ARTIFACT_NAME}
+								content={sample.data.content}
+								projectSourcePath={projectSourcePath}
+								embedded
+							/>
+						</div>
+					</>
+				) : (
+					<div className="space-y-2">
+						<p className="text-sm text-muted-foreground">
+							No report from this template has run in this project
+							yet.
+						</p>
+						{sample.isFetching ? (
+							<p className="flex items-center gap-2 text-sm text-muted-foreground">
+								<Loader2Icon
+									aria-hidden="true"
+									className="h-4 w-4 motion-safe:animate-spin"
+								/>
+								Preparing a sample with example data...
 							</p>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								onClick={() => void sample.refetch()}
-							>
-								<RotateCcwIcon className="mr-2 h-4 w-4" />
-								Try again
-							</Button>
-						</>
-					) : null}
-				</div>
-			)}
+						) : sample.isError ? (
+							<>
+								<p
+									role="alert"
+									className="text-xs text-destructive"
+								>
+									{sample.error.message}
+								</p>
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									onClick={() => void sample.refetch()}
+								>
+									<RotateCcwIcon className="mr-2 h-4 w-4" />
+									Try again
+								</Button>
+							</>
+						) : null}
+					</div>
+				)}
+			</div>
 		</section>
 	);
 }

@@ -181,6 +181,13 @@ describe("updateWithContextProcedure — phase-2 no-op backstop", () => {
 		expect(result.summary).toBe("Context update applied successfully.");
 		expect(result.documentVersion).toBe(6);
 		expect(mocks.loggerInfo).not.toHaveBeenCalled();
+		// Version history names the writer.
+		expect(mocks.updateDocument).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.objectContaining({
+				changeDescription: "Updated with latest context",
+			}),
+		);
 	});
 });
 

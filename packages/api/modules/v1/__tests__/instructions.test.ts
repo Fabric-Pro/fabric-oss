@@ -1308,6 +1308,34 @@ describe("GET /projects/:projectId/instructions/published", () => {
 		expect(mocks.getInstructionManifestDiff).not.toHaveBeenCalled();
 	});
 
+	// `projects.instructions.removeAll` clears the published pointer and
+	// deletes every version. A developer's CLI then still sends the digest it
+	// last synced; the answer must be the one a project that never published
+	// gets, with nothing about the removed version in it.
+	it("answers a project whose versions were all removed exactly as one that never had any, whatever digest the caller last synced", async () => {
+		mocks.getPublishedInstructionSnapshot.mockResolvedValue(null);
+
+		const neverPublished = await (
+			await buildApp().request(PUBLISHED_PATH)
+		).json();
+		const afterRemoval = await buildApp().request(
+			`${PUBLISHED_PATH}?sinceDigest=${"d".repeat(64)}`,
+		);
+
+		expect(afterRemoval.status).toBe(200);
+		const body = await afterRemoval.json();
+		expect(body).toEqual(neverPublished);
+		expect(body).toEqual({
+			data: {
+				published: false,
+				sourceOfTruth: "UPLOAD",
+				repository: null,
+			},
+		});
+		expect(mocks.getInstructionManifestDiff).not.toHaveBeenCalled();
+		expect(mocks.listInstructionFiles).not.toHaveBeenCalled();
+	});
+
 	it("returns the delta for a known base digest", async () => {
 		mocks.getInstructionManifestDiff.mockResolvedValue({
 			base: { id: "snap-1", version: 6, digest: "c".repeat(64) },
@@ -2126,6 +2154,99 @@ describe("POST instructions/changes", () => {
 		const [firstCall, secondCall] =
 			mocks.submitInstructionChange.mock.calls;
 		expect(secondCall?.[0]).toEqual(firstCall?.[0]);
+	});
+
+	describe("replacing the caller's stale proposal", () => {
+		const replacing = {
+			baseSnapshotId: BASE,
+			changes: [putChange()],
+			supersedesSnapshotId: "snap-stale",
+		};
+
+		it("goes through the supersede path, and answers that the new row records it", async () => {
+			mocks.getInstructionProposal.mockResolvedValue({
+				supersedesSnapshotId: "snap-stale",
+			});
+
+			const response = await buildApp().request(
+				postJson(CHANGES_PATH, replacing),
+			);
+
+			expect(response.status).toBe(200);
+			expect(mocks.submitInstructionChange).toHaveBeenCalledWith(
+				expect.objectContaining({
+					mode: "proposal",
+					baseSnapshotId: BASE,
+					supersedes: { snapshotId: "snap-stale" },
+				}),
+			);
+			expect(mocks.getInstructionProposal).toHaveBeenCalledWith(
+				submitted().snapshotId,
+				PROJECT,
+				"org-1",
+				{ proposerUserId: "user-1" },
+			);
+			await expect(response.json()).resolves.toEqual({
+				data: submitted({ supersedesSnapshotId: "snap-stale" }),
+			});
+		});
+
+		it("answers that nothing was replaced when the change was a duplicate of another proposal", async () => {
+			mocks.getInstructionProposal.mockResolvedValue({
+				supersedesSnapshotId: null,
+			});
+
+			const response = await buildApp().request(
+				postJson(CHANGES_PATH, replacing),
+			);
+
+			await expect(response.json()).resolves.toEqual({
+				data: submitted({ supersedesSnapshotId: null }),
+			});
+		});
+
+		it("relays the refusal when the proposal can no longer be replaced", async () => {
+			mocks.submitInstructionChange.mockRejectedValue(
+				orpcRefusal(
+					"CONFLICT",
+					"That proposal was decided or canceled.",
+					"REBASE_UNAVAILABLE",
+				),
+			);
+
+			const response = await buildApp().request(
+				postJson(CHANGES_PATH, replacing),
+			);
+
+			expect(response.status).toBe(409);
+			await expect(response.json()).resolves.toMatchObject({
+				error: { code: "REBASE_UNAVAILABLE" },
+			});
+		});
+
+		it("refuses a malformed proposal id before anything is written", async () => {
+			const response = await buildApp().request(
+				postJson(CHANGES_PATH, {
+					...replacing,
+					supersedesSnapshotId: 7,
+				}),
+			);
+
+			expect(response.status).toBe(400);
+			expect(mocks.submitInstructionChange).not.toHaveBeenCalled();
+		});
+
+		it("is not a way to close a proposal from the publish route", async () => {
+			mocks.scopes = ["instructions:publish"];
+
+			await buildApp().request(postJson(VERSIONS_PATH, replacing));
+
+			const call = mocks.submitInstructionChange.mock
+				.calls[0]?.[0] as Record<string, unknown>;
+			expect(call.mode).toBe("publish");
+			expect(call).not.toHaveProperty("supersedes");
+			expect(mocks.getInstructionProposal).not.toHaveBeenCalled();
+		});
 	});
 
 	it("carries the caller's base snapshot through", async () => {

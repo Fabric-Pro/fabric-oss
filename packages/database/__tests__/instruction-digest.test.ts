@@ -80,6 +80,7 @@ describe("digest reads", () => {
 			projectId: "p",
 			organizationId: "o",
 			afterVersion: 3,
+			throughVersion: null,
 		});
 
 		expect(mocks.snapshotFindMany).toHaveBeenCalledWith(
@@ -101,6 +102,20 @@ describe("digest reads", () => {
 		);
 	});
 
+	it("leaves out versions newer than the one published now: a rollback took them out of effect", async () => {
+		await listInstructionVersionsPublishedSince({
+			projectId: "p",
+			organizationId: "o",
+			afterVersion: 8,
+			throughVersion: 8,
+		});
+
+		expect(mocks.snapshotFindMany.mock.calls[0]![0].where.version).toEqual({
+			gt: 8,
+			lte: 8,
+		});
+	});
+
 	it("keeps the newest versions when more than a page qualify, returned oldest first", async () => {
 		mocks.snapshotFindMany.mockResolvedValue([
 			{ id: "s-30", version: 30 },
@@ -112,6 +127,7 @@ describe("digest reads", () => {
 			projectId: "p",
 			organizationId: "o",
 			afterVersion: 3,
+			throughVersion: 30,
 		});
 
 		expect(mocks.snapshotFindMany).toHaveBeenCalledWith(

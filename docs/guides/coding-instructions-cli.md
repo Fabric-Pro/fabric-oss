@@ -346,12 +346,23 @@ Matching ignores letter case, on the CLI and on the deployment alike: GitHub,
 GitLab and Azure DevOps names are case-insensitive, and an Azure DevOps
 `<org>.visualstudio.com` remote spells the organization in lowercase whatever
 the connected repository says. Only repository-sourced projects are found
-this way; an uploaded project needs `--project`.
+this way; an uploaded project needs `--project` the first time.
+
+**A folder outside any git checkout** that `sync` has written to names its
+project in its own `.fabric/instructions.lock`, and every command run there
+without `--project` uses that project, under `--hook` too. A sign-in for that
+one project (`fabric auth login --project <id>`) is then enough. Inside a git
+checkout the lock is never used for this, because it may have arrived with the
+repository; the remotes decide there. The folder may be reached through a
+symlink or a junction. A lock that cannot be read safely, for example through
+a symlinked `.fabric`, names no project, so the command asks for `--project`;
+`sync --project <id>` then reports the lock itself.
 
 **A session hook never resolves.** It runs unattended at every session start,
 and what it would answer could change between two sessions, so a hook names
-its project. `--hook` without `--project` skips with `this hook names no
-project. Run: fabric instructions init` on stderr and exits 0.
+its project, or runs in a folder whose own lock does. `--hook` without either
+skips with `this hook names no project. Run: fabric instructions init` on
+stderr and exits 0.
 
 ### `fabric instructions check [--project <id>] [--dest <dir>] [--verify] [--hook]`
 
@@ -453,6 +464,25 @@ line on stderr, which also names the local-notes files:
   with the published version like any other kept edit. `--include-overrides`
   on its own is refused (exit 2), because only `--repair` replaces anything.
 
+**Nothing published.** When the project has no published coding
+instructions, because none were ever published or a project admin removed
+them all from the Coding Instructions tab's settings, `sync` reports that and
+exits 0, the way `check` and `doctor` treat the same state. It writes and
+deletes nothing: the files in the folder and `.fabric/instructions.lock` stay
+exactly as they were, and the line says so: `This project has no published
+coding instructions. Nothing was written or removed here; your local copy, if
+this folder has one, was left as it is.` For a project that is not
+repository-sourced the line adds `A first version is uploaded from the
+project's Coding Instructions tab.` A `push` in this state exits 4 rather than
+asking for a `sync` first, because `sync` writes no lock while nothing is
+published. It names the same upload, or for a repository-sourced project says
+the first version comes from a commit to the repository. With `--format json` the object is
+`{ projectId, destination, published: false, code: "NOTHING_PUBLISHED",
+message }`. Under `--hook` it stays one line on stderr, `fabric: coding
+instructions sync skipped: This project has no published coding instructions
+yet.`, and exits 0. Once a new version is published, the next `sync` applies
+it against the lock as usual.
+
 For a repository-sourced project (source of truth `REPOSITORY`), what `sync`
 does depends on the directory it runs in; see
 [Repository-sourced projects](#repository-sourced-projects). In a checkout of
@@ -533,9 +563,12 @@ what the plugin serves.
 Suggests this checkout's edits back to the project. By default it opens a
 **proposal**: nothing changes for anybody reading the instructions until
 somebody who can edit them approves it in the Coding Instructions tab, where
-each changed file is reviewed as a unified diff of its two sides. `--publish`
-sends the same change set as a new version with nobody in between; see
-"publishing takes its own key" below for the key it needs.
+each changed file is reviewed as a unified diff of its two sides. On an uploaded
+project, the review policy in the tab's settings can require more than one
+approval and limit who may give them; `push` opens the proposal the same way
+whatever the policy says. `--publish` sends the same change set as a new version
+with nobody in between, so the policy does not apply to it; see "publishing
+takes its own key" below for the key it needs.
 
 The diff is computed against `<dest>/.fabric/instructions.lock`, so `sync` has
 to have run here first. Without that ledger there is nothing to diff against,
@@ -689,6 +722,23 @@ run `push --rebase` again: files the last run wrote are taken exactly as you
 left them, as long as no conflict marker remains, and the rest are merged
 again. That record lives in `.fabric/rebase.json` and only applies while the
 same version is still published; a successful push removes it.
+
+A file the record names is refused while a line of it still starts with
+`<<<<<<<` or `>>>>>>>`, whichever version the push is stated against, on a plain
+`push` too. A marker mentioned inside a line does not count, and neither does a
+file the record does not name. If a recorded file is meant to hold such a line,
+delete `.fabric/rebase.json`.
+
+A rebase replaces the proposal your earlier push opened when it can tell which
+one that is: your one open proposal on the version the lock names that touches a
+file this rebase sends, and has finished its checks. That proposal closes when
+the new one passes its checks, as it does when you rebase it from the Coding
+Instructions tab, and the command says so. With no such proposal, or more than
+one that could be it, nothing is closed and the command lists your open
+proposals, which you can cancel in the tab. The same applies when your open
+proposals cannot be read, or the server does not replace the proposal because
+another decision got there first or it predates this option: the push still goes
+through, and the command says the old proposal stays open.
 
 `--rebase` proposes for review, so it cannot be combined with `--publish`
 (exit 2), and it applies to uploaded projects only: a repository-sourced
@@ -2000,6 +2050,7 @@ forbidden, `6` rate limited, `7` refused or inconsistent.
 | an agent's MCP server | One registration result and any required sign-in action per selected tool. Exit 7 when requested registration is incomplete; exit 0 when registration succeeds, including an explicitly reported pending sign-in. `--no-mcp` intentionally omits registration. | nothing (a hook never registers anything) |
 | missing permission (403) | `This credential is missing the <scope> permission. Create a key that carries it, or run: fabric auth login --base-url <origin>`; for a scope a browser sign-in cannot carry, such as `instructions:publish`, `This credential is missing the <scope> permission, which a browser sign-in does not carry. Create a key that carries it and sign in with it: fabric auth login --base-url <origin> --key <api-key>`; or `You do not have access to this project's coding instructions. Ask a project maintainer for access.` (5) | stderr, skipped |
 | project not found (404) | `Project not found, or you cannot see it.` (4) | stderr: `… skipped: no project for this checkout` |
+| nothing published (`sync`) | `This project has no published coding instructions. Nothing was written or removed here; your local copy, if this folder has one, was left as it is.`, plus `A first version is uploaded from the project's Coding Instructions tab.` unless the project is repository-sourced (0); `code: "NOTHING_PUBLISHED"` with `--format json` | stderr: `fabric: coding instructions sync skipped: This project has no published coding instructions yet.` |
 | project unresolved | `This checkout's remote (<host>/<path>) is not connected to any project you can see. Connect the repository in Fabric first.` (4), or the list of `--project` choices (2) | stderr: `… skipped: this hook names no project. Run: fabric instructions init` |
 | rate limited (429) | `Too many requests. Wait a minute and try again.` (6) | stderr, skipped |
 | deployment unreachable | `Could not reach <origin>. Check your network and try again.` (1) | stderr, skipped |
@@ -2526,5 +2577,4 @@ no key can use `?org=` to discover which organizations exist.
 
 ## Related
 
-- [Coding instructions design](../superpowers/specs/2026-09-16-coding-instructions-design.md)
 - [API standards](../../fabric/standards/backend/api.md)

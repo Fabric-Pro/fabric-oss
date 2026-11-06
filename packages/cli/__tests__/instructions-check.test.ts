@@ -645,7 +645,10 @@ describe("--hook never fails", () => {
 		expect(elapsed).toBeLessThan(13_000);
 	}, 20_000);
 
-	it("reports the same failure with a real exit code without --hook", async () => {
+	// Nothing published is a state `sync` reports, as `check` and doctor do,
+	// not a failure: a project admin can now remove every version, and a
+	// developer's next sync must say so rather than fail (it used to exit 4).
+	it("reports an unpublished project on sync without --hook, exit 0", async () => {
 		const dest = await makeTree();
 		mocks.getPublished.mockResolvedValue({
 			published: false,
@@ -660,7 +663,11 @@ describe("--hook never fails", () => {
 			dest,
 		]);
 
-		expect(result.code).toBe(4);
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(
+			"This project has no published coding instructions.",
+		);
+		expect(result.stderr).toBe("");
 	});
 });
 

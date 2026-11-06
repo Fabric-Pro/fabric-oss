@@ -215,5 +215,6 @@ export function figurePaletteOf(paint: ProposalThemePaint): FigurePalette {
 		border: paint.border,
 		surface: paint.surface,
 		muted: paint.muted,
+		...(paint.neutralPrimary === true ? { neutralPrimary: true } : {}),
 	};
 }

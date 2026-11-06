@@ -394,6 +394,11 @@ export const AUDIT_ACTIONS = [
 	"project.instructions.published",
 	"project.instructions.rejected",
 	"project.instructions.deleted",
+	// Every version of a project's coding instructions removed at once, the
+	// published one included, so the project starts over with nothing
+	// published. The count and the version that was published only, never a
+	// path or content.
+	"project.instructions.removed",
 	"project.instructions.settings_updated",
 	"project.instructions.repository_sync_configured",
 	"project.instructions.repository_sync_started",
@@ -703,6 +708,12 @@ export const AUDIT_ACTIONS = [
 	// format, the export id and whether the starter is a guest; never any
 	// content.
 	"project.proposal_artifact.export_started",
+	// "Revise this section" (Fizzy #2946): a member saved a section of a
+	// client-document Proposal revised on their own instruction, checked and
+	// signed by the server. The row carries the base and saved versions only
+	// — never the instruction, the section's text or its key, which holds the
+	// heading's anchors.
+	"project.proposal_artifact.section_revised",
 	// Company context (Fizzy #2719): a company source's type label or
 	// AI instructions changed. Those two fields steer every Proposal and
 	// Business Case the organization generates, so the edit records both

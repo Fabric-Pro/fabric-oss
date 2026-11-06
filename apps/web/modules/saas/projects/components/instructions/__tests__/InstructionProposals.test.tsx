@@ -748,6 +748,54 @@ describe("InstructionProposals", () => {
 		).toBeInTheDocument();
 	});
 
+	// Stated against the proposer's branch, a restore of a published file the
+	// branch deleted is all additions; without the note it reads as new.
+	it("says a suggested file puts back a published file the proposer's branch deleted", async () => {
+		const user = userEvent.setup();
+		const change = {
+			op: "add" as const,
+			before: null,
+			after: "published\n",
+			binary: false,
+			beforeOmitted: null,
+			afterOmitted: null,
+			beforeSize: null,
+			afterSize: 10,
+		};
+		state.detail = {
+			...row(),
+			changes: [
+				{ ...change, path: "rules/a.md", restoresBranchDeletion: true },
+				{
+					...change,
+					path: "rules/new.md",
+					restoresBranchDeletion: false,
+				},
+			],
+		};
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+		const notes = await screen.findAllByTestId(
+			"proposal-change-restores-branch-deletion",
+		);
+		expect(notes).toHaveLength(1);
+		expect(notes[0]).toHaveTextContent(
+			"Deleted on the proposer's branch; this puts the published file back.",
+		);
+		expect(notes[0]?.closest("section")).toHaveTextContent("rules/a.md");
+	});
+
 	it("loads an omitted side through the paged reviewer file endpoint", async () => {
 		const user = userEvent.setup();
 		state.detail = {

@@ -22,7 +22,7 @@
  * say), so the tab and the notification agree.
  */
 
-import { db, type Prisma } from "../../client";
+import { type ArchitectureDecisionStatus, db, type Prisma } from "../../client";
 import { advisoryObjectKey } from "../lib/refresh-lock-key";
 import {
 	type ArchitectureDecisionDetail,
@@ -35,6 +35,13 @@ const LIVING_MEMORY_CANDIDATE_ADVISORY_CLASS = 0x4c4d4463; // "LMDc"
 
 /** `ArchitectureDecision.sourceKind` of a decision created from a candidate. */
 export const LIVING_MEMORY_DECISION_SOURCE_KIND = "living_memory";
+
+/**
+ * The decisions an update can replace. Accepting an update marks its target
+ * superseded only from one of these, so only these are offered as a target.
+ */
+export const IN_FORCE_DECISION_STATUSES: readonly ArchitectureDecisionStatus[] =
+	["ACCEPTED", "PROPOSED"];
 
 /**
  * One entry of `ProjectContextDecisionExtraction.decisions`. A type alias, not
@@ -309,7 +316,11 @@ export async function listLivingMemoryDecisionCandidates(input: {
 	const [current, existing] = await Promise.all([
 		openCurrentExtractions(input),
 		db.architectureDecision.findMany({
-			where: { projectId: input.projectId, deletedAt: null },
+			where: {
+				projectId: input.projectId,
+				deletedAt: null,
+				status: { in: [...IN_FORCE_DECISION_STATUSES] },
+			},
 			select: { id: true, identifier: true, title: true, decision: true },
 		}),
 	]);

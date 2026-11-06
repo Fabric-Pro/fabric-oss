@@ -385,6 +385,7 @@ export async function gatherReadinessEvidence(
 
 	const [
 		contextGroups,
+		indexedNotionCount,
 		knowledgeBaseLinkCount,
 		documentGroups,
 		acceptedMemberCount,
@@ -408,6 +409,16 @@ export async function gatherReadinessEvidence(
 			by: ["type"],
 			where: { projectId, extractionStatus: INDEXED },
 			_count: { _all: true },
+		}),
+		// The Notion ProjectContext writers use lowercase "notion"; other integrations do not
+		// satisfy Wiki Connected. Keep the grouped totals provider-independent.
+		db.projectContext.count({
+			where: {
+				projectId,
+				type: "INTEGRATION",
+				extractionStatus: INDEXED,
+				metadata: { path: ["provider"], equals: "notion" },
+			},
 		}),
 		// The Knowledge Base rule needs the category, not just the kind.
 		db.projectContext.count({
@@ -508,7 +519,11 @@ export async function gatherReadinessEvidence(
 				// source on its way. Counted, it held "Add context" In Progress.
 				importedDocuments: { none: {} },
 			},
-			select: { type: true, knowledgeBaseSourceCategory: true },
+			select: {
+				type: true,
+				knowledgeBaseSourceCategory: true,
+				metadata: true,
+			},
 		}),
 		db.projectCodeIndex.findFirst({
 			where: { projectId, status: { in: ["PENDING", "INDEXING"] } },
@@ -591,7 +606,10 @@ export async function gatherReadinessEvidence(
 						c.knowledgeBaseSourceCategory === "KNOWLEDGE_BASE_WIKI",
 				).length,
 				notionSources: extractingContexts.filter(
-					(c) => c.type === "INTEGRATION",
+					(c) =>
+						c.type === "INTEGRATION" &&
+						(c.metadata as { provider?: unknown } | null)
+							?.provider === "notion",
 				).length,
 			},
 			codebaseIndexing: indexingCodeIndex !== null,
@@ -608,9 +626,8 @@ export async function gatherReadinessEvidence(
 			total: totalContext,
 			meetingTranscripts: countOf("MEETING_TRANSCRIPT"),
 			knowledgeBaseLinks: knowledgeBaseLinkCount,
-			// Notion only for v1 — see the wiki rule in the registry for why
-			// Confluence cannot satisfy an "indexed successfully" clause today.
-			notionSources: countOf("INTEGRATION"),
+			// Completed INTEGRATION rows with metadata.provider === "notion".
+			notionSources: indexedNotionCount,
 		},
 
 		chat: {

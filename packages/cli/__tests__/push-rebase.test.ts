@@ -511,3 +511,359 @@ describe("push --rebase", () => {
 		);
 	});
 });
+
+describe("the proposal a rebase replaces", () => {
+	const openProposal = (
+		version: number,
+		over: Record<string, unknown> = {},
+	) => ({
+		snapshotId: `snap-open-${version}`,
+		version,
+		baseSnapshotId: "snap-7",
+		status: "READY",
+		pullRequest: null,
+		changes: [{ path: "AGENTS.md", op: "put", sha256: sha256("stale\n") }],
+		...over,
+	});
+	const rebasedCheckout = () =>
+		staleCheckout({
+			base: { "AGENTS.md": "one\ntwo\nthree\n" },
+			local: { "AGENTS.md": "ONE\ntwo\nthree\n" },
+			published: { "AGENTS.md": "one\ntwo\nTHREE\n" },
+		});
+	const optionsOfCall = (n = 0) => mocks.submitChange.mock.calls[n]?.[3];
+
+	it("names the one open proposal on the old version touching a sent path, and says it closes", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal(6)]);
+		mocks.submitChange.mockResolvedValue({
+			...accepted(),
+			supersedesSnapshotId: "snap-open-6",
+		});
+
+		const result = await push(await rebasedCheckout(), "--rebase");
+
+		expect(result.code).toBe(0);
+		expect(optionsOfCall()).toMatchObject({
+			supersedesSnapshotId: "snap-open-6",
+		});
+		expect(result.stdout).toContain(
+			"This replaces your proposal at version 6, which closes once this one passes its checks.",
+		);
+	});
+
+	it("closes nothing and lists them when two proposals could be the one", async () => {
+		mocks.getOpenProposals.mockResolvedValue([
+			openProposal(6),
+			openProposal(5),
+		]);
+		mocks.submitChange.mockResolvedValue(accepted());
+
+		const result = await push(await rebasedCheckout(), "--rebase");
+
+		expect(result.code).toBe(0);
+		expect(optionsOfCall()).not.toHaveProperty("supersedesSnapshotId");
+		expect(result.stdout).toContain(
+			"Your other open proposals stay open (version 6, version 5).",
+		);
+	});
+
+	it.each([
+		[
+			"touches no path the rebase sends",
+			{
+				changes: [
+					{ path: "other.md", op: "put", sha256: sha256("other\n") },
+				],
+			},
+		],
+		["is on another version", { baseSnapshotId: "snap-6" }],
+		["has not finished its checks", { status: "VALIDATING" }],
+	])("closes nothing when the only proposal %s", async (_label, over) => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal(6, over)]);
+		mocks.submitChange.mockResolvedValue(accepted());
+
+		const result = await push(await rebasedCheckout(), "--rebase");
+
+		expect(result.code).toBe(0);
+		expect(optionsOfCall()).not.toHaveProperty("supersedesSnapshotId");
+		expect(result.stdout).toContain(
+			"Your other open proposals stay open (version 6).",
+		);
+	});
+
+	it("still pushes against a server that does not take the option, and says the proposal stays open", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal(6)]);
+		mocks.submitChange.mockResolvedValue(accepted());
+
+		const result = await push(await rebasedCheckout(), "--rebase");
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain(
+			"Your proposal at version 6 stays open: the server did not replace it.",
+		);
+		expect(result.stdout).not.toContain("closes once");
+	});
+
+	it("still pushes when the proposal can no longer be replaced, without naming it again", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal(6)]);
+		mocks.submitChange
+			.mockRejectedValueOnce(
+				Object.assign(new Error("Already decided"), {
+					status: 409,
+					code: "REBASE_UNAVAILABLE",
+				}),
+			)
+			.mockResolvedValueOnce(accepted());
+
+		const result = await push(await rebasedCheckout(), "--rebase");
+
+		expect(result.code).toBe(0);
+		expect(mocks.submitChange).toHaveBeenCalledTimes(2);
+		expect(optionsOfCall(0)).toMatchObject({
+			supersedesSnapshotId: "snap-open-6",
+		});
+		expect(optionsOfCall(1)).not.toHaveProperty("supersedesSnapshotId");
+		expect(result.stdout).toContain(
+			"Your proposal at version 6 stays open",
+		);
+	});
+
+	it("does not hide another refusal behind a second attempt", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal(6)]);
+		mocks.submitChange.mockRejectedValue(
+			Object.assign(new Error("Too many"), {
+				status: 409,
+				code: "PROPOSAL_PROPOSER_LIMIT",
+			}),
+		);
+
+		const result = await push(await rebasedCheckout(), "--rebase");
+
+		expect(result.code).toBe(7);
+		expect(mocks.submitChange).toHaveBeenCalledTimes(1);
+	});
+
+	it("says nothing was closed when the open proposals cannot be read, and still pushes", async () => {
+		mocks.getOpenProposals.mockRejectedValue(
+			Object.assign(new Error("Gone"), { status: 500 }),
+		);
+		mocks.submitChange.mockResolvedValue(accepted());
+
+		const result = await push(await rebasedCheckout(), "--rebase");
+
+		expect(result.code).toBe(0);
+		expect(optionsOfCall()).not.toHaveProperty("supersedesSnapshotId");
+		expect(result.stdout).toContain(
+			"Your open proposals could not be read, so none was closed.",
+		);
+	});
+
+	it("names the replaced proposal under --include-proposed too", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal(6)]);
+		mocks.submitChange.mockResolvedValue({
+			...accepted(),
+			supersedesSnapshotId: "snap-open-6",
+		});
+
+		const result = await push(
+			await rebasedCheckout(),
+			"--rebase",
+			"--include-proposed",
+		);
+
+		expect(result.code).toBe(0);
+		expect(optionsOfCall()).toMatchObject({
+			supersedesSnapshotId: "snap-open-6",
+		});
+	});
+
+	it("says what it would replace on a dry run, and sends nothing", async () => {
+		mocks.getOpenProposals.mockResolvedValue([openProposal(6)]);
+
+		const result = await push(
+			await rebasedCheckout(),
+			"--rebase",
+			"--dry-run",
+		);
+
+		expect(result.code).toBe(0);
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+		expect(result.stdout).toContain(
+			"Would replace your proposal at version 6",
+		);
+	});
+
+	it("names no proposal on a push that is not a rebase", async () => {
+		const dest = await staleCheckout({
+			base: { "AGENTS.md": "a\n" },
+			local: { "AGENTS.md": "mine\n" },
+			published: { "AGENTS.md": "a\n" },
+		});
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: {
+				id: "snap-7",
+				version: 7,
+				digest: "7".repeat(64),
+				fileCount: 1,
+				publishedAt: "2026-09-17T09:00:00.000Z",
+			},
+			manifest: [entry("AGENTS.md", "a\n")],
+		});
+		mocks.getOpenProposals.mockResolvedValue([openProposal(6)]);
+		mocks.submitChange.mockResolvedValue(accepted());
+
+		const result = await push(dest);
+
+		expect(result.code).toBe(0);
+		expect(optionsOfCall()).not.toHaveProperty("supersedesSnapshotId");
+		expect(result.stdout).not.toContain("stay open");
+	});
+});
+
+describe("conflict markers a rebase record still names", () => {
+	const MARKED = "one\n<<<<<<< local\nmine\n=======\ntheirs\n>>>>>>> v8\n";
+
+	const writeRecord = (dest: string, over: Record<string, unknown> = {}) =>
+		writeFile(
+			path.join(dest, ".fabric", "rebase.json"),
+			JSON.stringify({
+				version: 1,
+				projectId: "proj-1",
+				fromSnapshotId: "snap-7",
+				ontoSnapshotId: "snap-older",
+				paths: ["AGENTS.md"],
+				...over,
+			}),
+		);
+
+	/** The lock names the published version: a plain push, no rebase. */
+	const currentCheckout = async (local: Record<string, string>) => {
+		const dest = await staleCheckout({
+			base: { "AGENTS.md": "one\n" },
+			local,
+			published: { "AGENTS.md": "one\n" },
+		});
+		mocks.getPublished.mockResolvedValue({
+			published: true,
+			sourceOfTruth: "UPLOAD",
+			snapshot: {
+				id: "snap-7",
+				version: 7,
+				digest: "7".repeat(64),
+				fileCount: 1,
+				publishedAt: "2026-09-17T09:00:00.000Z",
+			},
+			manifest: [entry("AGENTS.md", "one\n")],
+		});
+		return dest;
+	};
+
+	it("refuses a take-ours rebase of a recorded file holding markers, onto a version the record is not for", async () => {
+		// Only the checkout changed the file, so the merge alone would send it.
+		const dest = await staleCheckout({
+			base: { "AGENTS.md": "one\n" },
+			local: { "AGENTS.md": MARKED },
+			published: { "AGENTS.md": "one\n" },
+		});
+		await writeRecord(dest);
+
+		const result = await push(dest, "--rebase");
+
+		expect(result.code).toBe(7);
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+		expect(result.stdout).toContain("still holding conflict markers");
+		expect(result.stdout).toContain("delete .fabric/rebase.json");
+	});
+
+	it("merges a recorded file once its markers are gone, rather than taking it as resolved for another version", async () => {
+		mocks.submitChange.mockResolvedValue(accepted());
+		const dest = await staleCheckout({
+			base: { "AGENTS.md": "one\ntwo\nthree\n" },
+			local: { "AGENTS.md": "ONE\ntwo\nthree\n" },
+			published: { "AGENTS.md": "one\ntwo\nTHREE\n" },
+		});
+		await writeRecord(dest);
+
+		const result = await push(dest, "--rebase");
+
+		expect(result.code).toBe(0);
+		const [, , changes] = mocks.submitChange.mock.calls[0] ?? [];
+		expect(changes).toEqual([
+			{
+				op: "put",
+				path: "AGENTS.md",
+				content: "ONE\ntwo\nTHREE\n",
+				encoding: "utf8",
+			},
+		]);
+	});
+
+	it("keeps a stale record's unresolved file refused and unresolved across another conflicted run", async () => {
+		const dest = await staleCheckout({
+			base: { "AGENTS.md": "one\n" },
+			local: { "AGENTS.md": MARKED },
+			published: { "AGENTS.md": "one\n" },
+		});
+		await writeRecord(dest);
+
+		expect((await push(dest, "--rebase")).code).toBe(7);
+
+		const record = JSON.parse(
+			await readFile(path.join(dest, ".fabric", "rebase.json"), "utf8"),
+		);
+		expect(record).toMatchObject({
+			ontoSnapshotId: "snap-8",
+			paths: [],
+			earlierPaths: ["AGENTS.md"],
+		});
+		expect((await push(dest, "--rebase")).code).toBe(7);
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+	});
+
+	it("refuses a plain push of a recorded file still holding markers", async () => {
+		const dest = await currentCheckout({ "AGENTS.md": MARKED });
+		await writeRecord(dest);
+
+		const result = await push(dest);
+
+		expect(result.code).toBe(7);
+		expect(result.stderr).toContain("still hold conflict markers");
+		expect(result.stderr).toContain("AGENTS.md");
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+	});
+
+	it("lets a plain push send a recorded file whose markers are gone", async () => {
+		mocks.submitChange.mockResolvedValue(accepted());
+		const dest = await currentCheckout({ "AGENTS.md": "one\nresolved\n" });
+		await writeRecord(dest);
+
+		expect((await push(dest)).code).toBe(0);
+		expect(mocks.submitChange).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not refuse a recorded document that only mentions a marker inside a line", async () => {
+		mocks.submitChange.mockResolvedValue(accepted());
+		const dest = await currentCheckout({
+			"AGENTS.md":
+				"one\nResolve anything between <<<<<<< and >>>>>>> first.\n",
+		});
+		await writeRecord(dest);
+
+		expect((await push(dest)).code).toBe(0);
+		expect(mocks.submitChange).toHaveBeenCalledTimes(1);
+	});
+
+	it("never refuses a file the record does not name, and ignores another project's record", async () => {
+		mocks.submitChange.mockResolvedValue(accepted());
+		const unnamed = await currentCheckout({ "AGENTS.md": MARKED });
+		await writeRecord(unnamed, { paths: ["other.md"] });
+		expect((await push(unnamed)).code).toBe(0);
+
+		const otherProject = await currentCheckout({ "AGENTS.md": MARKED });
+		await writeRecord(otherProject, { projectId: "proj-2" });
+		expect((await push(otherProject)).code).toBe(0);
+		expect(mocks.submitChange).toHaveBeenCalledTimes(2);
+	});
+});

@@ -716,8 +716,10 @@ describe("a diagram wider than its column", () => {
 		const spy = narrowColumn(200);
 		try {
 			const { container } = await renderDiagram();
+			// Named for its caption, here its section's heading, after
+			// saying that it scrolls (Fizzy #2946).
 			const region = await screen.findByRole("region", {
-				name: "Diagram, scrolls sideways",
+				name: "Diagram, scrolls sideways: Delivery",
 			});
 			expect(region).toHaveAttribute("tabindex", "0");
 			expect(region).toHaveAttribute("data-scroll-edge", "start");
@@ -728,6 +730,22 @@ describe("a diagram wider than its column", () => {
 			expect(container.querySelector(".mermaid-diagram-area")).toBe(
 				region,
 			);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("names the region only for its scrolling with no caption and no heading above it", async () => {
+		const spy = narrowColumn(200);
+		try {
+			await renderDiagram(
+				`We start with discovery.\n\n${FLOWCHART}\n\nNext steps follow.`,
+			);
+			expect(
+				await screen.findByRole("region", {
+					name: "Diagram, scrolls sideways",
+				}),
+			).toHaveAttribute("tabindex", "0");
 		} finally {
 			spy.mockRestore();
 		}

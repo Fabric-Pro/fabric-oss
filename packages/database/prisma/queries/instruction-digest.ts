@@ -106,19 +106,28 @@ export function findReadableInstructionVersion(input: {
 /**
  * Versions that have held the published pointer and are newer than the
  * marker, oldest first. A version published, rolled back and published again
- * appears once. When more than the limit qualify, the NEWEST ones are kept:
- * the query reads newest first and the page is reversed.
+ * appears once. `throughVersion` is the version published now: a newer one
+ * was rolled back and is not in effect, so it is not listed. Null when
+ * nothing is published, and then there is no upper bound. When more than the
+ * limit qualify, the NEWEST ones are kept: the query reads newest first and
+ * the page is reversed.
  */
 export async function listInstructionVersionsPublishedSince(input: {
 	projectId: string;
 	organizationId: string;
 	afterVersion: number;
+	throughVersion: number | null;
 }) {
 	const newestFirst = await db.projectInstructionSnapshot.findMany({
 		where: {
 			projectId: input.projectId,
 			organizationId: input.organizationId,
-			version: { gt: input.afterVersion },
+			version: {
+				gt: input.afterVersion,
+				...(input.throughVersion === null
+					? {}
+					: { lte: input.throughVersion }),
+			},
 			publishedAt: { not: null },
 			...readableVersionFilter,
 		},

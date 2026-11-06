@@ -576,7 +576,14 @@ class BodyRenderer {
 	private code(node: Code): string {
 		const diagramIndex = this.input.prepared.diagramIndex.get(node);
 		if (diagramIndex !== undefined) {
-			return this.diagram(diagramIndex, exportDiagramCaption(node.value));
+			return this.diagram(
+				diagramIndex,
+				exportDiagramCaption(
+					node.value,
+					this.input.prepared.diagramSectionCaptions[diagramIndex] ??
+						null,
+				),
+			);
 		}
 		// The cover prints the one it reads and the editor shows any other
 		// as a card, so only a refused one prints, as code.

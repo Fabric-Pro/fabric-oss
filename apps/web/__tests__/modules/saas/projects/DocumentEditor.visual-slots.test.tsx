@@ -578,13 +578,13 @@ describe("DocumentEditor — visual slots on programmatic applications (KTD17)",
 		rerender(tree());
 		await flush();
 
-		// The editor escapes a numbered heading's dot when it serializes.
+		// A numbered heading saves as written, its dot unescaped.
 		const expectOneSlotInPlace = (markdown: string) => {
 			expect(parseVisualSlots(markdown)).toEqual([
 				expect.objectContaining({ id: "slot-a", orphanedFrom: null }),
 			]);
 			expect(markdown).toContain(
-				`then three.\n\n${SLOT_A}\n\n## 4\\. Risks`,
+				`then three.\n\n${SLOT_A}\n\n## 4. Risks`,
 			);
 		};
 		expect(slotIds(editor)).toEqual(["slot-a"]);

@@ -311,6 +311,109 @@ describe("ProjectContextsList — stuck sources (Fizzy #2886)", () => {
 		});
 	});
 
+	it("shows retry on a failed Notion page with saved content", async () => {
+		serveContexts([
+			{
+				...slackContext("ctx_notion"),
+				extractionStatus: "FAILED",
+				updatedAt: LONG_AGO,
+				contentPreview: "Example page",
+				contentLength: 12,
+				metadata: {
+					provider: "notion",
+					notionPageId: "page-example",
+					notionType: "page",
+					dataConnectionId: "connection-example",
+					sourceTitle: "Example page",
+					sourceUrl: "https://example.com/page",
+				},
+			},
+		]);
+		wrap(<ProjectContextsList projectId="proj_1" />);
+		const user = userEvent.setup();
+		const heading = await screen.findByText("Notion Documents");
+		await user.click(heading);
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("context-stalled-ctx_notion"),
+			).toBeInTheDocument(),
+		);
+	});
+
+	it.each(["PENDING", "FAILED"])(
+		"does not offer early Retry for a %s Notion page",
+		async (extractionStatus) => {
+			serveContexts([
+				{
+					...slackContext("ctx_recent"),
+					extractionStatus,
+					updatedAt: new Date(),
+					contentPreview: "Example page",
+					contentLength: 12,
+					metadata: {
+						provider: "notion",
+						sourceTitle: "Recent page",
+					},
+				},
+			]);
+			wrap(<ProjectContextsList projectId="proj_1" />);
+			await userEvent.click(await screen.findByText("Notion Documents"));
+			expect(
+				screen.queryByTestId("context-stalled-ctx_recent"),
+			).not.toBeInTheDocument();
+		},
+	);
+
+	it("does not offer failed Notion Retry during the final retry backoff window", async () => {
+		serveContexts([
+			{
+				...slackContext("ctx_window"),
+				extractionStatus: "FAILED",
+				updatedAt: new Date(Date.now() - 15 * 60 * 1000),
+				contentPreview: "Example page",
+				contentLength: 12,
+				metadata: {
+					provider: "notion",
+					sourceTitle: "Retry window page",
+				},
+			},
+		]);
+		wrap(<ProjectContextsList projectId="proj_1" />);
+		await userEvent.click(await screen.findByText("Notion Documents"));
+		expect(
+			screen.queryByTestId("context-stalled-ctx_window"),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows a blank Notion page as failed with removal guidance", async () => {
+		serveContexts([
+			{
+				...slackContext("ctx_empty"),
+				contentLength: 0,
+				contentPreview: "",
+				metadata: {
+					provider: "notion",
+					notionPageId: "page-example",
+					notionType: "page",
+					mcpConfigId: "mcp-example",
+					sourceTitle: "Empty page",
+					sourceUrl: "https://example.com/page",
+					contentFetchFailed: true,
+				},
+			},
+		]);
+		wrap(<ProjectContextsList projectId="proj_1" />);
+		await userEvent.click(await screen.findByText("Notion Documents"));
+		expect(
+			await screen.findByText(
+				"Fabric could not read any content from this Notion page. Remove it and add the page again.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByTestId("context-stalled-ctx_empty"),
+		).not.toBeInTheDocument();
+	});
+
 	it("outlines a named row and gives it its own Retry", async () => {
 		serveContexts([
 			fileContext("ctx_file", "example-brief.pdf"),

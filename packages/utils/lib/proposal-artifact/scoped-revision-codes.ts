@@ -53,10 +53,17 @@ export function isScopedRevisionRefusalCode(
 }
 
 /**
+ * The longest instruction "Revise this section" takes, in characters: the
+ * editor's box and `reviseSection` share it.
+ */
+export const SECTION_REVISION_INSTRUCTION_MAX_CHARS = 1000;
+
+/**
  * The `aiReview` descriptor an AI accept sends with its save to
  * `projects.documents.update`: a chat proposal with the previous body's
- * section keys inside every subtree it patched, or a finding-driven revision
- * with the token `reviseSection` returned.
+ * section keys inside every subtree it patched, a finding-driven revision
+ * with the token `reviseSection` returned, or a section revised on a
+ * member's own instruction ("Revise this section") with its token.
  */
 export type DocumentAiReviewDescriptor =
 	| { kind: "CHAT"; patchedSectionKeys?: string[] }
@@ -64,5 +71,10 @@ export type DocumentAiReviewDescriptor =
 			kind: "FINDING";
 			runId: string;
 			findingId: string;
+			revisionToken: string;
+	  }
+	| {
+			kind: "INSTRUCTION";
+			sectionKey: string;
 			revisionToken: string;
 	  };

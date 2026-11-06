@@ -48,7 +48,7 @@ export function PublishBeforeScanOption({
 		<div className="flex flex-col gap-2">
 			<label
 				htmlFor={optionId}
-				className="flex items-center gap-2 text-muted-foreground text-sm"
+				className="flex min-h-6 items-center gap-2 text-muted-foreground text-sm"
 			>
 				<Checkbox
 					id={optionId}
@@ -71,7 +71,7 @@ export function PublishBeforeScanOption({
 						<p>{t("warningBody")}</p>
 						<label
 							htmlFor={acknowledgeId}
-							className="mt-2 flex items-center gap-2 text-foreground"
+							className="mt-2 flex min-h-6 items-center gap-2 text-foreground"
 						>
 							<Checkbox
 								id={acknowledgeId}

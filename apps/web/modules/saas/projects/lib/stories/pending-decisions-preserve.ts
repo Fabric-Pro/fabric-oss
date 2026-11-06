@@ -42,12 +42,13 @@
  *
  *   1. stored — what `appendPendingDecision` writes, two lines:
  *      `- **Q:** …` / `  **Decided:** …`
- *   2. editor — Turndown of the mounted document, one line, four-space marker:
- *      `-   **Q:** … **Decided:** …`
+ *   2. editor — Turndown of the mounted document, one line (older saves
+ *      padded the marker to four columns, `-   **Q:**`):
+ *      `- **Q:** … **Decided:** …`
  *   3. initial-content — `buildInitialContent()`, used as the baseline when no
  *      run started during this mount; markdown descriptions pass through as (1),
  *      an HTML-stored description turns into a hard-broken variant of (2):
- *      `-   **Q:** …␠␠` / `    **Decided:** …`
+ *      `- **Q:** …␠␠` / `  **Decided:** …`
  *
  * A raw set difference would report every server entry as new and duplicate
  * every decision on every accept. The key is therefore the bullet's question

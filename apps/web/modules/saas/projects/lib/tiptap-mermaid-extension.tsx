@@ -17,6 +17,7 @@ import {
 	printsAsDrawn,
 	withoutLeadingChartComments,
 } from "@repo/utils/proposal-artifact/diagram-printability";
+import { scrubCitationText } from "@repo/utils/proposal-artifact/export-scrub";
 import {
 	type ProposalThemePaint,
 	withVisualRoleClassDefs,
@@ -24,6 +25,7 @@ import {
 import {
 	cleanDiagramCaption,
 	diagramSectionFingerprint,
+	headingDiagramCaption,
 	isFlowchartSource,
 	readDiagramCaption,
 	readVisualMarker,
@@ -77,6 +79,7 @@ import {
 	useMemo,
 	useRef,
 	useState,
+	useSyncExternalStore,
 } from "react";
 import {
 	cleanDiagramStylesheet,
@@ -91,6 +94,7 @@ import {
 } from "./mermaid-diagram-index";
 import { readSvgNaturalSize } from "./mermaid-diagram-sizing";
 import { MermaidEditVisualPanel } from "./mermaid-edit-visual-panel";
+import { visualEditKey } from "./mermaid-edit-visual-store";
 import { MermaidFailureView } from "./mermaid-failure-view";
 import { withMermaidLock } from "./mermaid-lock";
 import {
@@ -101,6 +105,7 @@ import {
 } from "./mermaid-proposal-figure";
 import { useMermaidVisualContext } from "./mermaid-visual-context";
 import { useMermaidDiagramSizing } from "./use-mermaid-diagram-sizing";
+import { useEditorEditable } from "./when-editor-editable";
 
 /**
  * Sanitize rendered diagram markup before it is injected as HTML.
@@ -612,6 +617,42 @@ export interface MermaidDocContext {
 }
 
 /**
+ * The caption a diagram at `blockPos` takes from the heading of the section
+ * it sits in when its fence carries none (Fizzy #2946), as the PDF, the
+ * Word file and the Markdown download print it, by their rule
+ * (`sectionCaptionsOf`): the nearest heading above it at any depth, a
+ * heading in a quote or a list included, past a leading `#` title, without
+ * citation markers or its section number (`headingDiagramCaption`). An
+ * empty heading leaves none, and so does no heading above it.
+ */
+export function sectionCaptionAt(
+	editor: { state: any } | null,
+	blockPos: number | undefined,
+): string | null {
+	const doc = editor?.state?.doc;
+	if (!doc || blockPos === undefined) {
+		return null;
+	}
+	let caption: string | null = null;
+	doc.descendants((node: any, pos: number) => {
+		if (pos >= blockPos) {
+			return false;
+		}
+		if (node.type?.name !== "heading") {
+			return true;
+		}
+		// The leading `#` title names the document, not a section.
+		if (!(pos === 0 && Number(node.attrs?.level) === 1)) {
+			caption = headingDiagramCaption(
+				scrubCitationText(node.textContent ?? "").text,
+			);
+		}
+		return false;
+	});
+	return caption;
+}
+
+/**
  * Extract surrounding-document context from the editor for AI generation.
  *
  * Walks `editor.state.doc` once and returns title, outline, nearest-section
@@ -902,7 +943,6 @@ function MermaidNodeView({ node, editor, getPos }: MermaidNodeViewProps) {
 	const [captionDraft, setCaptionDraft] = useState("");
 	// Cleared by Enter and Escape, so the blur that follows does not commit.
 	const captionOpenRef = useRef(false);
-	const captionValue = showCaptionInput ? captionDraft : storedCaption;
 	const captionInputRef = useRef<HTMLInputElement>(null);
 	const aiPromptInputRef = useRef<HTMLTextAreaElement>(null);
 	const [showAIPrompt, setShowAIPrompt] = useState(false);
@@ -921,7 +961,28 @@ function MermaidNodeView({ node, editor, getPos }: MermaidNodeViewProps) {
 	const paint = visual?.paint ?? null;
 	const tMenu = useTranslations("tooltips.editor.diagramMenu");
 	const tVisuals = useTranslations("projects.proposalArtifact.visuals");
-	const [showInstructionPanel, setShowInstructionPanel] = useState(false);
+	// Read again on every update: a diagram drawn while the editor took no
+	// input, as a collaborative editor back from a lost room does, otherwise
+	// kept no menu once it took input again (Fizzy #2946).
+	const editable = useEditorEditable(editor);
+	// The open Edit with instructions panel lives in the page's store under
+	// this diagram's key, so a node view drawn anew for the diagram shows it
+	// again (`mermaid-edit-visual-store.ts`). Kept once open: a diagram
+	// inserted above moves this one without changing its panel.
+	const editStore = visual?.editStore ?? null;
+	const [editKey, setEditKey] = useState<string | null>(null);
+	const subscribeEdits = useCallback(
+		(onChange: () => void) =>
+			editStore ? editStore.subscribe(onChange) : () => {},
+		[editStore],
+	);
+	const readPanelOpen = () =>
+		editKey !== null && editStore?.get(editKey) !== undefined;
+	const showInstructionPanel = useSyncExternalStore(
+		subscribeEdits,
+		readPanelOpen,
+		readPanelOpen,
+	);
 	const instructionInputRef = useRef<HTMLTextAreaElement>(null);
 	const triggerRef = useRef<HTMLButtonElement>(null);
 	const codeTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -954,6 +1015,17 @@ function MermaidNodeView({ node, editor, getPos }: MermaidNodeViewProps) {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 		[editor, editor?.state?.doc, getPos],
 	);
+	// On a client-document Proposal's page, a diagram without a caption of
+	// its own shows its section's heading, as its exports print it; the
+	// fence is never written to for it, so the caption field still opens
+	// on the stored caption (Fizzy #2946).
+	const sectionCaption = useMemo(
+		() => (visual === null ? null : sectionCaptionAt(editor, getPos())),
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[visual, editor, editor?.state?.doc, getPos],
+	);
+	const shownCaption = storedCaption || sectionCaption || "";
+	const captionValue = showCaptionInput ? captionDraft : shownCaption;
 	const { resolvedTheme } = useTheme();
 
 	/** Delete this diagram node from the document. */
@@ -1342,40 +1414,6 @@ Rules:
 		[editor, getPos],
 	);
 
-	const openInstructionPanel = useCallback(() => {
-		setShowAIPrompt(false);
-		setAiError(null);
-		setShowInstructionPanel(true);
-		setFocusRequest("instruction");
-	}, []);
-
-	/** Runs the chosen item once the menu has closed, and moves focus. */
-	const runMenuAction = useCallback(
-		(action: MenuAction) => {
-			switch (action) {
-				case "instruction":
-					openInstructionPanel();
-					return;
-				case "ai":
-					setShowInstructionPanel(false);
-					setShowAIPrompt(true);
-					setFocusRequest("ai");
-					return;
-				case "source":
-					setSourceOrigin("menu");
-					setFocusRequest("code");
-					return;
-				case "caption":
-					openCaptionInput();
-					return;
-				case "delete":
-					deleteNodeKeepingCaret();
-					return;
-			}
-		},
-		[openInstructionPanel, openCaptionInput, deleteNodeKeepingCaret],
-	);
-
 	/** The diagram as it is now, with its position among the document's diagrams. */
 	const readEditTarget = useCallback(() => {
 		const pos = getPos();
@@ -1400,32 +1438,91 @@ Rules:
 	}, [editor, getPos, visual?.specs]);
 
 	/**
-	 * Replace only this node with the candidate, in one transaction, when it
-	 * still holds the source the candidate was made from, the marker id an
-	 * edit of it names (if any) is the candidate's, and its section, as the
-	 * editor would save it, still has the fingerprint of the section the
-	 * server checked the candidate against. Two diagrams with the same source
-	 * in one section pass the other checks alike.
+	 * Close this diagram's Edit with instructions panel, aborting its
+	 * request. One closed mid-request clears its "Generating" line from the
+	 * live region every diagram shares, or the next request, saying the same
+	 * words, would not be spoken.
 	 */
-	const applyCandidate = useCallback(
-		(
-			fence: string,
-			sentHash: string,
-			sectionFingerprint: string,
-			visualId: string,
-		): "applied" | "stale" => {
+	const dropInstructionPanel = useCallback(() => {
+		if (editStore && editKey !== null) {
+			const generating =
+				editStore.get(editKey)?.phase.kind === "generating";
+			editStore.close(editKey);
+			if (generating) {
+				visual?.announce("");
+			}
+		}
+		setEditKey(null);
+	}, [editStore, editKey, visual]);
+
+	const openInstructionPanel = useCallback(() => {
+		setShowAIPrompt(false);
+		setAiError(null);
+		const target = readEditTarget();
+		if (!editStore || !visual || !target) {
+			return;
+		}
+		const key = visualEditKey(visual.documentId, target);
+		editStore.open(key);
+		setEditKey(key);
+		setFocusRequest("instruction");
+	}, [editStore, visual, readEditTarget]);
+
+	/** Runs the chosen item once the menu has closed, and moves focus. */
+	const runMenuAction = useCallback(
+		(action: MenuAction) => {
+			switch (action) {
+				case "instruction":
+					openInstructionPanel();
+					return;
+				case "ai":
+					dropInstructionPanel();
+					setShowAIPrompt(true);
+					setFocusRequest("ai");
+					return;
+				case "source":
+					dropInstructionPanel();
+					setSourceOrigin("menu");
+					setFocusRequest("code");
+					return;
+				case "caption":
+					openCaptionInput();
+					return;
+				case "delete":
+					dropInstructionPanel();
+					deleteNodeKeepingCaret();
+					return;
+			}
+		},
+		[
+			openInstructionPanel,
+			dropInstructionPanel,
+			openCaptionInput,
+			deleteNodeKeepingCaret,
+		],
+	);
+
+	/**
+	 * This node, where it still holds the source a candidate was made from,
+	 * the marker id an edit of it names (if any) is the candidate's, and its
+	 * section, as the editor would save it, still has the fingerprint of the
+	 * section the server checked the candidate against. Two diagrams with the
+	 * same source in one section pass the other checks alike.
+	 */
+	const candidateTarget = useCallback(
+		(sentHash: string, sectionFingerprint: string, visualId: string) => {
 			const pos = getPos();
 			if (pos === undefined) {
-				return "stale";
+				return null;
 			}
-			const { state, view } = editor;
+			const { state } = editor;
 			const current = state.doc.nodeAt(pos);
 			if (
 				!current ||
 				current.type.name !== MERMAID_NODE_NAME ||
 				visualSourceHash(current.textContent) !== sentHash
 			) {
-				return "stale";
+				return null;
 			}
 			const ordinal = diagramsOf(state.doc).positions.indexOf(pos);
 			const saved = getEditorMarkdownForSave(editor);
@@ -1439,8 +1536,37 @@ Rules:
 				(namedId !== undefined && namedId !== visualId) ||
 				diagramSectionFingerprint(saved, ordinal) !== sectionFingerprint
 			) {
+				return null;
+			}
+			return { pos, current };
+		},
+		[editor, getPos, visual?.specs],
+	);
+
+	const candidateApplies = useCallback(
+		(sentHash: string, sectionFingerprint: string, visualId: string) =>
+			candidateTarget(sentHash, sectionFingerprint, visualId) !== null,
+		[candidateTarget],
+	);
+
+	/** Replace only this node with the candidate, in one transaction. */
+	const applyCandidate = useCallback(
+		(
+			fence: string,
+			sentHash: string,
+			sectionFingerprint: string,
+			visualId: string,
+		): "applied" | "stale" => {
+			const target = candidateTarget(
+				sentHash,
+				sectionFingerprint,
+				visualId,
+			);
+			if (!target) {
 				return "stale";
 			}
+			const { pos, current } = target;
+			const { state, view } = editor;
 			// The caption is the person's, whatever the candidate carries.
 			const text = withDiagramCaption(fence, captionOf(current));
 			const replacement = current.type.create(
@@ -1452,7 +1578,7 @@ Rules:
 			);
 			return "applied";
 		},
-		[editor, getPos, visual?.specs],
+		[editor, candidateTarget],
 	);
 
 	const renderCandidate = useCallback(
@@ -1468,9 +1594,58 @@ Rules:
 	);
 
 	const closeInstructionPanel = useCallback(() => {
-		setShowInstructionPanel(false);
+		dropInstructionPanel();
 		setFocusRequest("trigger");
-	}, []);
+	}, [dropInstructionPanel]);
+
+	// A node view drawn anew for a diagram whose panel is open, a request in
+	// flight or a candidate shown, takes the panel up again.
+	useEffect(() => {
+		if (!editStore || !visual || editKey !== null) {
+			return;
+		}
+		const target = readEditTarget();
+		if (!target) {
+			return;
+		}
+		const key = visualEditKey(visual.documentId, target);
+		if (editStore.get(key)) {
+			setEditKey(key);
+			return;
+		}
+		// The key's form can change once the specs load: a diagram known by
+		// position and source may get its marker id, and a marker the specs
+		// do not vouch for is dropped (detached). A panel opened under the
+		// other form moves to this one.
+		const markerId = readVisualMarker(target.code).visualId;
+		const earlier = target.visualId
+			? visualEditKey(visual.documentId, {
+					code: target.code,
+					ordinal: target.ordinal,
+				})
+			: markerId
+				? visualEditKey(visual.documentId, {
+						...target,
+						visualId: markerId,
+					})
+				: null;
+		if (earlier !== null && editStore.rekey(earlier, key)) {
+			setEditKey(key);
+		}
+	}, [editStore, visual, editKey, readEditTarget]);
+
+	// The panel's request reads the diagram, draws its candidate and speaks
+	// through the node view drawing the diagram when it gets there.
+	useEffect(() => {
+		if (!editStore || !visual || editKey === null) {
+			return;
+		}
+		return editStore.setHost(editKey, {
+			readTarget: readEditTarget,
+			renderCandidate,
+			announce: visual.announce,
+		});
+	}, [editStore, visual, editKey, readEditTarget, renderCandidate]);
 
 	const origin = useDiagramOrigin(editor, getPos, visual?.specs);
 	const originLabel =
@@ -1482,9 +1657,7 @@ Rules:
 						: "origin.step",
 				);
 	const canEditWithInstructions =
-		visual !== null &&
-		editor.isEditable &&
-		isFlowchartSource(node.textContent);
+		visual !== null && editable && isFlowchartSource(node.textContent);
 	// Only where Edit with instructions is offered, since the line names it.
 	const fixedColours =
 		visual !== null &&
@@ -1497,7 +1670,7 @@ Rules:
 	const printability = livePrintability(node.textContent);
 	const notPrintable =
 		visual !== null &&
-		editor.isEditable &&
+		editable &&
 		svg !== "" &&
 		engine !== null &&
 		!printsAsDrawn(printability, engine);
@@ -1523,7 +1696,7 @@ Rules:
 	 * state from the enclosing closure — no props needed.
 	 */
 	const renderAIPanel = () => {
-		if (!showAIPrompt || !editor.isEditable) {
+		if (!showAIPrompt || !editable) {
 			return null;
 		}
 		return (
@@ -1624,13 +1797,19 @@ Rules:
 	 * flowcharts only. Its candidate shows below the current diagram.
 	 */
 	const renderInstructionPanel = () => {
-		if (!showInstructionPanel || !visual || !canEditWithInstructions) {
+		if (
+			!showInstructionPanel ||
+			editKey === null ||
+			!visual ||
+			!canEditWithInstructions
+		) {
 			return null;
 		}
 		return (
 			<MermaidEditVisualPanel
 				visual={visual}
-				readTarget={readEditTarget}
+				entryKey={editKey}
+				candidateApplies={candidateApplies}
 				applyCandidate={applyCandidate}
 				renderCandidate={renderCandidate}
 				onClose={closeInstructionPanel}
@@ -1712,15 +1891,15 @@ Rules:
 				<HiddenSource />
 				<MermaidFailureView
 					labelId={`${menuIds}-failure`}
-					caption={storedCaption}
-					readOnly={!editor.isEditable}
+					caption={shownCaption}
+					readOnly={!editable}
 					variant={
 						isLiveFigureCounted(printability, null)
 							? "placeholder"
 							: "omitted"
 					}
 					onEditSource={() => {
-						setShowInstructionPanel(false);
+						dropInstructionPanel();
 						setSourceOrigin("failure");
 						setFocusRequest("code");
 					}}
@@ -1771,7 +1950,7 @@ Rules:
 							)}
 						</div>
 						<div className="flex items-center gap-1">
-							{hasChanges && editor.isEditable && (
+							{hasChanges && editable && (
 								<button
 									type="button"
 									onClick={() => {
@@ -1798,13 +1977,13 @@ Rules:
 									{tMenu("editWithInstructions")}
 								</button>
 							)}
-							{editor.isEditable && (
+							{editable && (
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<button
 											type="button"
 											onClick={() => {
-												setShowInstructionPanel(false);
+												dropInstructionPanel();
 												setShowAIPrompt((v) => !v);
 												requestAnimationFrame(() =>
 													aiPromptInputRef.current?.focus(),
@@ -1860,7 +2039,7 @@ Rules:
 									</TooltipContent>
 								</Tooltip>
 							)}
-							{editor.isEditable && (
+							{editable && (
 								<DestructiveTooltip
 									copy={tTooltips.raw("delete")}
 								>
@@ -1890,7 +2069,7 @@ Rules:
 					{error && renderInstructionPanel()}
 
 					{/* Code - editable textarea when editor is editable, read-only pre otherwise */}
-					{editor.isEditable ? (
+					{editable ? (
 						<textarea
 							ref={codeTextareaRef}
 							className="w-full p-4 text-sm font-mono bg-muted/20 border-0 outline-none resize-y min-h-[120px]"
@@ -1938,7 +2117,7 @@ Rules:
 							<code>{displayCode}</code>
 						</pre>
 					)}
-					{editor.isEditable && (
+					{editable && (
 						<div className="px-3 py-1.5 border-t bg-muted/30 text-xs text-muted-foreground">
 							Ctrl+Enter to save changes
 						</div>
@@ -2027,7 +2206,7 @@ Rules:
 						<button
 							type="button"
 							onClick={() => {
-								if (editor.isEditable) {
+								if (editable) {
 									openCaptionInput();
 								}
 							}}
@@ -2062,7 +2241,7 @@ Rules:
 				>
 					{/* A strip of its own above the scrolling area, so the
 					    menu never covers the diagram or scrolls away. */}
-					{(editor.isEditable || originLabel || fixedColours) && (
+					{(editable || originLabel || fixedColours) && (
 						<div
 							className="mermaid-visual-strip flex min-h-9 items-center justify-between gap-2 px-3 py-1"
 							contentEditable={false}
@@ -2078,7 +2257,7 @@ Rules:
 									</p>
 								)}
 							</div>
-							{editor.isEditable && (
+							{editable && (
 								// Not modal: a menu inside the document must neither
 								// lock the page's scroll nor hide the rest of the
 								// editor from assistive technology.
@@ -2209,7 +2388,7 @@ Rules:
 						<span>Mermaid</span>
 					</div>
 					<div className="flex items-center gap-1">
-						{editor.isEditable && (
+						{editable && (
 							<>
 								<Tooltip>
 									<TooltipTrigger asChild>

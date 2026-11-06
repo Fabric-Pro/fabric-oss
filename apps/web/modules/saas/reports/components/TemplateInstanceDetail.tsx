@@ -1369,7 +1369,8 @@ export function TemplateInstanceDetail({
 	// What the connections read stays the owner's on a connected report; the
 	// server refuses those edits from anyone else, prompts stay editable.
 	const connectionsReadOnly =
-		!viewerOwnsReport && reportHasConnections(instance.connections);
+		readOnly ||
+		(!viewerOwnsReport && reportHasConnections(instance.connections));
 	// A schedule spends the owner's connections and credits, so editing a report
 	// does not by itself allow changing when it runs.
 	const scheduleLocked = !instance.canManageLifecycle;
@@ -1888,6 +1889,7 @@ export function TemplateInstanceDetail({
 										</Label>
 										<Input
 											id="instance-name"
+											disabled={readOnly}
 											value={instanceName}
 											onChange={(e) =>
 												handleNameChange(e.target.value)
@@ -1901,6 +1903,7 @@ export function TemplateInstanceDetail({
 										</Label>
 										<Textarea
 											id="instance-description"
+											disabled={readOnly}
 											value={instanceDescription}
 											onChange={(e) =>
 												handleDescriptionChange(
@@ -1925,26 +1928,33 @@ export function TemplateInstanceDetail({
 									</CardDescription>
 								</CardHeader>
 								<CardContent>
-									<ReportEvidenceSettings
-										value={reporting}
-										sourceDefinition={
-											instance.template.definition
-										}
-										sourceConnections={instance.connections}
-										organizationId={instanceOrgId}
-										lockAudience={
-											instance.executionCount > 0
-										}
-										lockedProjectId={
-											readReportEvidenceConfig(
-												instance.fabricConfig,
-											)?.projectId
-										}
-										onChange={(next) => {
-											setReporting(next);
-											setHasChanges(true);
-										}}
-									/>
+									<fieldset
+										disabled={readOnly}
+										className="m-0 min-w-0 border-0 p-0"
+									>
+										<ReportEvidenceSettings
+											value={reporting}
+											sourceDefinition={
+												instance.template.definition
+											}
+											sourceConnections={
+												instance.connections
+											}
+											organizationId={instanceOrgId}
+											lockAudience={
+												instance.executionCount > 0
+											}
+											lockedProjectId={
+												readReportEvidenceConfig(
+													instance.fabricConfig,
+												)?.projectId
+											}
+											onChange={(next) => {
+												setReporting(next);
+												setHasChanges(true);
+											}}
+										/>
+									</fieldset>
 								</CardContent>
 							</Card>
 
@@ -2518,6 +2528,7 @@ export function TemplateInstanceDetail({
 													</div>
 													<Switch
 														id="fabric-autodetect"
+														disabled={readOnly}
 														checked={
 															fabricAutoDetect
 														}
@@ -2547,6 +2558,7 @@ export function TemplateInstanceDetail({
 															/>
 														</Label>
 														<Select
+															disabled={readOnly}
 															value={
 																fabricStrategy ||
 																"__none__"
@@ -2609,6 +2621,7 @@ export function TemplateInstanceDetail({
 															/>
 														</Label>
 														<Select
+															disabled={readOnly}
 															value={
 																fabricContext ||
 																"__none__"
@@ -2672,6 +2685,7 @@ export function TemplateInstanceDetail({
 															/>
 														</Label>
 														<Select
+															disabled={readOnly}
 															value={
 																fabricPattern ||
 																"__none__"
@@ -2781,17 +2795,22 @@ export function TemplateInstanceDetail({
 											definition.aiAgents.length > 0 && (
 												<Card>
 													<CardContent className="pt-6">
-														<AiTaskPromptEditor
-															tasks={
-																definition.aiAgents
-															}
-															customTasks={
-																customAiTasks
-															}
-															onCustomTaskChange={
-																handleCustomTaskChange
-															}
-														/>
+														<fieldset
+															disabled={readOnly}
+															className="m-0 min-w-0 border-0 p-0"
+														>
+															<AiTaskPromptEditor
+																tasks={
+																	definition.aiAgents
+																}
+																customTasks={
+																	customAiTasks
+																}
+																onCustomTaskChange={
+																	handleCustomTaskChange
+																}
+															/>
+														</fieldset>
 													</CardContent>
 												</Card>
 											)}
@@ -2823,6 +2842,9 @@ export function TemplateInstanceDetail({
 														</Label>
 														{customSystemPrompt && (
 															<Button
+																disabled={
+																	readOnly
+																}
 																variant="ghost"
 																size="sm"
 																className="h-7 text-xs"
@@ -2841,6 +2863,7 @@ export function TemplateInstanceDetail({
 													</div>
 													<Textarea
 														id="system-prompt"
+														disabled={readOnly}
 														value={
 															customSystemPrompt
 														}
@@ -2906,6 +2929,7 @@ export function TemplateInstanceDetail({
 														</Label>
 														<Textarea
 															id="user-prompt"
+															disabled={readOnly}
 															value={userPrompt}
 															onChange={(e) =>
 																handleUserPromptChange(
@@ -2943,6 +2967,7 @@ export function TemplateInstanceDetail({
 													</Label>
 													<Input
 														id="max-iterations"
+														disabled={readOnly}
 														type="number"
 														min={1}
 														max={50}

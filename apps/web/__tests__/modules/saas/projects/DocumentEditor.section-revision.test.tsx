@@ -24,7 +24,12 @@
  *   - with the room flag off, the accept still names the body the editor
  *     loaded or last saved as its base, and is saved;
  *   - "Update using context" is not offered on a client-document Proposal,
- *     and is with the gate off.
+ *     and is with the gate off;
+ *   - Revise this section: a member's instruction reaches `reviseSection`
+ *     by section key, and its Accept sends the `INSTRUCTION` descriptor
+ *     with every other section byte-identical; the heading control is
+ *     offered on each `##` to a member the page lets revise, and not to a
+ *     guest, nor while a revision stands.
  *
  * Harness: the single-user one from `DocumentEditor.accept-version-guard`,
  * with a fake server that keeps a body identity and can refuse a save, a
@@ -36,6 +41,7 @@ import { buildSectionMap } from "@repo/utils/proposal-artifact/section-hash";
 import { spliceSectionBody } from "@repo/utils/proposal-artifact/section-splice";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { Editor } from "@tiptap/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -438,7 +444,17 @@ let saveSlot: HTMLElement;
 const settled: SectionRevisionOutcome[] = [];
 const shown: string[] = [];
 
-function tree(request: SectionRevisionRequest | null) {
+function tree(
+	request: SectionRevisionRequest | null,
+	revise?: {
+		isMember: boolean;
+		pending?: boolean;
+		onRequest: (asked: {
+			sectionKey: string;
+			instruction: string;
+		}) => boolean;
+	},
+) {
 	return (
 		<QueryClientProvider client={queryClient}>
 			<DocumentEditor
@@ -448,6 +464,14 @@ function tree(request: SectionRevisionRequest | null) {
 				sectionRevisionRequest={request}
 				onSectionRevisionSettled={(outcome) => settled.push(outcome)}
 				onSectionRevisionShown={(id) => shown.push(id)}
+				{...(revise
+					? {
+							statTiles: true,
+							proposalVisuals: { isMember: revise.isMember },
+							onRequestSectionRevision: revise.onRequest,
+							sectionRevisionPending: revise.pending ?? false,
+						}
+					: {})}
 			/>
 		</QueryClientProvider>
 	);
@@ -870,6 +894,204 @@ describe("a section revision in the editor (Fizzy #2946)", () => {
 		expect(bodyOf(mockEditor)).toBe(before);
 		expect(reviewBar.props).toBeNull();
 		expect(mockEditor?.isEditable).toBe(true);
+	});
+});
+
+describe("Revise this section in the editor (Fizzy #2946)", () => {
+	const INSTRUCTION: SectionRevisionRequest = {
+		id: "revision-instruction-1",
+		kind: "INSTRUCTION",
+		sectionKey: keyOf(STORED, "Pricing"),
+		instruction: "Say that both phases are covered.",
+	};
+
+	it("asks by section key with the instruction, and Accept sends the INSTRUCTION descriptor; every other section is byte-identical", async () => {
+		const view = await mount();
+		const before = bodyOf(mockEditor);
+		reviseSection.mockResolvedValue(candidate());
+		view.rerender(tree(INSTRUCTION));
+		await waitFor(() => {
+			expect(reviewBar.props).not.toBeNull();
+		});
+		await settle(50);
+		expect(reviseSection).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			documentId: "doc-1",
+			sectionKey: keyOf(STORED, "Pricing"),
+			instruction: "Say that both phases are covered.",
+			baseVersion: 7,
+			baseContentHash: hashOf(STORED),
+		});
+		expect(otherSections(bodyOf(mockEditor), "Pricing")).toBe(
+			otherSections(before, "Pricing"),
+		);
+
+		await act(async () => {
+			reviewBar.props?.onAcceptAll();
+		});
+		await settle(50);
+
+		expect(saveCalls).toHaveLength(1);
+		expect(saveCalls[0]).toMatchObject({
+			aiReview: {
+				kind: "INSTRUCTION",
+				sectionKey: keyOf(STORED, "Pricing"),
+				revisionToken: "token-example",
+			},
+			expectedVersion: 7,
+			expectedContentHash: hashOf(STORED),
+		});
+		expect(otherSections(saveCalls[0].content as string, "Pricing")).toBe(
+			otherSections(before, "Pricing"),
+		);
+		expect(settled).toEqual([
+			{ id: "revision-instruction-1", result: "accepted" },
+		]);
+	});
+
+	// The global next-intl stand-in answers with the key.
+	const CONTROL = "triggerLabel";
+
+	it("a request refused before it starts ends its focus stage: a later revision's review does not take focus", async () => {
+		const user = userEvent.setup();
+		const view = await mount();
+		const onRequest = vi.fn(() => true);
+		view.rerender(tree(null, { isMember: true, onRequest }));
+		const triggers = await screen.findAllByRole("button", {
+			name: CONTROL,
+		});
+		await user.click(triggers[1] as HTMLElement);
+		await user.type(screen.getByLabelText("fieldLabel"), "Shorter.");
+		await user.click(screen.getByRole("button", { name: "submit" }));
+		expect(onRequest).toHaveBeenCalledTimes(1);
+
+		// The editor can no longer start one when the page hands it over.
+		flags.values = { DOCUMENT_ROOM_CONVERGENCE: true };
+		view.rerender(
+			tree(
+				{
+					id: "revision-refused",
+					kind: "INSTRUCTION",
+					sectionKey: keyOf(STORED, "Pricing"),
+					instruction: "Shorter.",
+				},
+				{ isMember: true, pending: true, onRequest },
+			),
+		);
+		await waitFor(() => {
+			expect(settled).toEqual([
+				{
+					id: "revision-refused",
+					result: "refused",
+					code: "EDITOR_BUSY",
+				},
+			]);
+		});
+		expect(reviseSection).not.toHaveBeenCalled();
+
+		// A finding's revision later shows its review where it was asked
+		// for, without moving focus to it.
+		flags.values = {
+			PROPOSAL_ARTIFACT: true,
+			DOCUMENT_ROOM_CONVERGENCE: true,
+		};
+		reviseSection.mockResolvedValue(candidate());
+		const outside = window.document.createElement("button");
+		window.document.body.appendChild(outside);
+		outside.focus();
+		view.rerender(tree(REQUEST, { isMember: true, onRequest }));
+		await waitFor(() => {
+			expect(reviewBar.props).not.toBeNull();
+		});
+		await settle(50);
+		expect(outside).toHaveFocus();
+		outside.remove();
+	});
+
+	it("moves focus from the closed box to the revising status, then to the review's summary", async () => {
+		const user = userEvent.setup();
+		const view = await mount();
+		let asked: { sectionKey: string; instruction: string } | null = null;
+		const onRequest = vi.fn(
+			(request: { sectionKey: string; instruction: string }) => {
+				asked = request;
+				return true;
+			},
+		);
+		view.rerender(tree(null, { isMember: true, onRequest }));
+		const triggers = await screen.findAllByRole("button", {
+			name: CONTROL,
+		});
+		// Pricing is the second `##`.
+		await user.click(triggers[1] as HTMLElement);
+		await user.type(
+			screen.getByLabelText("fieldLabel"),
+			"Say that both phases are covered.",
+		);
+		let answer: (value: unknown) => void = () => {};
+		reviseSection.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					answer = resolve;
+				}),
+		);
+		await user.click(screen.getByRole("button", { name: "submit" }));
+		expect(asked).toEqual({
+			sectionKey: keyOf(STORED, "Pricing"),
+			instruction: "Say that both phases are covered.",
+		});
+
+		// The page hands the request back to the editor.
+		view.rerender(
+			tree(
+				{
+					id: "revision-instruction-2",
+					kind: "INSTRUCTION",
+					...(asked as unknown as {
+						sectionKey: string;
+						instruction: string;
+					}),
+				},
+				{ isMember: true, pending: true, onRequest },
+			),
+		);
+		await waitFor(() => {
+			expect(
+				screen.getByText("inProgress").closest("output"),
+			).toHaveFocus();
+		});
+
+		await act(async () => {
+			answer(candidate());
+		});
+		await waitFor(() => {
+			expect(
+				screen.getByRole("region", { name: "reviewTitle" }),
+			).toHaveFocus();
+		});
+		expect(
+			screen.getByRole("region", { name: "reviewTitle" }),
+		).toHaveAccessibleDescription("reviewHint");
+		expect(document.body).not.toHaveFocus();
+	});
+
+	it("offers the heading control on each ## to a member the page lets revise; not to a guest, nor while a revision stands", async () => {
+		const onRequest = vi.fn(() => true);
+		const view = await mount();
+		view.rerender(tree(null, { isMember: true, onRequest }));
+		await waitFor(() => {
+			expect(
+				screen.getAllByRole("button", { name: CONTROL }),
+			).toHaveLength(3);
+		});
+
+		view.rerender(tree(null, { isMember: true, pending: true, onRequest }));
+		await settle(50);
+		expect(screen.queryByRole("button", { name: CONTROL })).toBeNull();
+
+		view.rerender(tree(null, { isMember: false, onRequest }));
+		await settle(50);
+		expect(screen.queryByRole("button", { name: CONTROL })).toBeNull();
 	});
 });
 

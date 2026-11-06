@@ -221,6 +221,65 @@ describe("projects.instructions.getDigest", () => {
 		});
 	});
 
+	it("bounds the listed versions by the one published now, so a rolled-back newer version does not bring the digest back", async () => {
+		m.getPublishedInstructionSnapshot.mockResolvedValue({
+			id: "s8",
+			version: 8,
+		});
+		m.getInstructionSeenMarker.mockResolvedValue({
+			snapshotId: "s8",
+			version: 8,
+			seenAt,
+		});
+		m.getInstructionSnapshot.mockResolvedValue(readable("s8", 8));
+		// The real read keeps only versions within the bound it is given.
+		const rolledBack = [9, 10].map((version) => ({
+			id: `s${version}`,
+			version,
+			source: "REPOSITORY",
+			sourceRef: "main",
+			sourceCommitSha: null,
+			publishedAt: seenAt,
+			user: { id: "u2", name: "Example" },
+		}));
+		m.listInstructionVersionsPublishedSince.mockImplementation(
+			async (i: { throughVersion: number | null }) =>
+				rolledBack.filter(
+					(row) =>
+						i.throughVersion === null ||
+						row.version <= i.throughVersion,
+				),
+		);
+
+		const result = await m.handlers[DIGEST]!({
+			input: { projectId: "p" },
+			context: ctx,
+		});
+
+		expect(m.listInstructionVersionsPublishedSince).toHaveBeenCalledWith({
+			projectId: "p",
+			organizationId: "org_1",
+			afterVersion: 8,
+			throughVersion: 8,
+		});
+		expect(result).toMatchObject({ hasChanges: false, versions: [] });
+	});
+
+	it("puts no upper bound on the listed versions when nothing is published", async () => {
+		m.getPublishedInstructionSnapshot.mockResolvedValue(null);
+		m.getInstructionSeenMarker.mockResolvedValue({
+			snapshotId: null,
+			version: null,
+			seenAt,
+		});
+
+		await m.handlers[DIGEST]!({ input: { projectId: "p" }, context: ctx });
+
+		expect(m.listInstructionVersionsPublishedSince).toHaveBeenCalledWith(
+			expect.objectContaining({ afterVersion: 0, throughVersion: null }),
+		);
+	});
+
 	it("reports nothing new when the pointer is where they left it", async () => {
 		m.getInstructionSeenMarker.mockResolvedValue({
 			snapshotId: "s5",

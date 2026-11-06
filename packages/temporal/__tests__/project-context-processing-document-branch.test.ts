@@ -17,6 +17,7 @@ const stubs = vi.hoisted(() => ({
 	retryProjectContext: vi.fn(),
 	cleanupImportedContent: vi.fn(),
 	createImportedDocument: vi.fn(),
+	failContextTargetDocument: vi.fn(),
 	failTargetDocument: vi.fn(),
 	fillTargetDocument: vi.fn(),
 	embedProjectDocumentActivity: vi.fn(),
@@ -24,15 +25,24 @@ const stubs = vi.hoisted(() => ({
 }));
 
 const executeChildMock = vi.hoisted(() => vi.fn());
+const patchedMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@temporalio/workflow", () => ({
-	log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-	proxyActivities: vi.fn(() => stubs),
-	executeChild: executeChildMock,
-	ApplicationFailure: {
-		nonRetryable: (message: string) => new Error(message),
-	},
-}));
+vi.mock("@temporalio/workflow", () => {
+	// A class, not a plain object: the workflow's outer catch tells its own
+	// failure apart with `instanceof`, which a failure-path test reaches.
+	class ApplicationFailure extends Error {
+		static nonRetryable(message: string) {
+			return new ApplicationFailure(message);
+		}
+	}
+	return {
+		log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+		proxyActivities: vi.fn(() => stubs),
+		executeChild: executeChildMock,
+		patched: patchedMock,
+		ApplicationFailure,
+	};
+});
 
 import { projectContextProcessingWorkflow } from "../src/workflows/project-context-processing";
 
@@ -59,15 +69,28 @@ beforeEach(() => {
 		stub.mockReset();
 	}
 	stubs.updateProjectContextStatus.mockResolvedValue(undefined);
+	stubs.getProjectContextStatus.mockResolvedValue("FAILED");
 	stubs.cleanupImportedContent.mockResolvedValue("# Formatted\n\ntext");
 	stubs.createImportedDocument.mockResolvedValue({ documentId: "doc-new" });
 	stubs.fillTargetDocument.mockResolvedValue({ applied: true });
 	stubs.failTargetDocument.mockResolvedValue({ applied: true });
+	stubs.failContextTargetDocument.mockResolvedValue({ applied: true });
 	stubs.embedProjectDocumentActivity.mockResolvedValue(undefined);
 	stubs.issueGenerationToken.mockResolvedValue({ aiToken: "tok" });
 	executeChildMock.mockReset();
 	executeChildMock.mockResolvedValue(undefined);
+	patchedMock.mockReset();
+	patchedMock.mockReturnValue(true);
 });
+
+/** Every activity the run called, in the order it called them. */
+const activityCalls = () =>
+	Object.entries(stubs)
+		.flatMap(([name, stub]) =>
+			stub.mock.invocationCallOrder.map((order) => ({ name, order })),
+		)
+		.sort((a, b) => a.order - b.order)
+		.map(({ name }) => name);
 
 describe("Use As-Is skips the AI formatting pass", () => {
 	it("does not rewrite the extracted text", async () => {
@@ -302,5 +325,231 @@ describe("Use as Context, still reachable only by rows written before the refusa
 		await projectContextProcessingWorkflow(input);
 
 		expect(executeChildMock).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * A corrupt or empty file fails its context row. The document the create flow
+ * made for it has to fail too, with a reason, or it sits on "generating"
+ * until the stale-generation sweep clears it half an hour later.
+ */
+describe("a file that yields no text fails its document, not only its context row", () => {
+	const failures = [
+		{
+			label: "extraction throws on its last attempt",
+			arrange: () =>
+				stubs.processProjectContext.mockRejectedValue(
+					new Error("Activity task failed"),
+				),
+			error: "Activity task failed",
+			// A throw cannot be told apart from an outage that outlasted the
+			// retries, so the reason does not blame the file outright.
+			reason: /could not be read\. Try creating the document again, and use a different file if this happens again/,
+		},
+		{
+			label: "extraction returns a failure",
+			arrange: () =>
+				stubs.processProjectContext.mockResolvedValue({
+					success: false,
+					chunkCount: 0,
+					qdrantIds: [],
+					error: "No readable text could be extracted from this file.",
+				}),
+			error: "No readable text could be extracted from this file.",
+			reason: /could not be read, or contained no text/,
+		},
+	];
+
+	it.each(failures)(
+		"fails the document once, after the context row, when $label",
+		async ({ arrange, error, reason }) => {
+			arrange();
+
+			await expect(
+				projectContextProcessingWorkflow(input),
+			).rejects.toThrow(error);
+
+			expect(stubs.failContextTargetDocument).toHaveBeenCalledTimes(1);
+			expect(stubs.failContextTargetDocument).toHaveBeenCalledWith({
+				contextId: "ctx-1",
+				projectId: "proj-1",
+				userId: "user-1",
+				organizationId: "org-1",
+				reason: expect.stringMatching(reason),
+			});
+			expect(activityCalls()).toEqual([
+				"processProjectContext",
+				"getProjectContextStatus",
+				"updateProjectContextStatus",
+				"failContextTargetDocument",
+			]);
+		},
+	);
+
+	/**
+	 * The text was stored before a later step threw: the context row stays
+	 * COMPLETED, and the document must not be told its file was unreadable.
+	 */
+	it("says the file was read when the context row kept its stored text", async () => {
+		stubs.processProjectContext.mockRejectedValue(
+			new Error("Activity task failed"),
+		);
+		stubs.getProjectContextStatus.mockResolvedValue("COMPLETED");
+
+		await expect(projectContextProcessingWorkflow(input)).rejects.toThrow(
+			"Activity task failed",
+		);
+
+		expect(stubs.failContextTargetDocument).toHaveBeenCalledTimes(1);
+		expect(stubs.failContextTargetDocument).toHaveBeenCalledWith({
+			contextId: "ctx-1",
+			projectId: "proj-1",
+			userId: "user-1",
+			organizationId: "org-1",
+			reason: expect.stringMatching(/was read, but .* did not finish/i),
+		});
+		expect(activityCalls()).toEqual([
+			"processProjectContext",
+			"getProjectContextStatus",
+			"failContextTargetDocument",
+		]);
+	});
+
+	/**
+	 * A history recorded before this call existed has no marker, so `patched()`
+	 * answers false on replay. Its failure must issue exactly the commands it
+	 * always did, or replay fails with a nondeterminism error.
+	 */
+	it.each(failures)(
+		"issues the old command sequence for a recorded history when $label",
+		async ({ arrange, error }) => {
+			arrange();
+			patchedMock.mockReturnValue(false);
+
+			await expect(
+				projectContextProcessingWorkflow(input),
+			).rejects.toThrow(error);
+
+			expect(activityCalls()).toEqual([
+				"processProjectContext",
+				"getProjectContextStatus",
+				"updateProjectContextStatus",
+			]);
+		},
+	);
+
+	it.each(failures)(
+		"still fails with its own error when failing the document fails, when $label",
+		async ({ arrange, error }) => {
+			arrange();
+			stubs.failContextTargetDocument.mockRejectedValue(
+				new Error("database unavailable"),
+			);
+
+			const failure = await projectContextProcessingWorkflow(input).then(
+				() => undefined,
+				(caught: unknown) => caught,
+			);
+
+			expect(failure).toBeInstanceOf(Error);
+			expect((failure as Error).message).toBe(error);
+			expect(stubs.failContextTargetDocument).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	/** A company source has no document, and its run records no marker. */
+	it.each(failures)(
+		"leaves a company source alone when $label",
+		async ({ arrange, error }) => {
+			arrange();
+
+			await expect(
+				projectContextProcessingWorkflow({
+					contextId: "src-1",
+					userId: "user-1",
+					organizationId: "org-1",
+					owner: { kind: "company", organizationId: "org-1" },
+				}),
+			).rejects.toThrow(error);
+
+			expect(stubs.failContextTargetDocument).not.toHaveBeenCalled();
+			expect(patchedMock).not.toHaveBeenCalled();
+		},
+	);
+
+	/**
+	 * Retries happen inside the activity call, so an attempt that a later one
+	 * recovers from reaches the workflow as a success, and the document is
+	 * filled rather than failed.
+	 */
+	it("leaves the document to be filled when extraction succeeds", async () => {
+		stubs.processProjectContext.mockResolvedValue(
+			extraction({ documentUsage: "AS_IS", targetDocumentId: "doc-1" }),
+		);
+
+		await projectContextProcessingWorkflow(input);
+
+		expect(stubs.fillTargetDocument).toHaveBeenCalled();
+		expect(stubs.failContextTargetDocument).not.toHaveBeenCalled();
+		expect(patchedMock).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * The import branch swallows its failures, which is right for an import nobody
+ * is waiting on. A pre-created document is being watched, so a write to it
+ * that failed must not leave it generating.
+ */
+describe("a pre-created document is not left generating when writing it fails", () => {
+	it("fails the document when filling it fails", async () => {
+		stubs.processProjectContext.mockResolvedValue(
+			extraction({ documentUsage: "AS_IS", targetDocumentId: "doc-1" }),
+		);
+		stubs.fillTargetDocument.mockRejectedValue(
+			new Error("Activity task failed"),
+		);
+
+		const out = await projectContextProcessingWorkflow(input);
+
+		expect(out.success).toBe(true);
+		expect(stubs.failContextTargetDocument).toHaveBeenCalledTimes(1);
+		expect(stubs.failContextTargetDocument).toHaveBeenCalledWith({
+			contextId: "ctx-1",
+			projectId: "proj-1",
+			userId: "user-1",
+			organizationId: "org-1",
+			reason: expect.stringMatching(/was read, but .* did not finish/i),
+		});
+	});
+
+	it("issues the old command sequence for a recorded history", async () => {
+		stubs.processProjectContext.mockResolvedValue(
+			extraction({ documentUsage: "AS_IS", targetDocumentId: "doc-1" }),
+		);
+		stubs.fillTargetDocument.mockRejectedValue(
+			new Error("Activity task failed"),
+		);
+		patchedMock.mockReturnValue(false);
+
+		const out = await projectContextProcessingWorkflow(input);
+
+		expect(out.success).toBe(true);
+		expect(activityCalls()).toEqual([
+			"processProjectContext",
+			"fillTargetDocument",
+		]);
+	});
+
+	it("has nothing to fail for an import without a pre-created document", async () => {
+		stubs.processProjectContext.mockResolvedValue(extraction());
+		stubs.createImportedDocument.mockRejectedValue(
+			new Error("Activity task failed"),
+		);
+
+		const out = await projectContextProcessingWorkflow(input);
+
+		expect(out.success).toBe(true);
+		expect(stubs.failContextTargetDocument).not.toHaveBeenCalled();
+		expect(patchedMock).not.toHaveBeenCalled();
 	});
 });

@@ -70,7 +70,8 @@ export async function loadInstructionChangeDelta(operation: {
  * A PUT adds a path only when neither the published version nor the
  * member's branch held it. A branch-relative entry edits the file Fabric
  * wrote on the branch, so it is a modification there, whose mode the tip
- * keeps.
+ * keeps. A published file the branch deleted is also a modification here,
+ * which the append re-classifies against the branch's tip.
  */
 function isNewPath(entry: {
 	baseObjectId: string | null;

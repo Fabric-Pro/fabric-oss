@@ -717,3 +717,41 @@ describe("createIntegrationContexts — monitor enablement after linking", () =>
 		expect(mockEnableSlackChannelMonitor).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe("Notion admission failures in the wizard", () => {
+	it("reports the skipped page and continues creating other pages", async () => {
+		mockCreate.mockReset();
+		mockCreate
+			.mockRejectedValueOnce(
+				new Error(
+					"Fabric could not read any content from this Notion page",
+				),
+			)
+			.mockResolvedValue({});
+		const result = await createIntegrationContexts({
+			projectId: "project-example",
+			organizationId: "example-org",
+			selectedTeamsChats: [],
+			selectedNotionPages: [
+				{
+					pageId: "page-empty",
+					title: "Empty example",
+					url: "https://example.com/empty",
+					mcpConfigId: "mcp-example",
+				},
+				{
+					pageId: "page-readable",
+					title: "Readable example",
+					url: "https://example.com/readable",
+					mcpConfigId: "mcp-example",
+				},
+			],
+		});
+		expect(result).toMatchObject({
+			successCount: 1,
+			failCount: 1,
+			skippedNotionPages: ["Empty example"],
+		});
+		expect(mockCreate).toHaveBeenCalledTimes(2);
+	});
+});

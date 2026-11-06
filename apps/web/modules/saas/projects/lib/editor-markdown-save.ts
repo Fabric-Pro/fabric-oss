@@ -62,6 +62,198 @@ const highlightMarkRule: TurndownService.Rule = {
 const ELEMENT_NODE = 1;
 const TEXT_NODE = 3;
 
+// Marks that sit inside a line of text, so the characters around an
+// emphasis may come from outside the mark that holds it.
+const INLINE_MARK_TAGS = new Set([
+	"A",
+	"B",
+	"CODE",
+	"DEL",
+	"EM",
+	"I",
+	"INS",
+	"MARK",
+	"S",
+	"SPAN",
+	"STRONG",
+	"SUB",
+	"SUP",
+	"U",
+]);
+
+/**
+ * The character written just before (`"previous"`) or just after (`"next"`)
+ * `node`, looking out through the inline marks that hold it. Empty at the
+ * edge of a block.
+ */
+function adjacentCharacter(node: Node, side: "previous" | "next"): string {
+	let current: Node | null = node;
+	while (current) {
+		const sibling: Node | null =
+			side === "previous" ? current.previousSibling : current.nextSibling;
+		if (sibling) {
+			const text = sibling.textContent ?? "";
+			return side === "previous" ? text.slice(-1) : text.slice(0, 1);
+		}
+		const parent: Node | null = current.parentNode;
+		if (!parent || !INLINE_MARK_TAGS.has(parent.nodeName)) {
+			return "";
+		}
+		current = parent;
+	}
+	return "";
+}
+
+// A letter or digit, or a literal `*`/`_`, beside an italic run.
+const KEEPS_ASTERISK = /[\p{L}\p{N}*_]/u;
+
+// A `_` inside an italic run that is not between two letters or digits,
+// so it could open or close emphasis: `file_ name`, `_draft`, `a__b`.
+const UNDERSCORE_AT_WORD_EDGE = /(^|[^\p{L}\p{N}])_|_(?=[^\p{L}\p{N}]|$)/u;
+
+/**
+ * Turndown rule for italic: `_…_`, the form the document generator writes,
+ * so an unedited document saves as it was loaded (Fizzy #2946).
+ *
+ * `*` is kept where `_` would not read back as italic: inside a word, as in
+ * `un*break*able`, and next to a literal `*` or `_`. The second is the
+ * shape of a bold marker split across two bullets (`**Label*`), which loads
+ * as a `*` and an italic run; written back with `*` it keeps the shape the
+ * document repair recognises. `*` is also kept when the italic text holds a
+ * `_` at a word edge: `_file_ name_` would close the italic after `file`.
+ * A `_` between letters, as in `snake_case`, cannot, so it keeps `_`.
+ *
+ * Registered on BOTH Turndown services, as the highlight rule is.
+ */
+const emphasisRule: TurndownService.Rule = {
+	filter: ["em", "i"],
+	replacement: (content: string, node: any) => {
+		if (!content.trim()) {
+			return "";
+		}
+		const delimiter =
+			KEEPS_ASTERISK.test(adjacentCharacter(node, "previous")) ||
+			KEEPS_ASTERISK.test(adjacentCharacter(node, "next")) ||
+			/^\*|\*$/.test(content) ||
+			UNDERSCORE_AT_WORD_EDGE.test(content)
+				? "*"
+				: "_";
+		return `${delimiter}${content}${delimiter}`;
+	},
+};
+
+/**
+ * Turndown rule for headings that does not escape a leading `1.`
+ * (Fizzy #2946).
+ *
+ * The shared escape writes `1\.` at the start of every text node, so a
+ * paragraph that starts with `1. ` cannot become a list on the next load.
+ * Heading text cannot start a list, and the generator writes numbered
+ * section headings (`## 1. Executive Summary`), so the escape only rewrote
+ * every such heading on the first save. A `\` the user typed is itself
+ * escaped (`1\\.`), so it is not taken for the escape.
+ */
+const headingRule: TurndownService.Rule = {
+	filter: ["h1", "h2", "h3", "h4", "h5", "h6"],
+	replacement: (content: string, node: any) => {
+		const level = Number(node.nodeName.charAt(1));
+		const text = content.replace(/^(\d+)\\\. /, "$1. ");
+		return `\n\n${"#".repeat(level)} ${text}\n\n`;
+	},
+};
+
+const LIST_TAGS = new Set(["UL", "OL"]);
+const BLOCK_TAGS = new Set([
+	"BLOCKQUOTE",
+	"DIV",
+	"FIGURE",
+	"H1",
+	"H2",
+	"H3",
+	"H4",
+	"H5",
+	"H6",
+	"HR",
+	"OL",
+	"P",
+	"PRE",
+	"TABLE",
+	"UL",
+]);
+
+function blockChildren(element: Element): Element[] {
+	return Array.from(element.children).filter((child) =>
+		BLOCK_TAGS.has(child.nodeName),
+	);
+}
+
+/**
+ * Whether an item holds one line of text and, below it, only nested lists:
+ * a paragraph, then lists. A task item keeps that paragraph inside a
+ * `<div>`, which is looked into the same way.
+ */
+function isSingleParagraphItem(element: Element): boolean {
+	const [first, ...rest] = blockChildren(element);
+	if (!rest.every((child) => LIST_TAGS.has(child.nodeName))) {
+		return false;
+	}
+	if (!first || first.nodeName === "P" || LIST_TAGS.has(first.nodeName)) {
+		return true;
+	}
+	return (
+		first.nodeName === "DIV" &&
+		rest.length === 0 &&
+		isSingleParagraphItem(first)
+	);
+}
+
+/**
+ * Turndown rule for list items that keeps a list tight (Fizzy #2946).
+ *
+ * The editor wraps every item in a paragraph, and Turndown reads that
+ * paragraph as a loose item: it wrote `-   item` with a line of spaces after
+ * each item, so a tight list the generator wrote as `- item` came back
+ * loose, and wider, on the first save.
+ *
+ * The editor holds no record of whether a list was loose — `- a\n- b` and
+ * `- a\n\n- b` load as the same document — so the list's shape decides: a
+ * list whose items each hold one paragraph (and any nested lists) is
+ * written tight, one item per line; a list with an item of several blocks
+ * is written loose, with an empty line between items. A loose list of
+ * one-paragraph items is therefore saved tight.
+ *
+ * The marker is followed by one space (`- `, `1. `), and an item's later
+ * lines are indented to its text, so nested lists sit where the generator
+ * puts them. Empty lines are left empty rather than indented.
+ */
+const listItemRule: TurndownService.Rule = {
+	filter: "li",
+	replacement: (content: string, node: any, options) => {
+		const item = node as Element;
+		const parent = item.parentNode as Element;
+		let prefix = `${options.bulletListMarker} `;
+		if (parent.nodeName === "OL") {
+			const start = parent.getAttribute("start");
+			const index = Array.prototype.indexOf.call(parent.children, item);
+			prefix = `${start ? Number(start) + index : index + 1}. `;
+		}
+		const tight = Array.from(parent.children).every(isSingleParagraphItem);
+		let body = content.replace(/^\n+/, "").replace(/\n+$/, "");
+		const startsWithText = !LIST_TAGS.has(
+			blockChildren(item)[0]?.nodeName ?? "",
+		);
+		if (tight && startsWithText) {
+			// An item's own paragraph holds no empty line, so the first one
+			// is where the nested list starts. A loose nested list keeps its
+			// own empty lines.
+			body = body.replace(/\n{2,}/, "\n");
+		}
+		body = body.replace(/\n(?=[^\n])/g, `\n${" ".repeat(prefix.length)}`);
+		const separator = item.nextSibling ? (tight ? "\n" : "\n\n") : "";
+		return `${prefix}${body}${separator}`;
+	},
+};
+
 function isDiffDeletion(node: Node): boolean {
 	return (
 		node.nodeName === "DEL" &&
@@ -149,13 +341,15 @@ function getInlineCellService(): TurndownService {
 	const service = new TurndownService({
 		headingStyle: "atx",
 		bulletListMarker: "-",
-		emDelimiter: "*",
+		emDelimiter: "_",
 	});
 	service.use(gfm);
 	applyGfmStrikethroughFix(service);
 	disableEmphasisEscape(service);
-	// Highlights inside a cell go through this service, not the main one.
+	// Highlights and italic inside a cell go through this service, not the
+	// main one.
 	service.addRule("highlightMark", highlightMarkRule);
+	service.addRule("emphasis", emphasisRule);
 	service.addRule("emptyLink", emptyLinkRule);
 	inlineCellServiceSingleton = service;
 	return service;
@@ -187,7 +381,7 @@ export function createTurndownService(): TurndownService {
 		headingStyle: "atx",
 		codeBlockStyle: "fenced",
 		bulletListMarker: "-",
-		emDelimiter: "*",
+		emDelimiter: "_",
 		// `---` is the form normalizeMarkdownForDiff rewrites every rule to, so
 		// a saved rule matches the diff baseline instead of flipping spelling.
 		hr: "---",
@@ -372,6 +566,9 @@ export function createTurndownService(): TurndownService {
 	});
 	service.addRule("highlightMark", highlightMarkRule);
 	service.addRule("emptyLink", emptyLinkRule);
+	service.addRule("emphasis", emphasisRule);
+	service.addRule("heading", headingRule);
+	service.addRule("listItem", listItemRule);
 
 	return service;
 }

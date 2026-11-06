@@ -12,7 +12,9 @@
  * The guard is the stall verdict itself, read for one row: in flight, with an
  * extraction lifecycle, and quiet for longer than the window the banner uses —
  * no write to the row, or a processing job that stopped heartbeating. Anything
- * else is refused. A run that is merely slow must not be doubled, and a live
+ * else is refused. Failed Notion pages with saved text instead require the
+ * full embedding retry quiet window below; pending Notion pages use the stall
+ * verdict. A run with a live job heartbeat is refused, and a live
  * integration whose status never moves has nothing to restart.
  *
  * ## Which workflow
@@ -55,7 +57,10 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { STALL_MINUTES_BY_SOURCE } from "../../../capabilities/thresholds";
-import { hasExtractionLifecycle } from "../../lib/extraction-lifecycle";
+import {
+	CONTEXT_EMBEDDING_RETRY_WINDOW_MS,
+	hasExtractionLifecycle,
+} from "../../lib/extraction-lifecycle";
 import {
 	providerWorkflowArgs,
 	resolveUrlSourceProvider,
@@ -119,13 +124,38 @@ export const retryStalledContextProcedure = tenantProtectedProcedure
 			});
 		}
 
+		const isNotion =
+			existing.type === "INTEGRATION" &&
+			(existing.metadata as { provider?: unknown } | null)?.provider ===
+				"notion";
+		if (isNotion && !existing.content.trim()) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Fabric could not read any content from this Notion page. Remove it and add the page again.",
+			});
+		}
+		const retryableNotion =
+			isNotion &&
+			(existing.extractionStatus === "FAILED" ||
+				(existing.extractionStatus === "PENDING" &&
+					!existing.qdrantId &&
+					!existing.embeddedAt));
+		if (isNotion && !retryableNotion) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Only an unindexed pending or failed Notion source can be retried.",
+			});
+		}
 		if (!hasExtractionLifecycle(existing)) {
 			throw new ORPCError("BAD_REQUEST", {
 				message:
 					"This source is a live connection with no processing to retry.",
 			});
 		}
-		if (!IN_FLIGHT_STATUSES.has(existing.extractionStatus)) {
+		if (
+			!retryableNotion &&
+			!IN_FLIGHT_STATUSES.has(existing.extractionStatus)
+		) {
 			throw new ORPCError("BAD_REQUEST", {
 				message:
 					"Only a source that stopped processing can be retried.",
@@ -149,25 +179,38 @@ export const retryStalledContextProcedure = tenantProtectedProcedure
 		const liveJob = runningJobs.some((job) => job.heartbeatAt >= cutoff);
 		const stalled =
 			!liveJob && (existing.updatedAt < cutoff || runningJobs.length > 0);
-		if (!stalled) {
+		const oldFailedNotion =
+			isNotion &&
+			existing.extractionStatus === "FAILED" &&
+			existing.updatedAt.getTime() <
+				now.getTime() - CONTEXT_EMBEDDING_RETRY_WINDOW_MS;
+		if (
+			liveJob ||
+			!(
+				oldFailedNotion ||
+				(stalled && existing.extractionStatus !== "FAILED")
+			)
+		) {
 			throw new ORPCError("CONFLICT", {
 				message:
-					"This source is still processing. Retry becomes available if it stops.",
+					"This source is still processing or failed less than 15 minutes ago, so it can't be retried yet. Try again later.",
 			});
 		}
 
 		const isUploadedTranscript =
 			(existing.metadata as { provider?: string } | null)?.provider ===
 			UPLOADED_TRANSCRIPT_PROVIDER;
-		const dispatch: RetryDispatch | null = existing.s3Path
-			? isUploadedTranscript
-				? "transcript"
-				: "processing"
-			: existing.type === "LINK" && existing.sourceUrl
-				? "crawl"
-				: existing.content.trim().length > 0
-					? "embedding"
-					: null;
+		const dispatch: RetryDispatch | null = isNotion
+			? "embedding"
+			: existing.s3Path
+				? isUploadedTranscript
+					? "transcript"
+					: "processing"
+				: existing.type === "LINK" && existing.sourceUrl
+					? "crawl"
+					: existing.content.trim().length > 0
+						? "embedding"
+						: null;
 		if (dispatch === null) {
 			throw new ORPCError("BAD_REQUEST", {
 				message:
@@ -212,7 +255,11 @@ export const retryStalledContextProcedure = tenantProtectedProcedure
 			where: {
 				id: existing.id,
 				updatedAt: existing.updatedAt,
-				extractionStatus: { in: ["PENDING", "EXTRACTING"] },
+				extractionStatus: {
+					in: retryableNotion
+						? [existing.extractionStatus]
+						: ["PENDING", "EXTRACTING"],
+				},
 			},
 			data: { extractionStatus: "PENDING", extractionError: null },
 		});
@@ -336,13 +383,15 @@ export const retryStalledContextProcedure = tenantProtectedProcedure
 						workflowId,
 						args: [
 							{
-								// No body: the activity reads it back from
-								// the row, so a long one never has to fit in
-								// the workflow input.
+								// Notion uses the creation input shape; other
+								// sources read their body from the row.
 								contextId: existing.id,
 								projectId: input.projectId,
 								userId: user.id,
 								organizationId: contextOrganizationId,
+								...(isNotion
+									? { content: existing.content }
+									: {}),
 								type: existing.type,
 								metadata: (existing.metadata ?? undefined) as
 									| Record<string, unknown>

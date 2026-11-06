@@ -190,7 +190,7 @@ describe("diff review: an AI edit that changes a paragraph's block role", () => 
 		expect(html).not.toContain('<ins class="diff-ins"></ins>');
 		expect(html).toMatch(/<del[^>]*>Provide a repeatable export\./);
 		expect(html).toMatch(/<li><ins class="diff-ins">Provide a repeatable/);
-		expect(saved).toContain(`-   ${paragraph} Files are UTF-8.`);
+		expect(saved).toContain(`- ${paragraph} Files are UTF-8.`);
 		expect(saved.match(/Provide a repeatable/g)).toHaveLength(1);
 	});
 
@@ -458,9 +458,8 @@ describe("accepting an AI edit saves the AI's document", () => {
 			(document) => document.replace("const a = 1;", "const a =\n1;"),
 			(document) =>
 				document.replace("Closing paragraph.", "- Closing paragraph."),
-			(document) => document.replace("2.  Choose", "2.  Then choose"),
-			(document) =>
-				document.replace(/- {3}\*\*Owner:\*\* Product\n *\n/, ""),
+			(document) => document.replace("2. Choose", "2. Then choose"),
+			(document) => document.replace(/- \*\*Owner:\*\* Product\n/, ""),
 		];
 		let current = loadDirect(
 			[
@@ -621,4 +620,244 @@ describe("editor markdown round trip: fences (Fizzy #2946)", () => {
 			expect(second.saved).toBe(first.saved);
 		},
 	);
+});
+
+// The shape the Proposal generator writes: numbered section headings, italic
+// subtitles in `_…_`, tight lists with bold leads, a table and fences.
+const PROPOSAL_BODY = [
+	"```cover",
+	"eyebrow: Proposal · Example board",
+	"for: Example Org",
+	"by: Example Delivery Team",
+	"version: 3",
+	"```",
+	"",
+	"# Example Intake Board",
+	"",
+	"_Prepared for the Example Org operations team_",
+	"",
+	"## 1. Executive Summary",
+	"",
+	"_A short summary of the engagement._",
+	"",
+	"Example Org tracks requests in spreadsheets. This proposal moves them onto one board.",
+	"",
+	"- **Faster intake:** requests land in one queue.",
+	"- **Clear ownership:** each request has a named owner.",
+	"  - **Escalation:** an owner hands over in one step.",
+	"- **Less rework:** fields are checked on entry.",
+	"",
+	"## 2. Approach",
+	"",
+	"_How the work is staged._",
+	"",
+	"1. **Discovery:** two weeks of interviews.",
+	"2. **Build:** six weeks of delivery.",
+	"   - **Review:** a demo at the end of each fortnight.",
+	"3. **Launch:** one week of rollout.",
+	"",
+	"| Phase | Weeks | Owner |",
+	"| --- | --- | --- |",
+	"| Discovery | 2 | Example Delivery Team |",
+	"| Build | 6 | Example Delivery Team |",
+	"",
+	"```mermaid",
+	"flowchart LR",
+	'  A["Discovery"] --> B["Build"] --> C["Launch"]',
+	"```",
+	"",
+	"## 3. Investment",
+	"",
+	"The fixed fee covers all three phases.",
+].join("\n");
+
+const proposalExtensions = createAdvancedExtensions({
+	projectId: null,
+	documentId: null,
+	statTiles: true,
+});
+
+/** Load `markdown` into the Proposal editor, apply `edit`, then save. */
+function saveProposal(
+	markdown: string,
+	edit: (editor: Editor) => void = () => {},
+): string {
+	const editor = new Editor({
+		extensions: proposalExtensions,
+		content: fromMarkdown(markdown),
+	});
+	edit(editor);
+	const saved = getEditorMarkdownForSave(editor);
+	editor.destroy();
+	if (saved === null) {
+		throw new Error("serialization failed");
+	}
+	return saved;
+}
+
+/** Replace the first occurrence of `word` in the document's text, as typing would. */
+function replaceWord(editor: Editor, word: string, replacement: string): void {
+	let range: { from: number; to: number } | null = null;
+	editor.state.doc.descendants((node, position) => {
+		const index = node.isText ? (node.text ?? "").indexOf(word) : -1;
+		if (!range && index >= 0) {
+			range = {
+				from: position + index,
+				to: position + index + word.length,
+			};
+		}
+	});
+	if (!range) {
+		throw new Error(`"${word}" is not in the document`);
+	}
+	const { from, to } = range;
+	editor.view.dispatch(editor.state.tr.insertText(replacement, from, to));
+}
+
+describe("editor markdown round trip: a generated document saves as it was written (Fizzy #2946)", () => {
+	it("saves an unedited Proposal body byte for byte", () => {
+		// Act
+		const saved = saveProposal(PROPOSAL_BODY);
+		const repaired = loadAndSave(PROPOSAL_BODY).saved;
+
+		// Assert
+		expect(saved).toBe(PROPOSAL_BODY);
+		expect(repaired).toBe(PROPOSAL_BODY);
+	});
+
+	it("changes only the edited word when one word changes", () => {
+		// Act
+		const saved = saveProposal(PROPOSAL_BODY, (editor) =>
+			replaceWord(editor, "six weeks", "seven weeks"),
+		);
+
+		// Assert
+		expect(saved).toBe(PROPOSAL_BODY.replace("six weeks", "seven weeks"));
+	});
+
+	it("still escapes a paragraph that starts with a number and a dot", () => {
+		// Arrange
+		const editorHtml =
+			"<h2>1. Scope</h2><p>1. Not a list item.</p><ul><li><p>2. Nor this.</p></li></ul>";
+
+		// Act
+		const { saved } = saveEditorContent(editorHtml);
+
+		// Assert
+		expect(saved).toBe(
+			"## 1. Scope\n\n1\\. Not a list item.\n\n- 2\\. Nor this.",
+		);
+	});
+
+	it("keeps a backslash typed before a heading's number", () => {
+		// Arrange
+		const editorHtml = "<h2>1\\. Scope</h2>";
+
+		// Act
+		const first = saveEditorContent(editorHtml);
+		const second = saveEditorContent(fromMarkdown(first.saved));
+
+		// Assert
+		expect(first.saved).toBe("## 1\\\\. Scope");
+		expect(second.html).toBe(editorHtml);
+	});
+
+	it.each([
+		{ name: "inside a word", markdown: "An un*break*able rule." },
+		{ name: "next to a literal asterisk", markdown: "A **Label* split." },
+		{ name: "next to underscores", markdown: "Keep *_a_* as it is." },
+	])(
+		"writes italic $name with asterisks, which read back",
+		({ markdown }) => {
+			// Act
+			const first = saveEditorContent(fromMarkdown(markdown));
+			const second = saveEditorContent(fromMarkdown(first.saved));
+
+			// Assert
+			expect(first.html).toContain("<em>");
+			expect(second.html).toBe(first.html);
+			expect(second.saved).toBe(first.saved);
+		},
+	);
+
+	it.each([
+		{
+			name: "an underscore before a space",
+			html: "<p>See <em>file_ name</em> here.</p>",
+			saved: "See *file_ name* here.",
+		},
+		{
+			name: "a leading underscore",
+			html: "<p>See <em>_draft</em> here.</p>",
+			saved: "See *_draft* here.",
+		},
+		{
+			name: "a trailing underscore",
+			html: "<p>See <em>draft_</em> here.</p>",
+			saved: "See *draft_* here.",
+		},
+		{
+			name: "a doubled underscore",
+			html: "<p>See <em>a__b</em> here.</p>",
+			saved: "See *a__b* here.",
+		},
+		{
+			name: "an underscore between letters",
+			html: "<p>See <em>snake_case value</em> here.</p>",
+			saved: "See _snake_case value_ here.",
+		},
+	])(
+		"keeps italic holding $name the same over load → save cycles",
+		({ html, saved }) => {
+			// Act
+			const first = saveEditorContent(html);
+			const second = saveEditorContent(fromMarkdown(first.saved));
+			const third = saveEditorContent(fromMarkdown(second.saved));
+
+			// Assert
+			expect(first.saved).toBe(saved);
+			expect(second.html).toBe(html);
+			expect(second.saved).toBe(saved);
+			expect(third.saved).toBe(saved);
+		},
+	);
+
+	it("writes intraword italic with asterisks", () => {
+		// Act
+		const { saved } = saveEditorContent("<p>un<em>break</em>able</p>");
+
+		// Assert
+		expect(saved).toBe("un*break*able");
+	});
+
+	it("keeps a list loose when an item holds two paragraphs", () => {
+		// Arrange
+		const markdown =
+			"- First point.\n\n  More about the first point.\n\n- Second point.\n\nAfter.";
+
+		// Act
+		const first = saveEditorContent(fromMarkdown(markdown));
+		const second = saveEditorContent(fromMarkdown(first.saved));
+
+		// Assert
+		expect(first.saved).toBe(markdown);
+		expect(second.saved).toBe(markdown);
+		expect(first.saved).not.toMatch(/^ +$/m);
+	});
+
+	it("saves a blank-separated list of one-line items tight", () => {
+		// The editor holds no record of the blank lines: this list and its
+		// tight form load as the same document. The older padded, space-lined
+		// form saves the same way.
+		const loose = "- First\n\n- Second\n\nAfter.";
+		const padded = "-   First\n    \n-   Second\n    \n\nAfter.";
+
+		// Act
+		const fromLoose = saveEditorContent(fromMarkdown(loose)).saved;
+		const fromPadded = saveEditorContent(fromMarkdown(padded)).saved;
+
+		// Assert
+		expect(fromLoose).toBe("- First\n- Second\n\nAfter.");
+		expect(fromPadded).toBe("- First\n- Second\n\nAfter.");
+	});
 });

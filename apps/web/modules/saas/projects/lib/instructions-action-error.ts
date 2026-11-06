@@ -15,7 +15,50 @@ export type InstructionActionErrorKey =
 	| "readOnlyMode"
 	| "ownProposal"
 	| "notAnApprover"
+	| InstructionConflictReasonKey
 	| "generic";
+
+/** A CONFLICT whose `data.reason` says what stands in the way. */
+type InstructionConflictReasonKey =
+	| "repositoryMode"
+	| "snapshotActive"
+	| "pullRequestUnresolved"
+	| "proposalPending";
+
+/**
+ * `data.reason` values with their own line. Each names a state the person can
+ * resolve, which "this changed while you were working" would hide.
+ */
+const KEY_BY_CONFLICT_REASON: ReadonlyMap<
+	string,
+	InstructionConflictReasonKey
+> = new Map<string, InstructionConflictReasonKey>([
+	["REPOSITORY_MODE", "repositoryMode"],
+	["SNAPSHOT_ACTIVE", "snapshotActive"],
+	["PULL_REQUEST_UNRESOLVED", "pullRequestUnresolved"],
+	["PROPOSAL_PENDING", "proposalPending"],
+]);
+
+function conflictReasonKeyOf(
+	error: unknown,
+): InstructionConflictReasonKey | null {
+	if (codeOf(error) !== "CONFLICT") {
+		return null;
+	}
+	const data =
+		error && typeof error === "object" && "data" in error
+			? error.data
+			: undefined;
+	if (
+		!data ||
+		typeof data !== "object" ||
+		!("reason" in data) ||
+		typeof data.reason !== "string"
+	) {
+		return null;
+	}
+	return KEY_BY_CONFLICT_REASON.get(data.reason) ?? null;
+}
 
 /** Carried in `data.errorCode` by every write a project in Read-only mode refuses (`@repo/utils`). */
 const READ_ONLY_MODE_ERROR_CODE = "PROJECT_READ_ONLY";
@@ -186,6 +229,10 @@ export function instructionActionErrorKey(
 	const approvalRefusal = approvalRefusalKey(error);
 	if (approvalRefusal) {
 		return approvalRefusal;
+	}
+	const conflictReason = conflictReasonKeyOf(error);
+	if (conflictReason) {
+		return conflictReason;
 	}
 	const code = codeOf(error);
 	return (code && KEY_BY_CODE.get(code)) || "generic";

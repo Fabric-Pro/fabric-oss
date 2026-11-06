@@ -60,7 +60,7 @@ const READING_THE_DATA = `## Reading the Data
 
 The data comes from the tools connected to this report, which may be any project management or repository tool.
 
-1. **When a Board Facts block opens this prompt, take every board-wide number from it: \`total\`, \`open\`, \`closed\`, \`postponed\`, \`byStatus\`, \`byColumn\` (open work only), \`byAssignee\` and \`byTag\` (each \`{open, closed}\`), \`unassigned\`, \`overdue\`, \`stale\`, \`closedPerPeriod\` and \`createdPerPeriod\`. Do not count them from the items you can see: a large board's list is shortened to fit.**
+1. **When a Board Facts block opens this prompt, take every board-wide number from it: \`total\`, \`open\`, \`closed\`, \`postponed\`, \`byStatus\`, \`byColumn\` (open work only), \`byAssignee\` and \`byTag\` (each \`{open, closed}\`), \`unassigned\`, \`overdue\`, \`stale\`, \`closedPerPeriod\` and \`createdPerPeriod\`. Do not count them from the items you can see: a large board's list is shortened to fit. To name what closed in a period, read the days in that period in \`closedCardsByDay\`, which lists closed items by number under the day they closed, and take each title from the list.**
 2. **Say coverage is partial only when the Board Facts have \`complete: false\`, and name what \`gaps\` lists. Never call the data a sample.**
 3. A null fact means the source does not provide that field: say it is not available, never zero.
 4. Without Board Facts, count from the gathered items and say what each count covers.
@@ -318,7 +318,7 @@ ${READING_THE_DATA}
 
 ## Choosing What Goes In
 
-An item belongs in these notes when it closed in the period, by its own close date or, when it has none, its last activity. The number closed in the period comes from \`closedPerPeriod\`. \`byTag\` covers the whole board, not the period, so use it only to read how the team names its work.
+An item belongs in these notes when it closed in the period: \`closedCardsByDay\` lists it under a day in the period or, without that fact, its own close date or last activity falls in the period. The number closed in the period comes from \`closedPerPeriod\`. \`byTag\` covers the whole board, not the period, so use it only to read how the team names its work.
 
 ## Report Structure
 
@@ -433,12 +433,14 @@ ${READING_THE_DATA}
 
 Report each with its value, what it was worked out from, and how many records it rests on:
 
-1. **Deployment frequency**: from deployment or release records in the period. Merges to the default branch count only as a proxy, labelled so.
-2. **Lead time for changes**: from commit to deployment when both are recorded. Otherwise pull request opened to merged, labelled as a proxy.
-3. **Change failure rate**: failed deployments, reverts or hotfixes divided by deployments. It needs both counts from the tools.
+1. **Deployment frequency**: from deployment records in the period. Without them, count the releases published in the period, labelled as a proxy. Without releases, count merges to the default branch, labelled as a proxy. Deployment records can come from many sources, such as commits a deployment pipeline writes; when the records you could read cover only part of the period and the releases you read reach back to its start, report the release count for the whole period as the value, labelled as a proxy, and give the deployment-record count with the dates it covers beside it.
+2. **Lead time for changes**: from commit to deployment when both are recorded. Otherwise the median time from opened to merged for the pull requests merged in the period, labelled as a proxy.
+3. **Change failure rate**: failed deployments divided by deployments. Without failure records, count the pull requests merged in the period whose titles mark a revert or a hotfix and divide by the deployment count above, labelled as a proxy.
 4. **Time to restore service**: from incident or outage records with start and end times.
 
-A metric whose records are missing is "Not available", naming the record that would supply it. Do not place a metric in an Elite, High, Medium or Low band unless its value rests on the real records rather than a proxy.
+Listings are read back to the start of the period for you where the tool allows it. When a listing still covers only part of the period, work out the value over the dates it covers, give those dates and the count, and label it partial. A partial value is a result, not "Not available".
+
+A metric is "Not available" only when neither its records nor its proxy can be read from the connected tools, naming the record that would supply it. A proxy with a stated count is a result: report it rather than "Not available". Do not place a metric in an Elite, High, Medium or Low band unless its value rests on the real records rather than a proxy.
 
 ## Report Structure
 

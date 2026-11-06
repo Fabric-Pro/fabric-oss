@@ -1,3 +1,4 @@
+import { relativeLuminance } from "@repo/utils/brand-colors";
 import {
 	PRINT_FIGURE_MAX_HEIGHT_PX,
 	PRINT_FIGURE_UNDER_OPENER_MAX_HEIGHT_PX,
@@ -6,7 +7,12 @@ import {
 import { buildProposalThemeTokens } from "@repo/utils/proposal-artifact/theme-tokens";
 import sharp from "sharp";
 import { beforeAll, describe, expect, it } from "vitest";
-import { type AppendixLabels, appendixLabels } from "../build-cover-html";
+import {
+	type AppendixLabels,
+	appendixLabels,
+	needsPlate,
+	plateBackgrounds,
+} from "../build-cover-html";
 import {
 	type BuildThemeHtmlInput,
 	buildThemeHtml,
@@ -19,7 +25,12 @@ import {
 	type ThemeHtmlPass,
 } from "../build-theme-html";
 import { prepareExportMarkdown } from "../markdown";
-import type { ExportDiagram, ExportRaster, ExportThemeTokens } from "../types";
+import {
+	type ExportDiagram,
+	type ExportRaster,
+	type ExportThemeTokens,
+	LOGO_TONE_BUCKETS,
+} from "../types";
 
 const PROJECT = "project-example-1";
 const DOCUMENT = "document-example-1";
@@ -103,6 +114,32 @@ function exportTokens(options: TokenOptions = {}): ExportThemeTokens {
 		},
 		recipient: { ...base.recipient, logo: asset(options.recipientLogo) },
 	};
+}
+
+/** A logo's tones (`ExportRaster.tones`) from luminances and their shares. */
+function tonesOf(parts: readonly (readonly [number, number])[]): number[] {
+	const tones = Array<number>(LOGO_TONE_BUCKETS).fill(0);
+	for (const [luminance, share] of parts) {
+		const bucket = Math.min(
+			Math.floor(luminance * LOGO_TONE_BUCKETS),
+			LOGO_TONE_BUCKETS - 1,
+		);
+		tones[bucket] = (tones[bucket] as number) + share;
+	}
+	return tones;
+}
+
+/** `tokens` with the proposer's ink set to `ink`, or as they are without one. */
+function withInk(tokens: ExportThemeTokens, ink?: string): ExportThemeTokens {
+	return ink === undefined
+		? tokens
+		: {
+				...tokens,
+				proposer: {
+					...tokens.proposer,
+					ink: { value: ink, source: "BRAND_KIT" },
+				},
+			};
 }
 
 function build(markdown: string, overrides: Partial<BuildThemeHtmlInput> = {}) {
@@ -532,7 +569,7 @@ describe("buildThemeHtml: cover", () => {
 		'<div class="pa-cover-parties"><dl class="pa-cover-party-for"><dt>Prepared for</dt><dd>Example Client</dd></dl><div class="pa-cover-party-by"><dl><dt>Prepared by</dt><dd>Example Org</dd></dl><p class="pa-cover-date">October 15, 2026 · Confidential</p></div></div>';
 	const measured = (
 		raster: ExportRaster,
-		tone: Pick<ExportRaster, "luminance" | "opaque">,
+		tone: Pick<ExportRaster, "luminance" | "boxed">,
 	): ExportRaster => ({ ...raster, ...tone });
 
 	it("opens the body, block-level, with the data-held fields only when Main has no preamble", () => {
@@ -551,8 +588,8 @@ describe("buildThemeHtml: cover", () => {
 	});
 
 	it("holds every field in order: hero, brands, eyebrow, title, lead, figures, parties", () => {
-		const dark = measured(png, { luminance: 0.04, opaque: false });
-		const light = measured(png, { luminance: 0.93, opaque: false });
+		const dark = measured(png, { luminance: 0.04, boxed: false });
+		const light = measured(png, { luminance: 0.93, boxed: false });
 		const { html } = build(
 			[
 				"A short lead for the cover.",
@@ -602,33 +639,109 @@ describe("buildThemeHtml: cover", () => {
 		);
 	});
 
-	it("sets a dark or opaque logo on the plate and a light or unmeasured one straight on the ink", () => {
-		const plated = (raster: ExportRaster) =>
+	it("plates only a mark on transparency too dark to read on the ink, so a light or coloured mark or a boxed logo sits straight on it", () => {
+		const plated = (raster: ExportRaster, ink?: string) =>
 			coverOf(
 				build("Text.", {
-					tokens: exportTokens({ proposerLogo: raster }),
+					tokens: withInk(
+						exportTokens({ proposerLogo: raster }),
+						ink,
+					),
 				}).html,
 			).includes("pa-cover-logo-plate");
 
-		expect(plated(measured(png, { luminance: 0.02, opaque: false }))).toBe(
+		// The neutral ink (#111827) measures about 0.009: a mark reads on it
+		// at 3:1 from a luminance of about 0.128.
+		expect(plated(measured(png, { luminance: 0.02, boxed: false }))).toBe(
 			true,
 		);
-		expect(plated(measured(png, { luminance: 0.44, opaque: false }))).toBe(
+		expect(plated(measured(png, { luminance: 0.12, boxed: false }))).toBe(
 			true,
 		);
-		expect(plated(measured(png, { luminance: 0.45, opaque: false }))).toBe(
+		expect(plated(measured(png, { luminance: 0.13, boxed: false }))).toBe(
 			false,
 		);
-		expect(plated(measured(png, { luminance: 0.97, opaque: false }))).toBe(
+		// A coloured mark, such as #d6452b at about 0.19, reads on the ink.
+		expect(plated(measured(png, { luminance: 0.19, boxed: false }))).toBe(
 			false,
 		);
-		// An opaque image's own edge would meet the ink, however light it is.
-		expect(plated(measured(jpeg, { luminance: 0.97, opaque: true }))).toBe(
-			true,
+		expect(plated(measured(png, { luminance: 0.97, boxed: false }))).toBe(
+			false,
+		);
+		// A logo on a box of its own, dark or light, carries its own mark.
+		expect(plated(measured(jpeg, { luminance: 0.03, boxed: true }))).toBe(
+			false,
+		);
+		expect(plated(measured(jpeg, { luminance: 0.97, boxed: true }))).toBe(
+			false,
 		);
 		// Nothing opaque to measure, or not measured at all.
-		expect(plated(measured(png, { opaque: false }))).toBe(false);
+		expect(plated(measured(png, { boxed: false }))).toBe(false);
 		expect(plated(png)).toBe(false);
+		// Judged against the brand's own ink: a lighter one (#334155, about
+		// 0.05) plates a mark the neutral ink would not.
+		expect(
+			plated(measured(png, { luminance: 0.2, boxed: false }), "#334155"),
+		).toBe(true);
+		expect(plated(measured(png, { luminance: 0.2, boxed: false }))).toBe(
+			false,
+		);
+	});
+
+	it("plates a dark wordmark beside a bright icon, judged by the share of its tones rather than their mean", () => {
+		// #1f2937 (about 0.022) and #facc15 (about 0.64), by share.
+		const twoTone = (dark: number): ExportRaster => ({
+			...png,
+			boxed: false,
+			tones: tonesOf([
+				[0.022, dark],
+				[0.64, 1 - dark],
+			]),
+		});
+		const ink = relativeLuminance("#111827");
+		// Eight tenths dark text: the mean (about 0.144) would pass 3:1.
+		expect(needsPlate(twoTone(0.8), ink)).toBe(true);
+		expect(needsPlate(twoTone(0.2), ink)).toBe(true);
+		// A soft edge of a tenth falls short without hiding anything.
+		expect(needsPlate(twoTone(0.1), ink)).toBe(false);
+		// The letter's paper turns it round: a white wordmark beside a navy
+		// mark (#0b3d91, about 0.05) is plated in the ink.
+		const paper = relativeLuminance("#ffffff");
+		const onPaper = (white: number): ExportRaster => ({
+			...png,
+			boxed: false,
+			tones: tonesOf([
+				[1, white],
+				[0.05, 1 - white],
+			]),
+		});
+		expect(needsPlate(onPaper(0.25), paper)).toBe(true);
+		expect(needsPlate(onPaper(0.05), paper)).toBe(false);
+		// Several backgrounds: plated when it falls short on any of them.
+		const mid = measured(png, { luminance: 0.2, boxed: false });
+		expect(needsPlate(mid, ink)).toBe(false);
+		expect(needsPlate(mid, [ink, 0.18])).toBe(true);
+		// A box of its own is never plated, whatever its tones.
+		expect(needsPlate({ ...twoTone(0.8), boxed: true }, ink)).toBe(false);
+	});
+
+	it("plates a mid-tone mark over a hero, which reads on the plain ink but not over the veiled hero", () => {
+		const mark = measured(png, { luminance: 0.25, boxed: false });
+		const plated = (hero: ExportRaster | null) =>
+			coverOf(
+				build("Text.", {
+					tokens: exportTokens({ proposerLogo: mark, hero }),
+				}).html,
+			).includes("pa-cover-logo-plate");
+		expect(plated(null)).toBe(false);
+		// An unmeasured hero is taken as white at its bright end.
+		expect(plated(jpeg)).toBe(true);
+		const backgrounds = plateBackgrounds(exportTokens({ hero: jpeg }));
+		expect(backgrounds.cover).toHaveLength(3);
+		expect(backgrounds.cover[0]).toBe(backgrounds.ink);
+		expect(plateBackgrounds(exportTokens()).cover).toEqual([
+			plateBackgrounds(exportTokens()).ink,
+		]);
 	});
 
 	it("draws one logo alone on its own side, and no brands row without a logo", () => {
@@ -1849,6 +1962,55 @@ describe("buildThemeHtml: fences", () => {
 		);
 		expect(body).toContain(
 			'<svg viewBox="0 0 10 10"></svg><figcaption class="pa-caption"><span class="pa-figure-number">Figure 1.</span></figcaption>',
+		);
+	});
+
+	it("captions a diagram without a caption of its own with its section's heading, without the section number", () => {
+		const svg: ExportDiagram = {
+			kind: "svg",
+			svg: '<svg viewBox="0 0 10 10"></svg>',
+			width: 10,
+			height: 10,
+			png: null,
+		};
+		const fence = (caption?: string) =>
+			[
+				"```mermaid",
+				...(caption ? [`%% caption: ${caption}`] : []),
+				"flowchart LR",
+				"  A --> B",
+				"```",
+			].join("\n");
+		const body = bodyOf(
+			build(
+				[
+					"# Example Proposal",
+					"",
+					"## 3. Delivery approach",
+					"",
+					"Text.",
+					"",
+					fence(),
+					"",
+					"### Rollout [S2]",
+					"",
+					fence("Own caption"),
+					"",
+					fence("[S3]"),
+				].join("\n"),
+				{ diagrams: [svg, svg, svg] },
+			).html,
+		);
+		expect(body).toContain(
+			'<figcaption class="pa-caption"><span class="pa-figure-number">Figure 1.</span> Delivery approach</figcaption>',
+		);
+		// A caption of its own wins.
+		expect(body).toContain(
+			'<figcaption class="pa-caption"><span class="pa-figure-number">Figure 2.</span> Own caption</figcaption>',
+		);
+		// Nothing left of its own: the heading, without its marker.
+		expect(body).toContain(
+			'<figcaption class="pa-caption"><span class="pa-figure-number">Figure 3.</span> Rollout</figcaption>',
 		);
 	});
 
@@ -3269,7 +3431,7 @@ describe("buildThemeHtml: cover letter", () => {
 		);
 	});
 
-	it("sets the proposer logo at the top left, on a plate of the ink only when it was drawn for a dark background", () => {
+	it("sets the proposer logo at the top left, on a plate of the ink only when its mark is too light to read on the paper", () => {
 		const head = (logo: ExportRaster) =>
 			/<div class="pa-letter-head">.*?<\/div>/.exec(
 				letterOf(
@@ -3280,13 +3442,20 @@ describe("buildThemeHtml: cover letter", () => {
 			)?.[0];
 		const data = `data:${png.mimeType};base64,${png.bytes.toString("base64")}`;
 
-		expect(head({ ...png, luminance: 0.04, opaque: false })).toBe(
+		expect(head({ ...png, luminance: 0.04, boxed: false })).toBe(
 			`<div class="pa-letter-head"><img class="pa-letter-logo" src="${data}" alt="Example Org logo"><p class="pa-letter-label">Cover letter</p></div>`,
 		);
-		expect(head({ ...png, luminance: 0.93, opaque: false })).toContain(
+		// On the white paper a mark reads at 3:1 up to a luminance of 0.30.
+		expect(head({ ...png, luminance: 0.29, boxed: false })).not.toContain(
+			"pa-letter-logo-plate",
+		);
+		expect(head({ ...png, luminance: 0.31, boxed: false })).toContain(
 			'<img class="pa-letter-logo pa-letter-logo-plate"',
 		);
-		expect(head({ ...png, luminance: 0.93, opaque: true })).not.toContain(
+		expect(head({ ...png, luminance: 0.93, boxed: false })).toContain(
+			'<img class="pa-letter-logo pa-letter-logo-plate"',
+		);
+		expect(head({ ...png, luminance: 0.93, boxed: true })).not.toContain(
 			"pa-letter-logo-plate",
 		);
 		expect(head(png)).not.toContain("pa-letter-logo-plate");

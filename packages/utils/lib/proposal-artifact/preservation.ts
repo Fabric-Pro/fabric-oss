@@ -442,7 +442,13 @@ function readDocument(source: string): ScopedDocument {
 				destinations[index].push(destination(node.url));
 				break;
 			case "definition":
-				definitions.set(node.identifier, node.url);
+				// The first definition of an identifier is the one a reference
+				// renders with (CommonMark); a later duplicate is ignored, so
+				// one added above another section's definition is a change of
+				// that section's destinations.
+				if (!definitions.has(node.identifier)) {
+					definitions.set(node.identifier, node.url);
+				}
 				destinations[index].push(destination(node.url));
 				break;
 			case "html":

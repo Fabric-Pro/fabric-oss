@@ -14,6 +14,7 @@ import {
 	fetchProjectContextSources,
 	runContextUpdate,
 } from "@repo/temporal";
+import { DOCUMENT_VERSION_CHANGE_DESCRIPTIONS } from "@repo/utils/document-version-change";
 import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
 import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-identity";
 import { PROPOSAL_USE_CHAT_OR_REGENERATE } from "@repo/utils/proposal-artifact/whole-body-writers";
@@ -212,7 +213,8 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 						),
 					),
 					lastEditedBy: user.id,
-					changeDescription: "Updated with latest context",
+					changeDescription:
+						DOCUMENT_VERSION_CHANGE_DESCRIPTIONS.UPDATED_FROM_CONTEXT,
 					userId: user.id,
 					organizationId: documentOrganizationId,
 					...(hasBase

@@ -603,6 +603,10 @@ describe("project operation activity isolation", () => {
 						// A document completed by another writer must remain untouched,
 						// and requires no further vector indexing to end this operation.
 						fillTargetDocument: async () => ({ applied: false }),
+						// The failed extraction ends its pre-created document too.
+						failContextTargetDocument: async () => ({
+							applied: true,
+						}),
 					},
 				});
 				await workflowWorker.runUntil(() =>
@@ -680,6 +684,7 @@ describe("project operation activity isolation", () => {
 												"processProjectContext",
 												"getProjectContextStatus",
 												"updateProjectContextStatus",
+												"failContextTargetDocument",
 											],
 								);
 								for (const activity of scheduled) {

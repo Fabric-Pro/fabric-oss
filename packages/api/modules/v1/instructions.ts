@@ -2,6 +2,7 @@ import { config } from "@repo/config";
 import {
 	db,
 	getInstructionManifestDiff,
+	getInstructionProposal,
 	getProjectInstructionSettings,
 	getPublishedInstructionSnapshot,
 	listInstructionFiles,
@@ -252,6 +253,7 @@ function readChangeBody(body: unknown):
 	| (InstructionChangeBase & {
 			changes: InlineInstructionChange[];
 			note?: { title?: string; body?: string };
+			supersedesSnapshotId?: string;
 	  })
 	| { error: string } {
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -310,12 +312,29 @@ function readChangeBody(body: unknown):
 		});
 	}
 
+	// Optional: the caller's own stale proposal this one replaces. Only the
+	// SHAPE is checked here; whether it may be replaced is the derivation's.
+	const superseded = raw.supersedesSnapshotId;
+	let replaces: { supersedesSnapshotId?: string } = {};
+	if (superseded !== undefined && superseded !== null) {
+		if (
+			typeof superseded !== "string" ||
+			superseded.length === 0 ||
+			superseded.length > SNAPSHOT_ID_MAX_LENGTH
+		) {
+			return {
+				error: `supersedesSnapshotId must be a string of 1 to ${SNAPSHOT_ID_MAX_LENGTH} characters.`,
+			};
+		}
+		replaces = { supersedesSnapshotId: superseded };
+	}
+
 	// Optional (Fizzy #2563 spec §12): the proposal's title and description,
 	// for both destinations. Only the SHAPE is checked here; the length,
 	// line and credential rules are the admission's, which answer 422
 	// NOTE_REJECTED naming the field. `null` means none, as absent does.
 	if (raw.note === undefined || raw.note === null) {
-		return { ...base, changes };
+		return { ...base, changes, ...replaces };
 	}
 	if (typeof raw.note !== "object" || Array.isArray(raw.note)) {
 		return {
@@ -331,6 +350,7 @@ function readChangeBody(body: unknown):
 	return {
 		...base,
 		changes,
+		...replaces,
 		note: {
 			...(typeof note.title === "string" ? { title: note.title } : {}),
 			...(typeof note.body === "string" ? { body: note.body } : {}),
@@ -739,6 +759,10 @@ export function registerInstructionRoutes(
 	 * version it last synced through `versions/:snapshotId/files`, and then
 	 * states its change set against the version published now. A stale
 	 * PROPOSAL is rebased by its proposer through the app's `rebaseProposal`.
+	 * The CLI's rebase can name the caller's own stale proposal it replaces as
+	 * `supersedesSnapshotId`: the same supersede path, on the proposal route
+	 * only, and the answer says whether the new row records it. A body field
+	 * an older server ignores, so a client that gets no answer knows.
 	 *
 	 * The tenant comes from `resolveInstructionProject`, the same resolution
 	 * the two read routes use and for the same reason: the PROJECT decides
@@ -787,13 +811,22 @@ export function registerInstructionRoutes(
 			const { submitInstructionChange } = await import(
 				"../projects/procedures/instructions/submit-change"
 			);
+			const replacing =
+				mode === "proposal" && !body.nativeBase
+					? body.supersedesSnapshotId
+					: undefined;
 			try {
 				const result = await submitInstructionChange({
 					userId: resolved.userId,
 					projectId,
 					...(body.nativeBase
 						? { nativeBase: body.nativeBase }
-						: { baseSnapshotId: body.baseSnapshotId }),
+						: {
+								baseSnapshotId: body.baseSnapshotId,
+								...(replacing
+									? { supersedes: { snapshotId: replacing } }
+									: {}),
+							}),
 					changes: body.changes,
 					...(body.note ? { note: body.note } : {}),
 					// The route's own constant, closed over above. Nothing
@@ -813,20 +846,40 @@ export function registerInstructionRoutes(
 					},
 					via: `v1:${apiCtx.keyType}-key`,
 				});
+				if ("nativeBase" in result) {
+					return c.json(
+						ok({
+							mode: result.mode,
+							operationId: result.snapshotId,
+							nativeBase: result.nativeBase,
+							putCount: result.putCount,
+							deleteCount: result.deleteCount,
+							status: result.status,
+							proposalStatus: result.proposalStatus,
+						}),
+					);
+				}
+				if (!replacing) {
+					return c.json(ok(result));
+				}
+				// The proposal answered replaces the stale one when it records
+				// it: the row this call wrote, or the one a retried call's first
+				// attempt wrote. Anything else is a duplicate, the same change
+				// already proposed on this version, which replaces nothing.
+				const answered = await getInstructionProposal(
+					result.snapshotId,
+					projectId,
+					resolved.organizationId,
+					{ proposerUserId: resolved.userId },
+				);
 				return c.json(
-					ok(
-						"nativeBase" in result
-							? {
-									mode: result.mode,
-									operationId: result.snapshotId,
-									nativeBase: result.nativeBase,
-									putCount: result.putCount,
-									deleteCount: result.deleteCount,
-									status: result.status,
-									proposalStatus: result.proposalStatus,
-								}
-							: result,
-					),
+					ok({
+						...result,
+						supersedesSnapshotId:
+							answered?.supersedesSnapshotId === replacing
+								? replacing
+								: null,
+					}),
 				);
 			} catch (error) {
 				const failure = submitChangeFailure(error);

@@ -16,11 +16,17 @@ import type { FigureKind } from "./parse";
  * Light panels and dark cards are these colours at a reduced opacity.
  */
 export interface FigurePalette {
-	/** Text, number squares, the dark columns. */
+	/**
+	 * Text, the dark columns, number squares the primary cannot mark or the
+	 * neutral style keeps.
+	 */
 	ink: string;
 	/** Text on an ink fill. */
 	onInk: string;
-	/** Highlights, the loop, team connectors, bars within a threshold. */
+	/**
+	 * Number squares, highlights, the loop, team connectors, bars within a
+	 * threshold.
+	 */
 	primary: string;
 	/** Small mono labels that read as text on the paper: a bar threshold. */
 	label: string;
@@ -34,6 +40,13 @@ export interface FigurePalette {
 	surface: string;
 	/** Secondary text and plain connectors. */
 	muted: string;
+	/**
+	 * The primary is the neutral style's, no brand's: number squares stay
+	 * ink, as the neutral style has always drawn them, and only a
+	 * highlighted step's square is primary (Fizzy #2946). Not a colour, so
+	 * `checkedPalette` leaves it out.
+	 */
+	neutralPrimary?: boolean;
 }
 
 export interface FigureOptions {

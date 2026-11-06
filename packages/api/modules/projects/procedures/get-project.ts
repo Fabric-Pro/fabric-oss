@@ -151,6 +151,12 @@ export const getProjectProcedure = tenantProtectedProcedure
 			effective?.permissions ?? [],
 			ProjectPerms.INSTRUCTION_UPDATE,
 		);
+		// Removing every coding-instructions version at once
+		// (`projects.instructions.removeAll`), which requires it.
+		const canDeleteInstructions = hasPermission(
+			effective?.permissions ?? [],
+			ProjectPerms.INSTRUCTION_DELETE,
+		);
 		const canExecuteAgents = hasPermission(
 			effective?.permissions ?? [],
 			ProjectPerms.AGENT_EXECUTE,
@@ -205,6 +211,7 @@ export const getProjectProcedure = tenantProtectedProcedure
 				canPublish,
 				canEditInstructions,
 				canReviewInstructions,
+				canDeleteInstructions,
 				canExecuteAgents,
 				canDeleteContexts,
 				canManageMembers,

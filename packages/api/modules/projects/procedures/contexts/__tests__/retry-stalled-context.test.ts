@@ -627,3 +627,177 @@ describe("retryStalled — refusals", () => {
 		expect(mockGetContextById).not.toHaveBeenCalled();
 	});
 });
+
+describe("Notion retries", () => {
+	it.each(["PENDING", "FAILED"])(
+		"embeds a %s Notion page",
+		async (extractionStatus) => {
+			mockGetContextById.mockResolvedValue(
+				row({
+					type: "INTEGRATION",
+					extractionStatus,
+					updatedAt: LONG_AGO,
+					s3Path: null,
+					content: "Example page",
+					qdrantId: null,
+					embeddedAt: null,
+					metadata: {
+						provider: "notion",
+						notionPageId: "page-example",
+						notionType: "page",
+						dataConnectionId: "connection-example",
+						sourceTitle: "Example",
+						sourceUrl: "https://example.com/page",
+					},
+				}),
+			);
+			const handler = await loadHandler();
+			await expect(
+				handler({ input, context: orgCtx }),
+			).resolves.toMatchObject({ dispatch: "embedding" });
+			expect(mockProjectContextUpdateMany).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({
+						extractionStatus: {
+							in:
+								extractionStatus === "FAILED"
+									? ["FAILED"]
+									: ["PENDING"],
+						},
+					}),
+				}),
+			);
+
+			expect(mockTemporalWorkflowStart).toHaveBeenCalledWith(
+				"contextEmbeddingWorkflow",
+				expect.objectContaining({
+					taskQueue: "project-documents",
+					args: [
+						expect.objectContaining({
+							organizationId: ORG_ID,
+							content: "Example page",
+							type: "INTEGRATION",
+						}),
+					],
+				}),
+			);
+		},
+	);
+	it.each(["", " \n\t"])("refuses blank Notion %j", async (content) => {
+		mockGetContextById.mockResolvedValue(
+			row({
+				type: "INTEGRATION",
+				content,
+				metadata: { provider: "notion" },
+			}),
+		);
+		const handler = await loadHandler();
+		await expect(handler({ input, context: orgCtx })).rejects.toMatchObject(
+			{
+				code: "BAD_REQUEST",
+				message: expect.stringContaining(
+					"Remove it and add the page again",
+				),
+			},
+		);
+		expect(mockTemporalWorkflowStart).not.toHaveBeenCalled();
+	});
+});
+
+it.each([
+	{ qdrantId: "point-example" },
+	{ embeddedAt: new Date() },
+	{ extractionStatus: "COMPLETED" },
+	{ extractionStatus: "EXTRACTING" },
+])("refuses an ineligible Notion state %j", async (overrides) => {
+	mockGetContextById.mockResolvedValue(
+		row({
+			type: "INTEGRATION",
+			extractionStatus: "PENDING",
+			content: "Example page",
+			metadata: { provider: "notion" },
+			...overrides,
+		}),
+	);
+	const handler = await loadHandler();
+	await expect(handler({ input, context: orgCtx })).rejects.toMatchObject({
+		code: "BAD_REQUEST",
+	});
+	expect(mockTemporalWorkflowStart).not.toHaveBeenCalled();
+});
+
+it.each(["SLACK", "MICROSOFT_TEAMS"])(
+	"keeps refusing %s integration retries",
+	async (provider) => {
+		mockGetContextById.mockResolvedValue(
+			row({
+				type: "INTEGRATION",
+				extractionStatus: "FAILED",
+				content: "Example text",
+				metadata: { provider },
+			}),
+		);
+		const handler = await loadHandler();
+		await expect(handler({ input, context: orgCtx })).rejects.toMatchObject(
+			{
+				code: "BAD_REQUEST",
+				message:
+					"This source is a live connection with no processing to retry.",
+			},
+		);
+		expect(mockTemporalWorkflowStart).not.toHaveBeenCalled();
+	},
+);
+it("does not retry a Notion source with a live job heartbeat", async () => {
+	mockGetContextById.mockResolvedValue(
+		row({
+			type: "INTEGRATION",
+			extractionStatus: "PENDING",
+			content: "Example page",
+			metadata: { provider: "notion" },
+		}),
+	);
+	mockBackgroundJobFindMany.mockResolvedValue([
+		{ workflowId: "workflow-example", heartbeatAt: new Date() },
+	]);
+	const handler = await loadHandler();
+	await expect(handler({ input, context: orgCtx })).rejects.toMatchObject({
+		code: "CONFLICT",
+	});
+	expect(mockTemporalWorkflowStart).not.toHaveBeenCalled();
+});
+
+it.each(["PENDING", "FAILED"])(
+	"refuses a recent %s Notion embedding",
+	async (extractionStatus) => {
+		mockGetContextById.mockResolvedValue(
+			row({
+				type: "INTEGRATION",
+				extractionStatus,
+				updatedAt: new Date(),
+				content: "Example page",
+				metadata: { provider: "notion" },
+			}),
+		);
+		const handler = await loadHandler();
+		await expect(handler({ input, context: orgCtx })).rejects.toMatchObject(
+			{ code: "CONFLICT" },
+		);
+		expect(mockTemporalWorkflowStart).not.toHaveBeenCalled();
+	},
+);
+it("refuses FAILED within the full 15-minute 3-second retry window", async () => {
+	mockGetContextById.mockResolvedValue(
+		row({
+			type: "INTEGRATION",
+			extractionStatus: "FAILED",
+			updatedAt: new Date(Date.now() - 15 * 60 * 1000),
+			content: "Example page",
+			metadata: { provider: "notion" },
+		}),
+	);
+	const handler = await loadHandler();
+	await expect(handler({ input, context: orgCtx })).rejects.toMatchObject({
+		code: "CONFLICT",
+	});
+});

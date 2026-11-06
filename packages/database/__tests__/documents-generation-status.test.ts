@@ -23,6 +23,7 @@ vi.mock("../prisma/client", () => ({
 }));
 
 import {
+	failGeneratingDocument,
 	findStaleGeneratingDocuments,
 	markDocumentGenerationQueued,
 	markDocumentGenerationRunning,
@@ -632,5 +633,41 @@ describe("findStaleGeneratingDocuments", () => {
 			expect(select.workflowId).toBe(true);
 			expect(select.generationStartedAt).toBe(true);
 		}
+	});
+});
+
+describe("failGeneratingDocument", () => {
+	it("fails only a row that is still generating", async () => {
+		const count = await failGeneratingDocument({
+			documentId: DOCUMENT_ID,
+			reason: "The file could not be read.",
+		});
+
+		expect(updateMany).toHaveBeenCalledWith({
+			where: { id: DOCUMENT_ID, status: "GENERATING" },
+			data: {
+				status: "FAILED",
+				generationError: "The file could not be read.",
+			},
+		});
+		expect(count).toBe(1);
+	});
+
+	it("also holds the row to a project when the caller names one", async () => {
+		updateMany.mockResolvedValue({ count: 0 });
+
+		const count = await failGeneratingDocument({
+			documentId: DOCUMENT_ID,
+			reason: "The file could not be read.",
+			projectId: "proj-1",
+		});
+
+		const [{ where }] = updateMany.mock.calls[0];
+		expect(where).toEqual({
+			id: DOCUMENT_ID,
+			status: "GENERATING",
+			projectId: "proj-1",
+		});
+		expect(count).toBe(0);
 	});
 });

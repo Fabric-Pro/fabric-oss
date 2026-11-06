@@ -1844,6 +1844,10 @@ export async function generateDocumentWithAgent(params: {
 		// once the prompt carried settled decisions. Null for every other run,
 		// so nothing is checked. Artifact mode only.
 		let echoGuard: ResponseEchoGuard | null = null;
+		// The finding titles alone, each also counted when Main holds it
+		// whole. Never refuses: a generation cannot retry, so a whole title
+		// in the final Main is only logged, by key.
+		let wholeTitleGuard: ResponseEchoGuard | null = null;
 		if (artifact) {
 			// Artifact mode: the client-only Main prompt at exactly the version
 			// the run was planned with, on every attempt. The request's
@@ -1956,17 +1960,30 @@ export async function generateDocumentWithAgent(params: {
 			// the project information and the run's own instructions (its
 			// ADDITIONAL USER INSTRUCTIONS, carried when not blank), which the
 			// member who started it wrote (Fizzy #2946). One guard serves both
-			// the live previews and the final check. Its texts are never
-			// logged.
+			// the live previews and the final check, and checks titles by the
+			// long runs only, as answers are: a refusal here fails the run.
+			// Its texts are never logged.
 			if (settled) {
+				const sourceContext = [
+					...contexts,
+					...promptProjectInformation(project, contexts),
+					...(prompt && prompt.trim().length > 0 ? [prompt] : []),
+				];
+				const previousMain = currentDocument ?? null;
 				echoGuard = buildEchoGuard({
 					carried: settled.carried,
-					sourceContext: [
-						...contexts,
-						...promptProjectInformation(project, contexts),
-						...(prompt && prompt.trim().length > 0 ? [prompt] : []),
-					],
-					previousMain: currentDocument ?? null,
+					sourceContext,
+					previousMain,
+					wholeTitles: false,
+				});
+				wholeTitleGuard = buildEchoGuard({
+					carried: {
+						...settled.carried,
+						responseTexts: [],
+						responseKeys: [],
+					},
+					sourceContext,
+					previousMain,
 				});
 				live?.guardEchoes(echoGuard);
 			}
@@ -3192,6 +3209,24 @@ ${formattingRules}`;
 				// failure handling.
 				await live?.clear();
 				throw responseEchoedFailure();
+			}
+		}
+		if (wholeTitleGuard) {
+			const titles = checkEcho(wholeTitleGuard, content);
+			if (titles.echoed) {
+				activityLogger.warn(
+					"Generated Main holds a finding title whole; saving it",
+					{
+						projectId,
+						documentId,
+						liveRunId: artifact?.liveRunId,
+						echoedTitles: titles.titleIndexes.length,
+						echoedKeys: echoedStableKeys(
+							wholeTitleGuard.carried,
+							titles,
+						),
+					},
+				);
 			}
 		}
 		// Those slots are right only for the version they were lifted from, so

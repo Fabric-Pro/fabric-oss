@@ -16,9 +16,9 @@ function simulateRoundTrip(markdown: string): string {
 }
 
 function canonicalizeFixtureText(text: string): string {
-	// Turndown pads an ordered marker to a fixed width (`38.  Item`), so
+	// Older saves padded a marker to a fixed width (`38.  Item`), so
 	// collapse marker whitespace before comparing — the fixtures assert
-	// structure, not the serializer's column alignment.
+	// structure, not column alignment.
 	return text
 		.replace(/^(\s*[-*+])\s+/gm, "$1 ")
 		.replace(/^(\s*\d+[.)])\s+/gm, "$1 ");

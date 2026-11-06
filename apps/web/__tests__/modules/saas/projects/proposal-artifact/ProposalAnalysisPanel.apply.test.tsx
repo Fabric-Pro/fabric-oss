@@ -10,6 +10,8 @@
  *  - while that finding's revision is under way it says so in words, its
  *    controls are busy and its other actions wait, and no other finding's
  *    Apply can start a second revision;
+ *  - while a section revision asked for on Main (Revise this section) is
+ *    under way, every Apply is disabled and says why, and answers stay free;
  *  - nothing is offered while the analysis is greyed by a generation;
  *  - a Resolved finding shows its chip in words and offers Answer and Clear,
  *    and Confirm (never "Confirm again") when its author lost edit rights;
@@ -100,6 +102,7 @@ function renderPanel({
 	pendingRevisionFindingId = null as string | null,
 	isGenerating = false,
 	withApply = true,
+	sectionRevisionPending = false,
 } = {}) {
 	const ui = (pending: string | null) => (
 		<QueryClientProvider client={client}>
@@ -111,6 +114,7 @@ function renderPanel({
 					withApply ? onApplyRecommendation : undefined
 				}
 				pendingRevisionFindingId={pending}
+				sectionRevisionPending={sectionRevisionPending}
 			/>
 		</QueryClientProvider>
 	);
@@ -270,6 +274,34 @@ describe("ProposalAnalysisPanel — Apply recommendation", () => {
 
 		await userEvent.click(other.getByRole("button", { name: APPLY }));
 		expect(onApplyRecommendation).not.toHaveBeenCalled();
+	});
+
+	it("disables every Apply while a section revision runs on Main, and says why", async () => {
+		serverSays(threeFindings());
+		const { onApplyRecommendation, container } = renderPanel({
+			sectionRevisionPending: true,
+		});
+
+		await screen.findByText("Scope gap");
+		for (const title of ["Scope gap", "Pricing gap"]) {
+			const finding = within(item(title));
+			const apply = finding.getByRole("button", { name: APPLY });
+			expect(apply).toBeDisabled();
+			expect(apply).toHaveAccessibleDescription(
+				expect.stringContaining(copy.applyWaitsForSectionRevision),
+			);
+			expect(
+				finding.getByText(copy.applyWaitsForSectionRevision),
+			).toBeInTheDocument();
+			// No finding's own revision is under way, and answers stay free.
+			expect(finding.queryByText(copy.revisionInProgress)).toBeNull();
+			expect(
+				finding.getByRole("button", { name: copy.actions.confirm }),
+			).toBeEnabled();
+			await userEvent.click(apply);
+		}
+		expect(onApplyRecommendation).not.toHaveBeenCalled();
+		expect(await axe(container)).toHaveNoViolations();
 	});
 
 	it("frees the finding's actions once the revision settles without a change", async () => {

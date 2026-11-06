@@ -398,6 +398,22 @@ function readsOverHero(
 }
 
 /**
+ * The far ends of the hero as the cover shows it under its veil (Fizzy
+ * #2946): its bright end, and black, each laid under `paint.heroVeil` of the
+ * ink, as `readsOverHero` blends them. Whatever sits on the hero without
+ * being fitted to the veil, a cover logo, must read against both.
+ */
+export function veiledHeroEnds(
+	paint: Pick<ProposalThemePaint, "ink" | "heroVeil">,
+	heroLuminance: number | undefined,
+): [bright: string, dark: string] {
+	return [
+		mixHex(paint.ink, heroBrightEnd(heroLuminance), paint.heroVeil),
+		mixHex(paint.ink, "#000000", paint.heroVeil),
+	];
+}
+
+/**
  * The least ink veil, at 1% steps, under which every colour of `texts`
  * still reads at 4.5:1 over the hero, its bright end `brightest`.
  */
@@ -426,17 +442,26 @@ function heroVeilFor(
  * it does. The brand values are read as stored, not as the paper's paint,
  * which drops a light accent that reads well on the ink. With a hero, the
  * rule holds 3:1 over the veiled hero too: a brand colour that does, else
- * the plain ink's rule lightened until it does.
+ * the plain ink's rule lightened until it does. The eyebrows take the
+ * brand's own primary, `brandPrimary`, lightened until it reads at 4.5:1
+ * on the ink and over the veiled hero; without one (the neutral style)
+ * they take the brand colour above.
  */
 function onInkPaint(
 	ink: string,
 	surface: string,
 	brand: readonly string[],
 	primary: string,
+	brandPrimary: string | null,
 	hero: { present: boolean; luminance: number | undefined },
 ): Pick<
 	ProposalThemePaint,
-	"onInk" | "onInkMuted" | "onInkAccent" | "onInkRule" | "heroVeil"
+	| "onInk"
+	| "onInkMuted"
+	| "onInkAccent"
+	| "onInkPrimary"
+	| "onInkRule"
+	| "heroVeil"
 > {
 	// The surface always reads on the ink; white is preferred when it does.
 	const onInk =
@@ -449,10 +474,10 @@ function onInkPaint(
 		brand.find((color) => contrastRatio(color, ink) >= TEXT_CONTRAST) ??
 		onInk;
 	const brightest = heroBrightEnd(hero.luminance);
-	// The accent is text over the hero too: the cover's and each opener's
-	// eyebrow. The figures' rules are not: one that only just holds 3:1 on
-	// the ink would need the hero veiled away, so the rule is fitted to the
-	// veil the text needs instead.
+	// The accent is text that may sit over the hero too. The figures' rules
+	// and the eyebrows' primary are not in the list: a colour that only just
+	// holds on the ink would need the hero veiled away, so each is fitted to
+	// the veil this text needs instead.
 	const heroVeil = heroVeilFor(
 		ink,
 		[onInk, onInkMuted, onInkAccent],
@@ -460,14 +485,13 @@ function onInkPaint(
 	);
 	const onPlainInk = (color: string) =>
 		contrastRatio(color, ink) >= GRAPHIC_CONTRAST;
-	// A brand colour that holds, else `base` lightened towards the text
-	// colour until it does. At its lightest the mix is the text colour,
-	// which holds on the ink and, under the veil, over the hero.
-	const ruleWhere = (holds: (color: string) => boolean, base: string) => {
-		const kept = brand.find(holds);
-		if (kept !== undefined) {
-			return kept;
-		}
+	// `base` lightened towards the text colour, a tenth at a time, until it
+	// holds. At its lightest the mix is the text colour, which holds on the
+	// ink and, under the veil, over the hero.
+	const lightenedWhere = (
+		holds: (color: string) => boolean,
+		base: string,
+	) => {
 		for (let step = 1; ; step++) {
 			const lighter = mixHex(base, onInk, Math.max(1 - step / 10, 0));
 			if (holds(lighter) || step >= 10) {
@@ -475,6 +499,9 @@ function onInkPaint(
 			}
 		}
 	};
+	// A brand colour that holds, else `base` lightened until it does.
+	const ruleWhere = (holds: (color: string) => boolean, base: string) =>
+		brand.find(holds) ?? lightenedWhere(holds, base);
 	const plainRule = ruleWhere(onPlainInk, primary);
 	// The rules above the cover's key figures sit over the hero, where the
 	// fade has not yet taken it into the ink. They keep the plain ink's hue,
@@ -493,7 +520,26 @@ function onInkPaint(
 				plainRule,
 			)
 		: plainRule;
-	return { onInk, onInkMuted, onInkAccent, onInkRule, heroVeil };
+	// Text over the hero too, fitted to the veil the other text needs
+	// rather than thickening it.
+	const textHolds = (color: string) =>
+		contrastRatio(color, ink) >= TEXT_CONTRAST &&
+		(!hero.present ||
+			readsOverHero(color, ink, brightest, heroVeil, TEXT_CONTRAST));
+	const onInkPrimary =
+		brandPrimary === null
+			? onInkAccent
+			: textHolds(brandPrimary)
+				? brandPrimary
+				: lightenedWhere(textHolds, brandPrimary);
+	return {
+		onInk,
+		onInkMuted,
+		onInkAccent,
+		onInkPrimary,
+		onInkRule,
+		heroVeil,
+	};
 }
 
 /** The editor's own review hues (DocumentEditor.css), not brand values. */
@@ -508,7 +554,10 @@ const REVIEW_DELETE = "#f98181";
 export interface ProposalThemePaint {
 	surface: string;
 	ink: string;
-	/** Headings: the primary when it reads as text on the paper, else ink. */
+	/**
+	 * The primary as text on the paper when it reads there, else ink: links,
+	 * print's eyebrows and contents numbers on the paper.
+	 */
 	heading: string;
 	/** Rules, tile top borders, table header fills. */
 	primary: string;
@@ -517,9 +566,9 @@ export interface ProposalThemePaint {
 	accent: string;
 	onAccent: string;
 	/**
-	 * Small mono labels on the paper: eyebrows, contents numbers, list
-	 * markers, step numbers. A brand accent that reads as text there, else
-	 * the heading colour.
+	 * Small mono labels on the paper: list markers, step numbers, card
+	 * labels. A brand accent that reads as text there, else the heading
+	 * colour.
 	 */
 	label: string;
 	/** Secondary text, captions, eyebrows. */
@@ -540,8 +589,15 @@ export interface ProposalThemePaint {
 	onInk: string;
 	/** Secondary text on the ink: the cover's lead, labels and parties. */
 	onInkMuted: string;
-	/** A brand colour as text on the ink: eyebrows and labels. */
+	/** A brand colour as text on the ink: the cover's party labels. */
 	onInkAccent: string;
+	/**
+	 * The brand primary as text on the ink: the cover's eyebrow and each
+	 * section opener's. Lightened towards the ink's text colour until it
+	 * reads at 4.5:1 there, and over the hero under its veil; the neutral
+	 * style has no brand primary and takes the accent above.
+	 */
+	onInkPrimary: string;
 	/**
 	 * A brand colour as a rule on the ink: the cover's figure rules. With a
 	 * hero, it holds 3:1 over the hero under the veil too.
@@ -553,6 +609,13 @@ export interface ProposalThemePaint {
 	 * bright end, or over a pure white hero when it was not measured.
 	 */
 	heroVeil: number;
+	/**
+	 * The primary is the neutral style's own, no brand's (its token's source
+	 * is the default). The neutral style keeps its ink number squares in the
+	 * process and timeline figures (Fizzy #2946). Absent on paint assembled
+	 * elsewhere, which counts as a brand's.
+	 */
+	neutralPrimary?: boolean;
 	fonts: { display: string; body: string; mono: string };
 }
 
@@ -638,11 +701,13 @@ export function resolveThemePaint(
 				...normalizeHexColorList(proposer.accents.value, MAX_COLORS),
 			],
 			primary,
+			proposer.primary.source === "DEFAULT" ? null : brandPrimary,
 			{
 				present: proposer.hero.value !== null,
 				luminance: options.heroLuminance,
 			},
 		),
+		neutralPrimary: proposer.primary.source === "DEFAULT",
 		fonts: {
 			display:
 				safeFontFamily(proposer.fonts.display.value) ??
@@ -690,6 +755,7 @@ export function themeCustomProperties(
 		"--pa-on-ink": color(paint.onInk, NEUTRAL_THEME.surface),
 		"--pa-on-ink-muted": color(paint.onInkMuted, NEUTRAL_THEME.surface),
 		"--pa-on-ink-accent": color(paint.onInkAccent, NEUTRAL_THEME.surface),
+		"--pa-on-ink-primary": color(paint.onInkPrimary, NEUTRAL_THEME.surface),
 		"--pa-on-ink-rule": color(paint.onInkRule, NEUTRAL_THEME.surface),
 		// A number, never text: anything else paints the ink opaque.
 		"--pa-hero-veil":

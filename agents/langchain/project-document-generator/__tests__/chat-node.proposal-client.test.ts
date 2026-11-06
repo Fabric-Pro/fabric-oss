@@ -45,6 +45,7 @@ import {
 	buildProposalAttachmentBlock,
 	buildVisualPlaceholderView,
 	ECHO_CORRECTION_PREFIX,
+	GUEST_PROMPT_ECHO_MIN_WORDS,
 	guestEmittedState,
 	neutralizeTag,
 	PATCH_ONLY_CORRECTION_PREFIX,
@@ -1683,6 +1684,35 @@ describe("echo check", () => {
 		expect(capturedLogText()).not.toContain("phased rollout");
 	});
 
+	it("retries a proposed document that holds a short finding title whole", async () => {
+		mockInvoke.mockResolvedValueOnce(
+			patchResponse([
+				{
+					op: "append_to_section",
+					anchor: anchorFor(PROPOSAL, "## 3. Scope"),
+					content: "\nTriage ownership is unclear.\n",
+				},
+			]),
+		);
+		const command = asCommand(
+			await chatNode(
+				createState(),
+				artifactConfig({
+					proposal_echo_carried: {
+						responseTexts: [],
+						findingTitles: ["Triage ownership is unclear"],
+					},
+				}),
+			),
+		);
+
+		expect(gotoList(command)).toContain("chat_node");
+		expect(command.update).not.toHaveProperty("document");
+		expect(String(command.update.messages.at(-1).content)).toMatch(
+			new RegExp(`^${ECHO_CORRECTION_PREFIX}`),
+		);
+	});
+
 	it("lets wording already in Main through", async () => {
 		const document = PROPOSAL.replace(
 			"The first phase covers intake and triage.",
@@ -2066,6 +2096,112 @@ describe("a guest's reply on an artifact Proposal", () => {
 			await chatNode(createState({ document }), guestConfig()),
 		);
 		expect(lastText(command)).toBe(reply);
+	});
+
+	describe("a fragment of the prompt shorter than the shared threshold", () => {
+		// Eight words of CLIENT_PROMPT, with its punctuation and case changed.
+		const FRAGMENT =
+			"Keep every heading — and leave diagram placeholders exactly";
+		const fragmentReply = `Sure. I was told to ${FRAGMENT} where they are.`;
+
+		it("checks a guest's reply for runs of eight words", () => {
+			expect(GUEST_PROMPT_ECHO_MIN_WORDS).toBe(8);
+		});
+
+		it("replaces a guest's reply that repeats eight words of it", async () => {
+			mockInvoke.mockResolvedValueOnce(
+				new AIMessage({ content: fragmentReply }),
+			);
+			const command = asCommand(
+				await chatNode(createState(), guestConfig()),
+			);
+
+			expect(lastText(command)).toBe(PROPOSAL_PROMPT_REFUSAL_REPLY);
+			expect(JSON.stringify(command.update)).not.toContain(
+				"leave diagram placeholders",
+			);
+		});
+
+		it("lets a guest's reply with seven words of it through", async () => {
+			const reply =
+				"Sure. I keep every heading and leave diagram placeholders in place.";
+			mockInvoke.mockResolvedValueOnce(new AIMessage({ content: reply }));
+			const command = asCommand(
+				await chatNode(createState(), guestConfig()),
+			);
+
+			expect(lastText(command)).toBe(reply);
+		});
+
+		it("leaves a member's reply that repeats it as the model wrote it", async () => {
+			mockInvoke.mockResolvedValueOnce(
+				new AIMessage({ content: fragmentReply }),
+			);
+			const command = asCommand(
+				await chatNode(
+					createState(),
+					guestConfig({ proposal_viewer: "member" }),
+				),
+			);
+
+			expect(lastText(command)).toBe(fragmentReply);
+		});
+
+		it("replaces a guest's reply that hides it behind invisible characters", async () => {
+			// A zero-width space, a soft hyphen and a word joiner inside words.
+			const hidden =
+				"Keep ev\u200Bery heading and le\u00ADave diagram place\u2060holders exactly";
+			mockInvoke.mockResolvedValueOnce(
+				new AIMessage({ content: `Sure. I was told to ${hidden}.` }),
+			);
+			const command = asCommand(
+				await chatNode(createState(), guestConfig()),
+			);
+
+			expect(lastText(command)).toBe(PROPOSAL_PROMPT_REFUSAL_REPLY);
+		});
+
+		const fragmentPatch = () =>
+			patchResponse([
+				{
+					op: "append_to_section",
+					anchor: anchorFor(PROPOSAL, "## 3. Scope"),
+					content: `\nWe ${FRAGMENT} in every deliverable.\n`,
+				},
+			]);
+
+		it("never shows a guest a proposed document that repeats it", async () => {
+			mockInvoke.mockResolvedValueOnce(fragmentPatch());
+			const command = asCommand(
+				await chatNode(createState(), guestConfig()),
+			);
+
+			expect(gotoList(command)).toContain("chat_node");
+			expect(command.update).not.toHaveProperty("document");
+			expect(toolCallNames(command.update.messages)).not.toContain(
+				"confirm_changes",
+			);
+			expect(String(command.update.messages.at(-1).content)).toMatch(
+				new RegExp(`^${ECHO_CORRECTION_PREFIX}`),
+			);
+			expect(
+				JSON.stringify(guestEmittedState(command.update)),
+			).not.toContain("leave diagram placeholders");
+		});
+
+		it("lets a member's proposed document that repeats it through for review", async () => {
+			mockInvoke.mockResolvedValueOnce(fragmentPatch());
+			const command = asCommand(
+				await chatNode(
+					createState(),
+					guestConfig({ proposal_viewer: "member" }),
+				),
+			);
+
+			expect(toolCallNames(command.update.messages)).toContain(
+				"confirm_changes",
+			);
+		});
 	});
 
 	it("leaves a member's reply as the model wrote it", async () => {

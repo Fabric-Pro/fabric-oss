@@ -295,6 +295,8 @@ import {
 } from "./procedures/instructions/proposals";
 import { publishSnapshotProcedure } from "./procedures/instructions/publish-snapshot";
 import { rebaseInstructionProposalProcedure } from "./procedures/instructions/rebase-proposal";
+import { removeAllInstructionsProcedure } from "./procedures/instructions/remove-all";
+import { removeAllInstructionsPreviewProcedure } from "./procedures/instructions/remove-all-preview";
 import {
 	previewInstructionFileRestoreProcedure,
 	restoreInstructionFileProcedure,
@@ -2261,6 +2263,9 @@ export const projectsRouter = {
 		markSeen: markInstructionsSeenProcedure,
 		publish: publishSnapshotProcedure,
 		delete: deleteSnapshotProcedure,
+		// Every version at once, the published one included: start over.
+		removeAll: removeAllInstructionsProcedure,
+		removeAllPreview: removeAllInstructionsPreviewProcedure,
 		createDownloadUrl: createDownloadUrlProcedure,
 		getSettings: getInstructionSettingsProcedure,
 		// The plugin's name in coding tools (specs/2026-10-21).

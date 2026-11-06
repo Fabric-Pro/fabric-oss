@@ -1,7 +1,10 @@
 "use client";
 
 import { useAnalytics } from "@analytics";
-import { hasExtractionLifecycle } from "@repo/api/modules/projects/lib/extraction-lifecycle";
+import {
+	CONTEXT_EMBEDDING_RETRY_WINDOW_MS,
+	hasExtractionLifecycle,
+} from "@repo/api/modules/projects/lib/extraction-lifecycle";
 import {
 	pmDetectedTypeDisplayName,
 	UPLOADED_TRANSCRIPT_PROVIDER,
@@ -150,6 +153,15 @@ import { getPmToolBrandIcon } from "./stories/pm-sync/pm-tool-brand-icon";
 
 /** Context types that can be read as a customer scope document (plan §Slice 1). */
 const SCOPE_INTAKE_TYPES = new Set(["FILE", "DOCUMENT", "TEXT"]);
+
+/**
+ * How long a row download waits for its signed URL and, for PDF/Word, the
+ * stored text, before giving up. The preparing toast and the row's disabled
+ * Download stay until the attempt settles, so a request that never answers
+ * has to end in the failure toast rather than a loader that spins forever.
+ * One deadline over both requests, like the Download all button's.
+ */
+const DOWNLOAD_TIMEOUT_MS = 60_000;
 
 /**
  * Maximum window during which we'll keep polling a still-in-flight context
@@ -1093,15 +1105,53 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 		SCOPE_INTAKE_TYPES.has(ctx.type) &&
 		ctx.extractionStatus === "COMPLETED";
 
+	// Rows whose download is still running. The state drives the disabled
+	// menu items; the ref is what the handler checks, because two selects in
+	// the same tick would both read the state from before either started.
+	const [downloadingIds, setDownloadingIds] = useState<ReadonlySet<string>>(
+		() => new Set(),
+	);
+	const downloadingIdsRef = useRef(new Set<string>());
+
 	const handleDownloadRow = useCallback(
 		async (ctx: RowContext, format: "md" | "pdf" | "docx" = "md") => {
+			if (downloadingIdsRef.current.has(ctx.id)) {
+				return;
+			}
+			downloadingIdsRef.current.add(ctx.id);
+			setDownloadingIds(new Set(downloadingIdsRef.current));
+
+			const title = getContextDisplayTitle(ctx);
+			// PDF and Word are built in the browser from the extracted text,
+			// which takes seconds on a long transcript and blocks the page
+			// while it runs. Without a sign of progress the click looks like it
+			// did nothing, so the toast opens here, before the first await, and
+			// is queued ahead of that work. Markdown and original files are a
+			// plain signed-URL save and finish too fast to need one.
+			const showsProgress =
+				format !== "md" && classifyContext(ctx) !== "A";
+			// One toast per row: a failure replaces the preparing toast in place
+			// instead of stacking a second one beside it.
+			const toastId = `context-download-${ctx.id}`;
+			if (showsProgress) {
+				toast.loading(
+					tDownload(
+						format === "pdf" ? "preparingPdf" : "preparingDocx",
+						{ title },
+					),
+					{ id: toastId },
+				);
+			}
+
 			try {
+				const signal = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
 				const res = await orpc.projects.contexts.createDownloadUrl.call(
 					{
 						contextId: ctx.id,
 						projectId,
 						organizationId,
 					},
+					{ signal },
 				);
 				// Class A is always the original binary — `format` is ignored.
 				// Class B/C with `format === "md"` keeps the existing path
@@ -1111,14 +1161,13 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 				} else {
 					// Fetch the synthesized markdown text from the presigned URL,
 					// then render to PDF / DOCX in the browser before saving.
-					const markdownResp = await fetch(res.url);
+					const markdownResp = await fetch(res.url, { signal });
 					if (!markdownResp.ok) {
 						throw new Error(
 							`Failed to fetch context text: ${markdownResp.status}`,
 						);
 					}
 					const markdown = await markdownResp.text();
-					const title = getContextDisplayTitle(ctx);
 					const blob =
 						format === "pdf"
 							? await renderMarkdownToPdf(markdown)
@@ -1130,6 +1179,9 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 						dot > 0 ? res.filename.slice(0, dot) : res.filename;
 					triggerBlobDownload(blob, `${stem}.${format}`);
 				}
+				if (showsProgress) {
+					toast.dismiss(toastId);
+				}
 				trackEvent("project_context_downloaded", {
 					contextId: ctx.id,
 					projectId,
@@ -1138,7 +1190,10 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 					format,
 				});
 			} catch (_err) {
-				toast.error(tDownload("failed"));
+				toast.error(tDownload("failed"), { id: toastId });
+			} finally {
+				downloadingIdsRef.current.delete(ctx.id);
+				setDownloadingIds(new Set(downloadingIdsRef.current));
 			}
 		},
 		[organizationId, projectId, tDownload, trackEvent],
@@ -1175,6 +1230,13 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 		}
 		const cls = classifyContext(ctx);
 		const title = getContextDisplayTitle(ctx);
+		// The items let the menu close on select: the download runs on after
+		// it, and a row already downloading shows that here when the menu is
+		// opened again, instead of starting a second copy.
+		const inFlight = downloadingIds.has(ctx.id);
+		const downloadLabel = inFlight
+			? tDownload("preparingFile")
+			: tDownload("action");
 
 		// Class A: single Download item — the original binary is presigned
 		// directly. Format choice doesn't apply (image→PDF / xlsx→DOCX is
@@ -1184,17 +1246,28 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 				<>
 					{editItem}
 					<DropdownMenuItem
-						aria-label={tDownload("actionForRow", { title })}
-						onSelect={(e) => {
-							e.preventDefault();
+						disabled={inFlight}
+						aria-label={
+							inFlight
+								? tDownload("preparingFile")
+								: tDownload("actionForRow", { title })
+						}
+						onSelect={() => {
 							void handleDownloadRow(ctx, "md");
 						}}
 					>
-						<DownloadIcon
-							className="mr-2 size-4"
-							aria-hidden="true"
-						/>
-						{tDownload("action")}
+						{inFlight ? (
+							<LoaderIcon
+								className="mr-2 size-4 motion-safe:animate-spin"
+								aria-hidden="true"
+							/>
+						) : (
+							<DownloadIcon
+								className="mr-2 size-4"
+								aria-hidden="true"
+							/>
+						)}
+						{downloadLabel}
 					</DropdownMenuItem>
 					<DropdownMenuSeparator />
 				</>
@@ -1212,22 +1285,35 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 		// hardcoding `mr-2`/`ml-3` on individual elements — that approach
 		// glued the InfoIcon to the chevron because Radix's chevron uses
 		// `ml-auto` and consumed the trailing flex space.
+		//
+		// The shared sub-trigger has no disabled styling of its own, so the
+		// dimmed look of a disabled item is added here for the in-flight row.
 		return (
 			<>
 				{editItem}
 				<TooltipProvider>
 					<DropdownMenuSub>
 						<DropdownMenuSubTrigger
-							className="gap-2"
-							aria-label={tDownload("format.aria")}
+							className="gap-2 data-disabled:opacity-50"
+							disabled={inFlight}
+							aria-label={
+								inFlight
+									? tDownload("preparingFile")
+									: tDownload("format.aria")
+							}
 						>
-							<DownloadIcon
-								className="size-4"
-								aria-hidden="true"
-							/>
-							<span className="flex-1">
-								{tDownload("action")}
-							</span>
+							{inFlight ? (
+								<LoaderIcon
+									className="size-4 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : (
+								<DownloadIcon
+									className="size-4"
+									aria-hidden="true"
+								/>
+							)}
+							<span className="flex-1">{downloadLabel}</span>
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<InfoIcon
@@ -1242,24 +1328,24 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 						</DropdownMenuSubTrigger>
 						<DropdownMenuSubContent>
 							<DropdownMenuItem
-								onSelect={(e) => {
-									e.preventDefault();
+								disabled={inFlight}
+								onSelect={() => {
 									void handleDownloadRow(ctx, "md");
 								}}
 							>
 								{tDownload("format.markdown")}
 							</DropdownMenuItem>
 							<DropdownMenuItem
-								onSelect={(e) => {
-									e.preventDefault();
+								disabled={inFlight}
+								onSelect={() => {
 									void handleDownloadRow(ctx, "pdf");
 								}}
 							>
 								{tDownload("format.pdf")}
 							</DropdownMenuItem>
 							<DropdownMenuItem
-								onSelect={(e) => {
-									e.preventDefault();
+								disabled={inFlight}
+								onSelect={() => {
 									void handleDownloadRow(ctx, "docx");
 								}}
 							>
@@ -1382,7 +1468,25 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 	});
 	const retryingId = retryStalled.isPending ? retryStalled.variables : null;
 
-	const contexts = data?.contexts ?? [];
+	const contexts = useMemo(
+		() =>
+			(data?.contexts ?? []).map((row) => {
+				const metadata = row.metadata as { provider?: string } | null;
+				return row.type === "INTEGRATION" &&
+					metadata?.provider === "notion" &&
+					(row.contentLength === 0 ||
+						(row.contentPreview?.length === row.contentLength &&
+							!row.contentPreview.trim()))
+					? {
+							...row,
+							extractionStatus: "FAILED" as const,
+							extractionError:
+								"Fabric could not read any content from this Notion page. Remove it and add the page again.",
+						}
+					: row;
+			}),
+		[data?.contexts],
+	);
 	type ListedContext = (typeof contexts)[number];
 
 	// Duplicate detection (Fizzy #2619). The server marks each copy with the
@@ -1987,7 +2091,27 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 	// visible, unlike the hover-only row menu: it is what the banner told
 	// the viewer to look for.
 	const renderStalledMarker = (contextId: string, title: string) => {
-		if (!stalledIds.has(contextId)) {
+		const row = contextsById.get(contextId);
+		const failedNotion =
+			row?.type === "INTEGRATION" &&
+			(row.metadata as { provider?: string } | null)?.provider ===
+				"notion" &&
+			row.extractionStatus === "FAILED" &&
+			row.contentLength > 0 &&
+			new Date(row.updatedAt).getTime() <
+				Date.now() - CONTEXT_EMBEDDING_RETRY_WINDOW_MS;
+		const notion =
+			row?.type === "INTEGRATION" &&
+			(row.metadata as { provider?: string } | null)?.provider ===
+				"notion";
+		if (
+			notion &&
+			(!hasExtractionLifecycle(row) ||
+				(row.extractionStatus === "FAILED" && !failedNotion))
+		) {
+			return null;
+		}
+		if (!stalledIds.has(contextId) && !failedNotion) {
 			return null;
 		}
 		const retrying = retryingId === contextId;
@@ -2110,11 +2234,11 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 		const isIntegration = context.type === "INTEGRATION";
 
 		// Not every INTEGRATION context means the same thing.
-		// Google Docs run the full extraction pipeline and
+		// Google Docs run extraction and Notion pages run embedding; both
 		// carry a real `extractionStatus` (including FAILED);
 		// backlog and channel integrations are live links
 		// whose ingest is owned elsewhere, so their status
-		// column stays PENDING forever and reporting it
+		// column may remain PENDING and reporting it
 		// would mislead in the other direction.
 		//
 		// This replaces a hardcoded violet "Live" chip shown
@@ -2550,7 +2674,7 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 			!isStoredButNotSearchable(context as ReadinessRow),
 	).length;
 	// Only rows with real background work. A live integration's status is
-	// written PENDING and never moves (see `hasExtractionLifecycle`), so
+	// may remain PENDING (see `hasExtractionLifecycle`), so
 	// counting it read as work permanently under way.
 	const activeCount = contexts.filter(
 		(context) =>
@@ -3750,6 +3874,23 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 																	},
 																)}
 															</span>
+															<span>
+																{context.extractionStatus ===
+																"FAILED"
+																	? "Failed"
+																	: context.extractionStatus ===
+																			"COMPLETED"
+																		? "Ready"
+																		: "Processing"}
+															</span>
+															{context.extractionStatus ===
+																"FAILED" && (
+																<span className="text-destructive">
+																	{
+																		context.extractionError
+																	}
+																</span>
+															)}
 															{context.embeddedAt && (
 																<span className="flex items-center gap-1 text-success">
 																	<CheckCircleIcon className="size-3" />

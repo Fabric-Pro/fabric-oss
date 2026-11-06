@@ -10,6 +10,7 @@
 	"main": "./index.ts",
 	"type": "module",
 	"exports": {
+		"./notion-error-reasons": "./lib/notion-error-reasons.ts",
 		"./chat-event-cursor": "./lib/chat-event-cursor.ts",
 		"./conversation-turn-charge": {
 			"types": "./lib/conversation-turn-charge.ts",
@@ -385,6 +386,11 @@
 			"types": "./lib/document-version-author.ts",
 			"import": "./lib/document-version-author.ts",
 			"default": "./lib/document-version-author.ts"
+		},
+		"./document-version-change": {
+			"types": "./lib/document-version-change.ts",
+			"import": "./lib/document-version-change.ts",
+			"default": "./lib/document-version-change.ts"
 		},
 		"./group-highlights": {
 			"types": "./lib/group-highlights.ts",

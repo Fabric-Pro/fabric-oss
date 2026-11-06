@@ -48,6 +48,8 @@ import { getSnapshotProcedure } from "../get-snapshot";
 import { listFilesProcedure } from "../list-files";
 import { listSnapshotsProcedure } from "../list-snapshots";
 import { publishSnapshotProcedure } from "../publish-snapshot";
+import { removeAllInstructionsProcedure } from "../remove-all";
+import { removeAllInstructionsPreviewProcedure } from "../remove-all-preview";
 import { updateSettingsProcedure } from "../update-settings";
 
 type TaggedMiddleware = ((
@@ -76,6 +78,8 @@ const PROCEDURES = [
 	["createUploadUrls", createUploadUrlsProcedure],
 	["publishSnapshot", publishSnapshotProcedure],
 	["deleteSnapshot", deleteSnapshotProcedure],
+	["removeAll", removeAllInstructionsProcedure],
+	["removeAllPreview", removeAllInstructionsPreviewProcedure],
 	["updateSettings", updateSettingsProcedure],
 	["getPublished", getPublishedSnapshotProcedure],
 	["listFiles", listFilesProcedure],

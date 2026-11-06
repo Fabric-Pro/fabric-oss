@@ -21,7 +21,10 @@ vi.mock(
 	}),
 );
 
-import { readMemberBranchWrittenPaths } from "../prisma/queries/instruction-branch-relative";
+import {
+	readMemberBranchDeletedPaths,
+	readMemberBranchWrittenPaths,
+} from "../prisma/queries/instruction-branch-relative";
 import type {
 	BranchOperationEntryRecord,
 	BranchTreeEntry,
@@ -183,5 +186,45 @@ describe("readMemberBranchWrittenPaths", () => {
 	it("reads nothing when no path needs the branch", async () => {
 		expect((await query([])).size).toBe(0);
 		expect(m.getAcceptingBranchForMember).not.toHaveBeenCalled();
+	});
+});
+
+describe("readMemberBranchDeletedPaths", () => {
+	const deletedQuery = (paths: string[], userId = MEMBER) =>
+		readMemberBranchDeletedPaths({
+			projectId: "proj_example",
+			userId,
+			organizationId: "org_example",
+			paths,
+		});
+
+	it("answers only the asked paths an established operation deleted", async () => {
+		m.listEstablishedBranchOps.mockResolvedValue([added, deleted]);
+		const paths = await deletedQuery([
+			"rules/new.md",
+			"scripts/tool.sh",
+			"rules/never.md",
+		]);
+		expect([...paths]).toEqual(["rules/new.md"]);
+	});
+
+	it("does not count a withdrawn delete or one Fabric cannot prove", async () => {
+		m.listEstablishedBranchOps.mockResolvedValue([
+			added,
+			{ ...deleted, outcome: "unknown" },
+		]);
+		expect((await deletedQuery(["rules/new.md"])).size).toBe(0);
+		m.listEstablishedBranchOps.mockResolvedValue([
+			added,
+			deleted,
+			{ ...deleted, kind: "REVERT", executionSeq: 3 },
+		]);
+		expect((await deletedQuery(["rules/new.md"])).size).toBe(0);
+	});
+
+	it("reads only the caller's own accepting branch", async () => {
+		m.listEstablishedBranchOps.mockResolvedValue([added, deleted]);
+		expect((await deletedQuery(["rules/new.md"], OTHER)).size).toBe(0);
+		expect(m.listEstablishedBranchOps).not.toHaveBeenCalled();
 	});
 });

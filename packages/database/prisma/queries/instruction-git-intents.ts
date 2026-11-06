@@ -33,8 +33,11 @@ type GitIntentBase = {
 
 /**
  * A branch-relative entry names the blob Fabric wrote at its path on the
- * member's own proposal branch, where the published version has no file.
- * Omitted, the entry is relative to the published version, as before.
+ * member's own proposal branch, or `BRANCH_DELETED_OBJECT_ID` for a PUT of a
+ * published file the branch deleted. Omitted, the branch has written nothing
+ * at the path and the entry is relative to the published version. `base` is
+ * still what the published version holds, so a published file stays a
+ * modification to the write path.
  */
 type GitIntentBranchTarget = {
 	branchObjectId?: string;
@@ -166,7 +169,8 @@ function gitIntentDigest(input: AdmitGitIntentInput): string {
 						baseMode: entry.base?.mode ?? null,
 					}),
 			// Only present on a branch-relative entry, so every published-
-			// relative intent keeps the digest it had before.
+			// relative intent keeps the digest it had before, and the same
+			// bytes proposed over a different branch state are a new change.
 			...(entry.branchObjectId !== undefined
 				? { branchObjectId: entry.branchObjectId }
 				: {}),

@@ -19,6 +19,7 @@ import type { ReactNode } from "react";
 import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { InstructionReviewPolicySection } from "./InstructionReviewPolicySection";
+import { RemoveCodingInstructions } from "./RemoveCodingInstructions";
 
 /**
  * Edits the project's ignore-glob override. Source of truth (`.fabricignore`
@@ -197,6 +198,19 @@ export function InstructionsSettingsDialog({
 						canEdit={mayEdit}
 					/>
 				)}
+				{/* Upload mode only, confirmed by the loaded settings, and not
+				    while a move into a repository is open: the server refuses
+				    both, and the repository's next sync would bring the files
+				    back. The section decides permission and content itself. */}
+				{!repositoryMode &&
+				pausedReason === null &&
+				settings.data &&
+				settings.data.sourceOfTruth !== "REPOSITORY" ? (
+					<RemoveCodingInstructions
+						projectId={projectId}
+						onRemoved={() => onOpenChange(false)}
+					/>
+				) : null}
 				{canEdit ? (
 					<DialogFooter className="sm:justify-between sm:flex-wrap sm:gap-y-2">
 						<Button

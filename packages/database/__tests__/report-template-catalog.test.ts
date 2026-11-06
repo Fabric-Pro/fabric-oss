@@ -350,6 +350,7 @@ describe("standard report templates", () => {
 				"overdue",
 				"stale",
 				"closedPerPeriod",
+				"closedCardsByDay",
 				"createdPerPeriod",
 				"complete: false",
 				"gaps",
@@ -419,6 +420,23 @@ describe("standard report templates", () => {
 		const prompt = JSON.stringify(burnChart?.definition);
 		expect(prompt).toContain("inline SVG");
 		expect(prompt).toContain("light-only");
+	});
+});
+
+describe("engineering metrics wording", () => {
+	const prompt = JSON.stringify(
+		STANDARD_REPORT_TEMPLATES.find(
+			(template) => template.key === "engineering-metrics",
+		)?.definition,
+	);
+
+	it("counts releases when the deployment records cover only part of the period", () => {
+		expect(prompt).toContain(
+			"when the records you could read cover only part of the period and the releases you read reach back to its start, report the release count for the whole period as the value",
+		);
+		expect(prompt).toContain(
+			"give the deployment-record count with the dates it covers beside it",
+		);
 	});
 });
 
