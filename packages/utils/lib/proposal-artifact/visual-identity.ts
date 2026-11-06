@@ -35,13 +35,14 @@
  * shape.
  */
 
-import type { Code, Root, RootContent } from "mdast";
+import type { Code, Nodes, Root, RootContent } from "mdast";
 import { fnv1aHex64 } from "../fnv1a";
 import { parseOutline } from "../glossy/outline";
 import {
 	cleanDiagramCaption,
 	DIAGRAM_CAPTION_LINE,
 	DIAGRAM_CAPTION_MAX_CHARS,
+	headingDiagramCaption,
 	readDiagramCaption,
 	withDiagramCaption,
 } from "./diagram-caption";
@@ -59,6 +60,7 @@ export {
 	cleanDiagramCaption,
 	DIAGRAM_CAPTION_MAX_CHARS,
 	diagramHeaderLine,
+	headingDiagramCaption,
 	readDiagramCaption,
 	VISUAL_MARKER_PATTERN,
 	withDiagramCaption,
@@ -526,6 +528,80 @@ export function diagramFences(
 		),
 	);
 	return fences;
+}
+
+/** A node's text and inline code, run together, as the export reads a heading. */
+function headingText(node: Nodes): string {
+	if (node.type === "text" || node.type === "inlineCode") {
+		return node.value;
+	}
+	let text = "";
+	if ("children" in node) {
+		for (const child of node.children) {
+			text += headingText(child);
+		}
+	}
+	return text;
+}
+
+/**
+ * The caption each code block of `root` takes from the heading of the
+ * section it sits in, for a diagram whose fence carries none (Fizzy #2946):
+ * the last heading before it in document order, at any depth (a heading in
+ * a quote or a list counts, an ATX or a setext one alike), read as the
+ * export reads it (`headingDiagramCaption`). An empty heading leaves none,
+ * and the leading `#` title, which names the document rather than a
+ * section, is passed over. The PDF, the Word file and the Markdown download
+ * all read it here; the live page's walker over the editor's document
+ * (`sectionCaptionAt`) follows the same rule.
+ */
+export function sectionCaptionsOf(root: Root): Map<Code, string | null> {
+	const captions = new Map<Code, string | null>();
+	const title = root.children[0];
+	let caption: string | null = null;
+	// Depth first, each node before its children, in document order.
+	const stack: Nodes[] = [root];
+	while (stack.length > 0) {
+		const node = stack.pop() as Nodes;
+		if (node.type === "heading") {
+			if (!(node === title && node.depth === 1)) {
+				caption = headingDiagramCaption(headingText(node));
+			}
+			continue;
+		}
+		if (node.type === "code") {
+			captions.set(node, caption);
+			continue;
+		}
+		if ("children" in node) {
+			for (let index = node.children.length - 1; index >= 0; index--) {
+				stack.push(node.children[index] as Nodes);
+			}
+		}
+	}
+	return captions;
+}
+
+/**
+ * A reader of the caption a diagram in `markdown` takes from the heading of
+ * the section it sits in when its fence carries none, by the 1-based line
+ * its fence opens on (`sectionCaptionsOf`); null for a line no code block
+ * opens on. The Markdown download captions a diagram with it as the PDF and
+ * the Word file do.
+ */
+export function sectionDiagramCaptions(
+	markdown: string,
+): (line: number) => string | null {
+	const byLine = new Map<number, string | null>();
+	for (const [node, caption] of sectionCaptionsOf(
+		parseMarkdownAst(markdown.replace(/\r\n?/g, "\n")),
+	)) {
+		const line = node.position?.start.line;
+		if (line !== undefined) {
+			byLine.set(line, caption);
+		}
+	}
+	return (line) => byLine.get(line) ?? null;
 }
 
 /** A diagram's section: its heading, and that heading's own body. */

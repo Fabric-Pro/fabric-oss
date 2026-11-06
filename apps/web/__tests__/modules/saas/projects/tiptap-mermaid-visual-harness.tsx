@@ -64,8 +64,15 @@ export interface HarnessProps {
 		isMember?: boolean;
 		paint?: ProposalThemePaint | null;
 		flushSave?: () => Promise<boolean>;
+		saveAppliedEdit?: () => Promise<boolean>;
 	};
 	editable?: boolean;
+	/**
+	 * Changed between renders, a new editor is built under the same diagrams'
+	 * context: the node views are drawn anew, as when a collaborative editor
+	 * gets its room back.
+	 */
+	editorKey?: string | number;
 	themeRoot?: boolean;
 	onEditor?: (editor: Editor) => void;
 	queryClient?: QueryClient;
@@ -98,6 +105,7 @@ export function DiagramHarness({
 	markdown,
 	visual,
 	editable,
+	editorKey,
 	themeRoot = true,
 	onEditor,
 	queryClient,
@@ -105,6 +113,7 @@ export function DiagramHarness({
 	const client = queryClient ?? newQueryClient();
 	const content = (
 		<EditorUnderTest
+			key={editorKey}
 			markdown={markdown}
 			editable={editable}
 			onEditor={onEditor}
@@ -119,6 +128,9 @@ export function DiagramHarness({
 				isMember={visual?.isMember ?? true}
 				paint={visual?.paint ?? null}
 				flushSave={visual?.flushSave ?? (() => Promise.resolve(true))}
+				saveAppliedEdit={
+					visual?.saveAppliedEdit ?? (() => Promise.resolve(true))
+				}
 			>
 				{themeRoot ? (
 					<div className="proposal-theme" data-proposal-theme="live">

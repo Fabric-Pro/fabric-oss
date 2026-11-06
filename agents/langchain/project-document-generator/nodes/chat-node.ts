@@ -104,6 +104,7 @@ import {
 	diagramsBesideChangedText,
 	ECHO_CORRECTION_PREFIX,
 	guestCarriedText,
+	guestRunWords,
 	isGuestArtifactRun,
 	isProposalFrontendAction,
 	isProposalPatchOp,
@@ -1583,6 +1584,11 @@ function handleProposalPatches(params: {
 	response: AIMessage;
 	view: VisualPlaceholderView;
 	echoCarried: ReturnType<typeof readProposalClientConfig>["echoCarried"];
+	/**
+	 * The run length of each carried answer: a guest's, so the bound prompt
+	 * is checked as their reply is. Absent for a member.
+	 */
+	echoRunWords?: (index: number) => number;
 	extraStateUpdate: Record<string, unknown>;
 	reasoningUpdate: Record<string, unknown>;
 }): Command {
@@ -1594,6 +1600,7 @@ function handleProposalPatches(params: {
 		response,
 		view,
 		echoCarried,
+		echoRunWords,
 		extraStateUpdate,
 		reasoningUpdate,
 	} = params;
@@ -1823,6 +1830,7 @@ function handleProposalPatches(params: {
 			mainText: document,
 			carried: echoCarried,
 			previousMain: view.sourceDocument,
+			...(echoRunWords ? { responseRunWords: echoRunWords } : {}),
 		});
 		if (echo.echoed) {
 			const retried =
@@ -5270,6 +5278,16 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			}
 
 			if (proposalView && toolCall.name === "apply_document_patches") {
+				// A guest's patch is checked for the prompt even when the
+				// carried text came without it, and at the same run length as
+				// their reply: they review the proposed document.
+				const guestCarried =
+					guestEchoCheck && proposalConfig.clientPrompt
+						? guestCarriedText(
+								proposalConfig.clientPrompt,
+								proposalConfig.echoCarried,
+							)
+						: null;
 				return handleProposalPatches({
 					state,
 					guardState,
@@ -5277,15 +5295,15 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 					toolCall,
 					response,
 					view: proposalView,
-					// A guest's patch is checked for the prompt even when the
-					// carried text came without it, as their reply is.
-					echoCarried:
-						guestEchoCheck && proposalConfig.clientPrompt
-							? guestCarriedText(
+					echoCarried: guestCarried ?? proposalConfig.echoCarried,
+					...(guestCarried && proposalConfig.clientPrompt
+						? {
+								echoRunWords: guestRunWords(
+									guestCarried,
 									proposalConfig.clientPrompt,
-									proposalConfig.echoCarried,
-								)
-							: proposalConfig.echoCarried,
+								),
+							}
+						: {}),
 					reasoningUpdate: reasoningByTurnUpdate,
 					extraStateUpdate: {
 						...reasoningByTurnUpdate,

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { contrastRatio } from "../lib/brand-colors";
+import { contrastRatio, mixHex } from "../lib/brand-colors";
 import {
 	buildProposalThemeTokens,
 	diagramColors,
@@ -16,6 +16,7 @@ import {
 	themeCustomProperties,
 	themeTokenHash,
 	VISUAL_ROLES,
+	veiledHeroEnds,
 	visualRoleClassDefs,
 	withVisualRoleClassDefs,
 } from "../lib/proposal-artifact/theme-tokens";
@@ -684,7 +685,7 @@ describe("resolveThemePaint", () => {
 				}),
 			),
 		);
-		const { fonts, recipient, heroVeil, ...colors } = paint;
+		const { fonts, recipient, heroVeil, neutralPrimary, ...colors } = paint;
 
 		for (const color of [...Object.values(colors), ...recipient]) {
 			expect(color).toMatch(HEX);
@@ -692,6 +693,28 @@ describe("resolveThemePaint", () => {
 		expect(fonts.body).toBe("Inter");
 		expect(heroVeil).toBeGreaterThanOrEqual(0);
 		expect(heroVeil).toBeLessThanOrEqual(1);
+		// A brand primary, so the figures' number squares may take it.
+		expect(neutralPrimary).toBe(false);
+	});
+
+	it("marks the neutral style's primary as no brand's, so its number squares stay ink", () => {
+		const paint = resolveThemePaint(buildProposalThemeTokens(sources({})));
+		expect(paint.neutralPrimary).toBe(true);
+		expect(paint.primary).toBe(NEUTRAL_THEME.primary);
+	});
+
+	it("gives the two ends of the veiled hero, the ink laid over each at the veil", () => {
+		const paint = { ink: "#111827", heroVeil: 0.5 };
+		expect(veiledHeroEnds(paint, undefined)).toEqual([
+			mixHex("#111827", "#ffffff", 0.5),
+			mixHex("#111827", "#000000", 0.5),
+		]);
+		// No veil leaves the hero itself; a full veil, the ink.
+		expect(veiledHeroEnds({ ...paint, heroVeil: 0 }, 1)[0]).toBe("#ffffff");
+		expect(veiledHeroEnds({ ...paint, heroVeil: 1 }, 1)).toEqual([
+			"#111827",
+			"#111827",
+		]);
 	});
 });
 
@@ -764,6 +787,72 @@ describe("resolveThemePaint: colours on the ink", () => {
 		expect(paint.accent).not.toBe("#f08f72");
 		expect(paint.onInkRule).toBe("#d6452b");
 		expect(paint.onInkAccent).toBe("#f08f72");
+	});
+
+	it("sets the neutral eyebrows on the ink as before, in the accent's white", () => {
+		const paint = resolveThemePaint(buildProposalThemeTokens(NO_SOURCES));
+
+		// The neutral primary is no brand colour to lighten.
+		expect(paint.onInkPrimary).toBe(paint.onInkAccent);
+		expect(paint.onInkPrimary).toBe("#ffffff");
+	});
+
+	it("lightens a dark brand primary for the eyebrows on the ink until it reads at 4.5:1, keeping its hue", () => {
+		const paint = branded("#0b1f3a");
+
+		expect(paint.onInkPrimary).not.toBe("#0b1f3a");
+		expect(paint.onInkPrimary).not.toBe(paint.onInk);
+		expect(
+			contrastRatio(paint.onInkPrimary, paint.ink),
+		).toBeGreaterThanOrEqual(TEXT_CONTRAST);
+		const [red, , blue] = [1, 3, 5].map((offset) =>
+			Number.parseInt(paint.onInkPrimary.slice(offset, offset + 2), 16),
+		);
+		expect(blue).toBeGreaterThan(red as number);
+	});
+
+	it("keeps a brand primary that reads on the ink for the eyebrows, and the primary over an accent that reads", () => {
+		expect(branded("#f97316").onInkPrimary).toBe("#f97316");
+
+		// The red holds 3:1 but not 4.5:1; the eyebrows take it lightened,
+		// not the light accent the party labels take.
+		const paint = branded("#d6452b", ["#f08f72"]);
+		expect(paint.onInkAccent).toBe("#f08f72");
+		expect(paint.onInkPrimary).not.toBe("#f08f72");
+		expect(
+			contrastRatio(paint.onInkPrimary, paint.ink),
+		).toBeGreaterThanOrEqual(TEXT_CONTRAST);
+		const [red, green] = [1, 3].map((offset) =>
+			Number.parseInt(paint.onInkPrimary.slice(offset, offset + 2), 16),
+		);
+		expect(red).toBeGreaterThan(green as number);
+	});
+
+	it("fits the eyebrows' primary to the veil over a white hero, and lays no more veil for it", () => {
+		const paint = resolveThemePaint(
+			withProposer({
+				primary: { value: "#0b1f3a", source: "MANUAL" },
+				accents: { value: [], source: "MANUAL" },
+				hero: {
+					value: {
+						kind: "organization-hero",
+						key: "organization-brand/example-org/hero/hero-id.png",
+					},
+					source: "BRAND_KIT",
+				},
+			}),
+		);
+		const worst = over(paint.ink, "#ffffff", paint.heroVeil);
+
+		expect(contrastRatio(paint.onInkPrimary, worst)).toBeGreaterThanOrEqual(
+			TEXT_CONTRAST,
+		);
+		expect(
+			contrastRatio(paint.onInkPrimary, paint.ink),
+		).toBeGreaterThanOrEqual(TEXT_CONTRAST);
+		expect(paint.heroVeil).toBe(
+			resolveThemePaint(buildProposalThemeTokens(NO_SOURCES)).heroVeil,
+		);
 	});
 
 	it("lightens the figures' rule over a light hero until it reads at 3:1 under the veil, and lays no more veil for it", () => {
@@ -993,6 +1082,7 @@ describe("themeCustomProperties", () => {
 			"--pa-on-ink",
 			"--pa-on-ink-muted",
 			"--pa-on-ink-accent",
+			"--pa-on-ink-primary",
 			"--pa-on-ink-rule",
 		] as const) {
 			expect(properties[name]).toMatch(HEX);
@@ -1033,6 +1123,7 @@ describe("themeCustomProperties", () => {
 			primary: "red; background: url(https://example.com/x)",
 			tint: "#fff",
 			onInkAccent: "currentColor",
+			onInkPrimary: "inherit",
 			heroVeil: Number.NaN,
 			recipient: ["#0b3d91", "expression(alert(1))"],
 			fonts: { display: 'x"}', body: "Example Sans", mono: "" },
@@ -1046,6 +1137,7 @@ describe("themeCustomProperties", () => {
 		}
 		expect(properties["--pa-primary"]).toBe(NEUTRAL_THEME.primary);
 		expect(properties["--pa-on-ink-accent"]).toBe(NEUTRAL_THEME.surface);
+		expect(properties["--pa-on-ink-primary"]).toBe(NEUTRAL_THEME.surface);
 		// An opacity that is not one paints the ink opaque over the hero.
 		expect(properties["--pa-hero-veil"]).toBe("1.00");
 		expect(properties["--pa-tint"]).toBe(NEUTRAL_THEME.surface);

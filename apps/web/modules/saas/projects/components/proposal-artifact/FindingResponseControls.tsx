@@ -109,6 +109,7 @@ export function useFindingControls({
 	announce,
 	onApplyRecommendation,
 	pendingRevisionFindingId = null,
+	sectionRevisionPending = false,
 }: {
 	actions: ProposalAnalysisActions;
 	/** The run the tab shows; answers are given against its findings. */
@@ -121,6 +122,8 @@ export function useFindingControls({
 	onApplyRecommendation?: (finding: ApplyRecommendationRequest) => void;
 	/** The finding whose revision is under way; null when none is. */
 	pendingRevisionFindingId?: string | null;
+	/** A section revision asked for on Main is under way. */
+	sectionRevisionPending?: boolean;
 }) {
 	const t = useTranslations("projects.proposalArtifact.analysis");
 	const { respond, clear, pendingKeys } = actions;
@@ -355,7 +358,12 @@ export function useFindingControls({
 	 */
 	const applyRecommendation = onApplyRecommendation
 		? (finding: AnswerableFinding) => {
-				if (!finding.stableKey || !runId || pendingRevisionFindingId) {
+				if (
+					!finding.stableKey ||
+					!runId ||
+					pendingRevisionFindingId ||
+					sectionRevisionPending
+				) {
 					return;
 				}
 				onApplyRecommendation({
@@ -372,6 +380,7 @@ export function useFindingControls({
 		pendingKeys,
 		applyRecommendation,
 		pendingRevisionFindingId,
+		sectionRevisionPending,
 		openDraft,
 		updateDraft,
 		discardDraft,
@@ -628,7 +637,11 @@ export function FindingResponseControls({
 	const error = stableKey ? controls.errors.get(stableKey) : undefined;
 	const authorLostRights = answerAuthorLostRights(response, needsReview);
 	const revisionPending = controls.pendingRevisionFindingId === finding.id;
-	const anyRevisionPending = controls.pendingRevisionFindingId != null;
+	// A section revision asked for on Main holds Apply too, and says so.
+	const sectionRevisionPending = controls.sectionRevisionPending;
+	const anyRevisionPending =
+		controls.pendingRevisionFindingId != null || sectionRevisionPending;
+	const applyWaitId = `${titleId}-apply-wait`;
 	const busy = saving || revisionPending;
 
 	const openEditor = () => {
@@ -739,10 +752,20 @@ export function FindingResponseControls({
 				disabled={saving || anyRevisionPending}
 				loading={revisionPending}
 				aria-busy={revisionPending || undefined}
-				aria-describedby={titleId}
+				aria-describedby={
+					sectionRevisionPending
+						? `${titleId} ${applyWaitId}`
+						: titleId
+				}
 			>
 				{t("actions.applyRecommendation")}
 			</Button>
+		) : null;
+	const applyWait =
+		apply && sectionRevisionPending ? (
+			<p id={applyWaitId} className="text-muted-foreground text-xs">
+				{t("applyWaitsForSectionRevision")}
+			</p>
 		) : null;
 
 	return (
@@ -772,6 +795,7 @@ export function FindingResponseControls({
 					{actions}
 				</div>
 			) : null}
+			{applyWait}
 			{canEdit && stableKey && draft ? (
 				<AnswerEditor
 					draft={draft}

@@ -7,7 +7,9 @@
  *
  * The editor is the document editor's own extension set with the real node
  * view, menu and renderer; the translations are the real message files and
- * the oRPC client is stubbed.
+ * the oRPC client is stubbed. A new editor built under the same diagrams'
+ * context stands for a collaborative editor back from a lost room, which
+ * draws every diagram anew.
  */
 
 import {
@@ -26,6 +28,7 @@ import {
 	FLOWCHART_BODY,
 	fence,
 	MARKER,
+	newQueryClient,
 	VISUAL_ID,
 } from "./tiptap-mermaid-visual-harness";
 
@@ -164,15 +167,62 @@ async function renderEditor(
 ) {
 	let editor: Editor | null = null;
 	const flushSave = options.flushSave ?? vi.fn(async () => true);
-	const utils = render(
+	// What the editor held when the applied edit was saved.
+	const savedAppliedEdits: string[] = [];
+	const saveAppliedEdit = vi.fn(async () => {
+		savedAppliedEdits.push(
+			editor ? (getEditorMarkdownForSave(editor) ?? "") : "",
+		);
+		return true;
+	});
+	const queryClient = newQueryClient();
+	const harness = (
+		props: {
+			markdown?: string;
+			editable?: boolean;
+			editorKey?: number;
+		} = {},
+	) => (
 		<DiagramHarness
-			markdown={options.markdown ?? DOCUMENT}
-			visual={{ isMember: options.isMember ?? true, flushSave }}
+			markdown={props.markdown ?? options.markdown ?? DOCUMENT}
+			editable={props.editable}
+			editorKey={props.editorKey}
+			queryClient={queryClient}
+			visual={{
+				isMember: options.isMember ?? true,
+				flushSave,
+				saveAppliedEdit,
+			}}
 			onEditor={(created) => {
 				editor = created;
 			}}
-		/>,
+		/>
 	);
+	const utils = render(harness());
+	let builds = 0;
+	/**
+	 * Build a new editor under the same diagrams' context, from `markdown`
+	 * (the document as it was) and read-only when `editable` is false, and
+	 * wait for its diagrams.
+	 */
+	const rebuild = async (
+		props: { markdown?: string; editable?: boolean } = {},
+	) => {
+		const previous = editor;
+		builds += 1;
+		utils.rerender(harness({ ...props, editorKey: builds }));
+		await waitFor(() => {
+			if (editor === previous) {
+				throw new Error("no new editor yet");
+			}
+			if (
+				utils.container.querySelectorAll(".mermaid-diagram-area svg")
+					.length < 2
+			) {
+				throw new Error("no diagrams yet");
+			}
+		});
+	};
 	await waitFor(() => {
 		if (
 			utils.container.querySelectorAll(".mermaid-diagram-area svg")
@@ -187,7 +237,14 @@ async function renderEditor(
 		}
 		return editor as Editor;
 	};
-	return { ...utils, editor: getEditor, flushSave };
+	return {
+		...utils,
+		editor: getEditor,
+		flushSave,
+		rebuild,
+		saveAppliedEdit,
+		savedAppliedEdits,
+	};
 }
 
 /** The trigger of the diagram at `index` among the page's diagrams. */
@@ -515,7 +572,8 @@ describe("applying a candidate", () => {
 	it("replaces only this diagram: the saved Markdown outside its fence is byte-identical, and it then reads as updated with instructions", async () => {
 		const user = userEvent.setup();
 		rpc.editVisual.mockResolvedValue(candidate());
-		const { editor } = await renderEditor();
+		const { editor, saveAppliedEdit, savedAppliedEdits } =
+			await renderEditor();
 		const before = getEditorMarkdownForSave(editor()) ?? "";
 		expect(before).toContain(TARGET);
 		// The editor's save fingerprints its section as the stored Main does.
@@ -547,6 +605,10 @@ describe("applying a candidate", () => {
 		const after = getEditorMarkdownForSave(editor()) ?? "";
 		const appliedFence = fence(CANDIDATE_BODY.split("\n"));
 		expect(after).toBe(before.replace(TARGET, appliedFence));
+		// Saved at once as its own version, the applied diagram in it, so
+		// version history names Edit with instructions as its writer.
+		expect(saveAppliedEdit).toHaveBeenCalledTimes(1);
+		expect(savedAppliedEdits).toEqual([after]);
 		const [head, tail] = before.split(TARGET);
 		expect(after.startsWith(head ?? "")).toBe(true);
 		expect(after.endsWith(tail ?? "")).toBe(true);
@@ -610,7 +672,7 @@ describe("applying a candidate", () => {
 	it("says the diagram changed, and leaves the document alone, when the diagram was edited after the candidate came", async () => {
 		const user = userEvent.setup();
 		rpc.editVisual.mockResolvedValue(candidate());
-		const { editor } = await renderEditor();
+		const { editor, saveAppliedEdit } = await renderEditor();
 		const { field } = await openPanel(user);
 		await user.type(field, "Lay it out top to bottom");
 		await user.click(generateButton());
@@ -644,6 +706,7 @@ describe("applying a candidate", () => {
 			"The diagram changed. Try again on the current version.",
 		);
 		expect(getEditorMarkdownForSave(editor())).toBe(edited);
+		expect(saveAppliedEdit).not.toHaveBeenCalled();
 	});
 
 	it.each([
@@ -868,5 +931,170 @@ describe("a diagram inserted above", () => {
 			fenceSourceHash: TARGET_HASH,
 			instruction: "Lay it out top to bottom",
 		});
+	});
+});
+
+describe("an editor drawn anew, as when a collaborative editor gets its room back", () => {
+	const instructionField = () =>
+		screen.getByRole("textbox", {
+			name: "What should change in this diagram?",
+		});
+
+	it("keeps a request in flight, then shows its candidate, which applies", async () => {
+		const user = userEvent.setup();
+		let respond: (value: unknown) => void = () => {};
+		let signal: AbortSignal | undefined;
+		rpc.editVisual.mockImplementation(
+			(_input: unknown, options: { signal: AbortSignal }) => {
+				signal = options.signal;
+				return new Promise((resolve) => {
+					respond = resolve;
+				});
+			},
+		);
+		const { editor, rebuild, container } = await renderEditor();
+		const before = getEditorMarkdownForSave(editor()) ?? "";
+		const { field } = await openPanel(user);
+		await user.type(field, "Lay it out top to bottom");
+		await user.click(generateButton());
+		await waitFor(() => expect(rpc.editVisual).toHaveBeenCalled());
+
+		await rebuild();
+
+		expect(instructionField()).toHaveValue("Lay it out top to bottom");
+		expect(instructionField()).toBeDisabled();
+		expect(signal?.aborted).toBe(false);
+		await act(async () => {
+			respond(candidate());
+		});
+		expect(await screen.findByText("Proposed")).toBeInTheDocument();
+		expect(rpc.editVisual).toHaveBeenCalledTimes(1);
+		expect(liveRegion(container)?.textContent).toBe(
+			"A proposed diagram is ready. Review it below the current one, then apply or discard it.",
+		);
+
+		await user.click(screen.getByRole("button", { name: "Apply" }));
+
+		expect(getEditorMarkdownForSave(editor())).toBe(
+			before.replace(TARGET, fence(CANDIDATE_BODY.split("\n"))),
+		);
+	});
+
+	it("shows the candidate again below the diagram, and applies it", async () => {
+		const user = userEvent.setup();
+		rpc.editVisual.mockResolvedValue(candidate());
+		const { editor, rebuild, container } = await renderEditor();
+		const before = getEditorMarkdownForSave(editor()) ?? "";
+		const { field } = await openPanel(user);
+		await user.type(field, "Lay it out top to bottom");
+		await user.click(generateButton());
+		await screen.findByText("Proposed");
+
+		await rebuild();
+
+		expect(await screen.findByText("Proposed")).toBeInTheDocument();
+		const target = container.querySelectorAll(".mermaid-visual")[1];
+		expect(
+			target?.querySelector(".mermaid-candidate-area svg"),
+		).not.toBeNull();
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Apply" }));
+
+		expect(getEditorMarkdownForSave(editor())).toBe(
+			before.replace(TARGET, fence(CANDIDATE_BODY.split("\n"))),
+		);
+		expect(rpc.editVisual).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		["its section's text", DOCUMENT.replace("in Q1 2026", "in Q2 2026")],
+		[
+			"the diagram",
+			DOCUMENT.replace(TARGET, fence([...FLOWCHART_BODY, "  t1 --> t0"])),
+		],
+	])(
+		"says the diagram changed, rather than dropping the candidate, when %s changed meanwhile",
+		async (_label, changed) => {
+			const user = userEvent.setup();
+			rpc.editVisual.mockResolvedValue(candidate());
+			const { rebuild } = await renderEditor();
+			const { field } = await openPanel(user);
+			await user.type(field, "Lay it out top to bottom");
+			await user.click(generateButton());
+			await screen.findByText("Proposed");
+
+			await rebuild({ markdown: changed });
+
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				"The diagram changed. Try again on the current version.",
+			);
+			expect(screen.queryByText("Proposed")).not.toBeInTheDocument();
+			expect(instructionField()).toHaveValue("Lay it out top to bottom");
+			expect(
+				screen.getByRole("button", { name: "Try again" }),
+			).toBeEnabled();
+		},
+	);
+
+	it.each([["a marker the specs do not vouch for", DOCUMENT, { specs: [] }]])(
+		"takes up a panel opened before the specs loaded: %s",
+		async (_label, markdown, specs) => {
+			const user = userEvent.setup();
+			let specsLoaded: (value: unknown) => void = () => {};
+			rpc.listVisualSpecs.mockReset();
+			rpc.listVisualSpecs.mockImplementation(
+				() =>
+					new Promise((resolve) => {
+						specsLoaded = resolve;
+					}),
+			);
+			const { rebuild } = await renderEditor({ markdown });
+			const { field } = await openPanel(user);
+			await user.type(field, "Lay it out top to bottom");
+
+			await act(async () => {
+				specsLoaded(specs);
+			});
+			await rebuild({ markdown });
+
+			expect(instructionField()).toHaveValue("Lay it out top to bottom");
+		},
+	);
+
+	it("offers the diagram's menu again once an editor drawn read-only takes input", async () => {
+		const { editor, rebuild } = await renderEditor();
+		expect(triggers()).toHaveLength(2);
+
+		await rebuild({ editable: false });
+		expect(
+			screen.queryByRole("button", { name: "Diagram actions" }),
+		).not.toBeInTheDocument();
+
+		act(() => {
+			editor().setEditable(true);
+		});
+
+		expect(triggers()).toHaveLength(2);
+	});
+
+	it("hides an open panel while the editor takes no input, and shows it again after", async () => {
+		const user = userEvent.setup();
+		rpc.editVisual.mockResolvedValue(candidate());
+		const { editor } = await renderEditor();
+		const { field } = await openPanel(user);
+		await user.type(field, "Lay it out top to bottom");
+		await user.click(generateButton());
+		await screen.findByText("Proposed");
+
+		act(() => {
+			editor().setEditable(false);
+		});
+		expect(screen.queryByText("Proposed")).not.toBeInTheDocument();
+
+		act(() => {
+			editor().setEditable(true);
+		});
+		expect(screen.getByText("Proposed")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Apply" })).toBeEnabled();
 	});
 });

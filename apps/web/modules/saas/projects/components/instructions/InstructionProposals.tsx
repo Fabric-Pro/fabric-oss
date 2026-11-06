@@ -131,6 +131,11 @@ type ProposalChange = {
 	afterOmitted: OmissionReason;
 	beforeSize: number | null;
 	afterSize: number | null;
+	/**
+	 * A suggestion that puts back a published file the proposer's branch
+	 * deleted. Stated against that branch, it reads as an addition.
+	 */
+	restoresBranchDeletion?: boolean;
 };
 
 type OmissionReason =
@@ -1378,6 +1383,16 @@ export function InstructionProposals({
 													</span>
 												) : null}
 											</button>
+											{change.restoresBranchDeletion ? (
+												<p
+													className="text-muted-foreground text-xs"
+													data-testid="proposal-change-restores-branch-deletion"
+												>
+													{t(
+														"restoresBranchDeletion",
+													)}
+												</p>
+											) : null}
 											{!expanded ? null : change.binary ? (
 												<p className="text-muted-foreground text-sm">
 													{t("binary")}

@@ -32,7 +32,7 @@ const { documentGetMock, documentsListMock, flags, triggerBlobDownloadMock } =
 	vi.hoisted(() => ({
 		documentGetMock: vi.fn(),
 		documentsListMock: vi.fn(),
-		flags: { glossy: false },
+		flags: { glossy: false, proposalArtifact: false },
 		triggerBlobDownloadMock: vi.fn(),
 	}));
 
@@ -144,7 +144,9 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	}),
 }));
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
-	useFeatureFlag: (key: string) => key === "GLOSSY_EDITION" && flags.glossy,
+	useFeatureFlag: (key: string) =>
+		(key === "GLOSSY_EDITION" && flags.glossy) ||
+		(key === "PROPOSAL_ARTIFACT" && flags.proposalArtifact),
 }));
 vi.mock("../CreateDocumentDialog", () => ({
 	CreateDocumentDialog: () => null,
@@ -291,6 +293,55 @@ describe("DocumentDownloadDropdown — downloads", () => {
 				"General availability follows.",
 			].join("\n"),
 		);
+	});
+
+	it("captions a client Proposal's diagram without a caption with its section's heading (Fizzy #2946)", async () => {
+		flags.proposalArtifact = true;
+		try {
+			documentGetMock.mockResolvedValue({
+				document: {
+					content: [
+						"# Example Proposal",
+						"",
+						"## 2. Delivery plan",
+						"",
+						"Pilot starts in the first quarter.",
+						"",
+						"```mermaid",
+						"gantt",
+						"  dateFormat YYYY-MM-DD",
+						"  section Build",
+						"  First build :b1, 2026-01-05, 10d",
+						"```",
+						"",
+						"```mermaid",
+						"%% caption: Own caption",
+						"gantt",
+						"  dateFormat YYYY-MM-DD",
+						"  section Pilot",
+						"  Pilot :p1, 2026-02-02, 10d",
+						"```",
+					].join("\n"),
+				},
+			});
+			renderDropdown({ documentType: "PROPOSAL" });
+			const user = await openMenu();
+			await user.click(
+				screen.getByRole("menuitem", { name: "Markdown (.md)" }),
+			);
+
+			await waitFor(() =>
+				expect(triggerBlobDownloadMock).toHaveBeenCalledTimes(1),
+			);
+			const [blob] = triggerBlobDownloadMock.mock.calls[0];
+			const text = await readBlobText(blob as Blob);
+			// Not drawn here, so each keeps its code; both are numbered, as
+			// the PDF and the Word file number them.
+			expect(text).toContain("*Figure 1. Delivery plan*");
+			expect(text).toContain("*Figure 2. Own caption*");
+		} finally {
+			flags.proposalArtifact = false;
+		}
 	});
 
 	it("fetches the content with the route's organizationId", async () => {

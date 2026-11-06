@@ -25,7 +25,7 @@ import {
 } from "@repo/utils/feature-flag-registry";
 import { serializeVisualSlot } from "@repo/utils/glossy/visual-slots";
 import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Editor } from "@tiptap/core";
 import type { ReactNodeViewProps } from "@tiptap/react";
@@ -373,6 +373,23 @@ describe("VisualSlotNodeView — the chip", () => {
 			screen.getByRole("figure", { name: "Visual slot: org chart" }),
 		).toBeTruthy();
 		expect(await axe(container)).toHaveNoViolations();
+	});
+
+	it("becomes the chip again once a read-only editor takes input, without being drawn anew (Fizzy #2946)", () => {
+		const editor = makeEditor(
+			serializeVisualSlot({ id: "slot-a", kind: "org_chart" }),
+		);
+		editor.setEditable(false);
+		render(<VisualSlotNodeView {...nodeViewProps(editor)} />);
+		expect(screen.queryByRole("button")).toBeNull();
+
+		act(() => {
+			editor.setEditable(true);
+		});
+
+		expect(
+			screen.getByRole("button", { name: "Visual slot: org chart" }),
+		).toBeTruthy();
 	});
 
 	it("opens the popover prefilled, and a saved edit survives the markdown round trip", async () => {

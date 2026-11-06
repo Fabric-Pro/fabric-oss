@@ -38,6 +38,7 @@ import {
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { notionAddErrorMessage } from "../lib/notion-add-error-message";
 
 export interface IntegrationPageItem {
 	id: string;
@@ -385,6 +386,11 @@ export function IntegrationPageBrowser({
 					});
 				} catch (err) {
 					failedCount++;
+					if (provider === "notion") {
+						toast.error(`Could not add "${page.title}"`, {
+							description: notionAddErrorMessage(err),
+						});
+					}
 					if ((err as any)?.code === "UNAUTHORIZED") {
 						isUnauthorizedError = true;
 					}

@@ -62,6 +62,39 @@ export async function createInstructionStorageCleanupReceipt(
 }
 
 /**
+ * `createInstructionStorageCleanupReceipt` for many snapshots of one project
+ * at once, in one statement: removing every version of a project's coding
+ * instructions deletes all their rows in one transaction. The same rule
+ * applies: only inside the transaction that deletes those rows.
+ */
+export async function createInstructionStorageCleanupReceipts(
+	client: Prisma.TransactionClient,
+	input: {
+		snapshotIds: readonly string[];
+		projectId: string;
+		organizationId: string;
+		now?: Date;
+	},
+): Promise<void> {
+	if (input.snapshotIds.length === 0) {
+		return;
+	}
+	const now = input.now ?? new Date();
+	const notBefore = new Date(
+		now.getTime() + INSTRUCTION_STORAGE_CLEANUP_GRACE_MS,
+	);
+	await client.projectInstructionPendingStorageCleanup.createMany({
+		data: input.snapshotIds.map((snapshotId) => ({
+			snapshotId,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			notBefore,
+			nextAttemptAt: notBefore,
+		})),
+	});
+}
+
+/**
  * Returns a bounded system-wide page of receipts whose grace/backoff period
  * has elapsed. Each row carries its own organization id because the record
  * intentionally has no parent relation left to resolve it through.

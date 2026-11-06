@@ -154,10 +154,9 @@ export const READINESS_RULES: readonly ReadinessRule[] = [
 		inProgress: (e) => e.inFlight.codebaseIndexing,
 	},
 	{
-		// Notion only for v1. Confluence connects and records the source, but no
-		// ingestion exists for it, so "indexed successfully" can never become
-		// true on Confluence alone. Shipping the rule as written would leave a
-		// permanently unsatisfiable item on any Confluence-only project.
+		// Wiki Connected uses only INTEGRATION rows whose metadata.provider is
+		// "notion", for both completion and work in progress. Other providers,
+		// including Confluence and chat integrations, do not satisfy this rule.
 		key: "wiki-connected",
 		category: "CONTEXT_AND_CONNECTIONS",
 		i18nKey: "readiness.items.wikiConnected",

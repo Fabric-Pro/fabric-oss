@@ -474,6 +474,38 @@ describe("fabric_get_document returns the document's base", () => {
 		expect(payload.version).toBe(7);
 		expect(payload.contentHash).toBe(contentIdentity(STORED_WITHOUT_SLOT));
 	});
+
+	it("says why a failed document failed, and nothing for any other status", async () => {
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org-1",
+		});
+		const reason =
+			"The file could not be read, or contained no text. Try creating the document again with a different file.";
+		const readPayload = async () => {
+			const result = await executePlatformTool(
+				"fabric_get_document",
+				{ documentId: "doc-1" },
+				session,
+			);
+			return JSON.parse((result.content[0] as { text: string }).text) as {
+				generationError: string | null;
+			};
+		};
+
+		mocks.getDocumentById.mockResolvedValue({
+			...storedDocument(""),
+			status: "FAILED",
+			generationError: reason,
+		});
+		expect((await readPayload()).generationError).toBe(reason);
+
+		mocks.getDocumentById.mockResolvedValue({
+			...storedDocument(STORED_WITHOUT_SLOT),
+			status: "COMPLETE",
+			generationError: "an earlier run's reason",
+		});
+		expect((await readPayload()).generationError).toBeNull();
+	});
 });
 
 describe("fabric_update_document honours a base", () => {

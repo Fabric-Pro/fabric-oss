@@ -239,6 +239,13 @@ const REDACTED_BODY_FIELDS: ReadonlyMap<string, readonly string[]> = new Map([
 	// (a SCOPED_REVISION_REFUSAL such as RESPONSE_ECHOED) is refused precisely
 	// because its body repeats an internal answer or finding.
 	["projects.documents.update", ["content"]],
+	// "Revise this section": a member's free-text instruction for one section
+	// of a Proposal. A refused call (a guest's FORBIDDEN, a too-long
+	// instruction, a run holding the document) keeps its ids and versions.
+	["projects.proposalArtifact.reviseSection", ["instruction"]],
+	// Edit with instructions: a person's free-text request to redraw one
+	// diagram of a Proposal. Its ids, ordinal and source hash stay.
+	["projects.proposalArtifact.editVisual", ["instruction"]],
 	// The preview sends the editor's body, the confirm the accepted one; the
 	// confirm answers CONFLICT when the document moved on since the preview.
 	[

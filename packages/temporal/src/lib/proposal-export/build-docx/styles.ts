@@ -54,7 +54,7 @@ export const PAGE = PAGE_SIZE_TWIPS[PROPOSAL_PAGE_SIZE];
 
 /**
  * The print page's margins (0.85in top, 0.8in sides, 0.9in bottom), with the
- * running header and footer 0.4in from the paper's edge.
+ * running footer 0.4in from the paper's edge.
  */
 export const PAGE_MARGIN = {
 	top: 1224,
@@ -105,7 +105,10 @@ const HEADING_SPACING = [
 	{ before: 240, after: 80 },
 	{ before: 240, after: 80 },
 ] as const;
+/** The cover title: print's 34 pt at 1.08 lines, 16 pt above the lead. */
 export const TITLE_SIZE = 68;
+const TITLE_LINE = 259;
+const TITLE_AFTER = 320;
 export const CONTENTS_HEADING_SIZE = 48;
 
 /**
@@ -125,13 +128,8 @@ export const CAPTION_SIZE = 17;
 /** Running header and footer, as print's margin boxes. */
 export const FURNITURE_SIZE = 15;
 export const EYEBROW_SIZE = 16;
-export const PARTY_LABEL_SIZE = 15;
-export const PARTY_NAME_SIZE = 24;
-/** A party's second and third lines from the cover fence, under its name. */
-export const PARTY_LINE_SIZE = 20;
 /** The cover fence's line about the client, under the logos. */
 export const ORGANIZATION_SIZE = 14;
-export const DATE_SIZE = 20;
 /** Print's 1.6em and 0.76em of its 10.5 pt body, to the nearest half point. */
 export const STAT_VALUE_SIZE = 34;
 export const STAT_LABEL_SIZE = 16;
@@ -161,10 +159,81 @@ export const CELL_MARGIN = {
 /** The gap between two stat tiles. */
 export const STAT_TILE_GAP = 216;
 
-/** Cover logos fit a 2.75in × 0.75in box, as on the print cover. */
+/** The cover letter's logo is no wider than 2.75in. */
 export const LOGO_MAX_WIDTH = 2.75 * 1440;
-export const LOGO_MAX_HEIGHT = 0.75 * 1440;
+/** Cover logos fit a 2.4in × 0.36in box, as on the print cover. */
+export const COVER_LOGO_MAX_WIDTH = 2.4 * 1440;
+export const COVER_LOGO_MAX_HEIGHT = 0.36 * 1440;
 export const HERO_MAX_HEIGHT = 3.25 * 1440;
+/** The plate behind a logo drawn for a light background: 7 pt by 10 pt. */
+export const LOGO_PLATE_MARGIN = {
+	top: 140,
+	bottom: 140,
+	left: 200,
+	right: 200,
+} as const;
+
+/**
+ * The cover's geometry, as print lays it out on the ink: its own margins
+ * (0.7in top, 0.8in sides, the parties 0.75in over the paper's foot), the
+ * logos' row 0.56in high, the eyebrow 3.05in down the page, the parties
+ * in columns of 1 : 1.25 with 0.4in between them.
+ */
+export const COVER_MARGIN = {
+	top: 1008,
+	right: 1152,
+	bottom: 1080,
+	left: 1152,
+	header: 576,
+	footer: 576,
+	gutter: 0,
+} as const;
+export const COVER_BRANDS_HEIGHT = 806;
+export const COVER_BODY_TOP = 4392;
+export const COVER_PARTIES_GAP = 576;
+/** The lead: print's 13 pt at 1.5 lines, no wider than 5.7in. */
+export const COVER_LEAD_SIZE = 26;
+export const COVER_LEAD_LINE = 360;
+export const COVER_LEAD_WIDTH = 5.7 * 1440;
+/** The parties: 9 pt at 1.55 lines, their labels in mono at 7 pt. */
+export const COVER_PARTY_SIZE = 18;
+export const COVER_PARTY_LINE = 372;
+export const COVER_PARTY_LABEL_SIZE = 14;
+/** The eyebrow on the cover: 0.18em over its 8 pt. */
+export const COVER_EYEBROW_TRACKING = 29;
+
+/**
+ * A section opener, print's ink card: 18 pt over its text, 22 pt at its
+ * sides and 20 pt under it, 16 pt above the block after it; the "Section N"
+ * eyebrow in mono at 7.5 pt with 0.16em tracking, 8 pt over the heading;
+ * the heading at 21 pt over 1.15 lines, 6 pt over the subtitle; the
+ * subtitle at 10.5 pt over 1.45 lines, no wider than 3.9in.
+ */
+export const OPENER_MARGIN = {
+	top: 360,
+	bottom: 400,
+	left: 440,
+	right: 440,
+} as const;
+export const OPENER_BELOW = 320;
+export const OPENER_EYEBROW_SIZE = 15;
+export const OPENER_EYEBROW_TRACKING = 24;
+export const OPENER_EYEBROW_AFTER = 160;
+const OPENER_HEADING_SIZE = 42;
+const OPENER_HEADING_LINE = 276;
+export const OPENER_HEADING_AFTER = 120;
+
+/**
+ * The style of an opener's heading: the card's look lives here rather than
+ * on its runs, because Word copies a heading run's own formatting into the
+ * contents entry it writes when it updates the field, and light 21 pt text
+ * would vanish from the paper's contents page. Its outline level is a
+ * Heading 2's, which the contents' `\u` switch reads.
+ */
+export const SECTION_HEADING_STYLE = "SectionHeading";
+export const OPENER_SUBTITLE_SIZE = 21;
+export const OPENER_SUBTITLE_LINE = 348;
+export const OPENER_SUBTITLE_WIDTH = 3.9 * 1440;
 /** The proposer logo at the top of the cover letter: smaller than the cover's. */
 export const LETTER_LOGO_MAX_HEIGHT = 0.5 * 1440;
 
@@ -212,7 +281,10 @@ export function docxColors(paint: ProposalThemePaint): DocxColors {
 		ink: hex(paint.ink),
 		heading: hex(paint.heading),
 		primary: hex(paint.primary),
-		onPrimary: hex(paint.onPrimary),
+		onInk: hex(paint.onInk),
+		onInkMuted: hex(paint.onInkMuted),
+		onInkAccent: hex(paint.onInkAccent),
+		onInkPrimary: hex(paint.onInkPrimary),
 		label: hex(paint.label),
 		muted: hex(paint.muted),
 		border: hex(paint.border),
@@ -317,20 +389,6 @@ export function documentStyles(
 			// Word's own outline levels are zero-based; the TOC field and the
 			// navigation pane read them, whatever reader opens the file.
 			outlineLevel: level - 1,
-			// A section heading opens under a rule in the brand colour, as the
-			// live page's section headings do.
-			...(level === 2
-				? {
-						border: {
-							top: {
-								style: BorderStyle.SINGLE,
-								size: 18,
-								color: colors.primary,
-								space: 10,
-							},
-						},
-					}
-				: {}),
 		},
 	});
 	return {
@@ -347,16 +405,12 @@ export function documentStyles(
 					color: colors.ink,
 				},
 				paragraph: {
-					spacing: { before: 0, after: 360, line: 252 },
-					keepNext: true,
-					border: {
-						bottom: {
-							style: BorderStyle.SINGLE,
-							size: 24,
-							color: colors.primary,
-							space: 14,
-						},
+					spacing: {
+						before: 0,
+						after: TITLE_AFTER,
+						line: TITLE_LINE,
 					},
+					keepNext: true,
 				},
 			},
 			heading1: heading(1),
@@ -373,6 +427,25 @@ export function documentStyles(
 			},
 		},
 		paragraphStyles: [
+			{
+				id: SECTION_HEADING_STYLE,
+				name: "Section Heading",
+				basedOn: "Heading2",
+				next: "Normal",
+				quickFormat: true,
+				run: {
+					font: fonts.display,
+					size: OPENER_HEADING_SIZE,
+					bold: true,
+					color: colors.onInk,
+				},
+				paragraph: {
+					spacing: { before: 0, after: 0, line: OPENER_HEADING_LINE },
+					keepNext: true,
+					keepLines: true,
+					outlineLevel: 1,
+				},
+			},
 			{
 				// The contents entries Word writes when it updates the field.
 				id: "TOC2",

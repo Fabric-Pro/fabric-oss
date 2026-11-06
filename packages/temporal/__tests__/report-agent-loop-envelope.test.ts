@@ -276,6 +276,74 @@ describe("mergeToolResult — fizzy-mcp 1.1.0 page envelopes", () => {
 		expect(gatheredData.some_other_tool).toEqual(value);
 		expect(gatheredData._coverage).toBeUndefined();
 	});
+
+	it("counts a list once when a second read asks for fewer fields", () => {
+		const gatheredData: Record<string, unknown> = {};
+		const full = [
+			{
+				id: 101,
+				node_id: "RE_101",
+				tag_name: "v1.0.1",
+				html_url: "https://example.com/releases/v1.0.1",
+				body: "Notes",
+			},
+			{
+				id: 100,
+				node_id: "RE_100",
+				tag_name: "v1.0.0",
+				html_url: "https://example.com/releases/v1.0.0",
+				body: "Notes",
+			},
+		];
+		const slim = full.map(({ tag_name, html_url }) => ({
+			tag_name,
+			html_url,
+		}));
+
+		mergeToolResult(gatheredData, "list_releases", full);
+		mergeToolResult(gatheredData, "list_releases", slim);
+
+		expect(gatheredData.list_releases).toEqual(full);
+	});
+
+	it("counts a list once when it is read twice and its items carry no id", () => {
+		const gatheredData: Record<string, unknown> = {};
+		const releases = [
+			{
+				tag_name: "v1.0.1",
+				html_url: "https://example.com/releases/v1.0.1",
+			},
+			{
+				tag_name: "v1.0.0",
+				html_url: "https://example.com/releases/v1.0.0",
+			},
+		];
+		const commits = [{ sha: "abc" }, { sha: "def" }];
+
+		mergeToolResult(gatheredData, "list_releases", releases);
+		mergeToolResult(gatheredData, "list_releases", [...releases]);
+		mergeToolResult(gatheredData, "list_commits", commits);
+		mergeToolResult(gatheredData, "list_commits", [
+			{ sha: "def" },
+			{ sha: "ghi" },
+		]);
+
+		expect(gatheredData.list_releases).toHaveLength(2);
+		expect(gatheredData.list_commits).toEqual([
+			{ sha: "abc" },
+			{ sha: "def" },
+			{ sha: "ghi" },
+		]);
+	});
+
+	it("keeps items with no identity at all", () => {
+		const gatheredData: Record<string, unknown> = {};
+
+		mergeToolResult(gatheredData, "some_list", [{ name: "a" }]);
+		mergeToolResult(gatheredData, "some_list", [{ name: "a" }]);
+
+		expect(gatheredData.some_list).toHaveLength(2);
+	});
 });
 
 describe("consolidateIndividualCards after envelope normalization", () => {

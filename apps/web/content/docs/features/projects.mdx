@@ -209,6 +209,14 @@ To manage them, open the menu beside *Sync now* in the Living Memory section and
 
 Members who can't add context can open the list but not change it.
 
+### Decisions Found in Living Memory
+
+Once a synced file's new version has been indexed, Fabric reads it with AI and offers the decisions it states as suggestions in the project's **Decisions** tab. Only a file's current version is offered. A statement you already created or dismissed from the same file is not offered again.
+
+- **What is read**: Files marked **Store only** are not read. Files a repository's first sync wrote are skipped too, because reading a whole repository takes one AI request per file; choose **Scan for decisions** in the Decisions tab to read them.
+- **Nothing is binding until accepted**: A suggestion binds nobody. Reject it, or create a decision from it. A created decision starts as proposed, and is not accepted until someone accepts it.
+- **Updates**: When a suggestion reads like an existing decision that is accepted or proposed, the review offers **Create as update** as well as **Create as new decision**. Creating it as an update links the two, and accepting the new decision marks the one it updates as superseded. A statement that only matches a rejected, deprecated or superseded decision is offered as new.
+
 ## Team Collaboration
 
 ### Sharing Projects

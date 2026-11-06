@@ -24,7 +24,12 @@ export function useMyBranchFiles(projectId: string, enabled: boolean) {
 		enabled,
 	});
 	const files: BranchProjectionFile[] = query.data?.files ?? [];
-	return { branchId: query.data?.branch?.id ?? null, files };
+	return {
+		branchId: query.data?.branch?.id ?? null,
+		files,
+		// A disabled query stays pending for good; only a read under way is.
+		isPending: enabled && query.isPending,
+	};
 }
 
 /**

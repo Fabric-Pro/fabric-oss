@@ -3,6 +3,7 @@
 import { useCopilotAction, useCopilotReadable } from "@copilotkit/react-core";
 import { normalizeDocumentType, type ProjectContext } from "@repo/agent-types";
 import { featureKeyForAgentId } from "@repo/ai/lib/feature-keys";
+import { DOCUMENT_VERSION_CHANGE_DESCRIPTIONS } from "@repo/utils/document-version-change";
 import { countDocumentWords } from "@repo/utils/document-word-count";
 import {
 	CONFIRM_CHANGES_ACTION,
@@ -194,6 +195,10 @@ import {
 	MentionStatusContext,
 } from "../lib/mention-status-context";
 import {
+	useOwnedVisualEditStore,
+	VisualEditSessionProvider,
+} from "../lib/mermaid-edit-visual-store";
+import {
 	MermaidVisualProvider,
 	type ProposalVisualsOptions,
 } from "../lib/mermaid-visual-context";
@@ -255,6 +260,7 @@ import {
 import { ProposalReviewElsewhereStatus } from "./proposal-artifact/ProposalReviewElsewhereStatus";
 import { RoomSavedBody } from "./proposal-artifact/RoomSavedBody";
 import { RoomUpdatingStatus } from "./proposal-artifact/RoomUpdatingStatus";
+import { SectionRevisionControls } from "./proposal-artifact/SectionRevisionControls";
 import {
 	type GenerationRunState,
 	useGenerationRunState,
@@ -778,6 +784,18 @@ type Props = {
 	 * shown for review in this editor.
 	 */
 	onSectionRevisionShown?: (id: string) => void;
+	/**
+	 * Revise this section (Fizzy #2946): asks for a revision of one section
+	 * on the member's instruction, which comes back as a
+	 * `sectionRevisionRequest`; `false` when it was not taken. Absent where
+	 * the member may not revise the document, and then no heading offers it.
+	 */
+	onRequestSectionRevision?: (request: {
+		sectionKey: string;
+		instruction: string;
+	}) => boolean;
+	/** Whether a section revision stands, asked for here or elsewhere. */
+	sectionRevisionPending?: boolean;
 };
 
 /**
@@ -788,6 +806,11 @@ interface SectionRevisionBinding {
 	request: SectionRevisionRequest | null;
 	onSettled?: (outcome: SectionRevisionOutcome) => void;
 	onShown?: (id: string) => void;
+	onRequest?: (request: {
+		sectionKey: string;
+		instruction: string;
+	}) => boolean;
+	pending: boolean;
 	seen: Set<string>;
 }
 
@@ -880,6 +903,8 @@ export function DocumentEditor({
 	sectionRevisionRequest = null,
 	onSectionRevisionSettled,
 	onSectionRevisionShown,
+	onRequestSectionRevision,
+	sectionRevisionPending = false,
 }: Props) {
 	const [isRegenerating, setIsRegenerating] = useState(false);
 	// Beside `isRegenerating`, above the collaboration branch that remounts
@@ -892,6 +917,8 @@ export function DocumentEditor({
 		request: sectionRevisionRequest,
 		onSettled: onSectionRevisionSettled,
 		onShown: onSectionRevisionShown,
+		onRequest: onRequestSectionRevision,
+		pending: sectionRevisionPending,
 		seen: sectionRevisionSeenRef.current,
 	};
 	// The room stamp, the convergence of a room behind the saved document
@@ -1405,6 +1432,10 @@ function CollaborativeDocumentEditor({
 		null,
 	);
 	const hasSynced = syncedDocumentId === documentId;
+	// The diagrams' open Edit with instructions panels (Fizzy #2946): kept
+	// here, above the editor a lost room unmounts, so a candidate shown or
+	// a request in flight is still there when the room is back.
+	const visualEdits = useOwnedVisualEditStore(documentId);
 
 	// Ensure we're on the client before initializing Yjs
 	useEffect(() => {
@@ -1777,56 +1808,60 @@ function CollaborativeDocumentEditor({
 	}
 
 	return (
-		<DocumentEditorInner
-			projectId={projectId}
-			documentId={documentId}
-			organizationId={organizationId}
-			document={document}
-			project={project}
-			isRegenerating={isRegenerating}
-			setIsRegenerating={setIsRegenerating}
-			runState={runState}
-			roomConvergence={roomConvergence}
-			canEdit={canEdit}
-			tabVisible={tabVisible}
-			typedSinceSaveRef={typedSinceSaveRef}
-			pageLeaveRef={pageLeaveRef}
-			enableCollaboration={true}
-			ydoc={ydoc}
-			provider={provider}
-			isCollabConnected={isCollabConnected}
-			isCollabSynced={isCollabSynced}
-			collaborators={collaborators ?? []}
-			userColor={userColor}
-			shouldGenerateOnMount={shouldGenerateOnMount}
-			isAiSidebarExpanded={isAiSidebarExpanded}
-			actionSlot={actionSlot}
-			saveSlot={saveSlot}
-			syncSlot={syncSlot}
-			documentRefKind={documentRefKind}
-			activeAssistantConversationId={activeAssistantConversationId}
-			setActiveAssistantConversationId={setActiveAssistantConversationId}
-			activeAssistantVisibility={activeAssistantVisibility}
-			setActiveAssistantVisibility={setActiveAssistantVisibility}
-			activeAssistantVisibilityLockedAt={
-				activeAssistantVisibilityLockedAt
-			}
-			setActiveAssistantVisibilityLockedAt={
-				setActiveAssistantVisibilityLockedAt
-			}
-			initialPersistedMessageIds={initialPersistedMessageIds}
-			initialAttachmentsByMessageId={initialAttachmentsByMessageId}
-			initialAssistantMessages={initialAssistantMessages}
-			ssrConversationId={ssrConversationId}
-			documentDataUpdatedAt={documentDataUpdatedAt}
-			suppressGenerationOverlay={suppressGenerationOverlay}
-			attachToServerRun={attachToServerRun}
-			promptSelectorReplacement={promptSelectorReplacement}
-			contentThemeProps={contentThemeProps}
-			statTiles={statTiles}
-			proposalVisuals={proposalVisuals}
-			sectionRevision={sectionRevision}
-		/>
+		<VisualEditSessionProvider value={visualEdits}>
+			<DocumentEditorInner
+				projectId={projectId}
+				documentId={documentId}
+				organizationId={organizationId}
+				document={document}
+				project={project}
+				isRegenerating={isRegenerating}
+				setIsRegenerating={setIsRegenerating}
+				runState={runState}
+				roomConvergence={roomConvergence}
+				canEdit={canEdit}
+				tabVisible={tabVisible}
+				typedSinceSaveRef={typedSinceSaveRef}
+				pageLeaveRef={pageLeaveRef}
+				enableCollaboration={true}
+				ydoc={ydoc}
+				provider={provider}
+				isCollabConnected={isCollabConnected}
+				isCollabSynced={isCollabSynced}
+				collaborators={collaborators ?? []}
+				userColor={userColor}
+				shouldGenerateOnMount={shouldGenerateOnMount}
+				isAiSidebarExpanded={isAiSidebarExpanded}
+				actionSlot={actionSlot}
+				saveSlot={saveSlot}
+				syncSlot={syncSlot}
+				documentRefKind={documentRefKind}
+				activeAssistantConversationId={activeAssistantConversationId}
+				setActiveAssistantConversationId={
+					setActiveAssistantConversationId
+				}
+				activeAssistantVisibility={activeAssistantVisibility}
+				setActiveAssistantVisibility={setActiveAssistantVisibility}
+				activeAssistantVisibilityLockedAt={
+					activeAssistantVisibilityLockedAt
+				}
+				setActiveAssistantVisibilityLockedAt={
+					setActiveAssistantVisibilityLockedAt
+				}
+				initialPersistedMessageIds={initialPersistedMessageIds}
+				initialAttachmentsByMessageId={initialAttachmentsByMessageId}
+				initialAssistantMessages={initialAssistantMessages}
+				ssrConversationId={ssrConversationId}
+				documentDataUpdatedAt={documentDataUpdatedAt}
+				suppressGenerationOverlay={suppressGenerationOverlay}
+				attachToServerRun={attachToServerRun}
+				promptSelectorReplacement={promptSelectorReplacement}
+				contentThemeProps={contentThemeProps}
+				statTiles={statTiles}
+				proposalVisuals={proposalVisuals}
+				sectionRevision={sectionRevision}
+			/>
+		</VisualEditSessionProvider>
 	);
 }
 
@@ -6792,11 +6827,12 @@ function DocumentEditorInner({
 	// Keep the ref in sync so the onUpdate + triggerAutoSave guards can read it.
 	isContextUpdateActiveRef.current = contextUpdate.isActive;
 
-	// A finding-driven revision of one section of a client-document
-	// Proposal, asked for by the Internal Analysis (Fizzy #2946). Reviewed
-	// as the other proposals are: published to the room, the editor
-	// read-only, rejected on leaving and past the idle limit; its accept is
-	// saved through the held AI accept with the `FINDING` descriptor.
+	// A revision of one section of a client-document Proposal, asked for by
+	// the Internal Analysis or by a member's instruction on a heading (Fizzy
+	// #2946). Reviewed as the other proposals are: published to the room,
+	// the editor read-only, rejected on leaving and past the idle limit; its
+	// accept is saved through the held AI accept with the `FINDING` or
+	// `INSTRUCTION` descriptor.
 	const tRevision = useTranslations("projects.proposalArtifact.revision");
 	const sectionRevisionBlocked = (): string | null => {
 		if (!isArtifactProposal || canEdit !== true) {
@@ -6821,6 +6857,13 @@ function DocumentEditorInner({
 		}
 		return null;
 	};
+	// Revise this section is offered on a client-document Proposal's
+	// headings, to a member the page lets revise it.
+	const offersSectionRevision =
+		sectionRevision.onRequest !== undefined &&
+		statTiles &&
+		documentRefKind === "PROJECT_DOCUMENT" &&
+		proposalVisuals?.isMember === true;
 	const sectionRevisionBlockedRef = useRef(sectionRevisionBlocked);
 	sectionRevisionBlockedRef.current = sectionRevisionBlocked;
 	const saveSectionRevisionAcceptRef = useRef<
@@ -6858,7 +6901,21 @@ function DocumentEditorInner({
 		},
 		onReviewShown: (id) => sectionRevision.onShown?.(id),
 		saveAccept: (accept) => saveSectionRevisionAcceptRef.current(accept),
-		onSettled: (outcome) => sectionRevision.onSettled?.(outcome),
+		onSettled: (outcome) => {
+			// A request refused before it started never became active: its
+			// focus stage ends here, focus goes back to the editor, and a
+			// later revision does not inherit it.
+			if (sectionReviewFocusRef.current === "asked") {
+				sectionReviewFocusRef.current = null;
+				requestAnimationFrame(() => {
+					const ed = editorRef.current;
+					if (ed && !ed.isDestroyed && ed.isEditable) {
+						ed.view.focus();
+					}
+				});
+			}
+			sectionRevision.onSettled?.(outcome);
+		},
 	});
 	sectionRevisionShownRef.current = sectionReview.isReviewing;
 	sectionRevisionActiveRef.current = sectionReview.isActive;
@@ -6868,6 +6925,49 @@ function DocumentEditorInner({
 	useEffect(() => {
 		setSectionRevisionActive(sectionReview.isActive);
 	}, [sectionReview.isActive]);
+	// Revise this section moves focus along with the revision it asked for,
+	// so it is never left on the page body once its box closes: to the
+	// "revising" status while it is drafted, then to the review's summary,
+	// which names the section and says what Accept and Reject do; to the
+	// editor when it ends without a review, whose reason a toast says.
+	const sectionRequestingStatusRef = useRef<HTMLOutputElement>(null);
+	const sectionReviewSummaryRef = useRef<HTMLElement>(null);
+	const sectionReviewFocusRef = useRef<"asked" | "active" | null>(null);
+	const requestSectionRevisionHere = (asked: {
+		sectionKey: string;
+		instruction: string;
+	}): boolean => {
+		const taken = sectionRevision.onRequest?.(asked) ?? false;
+		if (taken) {
+			sectionReviewFocusRef.current = "asked";
+		}
+		return taken;
+	};
+	useEffect(() => {
+		const stage = sectionReviewFocusRef.current;
+		if (stage === null) {
+			return;
+		}
+		if (sectionReview.isReviewing) {
+			sectionReviewFocusRef.current = null;
+			sectionReviewSummaryRef.current?.focus();
+			return;
+		}
+		if (sectionReview.isActive) {
+			sectionReviewFocusRef.current = "active";
+			sectionRequestingStatusRef.current?.focus();
+			return;
+		}
+		if (stage === "active") {
+			sectionReviewFocusRef.current = null;
+			const frame = requestAnimationFrame(() => {
+				if (editor && !editor.isDestroyed && editor.isEditable) {
+					editor.view.focus();
+				}
+			});
+			return () => cancelAnimationFrame(frame);
+		}
+	}, [sectionReview.isActive, sectionReview.isReviewing, editor]);
 	const rejectSectionRevisionRef = useRef(sectionReview.reject);
 	rejectSectionRevisionRef.current = sectionReview.reject;
 	const isSectionRevisionApplyingNowRef = useRef(sectionReview.isApplyingNow);
@@ -8048,8 +8148,12 @@ function DocumentEditorInner({
 	// Proposal's diagram saves the editor first (Fizzy #2946). `false` when
 	// saving is refused right now (a run owns the document, the room is
 	// behind the saved body, the viewer may not edit) or the save does not
-	// land: the diagram then reads as changed, and nothing is asked.
-	const flushBeforeVisualEdit = (): Promise<boolean> => {
+	// land: the diagram then reads as changed, and nothing is asked. Once
+	// Edit with instructions applied its diagram, this save runs again with
+	// `changeDescription`, so the version says which writer made it.
+	const flushBeforeVisualEdit = (
+		changeDescription?: string,
+	): Promise<boolean> => {
 		if (
 			canEdit !== true ||
 			!document ||
@@ -8085,6 +8189,7 @@ function DocumentEditorInner({
 						content,
 						isManualSave: false,
 						base,
+						changeDescription,
 					}),
 				onUnavailable: () => {},
 				onSaved: () => {
@@ -8299,6 +8404,13 @@ function DocumentEditorInner({
 	};
 	const flushForVisualEdit = useCallback(
 		() => flushBeforeVisualEditRef.current(),
+		[],
+	);
+	const saveAppliedVisualEdit = useCallback(
+		() =>
+			flushBeforeVisualEditRef.current(
+				DOCUMENT_VERSION_CHANGE_DESCRIPTIONS.EDIT_WITH_INSTRUCTIONS,
+			),
 		[],
 	);
 	useLayoutEffect(() => {
@@ -11639,7 +11751,13 @@ function DocumentEditorInner({
 													/>
 												)}
 												{sectionReview.isRequesting && (
-													<output className="sticky top-0 z-10 flex items-center gap-3 px-4 py-2 bg-muted/50 border-b border-border text-sm backdrop-blur-sm">
+													<output
+														ref={
+															sectionRequestingStatusRef
+														}
+														tabIndex={-1}
+														className="sticky top-0 z-10 flex items-center gap-3 px-4 py-2 bg-muted/50 border-b border-border text-sm backdrop-blur-sm focus:outline-none"
+													>
 														<Loader2
 															className="h-4 w-4 animate-spin text-primary shrink-0"
 															aria-hidden
@@ -11653,8 +11771,19 @@ function DocumentEditorInner({
 												)}
 												{sectionReview.isReviewing && (
 													<>
-														<div className="flex flex-col gap-0.5 border-b border-border bg-muted/30 px-4 py-2 text-sm">
-															<span className="font-medium text-foreground">
+														<section
+															ref={
+																sectionReviewSummaryRef
+															}
+															tabIndex={-1}
+															aria-labelledby={`${documentId}-section-review-title`}
+															aria-describedby={`${documentId}-section-review-hint`}
+															className="flex flex-col gap-0.5 border-b border-border bg-muted/30 px-4 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+														>
+															<span
+																id={`${documentId}-section-review-title`}
+																className="font-medium text-foreground"
+															>
 																{tRevision(
 																	"reviewTitle",
 																	{
@@ -11664,7 +11793,10 @@ function DocumentEditorInner({
 																	},
 																)}
 															</span>
-															<output className="text-xs text-muted-foreground">
+															<output
+																id={`${documentId}-section-review-hint`}
+																className="text-xs text-muted-foreground"
+															>
 																{sectionReview.isApplying
 																	? tRevision(
 																			"applying",
@@ -11673,7 +11805,7 @@ function DocumentEditorInner({
 																			"reviewHint",
 																		)}
 															</output>
-														</div>
+														</section>
 														<DiffReviewBar
 															editor={editor}
 															mode={
@@ -11739,6 +11871,10 @@ function DocumentEditorInner({
 												{...contentThemeProps}
 												className={
 													cn(
+														// The heading controls are
+														// placed against this box.
+														offersSectionRevision &&
+															"relative",
 														contentThemeProps?.className,
 														showDiffPreviewPanes &&
 															"hidden",
@@ -11770,6 +11906,9 @@ function DocumentEditorInner({
 													flushSave={
 														flushForVisualEdit
 													}
+													saveAppliedEdit={
+														saveAppliedVisualEdit
+													}
 												>
 													<EditorContent
 														editor={editor}
@@ -11779,6 +11918,27 @@ function DocumentEditorInner({
 																"hidden",
 														)}
 													/>
+													{offersSectionRevision &&
+														sectionRevision.onRequest && (
+															<SectionRevisionControls
+																editor={editor}
+																enabled={
+																	!sectionRevision.pending &&
+																	!sectionReview.isActive &&
+																	!showsSavedBody &&
+																	sectionRevisionBlocked() ===
+																		null
+																}
+																getMarkdown={() =>
+																	getEditorMarkdownForSave(
+																		editor,
+																	)
+																}
+																onRequest={
+																	requestSectionRevisionHere
+																}
+															/>
+														)}
 													{(showsSavedBody ||
 														(roomStatus ===
 															"checking" &&

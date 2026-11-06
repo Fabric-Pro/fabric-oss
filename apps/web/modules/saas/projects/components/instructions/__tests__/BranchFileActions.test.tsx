@@ -6,7 +6,7 @@
  */
 import en from "@repo/i18n/translations/en.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -126,6 +126,7 @@ vi.mock("@saas/projects/hooks/use-instruction-action-error", () => ({
 import {
 	BranchFileActionButton,
 	BranchFileNotice,
+	useMyBranchFiles,
 	useRestoreBranchFile,
 } from "../BranchFileActions";
 import { BranchFileList } from "../BranchFileList";
@@ -185,6 +186,27 @@ beforeEach(() => {
 	state.failure = null;
 	state.branch = { branch: { id: "branch_1" }, files: [] };
 	state.published = { incomplete: false, files: [] };
+});
+
+describe("useMyBranchFiles", () => {
+	// The tree waits on `isPending` before saying nothing is there; a disabled
+	// read, which TanStack keeps pending for good, must not hold it forever.
+	it("is pending only while an enabled read is under way", async () => {
+		const enabled = renderHook(() => useMyBranchFiles("p", true), {
+			wrapper: Wrapper,
+		});
+		expect(enabled.result.current.isPending).toBe(true);
+		await waitFor(() =>
+			expect(enabled.result.current.isPending).toBe(false),
+		);
+		expect(enabled.result.current.branchId).toBe("branch_1");
+
+		const disabled = renderHook(() => useMyBranchFiles("p", false), {
+			wrapper: Wrapper,
+		});
+		expect(disabled.result.current.isPending).toBe(false);
+		expect(disabled.result.current.files).toEqual([]);
+	});
 });
 
 describe("BranchFileActionButton", () => {

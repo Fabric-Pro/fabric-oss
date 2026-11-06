@@ -143,9 +143,12 @@ export function InstructionsDigestPanel({ projectId }: { projectId: string }) {
 						</p>
 					) : null}
 				</div>
-			) : data.seen.comparable ? null : (
+			) : data.seen.comparable || data.seen.version === null ? null : (
+				// A marker with no version was recorded while nothing was
+				// published, so there is no earlier version to have lost: the
+				// versions listed above are the whole news.
 				<p className="text-muted-foreground text-xs">
-					{t("seenVersionGone", { version: data.seen.version ?? 0 })}
+					{t("seenVersionGone", { version: data.seen.version })}
 				</p>
 			)}
 			{data.proposals.length > 0 ? (

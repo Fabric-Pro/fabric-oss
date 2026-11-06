@@ -4,11 +4,13 @@
  * document (title, outline, nearest section, and optionally full text).
  */
 
+import { Schema } from "@tiptap/pm/model";
 import { describe, expect, it } from "vitest";
 import {
 	buildContextBlock,
 	extractDocContext,
 	type MermaidDocContext,
+	sectionCaptionAt,
 } from "../tiptap-mermaid-extension";
 
 type FakeNode = {
@@ -246,5 +248,85 @@ describe("buildContextBlock", () => {
 		expect(result).toContain("Document outline:");
 		expect(result).not.toContain("Full document content:");
 		expect(result).not.toContain("Current section");
+	});
+});
+
+describe("sectionCaptionAt (Fizzy #2946)", () => {
+	// A real ProseMirror document, so positions and `descendants` behave as
+	// the editor's do.
+	const schema = new Schema({
+		nodes: {
+			doc: { content: "block+" },
+			paragraph: { group: "block", content: "text*" },
+			heading: {
+				group: "block",
+				content: "text*",
+				attrs: { level: { default: 1 } },
+			},
+			mermaid: { group: "block", content: "text*" },
+			blockquote: { group: "block", content: "block+" },
+			text: {},
+		},
+	});
+	const heading = (level: number, text: string) =>
+		schema.node("heading", { level }, [schema.text(text)]);
+	const paragraph = (text: string) =>
+		schema.node("paragraph", null, [schema.text(text)]);
+	const diagram = () =>
+		schema.node("mermaid", null, [schema.text("flowchart LR")]);
+
+	/** The editor and each diagram's position, in document order. */
+	function editorOf(blocks: ReturnType<typeof diagram>[]) {
+		const doc = schema.node("doc", null, blocks);
+		const positions: number[] = [];
+		doc.forEach((node, offset) => {
+			if (node.type.name === "mermaid") {
+				positions.push(offset);
+			}
+		});
+		return { editor: { state: { doc } }, positions };
+	}
+
+	it("takes the nearest heading above, without its number or citation markers, past the leading title", () => {
+		const { editor, positions } = editorOf([
+			heading(1, "Example Proposal"),
+			diagram(),
+			heading(2, "3. Delivery approach [S2]"),
+			paragraph("Text."),
+			diagram(),
+			heading(3, "2026 Roadmap"),
+			diagram(),
+		]);
+		expect(positions.map((pos) => sectionCaptionAt(editor, pos))).toEqual([
+			null,
+			"Delivery approach",
+			"2026 Roadmap",
+		]);
+	});
+
+	it("follows the export's rule for a heading in a quote and an empty heading", () => {
+		const { editor, positions } = editorOf([
+			heading(2, "Delivery"),
+			schema.node("blockquote", null, [heading(2, "Quoted section")]),
+			diagram(),
+			schema.node("heading", { level: 2 }),
+			diagram(),
+		]);
+		// As `sectionCaptionsOf` reads `> ## Quoted section` and a bare `##`.
+		expect(positions.map((pos) => sectionCaptionAt(editor, pos))).toEqual([
+			"Quoted section",
+			null,
+		]);
+	});
+
+	it("reads a first heading below the top as a section, and nothing without a position", () => {
+		const { editor, positions } = editorOf([
+			paragraph("Intro."),
+			heading(1, "Overview"),
+			diagram(),
+		]);
+		expect(sectionCaptionAt(editor, positions[0])).toBe("Overview");
+		expect(sectionCaptionAt(editor, undefined)).toBeNull();
+		expect(sectionCaptionAt(null, 0)).toBeNull();
 	});
 });

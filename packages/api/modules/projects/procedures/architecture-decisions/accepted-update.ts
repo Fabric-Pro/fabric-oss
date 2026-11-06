@@ -9,13 +9,9 @@
  */
 import {
 	getArchitectureDecision,
+	IN_FORCE_DECISION_STATUSES,
 	livingMemoryUpdateTargetId,
 } from "@repo/database";
-
-const IN_FORCE_STATUSES: ReadonlySet<string> = new Set([
-	"ACCEPTED",
-	"PROPOSED",
-]);
 
 export async function acceptedUpdateTargetIds(input: {
 	projectId: string;
@@ -37,5 +33,7 @@ export async function acceptedUpdateTargetIds(input: {
 		id: targetId,
 		projectId: input.projectId,
 	});
-	return target && IN_FORCE_STATUSES.has(target.status) ? [targetId] : [];
+	return target && IN_FORCE_DECISION_STATUSES.includes(target.status)
+		? [targetId]
+		: [];
 }

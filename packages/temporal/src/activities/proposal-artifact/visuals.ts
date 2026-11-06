@@ -33,6 +33,7 @@ import { withFigureKind } from "@repo/utils/proposal-artifact/proposal-figures";
 import { withoutStorageReferences } from "@repo/utils/proposal-artifact/storage-references";
 import { mintVisualId } from "@repo/utils/proposal-artifact/visual-id-server";
 import {
+	headingDiagramCaption,
 	VISUAL_ORIGIN,
 	visualSourceHash,
 	withDiagramCaption,
@@ -438,7 +439,7 @@ interface ProposalVisualSection {
 	appendix: boolean;
 	/**
 	 * The heading as the export reads it, without its section number
-	 * (`CAPTION_SECTION_NUMBER`): the caption of a diagram whose extraction
+	 * (`headingDiagramCaption`): the caption of a diagram whose extraction
 	 * gave none. Empty when nothing is left.
 	 */
 	headingCaption: string;
@@ -446,21 +447,12 @@ interface ProposalVisualSection {
 
 /**
  * A leading heading number, which is structure: "5 ", "5. ", "5.2 ", "1A) ",
- * "B. ", "IV. " (a letter or numeral needs its `.` or `)`).
+ * "B. ", "IV. " (a letter or numeral needs its `.` or `)`). Looser than the
+ * number a caption leaves out (`headingDiagramCaption`), which keeps a
+ * heading's leading year or count.
  */
 const HEADING_NUMBERING =
 	/^(?:\d+(?:\.\d+)*[A-Za-z]?\\?[.)]?|[A-Za-z]\\?[.)]|[IVXLC]+\\?[.)])\s+/i;
-
-/**
- * A section number typed before a heading, which its caption leaves out:
- * "3. ", "3) ", "3.1 ", "1A) ", "B. ", "IV. ". Unlike `HEADING_NUMBERING`,
- * a single number needs its `.` or `)` and every number has at most three
- * digits, so a heading that starts with a year or a count ("2026 Roadmap",
- * "90 Day Plan") keeps it. Read from the heading as the export reads it, so
- * no escape is left before the mark.
- */
-const CAPTION_SECTION_NUMBER =
-	/^(?:\d{1,3}(?:\.\d{1,3})+[A-Za-z]?[.)]?|\d{1,3}[A-Za-z]?[.)]|[A-Za-z][.)]|[IVXLC]+[.)])\s+/i;
 
 /** An appendix heading, in English or German, once its numbering is gone. */
 const APPENDIX_HEADING = /^(?:appendix|anhang)(?![\p{L}\p{N}])/iu;
@@ -550,11 +542,10 @@ function proposalVisualSections(content: string): ProposalVisualSection[] {
 			heading: heading.text,
 			markdown,
 			appendix: isAppendixHeading(heading.text),
-			headingCaption: exportedHeadingText(
-				lines[heading.startLine - 1] ?? "",
-			)
-				.trim()
-				.replace(CAPTION_SECTION_NUMBER, ""),
+			headingCaption:
+				headingDiagramCaption(
+					exportedHeadingText(lines[heading.startLine - 1] ?? ""),
+				) ?? "",
 		});
 	});
 	return sections;

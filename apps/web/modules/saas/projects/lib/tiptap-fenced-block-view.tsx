@@ -43,6 +43,7 @@ import {
 } from "@tiptap/react";
 import { cn } from "@ui/lib";
 import { type ReactNode, useId, useState } from "react";
+import { useEditorEditable } from "./when-editor-editable";
 
 /**
  * Above the default 50 that `MermaidBlock` and the code block leave their
@@ -138,7 +139,10 @@ export function FencedBlockView({
 	const [sourceToggled, setSourceToggled] = useState(false);
 	const pendingDiff = hasPendingDiff(node);
 
-	const editable = editor.isEditable;
+	// Read again on every update: ProseMirror does not draw a node view
+	// again for `setEditable`, so a block drawn while the editor took no
+	// input kept no toggle once it took input again (Fizzy #2946).
+	const editable = useEditorEditable(editor);
 	const showForm = reading.ok && !pendingDiff;
 	const sourceOpen =
 		!showForm || (editable && (sourceToggled || selectionInside === true));

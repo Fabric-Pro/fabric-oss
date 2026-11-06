@@ -88,6 +88,7 @@ export interface ReadinessEvidence {
 			total: number;
 			meetingTranscripts: number;
 			knowledgeBaseLinks: number;
+			/** INTEGRATION rows with metadata.provider equal to "notion". */
 			notionSources: number;
 		};
 		/** A full or refresh index currently running. */
@@ -108,7 +109,7 @@ export interface ReadinessEvidence {
 		meetingTranscripts: number;
 		/** LINK sources categorised as a knowledge base / wiki. */
 		knowledgeBaseLinks: number;
-		/** INTEGRATION rows for a wiki provider that actually ingests. */
+		/** INTEGRATION rows with metadata.provider equal to "notion". */
 		notionSources: number;
 	};
 

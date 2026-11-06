@@ -52,7 +52,7 @@ const BLOCK_START = /^(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|>|\||<|---$)/;
  * editor round trip (TipTap → Turndown) changes without changing meaning:
  * - backslash escapes, including the ordered-marker escape;
  * - list markers (`*`, `+`, `-   `) and their spacing, list indentation;
- * - `_` emphasis, which the serializer rewrites as `*`;
+ * - `_` emphasis, which earlier editor saves rewrote as `*`;
  * - thematic breaks (`* * *` vs `---`) and table cell padding;
  * - soft-wrapped paragraph lines, which the editor joins with a space;
  * - blank lines between a paragraph and the list it introduces.

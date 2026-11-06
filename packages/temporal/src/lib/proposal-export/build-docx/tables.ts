@@ -103,7 +103,8 @@ const CELL_ALIGNMENT = {
 
 /**
  * A data table: the first row is the header, repeated on every page it
- * runs onto, filled with the primary colour; rows alternate with the tint,
+ * runs onto, filled with the ink and set in light mono labels, as print's
+ * header row is; rows alternate with the tint,
  * counted over the rows written, so a data row right under the header is
  * tinted; rules in the paint's border colour; column alignment from the
  * Markdown. A header row with nothing in it is left out, as print leaves
@@ -130,7 +131,7 @@ export function renderTable(
 		size: 6,
 		color: colors.border,
 	};
-	const headerRule: IBorderOptions = { ...rule, color: colors.primary };
+	const headerRule: IBorderOptions = { ...rule, color: colors.ink };
 
 	const rows = written.map((row, rowIndex) => {
 		const header = !headerless && rowIndex === 0;
@@ -140,12 +141,12 @@ export function renderTable(
 		const style: RunStyle = header
 			? {
 					...writer.monoMedium,
-					color: colors.onPrimary,
+					color: colors.onInk,
 					size: TABLE_HEADER_SIZE,
 					allCaps: true,
 					characterSpacing: LABEL_TRACKING,
-					linkColor: colors.onPrimary,
-					linkUnderline: colors.onPrimary,
+					linkColor: colors.onInk,
+					linkUnderline: colors.onInk,
 				}
 			: { ...bodyRunStyle(writer), size: TABLE_SIZE };
 		return new TableRow({
@@ -164,7 +165,7 @@ export function renderTable(
 							? {
 									type: ShadingType.CLEAR,
 									color: "auto",
-									fill: header ? colors.primary : colors.tint,
+									fill: header ? colors.ink : colors.tint,
 								}
 							: undefined,
 					borders: header

@@ -35,6 +35,7 @@ import { WorkflowsIcon } from "@saas/shared/components/icons/WorkflowsIcon";
 import { SidebarEdgeHandle } from "@saas/shared/components/SidebarEdgeHandle";
 import { ThemeToggle } from "@saas/shared/components/ThemeToggle";
 import { UserMenu } from "@saas/shared/components/UserMenu";
+import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
 import { useSidebarCollapse } from "@saas/shared/contexts/SidebarCollapseContext";
 import { isMonitoringFeatureEnabled } from "@saas/shared/lib/feature-flags";
 import { Logo } from "@shared/components/Logo";
@@ -190,14 +191,14 @@ export function NavBar({
 	const { isCollapsed, toggleCollapsed } = useSidebarCollapse();
 	const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 	// Fullscreen pages render the sidebar force-collapsed with no persistent
-	// expand control. This local override lets the edge handle temporarily
-	// reveal the full sidebar (as an overlay) so every nav item stays reachable
-	// without leaving the fullscreen view.
-	const [fullscreenExpanded, setFullscreenExpanded] = useState(false);
+	// expand control. This override lets the edge handle temporarily reveal
+	// the full sidebar; it lives in FullscreenContext so a page can make room
+	// for it.
+	const { isRailExpanded, setIsRailExpanded } = useFullscreen();
 
 	const { useSidebarLayout } = config.ui.saas;
 
-	const showLabels = forceCollapsed ? fullscreenExpanded : !isCollapsed;
+	const showLabels = forceCollapsed ? isRailExpanded : !isCollapsed;
 
 	const onLogout = () => {
 		authClient.signOut({
@@ -976,7 +977,7 @@ export function NavBar({
 						isExpanded={showLabels}
 						onClick={
 							forceCollapsed
-								? () => setFullscreenExpanded((v) => !v)
+								? () => setIsRailExpanded(!isRailExpanded)
 								: toggleCollapsed
 						}
 						expandLabel="Expand sidebar"

@@ -9,6 +9,7 @@ import {
 	isAiRefreshAuthor,
 	resolveDocumentVersionAuthor,
 } from "@repo/utils/document-version-author";
+import { restoredVersionDescription } from "@repo/utils/document-version-change";
 import { countDocumentWords } from "@repo/utils/document-word-count";
 import {
 	isGenerationRunStillWriting,
@@ -1062,7 +1063,7 @@ export async function restoreDocumentVersion(
 	return await updateDocument(documentId, {
 		content: versionData.content,
 		lastEditedBy: restoredBy,
-		changeDescription: `Restored to version ${version}`,
+		changeDescription: restoredVersionDescription(version),
 		userId: tenantContext.userId,
 		organizationId: tenantContext.organizationId,
 	});
@@ -1684,16 +1685,25 @@ export async function fillGeneratingDocument({
  * without OCR, a corrupt file, an unsupported container. Before the row was
  * created up front, that outcome was silent: no document appeared and nothing
  * said why. Same GENERATING guard as above, for the same reason.
+ *
+ * `projectId`, when given, is required of the row as well: a caller that found
+ * the document id on some other record can hold it to that record's project.
  */
 export async function failGeneratingDocument({
 	documentId,
 	reason,
+	projectId,
 }: {
 	documentId: string;
 	reason: string;
+	projectId?: string;
 }): Promise<number> {
 	const { count } = await db.projectDocument.updateMany({
-		where: { id: documentId, status: "GENERATING" },
+		where: {
+			id: documentId,
+			status: "GENERATING",
+			...(projectId ? { projectId } : {}),
+		},
 		data: { status: "FAILED", generationError: reason },
 	});
 	return count;

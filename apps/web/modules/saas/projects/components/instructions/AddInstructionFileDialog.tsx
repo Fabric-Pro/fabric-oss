@@ -567,7 +567,7 @@ export function AddInstructionFileDialog({
 					{!proposalOnly && !commitMode ? (
 						<label
 							htmlFor="add-instruction-publish"
-							className="flex items-center gap-2 text-muted-foreground text-sm"
+							className="flex min-h-6 items-center gap-2 text-muted-foreground text-sm"
 						>
 							<Checkbox
 								id="add-instruction-publish"

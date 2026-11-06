@@ -27,7 +27,17 @@ function interpolate(template: string, values?: Record<string, unknown>) {
 	if (!values) {
 		return template;
 	}
-	return template.replace(/\{(\w+)\}/g, (_, name) => String(values[name]));
+	// The two-form plural the copy uses, as `en-copy`'s stand-in reads it.
+	return template
+		.replace(
+			/\{(\w+), plural, one \{([^}]*)\} other \{([^}]*)\}\}/g,
+			(_, name: string, one: string, other: string) =>
+				(Number(values[name]) === 1 ? one : other).replaceAll(
+					"#",
+					Number(values[name]).toLocaleString("en-US"),
+				),
+		)
+		.replace(/\{(\w+)\}/g, (_, name) => String(values[name]));
 }
 
 /** Minimal `t.rich` stand-in: replaces `<tag>inner</tag>` with `tags[tag](inner)`. */
@@ -174,13 +184,13 @@ describe("UploadFolderDialog", () => {
 		await waitFor(() =>
 			expect(
 				screen.getByText(
-					/1 files, .* will be uploaded\. 1 files will be left out\./,
+					/1 file, .* will be uploaded\. 1 file will be left out\./,
 				),
 			).toBeInTheDocument(),
 		);
 		expect(screen.getByText("default rule")).toBeInTheDocument();
 		await userEvent.click(
-			screen.getByRole("button", { name: /Upload 1 files/ }),
+			screen.getByRole("button", { name: /Upload 1 file$/ }),
 		);
 		await waitFor(() => expect(onUploaded).toHaveBeenCalledWith("snap_1"));
 		expect(uploadSnapshot).toHaveBeenCalledWith(
@@ -206,7 +216,7 @@ describe("UploadFolderDialog", () => {
 		);
 
 		const alert = await screen.findByRole("alert");
-		expect(alert).toHaveTextContent("1 files will be rejected");
+		expect(alert).toHaveTextContent("1 file will be rejected");
 		expect(alert).toHaveTextContent(".env");
 		expect(screen.getByText("will be rejected")).toBeInTheDocument();
 		// The server is the authority; a client-side guess must never be able
@@ -270,7 +280,7 @@ describe("UploadFolderDialog", () => {
 			[pickRoot("AGENTS.md", "# a")],
 		);
 		await waitFor(() =>
-			expect(sourceChips()).toEqual(["repo", ".claude", "1 files"]),
+			expect(sourceChips()).toEqual(["repo", ".claude", "1 file"]),
 		);
 		expect(rowPaths()).toEqual([
 			".claude/agents",
@@ -280,7 +290,7 @@ describe("UploadFolderDialog", () => {
 
 		await user.click(screen.getByRole("button", { name: "Remove repo" }));
 		await waitFor(() =>
-			expect(sourceChips()).toEqual([".claude", "1 files"]),
+			expect(sourceChips()).toEqual([".claude", "1 file"]),
 		);
 		expect(rowPaths()).toEqual([".claude/agents", "AGENTS.md"]);
 
@@ -374,7 +384,7 @@ describe("UploadFolderDialog", () => {
 			],
 		);
 		const upload = await screen.findByRole("button", {
-			name: /Upload 1 files/,
+			name: /Upload 1 file$/,
 		});
 		expect(upload).toBeEnabled();
 		expect(
@@ -408,7 +418,7 @@ describe("UploadFolderDialog", () => {
 			],
 		);
 		expect(
-			await screen.findByRole("button", { name: /Upload 1 files/ }),
+			await screen.findByRole("button", { name: /Upload 1 file$/ }),
 		).toBeEnabled();
 		expect(screen.queryByText(/each file can be at most/)).toBeNull();
 
@@ -459,7 +469,7 @@ describe("UploadFolderDialog", () => {
 				"docs is both a file and a folder (it would hold docs/a.md). Remove one, or change whether a folder keeps its name.",
 			),
 		).toBeInTheDocument();
-		expect(sourceChips()).toEqual(["1 files"]);
+		expect(sourceChips()).toEqual(["1 file"]);
 	});
 
 	// The visible buttons were disabled while settings loaded, but the
@@ -550,7 +560,7 @@ describe("UploadFolderDialog: publish now and scan afterwards (Fizzy #2737)", ()
 		);
 		await waitFor(() =>
 			expect(
-				screen.getByRole("button", { name: /Upload 1 files/ }),
+				screen.getByRole("button", { name: /Upload 1 file$/ }),
 			).toBeInTheDocument(),
 		);
 		return onUploaded;
@@ -571,7 +581,7 @@ describe("UploadFolderDialog: publish now and scan afterwards (Fizzy #2737)", ()
 		const option = screen.getByRole("checkbox", {
 			name: publishBeforeScanCopy.label,
 		});
-		const upload = screen.getByRole("button", { name: /Upload 1 files/ });
+		const upload = screen.getByRole("button", { name: /Upload 1 file$/ });
 		expect(upload).toBeEnabled();
 
 		await userEvent.click(option);
@@ -623,7 +633,7 @@ describe("UploadFolderDialog: publish now and scan afterwards (Fizzy #2737)", ()
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
 		await userEvent.click(
-			screen.getByRole("button", { name: /Upload 1 files/ }),
+			screen.getByRole("button", { name: /Upload 1 file$/ }),
 		);
 		await waitFor(() => expect(onUploaded).toHaveBeenCalled());
 		expect(uploadSnapshot).toHaveBeenCalledWith(
@@ -642,7 +652,7 @@ describe("UploadFolderDialog: publish now and scan afterwards (Fizzy #2737)", ()
 			},
 		);
 		await pickAndReview(true);
-		const upload = screen.getByRole("button", { name: /Upload 1 files/ });
+		const upload = screen.getByRole("button", { name: /Upload 1 file$/ });
 
 		// First attempt: ordinary, and it fails after `begin`.
 		await userEvent.click(upload);
@@ -695,7 +705,7 @@ describe("UploadFolderDialog: publish now and scan afterwards (Fizzy #2737)", ()
 			await pickAndReview(false);
 
 			await userEvent.click(
-				screen.getByRole("button", { name: /Upload 1 files/ }),
+				screen.getByRole("button", { name: /Upload 1 file$/ }),
 			);
 
 			await waitFor(() =>
@@ -787,7 +797,7 @@ describe("UploadFolderDialog: progress while it works", () => {
 			[pick("repo/CLAUDE.md", "# x")],
 		);
 		await userEvent.click(
-			await screen.findByRole("button", { name: /Upload 1 files/ }),
+			await screen.findByRole("button", { name: /Upload 1 file$/ }),
 		);
 		await waitFor(() => expect(report).toBeDefined());
 
@@ -831,7 +841,7 @@ describe("UploadFolderDialog: progress while it works", () => {
 			[pick("repo/CLAUDE.md", "# x")],
 		);
 		await userEvent.click(
-			await screen.findByRole("button", { name: /Upload 1 files/ }),
+			await screen.findByRole("button", { name: /Upload 1 file$/ }),
 		);
 		await waitFor(() => expect(finalizing).toBeDefined());
 

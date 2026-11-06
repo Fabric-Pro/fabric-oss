@@ -197,6 +197,65 @@ describe("listLivingMemoryDecisionCandidates", () => {
 		});
 	});
 
+	describe("which decision a candidate is offered as an update of", () => {
+		/** The real read's status filter, applied to one matching decision. */
+		function matchingDecisionIs(status: string) {
+			mocks.decisionFindMany.mockImplementation(
+				async ({
+					where,
+				}: {
+					where: {
+						sourceKind?: string;
+						status?: { in?: string[] };
+					};
+				}) => {
+					if (where.sourceKind) {
+						return [];
+					}
+					const row = {
+						id: "dec-1",
+						identifier: "ADR-001",
+						title: "Postgres for persistence",
+						decision: "We use Postgres for all persistence.",
+						status,
+					};
+					return !where.status?.in || where.status.in.includes(status)
+						? [row]
+						: [];
+				},
+			);
+		}
+
+		it.each(["REJECTED", "DEPRECATED", "SUPERSEDED"])(
+			"offers a statement matching a %s decision as new: accepting an update would change nothing",
+			async (status) => {
+				matchingDecisionIs(status);
+
+				const [first] = await listLivingMemoryDecisionCandidates({
+					projectId: "proj",
+				});
+
+				expect(first?.text).toBe(
+					"We use Postgres for all persistence.",
+				);
+				expect(first).not.toHaveProperty("matchedDecision");
+			},
+		);
+
+		it.each(["ACCEPTED", "PROPOSED"])(
+			"offers a statement matching a %s decision as its update",
+			async (status) => {
+				matchingDecisionIs(status);
+
+				const [first] = await listLivingMemoryDecisionCandidates({
+					projectId: "proj",
+				});
+
+				expect(first?.matchedDecision?.id).toBe("dec-1");
+			},
+		);
+	});
+
 	it("does not offer again a decision converted or dismissed in an earlier version of the file", async () => {
 		mocks.extractionFindMany.mockResolvedValue([
 			currentExtraction,

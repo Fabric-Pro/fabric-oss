@@ -204,7 +204,7 @@ error naming the scope, and the `codingInstructions` field on `fabric_list_proje
 | `fabric_add_instruction_lesson` | `instructions:write` | write | Record a lesson as a new file under `Lessons/`; held for review |
 | `fabric_change_instructions` | `instructions:write` | write | Change the instructions; held for review, committed only when the sign-in also carries `instructions:publish` |
 | `fabric_list_code_repositories` | `instructions:read` | read | List the project's code repositories with clone URLs and `repos/<folder>` paths; the agent clones them with git |
-| `fabric_semantic_search` | `projects:read` | read | Semantic (RAG) search over the project's Context and code index; ranked passages |
+| `fabric_semantic_search` | `projects:read` | read | Semantic (RAG) search over the project's Context; ranked passages. Not the code index |
 
 `instructions:write` reaches only the proposal path, which is what a project reader can
 already do in the Coding Instructions tab. No argument publishes from the gateway: a proposal

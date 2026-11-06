@@ -55,7 +55,7 @@ export function letterRules(
 			"object-fit": "contain",
 			"border-radius": "0",
 		}),
-		// A logo drawn for a dark background sits on a plate of the ink.
+		// A mark too light to read on the paper sits on a plate of the ink.
 		rule(dot(print.letterLogoPlate), {
 			padding: "7pt 10pt",
 			"border-radius": "5pt",

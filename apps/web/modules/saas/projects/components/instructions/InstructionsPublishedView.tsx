@@ -175,6 +175,12 @@ export function InstructionsPublishedView({
 	const [selected, setSelected] = useState<string | null>(null);
 	const [addFileOpen, setAddFileOpen] = useState(false);
 	const [historyOpen, setHistoryOpen] = useState(false);
+	// History re-reads the versions as it opens: a version proposed from the
+	// CLI or by a teammate since the tab loaded is not in the cache yet.
+	const openHistory = () => {
+		setHistoryOpen(true);
+		onChanged();
+	};
 	const [proposalsOpen, setProposalsOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [connectOpen, setConnectOpen] = useState(false);
@@ -474,7 +480,7 @@ export function InstructionsPublishedView({
 				}
 			: undefined,
 		history: {
-			onOpen: () => setHistoryOpen(true),
+			onOpen: openHistory,
 			commits: repositoryConfiguration !== null,
 		},
 		download: published
@@ -729,14 +735,14 @@ export function InstructionsPublishedView({
 			{published ? (
 				<InstructionsDeferredScanAlerts
 					published={published}
-					onOpenHistory={() => setHistoryOpen(true)}
+					onOpenHistory={openHistory}
 				/>
 			) : null}
 			{superseded && published ? (
 				<InstructionsSupersededNotice
 					superseded={superseded}
 					publishedVersion={published.version}
-					onOpenHistory={() => setHistoryOpen(true)}
+					onOpenHistory={openHistory}
 				/>
 			) : null}
 			{published ? (

@@ -5,7 +5,7 @@
 
 import type { ProposalThemePaint } from "@repo/utils/proposal-artifact/theme-tokens";
 import { type IParagraphOptions, type Table, TextRun } from "docx";
-import type { Heading, Nodes } from "mdast";
+import type { Heading, Paragraph as MdParagraph, Nodes } from "mdast";
 import type { CoverFence, CoverLetter } from "../document-content";
 import { eachNode, type PreparedExportMarkdown } from "../markdown";
 import type {
@@ -42,7 +42,14 @@ export interface DocxColors {
 	ink: string;
 	heading: string;
 	primary: string;
-	onPrimary: string;
+	/** Text on the ink: the cover, the section openers and header rows. */
+	onInk: string;
+	/** Quieter text on the ink: the cover's lead and parties, subtitles. */
+	onInkMuted: string;
+	/** Labels on the ink: the cover's party labels. */
+	onInkAccent: string;
+	/** The cover's and the section openers' eyebrows: the primary on the ink. */
+	onInkPrimary: string;
 	/** Small labels on the paper, such as list bullets. */
 	label: string;
 	muted: string;
@@ -61,8 +68,8 @@ export interface ListDefinition {
 export interface Writer {
 	input: BuildDocxInput;
 	/**
-	 * The title the file prints under, for the cover, the running header and
-	 * footer, and the file's properties: Main's leading H1, or the record's.
+	 * The title the file prints under, for the cover, the running footer and
+	 * the file's properties: Main's leading H1, or the record's.
 	 */
 	title: string;
 	/** Main's leading H1 when it is the title, which the body leaves out. */
@@ -72,6 +79,11 @@ export interface Writer {
 	 * body leaves out, or null.
 	 */
 	coverFence: CoverFence | null;
+	/**
+	 * The preamble's first paragraph when the cover takes it as its lead,
+	 * as print's cover does (`coverPreamble`); the body leaves it out.
+	 */
+	lead: MdParagraph | null;
 	/**
 	 * Main's cover letter, written in a section of its own after the cover
 	 * and left out of the body, or null.
@@ -90,6 +102,11 @@ export interface Writer {
 	lists: ListDefinition[];
 	/** Every Heading 2's text, for the contents shown before Word updates it. */
 	contents: string[];
+	/**
+	 * Section openers numbered so far: the "Section N" of the next one is
+	 * this plus one. An appendix's opener takes no number, as in print.
+	 */
+	sectionNumber: number;
 	/** Markdown images left out. */
 	externalImages: number;
 	/** Image bytes placed so far (cover, uploads, diagrams), repeats included. */
@@ -125,8 +142,12 @@ export type MonoMedium = Pick<RunStyle, "font" | "bold">;
 
 /** How a run of inline text is set. */
 export interface RunStyle {
-	font: string;
-	color: string;
+	/**
+	 * Left out, the run takes its paragraph style's font and colour: a run
+	 * Word copies into the contents must carry no look of its own.
+	 */
+	font?: string;
+	color?: string;
 	size?: number;
 	bold?: boolean;
 	italics?: boolean;

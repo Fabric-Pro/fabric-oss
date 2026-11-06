@@ -129,4 +129,24 @@ describe("InstructionsDigestPanel", () => {
 
 		expect(await screen.findByText("seenVersionGone")).toBeInTheDocument();
 	});
+
+	// Recorded while nothing was published (a first visit, or after every
+	// version was removed): no version was ever seen, so none is "gone".
+	it("names no lost version when the last visit saw nothing published", async () => {
+		m.digest = withNews({
+			paths: null,
+			seen: {
+				snapshotId: null,
+				version: null,
+				seenAt,
+				comparable: false,
+			},
+		});
+		render(<InstructionsDigestPanel projectId="p" />, { wrapper: Wrapper });
+
+		expect(
+			await screen.findByTestId("instructions-digest"),
+		).toBeInTheDocument();
+		expect(screen.queryByText("seenVersionGone")).toBeNull();
+	});
 });

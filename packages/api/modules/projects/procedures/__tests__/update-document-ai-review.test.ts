@@ -11,6 +11,10 @@
  *    prose and its link and image destinations); the
  *    finding is recorded as Resolved, with its audit row, in the save's
  *    transaction, and a failure there rolls the body back;
+ *  - INSTRUCTION: a section revised on a member's own instruction; the same
+ *    access as FINDING, a token of its own kind for this user, document,
+ *    base and section, the section scope and the echo check, and an audit
+ *    row of versions only in the save's transaction;
  *  - refusals are PRECONDITION_FAILED with a code, and write nothing;
  *  - a saved accept the client did not describe gets a generic version
  *    description, which names no finding;
@@ -32,8 +36,10 @@ import {
 } from "@repo/utils/proposal-artifact/section-hash";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	type InstructionRevisionTokenPayload,
 	type RevisionTokenPayload,
 	revisionSectionFingerprint,
+	signInstructionRevisionToken,
 	signRevisionToken,
 } from "../../lib/proposal-revision-token";
 
@@ -390,6 +396,22 @@ describe("CHAT accept", () => {
 			violations: [expect.objectContaining({ sectionKey: PRICING_KEY })],
 		});
 		expect(JSON.stringify(error.data)).not.toContain("monthly");
+		// The log names the section by its key's hash and length, never the
+		// key, which spells its heading path.
+		const logged = JSON.stringify(mocks.loggerInfo.mock.calls);
+		expect(logged).not.toContain(PRICING_KEY);
+		expect(mocks.loggerInfo).toHaveBeenCalledWith(
+			expect.objectContaining({
+				violations: [
+					expect.objectContaining({
+						code: SCOPED_REVISION_REFUSAL.OUTSIDE_TARGET,
+						sectionKeyHash: expect.any(String),
+						sectionKeyLength: PRICING_KEY.length,
+					}),
+				],
+			}),
+			expect.stringContaining("change outside its target"),
+		);
 		expect(mocks.updateDocument).not.toHaveBeenCalled();
 		// No diagram changed, so the stored specs that classify one are not read.
 		expect(mocks.listVisualSpecs).not.toHaveBeenCalled();
@@ -421,7 +443,7 @@ describe("CHAT accept", () => {
 		expect(committed?.content).toBe(next);
 	});
 
-	it("describes the version as an assistant edit unless the client described it", async () => {
+	it("describes the version as a chat edit unless the client described it", async () => {
 		const next = withProse(
 			"What the engagement covers.",
 			"What the engagement covers, in detail.",
@@ -441,7 +463,31 @@ describe("CHAT accept", () => {
 				([, data]) =>
 					(data as { changeDescription?: string }).changeDescription,
 			),
-		).toEqual(["Assistant edit", "Assistant edit", "Tightened the scope"]);
+		).toEqual(["Chat edit", "Chat edit", "Tightened the scope"]);
+	});
+
+	it("stores a plain save's own description, as Edit with instructions sends it", async () => {
+		// The applied diagram is saved by the editor's plain save, with no
+		// descriptor: its description is the writer's record.
+		const next = withProse(
+			"  Discovery --> Delivery",
+			"  Discovery --> Build --> Delivery",
+		);
+
+		await call({
+			content: next,
+			...BASE,
+			changeDescription: "Edit with instructions",
+		});
+
+		expect(mocks.updateDocument).toHaveBeenCalledWith(
+			"doc_1",
+			expect.objectContaining({
+				content: next,
+				changeDescription: "Edit with instructions",
+			}),
+		);
+		expect(mocks.listVisualSpecs).not.toHaveBeenCalled();
 	});
 
 	it("refuses a change to a diagram in a kept section", async () => {
@@ -1397,5 +1443,249 @@ describe("where the descriptor applies", () => {
 
 		expect(committed?.content).toContain('id="slot-a"');
 		expect(committed?.content).toContain("in detail.");
+	});
+});
+
+describe("INSTRUCTION accept", () => {
+	const CANDIDATE = withProse(
+		"The fee is agreed later.",
+		"The fee is fixed and paid in two instalments.",
+	);
+
+	function fingerprintOf(body: string): string {
+		const fingerprint = revisionSectionFingerprint(body, PRICING_KEY);
+		if (!fingerprint) {
+			throw new Error("no Pricing section");
+		}
+		return fingerprint;
+	}
+
+	function token(
+		overrides: Partial<InstructionRevisionTokenPayload> = {},
+	): string {
+		return signInstructionRevisionToken({
+			userId: "user_member",
+			documentId: "doc_1",
+			baseVersion: 3,
+			sectionKey: PRICING_KEY,
+			sectionFingerprint: fingerprintOf(CANDIDATE),
+			...overrides,
+		});
+	}
+
+	function instruction(revisionToken = token(), sectionKey = PRICING_KEY) {
+		return {
+			kind: "INSTRUCTION" as const,
+			sectionKey,
+			revisionToken,
+		};
+	}
+
+	it("saves the signed section and audits versions only, resolving nothing", async () => {
+		await call({ content: CANDIDATE, ...BASE, aiReview: instruction() });
+
+		expect(committed?.content).toBe(CANDIDATE);
+		expect(mocks.assertProjectPermission).toHaveBeenCalledWith(
+			"proj_1",
+			"user_member",
+			"DOCUMENT_UPDATE",
+		);
+		expect(mocks.loadProposalArtifactDocument).toHaveBeenCalledWith(
+			expect.objectContaining({ write: true, userId: "user_member" }),
+		);
+		expect(mocks.loadProposalFinding).not.toHaveBeenCalled();
+		expect(mocks.writeResolved).not.toHaveBeenCalled();
+		expect(mocks.recordAuditTx).toHaveBeenCalledTimes(1);
+		expect(mocks.recordAuditTx).toHaveBeenCalledWith(
+			{ tx: true },
+			expect.objectContaining({
+				action: "project.proposal_artifact.section_revised",
+				category: "project",
+				outcome: "success",
+				organizationId: "org_1",
+				projectId: "proj_1",
+				resource: { type: "project_document", id: "doc_1", name: null },
+				metadata: { baseVersion: 3, version: 4 },
+			}),
+		);
+		const audited = JSON.stringify(mocks.recordAuditTx.mock.calls[0][1]);
+		expect(audited).not.toContain("instalments");
+		expect(audited).not.toContain(PRICING_KEY);
+		const { changeDescription } = mocks.updateDocument.mock.calls[0][1] as {
+			changeDescription?: string;
+		};
+		expect(changeDescription).toBe("Revised a section with instructions");
+	});
+
+	it.each([
+		["a forged token", () => `${token().split(".")[0]}.forged`],
+		["another user's token", () => token({ userId: "user_other" })],
+		["another document's token", () => token({ documentId: "doc_2" })],
+		["a token for another base", () => token({ baseVersion: 2 })],
+		["a token for another section", () => token({ sectionKey: SCOPE_KEY })],
+		[
+			"a token for another candidate",
+			() => token({ sectionFingerprint: "hand-edited" }),
+		],
+		[
+			"a finding's token",
+			() =>
+				signRevisionToken({
+					userId: "user_member",
+					documentId: "doc_1",
+					runId: "run_1",
+					findingId: "finding_1",
+					baseVersion: 3,
+					response: null,
+					sectionKey: PRICING_KEY,
+					sectionFingerprint: fingerprintOf(CANDIDATE),
+				}),
+		],
+	])(
+		"refuses %s with REVISION_TOKEN_INVALID and writes nothing",
+		async (_label, make) => {
+			const error = await refusal(
+				call({
+					content: CANDIDATE,
+					...BASE,
+					aiReview: instruction(make()),
+				}),
+			);
+
+			expect(error.data?.code).toBe(
+				SCOPED_REVISION_REFUSAL.REVISION_TOKEN_INVALID,
+			);
+			expect(mocks.updateDocument).not.toHaveBeenCalled();
+			expect(mocks.recordAuditTx).not.toHaveBeenCalled();
+		},
+	);
+
+	it("never takes an instruction token as a finding's", async () => {
+		const error = await refusal(
+			call({
+				content: CANDIDATE,
+				...BASE,
+				aiReview: {
+					kind: "FINDING",
+					runId: "run_1",
+					findingId: "finding_1",
+					revisionToken: token(),
+				},
+			}),
+		);
+
+		expect(error.data?.code).toBe(
+			SCOPED_REVISION_REFUSAL.REVISION_TOKEN_INVALID,
+		);
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
+	});
+
+	it("refuses a descriptor naming another section than its token", async () => {
+		const error = await refusal(
+			call({
+				content: CANDIDATE,
+				...BASE,
+				aiReview: instruction(token(), SCOPE_KEY),
+			}),
+		);
+
+		expect(error.data?.code).toBe(
+			SCOPED_REVISION_REFUSAL.REVISION_TOKEN_INVALID,
+		);
+	});
+
+	it("refuses a hand edit of the candidate", async () => {
+		const edited = withProse(
+			"The fee is agreed later.",
+			"The fee is fixed and paid in three instalments.",
+		);
+
+		const error = await refusal(
+			call({ content: edited, ...BASE, aiReview: instruction() }),
+		);
+
+		expect(error.data?.code).toBe(
+			SCOPED_REVISION_REFUSAL.REVISION_TOKEN_INVALID,
+		);
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
+	});
+
+	it("refuses a revision that also changed another section", async () => {
+		const both = withProse(
+			"What the engagement covers.",
+			"What the engagement covers, widened.",
+			CANDIDATE,
+		);
+
+		const error = await refusal(
+			call({ content: both, ...BASE, aiReview: instruction() }),
+		);
+
+		expect(error.data?.code).toBe(SCOPED_REVISION_REFUSAL.OUTSIDE_TARGET);
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
+	});
+
+	it("refuses a section that echoes a settled answer, naming no text", async () => {
+		mocks.buildSettledDecisionsBlock.mockResolvedValue({
+			block: "",
+			analysisBlock: "",
+			itemCount: 1,
+			carried: {
+				responseTexts: [LONG_ANSWER],
+				findingTitles: ["Workshop format is unclear"],
+				responseKeys: ["delivery|scope|workshop"],
+				titleKeys: ["delivery|scope|workshop"],
+			},
+		});
+		const echoing = withProse(
+			"The fee is agreed later.",
+			`The fee covers what ${LONG_ANSWER}.`,
+		);
+
+		const error = await refusal(
+			call({
+				content: echoing,
+				...BASE,
+				aiReview: instruction(
+					token({ sectionFingerprint: fingerprintOf(echoing) }),
+				),
+			}),
+		);
+
+		expect(error.data).toEqual({
+			code: SCOPED_REVISION_REFUSAL.RESPONSE_ECHOED,
+		});
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
+	});
+
+	it("is FORBIDDEN for a project guest with edit rights", async () => {
+		mocks.loadProposalArtifactDocument.mockRejectedValue(
+			new ORPCError("FORBIDDEN", {
+				message: "Only members",
+				data: { code: "ORGANIZATION_MEMBERSHIP_REQUIRED" },
+			}),
+		);
+
+		const error = await refusal(
+			call({ content: CANDIDATE, ...BASE, aiReview: instruction() }),
+		);
+
+		expect(error.code).toBe("FORBIDDEN");
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
+	});
+
+	it("is FORBIDDEN for a member without DOCUMENT_UPDATE", async () => {
+		mocks.assertProjectPermission.mockRejectedValue(
+			new ORPCError("FORBIDDEN", {
+				message: "Missing required permission: DOCUMENT_UPDATE",
+			}),
+		);
+
+		const error = await refusal(
+			call({ content: CANDIDATE, ...BASE, aiReview: instruction() }),
+		);
+
+		expect(error.code).toBe("FORBIDDEN");
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
 	});
 });

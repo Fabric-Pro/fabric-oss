@@ -21,6 +21,7 @@ import {
 	diagramHeaderLine,
 	diagramSectionAt,
 	diagramSectionFingerprint,
+	headingDiagramCaption,
 	isFlowchartSource,
 	isVisualId,
 	isVisualOrigin,
@@ -29,6 +30,7 @@ import {
 	preserveVisualMarkers,
 	readDiagramCaption,
 	readVisualMarker,
+	sectionDiagramCaptions,
 	VISUAL_HASH_PATTERN,
 	VISUAL_ORIGIN,
 	VISUAL_ORIGINS,
@@ -820,6 +822,67 @@ describe("diagram caption", () => {
 		expect(classifyVisualFences(result, [row()])[0].state).toBe(
 			"generated",
 		);
+	});
+});
+
+describe("section captions", () => {
+	it("takes a heading without its section number, keeping a leading year or count", () => {
+		expect(headingDiagramCaption("3. Delivery approach")).toBe(
+			"Delivery approach",
+		);
+		expect(headingDiagramCaption("  4.2 Rollout plan ")).toBe(
+			"Rollout plan",
+		);
+		expect(headingDiagramCaption("IV. Pricing")).toBe("Pricing");
+		expect(headingDiagramCaption("2026 Roadmap")).toBe("2026 Roadmap");
+		expect(headingDiagramCaption("90 Day Plan")).toBe("90 Day Plan");
+		expect(headingDiagramCaption("   ")).toBeNull();
+	});
+
+	it("reads the nearest heading above a fence's line, past the leading title", () => {
+		const markdown = lines(
+			"# Example Proposal",
+			"",
+			"```mermaid",
+			"flowchart LR",
+			"```",
+			"",
+			"## 2. Delivery **approach** `v2`",
+			"",
+			"```mermaid",
+			"flowchart LR",
+			"```",
+			"",
+			"### Rollout 1. waves",
+			"",
+			"```mermaid",
+			"flowchart LR",
+			"```",
+		);
+		const read = sectionDiagramCaptions(markdown);
+		// Under the document's title, before any section: none.
+		expect(read(3)).toBeNull();
+		// Marks and escapes read as the export reads them.
+		expect(read(9)).toBe("Delivery approach v2");
+		expect(read(15)).toBe("Rollout 1. waves");
+	});
+
+	it("reads a first heading that is no leading title as a section", () => {
+		const read = sectionDiagramCaptions(
+			lines(
+				"Intro.",
+				"",
+				"# Overview",
+				"",
+				"```mermaid",
+				"flowchart LR",
+				"```",
+			),
+		);
+		expect(read(5)).toBe("Overview");
+		expect(
+			sectionDiagramCaptions("```mermaid\nflowchart LR\n```")(1),
+		).toBeNull();
 	});
 });
 

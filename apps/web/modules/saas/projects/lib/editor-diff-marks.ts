@@ -1,5 +1,5 @@
 import type { Editor } from "@tiptap/core";
-import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import type { Node as ProseMirrorNode, ResolvedPos } from "@tiptap/pm/model";
 import type { Transaction } from "@tiptap/pm/state";
 
 /**
@@ -128,32 +128,69 @@ export function editorHoldsDiffMarks(
 }
 
 /**
+ * The depth of the block to remove with the textblock at `$from`, whose
+ * content an accept or a reject is about to delete in full: the textblock
+ * itself, or the list item, list or quote that held nothing but it, which
+ * would otherwise be left empty. `null` keeps the emptied textblock: its parent
+ * holds other content the textblock cannot go without (a list item's
+ * paragraph before its nested list), it is the document's only block, or it
+ * sits in a table cell, which keeps its place in the table.
+ */
+function emptiedBlockDepth($from: ResolvedPos): number | null {
+	for (let depth = $from.depth; depth > 0; depth--) {
+		const parent = $from.node(depth - 1);
+		const index = $from.index(depth - 1);
+		if (parent.canReplace(index, index + 1)) {
+			return depth;
+		}
+		if (
+			depth - 1 === 0 ||
+			parent.childCount !== 1 ||
+			parent.type.spec.isolating === true
+		) {
+			return null;
+		}
+	}
+	return null;
+}
+
+/**
  * Delete a change's text. A code block or diagram that held nothing else goes
  * with it: a removed or added fence is reviewed as one mark over its whole
  * content, and accepting its removal or rejecting its addition would otherwise
  * leave an empty block in the editor.
+ *
+ * A paragraph, heading or list item whose whole content is one change goes
+ * with it too (Fizzy #2946): one the proposal added whole, when that
+ * addition is rejected, and one it deleted whole, when that deletion is
+ * accepted. Deleting only the text left an empty paragraph in the document
+ * and the room. A change that covers only part of a block, its other text
+ * unmarked or marked the other way, leaves the block in place.
  */
 function deleteChangeText(tr: Transaction, from: number, to: number) {
 	const $from = tr.doc.resolve(from);
 	const block = $from.parent;
 	const codeLike =
 		block.type.spec.code === true || block.type.name === "mermaidBlock";
-	if (
-		codeLike &&
-		$from.depth > 0 &&
-		from === $from.start() &&
-		to === $from.end()
-	) {
+	const wholeBlock =
+		$from.depth > 0 && from === $from.start() && to === $from.end();
+	if (wholeBlock && codeLike) {
 		tr.delete($from.before(), $from.after());
-	} else {
+		return;
+	}
+	const depth = wholeBlock ? emptiedBlockDepth($from) : null;
+	if (depth === null) {
 		tr.delete(from, to);
+	} else {
+		tr.delete($from.before(depth), $from.after(depth));
 	}
 }
 
 /**
  * Accept a change into `tr`:
  * - Addition (diffInsert / <ins>): remove the mark, keep the text
- * - Deletion (diffDelete / <del>): delete the text entirely
+ * - Deletion (diffDelete / <del>): delete the text entirely, and the block
+ *   it emptied when the proposal deleted that block whole
  */
 function acceptRange(tr: Transaction, range: DiffRange) {
 	if (range.table) {
@@ -174,7 +211,8 @@ function acceptRange(tr: Transaction, range: DiffRange) {
 
 /**
  * Reject a change into `tr`:
- * - Addition (diffInsert / <ins>): delete the text entirely
+ * - Addition (diffInsert / <ins>): delete the text entirely, and the block
+ *   it filled when the proposal added that block whole
  * - Deletion (diffDelete / <del>): remove the mark, keep the text
  */
 function rejectRange(tr: Transaction, range: DiffRange) {

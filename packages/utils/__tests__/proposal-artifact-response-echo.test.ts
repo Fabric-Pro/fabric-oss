@@ -13,6 +13,7 @@ import {
 	checkResponseEcho,
 	echoedStableKeys,
 	RESPONSE_ECHO_MIN_WORDS,
+	TITLE_ECHO_MIN_WORDS,
 } from "../lib/proposal-artifact/response-echo";
 
 const SCOPE_ANSWER =
@@ -148,6 +149,211 @@ describe("checkResponseEcho", () => {
 		).toEqual({ echoed: true, responseIndexes: [], titleIndexes: [1] });
 	});
 
+	describe("a finding title shorter than the threshold", () => {
+		const TITLE = "Support hours after launch are unclear";
+		const titled = (mainText: string, sourceContext: string[] = []) =>
+			checkResponseEcho({
+				mainText,
+				carried: { responseTexts: [], findingTitles: ["Price", TITLE] },
+				sourceContext,
+				previousMain: null,
+			});
+
+		it("needs four words to count whole", () => {
+			expect(TITLE_ECHO_MIN_WORDS).toBe(4);
+		});
+
+		it("flags a Main that holds the whole title", () => {
+			expect(titled(`${MAIN_PREFIX}\n\n${TITLE}.`)).toEqual({
+				echoed: true,
+				responseIndexes: [],
+				titleIndexes: [1],
+			});
+		});
+
+		it("sees through case, whitespace, emphasis and punctuation", () => {
+			for (const restyled of [
+				"## SUPPORT HOURS AFTER LAUNCH ARE UNCLEAR",
+				"**Support   hours** after\nlaunch — are *unclear*!",
+				"Support-hours after launch are unclear.",
+			]) {
+				expect(titled(`${MAIN_PREFIX}\n\n${restyled}`).echoed).toBe(
+					true,
+				);
+			}
+		});
+
+		it("flags a short Main that holds it", () => {
+			expect(titled(`Note: ${TITLE}.`).echoed).toBe(true);
+		});
+
+		it("passes part of the title", () => {
+			expect(
+				titled(
+					`${MAIN_PREFIX} Support hours after launch are listed below.`,
+				).echoed,
+			).toBe(false);
+		});
+
+		it("passes when the sources hold the title", () => {
+			expect(
+				titled(`${MAIN_PREFIX}\n\n${TITLE}.`, [
+					`Call notes: ${TITLE.toLowerCase()}, the client said.`,
+				]).echoed,
+			).toBe(false);
+		});
+
+		it("passes when the previous Main held it", () => {
+			expect(
+				checkResponseEcho({
+					mainText: `${MAIN_PREFIX}\n\n${TITLE}.`,
+					carried: { responseTexts: [], findingTitles: [TITLE] },
+					previousMain: `## Support\n\n${TITLE}.`,
+				}).echoed,
+			).toBe(false);
+		});
+
+		it("never flags a title of three words", () => {
+			expect(
+				checkResponseEcho({
+					mainText: `${MAIN_PREFIX}\n\nThe price is missing here.`,
+					carried: {
+						responseTexts: [],
+						findingTitles: [
+							"Price is missing",
+							"Price (USD) missing?",
+						],
+					},
+				}).echoed,
+			).toBe(false);
+		});
+
+		it("checks a recommendation by the long runs only, never whole", () => {
+			const recommendation = "State when support hours are counted";
+			const carried = {
+				responseTexts: [],
+				findingTitles: [TITLE, recommendation],
+				recommendationIndexes: [1],
+			};
+			expect(
+				checkResponseEcho({
+					mainText: `${MAIN_PREFIX}\n\n${recommendation}.`,
+					carried,
+				}).echoed,
+			).toBe(false);
+			expect(
+				checkResponseEcho({
+					mainText: `${MAIN_PREFIX}\n\n${TITLE}.`,
+					carried,
+				}),
+			).toEqual({ echoed: true, responseIndexes: [], titleIndexes: [0] });
+		});
+
+		it("keeps an answer of the same words to the answer threshold", () => {
+			expect(
+				checkResponseEcho({
+					mainText: `${MAIN_PREFIX}\n\n${TITLE}.`,
+					carried: { responseTexts: [TITLE], findingTitles: [] },
+				}).echoed,
+			).toBe(false);
+		});
+	});
+
+	describe("an answer checked with shorter runs", () => {
+		const PROMPT =
+			"Write for the client only and never mention the internal review or its findings";
+		const MAIN = `${MAIN_PREFIX}\n\nWe never mention the internal review or its findings here.`;
+
+		it("flags a run of the length its caller gave", () => {
+			expect(
+				checkResponseEcho({
+					mainText: MAIN,
+					carried: {
+						responseTexts: ["Other answer", PROMPT],
+						findingTitles: [],
+					},
+					responseRunWords: (index) => (index === 1 ? 8 : 12),
+				}),
+			).toEqual({ echoed: true, responseIndexes: [1], titleIndexes: [] });
+		});
+
+		it("keeps the shared threshold without one", () => {
+			expect(
+				checkResponseEcho({
+					mainText: MAIN,
+					carried: { responseTexts: [PROMPT], findingTitles: [] },
+				}).echoed,
+			).toBe(false);
+		});
+	});
+
+	describe("invisible characters", () => {
+		// A zero-width space, a soft hyphen, a word joiner and a zero-width
+		// joiner, each inside a word: drawn as nothing, read as nothing.
+		const hide = (text: string) =>
+			text
+				.replace("migration", "migra\u200Btion")
+				.replace("scope", "sco\u00ADpe")
+				.replace("phases", "pha\u2060ses")
+				.replace("separately", "separ\u200Dately")
+				.replace("hours", "ho\u200Burs")
+				.replace("launch", "laun\u00ADch");
+		const TITLE = "Support hours after launch are unclear";
+
+		it("do not hide a copied answer", () => {
+			expect(
+				checkResponseEcho({
+					mainText: `${MAIN_PREFIX}\n\n${hide(SCOPE_ANSWER)}.`,
+					carried: {
+						responseTexts: [SCOPE_ANSWER],
+						findingTitles: [],
+					},
+				}).echoed,
+			).toBe(true);
+		});
+
+		it("do not hide a copied title", () => {
+			expect(
+				checkResponseEcho({
+					mainText: `${MAIN_PREFIX}\n\n${hide(TITLE)}.`,
+					carried: { responseTexts: [], findingTitles: [TITLE] },
+				}).echoed,
+			).toBe(true);
+		});
+
+		it("do not hide a run checked with shorter runs", () => {
+			const prompt =
+				"Write for the client only and never mention the internal review or its findings";
+			expect(
+				checkResponseEcho({
+					mainText:
+						"We never men\u200Btion the inter\u00ADnal review or its findings.",
+					carried: { responseTexts: [prompt], findingTitles: [] },
+					responseRunWords: () => 8,
+				}).echoed,
+			).toBe(true);
+		});
+
+		it("in the carried text or the source still match", () => {
+			expect(
+				checkResponseEcho({
+					mainText: `${MAIN_PREFIX}\n\n${TITLE}.`,
+					carried: {
+						responseTexts: [],
+						findingTitles: [hide(TITLE)],
+					},
+				}).echoed,
+			).toBe(true);
+			expect(
+				checkResponseEcho({
+					mainText: `${MAIN_PREFIX}\n\n${TITLE}.`,
+					carried: { responseTexts: [], findingTitles: [TITLE] },
+					sourceContext: [hide(TITLE)],
+				}).echoed,
+			).toBe(false);
+		});
+	});
+
 	it("passes when nothing was carried", () => {
 		expect(
 			checkResponseEcho({
@@ -280,6 +486,29 @@ describe("buildEchoGuard and checkEcho", () => {
 		{
 			mainText: "Too short to hold a run.",
 			carried: ANSWER_ONLY,
+		},
+		{
+			mainText: `${MAIN_PREFIX}\n\n**Support hours** after launch are unclear.`,
+			carried: {
+				responseTexts: [],
+				findingTitles: [
+					"Price",
+					"Support hours after launch are unclear",
+				],
+			},
+		},
+		{
+			mainText: `${MAIN_PREFIX}\n\nSupport hours after launch are unclear.`,
+			carried: {
+				responseTexts: [],
+				findingTitles: ["Support hours after launch are unclear"],
+			},
+			sourceContext: ["Support hours after launch are unclear."],
+		},
+		{
+			mainText: MAIN,
+			carried: ANSWER_ONLY,
+			responseRunWords: () => 8,
 		},
 	];
 

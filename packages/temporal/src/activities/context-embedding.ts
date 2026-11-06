@@ -333,9 +333,9 @@ export async function embedSingleContextActivity(
 					},
 				);
 			}
-			// Pre-existing branch retained for Notion-resync flow: the row was
-			// created with empty content and the user is expected to resync
-			// from Integrations later. Leaving extractionStatus at PENDING.
+			// Legacy empty Notion rows have no embeddable body. Creation now
+			// refuses these; the list directs users to remove and add them again.
+			// No extraction lifecycle is reported for an empty Notion row.
 			return { success: true };
 		}
 

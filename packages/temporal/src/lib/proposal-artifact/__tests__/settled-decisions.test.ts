@@ -931,6 +931,7 @@ describe("buildFindingEchoCarried", () => {
 				"commercial|pricing|fee",
 				"commercial|pricing|fee",
 			],
+			recommendationIndexes: [3],
 		});
 	});
 
@@ -946,6 +947,7 @@ describe("buildFindingEchoCarried", () => {
 			responseKeys: [],
 			findingTitles: ["Pricing is vague"],
 			titleKeys: ["commercial|pricing|fee"],
+			recommendationIndexes: [],
 		});
 	});
 

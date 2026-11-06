@@ -67,7 +67,7 @@ async function renderAndUpload() {
 		[pick("repo/CLAUDE.md", "# x")],
 	);
 	await user.click(
-		await screen.findByRole("button", { name: /Upload 1 files/ }),
+		await screen.findByRole("button", { name: /Upload 1 file$/ }),
 	);
 	return { user, onUploaded, onDiscarded };
 }
@@ -118,7 +118,7 @@ describe("UploadFolderDialog when storage cannot be reached", () => {
 		});
 
 		await user.click(
-			screen.getByRole("button", { name: /Upload 1 files/ }),
+			screen.getByRole("button", { name: /Upload 1 file$/ }),
 		);
 
 		await waitFor(() =>
@@ -150,7 +150,7 @@ describe("UploadFolderDialog when storage cannot be reached", () => {
 		);
 
 		await user.click(
-			screen.getByRole("button", { name: /Upload 1 files/ }),
+			screen.getByRole("button", { name: /Upload 1 file$/ }),
 		);
 
 		await waitFor(() =>
@@ -178,7 +178,7 @@ describe("UploadFolderDialog when storage cannot be reached", () => {
 		});
 
 		await user.click(
-			screen.getByRole("button", { name: /Upload 1 files/ }),
+			screen.getByRole("button", { name: /Upload 1 file$/ }),
 		);
 
 		await waitFor(() =>

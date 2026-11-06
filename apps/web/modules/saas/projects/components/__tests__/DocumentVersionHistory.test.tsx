@@ -21,6 +21,10 @@
  *
  * And a row's word count is the server's (Fizzy #2946): a diagram fence or an
  * image is no words.
+ *
+ * And a row says which writer made it (Fizzy #2946): each writer's stored
+ * description reads as its own label, and any other text, an older row's
+ * "Assistant edit" included, as stored.
  */
 
 import en from "@repo/i18n/translations/en.json";
@@ -92,8 +96,13 @@ vi.mock("next-intl", async () => {
 		return value;
 	};
 	return {
-		useTranslations: (namespace: string) => (key: string) =>
-			resolve(`${namespace}.${key}`),
+		useTranslations:
+			(namespace: string) =>
+			(key: string, values?: Record<string, string | number>) =>
+				resolve(`${namespace}.${key}`).replace(
+					/\{(\w+)\}/g,
+					(_, name) => String(values?.[name] ?? `{${name}}`),
+				),
 	};
 });
 
@@ -306,6 +315,113 @@ describe("DocumentVersionHistory — word count (Fizzy #2946)", () => {
 
 		await screen.findByText("v2");
 		expect(screen.getByText(`${expected} words`)).toBeInTheDocument();
+	});
+});
+
+const CHANGE_COPY = en.projects.versionHistory.change;
+
+describe("DocumentVersionHistory — which writer made a version (Fizzy #2946)", () => {
+	it("labels each writer's version as its own", async () => {
+		listVersions.mockResolvedValue({
+			versions: [
+				version({
+					id: "v18",
+					version: 18,
+					changeDescription: "Chat edit",
+				}),
+				version({
+					id: "v17",
+					version: 17,
+					changeDescription: "Edit with instructions",
+				}),
+				version({
+					id: "v16",
+					version: 16,
+					changeDescription: "Applied a review recommendation",
+				}),
+				version({
+					id: "v15",
+					version: 15,
+					changeDescription: "Updated with latest context",
+				}),
+				version({
+					id: "v14",
+					version: 14,
+					changeDescription: "Regenerated version",
+				}),
+				version({
+					id: "v13",
+					version: 13,
+					changeDescription: "Restored to version 1",
+				}),
+				version({
+					id: "v12",
+					version: 12,
+					changeDescription: "Assistant edit",
+				}),
+				version({
+					id: "v11",
+					version: 11,
+					changeDescription: "Tightened the scope",
+				}),
+			],
+		});
+
+		renderPanel();
+
+		// Numbered past the current version, whose "v3" heads the list.
+		const descriptionOf = async (label: string) =>
+			(await screen.findByText(label))
+				.closest("[role='button']")
+				?.querySelector("p")?.textContent;
+		expect(await descriptionOf("v18")).toBe(CHANGE_COPY.chatEdit);
+		expect(await descriptionOf("v17")).toBe(
+			CHANGE_COPY.editWithInstructions,
+		);
+		expect(await descriptionOf("v16")).toBe(
+			CHANGE_COPY.recommendationApplied,
+		);
+		expect(await descriptionOf("v15")).toBe(CHANGE_COPY.updatedFromContext);
+		expect(await descriptionOf("v14")).toBe(CHANGE_COPY.regenerated);
+		expect(await descriptionOf("v13")).toBe("Restored to version 1");
+		// Older rows keep what they say: an "Assistant edit" from before the
+		// writers were told apart, and a person's own description.
+		expect(await descriptionOf("v12")).toBe("Assistant edit");
+		expect(await descriptionOf("v11")).toBe("Tightened the scope");
+		// The chat edit and Edit with instructions no longer read alike.
+		expect(CHANGE_COPY.chatEdit).not.toBe(CHANGE_COPY.editWithInstructions);
+	});
+
+	it("labels the version in the restore confirm and the diff viewer alike", async () => {
+		listVersions.mockResolvedValue({
+			versions: [
+				version({
+					version: 2,
+					changeDescription: "Edit with instructions",
+				}),
+			],
+		});
+
+		renderPanel();
+
+		await screen.findByText("v2");
+		fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+		const dialog = await screen.findByRole("dialog", {
+			name: "Restore to Version 2?",
+		});
+		expect(
+			within(dialog).getByText(CHANGE_COPY.editWithInstructions),
+		).toBeInTheDocument();
+		fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+		fireEvent.click(await screen.findByText("v2"));
+		expect(
+			(
+				diffViewer.props as unknown as {
+					selectedVersion: { changeDescription: string | null };
+				}
+			).selectedVersion.changeDescription,
+		).toBe(CHANGE_COPY.editWithInstructions);
 	});
 });
 

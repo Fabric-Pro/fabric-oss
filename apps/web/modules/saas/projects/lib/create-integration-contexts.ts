@@ -137,7 +137,11 @@ export async function createIntegrationContexts(params: {
 	selectedSlackChannels?: SlackChannelSelection[];
 	selectedConfluencePages?: ConfluencePageSelection[];
 	selectedGoogleDocs?: GoogleDocSelection[];
-}): Promise<{ successCount: number; failCount: number }> {
+}): Promise<{
+	successCount: number;
+	failCount: number;
+	skippedNotionPages: string[];
+}> {
 	const {
 		projectId,
 		organizationId,
@@ -156,11 +160,12 @@ export async function createIntegrationContexts(params: {
 		selectedGoogleDocs.length;
 
 	if (totalItems === 0) {
-		return { successCount: 0, failCount: 0 };
+		return { successCount: 0, failCount: 0, skippedNotionPages: [] };
 	}
 
 	let successCount = 0;
 	let failCount = 0;
+	const skippedNotionPages: string[] = [];
 
 	// After-loop monitor enablement. `createContextProcedure` links each
 	// chat/channel into the project's `ProjectLinkedTeams*Chat` /
@@ -258,6 +263,7 @@ export async function createIntegrationContexts(params: {
 				err,
 			);
 			failCount++;
+			skippedNotionPages.push(page.title);
 		}
 	}
 
@@ -422,5 +428,5 @@ export async function createIntegrationContexts(params: {
 		}
 	}
 
-	return { successCount, failCount };
+	return { successCount, failCount, skippedNotionPages };
 }

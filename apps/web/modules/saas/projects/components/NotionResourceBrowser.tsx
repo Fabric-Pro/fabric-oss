@@ -11,6 +11,7 @@
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
+import { notionAddErrorMessage } from "../lib/notion-add-error-message";
 import { fetchNotionPageContent } from "../lib/notion-content-fetcher";
 import {
 	NotionPageSelector,
@@ -51,38 +52,46 @@ export function NotionResourceBrowser({
 
 				try {
 					for (const page of pages) {
-						const { content, title, contentFetchFailed } =
-							await fetchNotionPageContent({
-								pageId: page.pageId,
-								mcpConfigId,
-								organizationId,
-								fallbackTitle: page.title,
+						try {
+							const { content, title, contentFetchFailed } =
+								await fetchNotionPageContent({
+									pageId: page.pageId,
+									mcpConfigId,
+									organizationId,
+									fallbackTitle: page.title,
+								});
+
+							if (contentFetchFailed) {
+								console.warn(
+									`[NotionResourceBrowser] Failed to fetch content for "${page.title}"`,
+								);
+							}
+
+							await orpcClient.projects.contexts.create({
+								projectId,
+								organizationId: organizationId ?? undefined,
+								type: "INTEGRATION",
+								content: content || "",
+								metadata: {
+									notionPageId: page.pageId,
+									notionType: "page",
+									mcpConfigId,
+									provider: "notion",
+									sourceTitle: title,
+									sourceUrl: page.url || null,
+								},
 							});
-
-						if (contentFetchFailed) {
-							console.warn(
-								`[NotionResourceBrowser] Failed to fetch content for "${page.title}"`,
-							);
+							addedCount++;
+						} catch (err) {
+							toast.error(`Could not add "${page.title}"`, {
+								description: notionAddErrorMessage(err),
+							});
 						}
-
-						await orpcClient.projects.contexts.create({
-							projectId,
-							organizationId: organizationId ?? undefined,
-							type: "INTEGRATION",
-							content: content || "",
-							metadata: {
-								notionPageId: page.pageId,
-								notionType: "page",
-								mcpConfigId,
-								provider: "notion",
-								sourceTitle: title,
-								sourceUrl: page.url || null,
-							},
-						});
-						addedCount++;
 					}
 
-					toast.success(`Added ${addedCount} page(s) to project`);
+					if (addedCount > 0) {
+						toast.success(`Added ${addedCount} page(s) to project`);
+					}
 					onResourcesAdded?.();
 					onOpenChange(false);
 				} catch (err) {

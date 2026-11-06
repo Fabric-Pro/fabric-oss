@@ -4,23 +4,29 @@
  *
  * The file has up to four parts, each its own Word section:
  *
- * 1. a cover with no running header or footer: the proposer's and the
- *    recipient's logos, the hero, a "Proposal" eyebrow, the title in the
- *    Title style, "Prepared for" / "Prepared by" and the date. Every cover
- *    field comes from data; nothing is written in when a field is missing.
- *    The title is Main's leading H1 when Main opens with one and has
- *    sections, as on the print cover, and the body then leaves that H1 out.
- *    A `cover` fence in Main's preamble sets the eyebrow, a line about the
- *    client under the logos, the party lines and the version, and the body
- *    leaves that fence out.
+ * 1. a cover on the ink, as print's, with no running footer: the
+ *    proposer's and the recipient's logos, the hero, a "Proposal" eyebrow,
+ *    the title in the Title style and the lead in light text, then
+ *    "Prepared for" / "Prepared by" and the date line at the foot. Every
+ *    cover field comes from data; nothing is written in when a field is
+ *    missing. The title is Main's leading H1 when Main opens with one and
+ *    has sections, as on the print cover, and the body then leaves that H1
+ *    out; so too the lead, the preamble's first paragraph when print's
+ *    cover takes it (`coverPreamble`). A `cover` fence in Main's preamble
+ *    sets the eyebrow, a line about the client under the logos, the party
+ *    lines and the version, and the body leaves that fence out.
  * 2. a cover letter, when Main's first section is one: the proposer's logo
- *    and the letter, in a section of its own with the running furniture.
- *    Its heading is no Heading 2, so the contents never list it.
+ *    and the letter, in a section of its own with the running footer. Its
+ *    heading is no Heading 2, so the contents never list it.
  * 3. a contents page: a TOC field over the Heading 2 sections, which Word
  *    fills in with page numbers when it opens the file (`updateFields`).
  * 4. the body, in portrait Letter, except that a table wider than six
  *    columns gets a landscape section of its own and the body continues in
- *    portrait after it.
+ *    portrait after it. Each section opens on a new page with print's ink
+ *    card: its "Section N" eyebrow, its Heading 2 and its subtitle.
+ *
+ * Like print, the file runs no header; every page after the cover carries
+ * the footer "proposer · title · date · Confidential" and "Page N of M".
  *
  * Everything a reader of the file sees comes from the walk below; the file
  * holds no relationship to anything outside itself except the http(s) and
@@ -44,6 +50,8 @@
 
 import { resolveThemePaint } from "@repo/utils/proposal-artifact/theme-tokens";
 import { Document, Packer } from "docx";
+import sharp from "sharp";
+import { coverPreamble } from "../build-cover-html";
 import { coverFence, coverLetter, printedTitle } from "../document-content";
 import { diagramFigureNumbers, type ProposalExportWarning } from "../types";
 import { ExportWarningTally } from "../warnings";
@@ -83,6 +91,18 @@ export interface BuildDocxResult {
 // ---------------------------------------------------------------------------
 
 /**
+ * The cover's ink as a small PNG of the one colour, which Word stretches to
+ * the page behind the cover's text (see `coverSection`).
+ */
+function inkBackdrop(ink: string): Promise<Buffer> {
+	return sharp({
+		create: { width: 8, height: 8, channels: 3, background: ink },
+	})
+		.png()
+		.toBuffer();
+}
+
+/**
  * Lay Main out as a DOCX. Never fetches anything: every image is either in
  * `images`, in a diagram render, or in the tokens, or it is not printed.
  *
@@ -105,6 +125,7 @@ export async function buildProposalDocx(
 		title: title.text,
 		titleHeading: title.heading,
 		coverFence: coverFence(input.prepared.root),
+		lead: coverPreamble(input.prepared.root).lead,
 		letter: coverLetter(input.prepared.root),
 		colors: docxColors(paint),
 		fonts: docxFonts(input.tokens, paint),
@@ -112,6 +133,7 @@ export async function buildProposalDocx(
 		definitions: collectDefinitions(input.prepared.root),
 		lists: [],
 		contents: [],
+		sectionNumber: 0,
 		externalImages: 0,
 		placedImageBytes: 0,
 		imagesOverLimit: 0,
@@ -121,7 +143,7 @@ export async function buildProposalDocx(
 
 	// The cover first, so its logos and hero are placed before any body
 	// image can spend the placement budget, then the letter, as they read.
-	const cover = coverSection(writer);
+	const cover = coverSection(writer, await inkBackdrop(paint.ink));
 	const letter = letterSection(writer);
 	const body = bodySections(writer);
 	const contents = contentsSection(writer);

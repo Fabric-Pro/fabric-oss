@@ -646,6 +646,12 @@ export interface SubmittedInstructionChange {
 	 * `getProposalPullRequest`.
 	 */
 	pullRequest?: ProposalPullRequest | null;
+	/**
+	 * Answers `submitChange`'s `supersedesSnapshotId`: the proposal the new one
+	 * replaces, or `null` when it replaces nothing. Absent from a server that
+	 * does not take the option, where the proposal named stays open.
+	 */
+	supersedesSnapshotId?: string | null;
 }
 
 export interface SubmittedRepositoryInstructionChange {
@@ -885,14 +891,26 @@ export class InstructionsResource {
 		projectId: string,
 		baseSnapshotId: string,
 		changes: InstructionChange[],
-		options: SubmitInstructionProposalOptions = {},
+		options: SubmitInstructionProposalOptions & {
+			/**
+			 * The caller's own stale proposal this one replaces. It closes once
+			 * the new one passes its checks; `supersedesSnapshotId` on the answer
+			 * says whether the server took it.
+			 */
+			supersedesSnapshotId?: string;
+		} = {},
 	): Promise<SubmittedInstructionChange> {
-		// The note is body, not query: `buildQuery` serialises every key it
-		// is given.
-		const { note, ...context } = options;
+		// The note and the replaced proposal are body, not query: `buildQuery`
+		// serialises every key it is given.
+		const { note, supersedesSnapshotId, ...context } = options;
 		return this.http.post<SubmittedInstructionChange>(
 			`/projects/${encodeURIComponent(projectId)}/instructions/changes${buildQuery(context)}`,
-			{ baseSnapshotId, changes, ...(note ? { note } : {}) },
+			{
+				baseSnapshotId,
+				changes,
+				...(note ? { note } : {}),
+				...(supersedesSnapshotId ? { supersedesSnapshotId } : {}),
+			},
 		);
 	}
 

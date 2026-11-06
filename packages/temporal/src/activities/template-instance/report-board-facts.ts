@@ -39,6 +39,9 @@ export interface OpenClosedCounts {
 	closed: number;
 }
 
+/** A card's number, or its id when the source has no numbers. */
+type CardReference = number | string;
+
 export interface BoardFacts {
 	/** Unique cards read. Always `open + closed + postponed`. */
 	total: number;
@@ -66,6 +69,13 @@ export interface BoardFacts {
 	 * Null when no closed card carries either.
 	 */
 	closedPerPeriod: (PeriodCounts & { basis: string }) | null;
+	/**
+	 * The closed cards themselves, by number, keyed `YYYY-MM-DD` in UTC, on the
+	 * same basis as `closedPerPeriod`. Closed cards lose their dates first when
+	 * the list is shortened, and this is what still says which of them closed in a
+	 * period. It costs about 6 bytes a card.
+	 */
+	closedCardsByDay: Record<string, CardReference[]> | null;
 	/** Cards created per period; null when no card carries a creation date. */
 	createdPerPeriod: PeriodCounts | null;
 }
@@ -166,6 +176,37 @@ function sortedPeriods(periods: PeriodCounts): PeriodCounts {
 	};
 }
 
+function addCardToDay(
+	days: Record<string, CardReference[]>,
+	time: number,
+	card: Card,
+): void {
+	const reference = card.number ?? card.id;
+	if (typeof reference !== "number" && typeof reference !== "string") {
+		return;
+	}
+	const day = new Date(time).toISOString().slice(0, 10);
+	days[day] ??= [];
+	days[day].push(reference);
+}
+
+function sortedCardDays(
+	days: Record<string, CardReference[]>,
+): Record<string, CardReference[]> {
+	return sortedByKey(
+		Object.fromEntries(
+			Object.entries(days).map(([day, references]) => [
+				day,
+				references.sort((a, b) =>
+					String(a).localeCompare(String(b), undefined, {
+						numeric: true,
+					}),
+				),
+			]),
+		),
+	);
+}
+
 /** A date-only due value is still on time through the end of that day. */
 function isPastDue(value: unknown, now: Date): boolean {
 	const time = parseTime(value);
@@ -196,10 +237,13 @@ export function computeBoardFacts(cards: unknown[], now: Date): BoardFacts {
 		overdue: null,
 		stale: null,
 		closedPerPeriod: null,
+		closedCardsByDay: null,
 		createdPerPeriod: null,
 	};
 	const closedByDate: PeriodCounts = { byMonth: {}, byWeek: {} };
 	const closedByActivity: PeriodCounts = { byMonth: {}, byWeek: {} };
+	const closedCardsByDate: Record<string, CardReference[]> = {};
+	const closedCardsByActivity: Record<string, CardReference[]> = {};
 	const created: PeriodCounts = { byMonth: {}, byWeek: {} };
 	let sawClosedDate = false;
 	let sawClosedActivity = false;
@@ -274,10 +318,12 @@ export function computeBoardFacts(cards: unknown[], now: Date): BoardFacts {
 			if (closedAt !== null) {
 				sawClosedDate = true;
 				addToPeriods(closedByDate, closedAt);
+				addCardToDay(closedCardsByDate, closedAt, card);
 			}
 			if (active !== null) {
 				sawClosedActivity = true;
 				addToPeriods(closedByActivity, active);
+				addCardToDay(closedCardsByActivity, active, card);
 			}
 		}
 
@@ -293,11 +339,13 @@ export function computeBoardFacts(cards: unknown[], now: Date): BoardFacts {
 			basis: "closed_at",
 			...sortedPeriods(closedByDate),
 		};
+		facts.closedCardsByDay = sortedCardDays(closedCardsByDate);
 	} else if (sawClosedActivity) {
 		facts.closedPerPeriod = {
 			basis: "last_active_at",
 			...sortedPeriods(closedByActivity),
 		};
+		facts.closedCardsByDay = sortedCardDays(closedCardsByActivity);
 	}
 	if (facts.createdPerPeriod) {
 		facts.createdPerPeriod = sortedPeriods(created);
@@ -485,7 +533,12 @@ export function buildBoardFactsHeader(facts: unknown, listedCards = 0): string {
 	const closedPerPeriod = facts.closedPerPeriod;
 	if (isCard(closedPerPeriod) && closedPerPeriod.basis !== "closed_at") {
 		lines.push(
-			"The source has no close date, so `closedPerPeriod` groups closed cards by their last activity. Present it as approximate.",
+			"The source has no close date, so `closedPerPeriod` and `closedCardsByDay` group closed cards by their last activity. Present them as approximate.",
+		);
+	}
+	if (facts.closedCardsByDay) {
+		lines.push(
+			"`closedCardsByDay` lists closed cards by number under their day in UTC, on the same basis as `closedPerPeriod`, whatever fields the card keeps in the list below. A closed card without that date is not in it. To name what closed in a period, read the days in that period and take each card's title from the list.",
 		);
 	}
 	lines.push(

@@ -80,6 +80,11 @@ export type ProposalAnalysisPanelProps = {
 	 * other actions wait. Null when none is.
 	 */
 	pendingRevisionFindingId?: string | null;
+	/**
+	 * A section revision asked for on Main ("Revise this section") is under
+	 * way: Apply waits for it, and says why.
+	 */
+	sectionRevisionPending?: boolean;
 };
 
 type Translate = ReturnType<typeof useTranslations>;
@@ -207,6 +212,7 @@ export function ProposalAnalysisPanel({
 	awaitingNewRun = false,
 	onApplyRecommendation,
 	pendingRevisionFindingId = null,
+	sectionRevisionPending = false,
 }: ProposalAnalysisPanelProps) {
 	const t = useTranslations("projects.proposalArtifact.analysis");
 	const query = useProposalAnalysis({
@@ -224,6 +230,7 @@ export function ProposalAnalysisPanel({
 		announce,
 		onApplyRecommendation,
 		pendingRevisionFindingId,
+		sectionRevisionPending,
 	});
 	// Where focus lands when the control a member used is gone with
 	// everything around it, such as Clear on the last answer no longer raised.

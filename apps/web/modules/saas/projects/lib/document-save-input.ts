@@ -39,6 +39,10 @@ export const DOCUMENT_AUTOSAVE_TIMINGS = { delayMs: 10_000 };
  * `aiReview` marks the save as the accept of an AI change to a
  * client-document Proposal (a chat proposal or a finding-driven revision),
  * which the server checks before it writes; it goes out only when given.
+ *
+ * `changeDescription` names the writer of the version the save makes, as
+ * Edit with instructions does (`DOCUMENT_VERSION_CHANGE_DESCRIPTIONS`); it
+ * goes out only when given.
  */
 export function buildDocumentSaveInput({
 	projectId,
@@ -50,6 +54,7 @@ export function buildDocumentSaveInput({
 	skipVersionBump,
 	organizationId,
 	aiReview,
+	changeDescription,
 }: {
 	projectId: string;
 	documentId: string;
@@ -61,6 +66,7 @@ export function buildDocumentSaveInput({
 	skipVersionBump?: boolean;
 	organizationId?: string | null;
 	aiReview?: DocumentAiReviewDescriptor;
+	changeDescription?: string;
 }) {
 	return {
 		projectId,
@@ -78,6 +84,7 @@ export function buildDocumentSaveInput({
 		...(skipVersionBump ? { skipVersionBump: true as const } : {}),
 		...(organizationId !== undefined ? { organizationId } : {}),
 		...(aiReview ? { aiReview } : {}),
+		...(changeDescription ? { changeDescription } : {}),
 	};
 }
 

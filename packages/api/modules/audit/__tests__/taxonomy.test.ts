@@ -343,7 +343,15 @@ describe("audit.taxonomy handler", () => {
 		// history, Fizzy #2277) = 257.
 		// + 1 project.problem_log.reviewed (a drafted entry confirmed or
 		// dismissed; decision and edited field names only) = 258.
-		expect(result.actions).toHaveLength(258);
+		// + 1 project.proposal_artifact.section_revised (a member saved a
+		// Proposal section revised on their own instruction; base and saved
+		// versions only, never the instruction or the section, Fizzy #2946)
+		// = 259.
+		// + 1 project.instructions.removed (every coding-instructions version
+		// of a project removed at once; the count and the version that was
+		// published, never a path or content) = 260.
+		expect(result.actions).toHaveLength(260);
+		expect(result.actions).toContain("project.instructions.removed");
 		expect(result.actions).toContain(
 			"project.instructions.consolidation_cleanup_merged",
 		);
@@ -377,6 +385,9 @@ describe("audit.taxonomy handler", () => {
 		expect(result.actions).toContain("project.problem_log.reviewed");
 		expect(result.actions).toContain(
 			"project.proposal_artifact.export_started",
+		);
+		expect(result.actions).toContain(
+			"project.proposal_artifact.section_revised",
 		);
 		expect(result.actions).toContain("project.document_analysis.responded");
 		expect(result.actions).toContain("project.document_analysis.cleared");

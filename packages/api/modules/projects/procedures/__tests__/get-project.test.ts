@@ -225,6 +225,32 @@ describe("getProjectProcedure — coding-instructions capabilities", () => {
 			userRole: null,
 			canEditInstructions: true,
 			canReviewInstructions: true,
+			// Removing every version is the project admin's, not the editor's.
+			canDeleteInstructions: false,
+		});
+	});
+
+	it("lets an invited project admin remove the coding instructions", async () => {
+		mocks.getProjectRole.mockResolvedValue(null);
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role: "PROJECT_ADMIN",
+			acceptedAt: new Date(),
+			expiresAt: null,
+		});
+
+		const result = await handler({
+			input: { id: PROJECT_ID, organizationId: ORG_ID },
+			context: ctx,
+		});
+
+		expect(result.project).toMatchObject({
+			canEditInstructions: true,
+			canDeleteInstructions: true,
 		});
 	});
 
@@ -262,6 +288,7 @@ describe("getProjectProcedure — coding-instructions capabilities", () => {
 		expect(result.project).toMatchObject({
 			canEditInstructions: false,
 			canReviewInstructions: false,
+			canDeleteInstructions: false,
 		});
 	});
 });

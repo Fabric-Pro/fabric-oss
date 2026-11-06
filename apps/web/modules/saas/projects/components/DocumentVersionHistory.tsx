@@ -7,6 +7,7 @@
  */
 
 import type { DocumentVersionAuthor } from "@repo/utils/document-version-author";
+import { describeDocumentVersionChange } from "@repo/utils/document-version-change";
 import { countDocumentWords } from "@repo/utils/document-word-count";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -169,6 +170,18 @@ export function DocumentVersionHistory({
 						? t("restoreBlocked.proposalOrphaned")
 						: null;
 	const restoreBlocked = restoreBlockedText !== null;
+	// Which writer made a version, in the reader's words (Fizzy #2946). A
+	// description no writer stores — a person's own, or an older row's
+	// "Assistant edit" — is shown as stored.
+	const describeChange = (description: string | null): string | null => {
+		const change = describeDocumentVersionChange(description);
+		if (!change) {
+			return description;
+		}
+		return change.kind === "restored"
+			? t("change.restored", { version: change.version })
+			: t(`change.${change.kind}`);
+	};
 	const rowRestoreBlockedId = useId();
 	const dialogRestoreBlockedId = useId();
 	const [restoreTarget, setRestoreTarget] = useState<DocumentVersion | null>(
@@ -388,6 +401,13 @@ export function DocumentVersionHistory({
 		if (!description) {
 			return <FileTextIcon className="h-3.5 w-3.5" />;
 		}
+		const change = describeDocumentVersionChange(description);
+		if (change?.kind === "restored") {
+			return <RotateCcwIcon className="h-3.5 w-3.5" />;
+		}
+		if (change) {
+			return <SparklesIcon className="h-3.5 w-3.5" />;
+		}
 		const lower = description.toLowerCase();
 		if (lower.includes("initial") || lower.includes("generated")) {
 			return <SparklesIcon className="h-3.5 w-3.5" />;
@@ -574,9 +594,9 @@ export function DocumentVersionHistory({
 
 													{version.changeDescription && (
 														<p className="text-sm text-muted-foreground mt-1.5 ml-5">
-															{
-																version.changeDescription
-															}
+															{describeChange(
+																version.changeDescription,
+															)}
 														</p>
 													)}
 
@@ -666,7 +686,9 @@ export function DocumentVersionHistory({
 								Version {restoreTarget.version} description:
 							</p>
 							<p className="text-sm text-muted-foreground">
-								{restoreTarget.changeDescription}
+								{describeChange(
+									restoreTarget.changeDescription,
+								)}
 							</p>
 						</div>
 					)}
@@ -715,7 +737,12 @@ export function DocumentVersionHistory({
 				<VersionDiffViewer
 					open={showDiffViewer}
 					onOpenChange={setShowDiffViewer}
-					selectedVersion={diffVersion}
+					selectedVersion={{
+						...diffVersion,
+						changeDescription: describeChange(
+							diffVersion.changeDescription,
+						),
+					}}
 					currentContent={currentContent}
 					currentVersion={currentVersion}
 					onRestore={handleDiffViewerRestore}

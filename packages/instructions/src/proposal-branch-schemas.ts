@@ -17,6 +17,13 @@ const nonEmpty = z.string().min(1);
 /** A full object id: SHA-1, or SHA-256 for a repository that uses it. */
 const objectId = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 
+/**
+ * Git's "no object" id, as a native entry's `branchObjectId`: a PUT of a path
+ * the published version holds and the member's branch deleted. The branch has
+ * no blob to freeze, and to a reviewer the PUT adds the file back.
+ */
+export const BRANCH_DELETED_OBJECT_ID = "0".repeat(40);
+
 /** A git tree entry mode, as `ls-tree` prints it. */
 const treeMode = z.string().regex(/^[0-7]{6}$/);
 

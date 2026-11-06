@@ -1649,8 +1649,9 @@ export function StoryWorkspace({
 	//
 	// Note: this is the stored-markdown shape (`buildInitialContent()`),
 	// not the Turndown shape every other writer of this ref uses
-	// (`getEditorMarkdownForSave` output — e.g. `-   item`, trailing
-	// spaces). The two are never byte-equal for a bulleted document. This
+	// (`getEditorMarkdownForSave` output, which may spell escapes, loose
+	// lists or a hard break differently). The two are not byte-equal for
+	// every document. This
 	// only matters for `handleReject`, the one reader that compares against
 	// this ref without another writer having overwritten it first; it fails
 	// safe (reports dirty, not clean) on a never-saved document, so no data

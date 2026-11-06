@@ -15,9 +15,10 @@
  * is mocked down to the two real key predicates, so the rules under test are
  * the shipped ones. Images are real PNG and JPEG bytes from `sharp`, and the
  * real normalizer decodes them. Each logo is measured too, so the dark
- * cover can set one drawn for a light background on a plate.
+ * cover can set a mark too dark to read on it on a plate.
  */
 
+import { relativeLuminance } from "@repo/utils/brand-colors";
 import { buildProposalThemeTokens } from "@repo/utils/proposal-artifact/theme-tokens";
 import sharp from "sharp";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -65,9 +66,10 @@ vi.mock(
 	},
 );
 
+import { needsPlate } from "../../../lib/proposal-export/build-cover-html";
 import { createExportImageBudget } from "../../../lib/proposal-export/extract-document-images";
 import { normalizeExportImage } from "../../../lib/proposal-export/normalize-image";
-import { COVER_LOGO_DARK_LUMINANCE } from "../../../lib/proposal-export/types";
+import { LOGO_TONE_BUCKETS } from "../../../lib/proposal-export/types";
 import {
 	loadThemeAssets,
 	measureHero,
@@ -383,19 +385,18 @@ describe("loadThemeAssets: how light a logo is", () => {
 
 	it("reads a black wordmark as dark and a white one as light, over their opaque pixels only", async () => {
 		const black = await loadLogo(await wordmark({ r: 0, g: 0, b: 0 }));
-		expect(black).toMatchObject({ mimeType: "image/png", opaque: false });
+		expect(black).toMatchObject({ mimeType: "image/png", boxed: false });
 		expect(black?.luminance).toBeCloseTo(0, 5);
-		expect(black?.luminance).toBeLessThan(COVER_LOGO_DARK_LUMINANCE);
 
 		const white = await loadLogo(
 			await wordmark({ r: 255, g: 255, b: 255 }),
 		);
-		expect(white).toMatchObject({ mimeType: "image/png", opaque: false });
+		expect(white).toMatchObject({ mimeType: "image/png", boxed: false });
 		expect(white?.luminance).toBeCloseTo(1, 5);
 	});
 
 	it("reads a mid-tone brand wordmark by its relative luminance", async () => {
-		// #d6452b measures about 0.19: drawn for a light background.
+		// #d6452b measures about 0.19: it reads on the neutral ink.
 		const red = await loadLogo(await wordmark({ r: 214, g: 69, b: 43 }));
 		expect(red?.luminance).toBeGreaterThan(0.17);
 		expect(red?.luminance).toBeLessThan(0.21);
@@ -416,10 +417,10 @@ describe("loadThemeAssets: how light a logo is", () => {
 		);
 		expect(clear).not.toBeNull();
 		expect(clear?.luminance).toBeUndefined();
-		expect(clear?.opaque).toBe(false);
+		expect(clear?.boxed).toBe(false);
 	});
 
-	it("marks a logo without a transparent pixel as opaque, however light", async () => {
+	it("marks a logo without a transparent pixel as boxed, however light", async () => {
 		const jpeg = await loadLogo(
 			await sharp({
 				create: {
@@ -432,7 +433,7 @@ describe("loadThemeAssets: how light a logo is", () => {
 				.jpeg()
 				.toBuffer(),
 		);
-		expect(jpeg).toMatchObject({ mimeType: "image/jpeg", opaque: true });
+		expect(jpeg).toMatchObject({ mimeType: "image/jpeg", boxed: true });
 		expect(jpeg?.luminance).toBeGreaterThan(0.9);
 
 		// The same holds for a PNG whose alpha channel is solid throughout.
@@ -451,7 +452,72 @@ describe("loadThemeAssets: how light a logo is", () => {
 			width: 8,
 			height: 8,
 		});
-		expect(solid.opaque).toBe(true);
+		expect(solid.boxed).toBe(true);
+	});
+
+	it("marks a logo whose edge is opaque as boxed, its rounded corners or a transparent hole inside aside", async () => {
+		// A dark tile with rounded corners and a transparent mark cut out of
+		// it: its edge is the box, whatever is inside.
+		const tile = await sharp(
+			Buffer.from(
+				'<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><path fill="#14181f" fill-rule="evenodd" d="M6 0H58A6 6 0 0 1 64 6V58A6 6 0 0 1 58 64H6A6 6 0 0 1 0 58V6A6 6 0 0 1 6 0ZM20 20H44V44H20Z"/></svg>',
+			),
+		)
+			.png()
+			.toBuffer();
+		const measured = await measureLogo({
+			mimeType: "image/png",
+			bytes: tile,
+			width: 64,
+			height: 64,
+		});
+		expect(measured.boxed).toBe(true);
+		expect(measured.luminance).toBeLessThan(0.05);
+
+		// A wordmark with a margin of transparency is a mark, not a box.
+		const mark = await measureLogo({
+			mimeType: "image/png",
+			bytes: await wordmark({ r: 20, g: 24, b: 31 }),
+			width: 80,
+			height: 24,
+		});
+		expect(mark.boxed).toBe(false);
+	});
+
+	it("keeps a logo's tones, so a dark wordmark beside a bright icon is plated though its mean reads", async () => {
+		// A yellow icon (#facc15) on the left fifth, a dark wordmark (#1f2937)
+		// on the rest, all on transparency.
+		const bytes = await sharp(
+			Buffer.from(
+				'<svg xmlns="http://www.w3.org/2000/svg" width="100" height="20"><rect x="2" y="2" width="19" height="16" fill="#facc15"/><rect x="21" y="2" width="76" height="16" fill="#1f2937"/></svg>',
+			),
+		)
+			.png()
+			.toBuffer();
+		const measured = await measureLogo({
+			mimeType: "image/png",
+			bytes,
+			width: 100,
+			height: 20,
+		});
+		expect(measured.boxed).toBe(false);
+		const tones = measured.tones ?? [];
+		expect(tones).toHaveLength(LOGO_TONE_BUCKETS);
+		expect(tones.reduce((sum, share) => sum + share, 0)).toBeCloseTo(1, 6);
+		// Four fifths of it sit in the darkest steps.
+		const dark = tones
+			.slice(0, Math.ceil(0.05 * LOGO_TONE_BUCKETS))
+			.reduce((sum, share) => sum + share, 0);
+		expect(dark).toBeGreaterThan(0.75);
+		const ink = relativeLuminance("#111827");
+		const raster = {
+			mimeType: "image/png" as const,
+			bytes,
+			width: 100,
+			height: 20,
+			...measured,
+		};
+		expect(needsPlate(raster, ink)).toBe(true);
 	});
 
 	it("weights a half-transparent pixel by its alpha", async () => {
@@ -462,14 +528,15 @@ describe("loadThemeAssets: how light a logo is", () => {
 		)
 			.png()
 			.toBuffer();
-		const { luminance, opaque } = await measureLogo({
+		const { luminance, boxed } = await measureLogo({
 			mimeType: "image/png",
 			bytes,
 			width: 2,
 			height: 1,
 		});
 
-		expect(opaque).toBe(false);
+		// Half the edge is half transparent: no box.
+		expect(boxed).toBe(false);
 		expect(luminance).toBeCloseTo(255 / (255 + 128), 5);
 	});
 
@@ -486,7 +553,7 @@ describe("loadThemeAssets: how light a logo is", () => {
 		// A flat #c82828 is about 0.13 throughout, so its bright end too.
 		expect(hero?.luminance).toBeGreaterThan(0.12);
 		expect(hero?.luminance).toBeLessThan(0.15);
-		expect(hero).not.toHaveProperty("opaque");
+		expect(hero).not.toHaveProperty("boxed");
 	});
 });
 
@@ -812,7 +879,7 @@ describe("loadThemeAssets: the hero", () => {
 		const hero = result.tokens.proposer.hero.value;
 		expect(logo).toMatchObject({ width: 10, height: 10 });
 		expect(logo).not.toHaveProperty("luminance");
-		expect(logo).not.toHaveProperty("opaque");
+		expect(logo).not.toHaveProperty("boxed");
 		expect(hero).toMatchObject({ width: 10, height: 10 });
 		expect(hero).not.toHaveProperty("luminance");
 		expect(result.warnings).toEqual([]);

@@ -61,6 +61,7 @@ vi.mock("@repo/database", async (importOriginal) => ({
 }));
 
 import { gatherReadinessEvidence } from "../evidence";
+import { READINESS_RULES_BY_KEY } from "../registry";
 
 /** A project row with nothing configured, including no legacy repository. */
 function projectRow(overrides: Record<string, unknown> = {}) {
@@ -1026,4 +1027,96 @@ describe("gatherReadinessEvidence — the project's own facts", () => {
 		expect(result?.evidence).not.toHaveProperty("status");
 		expect(result?.evidence).not.toHaveProperty("name");
 	});
+});
+
+describe.each(["PENDING", "EXTRACTING", "COMPLETED"])(
+	"wiki provider evidence — %s",
+	(status) => {
+		it.each([
+			"MICROSOFT_TEAMS",
+			"SLACK",
+			"AZURE_DEVOPS",
+			"confluence",
+			"CONFLUENCE",
+			"google-drive",
+			"JIRA",
+			"LINEAR",
+			"BACKLOG",
+			"NOTION",
+			undefined,
+			"notion",
+		])("counts only Notion for provider %s", async (provider) => {
+			const metadata = provider === undefined ? {} : { provider };
+			const expected = provider === "notion" ? 1 : 0;
+			mockDb.projectContext.findMany.mockResolvedValue(
+				status === "COMPLETED"
+					? []
+					: [
+							{
+								type: "INTEGRATION",
+								metadata,
+								knowledgeBaseSourceCategory: null,
+							},
+						],
+			);
+			mockDb.projectContext.groupBy.mockResolvedValue([
+				...(status === "COMPLETED"
+					? [{ type: "INTEGRATION", _count: { _all: 1 } }]
+					: []),
+			]);
+			mockDb.projectContext.count.mockImplementation(async ({ where }) =>
+				status === "COMPLETED" &&
+				where.type === "INTEGRATION" &&
+				where.metadata?.equals === provider
+					? 1
+					: 0,
+			);
+			const result = await gatherReadinessEvidence("p1");
+			expect(mockDb.projectContext.count).toHaveBeenCalledWith({
+				where: {
+					projectId: "p1",
+					type: "INTEGRATION",
+					extractionStatus: "COMPLETED",
+					metadata: { path: ["provider"], equals: "notion" },
+				},
+			});
+			expect(result).not.toBeNull();
+			if (!result) {
+				throw new Error("Missing project evidence");
+			}
+			const evidence = result.evidence;
+			expect(evidence.inFlight.context.notionSources).toBe(
+				status === "COMPLETED" ? 0 : expected,
+			);
+			expect(evidence.indexedContext.notionSources).toBe(
+				status === "COMPLETED" ? expected : 0,
+			);
+			expect(evidence.inFlight.context.total).toBe(
+				status === "COMPLETED" ? 0 : 1,
+			);
+			expect(evidence.indexedContext.total).toBe(
+				status === "COMPLETED" ? 1 : 0,
+			);
+			const wiki = READINESS_RULES_BY_KEY.get("wiki-connected");
+			expect(wiki?.detect(evidence)).toBe(
+				status === "COMPLETED" && expected === 1,
+			);
+			expect(wiki?.inProgress?.(evidence)).toBe(
+				status !== "COMPLETED" && expected === 1,
+			);
+		});
+	},
+);
+
+it("does not count non-integration rows carrying Notion metadata", async () => {
+	mockDb.projectContext.findMany.mockResolvedValue([
+		{
+			type: "LINK",
+			metadata: { provider: "notion" },
+			knowledgeBaseSourceCategory: "KNOWLEDGE_BASE_WIKI",
+		},
+	]);
+	const result = await gatherReadinessEvidence("p1");
+	expect(result?.evidence.inFlight.context.notionSources).toBe(0);
+	expect(result?.evidence.inFlight.context.knowledgeBaseLinks).toBe(1);
 });

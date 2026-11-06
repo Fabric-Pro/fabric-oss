@@ -121,6 +121,7 @@ export const getInstructionsDigestProcedure = tenantProtectedProcedure
 				projectId: input.projectId,
 				organizationId,
 				afterVersion: marker.version ?? 0,
+				throughVersion: current?.version ?? null,
 			}),
 			listInstructionProposalsResolvedSince({
 				projectId: input.projectId,

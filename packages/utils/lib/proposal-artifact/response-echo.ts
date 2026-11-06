@@ -23,11 +23,19 @@
 
 /**
  * Consecutive normalised words a Main must repeat from one carried answer or
- * title before it counts as an echo. A carried text shorter than this can
- * never trigger the check, so a plain factual answer (a price, a duration, a
- * date, a short name) is always free to appear in Main.
+ * title before it counts as an echo. An answer shorter than this can never
+ * trigger the check, so a plain factual answer (a price, a duration, a date,
+ * a short name) is always free to appear in Main.
  */
 export const RESPONSE_ECHO_MIN_WORDS = 12;
+
+/**
+ * Normalised words a finding title needs before Main may not repeat it
+ * whole. A title is usually shorter than {@link RESPONSE_ECHO_MIN_WORDS}, so
+ * one of this many words or more counts as an echo when Main holds all of
+ * it; a shorter title ("Price is missing") never does.
+ */
+export const TITLE_ECHO_MIN_WORDS = 4;
 
 /**
  * The text a prompt carried, for {@link checkResponseEcho}. Prompt-only: the
@@ -42,6 +50,13 @@ export interface CarriedSettledText {
 	responseKeys?: readonly string[];
 	/** The stable key of each entry of `findingTitles`, in order. */
 	titleKeys?: readonly string[];
+	/**
+	 * Indexes into `findingTitles` that hold a finding's recommendation
+	 * rather than its title. A recommendation is checked only by runs of
+	 * {@link RESPONSE_ECHO_MIN_WORDS} words, never whole: applying it is
+	 * meant to carry it into Main.
+	 */
+	recommendationIndexes?: readonly number[];
 }
 
 export interface ResponseEchoInput {
@@ -56,6 +71,21 @@ export interface ResponseEchoInput {
 	sourceContext?: string | readonly string[] | null;
 	/** The Main before this save. A run already there never counts. */
 	previousMain?: string | null;
+	/**
+	 * The run length for each carried answer, by its index in
+	 * `carried.responseTexts`, in place of {@link RESPONSE_ECHO_MIN_WORDS}.
+	 * A caller that holds a text no reader may see even in part (the bound
+	 * prompt, for a guest) checks it with shorter runs. Absent, every answer
+	 * uses the default.
+	 */
+	responseRunWords?: (index: number) => number;
+	/**
+	 * Whether a finding title of {@link TITLE_ECHO_MIN_WORDS} to
+	 * {@link RESPONSE_ECHO_MIN_WORDS} words counts when Main holds it whole.
+	 * On by default; a caller whose refusal cannot be retried (the Main
+	 * generation) turns it off and checks titles by the long runs only.
+	 */
+	wholeTitles?: boolean;
 }
 
 export interface ResponseEchoResult {
@@ -68,13 +98,14 @@ export interface ResponseEchoResult {
 
 /**
  * Whether `mainText` repeats {@link RESPONSE_ECHO_MIN_WORDS} or more
- * consecutive words of a carried answer or finding title, leaving out every
- * run that also appears in the source context or the previous Main.
+ * consecutive words of a carried answer or finding title, or the whole of a
+ * finding title of {@link TITLE_ECHO_MIN_WORDS} words or more, leaving out
+ * every run that also appears in the source context or the previous Main.
  *
  * Words are compared normalised: NFKC, lower case, split on anything that is
  * not a letter, mark or digit, so markdown emphasis, punctuation and case do
- * not hide a copy. A carried text shorter than the threshold can never match,
- * so short factual answers pass. The result names indexes only, never words:
+ * not hide a copy. An answer shorter than the threshold can never match, so
+ * short factual answers pass. The result names indexes only, never words:
  * a caller refuses with its `RESPONSE_ECHOED` code and a message that names
  * no text (the worker's `RESPONSE_ECHOED_MESSAGE`), and logs the indexes at
  * most.
@@ -112,6 +143,8 @@ interface CarriedEchoEntry {
 	kind: "response" | "title";
 	/** Index into `carried.responseTexts` or `carried.findingTitles`. */
 	index: number;
+	/** The words in each of `runs`. */
+	runWords: number;
 	runs: readonly string[];
 }
 
@@ -130,20 +163,26 @@ export function buildEchoGuard(
 	];
 	let haystack: string | null = null;
 	const verdicts = new Map<string, boolean>();
-	const carriedRuns = (text: string) => wordRuns(normalizedWords(text));
+	const responseRunWords = input.responseRunWords;
+	const recommendations = new Set(input.carried.recommendationIndexes);
+	const wholeTitles = input.wholeTitles ?? true;
 	return {
 		carried: input.carried,
 		entries: [
-			...input.carried.responseTexts.map((text, index) => ({
-				kind: "response" as const,
-				index,
-				runs: carriedRuns(text),
-			})),
-			...input.carried.findingTitles.map((text, index) => ({
-				kind: "title" as const,
-				index,
-				runs: carriedRuns(text),
-			})),
+			...input.carried.responseTexts.map((text, index) =>
+				responseEntry(
+					text,
+					index,
+					responseRunWords?.(index) ?? RESPONSE_ECHO_MIN_WORDS,
+				),
+			),
+			...input.carried.findingTitles.map((text, index) =>
+				titleEntry(
+					text,
+					index,
+					!wholeTitles || recommendations.has(index),
+				),
+			),
 		],
 		allowed: (run) => {
 			let verdict = verdicts.get(run);
@@ -171,14 +210,24 @@ export function checkEcho(
 		return { echoed: false, responseIndexes, titleIndexes };
 	}
 	const mainWords = normalizedWords(mainText);
-	if (mainWords.length < RESPONSE_ECHO_MIN_WORDS) {
-		return { echoed: false, responseIndexes, titleIndexes };
-	}
-	const mainRuns = new Set(wordRuns(mainWords));
+	// Main's runs of each length an entry needs, built on first need.
+	const mainRuns = new Map<number, ReadonlySet<string>>();
+	const mainRunsOf = (runWords: number) => {
+		let runs = mainRuns.get(runWords);
+		if (!runs) {
+			runs = new Set(wordRuns(mainWords, runWords));
+			mainRuns.set(runWords, runs);
+		}
+		return runs;
+	};
 
 	for (const entry of guard.entries) {
+		if (entry.runs.length === 0 || mainWords.length < entry.runWords) {
+			continue;
+		}
+		const runs = mainRunsOf(entry.runWords);
 		const repeated = entry.runs.some(
-			(run) => mainRuns.has(run) && !guard.allowed(run),
+			(run) => runs.has(run) && !guard.allowed(run),
 		);
 		if (repeated) {
 			(entry.kind === "response" ? responseIndexes : titleIndexes).push(
@@ -196,23 +245,69 @@ export function checkEcho(
 
 const NON_WORD = /[^\p{L}\p{M}\p{N}]+/u;
 
+/**
+ * Characters that draw nothing (a zero-width space, a soft hyphen, a word
+ * joiner): removed before splitting, so one placed inside a word cannot
+ * break a copy into runs that match nothing.
+ */
+const INVISIBLE = /\p{Default_Ignorable_Code_Point}/gu;
+
 function normalizedWords(text: string): string[] {
-	return text.normalize("NFKC").toLowerCase().split(NON_WORD).filter(Boolean);
+	return text
+		.normalize("NFKC")
+		.replace(INVISIBLE, "")
+		.toLowerCase()
+		.split(NON_WORD)
+		.filter(Boolean);
 }
 
-/** Every run of exactly {@link RESPONSE_ECHO_MIN_WORDS} words, space-joined. */
-function wordRuns(words: readonly string[]): string[] {
+/** Every run of exactly `runWords` words, space-joined. */
+function wordRuns(words: readonly string[], runWords: number): string[] {
 	const runs: string[] = [];
-	for (
-		let start = 0;
-		start + RESPONSE_ECHO_MIN_WORDS <= words.length;
-		start += 1
-	) {
-		runs.push(
-			words.slice(start, start + RESPONSE_ECHO_MIN_WORDS).join(" "),
-		);
+	for (let start = 0; start + runWords <= words.length; start += 1) {
+		runs.push(words.slice(start, start + runWords).join(" "));
 	}
 	return runs;
+}
+
+/** A carried answer's entry: its runs of `runWords` words. */
+function responseEntry(
+	text: string,
+	index: number,
+	runWords: number,
+): CarriedEchoEntry {
+	const length = Math.max(1, Math.floor(runWords));
+	return {
+		kind: "response",
+		index,
+		runWords: length,
+		runs: wordRuns(normalizedWords(text), length),
+	};
+}
+
+/**
+ * A finding title's entry: its runs of {@link RESPONSE_ECHO_MIN_WORDS} words
+ * when it is that long, otherwise the whole title as one run when it has
+ * {@link TITLE_ECHO_MIN_WORDS} words or more, and no run when it is shorter.
+ * With `longRunsOnly` (a recommendation, or a caller without whole titles)
+ * it gets the long runs only.
+ */
+function titleEntry(
+	text: string,
+	index: number,
+	longRunsOnly: boolean,
+): CarriedEchoEntry {
+	const words = normalizedWords(text);
+	const runWords =
+		words.length >= RESPONSE_ECHO_MIN_WORDS || longRunsOnly
+			? RESPONSE_ECHO_MIN_WORDS
+			: words.length;
+	return {
+		kind: "title",
+		index,
+		runWords,
+		runs: runWords >= TITLE_ECHO_MIN_WORDS ? wordRuns(words, runWords) : [],
+	};
 }
 
 /**

@@ -416,7 +416,12 @@ function renderCode(
 			writer.input.diagrams[diagramIndex],
 			{
 				number: writer.figureNumbers[diagramIndex] ?? null,
-				text: exportDiagramCaption(node.value),
+				text: exportDiagramCaption(
+					node.value,
+					writer.input.prepared.diagramSectionCaptions[
+						diagramIndex
+					] ?? null,
+				),
 			},
 			out,
 			context,

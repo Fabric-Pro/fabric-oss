@@ -22,6 +22,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LOCK_VERSION, readLock } from "../src/lib/instructions/lock.js";
 import { computeSnapshotDigest } from "../src/lib/instructions/manifest.js";
+import { nothingPublishedSyncLine } from "../src/lib/instructions/nothing-published.js";
 import { commandPath } from "./helpers/command-path.js";
 import {
 	makeTree,
@@ -1545,5 +1546,140 @@ describe("an unchanged digest over a drifted tree", () => {
 			`fabric: 1 local edit(s) kept; run ${instead} to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.\n`,
 		);
 		expect(`${result.stdout}${result.stderr}`).not.toContain(leaked);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Nothing published: never, or a project admin removed every version
+// ---------------------------------------------------------------------------
+describe("a project with nothing published", () => {
+	const UNPUBLISHED = { published: false, sourceOfTruth: "UPLOAD" } as const;
+	const LINE =
+		"This project has no published coding instructions. Nothing was written or removed here; your local copy, if this folder has one, was left as it is. A first version is uploaded from the project's Coding Instructions tab.";
+
+	/** A folder synced from a version that has since been removed. */
+	async function previouslySynced(): Promise<string> {
+		const manifest = [manifestEntry("AGENTS.md", "published\n")];
+		const dest = await makeTree();
+		await writeFile(path.join(dest, "AGENTS.md"), "published\n");
+		await seedLock(dest, computeSnapshotDigest(manifest), {
+			"AGENTS.md": { sha256: manifest[0].sha256, mode: 0o100644 },
+		});
+		return dest;
+	}
+
+	async function lockText(dest: string): Promise<string> {
+		return readFile(
+			path.join(dest, ".fabric", "instructions.lock"),
+			"utf8",
+		);
+	}
+
+	it("is reported, not failed, and leaves the local copy and its lock as they were", async () => {
+		const dest = await previouslySynced();
+		const lockBefore = await lockText(dest);
+		mocks.getPublished.mockResolvedValue(UNPUBLISHED);
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result).toEqual({ code: 0, stdout: `${LINE}\n`, stderr: "" });
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"published\n",
+		);
+		expect(await lockText(dest)).toBe(lockBefore);
+		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
+		expect(mocks.createFileDownloadUrls).not.toHaveBeenCalled();
+	});
+
+	// A repository-sourced project's first version comes from its repository,
+	// so only an uploaded project is pointed at the tab's upload.
+	it("names the tab's upload only for a project that is not repository-sourced", () => {
+		expect(nothingPublishedSyncLine(true)).toBe(LINE);
+		expect(nothingPublishedSyncLine(false)).not.toContain(
+			"Coding Instructions tab",
+		);
+		expect(LINE.startsWith(nothingPublishedSyncLine(false))).toBe(true);
+	});
+
+	it("answers NOTHING_PUBLISHED in --format json", async () => {
+		const dest = await previouslySynced();
+		mocks.getPublished.mockResolvedValue(UNPUBLISHED);
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--format",
+			"json",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(JSON.parse(result.stdout)).toMatchObject({
+			projectId: "project-1",
+			published: false,
+			code: "NOTHING_PUBLISHED",
+			message: LINE,
+		});
+	});
+
+	it("stays one quiet line on stderr under --hook", async () => {
+		const dest = await previouslySynced();
+		mocks.getPublished.mockResolvedValue(UNPUBLISHED);
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+			"--hook",
+		]);
+
+		expect(result).toEqual({
+			code: 0,
+			stdout: "",
+			stderr: "fabric: coding instructions sync skipped: This project has no published coding instructions yet.\n",
+		});
+		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
+			"published\n",
+		);
+	});
+
+	it("is reported the same when the version disappears between the first answer and the full manifest", async () => {
+		const manifest = [manifestEntry("AGENTS.md", "published\n")];
+		const dest = await previouslySynced();
+		// Drift the tree so the unchanged answer is not enough and the sync
+		// asks again for the whole manifest, which by then is gone.
+		await unlink(path.join(dest, "AGENTS.md"));
+		mocks.getPublished.mockImplementation(
+			async (_project: string, options: { sinceDigest?: string }) =>
+				options.sinceDigest
+					? {
+							published: true,
+							sourceOfTruth: "UPLOAD",
+							snapshot: snapshotFor(manifest),
+							unchanged: true,
+							changes: { added: [], removed: [], changed: [] },
+						}
+					: UNPUBLISHED,
+		);
+
+		const result = await runCli([
+			"sync",
+			"--project",
+			"project-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result).toEqual({ code: 0, stdout: `${LINE}\n`, stderr: "" });
 	});
 });

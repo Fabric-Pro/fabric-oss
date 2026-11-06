@@ -4073,8 +4073,9 @@ function alignHunkUnits(oldHunk: string[], newHunk: string[]): HunkStep[] {
  * indent is pulled into an insertion. Accepting such a diff drops the rule,
  * leaves a dangling `-`, or un-nests the next list item.
  *
- * Blank lines are left out of the alignment (the serializer writes loose
- * lists, the model usually tight ones) and are emitted from the new text.
+ * Blank lines are left out of the alignment (a stored document may hold
+ * loose lists, the model usually writes tight ones) and are emitted from the
+ * new text.
  */
 function diffByLines(oldText: string, newText: string): DiffPart[] {
 	const oldLines = oldText.split("\n");

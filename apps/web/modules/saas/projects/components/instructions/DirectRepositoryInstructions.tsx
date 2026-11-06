@@ -540,10 +540,16 @@ function ReadyRepositoryInstructions({
 							{t("incomplete")}
 						</p>
 					) : null}
-					{listing && listing.files.length === 0 && !draftOwner ? (
-						<p className="rounded-lg border p-6 text-sm">
-							{t("empty")}
-						</p>
+					{treeFiles?.length === 0 && !draftOwner ? (
+						// The member's branch may hold the only files; until it
+						// is read, "empty" could flash before the tree.
+						myBranch.isPending ? (
+							<output>{t("loading")}</output>
+						) : (
+							<p className="rounded-lg border p-6 text-sm">
+								{t("empty")}
+							</p>
+						)
 					) : (
 						<div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[340px_minmax(0,1fr)]">
 							<div className="min-w-0">

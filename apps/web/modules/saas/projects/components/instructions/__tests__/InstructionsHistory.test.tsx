@@ -14,6 +14,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { HistorySnapshot } from "../InstructionsHistory";
 
 vi.mock("sonner", () => ({
 	toast: { error: vi.fn(), success: vi.fn() },
@@ -220,6 +221,103 @@ describe("InstructionsHistory", () => {
 		expect(
 			screen.queryByRole("button", { name: "publishAction" }),
 		).toBeNull();
+	});
+
+	it("labels a proposal by its review state, never as Ready", () => {
+		const row = (
+			id: string,
+			version: number,
+			extra: Partial<HistorySnapshot>,
+		): HistorySnapshot => ({
+			id,
+			version,
+			status: "READY",
+			source: "UPLOAD",
+			fileCount: 1,
+			createdAt: new Date(),
+			...extra,
+		});
+		render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={[
+					row("rebased", 6, {
+						proposalStatus: "PENDING",
+						supersedesSnapshotId: "replaced",
+					}),
+					row("published", 5, {}),
+					row("replaced", 4, { proposalStatus: "REJECTED" }),
+					row("rejected", 3, {
+						proposalStatus: "REJECTED",
+						reviewerUserId: "reviewer",
+					}),
+					row("closed", 2, { proposalStatus: "REJECTED" }),
+					row("upload", 1, {}),
+				]}
+				publishedId="published"
+				publishedVersion={5}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+
+		expect(screen.getByText("proposedPill")).toBeInTheDocument();
+		expect(screen.getByText("replacedPill:6")).toBeInTheDocument();
+		expect(screen.getByText("proposalRejectedPill")).toBeInTheDocument();
+		expect(screen.getByText("proposalClosedPill")).toBeInTheDocument();
+		// Only the ordinary upload that is not published reads as Ready.
+		expect(screen.getAllByText("readyPill")).toHaveLength(1);
+	});
+
+	// A rebase closes the proposal it supersedes only once the new one passes
+	// its checks, and that close records no reviewer. A replacement that
+	// failed replaced nothing, and a reviewer's decision is the decision.
+	it("names a replacement only when it passed its checks and no reviewer decided", () => {
+		const row = (
+			id: string,
+			version: number,
+			extra: Partial<HistorySnapshot>,
+		): HistorySnapshot => ({
+			id,
+			version,
+			status: "READY",
+			source: "UPLOAD",
+			fileCount: 1,
+			createdAt: new Date(),
+			...extra,
+		});
+		render(
+			<InstructionsHistory
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				snapshots={[
+					row("failedRebase", 9, {
+						status: "FAILED",
+						supersedesSnapshotId: "closedByProposer",
+					}),
+					row("passedRebase", 8, {
+						proposalStatus: "PENDING",
+						supersedesSnapshotId: "rejectedByReviewer",
+					}),
+					row("closedByProposer", 7, { proposalStatus: "REJECTED" }),
+					row("rejectedByReviewer", 6, {
+						proposalStatus: "REJECTED",
+						reviewerUserId: "reviewer",
+					}),
+				]}
+				publishedId={null}
+				publishedVersion={null}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+
+		expect(screen.queryByText(/^replacedPill/)).toBeNull();
+		expect(screen.getByText("proposalClosedPill")).toBeInTheDocument();
+		expect(screen.getByText("proposalRejectedPill")).toBeInTheDocument();
 	});
 
 	// Fizzy #2563 spec §2.5: a suggestion that became a pull request reaches

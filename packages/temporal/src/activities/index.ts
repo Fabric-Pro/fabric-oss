@@ -1165,6 +1165,7 @@ export * from "./preflight-validation";
 export * from "./project-context-embedding";
 // Project context processing activities (post-creation uploads)
 export {
+	failContextTargetDocument,
 	getProjectContextStatus,
 	processProjectContext,
 	retryProjectContext,

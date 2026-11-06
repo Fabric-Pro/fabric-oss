@@ -7,6 +7,8 @@
  * The SDK is mocked at `getClient` and git is scripted through
  * `helpers/git-fake.ts`, so nothing here depends on the machine's git.
  */
+import { symlink } from "node:fs/promises";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chooseProject } from "../src/lib/instructions/prompt.js";
@@ -17,6 +19,7 @@ import {
 	manifestEntry,
 	resetInstructionsMocks,
 	runCli,
+	seedLock,
 	snapshotFor,
 } from "./helpers/instructions-commands.js";
 
@@ -320,6 +323,101 @@ describe("a command run with no --project", () => {
 		expect(result.stderr).toBe(
 			"✗ This folder is not a git checkout, so its project cannot be found. Run: fabric instructions sync --project <id>\n",
 		);
+	});
+
+	// A folder kept up to date by `sync` alone has no remote to ask; its own
+	// lock already says which project it holds, and a sign-in for that one
+	// project is then enough.
+	it("takes the project from the folder's own lock outside a git checkout", async () => {
+		const dest = await makeTree();
+		await seedLock(dest, "d".repeat(64), {}, "project-lock");
+		mocks.getPublished.mockResolvedValue({
+			published: false,
+			sourceOfTruth: "UPLOAD",
+		});
+
+		const result = await runCli(["sync", "--dest", dest]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.getPublished).toHaveBeenCalledWith(
+			"project-lock",
+			expect.anything(),
+		);
+		expect(mocks.resolveCheckout).not.toHaveBeenCalled();
+	});
+
+	it("lets a hook use the folder's own lock outside a git checkout", async () => {
+		const dest = await makeTree();
+		await seedLock(dest, "d".repeat(64), {}, "project-lock");
+		mocks.getPublished.mockResolvedValue({
+			published: false,
+			sourceOfTruth: "UPLOAD",
+		});
+
+		const result = await runCli(["sync", "--dest", dest, "--hook"]);
+
+		expect(result.code).toBe(0);
+		expect(result.stderr).not.toContain("names no project");
+		expect(mocks.getPublished).toHaveBeenCalledWith(
+			"project-lock",
+			expect.anything(),
+		);
+	});
+
+	// A home or project folder reached through a symlink or a Windows junction
+	// is the same folder: the guarded lock read must see its lock there too.
+	it("takes the project from the lock of a folder opened through a symlink", async () => {
+		const real = await makeTree();
+		await seedLock(real, "d".repeat(64), {}, "project-lock");
+		const linked = path.join(await makeTree(), "linked");
+		await symlink(real, linked, "junction");
+		mocks.getPublished.mockResolvedValue({
+			published: false,
+			sourceOfTruth: "UPLOAD",
+		});
+
+		const result = await runCli(["sync", "--dest", linked]);
+
+		expect(result.code).toBe(0);
+		expect(mocks.getPublished).toHaveBeenCalledWith(
+			"project-lock",
+			expect.anything(),
+		);
+	});
+
+	// A lock reached through a symlinked `.fabric` is refused rather than
+	// followed, and then names no project: the answer is the one a folder
+	// without a lock gets.
+	it("asks for --project when the folder's lock cannot be read safely", async () => {
+		const dest = await makeTree();
+		const elsewhere = await makeTree();
+		await seedLock(elsewhere, "d".repeat(64), {}, "project-lock");
+		await symlink(
+			path.join(elsewhere, ".fabric"),
+			path.join(dest, ".fabric"),
+			"junction",
+		);
+
+		const result = await runCli(["sync", "--dest", dest]);
+
+		expect(result.code).toBe(2);
+		expect(result.stderr).toContain("--project <id>");
+		expect(mocks.getPublished).not.toHaveBeenCalled();
+	});
+
+	// Inside a checkout the lock may have come with the repository, so it
+	// never picks the project there.
+	it("ignores a lock inside a git checkout and asks about the remote", async () => {
+		const dest = await makeTree();
+		await seedLock(dest, "d".repeat(64), {}, "project-lock");
+		inCheckout(dest);
+		mocks.resolveCheckout.mockResolvedValue({ matches: [] });
+
+		const result = await runCli(["check", "--dest", dest]);
+
+		expect(result.code).toBe(4);
+		expect(mocks.resolveCheckout).toHaveBeenCalled();
+		expect(mocks.getPublished).not.toHaveBeenCalled();
 	});
 
 	it("says to pass --project in a checkout with no remote", async () => {

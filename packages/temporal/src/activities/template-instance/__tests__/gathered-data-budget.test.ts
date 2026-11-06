@@ -392,6 +392,15 @@ describe("boundGatheredData", () => {
 			);
 			expect(result.recordsDropped).toBe(false);
 			expect(result.data._board_facts).toEqual(board._board_facts);
+			// The listed closed cards have no dates left; the facts still place them.
+			expect(cards[OPEN].last_active_at).toBeUndefined();
+			const closedByDay = (
+				result.data._board_facts as {
+					closedCardsByDay: Record<string, number[]>;
+				}
+			).closedCardsByDay;
+			expect(closedByDay["2026-10-01"]).toHaveLength(CLOSED);
+			expect(closedByDay["2026-10-01"]).toContain(allCards[OPEN].number);
 			expect(result.data._board_facts).toMatchObject({
 				total: TOTAL,
 				open: OPEN,

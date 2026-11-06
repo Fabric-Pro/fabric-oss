@@ -74,6 +74,32 @@ export function leadingCommentIndexes(
 	return indexes;
 }
 
+/**
+ * A section number typed before a heading, which its caption leaves out:
+ * "3. ", "3) ", "3.1 ", "1A) ", "B. ", "IV. ". A single number needs its `.`
+ * or `)` and every number has at most three digits, so a heading that
+ * starts with a year or a count ("2026 Roadmap", "90 Day Plan") keeps it.
+ * Read from the heading as the export reads it, so no escape is left before
+ * the mark.
+ */
+const CAPTION_SECTION_NUMBER =
+	/^(?:\d{1,3}(?:\.\d{1,3})+[A-Za-z]?[.)]?|\d{1,3}[A-Za-z]?[.)]|[A-Za-z][.)]|[IVXLC]+[.)])\s+/i;
+
+/**
+ * The caption a diagram takes from the heading of the section it sits in,
+ * when its fence carries none (Fizzy #2946): the heading's plain text as the
+ * export reads it, without its section number, cleaned as a caption is.
+ * Generated visuals are written with it, and the live page, the PDF, the
+ * Word file and the Markdown download show it under a diagram added
+ * without a `%% caption:` line, so no figure reads as a bare "Figure N.".
+ * Null when nothing is left.
+ */
+export function headingDiagramCaption(heading: string): string | null {
+	return cleanDiagramCaption(
+		heading.trim().replace(CAPTION_SECTION_NUMBER, ""),
+	);
+}
+
 /** The caption a fence body carries, cleaned, or null. */
 export function readDiagramCaption(source: string): string | null {
 	const lines = source.split(/\r\n?|\n/);

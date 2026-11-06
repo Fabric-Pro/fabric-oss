@@ -8,6 +8,7 @@ import {
 	visualSpecToMermaid,
 } from "../lib/glossy/visual-templates";
 import { withDiagramCaption } from "../lib/proposal-artifact/diagram-caption";
+import { figurePaletteOf } from "../lib/proposal-artifact/diagram-printability";
 import {
 	barsFigureSvg,
 	barsOverGrey,
@@ -29,6 +30,10 @@ import {
 	tryRenderFigure,
 	withFigureKind,
 } from "../lib/proposal-artifact/proposal-figures";
+import {
+	buildProposalThemeTokens,
+	resolveThemePaint,
+} from "../lib/proposal-artifact/theme-tokens";
 
 const lines = (...parts: string[]) => parts.join("\n");
 
@@ -576,7 +581,7 @@ const LONG_TIMELINE = lines(
 const LONG_TIMELINE_TEXT = LONG_TIMELINE_ITEMS.flat().join(" ");
 
 describe("processFigureSvg", () => {
-	it("lays a chain of six out in two rows of four and two", () => {
+	it("lays a chain of six out in two rows of three", () => {
 		const svg = svgOf(
 			processFigureSvg(parsed(chainSource(6)), PALETTE, {}),
 		);
@@ -584,11 +589,83 @@ describe("processFigureSvg", () => {
 			svg.matchAll(/<rect class="step" x="[\d.]+" y="([\d.]+)"/g),
 		).map((match) => match[1]);
 		expect(tops).toHaveLength(6);
-		expect(new Set(tops.slice(0, 4)).size).toBe(1);
-		expect(new Set(tops.slice(4)).size).toBe(1);
-		expect(tops[4]).not.toBe(tops[0]);
+		expect(new Set(tops.slice(0, 3)).size).toBe(1);
+		expect(new Set(tops.slice(3)).size).toBe(1);
+		expect(tops[3]).not.toBe(tops[0]);
 		expectPrintGeometry(svg);
 		expectSafeSvg(svg);
+	});
+
+	it.each([
+		[4, [4]],
+		[5, [3, 2]],
+		[7, [4, 3]],
+		[8, [4, 4]],
+		[9, [3, 3, 3]],
+		[10, [4, 3, 3]],
+		[13, [4, 3, 3, 3]],
+		[24, [4, 4, 4, 4, 4, 4]],
+	])(
+		"shares %i steps out as rows of %j, never a lone box after a full row",
+		(count, rows) => {
+			const svg = svgOf(
+				processFigureSvg(parsed(chainSource(count)), PALETTE, {}),
+			);
+			const boxes = Array.from(
+				svg.matchAll(
+					/<rect class="step" x="([\d.]+)" y="([\d.]+)" width="([\d.]+)"/g,
+				),
+				(match) => ({ x: match[1], y: match[2], width: match[3] }),
+			);
+			expect(boxes).toHaveLength(count);
+			// Steps in chain order, row by row: count each row's run of tops.
+			const lengths: number[] = [];
+			for (const [index, box] of boxes.entries()) {
+				if (index > 0 && box.y === boxes[index - 1].y) {
+					lengths[lengths.length - 1]++;
+				} else {
+					lengths.push(1);
+				}
+			}
+			expect(lengths).toEqual(rows);
+			// Every row starts at the left edge, and the boxes take the width
+			// of the longest row.
+			const firsts = boxes.filter(
+				(_box, index) => index === 0 || boxes[index - 1].y !== _box.y,
+			);
+			expect(new Set(firsts.map((box) => box.x)).size).toBe(1);
+			const columns = Math.max(...rows);
+			for (const box of boxes) {
+				// Drawn inside its outline, so a pixel narrower at most.
+				expect(Number(box.width)).toBeCloseTo(
+					(FIGURE_WIDTH - (columns - 1) * 20) / columns - 1,
+					0,
+				);
+			}
+			expectPrintGeometry(svg);
+		},
+	);
+
+	it("draws a loop from the last row of a balanced grid", () => {
+		// Five steps: three and two, the loop leaving step 5 in the second
+		// row for step 1 in the first.
+		const svg = svgOf(
+			processFigureSvg(
+				parsed(chainSource(5, ["n5 -.->|Next| n1"])),
+				PALETTE,
+				{},
+			),
+		);
+		expect(svg).toContain('<path class="loop"');
+		expectPrintGeometry(svg);
+		// A back edge from a row above the last is still refused.
+		expect(
+			processFigureSvg(
+				parsed(chainSource(5, ["n3 -.-> n1"])),
+				PALETTE,
+				{},
+			),
+		).toBeNull();
 	});
 
 	it("highlights only the node with the highlight class", () => {
@@ -608,6 +685,44 @@ describe("processFigureSvg", () => {
 			PALETTE.tint,
 			PALETTE.surface,
 		]);
+		const outlines = Array.from(
+			svg.matchAll(/<rect class="step" [^>]*stroke="(#[0-9a-f]+)"/g),
+		).map((match) => match[1]);
+		expect(outlines).toEqual([
+			PALETTE.border,
+			PALETTE.border,
+			PALETTE.primary,
+			PALETTE.border,
+		]);
+	});
+
+	it("numbers every step in a primary square, its number in the primary's text colour", () => {
+		const svg = svgOf(
+			processFigureSvg(
+				parsed(chainSource(4, ["class n3 highlight"])),
+				PALETTE,
+				{},
+			),
+		);
+		const squares = Array.from(
+			svg.matchAll(/<rect class="number" [^>]*fill="(#[0-9a-f]+)"/g),
+		).map((match) => match[1]);
+		expect(squares).toEqual(Array(4).fill(PALETTE.primary));
+		const numbers = Array.from(
+			svg.matchAll(/<text class="step-number" [^>]*fill="(#[0-9a-f]+)"/g),
+		).map((match) => match[1]);
+		expect(numbers).toEqual(Array(4).fill(PALETTE.onPrimary));
+	});
+
+	it("keeps the neutral style's ink squares, only a highlighted step's in its primary and without an outline", () => {
+		const neutral = { ...PALETTE, neutralPrimary: true };
+		const svg = svgOf(
+			processFigureSvg(
+				parsed(chainSource(4, ["class n3 highlight"])),
+				neutral,
+				{},
+			),
+		);
 		const squares = Array.from(
 			svg.matchAll(/<rect class="number" [^>]*fill="(#[0-9a-f]+)"/g),
 		).map((match) => match[1]);
@@ -617,6 +732,74 @@ describe("processFigureSvg", () => {
 			PALETTE.primary,
 			PALETTE.ink,
 		]);
+		const numbers = Array.from(
+			svg.matchAll(/<text class="step-number" [^>]*fill="(#[0-9a-f]+)"/g),
+		).map((match) => match[1]);
+		expect(numbers).toEqual([
+			PALETTE.onInk,
+			PALETTE.onInk,
+			PALETTE.onPrimary,
+			PALETTE.onInk,
+		]);
+		const strokes = Array.from(
+			svg.matchAll(/<rect class="step" [^>]*stroke="(#[0-9a-f]+)"/g),
+		).map((match) => match[1]);
+		expect(strokes).toEqual(Array(4).fill(PALETTE.border));
+	});
+
+	it("reads the neutral style from its paint, as the page and the export build the palette", () => {
+		const neutral = figurePaletteOf(
+			resolveThemePaint(
+				buildProposalThemeTokens({
+					organization: null,
+					style: null,
+					brandKit: null,
+					recipient: null,
+				}),
+			),
+		);
+		expect(neutral.neutralPrimary).toBe(true);
+		const brand = figurePaletteOf(
+			resolveThemePaint(
+				buildProposalThemeTokens({
+					organization: null,
+					style: { primaryColor: "#1d4ed8", accentColors: [] },
+					brandKit: null,
+					recipient: null,
+				}),
+			),
+		);
+		expect(brand.neutralPrimary).toBeUndefined();
+		const squares = (palette: typeof brand) =>
+			Array.from(
+				svgOf(
+					processFigureSvg(parsed(chainSource(2)), palette, {}),
+				).matchAll(/<rect class="number" [^>]*fill="(#[0-9a-f]+)"/g),
+				(match) => match[1],
+			);
+		expect(squares(neutral)).toEqual([neutral.ink, neutral.ink]);
+		expect(squares(brand)).toEqual([brand.primary, brand.primary]);
+	});
+
+	it("keeps a number square in the ink where the primary does not hold 3:1 against its box", () => {
+		// A pale primary measures under 3:1 against the white box and its tint.
+		const pale = { ...PALETTE, primary: "#f6c9b0", tint: "#fefaf7" };
+		const svg = svgOf(
+			processFigureSvg(
+				parsed(chainSource(4, ["class n3 highlight"])),
+				pale,
+				{},
+			),
+		);
+		const squares = Array.from(
+			svg.matchAll(/<rect class="number" [^>]*fill="(#[0-9a-f]+)"/g),
+		).map((match) => match[1]);
+		expect(squares).toEqual(Array(4).fill(pale.ink));
+		const numbers = Array.from(
+			svg.matchAll(/<text class="step-number" [^>]*fill="(#[0-9a-f]+)"/g),
+		).map((match) => match[1]);
+		expect(numbers).toEqual(Array(4).fill(pale.onInk));
+		expect(svg).not.toContain(`stroke="${pale.primary}"`);
 	});
 
 	it("draws a dashed back edge as a labelled loop under the rows", () => {

@@ -101,6 +101,47 @@ describe("instruction change sources", () => {
 		]);
 		expect(delta.deleted).toEqual([{ path: "branch-gone.md", mode: null }]);
 	});
+	it("keeps a published file a modification or a deletion whatever the branch did to it", async () => {
+		h.intent.mockResolvedValue({
+			status: "READY",
+			gitIntentEntries: [
+				{
+					operation: "PUT",
+					path: "changed-on-branch.md",
+					baseObjectId: "a".repeat(40),
+					baseMode: 0o100644,
+					branchObjectId: "d".repeat(40),
+					mode: 0o100644,
+					storageKey: "changed/on-branch",
+					sha256: "e".repeat(64),
+				},
+				{
+					operation: "PUT",
+					path: "deleted-on-branch.md",
+					baseObjectId: "b".repeat(40),
+					baseMode: 0o100644,
+					branchObjectId: "0".repeat(40),
+					mode: 0o100644,
+					storageKey: "changed/deleted-on-branch",
+					sha256: "f".repeat(64),
+				},
+				{
+					operation: "DELETE",
+					path: "removed.md",
+					baseObjectId: "c".repeat(40),
+					baseMode: 0o100755,
+					branchObjectId: "d".repeat(40),
+				},
+			],
+		});
+		const delta = await loadInstructionChangeDelta(operation);
+		expect(delta.added).toEqual([]);
+		expect(delta.modified.map((row) => row.path)).toEqual([
+			"changed-on-branch.md",
+			"deleted-on-branch.md",
+		]);
+		expect(delta.deleted).toEqual([{ path: "removed.md", mode: 0o100755 }]);
+	});
 	it("refuses native bytes before the receipt is sealed", async () => {
 		h.intent.mockResolvedValue({
 			status: "RECEIVING",

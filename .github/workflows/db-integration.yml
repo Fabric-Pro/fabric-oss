@@ -74,6 +74,7 @@ on:
       - 'packages/database/prisma/migrations/**'
       - 'packages/api/modules/prompts/**'
       - 'packages/api/modules/projects/**'
+      - 'packages/permissions/**'
       - 'packages/temporal/**'
       - '.github/workflows/db-integration.yml'
   # Deliberately unfiltered: a manual run must be able to exercise both suites

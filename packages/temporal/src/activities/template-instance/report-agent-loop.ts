@@ -64,6 +64,12 @@ import {
 	withSummaryProjection,
 } from "./report-card-pages";
 import { mapAgenticGatheredData } from "./report-data-gate";
+import {
+	type PlainListPages,
+	periodTextStart,
+	readToolResultPages,
+	reportPeriodStart,
+} from "./report-plain-list-pages";
 import type { McpServerDiagnostic } from "./types";
 
 export {
@@ -613,6 +619,8 @@ export interface ExecuteAgentLoopInput {
 	promptOverride?: string;
 	/** Human-readable context (project name, team name, etc.) */
 	context: InstanceContext;
+	/** The report's period parameter as written, such as "Last 3 months". */
+	reportPeriod?: string;
 	/** MCP config IDs to connect to */
 	mcpConfigIds: string[];
 	/** Provider types for tool filtering (e.g., ["azure_devops"]) */
@@ -706,10 +714,11 @@ Read each tool's own description first, then use the strategy it calls for:
 - A card listing is read to its end for you: one call fetches every page, and its result says so under \`_listing\`. Never ask for a \`page\` of a card listing yourself, and never repeat one
 - If a tool's description says its result is COMPLETE (it fetches every upstream page server-side), trust it: use the result as-is and do NOT re-query it with filters to "check" for more
 - If another tool returns pagination metadata (has_more/next_page/total_count), page through results — stop when has_more is false OR a page comes back empty — instead of guessing from page size
+- A plain list from a tool that takes a \`page\` argument is read past its first page for you while pages come back full, and its result says so under \`_pagesRead\`. A search is read up to its match count the same way, and says it under \`_totalMatches\`. Ask for the largest page size the tool allows. When the tool takes a \`fields\` argument, ask only for the fields the report needs, such as number, title, dates and state: a full search of several hundred pull requests is larger than the report can hold. When the tool can filter or search by date, ask for the report period instead of listing everything
 - If results are not pageable and you have column IDs, call get_cards/get_items for EACH column individually using the \`column_id\` filter
 - If the tool supports a status filter, fetch for EACH status separately
 - If you have categories/groups, fetch for each one
-- Only when a tool returns a full-looking batch AND declares neither pagination metadata nor completeness should you assume more data exists — then try additional filters (column, status, tag, assignee) to reach the rest
+- Only when a tool returns a full-looking batch, takes no \`page\` argument, AND declares neither pagination metadata nor completeness should you assume more data exists — then try additional filters (column, status, tag, assignee) to reach the rest
 - If columns returned empty, use OTHER filter strategies the tool supports: tags, assignees, search (status only if the tool schema exposes it)
 
 ## Instructions
@@ -738,6 +747,7 @@ function buildDataGatheringPrompt(
 	context: Record<string, string | undefined>,
 	basePrompt: string = REPORT_AGENT_SYSTEM_PROMPT,
 	sweptListings: string[] = [],
+	reportPeriod?: { text: string; start?: number },
 ): string {
 	const parts: string[] = [basePrompt];
 
@@ -811,6 +821,18 @@ function buildDataGatheringPrompt(
 			);
 			parts.push("2. Then fetch work items per iteration or category");
 		}
+	}
+
+	if (reportPeriod) {
+		const from =
+			reportPeriod.start !== undefined
+				? `, from ${new Date(reportPeriod.start).toISOString().slice(0, 10)} (UTC)`
+				: "";
+		parts.push("");
+		parts.push("## Report Period");
+		parts.push(
+			`The report covers \`${reportPeriod.text}\`${from}. When a tool can filter or search by date, ask for this period.`,
+		);
 	}
 
 	parts.push("");
@@ -995,6 +1017,39 @@ function recordPageCoverage(
  * different column_id filters), array results are merged and deduplicated by
  * `id`. `coverageKey` names the listing a page belongs to.
  */
+/**
+ * Fields that identify a list item, in the order they are read. A source that
+ * returns items without an `id`, such as a slimmed release or commit list,
+ * still has a stable link or hash, so a second call to the same tool does not
+ * count its items twice.
+ */
+const ITEM_IDENTITY_FIELDS = [
+	"id",
+	"node_id",
+	"sha",
+	"tag_name",
+	"html_url",
+	"url",
+];
+
+/**
+ * Every identity an item carries. A second call can ask for fewer fields, as
+ * a release list read once in full and once with only `tag_name` and
+ * `html_url` was on staging, so an item repeats another when they share any
+ * one of these, not only the first.
+ */
+function itemIdentities(item: unknown): string[] {
+	if (!isPlainObject(item)) {
+		return [];
+	}
+	return ITEM_IDENTITY_FIELDS.flatMap((field) => {
+		const value = item[field];
+		return (typeof value === "string" && value) || typeof value === "number"
+			? [`${field}:${String(value)}`]
+			: [];
+	});
+}
+
 export function mergeToolResult(
 	gatheredData: Record<string, unknown>,
 	toolName: string,
@@ -1016,19 +1071,16 @@ export function mergeToolResult(
 	if (gatheredData[toolName] !== undefined) {
 		const existing = gatheredData[toolName];
 		if (Array.isArray(existing) && Array.isArray(normalized)) {
-			// Merge arrays and deduplicate by `id` field if present
+			// Merge arrays and deduplicate by each item's identity when it has one
 			const merged = [...existing, ...normalized];
 			const seenIds = new Set<string>();
 			const deduped: unknown[] = [];
 			for (const item of merged) {
-				const id =
-					item && typeof item === "object" && "id" in item
-						? (item as { id: string }).id
-						: null;
-				if (id) {
-					if (seenIds.has(id)) {
-						continue;
-					}
+				const ids = itemIdentities(item);
+				if (ids.some((id) => seenIds.has(id))) {
+					continue;
+				}
+				for (const id of ids) {
 					seenIds.add(id);
 				}
 				deduped.push(item);
@@ -1198,6 +1250,21 @@ function describeReadListing(walk: ListingWalk): Record<string, unknown> {
 		_listing: walk,
 		note: "Every card this listing could provide was already read in this run and will reach the report. Do not request it again.",
 	};
+}
+
+/** Tells the model a plain list was read past its first page, so it does not ask again. */
+function withPagesRead(copy: unknown, read: PlainListPages): unknown {
+	const lastPage = read.startPage + read.pages - 1;
+	const status = {
+		_pagesRead: read.pages,
+		...(read.total !== undefined ? { _totalMatches: read.total } : {}),
+		_note: read.stoppedEarly
+			? `Pages ${read.startPage} to ${lastPage} were read for you; ${read.stoppedEarly}. Do not request those pages again; continue from page ${lastPage + 1} only if the report needs more.`
+			: `Every page from page ${read.startPage} on was read for you (${read.pages} pages). Do not request another page of this list.`,
+	};
+	return isPlainObject(copy)
+		? { ...copy, ...status }
+		: { result: copy, ...status };
 }
 
 /**
@@ -1839,6 +1906,9 @@ export async function executeAgentDataGatheringLoop(
 
 	// Normalize context: coerce all values to strings (JSON parsing can produce numbers)
 	const context = normalizeContext(rawContext);
+	const periodStart =
+		reportPeriodStart(context) ??
+		periodTextStart(input.reportPeriod, Date.now());
 	const toolResults: ToolCallResult[] = [];
 	const listings = new Map<string, ListingWalk>();
 	const closedListingTools = new Set<string>();
@@ -2072,6 +2142,9 @@ export async function executeAgentDataGatheringLoop(
 			context,
 			baseSystemPrompt,
 			sweptListings,
+			input.reportPeriod
+				? { text: input.reportPeriod, start: periodStart }
+				: undefined,
 		);
 
 		// 5. Get AI model
@@ -2386,6 +2459,7 @@ export async function executeAgentDataGatheringLoop(
 				try {
 					let parsedOutput: unknown;
 					let listing: ListingWalk | undefined;
+					let plainListPages: PlainListPages | undefined;
 					if (isCardListTool(toolName)) {
 						const coverageKey = listingCoverageKey(
 							toolName,
@@ -2432,6 +2506,26 @@ export async function executeAgentDataGatheringLoop(
 							args,
 							typedToolCall.toolCallId,
 						);
+						const inputSchema = allTools[toolName]?.inputSchema;
+						let pageNumber = 1;
+						const paged = await readToolResultPages({
+							output: parsedOutput,
+							args,
+							inputSchema,
+							fetchPage: (pageArgs) =>
+								callTool(
+									toolName,
+									coerceToolArgs(pageArgs, inputSchema),
+									`${typedToolCall.toolCallId}-${++pageNumber}`,
+								),
+							beat: heartbeat,
+							periodStart,
+						});
+						parsedOutput = paged.output;
+						if (paged.read) {
+							toolCallCount += paged.read.pages - 1;
+							plainListPages = paged.read;
+						}
 						toolResults.push({
 							toolName,
 							result: shrinkToolResultForStorage(
@@ -2460,7 +2554,11 @@ export async function executeAgentDataGatheringLoop(
 							type: "json",
 							value: listing
 								? withListingStatus(contextCopy, listing)
-								: contextCopy,
+								: plainListPages &&
+										(plainListPages.pages > 1 ||
+											plainListPages.total !== undefined)
+									? withPagesRead(contextCopy, plainListPages)
+									: contextCopy,
 						},
 					});
 

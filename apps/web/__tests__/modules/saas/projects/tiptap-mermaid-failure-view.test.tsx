@@ -409,10 +409,24 @@ describe("the failure view of a kind only the live page draws", () => {
 		);
 	});
 
-	it("keeps an empty caption line for the number when it has no caption", async () => {
+	it("captions it with its section's heading when it has no caption of its own, as the exports do (Fizzy #2946)", async () => {
 		const { container } = renderPage(doc([...GANTT_BODY, "  BROKEN"]), {
 			editable: false,
 		});
+
+		await screen.findByText(TITLE);
+		const caption = container.querySelector(
+			"[data-diagram-failure] .pa-figure-caption",
+		);
+		expect(caption?.textContent).toBe("Delivery");
+		expect(screen.queryByRole("button")).not.toBeInTheDocument();
+	});
+
+	it("keeps an empty caption line for the number with no caption and no heading above it", async () => {
+		const { container } = renderPage(
+			`We start with discovery.\n\n${fence([...GANTT_BODY, "  BROKEN"])}\n`,
+			{ editable: false },
+		);
 
 		await screen.findByText(TITLE);
 		const caption = container.querySelector(

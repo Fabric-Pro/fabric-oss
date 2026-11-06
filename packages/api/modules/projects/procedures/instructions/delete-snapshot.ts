@@ -1,5 +1,4 @@
 import { ORPCError } from "@orpc/client";
-import { config } from "@repo/config";
 import {
 	countInFlightDerivedSnapshots,
 	deleteInstructionSnapshot,
@@ -7,15 +6,7 @@ import {
 	getPublishedInstructionSnapshot,
 	listInstructionFiles,
 } from "@repo/database";
-import {
-	isKeyOwnedBySnapshot,
-	snapshotOwnedPrefixes,
-} from "@repo/instructions";
-import {
-	type DeleteObjectsResult,
-	getStorageProvider,
-	type StorageProviderInterface,
-} from "@repo/storage";
+import { isKeyOwnedBySnapshot } from "@repo/instructions";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import { projectNotFoundUnlessVisible } from "../../../../orpc/middleware/project-visibility";
@@ -27,8 +18,7 @@ import {
 } from "../../../../orpc/procedures";
 import { requireHostingOrganizationId } from "./hosting-organization";
 import { assertNotMigrationSnapshot } from "./migration-freeze";
-
-const BUCKET = config.storage.bucketNames.skills;
+import { deleteSnapshotObjects } from "./snapshot-storage";
 
 /**
  * Deleting a snapshot whose validation workflow is still running removes the
@@ -70,52 +60,6 @@ function isUnfinishedUpload(snapshot: {
 		snapshot.source === "UPLOAD" &&
 		(snapshot.proposalStatus ?? null) === null
 	);
-}
-
-/**
- * `deleteObjects` is best-effort: it NEVER throws on a delete failure and
- * reports per-key failures in `errors` (`packages/storage/types.ts`).
- * Discarding that result reported a delete as complete while the objects were
- * still in the bucket — for someone deleting a version precisely because of
- * what it held. The Temporal twin of this check lives in
- * `activities/project-instructions.ts`; there a throw means a retry, here it
- * means the caller is told the delete did not finish.
- *
- * The message carries the COUNT only: a key names a project, a snapshot and a
- * file id, and this string is returned to the client.
- */
-function assertAllDeleted(result: DeleteObjectsResult): void {
-	if (result.errors.length > 0) {
-		throw new ORPCError("INTERNAL_SERVER_ERROR", {
-			message: `Could not delete ${result.errors.length} stored object(s)`,
-		});
-	}
-}
-
-/**
- * Deletes every object under a prefix, paginated to completion. Keys that are
- * already gone are tolerated, so this is safe when the prefix is empty or the
- * delete is a retry; a key that genuinely could not be deleted throws.
- */
-async function deleteObjectsUnderPrefix(
-	storage: StorageProviderInterface,
-	prefix: string,
-): Promise<void> {
-	let continuationToken: string | undefined;
-	do {
-		const page = await storage.listObjects({
-			bucket: BUCKET,
-			prefix,
-			continuationToken,
-		});
-		const keys = page.objects.map((o) => o.key);
-		if (keys.length > 0) {
-			assertAllDeleted(
-				await storage.deleteObjects(keys, { bucket: BUCKET }),
-			);
-		}
-		continuationToken = page.nextContinuationToken;
-	} while (continuationToken);
 }
 
 /**
@@ -313,18 +257,12 @@ export const deleteSnapshotProcedure = tenantProtectedProcedure
 
 		// Storage last, and after the audit: the rows are gone, so the
 		// deletion has happened whatever storage does next. A failure here
-		// throws (see `assertAllDeleted`) rather than reporting a clean
-		// delete, and the objects it could not remove are unreferenced — the
-		// bucket lifecycle rule is the backstop for those, tracked as a
-		// follow-up.
-		const storage = getStorageProvider();
-		if (keys.length > 0) {
-			assertAllDeleted(
-				await storage.deleteObjects(keys, { bucket: BUCKET }),
-			);
-		}
-		// Everything else under the snapshot's own prefixes, which the file
-		// rows do not know about: the export zips built from it, and any
+		// throws rather than reporting a clean delete, and the objects it
+		// could not remove stay under the storage-cleanup receipt the row
+		// delete wrote, which the storage reaper retries.
+		//
+		// Everything under the snapshot's own prefixes goes too, which the
+		// file rows do not know about: the export zips built from it, and any
 		// staged or promoted object no row names. Someone deleting a version
 		// because it held something they did not want stored would otherwise
 		// leave a full copy of its contents in the bucket for every Download
@@ -332,11 +270,10 @@ export const deleteSnapshotProcedure = tenantProtectedProcedure
 		// against it, or a staged copy of an upload that was replaced. Found
 		// by prefix rather than by a recorded key, so pre-existing
 		// wall-clock-stamped objects are collected too.
-		for (const prefix of snapshotOwnedPrefixes(
-			input.projectId,
-			snapshot.id,
-		)) {
-			await deleteObjectsUnderPrefix(storage, prefix);
-		}
+		await deleteSnapshotObjects({
+			projectId: input.projectId,
+			snapshotId: snapshot.id,
+			keys,
+		});
 		return { deleted: true as const };
 	});

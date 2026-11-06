@@ -1716,3 +1716,44 @@ describe("ConfigureContextRepositorySyncDialog — .contextignore", () => {
 		expect(screen.getByText(`${NS}.summary.cantCount`)).toBeInTheDocument();
 	});
 });
+
+describe("ConfigureContextRepositorySyncDialog — the .contextignore notice", () => {
+	const READ_NOTICE = `${NS}.configureDialog.contextignoreNotice`;
+	const UNREAD_NOTICE = `${NS}.configureDialog.contextignoreNoticeUnread`;
+
+	it("says the file is read here once the branch is listed", async () => {
+		renderDialog();
+
+		expect(await screen.findByText(READ_NOTICE)).toBeInTheDocument();
+		expect(screen.queryByText(UNREAD_NOTICE)).toBeNull();
+	});
+
+	it("does not claim the file was read when the provider cannot list the branch", async () => {
+		listTreeMock.mockResolvedValue(UNSUPPORTED);
+
+		renderDialog();
+
+		await waitFor(() => expect(listTreeMock).toHaveBeenCalled());
+		expect(await screen.findByText(UNREAD_NOTICE)).toBeInTheDocument();
+		expect(screen.queryByText(READ_NOTICE)).toBeNull();
+	});
+
+	it("does not claim the file was read when the listing failed", async () => {
+		listTreeMock.mockRejectedValue(new Error("unreachable"));
+
+		renderDialog();
+
+		await waitFor(() => expect(listTreeMock).toHaveBeenCalled());
+		expect(await screen.findByText(UNREAD_NOTICE)).toBeInTheDocument();
+		expect(screen.queryByText(READ_NOTICE)).toBeNull();
+	});
+
+	it("keeps the notice in place before a branch is named, so the dialog does not jump", () => {
+		renderDialog({
+			integrations: [{ ...ONE_INTEGRATION[0], defaultBranch: "" }],
+		});
+
+		expect(screen.getByText(READ_NOTICE)).toBeInTheDocument();
+		expect(screen.queryByText(UNREAD_NOTICE)).toBeNull();
+	});
+});

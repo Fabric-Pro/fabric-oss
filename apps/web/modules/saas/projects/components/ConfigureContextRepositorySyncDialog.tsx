@@ -552,7 +552,12 @@ export function ConfigureContextRepositorySyncDialog({
 						</div>
 					</div>
 					<p className="text-muted-foreground text-sm">
-						{t("configureDialog.contextignoreNotice")}
+						{t(
+							listing.status === "error" ||
+								listing.status === "unsupported"
+								? "configureDialog.contextignoreNoticeUnread"
+								: "configureDialog.contextignoreNotice",
+						)}
 					</p>
 					<p className="text-muted-foreground text-sm">
 						{t("configureDialog.pruneNotice")}

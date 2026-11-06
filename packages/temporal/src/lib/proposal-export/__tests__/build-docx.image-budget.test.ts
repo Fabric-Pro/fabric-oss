@@ -51,11 +51,15 @@ const RASTER: ExportRaster = {
 	height: 20,
 };
 
+/**
+ * The pictures placed in the flow. The cover's ink is a drawing anchored
+ * behind the text, the writer's own and outside the budget.
+ */
 async function drawings(buffer: Buffer): Promise<number> {
 	const documentXml = await (await JSZip.loadAsync(buffer))
 		.file("word/document.xml")
 		?.async("string");
-	return documentXml?.match(/<w:drawing>/g)?.length ?? 0;
+	return documentXml?.match(/<wp:inline\b/g)?.length ?? 0;
 }
 
 describe("buildProposalDocx image placement budget", () => {

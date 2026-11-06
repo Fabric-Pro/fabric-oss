@@ -264,6 +264,53 @@ describe("preconditions", () => {
 		expect(mocks.submitChange).not.toHaveBeenCalled();
 	});
 
+	// `sync` writes no lock while nothing is published, so pointing at it
+	// would loop: the way out is the tab's upload.
+	it("names the tab's upload, not sync, for an unsynced tree when nothing is published", async () => {
+		const dest = await mkdtemp(path.join(tmpdir(), "fabric-push-cmd-"));
+		mocks.getPublished.mockResolvedValue({
+			published: false,
+			sourceOfTruth: "UPLOAD",
+		});
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(4);
+		expect(result.stderr).toContain("Coding Instructions tab");
+		expect(result.stderr).not.toContain("instructions sync");
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+	});
+
+	// A repository project whose first sync has not published yet: its
+	// first version comes from the repository, not from an upload.
+	it("points a repository project with nothing published at its repository, not the tab", async () => {
+		const dest = await mkdtemp(path.join(tmpdir(), "fabric-push-cmd-"));
+		mocks.getPublished.mockResolvedValue({
+			published: false,
+			sourceOfTruth: "REPOSITORY",
+			repository: null,
+		});
+
+		const result = await runCli([
+			"push",
+			"--project",
+			"proj-1",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(4);
+		expect(result.stderr).toContain("commit there");
+		expect(result.stderr).not.toContain("Coding Instructions tab");
+		expect(mocks.submitChange).not.toHaveBeenCalled();
+	});
+
 	it("refuses when nothing in the checkout has changed", async () => {
 		const dest = await syncedTree({ "AGENTS.md": "one\n" });
 
@@ -2737,6 +2784,7 @@ describe("changes an open proposal already carries", () => {
 			status: null,
 			published: null,
 			pullRequest: null,
+			rebaseProposals: null,
 		});
 		expect(result.stderr).toContain("Nothing new to publish");
 	});

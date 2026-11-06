@@ -1,5 +1,38 @@
 # fabric-app
 
+## 1.16.44
+
+### Patch Changes
+
+- 527efdf: A proposed diagram from Edit with instructions now stays on screen, or says the diagram changed, when the collaborative editor reconnects; diagram, stat tile and visual slot controls come back without a reload once the editor accepts input again; and rejecting a paragraph the AI added, or accepting one it deleted, removes the paragraph instead of leaving an empty line behind.
+- 527efdf: Opening the sidebar while editing a document now moves the editor over instead of covering its outline and title.
+- 527efdf: Saving a document after a small edit now keeps the rest of its Markdown exactly as it was written, so numbered headings, italic text and tight lists no longer show up as changed in version history.
+- 527efdf: Document version history now says which writer made each version, telling a chat edit, Edit with instructions on a diagram, an applied recommendation, an update from context, a regeneration and a restore apart.
+- 527efdf: Engineering Metrics counts releases for deployment frequency when the deployment records it can read cover only part of the period.
+- 527efdf: A document created from an attached file that cannot be read now shows as failed, with the reason, within seconds instead of staying on "generating" for up to 40 minutes. Downloading a project context as PDF or Word now shows a "Preparing" message until the file is saved, closes the menu, and cannot start twice for the same item.
+- 527efdf: Coding instructions: the CLI finds a folder's lock through a symlinked path, `init` needs only that project's sign-in, and History names a replacement only when it happened.
+- 527efdf: Coding instructions: the upload dialog keeps a side margin on tablets, History rows no longer split "1 file stored" across lines, and checkbox rows meet the 24px target.
+- 527efdf: Coding instructions: "Since your last visit" no longer says "Version 0, the one you last saw, is no longer kept" after a visit with nothing published.
+- 527efdf: Coding instructions: History labels proposals by review state, file counts read "1 file", and the CLI points to the tab after a removal.
+- 527efdf: Coding instructions: `push --rebase` closes the proposal it replaces, refuses leftover markers, and reviewers see changes against the branch.
+- 527efdf: Fabric's MCP semantic search tool now says it searches a project's Context (documents, transcripts, notes and synced files), not its code.
+- 527efdf: Empty Notion pages are refused with a clear message, and stuck Notion context sources with saved content can be retried.
+- 527efdf: AI edits to client proposals now also refuse text that repeats an internal review finding's title word for word, and the assistant checks a project guest's replies and proposed edits more strictly for wording from the proposal's internal instructions.
+- 527efdf: A client Proposal's primary brand colour now marks the step numbers of its process and timeline figures, the cover and section eyebrows, and the contents page's section numbers, lightened where needed so each still reads against its background.
+- 527efdf: Proposal step diagrams now spread their steps over evenly filled rows instead of leaving a lone step on the last row, a diagram without a caption is captioned with its section's heading on the page and in PDF, Word and Markdown downloads, and cover logos that read on the dark cover are no longer framed in a white box.
+- 527efdf: Members who can edit a client-ready Proposal can now revise a single section from its heading with their own instruction, and review the change with Accept or Reject before it is saved.
+- 527efdf: A Proposal's Word download now looks like its PDF: a dark cover with the lead and the parties at its foot, each section opening on a new page with a dark card holding its number, title and subtitle, dark table header rows, and no running header.
+- 527efdf: Coding instructions: a project admin can remove every version, the published one included, and start over; `sync` then reports NOTHING_PUBLISHED.
+- 527efdf: Reports now name what closed in a period on large boards, and engineering metrics use release and pull request proxies instead of "Not available".
+- 527efdf: Reports now read repository lists back to the start of the report period, and engineering metrics give a labelled value for a partly covered period.
+- 527efdf: Reports now page through repository listings that return a full batch, so engineering metrics cover the whole report period.
+- 527efdf: Reports with a period such as "Last 3 months" now read repository lists back to the start of that period, and the data gathering step is told the period.
+- 527efdf: Reports now read repository lists such as pull requests and releases past their first page, so engineering metrics cover a three-month period.
+- 527efdf: A large repository search no longer crowds every other report source down to one record, and a list read twice with fewer fields is counted once.
+- 527efdf: Reports read every page of a repository search up to its match count, count a list read twice only once, and the report preview no longer pushes the form down while it loads.
+- 527efdf: A project Viewer's report page now shows its settings as read-only, so typing can no longer look like an edit that goes nowhere.
+- 527efdf: The Wiki Connected readiness item now counts only Notion sources, so chat and other integrations no longer hold it In progress or mark it complete.
+
 ## 1.16.43
 
 ### Patch Changes

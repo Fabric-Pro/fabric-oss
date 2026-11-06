@@ -29,10 +29,13 @@ import path from "node:path";
 import type {
 	DirectInstructionRepositoryState,
 	FabricClient,
+	InstructionChange,
 	ProposalPullRequest,
 	PublishedInstructionRepository,
 	PublishedInstructionSource,
 	PublishedInstructions,
+	SubmitInstructionProposalOptions,
+	SubmittedInstructionChange,
 } from "@fabricorg/sdk";
 import { Command } from "commander";
 import { getClient } from "../../lib/client.js";
@@ -154,6 +157,12 @@ import {
 	maxArchiveBytes,
 } from "../../lib/instructions/manifest.js";
 import { runNativeInstructionPush } from "../../lib/instructions/native-push.js";
+import {
+	NOTHING_PUBLISHED_HOOK_LINE,
+	nothingPublishedJson,
+	nothingPublishedPushLine,
+	nothingPublishedSyncLine,
+} from "../../lib/instructions/nothing-published.js";
 import { lookUpOpenProposals } from "../../lib/instructions/open-proposals.js";
 import {
 	HOOK_PREFIX,
@@ -198,10 +207,14 @@ import {
 import {
 	BaseVersionRemovedError,
 	clearRebaseState,
+	proposalReplacedByRebase,
 	type RebaseInput,
 	type RebaseOutcome,
+	type RebaseReplacement,
 	rebaseConflictLines,
 	rebasePush,
+	UNRESOLVED_MARKERS_ESCAPE,
+	unresolvedRebasePaths,
 } from "../../lib/instructions/rebase-push.js";
 import { resolveProjectFromCheckout } from "../../lib/instructions/resolve-project.js";
 import {
@@ -843,7 +856,7 @@ async function run(
 							: null));
 			if (signedOutOf !== null) {
 				line(
-					`${HOOK_PREFIX}: ${outcomeLine("hook-signed-out", { origin: signedOutOf || describedOrigin(opts), project: opts.project, otherProjects: signedInForOtherProjects(signedOutOf || describedOrigin(opts), opts.project) })}`,
+					`${HOOK_PREFIX}: ${outcomeLine("hook-signed-out", { origin: signedOutOf || describedOrigin(opts), project: opts.project ?? activeProject, otherProjects: signedInForOtherProjects(signedOutOf || describedOrigin(opts), opts.project ?? activeProject) })}`,
 				);
 			} else if (error instanceof UpgradeRequiredFailure) {
 				line(error.line);
@@ -1403,13 +1416,41 @@ function hasSignInFor(origin: string, project: string | undefined): boolean {
 }
 
 /**
+ * The project a folder outside any git checkout was last synced from, as its
+ * own lock records it. Such a folder has no remote to ask, and a sign-in for
+ * that one project is then all the run needs. Inside a checkout the lock may
+ * have arrived with the repository, so the repository's connection decides
+ * there, as before. A damaged or symlinked lock is reported, not skipped.
+ */
+async function projectOfLockOutsideGit(
+	destination: string,
+): Promise<string | null> {
+	const tree = await git.findWorkTree(destination, gitDeadline());
+	if (tree.kind !== "absent") {
+		return null;
+	}
+	// The guarded read needs a canonical root: through a symlinked or
+	// junctioned folder the lock would otherwise look like it escapes it. A
+	// lock that cannot be read safely names no project; the caller then asks
+	// for `--project` as it would without one.
+	const root = await resolveExistingRoot(destination);
+	const lock = await readLockSafely(root, {
+		maxBytes: MAX_HINT_LOCK_BYTES,
+	}).catch(() => null);
+	return lock !== null && isIdentifier(lock.projectId)
+		? lock.projectId
+		: null;
+}
+
+/**
  * The options with the project filled in: the one named, or the one this
  * checkout's repository is connected to. `--base-url` is normalised to an
  * origin here, once, so the client, the hook and the credential all see the
  * same spelling.
  *
  * A hook never resolves: it runs unattended at session start, and what it
- * would answer could change between two sessions. It names its project.
+ * would answer could change between two sessions. It names its project, or
+ * runs in a folder whose own lock does.
  */
 async function withProject<T extends RawOptions>(
 	opts: T,
@@ -1430,14 +1471,29 @@ async function withProject<T extends RawOptions>(
 		throw outcomeFailure("bad-remote-name", {});
 	}
 	const bound = { ...opts, baseUrl: baseUrl ?? undefined };
-	if (verb === "init") {
-		await ensureSignedIn(bound);
-	}
+	// `init` signs in for the project it will use, so a sign-in for that one
+	// project is enough once the project is known.
 	if (opts.project !== undefined) {
+		if (verb === "init") {
+			await ensureSignedIn(bound);
+		}
 		return { ...bound, project: opts.project };
+	}
+	const locked = await projectOfLockOutsideGit(destinationOf(opts));
+	if (locked !== null) {
+		activeProject = locked;
+		if (verb === "init") {
+			await ensureSignedIn({ ...bound, project: locked });
+		}
+		return { ...bound, project: locked };
 	}
 	if (opts.hook) {
 		throw outcomeFailure("hook-needs-project", {});
+	}
+	// Finding the project from the checkout asks the server, which needs a
+	// sign-in that is not tied to one project.
+	if (verb === "init") {
+		await ensureSignedIn(bound);
 	}
 	const client = instructionsClient(bound, CHECK_TIMEOUT_MS);
 	const match = await resolveProjectFromCheckout({
@@ -2259,6 +2315,24 @@ async function runSync(
 		);
 	}
 	const synced = await syncOnce(opts);
+	if (synced.kind === "nothing-published") {
+		// Exit 0, as `check` and doctor treat the same state.
+		if (format === "json") {
+			printOutput(
+				nothingPublishedJson({
+					projectId: opts.project,
+					destination: synced.destination,
+					uploaded: synced.uploaded,
+				}),
+				{ format: "json" },
+			);
+		} else if (opts.hook) {
+			process.stderr.write(`${NOTHING_PUBLISHED_HOOK_LINE}\n`);
+		} else {
+			line(nothingPublishedSyncLine(synced.uploaded));
+		}
+		return;
+	}
 	if (synced.kind === "reported") {
 		// A checkout of the repository (Fizzy #2708): the files arrive with
 		// git, so this reports and writes nothing. `--dry-run` and `--repair`
@@ -2417,7 +2491,12 @@ type SyncResult =
 			current: string | null;
 			/** What the session hook's fast-forward did, when it ran. */
 			fastForward: FastForwardResult | null;
-	  };
+	  }
+	/**
+	 * Nothing is published; nothing was written or deleted. `uploaded`: the
+	 * project is not repository-sourced, so its first version is an upload.
+	 */
+	| { kind: "nothing-published"; destination: string; uploaded: boolean };
 
 async function syncOnce(
 	opts: CommonOptions & {
@@ -2599,12 +2678,13 @@ async function syncOnce(
 			: overrideMatcher(await readLocalOverrides(root));
 
 	if (!published.published || !published.snapshot) {
-		// A real failure for a person who asked for a copy; the `--hook`
-		// boundary turns it into one quiet line for a session start.
-		throw new CliFailure(
-			"This project has no published coding instructions yet.",
-			4,
-		);
+		// Never published, or every version was removed: a state to report,
+		// as `check` reports it, and nothing here is written or deleted.
+		return {
+			kind: "nothing-published",
+			destination: root,
+			uploaded: published.sourceOfTruth !== "REPOSITORY",
+		};
 	}
 
 	outcome.version = published.snapshot.version;
@@ -2656,10 +2736,11 @@ async function syncOnce(
 		// published list to put the tree back.
 		published = await fetchPublished(client, opts, undefined, guard);
 		if (!published.published || !published.snapshot) {
-			throw new CliFailure(
-				"This project has no published coding instructions yet.",
-				4,
-			);
+			return {
+				kind: "nothing-published",
+				destination: root,
+				uploaded: published.sourceOfTruth !== "REPOSITORY",
+			};
 		}
 		outcome.version = published.snapshot.version;
 		outcome.digest = published.snapshot.digest;
@@ -2756,11 +2837,13 @@ async function syncOnce(
 					undefined,
 					guard,
 				);
+				// Removed while this run was planning: nothing was written yet.
 				if (!published.published || !published.snapshot)
-					throw new CliFailure(
-						"This project has no published coding instructions yet.",
-						4,
-					);
+					return {
+						kind: "nothing-published",
+						destination: root,
+						uploaded: published.sourceOfTruth !== "REPOSITORY",
+					};
 				outcome.version = published.snapshot.version;
 				outcome.digest = published.snapshot.digest;
 				manifest = assertValidManifest({
@@ -3012,6 +3095,18 @@ interface PushOutcome {
 	 * the branch's pull request once it has one.
 	 */
 	pullRequest: PushPullRequestStatus | null;
+	/**
+	 * Under `--rebase`, what became of the caller's open proposals; otherwise
+	 * null. `checked` is false when they could not be read. `closes` is the one
+	 * this push replaces, which the server closes once the new one passes its
+	 * checks; `notClosed` is one it asked to replace and the server did not.
+	 */
+	rebaseProposals: {
+		checked: boolean;
+		closes: RebaseReplacement["replaces"];
+		notClosed: RebaseReplacement["replaces"];
+		stillOpen: RebaseReplacement["stillOpen"];
+	} | null;
 }
 
 /**
@@ -3128,6 +3223,14 @@ async function runPush(
 		});
 		return;
 	}
+	// Before the lock: with nothing published, `sync` writes no lock, so
+	// "run sync first" would send the developer round in a circle.
+	if (!published.published || !published.snapshot) {
+		throw new CliFailure(
+			nothingPublishedPushLine(published.sourceOfTruth !== "REPOSITORY"),
+			4,
+		);
+	}
 	const lock = await readLockForProject(root, opts.project);
 	if (lock === null) {
 		throw new CliFailure(
@@ -3144,12 +3247,6 @@ async function runPush(
 	// BEFORE any file is read. Two questions, both answered by this one call:
 	// is the lock still the published version, and is its ledger actually
 	// that version's manifest.
-	if (!published.published || !published.snapshot) {
-		throw new CliFailure(
-			"this project has no published coding instructions to change yet; the first version is uploaded from the Coding Instructions tab",
-			4,
-		);
-	}
 	const rebasing = published.snapshot.id !== lock.snapshotId;
 	if (rebasing && !opts.rebase) {
 		// Exactly what the server would answer, decided locally so nothing is
@@ -3228,6 +3325,19 @@ async function runPush(
 			}),
 			isOverridden,
 		);
+		// A file an interrupted rebase left markers in is not a change to send,
+		// whichever version the checkout has moved to since.
+		const unresolved = await unresolvedRebasePaths({
+			root,
+			projectId: opts.project,
+			entries: planned.plan.entries,
+		});
+		if (unresolved.length > 0) {
+			throw new CliFailure(
+				`These files still hold conflict markers from an earlier \`${fabricCommand("instructions push --rebase")}\`: ${unresolved.join(", ")}. Nothing was sent. Make each one what it should be, then push again. ${UNRESOLVED_MARKERS_ESCAPE}`,
+				7,
+			);
+		}
 	}
 	const computed = planned.plan;
 	const overridden = [
@@ -3254,24 +3364,38 @@ async function runPush(
 		state: "skipped",
 		reason: null,
 	};
-	if (!opts.includeProposed) {
+	let replacement: RebaseReplacement | null = null;
+	// A rebase also asks under --include-proposed: which proposal it replaces
+	// has nothing to do with which changes are sent.
+	if (!opts.includeProposed || rebasing) {
 		const lookup = await lookUpOpenProposals(client, opts.project, {
 			org: orgSlugFor(opts),
 		});
 		if (lookup.kind === "found") {
-			({ plan, alreadyProposed } = setAsideProposed(
-				computed,
-				lookup.proposals,
-				base.snapshotId,
-			));
-			openProposalCheck = { state: "checked", reason: null };
-		} else {
+			if (!opts.includeProposed) {
+				({ plan, alreadyProposed } = setAsideProposed(
+					computed,
+					lookup.proposals,
+					base.snapshotId,
+				));
+				openProposalCheck = { state: "checked", reason: null };
+			}
+			if (rebasing) {
+				replacement = proposalReplacedByRebase({
+					proposals: lookup.proposals,
+					fromSnapshotId: lock.snapshotId,
+					paths: computed.entries.map((entry) => entry.path),
+				});
+			}
+		} else if (!opts.includeProposed) {
 			openProposalCheck = { state: "unavailable", reason: lookup.reason };
 			process.stderr.write(
 				`Could not check your open proposals (${lookup.reason}), so nothing was left out: a change one of them already carries ${opts.dryRun ? "would be" : "is"} sent again.\n`,
 			);
 		}
 	}
+	// With nothing to send, nothing replaces the proposal.
+	const replaces = plan.entries.length > 0 ? replacement?.replaces : null;
 
 	if (plan.entries.length > MAX_PUSH_CHANGES) {
 		throw new CliFailure(
@@ -3318,6 +3442,19 @@ async function runPush(
 		status: null,
 		published: null,
 		pullRequest: null,
+		rebaseProposals: rebasing
+			? {
+					checked: replacement !== null,
+					closes: replaces ?? null,
+					notClosed: null,
+					stillOpen: [
+						...(replacement?.stillOpen ?? []),
+						...(replacement?.replaces && !replaces
+							? [replacement.replaces]
+							: []),
+					],
+				}
+			: null,
 	};
 
 	// Everything left was already proposed. For a proposal that is the state
@@ -3369,12 +3506,22 @@ async function runPush(
 						changes,
 						{ org: orgSlugFor(opts) },
 					)
-				: await client.instructions.submitChange(
+				: await submitProposal(
+						client,
 						opts.project,
 						base.snapshotId,
 						changes,
 						{ org: orgSlugFor(opts), ...(note ? { note } : {}) },
+						replaces?.snapshotId,
 					);
+			if (
+				outcome.rebaseProposals?.closes &&
+				submitted.supersedesSnapshotId !== replaces?.snapshotId
+			) {
+				outcome.rebaseProposals.notClosed =
+					outcome.rebaseProposals.closes;
+				outcome.rebaseProposals.closes = null;
+			}
 			outcome.snapshotId = submitted.snapshotId;
 			outcome.version = submitted.version;
 			outcome.proposalStatus = submitted.proposalStatus;
@@ -3445,6 +3592,49 @@ async function runPush(
 	}
 }
 
+/**
+ * A proposal, naming the stale one it replaces when there is one. The push
+ * still goes through when the server will not replace it, because it was
+ * decided a moment ago or another rebase of it is being checked: only the
+ * replacing is refused, and the answer then names no replaced proposal.
+ */
+async function submitProposal(
+	client: FabricClient,
+	projectId: string,
+	baseSnapshotId: string,
+	changes: InstructionChange[],
+	options: SubmitInstructionProposalOptions,
+	supersedesSnapshotId: string | undefined,
+): Promise<SubmittedInstructionChange> {
+	if (supersedesSnapshotId === undefined) {
+		return client.instructions.submitChange(
+			projectId,
+			baseSnapshotId,
+			changes,
+			options,
+		);
+	}
+	try {
+		return await client.instructions.submitChange(
+			projectId,
+			baseSnapshotId,
+			changes,
+			{ ...options, supersedesSnapshotId },
+		);
+	} catch (error) {
+		const code = (error as { code?: string }).code;
+		if (code !== "REBASE_UNAVAILABLE" && code !== "REBASE_UNSUPPORTED") {
+			throw error;
+		}
+		return client.instructions.submitChange(
+			projectId,
+			baseSnapshotId,
+			changes,
+			options,
+		);
+	}
+}
+
 /** `rebasePush`, with the failures it has its own sentences for. */
 async function rebaseOntoPublished(input: RebaseInput): Promise<RebaseOutcome> {
 	try {
@@ -3484,10 +3674,7 @@ function asPushFailure(error: unknown): CliFailure {
 				7,
 			);
 		case "NOTHING_PUBLISHED":
-			return new CliFailure(
-				"this project has no published coding instructions to change yet; the first version is uploaded from the Coding Instructions tab",
-				4,
-			);
+			return new CliFailure(nothingPublishedPushLine(true), 4);
 		case "PROPOSAL_PROPOSER_LIMIT":
 			return outcomeFailure("proposal-limit-proposer", {});
 		case "PROPOSAL_PROJECT_LIMIT":
@@ -3626,6 +3813,7 @@ function reportPush(outcome: PushOutcome): void {
 		);
 	}
 	reportAlreadyProposed(outcome);
+	reportRebaseProposals(outcome);
 
 	if (outcome.dryRun) {
 		line(
@@ -3690,6 +3878,41 @@ function proposalReferences(alreadyProposed: AlreadyProposed[]): string {
 		.sort(([a], [b]) => b - a)
 		.map(([, reference]) => reference)
 		.join("; ");
+}
+
+/** What a rebase did to the caller's open proposals, and what it left open. */
+function reportRebaseProposals(outcome: PushOutcome): void {
+	const proposals = outcome.rebaseProposals;
+	if (proposals === null) {
+		return;
+	}
+	const cancelIt =
+		"Cancel it in the project's Coding Instructions tab if this one replaces it.";
+	if (proposals.closes) {
+		line(
+			outcome.dryRun
+				? `Would replace your proposal at version ${proposals.closes.version}, which would close once this one passes its checks.`
+				: `This replaces your proposal at version ${proposals.closes.version}, which closes once this one passes its checks.`,
+		);
+	}
+	if (proposals.notClosed) {
+		line(
+			`Your proposal at version ${proposals.notClosed.version} stays open: the server did not replace it. ${cancelIt}`,
+		);
+	}
+	if (!proposals.checked) {
+		line(
+			`Your open proposals could not be read, so none was closed. ${cancelIt}`,
+		);
+	}
+	if (proposals.stillOpen.length > 0) {
+		const versions = proposals.stillOpen
+			.map((proposal) => `version ${proposal.version}`)
+			.join(", ");
+		line(
+			`Your other open proposals stay open (${versions}). Cancel any this one replaces in the project's Coding Instructions tab.`,
+		);
+	}
 }
 
 function reportAlreadyProposed(outcome: PushOutcome): void {

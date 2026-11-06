@@ -336,6 +336,8 @@ async function buildProposalChanges(input: {
 			beforeSize: before.size,
 			afterSize: after.size,
 			binary,
+			// Stated against the published base, never a member's branch.
+			restoresBranchDeletion: false,
 		});
 	}
 	return changes;

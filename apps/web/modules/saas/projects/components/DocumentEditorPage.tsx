@@ -22,6 +22,7 @@ import type { MessageAttachmentListItem } from "@saas/shared/components/copilot/
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
+import { shellDockOffsetClass } from "@saas/shared/lib/shell-layout";
 import { SubscribeToggle } from "@saas/subscriptions/components/SubscribeToggle";
 import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -113,6 +114,7 @@ import {
 	useProposalTheme,
 } from "./proposal-artifact/use-proposal-theme";
 import {
+	type SectionRevisionRequest as EditorSectionRevisionRequest,
 	type SectionRevisionOutcome,
 	sectionRevisionReasonKey,
 } from "./proposal-artifact/useSectionRevision";
@@ -215,16 +217,25 @@ function GlossyVersionLinkButton({ href }: { href: string }) {
 type ProposalArtifactTab = "main" | "analysis" | "style";
 
 /**
- * A finding's recommendation on its way to Main (Fizzy #2946): the editor
- * drafts the section's revision and reviews it, then settles the request by
- * its `id`.
+ * A section revision on its way to Main (Fizzy #2946): a finding's
+ * recommendation, or a member's instruction from a section heading. The
+ * editor drafts the section's revision and reviews it, then settles the
+ * request by its `id`.
  */
-type SectionRevisionRequest = {
-	id: string;
-	runId: string;
-	findingId: string;
-	stableKey: string;
-};
+type SectionRevisionRequest =
+	| {
+			kind: "FINDING";
+			id: string;
+			runId: string;
+			findingId: string;
+			stableKey: string;
+	  }
+	| {
+			kind: "INSTRUCTION";
+			id: string;
+			sectionKey: string;
+			instruction: string;
+	  };
 
 /**
  * What the Internal Analysis tab shows beside its label. Each state carries
@@ -529,7 +540,7 @@ export function DocumentEditorPage({
 	initialAssistantVisibility = "SHARED",
 	initialAssistantVisibilityLockedAt = null,
 }: Props) {
-	const { setIsFullscreen } = useFullscreen();
+	const { setIsFullscreen, isRailExpanded } = useFullscreen();
 	const { organizationId } = useOrganizationContext();
 	const onCopilotError = useCopilotErrorHandler();
 	const assistantThread = useAssistantThreadId(
@@ -928,6 +939,7 @@ export function DocumentEditorPage({
 			}
 			revisionCountRef.current += 1;
 			const request: SectionRevisionRequest = {
+				kind: "FINDING",
 				id: `${tabIdBase}-revision-${revisionCountRef.current}`,
 				runId: finding.runId,
 				findingId: finding.id,
@@ -939,6 +951,29 @@ export function DocumentEditorPage({
 			selectTab("main");
 		},
 		[tabIdBase, selectTab],
+	);
+
+	// Revise this section: the editor's heading control asks, on Main, and
+	// the review stays there. Refused while another revision stands, which
+	// the control is disabled for anyway.
+	const handleRequestInstructionRevision = useCallback(
+		(asked: { sectionKey: string; instruction: string }): boolean => {
+			if (revisionRequestRef.current) {
+				return false;
+			}
+			revisionCountRef.current += 1;
+			const request: SectionRevisionRequest = {
+				kind: "INSTRUCTION",
+				id: `${tabIdBase}-revision-${revisionCountRef.current}`,
+				sectionKey: asked.sectionKey,
+				instruction: asked.instruction,
+			};
+			revisionRequestRef.current = request;
+			setRevisionRequest(request);
+			setRevisionNotice(null);
+			return true;
+		},
+		[tabIdBase],
 	);
 
 	const handleSectionRevisionShown = useCallback(
@@ -958,6 +993,25 @@ export function DocumentEditorPage({
 			}
 			revisionRequestRef.current = null;
 			setRevisionRequest(null);
+			// An instruction's revision has no finding to return to: its
+			// outcome is said where it was asked for. The hook already said
+			// an accept.
+			if (current.kind === "INSTRUCTION") {
+				if (outcome.result === "rejected") {
+					toast.info(tRevision("rejected"));
+				} else if (outcome.result !== "accepted") {
+					toast.error(
+						tRevision("notApplied", {
+							reason: tRevision(
+								outcome.code === "SECTION_NOT_FOUND"
+									? "instruction.sectionNotFound"
+									: `reasons.${sectionRevisionReasonKey(outcome.code)}`,
+							),
+						}),
+					);
+				}
+				return;
+			}
 			// The member moved on to another tab meanwhile: it stays.
 			if (activeTabRef.current === "main") {
 				selectTab("analysis");
@@ -988,14 +1042,16 @@ export function DocumentEditorPage({
 	// What the editor gets: the request without the key it never needs, the
 	// same object for as long as the request stands.
 	const sectionRevisionRequest = useMemo(
-		() =>
-			revisionRequest
-				? {
-						id: revisionRequest.id,
-						runId: revisionRequest.runId,
-						findingId: revisionRequest.findingId,
-					}
-				: null,
+		(): EditorSectionRevisionRequest | null =>
+			revisionRequest === null
+				? null
+				: revisionRequest.kind === "INSTRUCTION"
+					? revisionRequest
+					: {
+							id: revisionRequest.id,
+							runId: revisionRequest.runId,
+							findingId: revisionRequest.findingId,
+						},
 		[revisionRequest],
 	);
 
@@ -1062,7 +1118,9 @@ export function DocumentEditorPage({
 
 	if (isLoading) {
 		return (
-			<div className="fixed inset-y-0 right-0 left-0 bg-background flex items-center justify-center md:left-[72px]">
+			<div
+				className={`fixed inset-y-0 right-0 left-0 bg-background flex items-center justify-center ${shellDockOffsetClass(!isRailExpanded)}`}
+			>
 				<div className="space-y-6 w-full max-w-4xl p-6">
 					<Skeleton className="h-8 w-full" />
 					<Skeleton className="h-96 w-full" />
@@ -1073,7 +1131,9 @@ export function DocumentEditorPage({
 
 	if (!document || !project) {
 		return (
-			<div className="fixed inset-y-0 right-0 left-0 bg-background flex items-center justify-center md:left-[72px]">
+			<div
+				className={`fixed inset-y-0 right-0 left-0 bg-background flex items-center justify-center ${shellDockOffsetClass(!isRailExpanded)}`}
+			>
 				<p className="text-muted-foreground">
 					{!document ? "Document not found" : "Project not found"}
 				</p>
@@ -1126,7 +1186,7 @@ export function DocumentEditorPage({
 		// inside the editor, so while the editor is hidden (another tab, or
 		// a Proposal's live Main) the page takes its full width back.
 		<div
-			className={`fixed inset-y-0 left-0 right-0 md:left-[72px] bg-background flex flex-col transition-[right] duration-300 ${
+			className={`fixed inset-y-0 left-0 right-0 ${shellDockOffsetClass(!isRailExpanded)} bg-background flex flex-col transition-[left,right] duration-300 ${
 				isAiSidebarExpanded && isEditorShown
 					? AI_SIDEBAR_CONTENT_SHIFT_CLASS
 					: ""
@@ -1586,6 +1646,14 @@ export function DocumentEditorPage({
 											onSectionRevisionShown={
 												handleSectionRevisionShown
 											}
+											onRequestSectionRevision={
+												artifactMode && canEdit
+													? handleRequestInstructionRevision
+													: undefined
+											}
+											sectionRevisionPending={
+												revisionRequest !== null
+											}
 										/>
 									</CopilotChatSessionProvider>
 								</AssistantThreadProvider>
@@ -1622,7 +1690,12 @@ export function DocumentEditorPage({
 										handleApplyRecommendation
 									}
 									pendingRevisionFindingId={
-										revisionRequest?.findingId ?? null
+										revisionRequest?.kind === "FINDING"
+											? revisionRequest.findingId
+											: null
+									}
+									sectionRevisionPending={
+										revisionRequest?.kind === "INSTRUCTION"
 									}
 								/>
 							</div>

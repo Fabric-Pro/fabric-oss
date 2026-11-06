@@ -21,16 +21,17 @@ import type { DocumentSaveBase } from "../../lib/document-save-input";
 import { getOrpcErrorData } from "../../lib/orpc-error-data";
 
 /**
- * A finding-driven revision of one section of a client-document Proposal's
- * Main, reviewed in the editor (Fizzy #2946).
+ * A revision of one section of a client-document Proposal's Main, reviewed in
+ * the editor (Fizzy #2946).
  *
- * Asked for by the Internal Analysis ("Apply recommendation"): the editor's
- * save is flushed first, so the server revises the body the editor holds;
+ * Asked for by the Internal Analysis ("Apply recommendation"), or by a
+ * member's own instruction on a section heading ("Revise this section"): the
+ * editor's save is flushed first, so the server revises the body the editor holds;
  * `projects.proposalArtifact.reviseSection` answers with the section's new
  * own lines, which are spliced into the editor's current body and shown as
  * a diff, under a proposal review the room hears of, the editor read-only.
- * Accept saves through the editor's held AI accept with the `FINDING`
- * descriptor; Reject puts back the body from before the review. The accept
+ * Accept saves through the editor's held AI accept with the `FINDING` or
+ * `INSTRUCTION` descriptor; Reject puts back the body from before the review. The accept
  * is bound to the base the revision read, so the candidate is dropped when
  * that base or the editor's body moved while it was drafted — an edit
  * elsewhere included, whose accept the server would refuse: the editor
@@ -39,12 +40,26 @@ import { getOrpcErrorData } from "../../lib/orpc-error-data";
  * Every request is answered once through `onSettled`.
  */
 
-export interface SectionRevisionRequest {
-	/** New per request: a request with an id already seen is not run again. */
-	id: string;
-	runId: string;
-	findingId: string;
-}
+/**
+ * A request to revise one section: a finding's recommendation, or a
+ * member's instruction. `id` is new per request: a request with an id
+ * already seen is not run again.
+ */
+export type SectionRevisionRequest =
+	| {
+			id: string;
+			kind?: "FINDING";
+			runId: string;
+			findingId: string;
+	  }
+	| {
+			id: string;
+			kind: "INSTRUCTION";
+			/** The section to revise, a key of the editor's section map. */
+			sectionKey: string;
+			/** What the member asked for; sent to the server, never logged. */
+			instruction: string;
+	  };
 
 export type SectionRevisionResult =
 	| "accepted"
@@ -301,7 +316,14 @@ export function useSectionRevision({
 		) => {
 			if (result === "accepted") {
 				toast.dismiss(aiAcceptOfferToastId(documentId));
-				toast.success(t("accepted"));
+				// Only an applied recommendation resolves a finding.
+				toast.success(
+					t(
+						answered.kind === "INSTRUCTION"
+							? "instruction.accepted"
+							: "accepted",
+					),
+				);
 			} else if (!latest.current.onSettled) {
 				if (result === "refused" || result === "failed") {
 					toast.error(t("notApplied", { reason: reason(code) }));
@@ -389,8 +411,15 @@ export function useSectionRevision({
 					await orpcClient.projects.proposalArtifact.reviseSection({
 						projectId,
 						documentId,
-						runId: asked.runId,
-						findingId: asked.findingId,
+						...(asked.kind === "INSTRUCTION"
+							? {
+									sectionKey: asked.sectionKey,
+									instruction: asked.instruction,
+								}
+							: {
+									runId: asked.runId,
+									findingId: asked.findingId,
+								}),
 						baseVersion: base.version,
 						baseContentHash: base.contentHash,
 					});
@@ -560,12 +589,19 @@ export function useSectionRevision({
 		latest.current.saveAccept({
 			content,
 			from: baseline,
-			aiReview: {
-				kind: "FINDING",
-				runId: asked.runId,
-				findingId: asked.findingId,
-				revisionToken,
-			},
+			aiReview:
+				asked.kind === "INSTRUCTION"
+					? {
+							kind: "INSTRUCTION",
+							sectionKey: asked.sectionKey,
+							revisionToken,
+						}
+					: {
+							kind: "FINDING",
+							runId: asked.runId,
+							findingId: asked.findingId,
+							revisionToken,
+						},
 			onAnswer: (answer) => {
 				if (answer.kind === "saved") {
 					finish(asked, "accepted");

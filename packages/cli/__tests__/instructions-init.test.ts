@@ -41,6 +41,7 @@ const { mocks } = vi.hoisted(() => ({
 		createDownloadUrl: vi.fn(),
 		createFileDownloadUrls: vi.fn(),
 		getApiKey: vi.fn<() => string | undefined>(),
+		getOAuth: vi.fn<(...args: unknown[]) => unknown>(),
 		getConfigPath: vi.fn<() => string>(),
 		getDefaultContext: vi.fn<() => unknown>(),
 		withoutContext: vi.fn(),
@@ -50,7 +51,7 @@ const { mocks } = vi.hoisted(() => ({
 
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
-	getOAuth: () => undefined,
+	getOAuth: (...args: unknown[]) => mocks.getOAuth(...args),
 	listProjectSignIns: () => [],
 	hasStoredApiKey: () => mocks.getApiKey() !== undefined,
 	getConfigPath: mocks.getConfigPath,
@@ -92,6 +93,7 @@ vi.mock("../src/lib/client.js", () => {
 
 beforeEach(() => {
 	resetInstructionsMocks(mocks);
+	mocks.getOAuth.mockReset();
 	fakeGit.reset();
 });
 
@@ -106,6 +108,7 @@ const REPOSITORY = {
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+	vi.unstubAllEnvs();
 });
 
 // ---------------------------------------------------------------------------
@@ -128,6 +131,40 @@ describe("fabric instructions init", () => {
 		expect(result.code).toBe(2);
 		expect(result.stderr).toContain("--tool claude-code or --tool codex");
 		expect(mocks.getPublished).not.toHaveBeenCalled();
+	});
+
+	// Outside git the folder's own lock names the project, so a sign-in for
+	// that one project is enough: nothing asks for an organization-wide one
+	// first, which unattended (CI) would fail outright.
+	it("sets up from the folder's lock with only that project's sign-in", async () => {
+		const dest = await makeTree();
+		await seedLock(dest, "d".repeat(64), {}, "project-lock");
+		mocks.getApiKey.mockImplementation((...args: unknown[]) =>
+			args[1] === "project-lock" ? "fab_lock" : undefined,
+		);
+		mocks.getOAuth.mockImplementation((...args: unknown[]) =>
+			args[1] === "project-lock"
+				? { accessToken: "fab_lock" }
+				: undefined,
+		);
+		mocks.getPublished.mockResolvedValue({
+			published: false,
+			sourceOfTruth: "UPLOAD",
+		});
+		vi.stubEnv("CI", "true");
+
+		const result = await runCli([
+			"init",
+			"--tool",
+			"codex",
+			"--dest",
+			dest,
+		]);
+
+		expect(result.code).toBe(0);
+		expect(
+			await readFile(path.join(dest, ".codex", "hooks.json"), "utf8"),
+		).toContain("--project project-lock");
 	});
 
 	it("writes a Codex project hook without putting the credential in the checkout", async () => {

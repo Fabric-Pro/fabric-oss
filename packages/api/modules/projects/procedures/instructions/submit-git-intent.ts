@@ -7,9 +7,14 @@ import {
 	admitGitIntent,
 	findExistingGitIntent,
 	type GitIntentEntry,
+	readMemberBranchDeletedPaths,
 	readMemberBranchWrittenPaths,
 } from "@repo/database";
-import { scanTextForSecrets, snapshotKey } from "@repo/instructions";
+import {
+	BRANCH_DELETED_OBJECT_ID,
+	scanTextForSecrets,
+	snapshotKey,
+} from "@repo/instructions";
 import { getStorageProvider } from "@repo/storage";
 import type { AuditRequestContext } from "../../../../lib/audit";
 import { validateInstructionChanges } from "./change-set";
@@ -142,28 +147,38 @@ export async function submitGitIntentChange(
 		const filesByPath = new Map(
 			listed.files.map((file) => [file.path, file]),
 		);
-		// A path the published version lacks may still be a file Fabric wrote
-		// on the caller's OWN proposal branch: a proposal may then delete or
-		// edit it there. A direct commit targets the synced branch, never a
+		// A path may be a file Fabric wrote on the caller's OWN proposal branch.
+		// A proposal may then delete or edit it there even when the published
+		// version lacks it, and the entry freezes the branch's blob so a
+		// reviewer sees the change against what the branch held. A published
+		// file the branch deleted has no blob, and putting it back freezes
+		// that instead. A direct commit targets the synced branch, never a
 		// member's, so it reads no branch.
+		const proposedPaths =
+			input.mode === "proposal"
+				? changes.map((change) => change.path)
+				: [];
 		const onBranch = await readMemberBranchWrittenPaths({
 			projectId: input.projectId,
 			userId: input.userId,
 			organizationId: input.organizationId,
-			paths:
-				input.mode === "proposal"
-					? changes
-							.filter((change) => !filesByPath.has(change.path))
-							.map((change) => change.path)
-					: [],
+			paths: proposedPaths,
+		});
+		const deletedOnBranch = await readMemberBranchDeletedPaths({
+			projectId: input.projectId,
+			userId: input.userId,
+			organizationId: input.organizationId,
+			paths: proposedPaths.filter((path) => filesByPath.has(path)),
 		});
 		const snapshotId = createId();
 		const entries: GitIntentEntry[] = changes.map((change, index) => {
 			const base = filesByPath.get(change.path);
-			const branchFile = base ? undefined : onBranch.get(change.path);
+			const branchFile = onBranch.get(change.path);
 			const branchTarget = branchFile
 				? { branchObjectId: branchFile.objectId }
-				: {};
+				: change.op === "put" && deletedOnBranch.has(change.path)
+					? { branchObjectId: BRANCH_DELETED_OBJECT_ID }
+					: {};
 			let baseEntry: { objectId: string; mode: number } | null = null;
 			if (base) {
 				if (base.blobId === undefined || base.mode === undefined) {
@@ -212,7 +227,7 @@ export async function submitGitIntentChange(
 				isText: textPaths.has(change.path),
 				// An edit keeps the file's mode: the branch's for a file only
 				// the branch holds, so an executable stays executable.
-				mode: branchFile?.mode ?? baseEntry?.mode ?? 0o100644,
+				mode: baseEntry?.mode ?? branchFile?.mode ?? 0o100644,
 				kind: change.kind,
 				...branchTarget,
 			};

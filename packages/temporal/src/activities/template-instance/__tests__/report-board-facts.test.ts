@@ -124,6 +124,7 @@ describe("computeBoardFacts", () => {
 		expect(facts.stale).toBeNull();
 		expect(facts.unassigned).toBeNull();
 		expect(facts.closedPerPeriod).toBeNull();
+		expect(facts.closedCardsByDay).toBeNull();
 		expect(facts.createdPerPeriod).toBeNull();
 	});
 
@@ -162,6 +163,70 @@ describe("computeBoardFacts", () => {
 			byMonth: { "2026-11": 1 },
 			byWeek: { "2026-11-02": 1 },
 		});
+	});
+
+	it("names the closed cards under the day they closed, in number order", () => {
+		const facts = computeBoardFacts(
+			[
+				card({
+					id: "a",
+					number: 12,
+					closed_at: "2026-11-04T10:00:00.000Z",
+				}),
+				card({
+					id: "b",
+					number: 9,
+					closed_at: "2026-11-04T23:59:00.000Z",
+				}),
+				card({
+					id: "c",
+					number: 7,
+					closed_at: "2026-10-30T10:00:00.000Z",
+				}),
+				card({ id: "open", number: 5 }),
+				card({ id: "set-aside", number: 3, postponed: true }),
+			],
+			NOW,
+		);
+
+		expect(facts.closedCardsByDay).toEqual({
+			"2026-10-30": [7],
+			"2026-11-04": [9, 12],
+		});
+		expect(Object.keys(facts.closedCardsByDay ?? {})).toEqual([
+			"2026-10-30",
+			"2026-11-04",
+		]);
+	});
+
+	it("names closed cards by last activity when no close date exists, by id without a number", () => {
+		const facts = computeBoardFacts(
+			[
+				card({ id: "a", closed: true }),
+				card({ id: "b", number: 4, closed: true }),
+			],
+			NOW,
+		);
+
+		expect(facts.closedPerPeriod?.basis).toBe("last_active_at");
+		expect(facts.closedCardsByDay).toEqual({ "2026-11-04": [4, "a"] });
+	});
+
+	it("keeps closed cards on one basis, like the period counts", () => {
+		const facts = computeBoardFacts(
+			[
+				card({
+					id: "a",
+					number: 1,
+					closed_at: "2026-10-30T10:00:00.000Z",
+				}),
+				card({ id: "b", number: 2, closed: true }),
+			],
+			NOW,
+		);
+
+		expect(facts.closedPerPeriod?.basis).toBe("closed_at");
+		expect(facts.closedCardsByDay).toEqual({ "2026-10-30": [1] });
 	});
 
 	it("groups created cards by period", () => {
@@ -458,6 +523,27 @@ describe("buildBoardFactsHeader", () => {
 		expect(header).toContain("only the 900 cards");
 		expect(header).toContain("page 7 could not be read");
 		expect(header).not.toContain("Coverage is complete");
+	});
+
+	it("says how to name what closed in a period", () => {
+		const header = buildBoardFactsHeader(
+			facts({ closedCardsByDay: { "2026-11-04": [3509] } }),
+		);
+
+		expect(header).toContain("To name what closed in a period");
+		expect(header).toContain(
+			"A closed card without that date is not in it",
+		);
+		expect(header).toContain('"closedCardsByDay":{"2026-11-04":[3509]}');
+	});
+
+	it("says nothing about closed cards by day when the source dates none", () => {
+		expect(
+			buildBoardFactsHeader(facts({ closedCardsByDay: null })),
+		).not.toContain("To name what closed in a period");
+		expect(buildBoardFactsHeader(facts())).not.toContain(
+			"To name what closed in a period",
+		);
 	});
 
 	it("says a period count built on last activity is approximate", () => {

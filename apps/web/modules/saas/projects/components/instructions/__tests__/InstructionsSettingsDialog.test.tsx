@@ -23,7 +23,7 @@ const settingsResponse = vi.hoisted(() => ({
 	current: {
 		ignoreGlobs: null as string[] | null,
 		defaultIgnoreGlobs: ["**/node_modules/**", "retro.md"],
-		sourceOfTruth: null,
+		sourceOfTruth: null as "UPLOAD" | "REPOSITORY" | null,
 	},
 }));
 
@@ -73,6 +73,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 // Saved on its own; covered by InstructionReviewPolicySection.test.tsx.
 vi.mock("../InstructionReviewPolicySection", () => ({
 	InstructionReviewPolicySection: () => null,
+}));
+
+// Its permission, content and confirmation are covered by
+// RemoveCodingInstructions.test.tsx; here only where the dialog mounts it.
+vi.mock("../RemoveCodingInstructions", () => ({
+	RemoveCodingInstructions: () => <div data-testid="remove-section-stub" />,
 }));
 
 import { InstructionsSettingsDialog } from "../InstructionsSettingsDialog";
@@ -400,5 +406,61 @@ describe("InstructionsSettingsDialog — a reader", () => {
 		expect(
 			screen.queryByTestId("instructions-settings-defaults"),
 		).toBeNull();
+	});
+
+	describe("Remove coding instructions", () => {
+		/** The project's own rules are shown once the settings have loaded. */
+		async function settingsLoaded() {
+			const textarea = (await screen.findByLabelText(
+				"textareaLabel",
+			)) as HTMLTextAreaElement;
+			await waitFor(() => expect(textarea.value).toBe("dist/**"));
+		}
+
+		it("is offered in upload mode once the settings have loaded", async () => {
+			settingsResponse.current = {
+				...settingsResponse.current,
+				sourceOfTruth: "UPLOAD",
+			};
+			renderDialog();
+
+			expect(
+				await screen.findByTestId("remove-section-stub"),
+			).toBeInTheDocument();
+		});
+
+		it("is not offered while the settings name the repository as the source", async () => {
+			settingsResponse.current = {
+				...settingsResponse.current,
+				sourceOfTruth: "REPOSITORY",
+			};
+			renderDialog();
+
+			await settingsLoaded();
+			expect(screen.queryByTestId("remove-section-stub")).toBeNull();
+		});
+
+		it("is not offered in the repository view", async () => {
+			renderDialog({ repositoryMode: true });
+
+			await settingsLoaded();
+			expect(screen.queryByTestId("remove-section-stub")).toBeNull();
+		});
+
+		it("is not offered while a move into a repository is open", async () => {
+			render(
+				<InstructionsSettingsDialog
+					projectId="p"
+					open
+					canEdit
+					pausedReason="A move into a repository is open."
+					onOpenChange={() => undefined}
+				/>,
+				{ wrapper: TestQueryProvider },
+			);
+
+			await settingsLoaded();
+			expect(screen.queryByTestId("remove-section-stub")).toBeNull();
+		});
 	});
 });

@@ -24,13 +24,27 @@ export interface ExportRaster {
 	height: number;
 	/**
 	 * Relative luminance (0 to 1) of a measured brand asset, weighted by
-	 * alpha: a logo's mean over its opaque pixels, which picks its plate,
-	 * and the hero's bright end (its 90th percentile), which sets the veil.
-	 * Absent when not measured or when no pixel is opaque at all.
+	 * alpha: a logo's mean over its opaque pixels, which decides whether a
+	 * mark on transparency reads on its background, and the hero's bright
+	 * end (its 90th percentile), which sets the veil. Absent when not
+	 * measured or when no pixel is opaque at all.
 	 */
 	luminance?: number;
-	/** A measured logo with no transparent pixel: its own edge is its box. */
-	opaque?: boolean;
+	/**
+	 * A measured logo's tones: the share of its opaque weight (pixels
+	 * weighted by alpha) in each of {@link LOGO_TONE_BUCKETS} equal steps of
+	 * relative luminance, darkest first, summing to 1. What decides its
+	 * plate (Fizzy #2946): a mean would let a bright icon carry a dark
+	 * wordmark beside it past the check. Absent when not measured or when
+	 * no pixel is opaque at all.
+	 */
+	tones?: readonly number[];
+	/**
+	 * A measured logo drawn on a box of its own, its sides opaque: the
+	 * box carries the mark, so it never takes a plate (Fizzy #2946). False
+	 * for a mark on transparency; absent when not measured.
+	 */
+	boxed?: boolean;
 	/**
 	 * The hero again at a section opener graphic's size. Print writes a
 	 * separate crop of the image for each opener, so the openers crop this
@@ -39,11 +53,8 @@ export interface ExportRaster {
 	openerCopy?: ExportRaster;
 }
 
-/**
- * Below this mean luminance a logo is drawn for a light background, so the
- * dark cover sets it on a light plate.
- */
-export const COVER_LOGO_DARK_LUMINANCE = 0.45;
+/** The luminance steps a logo's tones are counted in (`ExportRaster.tones`). */
+export const LOGO_TONE_BUCKETS = 128;
 
 /**
  * Brand tokens as print reads them: every asset is already re-encoded bytes,

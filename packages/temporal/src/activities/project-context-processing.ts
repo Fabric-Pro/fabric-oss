@@ -160,6 +160,90 @@ export async function updateProjectContextStatus(
 	}
 }
 
+/**
+ * Fail the document an upload was meant to fill, once the upload itself has
+ * failed for good.
+ *
+ * The Documents-tab create flow writes its document row GENERATING before the
+ * file is read, and records the row's id on the context
+ * (`metadata.targetDocumentId`). When extraction throws on every attempt, or
+ * ends without usable text, the workflow marks the context FAILED and nothing
+ * ends the document: it sat on "generating", with no reason, until the
+ * stale-generation sweep cleared it half an hour later. The workflow's failure
+ * branches only hold the context id, so the lookup lives here.
+ *
+ * Called by the workflow after the extraction activity has given up, never
+ * from inside that activity: an attempt that throws is retried, and a retry
+ * that recovers must find its document still waiting to be filled.
+ *
+ * The context is looked up under the run's own project and tenant, with the
+ * same filter the processing activity loads it with, and the document is held
+ * to that project. Only a GENERATING row changes, so one that was filled,
+ * edited or already failed stands as it is. A company source has no project
+ * context row, so there is nothing to fail.
+ */
+export async function failContextTargetDocument(params: {
+	contextId: string;
+	projectId: string;
+	userId: string;
+	organizationId?: string | null;
+	reason: string;
+}): Promise<{ applied: boolean }> {
+	const tenantFilter = params.organizationId
+		? { organizationId: params.organizationId }
+		: { organizationId: null, userId: params.userId };
+	const context = await db.projectContext.findFirst({
+		where: {
+			id: params.contextId,
+			projectId: params.projectId,
+			...tenantFilter,
+		},
+		select: { projectId: true, metadata: true },
+	});
+	const metadata = context?.metadata;
+	const targetDocumentId =
+		metadata && typeof metadata === "object" && !Array.isArray(metadata)
+			? metadata.targetDocumentId
+			: undefined;
+	if (
+		!context?.projectId ||
+		typeof targetDocumentId !== "string" ||
+		targetDocumentId.length === 0
+	) {
+		return { applied: false };
+	}
+
+	// Another upload may already be on its way to the same document: the
+	// upload procedure checks a target's project and type, not whether an
+	// earlier upload for it is still running. Failing the row now would stop
+	// that upload's fill, which only writes a GENERATING row, so its file
+	// would never reach the document. Leave the row to the upload still in
+	// flight; it fills the document or, failing, ends it itself.
+	const uploadStillInFlight = await db.projectContext.findFirst({
+		where: {
+			id: { not: params.contextId },
+			projectId: context.projectId,
+			...tenantFilter,
+			extractionStatus: { in: ["PENDING", "EXTRACTING"] },
+			metadata: { path: ["targetDocumentId"], equals: targetDocumentId },
+		},
+		select: { id: true },
+	});
+	if (uploadStillInFlight) {
+		return { applied: false };
+	}
+
+	const { failGeneratingDocument } = await import(
+		"@repo/database/prisma/queries/projects/documents"
+	);
+	const count = await failGeneratingDocument({
+		documentId: targetDocumentId,
+		reason: params.reason,
+		projectId: context.projectId,
+	});
+	return { applied: count > 0 };
+}
+
 interface ProcessProjectContextResult {
 	success: boolean;
 	chunkCount: number;
@@ -286,6 +370,8 @@ async function runProjectContextPipeline(
 	let extractorUsedForRecovery: string | undefined;
 	let documentTagForRecovery: string | undefined;
 	let documentTitleForRecovery: string | undefined;
+	let documentUsageForRecovery: "AS_IS" | "CONTEXT" | undefined;
+	let targetDocumentIdForRecovery: string | undefined;
 
 	try {
 		safeHeartbeat("starting");
@@ -398,6 +484,8 @@ async function runProjectContextPipeline(
 		extractorUsedForRecovery = extractorUsed;
 		documentTagForRecovery = documentTag;
 		documentTitleForRecovery = documentTitle;
+		documentUsageForRecovery = documentUsage;
+		targetDocumentIdForRecovery = targetDocumentId;
 
 		// Use As-Is stops here: the extracted text becomes the document body, and
 		// the document is what retrieval reads. Embedding the context row too
@@ -701,6 +789,10 @@ async function runProjectContextPipeline(
 			console.warn(
 				`[ProjectContextProcessing] Post-extraction step failed (status remains COMPLETED): ${errorMessage}`,
 			);
+			// The same document fields every other success return carries.
+			// Without the target id the workflow took this for an ordinary
+			// tagged import and created a second document, leaving the one the
+			// user was already looking at on "generating".
 			return {
 				success: true,
 				chunkCount: 0,
@@ -708,6 +800,8 @@ async function runProjectContextPipeline(
 				qdrantIds: [],
 				documentTag: documentTagForRecovery,
 				documentTitle: documentTitleForRecovery,
+				documentUsage: documentUsageForRecovery,
+				targetDocumentId: targetDocumentIdForRecovery,
 				extractedContent: documentTagForRecovery
 					? extractedTextForRecovery.slice(0, 500_000)
 					: undefined,

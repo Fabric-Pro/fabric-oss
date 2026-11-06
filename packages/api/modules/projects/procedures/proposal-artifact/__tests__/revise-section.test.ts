@@ -1,7 +1,8 @@
 /**
  * `projects.proposalArtifact.reviseSection` (Fizzy #2946): applying a
- * finding's recommendation returns a candidate for the finding's section and
- * a revision token, and never writes Main.
+ * finding's recommendation, or a member's own instruction for a section they
+ * name, returns a candidate for that section and a revision token, and never
+ * writes Main.
  *
  * The gate middleware, the permission decision, the access loaders and the
  * real revision library (placeholders, structure and echo checks, splice,
@@ -18,6 +19,7 @@ const revise = vi.hoisted(() => ({
 	findBoundProposalPrompt: vi.fn(),
 	buildSettledDecisionsBlock: vi.fn(),
 	signRevisionToken: vi.fn(),
+	signInstructionRevisionToken: vi.fn(),
 	promptVersionFindUnique: vi.fn(),
 	/** The stored row's columns the world's documents do not carry. */
 	stored: { status: "DRAFT", version: 3 } as {
@@ -77,10 +79,12 @@ vi.mock("../../../lib/proposal-revision-token", async () => ({
 		typeof import("../../../lib/proposal-revision-token")
 	>("../../../lib/proposal-revision-token")),
 	signRevisionToken: revise.signRevisionToken,
+	signInstructionRevisionToken: revise.signInstructionRevisionToken,
 }));
 
 import { ORPCError } from "@orpc/client";
 import { AIProviderNotConfiguredError } from "@repo/ai";
+import { logger } from "@repo/logs";
 import { spliceSectionBody } from "@repo/temporal/proposal-artifact-revise-section";
 import { contentIdentity } from "@repo/utils/content-identity";
 import {
@@ -98,6 +102,7 @@ import {
 	DOC_B,
 	declaredPermission,
 	declaredRoute,
+	inputRefusal,
 	ORG_A,
 	PROJECT_A,
 	PROJECT_B,
@@ -270,6 +275,7 @@ beforeEach(() => {
 		revise.findBoundProposalPrompt,
 		revise.buildSettledDecisionsBlock,
 		revise.signRevisionToken,
+		revise.signInstructionRevisionToken,
 		revise.promptVersionFindUnique,
 	]) {
 		mock.mockReset();
@@ -298,6 +304,9 @@ beforeEach(() => {
 	});
 	revise.buildSettledDecisionsBlock.mockResolvedValue(null);
 	revise.signRevisionToken.mockReturnValue("signed-revision-token");
+	revise.signInstructionRevisionToken.mockReturnValue(
+		"signed-instruction-token",
+	);
 });
 
 describe("declared chain", () => {
@@ -583,6 +592,29 @@ describe("refused candidates", () => {
 
 		expect(await reviseSection()).toEqual({ status: "RESPONSE_ECHOED" });
 	});
+
+	it("lets a short recommendation through when the model applies it word for word", async () => {
+		const recommendation = "Name the deliverable of discovery week.";
+		addFinding({ recommendation });
+		const applied = MODEL_BODY.replace(
+			"and then build.",
+			`and then build. ${recommendation}`,
+		);
+		modelWrites(applied);
+
+		expect(await reviseSection()).toMatchObject({ status: "CANDIDATE" });
+	});
+
+	it("answers RESPONSE_ECHOED when the model repeats a short finding title whole", async () => {
+		addFinding({ title: "Discovery week has no named deliverable" });
+		const echoing = MODEL_BODY.replace(
+			"and then build.",
+			"and then build. Discovery week has no named deliverable.",
+		);
+		modelWrites(echoing, echoing);
+
+		expect(await reviseSection()).toEqual({ status: "RESPONSE_ECHOED" });
+	});
 });
 
 describe("refusals before the model", () => {
@@ -756,5 +788,332 @@ describe("access", () => {
 		expect(
 			(await refusal(reviseSection({ runId: "run-other" }))).code,
 		).toBe("NOT_FOUND");
+	});
+});
+
+describe("revise this section (a member's instruction)", () => {
+	const INSTRUCTION =
+		"Say that discovery takes two weeks and ends with a written plan.";
+
+	function reviseWithInstruction(
+		overrides: Record<string, unknown> = {},
+		userId: string = USERS.editor,
+	) {
+		return call(
+			reviseProposalSectionProcedure,
+			{
+				projectId: PROJECT_A,
+				documentId: DOC_A,
+				sectionKey: APPROACH.key,
+				instruction: INSTRUCTION,
+				baseVersion: 3,
+				baseContentHash: contentIdentity(MAIN),
+				...overrides,
+			},
+			userId,
+		);
+	}
+
+	it("returns the revised section with an instruction token, and writes nothing", async () => {
+		modelWrites(MODEL_BODY);
+
+		expect(await reviseWithInstruction()).toEqual({
+			status: "CANDIDATE",
+			sectionKey: APPROACH.key,
+			body: RESTORED_BODY,
+			baseVersion: 3,
+			baseContentHash: contentIdentity(MAIN),
+			revisionToken: "signed-instruction-token",
+		});
+		const spliced = spliceSectionBody(
+			MAIN,
+			APPROACH.key,
+			RESTORED_BODY,
+		) as string;
+		expect(revise.signInstructionRevisionToken).toHaveBeenCalledWith({
+			userId: USERS.editor,
+			documentId: DOC_A,
+			baseVersion: 3,
+			sectionKey: APPROACH.key,
+			sectionFingerprint: revisionSectionFingerprint(
+				spliced,
+				APPROACH.key,
+			),
+		});
+		expect(revise.signRevisionToken).not.toHaveBeenCalled();
+		expect(world.documents.get(DOC_A)?.content).toBe(MAIN);
+	});
+
+	it("sends the instruction as the member's request, with the settled block and no finding", async () => {
+		revise.buildSettledDecisionsBlock.mockResolvedValue({
+			block: SETTLED_BLOCK,
+			analysisBlock: "",
+			carried: { responseTexts: [], findingTitles: [] },
+			itemCount: 1,
+		});
+		modelWrites(MODEL_BODY);
+
+		await reviseWithInstruction();
+
+		const { instructions, prompt } = revise.generateText.mock.calls[0][0];
+		expect(prompt).toContain(`<member_request>\n${INSTRUCTION}`);
+		expect(prompt).not.toContain("<internal_guidance>");
+		expect(prompt).not.toContain(RECOMMENDATION);
+		expect(instructions).not.toContain(INSTRUCTION);
+		expect(instructions.endsWith(SETTLED_BLOCK)).toBe(true);
+		expect(revise.getAIModelWithMetadata).toHaveBeenCalledWith(
+			{ taskType: "COMPLEX" },
+			expect.objectContaining({
+				organizationId: ORG_A,
+				userId: USERS.editor,
+				projectId: PROJECT_A,
+			}),
+		);
+		expect(revise.enforceAiRateLimit.mock.calls[0][0]).toBe(USERS.editor);
+	});
+
+	it("sends the model the instruction as the schema bounded it, control characters removed", async () => {
+		modelWrites(MODEL_BODY);
+
+		await reviseWithInstruction({
+			instruction:
+				"Say\u0007 that discovery\u0000 takes\u001b two weeks.",
+		});
+
+		const { prompt } = revise.generateText.mock.calls[0][0];
+		expect(prompt).toContain(
+			"<member_request>\nSay that discovery takes two weeks.\n</member_request>",
+		);
+		for (const control of ["\u0000", "\u0007", "\u001b"]) {
+			expect(prompt).not.toContain(control);
+		}
+	});
+
+	it("logs the section's key as a hash and a length, never the key", async () => {
+		const info = vi.spyOn(logger, "info");
+		const warn = vi.spyOn(logger, "warn");
+		try {
+			// Refused by the revision's own check, then by the splice's.
+			const added = `${MODEL_BODY}\n\n### 4.1 Discovery\n\nTwo weeks.`;
+			modelWrites(added, added);
+			expect(await reviseWithInstruction()).toEqual({
+				status: "INVALID_CANDIDATE",
+			});
+			const unclosed = `${MODEL_BODY}\n\n\`\`\`text\nopen fence`;
+			modelWrites(unclosed, unclosed);
+			expect(await reviseWithInstruction()).toEqual({
+				status: "INVALID_CANDIDATE",
+			});
+
+			const logged = JSON.stringify([
+				...info.mock.calls,
+				...warn.mock.calls,
+			]);
+			expect(info.mock.calls.length).toBeGreaterThanOrEqual(2);
+			expect(logged).not.toContain(APPROACH.key);
+			expect(logged).not.toContain(INSTRUCTION);
+			expect(logged).toContain("sectionKeyHash");
+		} finally {
+			info.mockRestore();
+			warn.mockRestore();
+		}
+	});
+
+	it("lets the member's own wording through: it is not internal", async () => {
+		const wording =
+			"Discovery takes two weeks and ends with a written plan the client signs off.";
+		modelWrites(
+			MODEL_BODY.replace(
+				"We start with a two-week discovery that ends in a written plan, and then build.",
+				wording,
+			),
+		);
+
+		expect(
+			await reviseWithInstruction({
+				instruction: `Replace the first sentence with: ${wording}`,
+			}),
+		).toMatchObject({ status: "CANDIDATE" });
+	});
+
+	it("answers RESPONSE_ECHOED when the model repeats a settled answer twice", async () => {
+		const settled =
+			"Every phase of the engagement is billed monthly against the agreed fixed fee schedule only.";
+		revise.buildSettledDecisionsBlock.mockResolvedValue({
+			block: SETTLED_BLOCK,
+			analysisBlock: "",
+			carried: { responseTexts: [settled], findingTitles: ["Billing"] },
+			itemCount: 1,
+		});
+		const echoing = `${MODEL_BODY}\n\n${settled}`;
+		modelWrites(echoing, echoing);
+
+		expect(await reviseWithInstruction()).toEqual({
+			status: "RESPONSE_ECHOED",
+		});
+		expect(revise.signInstructionRevisionToken).not.toHaveBeenCalled();
+	});
+
+	it("answers INVALID_CANDIDATE when the splice would change Main outside the section", async () => {
+		const unclosed = `${MODEL_BODY}\n\n\`\`\`text\nopen fence`;
+		modelWrites(unclosed, unclosed);
+
+		expect(await reviseWithInstruction()).toEqual({
+			status: "INVALID_CANDIDATE",
+		});
+		expect(revise.signInstructionRevisionToken).not.toHaveBeenCalled();
+	});
+
+	it("answers SECTION_NOT_FOUND for an unknown section, the document and the preamble, before the model", async () => {
+		for (const sectionKey of [
+			"p1:gone#0",
+			DOCUMENT_SECTION_KEY,
+			PREAMBLE_SECTION_KEY,
+		]) {
+			expect(await reviseWithInstruction({ sectionKey })).toEqual({
+				status: "SECTION_NOT_FOUND",
+			});
+		}
+		expect(revise.generateText).not.toHaveBeenCalled();
+		expect(revise.enforceAiRateLimit).not.toHaveBeenCalled();
+	});
+
+	it("revises a subsection too: any heading is a target", async () => {
+		const withSub = MAIN.replace(
+			"## 5. Pricing",
+			"### 4.1 Rollout\n\nIn waves.\n\n## 5. Pricing",
+		);
+		const document = world.documents.get(DOC_A);
+		if (document) {
+			document.content = withSub;
+		}
+		const sub = buildSectionMap(withSub).sections.find(
+			(section) => section.headingText === "4.1 Rollout",
+		);
+		modelWrites("In three waves, one per region.");
+
+		expect(
+			await reviseWithInstruction({
+				sectionKey: sub?.key,
+				baseContentHash: contentIdentity(withSub),
+			}),
+		).toMatchObject({ status: "CANDIDATE", sectionKey: sub?.key });
+	});
+
+	it("answers STALE when the stored version moved", async () => {
+		revise.stored.version = 4;
+
+		expect(await reviseWithInstruction()).toEqual({ status: "STALE" });
+		expect(revise.generateText).not.toHaveBeenCalled();
+	});
+
+	it("answers RATE_LIMITED when the AI rate limit refuses", async () => {
+		revise.enforceAiRateLimit.mockRejectedValueOnce(
+			new ORPCError("TOO_MANY_REQUESTS", { message: "Slow down" }),
+		);
+
+		expect(await reviseWithInstruction()).toEqual({
+			status: "RATE_LIMITED",
+		});
+		expect(revise.generateText).not.toHaveBeenCalled();
+	});
+
+	describe("input", () => {
+		it.each([
+			[
+				"both a finding and an instruction",
+				{ runId: RUN_ID, findingId: FINDING_ID },
+			],
+			["neither", { sectionKey: undefined, instruction: undefined }],
+			["a section without an instruction", { instruction: undefined }],
+			["an instruction without a section", { sectionKey: undefined }],
+			["half a finding beside an instruction", { runId: RUN_ID }],
+			["a blank instruction", { instruction: "   " }],
+			["control characters only", { instruction: "\u0001\u0002" }],
+			[
+				"an instruction over 1000 characters",
+				{ instruction: "a".repeat(1001) },
+			],
+		])("refuses %s with BAD_REQUEST", async (_label, overrides) => {
+			const refused = await inputRefusal(
+				reviseWithInstruction(overrides),
+			);
+
+			expect(refused.code).toBe("BAD_REQUEST");
+			expect(revise.generateText).not.toHaveBeenCalled();
+		});
+
+		it("refuses half a finding with BAD_REQUEST", async () => {
+			const refused = await inputRefusal(
+				reviseSection({ findingId: undefined }),
+			);
+
+			expect(refused.code).toBe("BAD_REQUEST");
+		});
+
+		it("takes an instruction of exactly 1000 characters", async () => {
+			modelWrites(MODEL_BODY);
+
+			expect(
+				await reviseWithInstruction({ instruction: "a".repeat(1000) }),
+			).toMatchObject({ status: "CANDIDATE" });
+		});
+	});
+
+	describe("access", () => {
+		it("refuses a project guest with edit rights", async () => {
+			const refused = await refusal(
+				reviseWithInstruction({}, USERS.guestEditor),
+			);
+
+			expect(refused.code).toBe("FORBIDDEN");
+			expect(refused.data).toEqual({
+				code: "ORGANIZATION_MEMBERSHIP_REQUIRED",
+			});
+			expect(revise.generateText).not.toHaveBeenCalled();
+		});
+
+		it("refuses a member commenter and a member viewer", async () => {
+			for (const user of [USERS.memberCommenter, USERS.memberViewer]) {
+				expect(
+					(await refusal(reviseWithInstruction({}, user))).code,
+				).toBe("FORBIDDEN");
+			}
+			expect(revise.generateText).not.toHaveBeenCalled();
+		});
+
+		it("answers NOT_FOUND for another organization's project and for an outsider", async () => {
+			expect(
+				(
+					await refusal(
+						reviseWithInstruction({
+							projectId: PROJECT_B,
+							documentId: DOC_B,
+						}),
+					)
+				).code,
+			).toBe("NOT_FOUND");
+			expect(
+				(await refusal(reviseWithInstruction({}, USERS.outsider))).code,
+			).toBe("NOT_FOUND");
+			expect(revise.generateText).not.toHaveBeenCalled();
+		});
+
+		it("answers NOT_FOUND when the rollout gate is off", async () => {
+			world.flags.set(ORG_A, false);
+
+			expect((await refusal(reviseWithInstruction())).code).toBe(
+				"NOT_FOUND",
+			);
+		});
+
+		it("refuses with CONFLICT while a generation run holds the document", async () => {
+			revise.stored.status = "GENERATING";
+
+			expect((await refusal(reviseWithInstruction())).code).toBe(
+				"CONFLICT",
+			);
+			expect(revise.generateText).not.toHaveBeenCalled();
+		});
 	});
 });

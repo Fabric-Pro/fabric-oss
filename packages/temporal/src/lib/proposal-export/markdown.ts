@@ -41,6 +41,7 @@ import { parseMarkdownAst } from "@repo/utils/proposal-artifact/markdown-ast";
 import { isDiagramFence } from "@repo/utils/proposal-artifact/section-hash";
 import {
 	readDiagramCaption,
+	sectionCaptionsOf,
 	withDiagramCaption,
 } from "@repo/utils/proposal-artifact/visual-identity";
 import type { Code, Html, Nodes, Root, RootContent } from "mdast";
@@ -60,6 +61,12 @@ export interface PreparedExportMarkdown {
 	diagramSources: string[];
 	/** A diagram fence's position in `diagramSources`. */
 	diagramIndex: ReadonlyMap<Code, number>;
+	/**
+	 * By the same order, the caption each diagram takes from the heading of
+	 * the section it sits in when its fence carries none, or null before
+	 * the first section (`exportDiagramCaption`).
+	 */
+	diagramSectionCaptions: (string | null)[];
 }
 
 /**
@@ -88,13 +95,17 @@ export function prepareExportMarkdown(content: string): PreparedExportMarkdown {
 
 	const diagramSources: string[] = [];
 	const diagramIndex = new Map<Code, number>();
+	const diagramSectionCaptions: (string | null)[] = [];
+	// The same rule the Markdown download reads its captions by.
+	const sectionCaptions = sectionCaptionsOf(root);
 	eachNode(root, (node) => {
 		if (node.type === "code" && isDiagramFence(node.lang, node.value)) {
 			diagramIndex.set(node, diagramSources.length);
 			diagramSources.push(withDiagramCaption(node.value, null));
+			diagramSectionCaptions.push(sectionCaptions.get(node) ?? null);
 		}
 	});
-	return { root, diagramSources, diagramIndex };
+	return { root, diagramSources, diagramIndex, diagramSectionCaptions };
 }
 
 /** A link whose whole text is a citation label: `[S3](#…)`, `[cite](…)`. */
@@ -314,16 +325,20 @@ export function eachNode(root: Nodes, visit: (node: Nodes) => void): void {
 
 /**
  * A diagram's caption as an export prints it: without citation markers, by
- * the rule prose follows, so no `[S#]` reaches a client document. Null when
- * the fence has no caption or nothing is left of it.
+ * the rule prose follows, so no `[S#]` reaches a client document. A fence
+ * with no caption, or none left of it, takes its section's heading
+ * (`sectionCaption`, `diagramSectionCaptions`), as a generated visual is
+ * written with it (Fizzy #2946), so a diagram added in chat never prints as
+ * a bare "Figure N."; null when there is none either.
  */
-export function exportDiagramCaption(source: string): string | null {
+export function exportDiagramCaption(
+	source: string,
+	sectionCaption: string | null = null,
+): string | null {
 	const caption = readDiagramCaption(source);
-	if (caption === null) {
-		return null;
-	}
-	const scrubbed = scrubCitationText(caption).text.trim();
-	return scrubbed === "" ? null : scrubbed;
+	const scrubbed =
+		caption === null ? "" : scrubCitationText(caption).text.trim();
+	return scrubbed === "" ? sectionCaption : scrubbed;
 }
 
 /** Each diagram fence's printed caption, by its `diagramSources` order. */
@@ -332,7 +347,10 @@ export function exportDiagramCaptions(
 ): (string | null)[] {
 	const captions: (string | null)[] = prepared.diagramSources.map(() => null);
 	for (const [node, index] of prepared.diagramIndex) {
-		captions[index] = exportDiagramCaption(node.value);
+		captions[index] = exportDiagramCaption(
+			node.value,
+			prepared.diagramSectionCaptions[index] ?? null,
+		);
 	}
 	return captions;
 }

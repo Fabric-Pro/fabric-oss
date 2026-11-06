@@ -36,7 +36,7 @@ import {
 	STAT_TILES_NODE_NAME,
 	StatTilesBlock,
 } from "@saas/projects/lib/tiptap-stat-tiles-extension";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Editor } from "@tiptap/core";
 import { DOMParser as ProseMirrorDOMParser } from "@tiptap/pm/model";
@@ -699,6 +699,29 @@ describe("the stat tiles node view", () => {
 			expect(tilePairs(list)).toHaveLength(3);
 			expect(screen.queryByRole("button")).not.toBeInTheDocument();
 			expect(await axe(container)).toHaveNoViolations();
+		});
+
+		it("offers the toggle once the editor takes input again, without the block being drawn anew (Fizzy #2946)", async () => {
+			let editor: ReactEditor | null = null;
+			const { container } = render(
+				<TestEditor
+					markdown={MARKED_FENCE}
+					editable={false}
+					onEditor={(created) => {
+						editor = created;
+					}}
+				/>,
+			);
+			await findTiles(container);
+			expect(screen.queryByRole("button")).not.toBeInTheDocument();
+
+			act(() => {
+				(editor as ReactEditor | null)?.setEditable(true);
+			});
+
+			expect(
+				screen.getByRole("button", { name: EDIT_SOURCE }),
+			).toBeInTheDocument();
 		});
 
 		it("draws a block that breaks the rule as a plain code block, without the editor's reason", async () => {

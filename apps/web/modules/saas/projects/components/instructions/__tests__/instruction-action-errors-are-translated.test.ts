@@ -89,6 +89,7 @@ describe("Coding Instructions action errors", () => {
 			"InstructionsSettingsDialog.tsx",
 			"MoveInstructionsDialog.tsx",
 			"ProposalRebaseAction.tsx",
+			"RemoveCodingInstructions.tsx",
 			"RenameInstructionFileDialog.tsx",
 			"RepositoryMigrationStatus.tsx",
 			"UploadFolderDialog.tsx",

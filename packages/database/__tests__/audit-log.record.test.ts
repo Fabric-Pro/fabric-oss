@@ -497,6 +497,7 @@ describe("audit taxonomy — closed action set", () => {
 		expect(AUDIT_ACTIONS).toContain("project.instructions.published");
 		expect(AUDIT_ACTIONS).toContain("project.instructions.rejected");
 		expect(AUDIT_ACTIONS).toContain("project.instructions.deleted");
+		expect(AUDIT_ACTIONS).toContain("project.instructions.removed");
 		expect(AUDIT_ACTIONS).toContain(
 			"project.instructions.settings_updated",
 		);

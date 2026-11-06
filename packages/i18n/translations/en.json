@@ -1852,7 +1852,8 @@
 						"resolved": "Analysis finding resolved"
 					},
 					"proposal_artifact": {
-						"export_started": "Proposal export started"
+						"export_started": "Proposal export started",
+						"section_revised": "Proposal section revised with instructions"
 					},
 					"problem_log": {
 						"status_changed": "Problem Log entry status changed",
@@ -1886,6 +1887,7 @@
 						"published": "Coding-instructions version published",
 						"rejected": "Coding-instructions upload rejected",
 						"deleted": "Coding-instructions version deleted",
+						"removed": "Coding instructions removed (all versions)",
 						"settings_updated": "Coding-instructions settings updated",
 						"repository_sync_configured": "Coding-instructions repository sync configured",
 						"repository_sync_started": "Coding-instructions repository sync started",
@@ -3940,6 +3942,9 @@
 				"downloadAllAria": "Download all contexts",
 				"preparing": "Preparing archive…",
 				"preparingAria": "Preparing archive, please wait",
+				"preparingPdf": "Preparing {title} as PDF…",
+				"preparingDocx": "Preparing {title} as a Word document…",
+				"preparingFile": "Preparing download…",
 				"empty": "No contexts to download",
 				"pending": "This context is still being processed",
 				"extractedTextWarning": "Downloads extracted text — original source is not stored in Fabric",
@@ -4181,6 +4186,7 @@
 							"branchMissing": "Branch {ref} wasn't found in the repository. Choose another branch to save."
 						},
 						"contextignoreNotice": "Each selected folder's own .contextignore is read here and applied the same way `fabric context push` applies it.",
+						"contextignoreNoticeUnread": "Each selected folder's own .contextignore can't be read here without a listing of the branch's files. The sync still applies it when it runs.",
 						"pruneNotice": "A file no longer selected, left out, or removed from the repository is pruned from Living Memory on the next sync.",
 						"actingNotice": "Every sync after this one runs as you, the member who configured it.",
 						"automaticLabel": "Keep in sync automatically",
@@ -7540,6 +7546,10 @@
 				"notAnApprover": "This project's review policy names who may approve proposals, and you are not one of them.",
 				"notFound": "That no longer exists. Refresh and try again.",
 				"conflict": "This changed while you were working. Refresh and try again.",
+				"repositoryMode": "These coding instructions come from a repository. Switch back to upload mode in the settings first. The repository and its files are not affected.",
+				"snapshotActive": "An upload or an edit is still being received or checked. Wait for it to finish, or delete it from History.",
+				"pullRequestUnresolved": "A proposal's pull request is still open or being closed. Wait for it to be merged or closed.",
+				"proposalPending": "A proposed change is waiting for review. Approve or reject it first.",
 				"badRequest": "That wasn't accepted. Check it and try again.",
 				"preconditionFailed": "That can't be done in the project's current state. Refresh and try again.",
 				"tooManyRequests": "Too many requests. Wait a moment and try again.",
@@ -7592,7 +7602,7 @@
 				"addFolder": "Add folder",
 				"addFiles": "Add files",
 				"sourcesLabel": "Added folders and files",
-				"filesSource": "{count} files",
+				"filesSource": "{count, plural, one {# file} other {# files}}",
 				"keepFolderName": "Keep the {name}/ prefix",
 				"removeSource": "Remove {name}",
 				"duplicateFolder": "A folder named {name} is already added.",
@@ -7612,23 +7622,23 @@
 				"excludedProject": "excluded by project setting",
 				"excludedDefault": "default rule",
 				"willBeRejected": "will be rejected",
-				"rejectedFilesTitle": "{count} files will be rejected",
+				"rejectedFilesTitle": "{count, plural, one {# file will be rejected} other {# files will be rejected}}",
 				"rejectedFilesBody": "Fabric never stores credential files. Remove these from the folder and pick it again — otherwise the whole upload is rejected and nothing is kept.",
 				"rejectedFilesMore": "…and {count} more.",
-				"summary": "{keptCount} files, {keptSize} will be uploaded. {excludedCount} files will be left out.",
+				"summary": "{keptCount, plural, one {# file} other {# files}}, {keptSize} will be uploaded. {excludedCount, plural, one {# file} other {# files}} will be left out.",
 				"publishOnReady": "Publish as soon as the upload passes checks",
-				"progress": "Uploading {done} of {total} files",
-				"reading": "Reading {done} of {total} files",
+				"progress": "Uploading {done} of {total, plural, one {# file} other {# files}}",
+				"reading": "Reading {done} of {total, plural, one {# file} other {# files}}",
 				"readingPhase": "Reading files",
 				"uploadingPhase": "Uploading files",
 				"startingChecks": "Starting checks…",
 				"cancel": "Cancel",
-				"uploadButton": "Upload {count} files",
+				"uploadButton": "Upload {count, plural, one {# file} other {# files}}",
 				"genericError": "Upload failed",
 				"storageUnreachable": "The upload could not reach storage; nothing was kept. Try again.",
 				"storageUnreachableKept": "The upload could not reach storage, and the unfinished upload could not be discarded. Try again, or discard it from the tab.",
 				"settingsLoading": "Loading project settings…",
-				"serverExcludedNotice": "{count} files were left out because they match the project's current settings and were not uploaded.",
+				"serverExcludedNotice": "{count, plural, one {# file was left out because it matches the project's current settings and was not uploaded.} other {# files were left out because they match the project's current settings and were not uploaded.}}",
 				"done": "Done"
 			},
 			"publishBeforeScan": {
@@ -7895,6 +7905,12 @@
 				"publishedPill": "Published",
 				"readyPill": "Ready",
 				"rejectedPill": "Rejected",
+				"proposedPill": "Proposed",
+				"replacedPill": "Replaced by version {version}",
+				"proposalRejectedPill": "Proposal rejected",
+				"proposalClosedPill": "Proposal closed",
+				"mergedPill": "Merged",
+				"pullRequestClosedPill": "Pull request closed",
 				"checkingPill": "Checking",
 				"stalledPill": "Upload did not finish",
 				"discardAction": "Discard",
@@ -7917,7 +7933,7 @@
 				"deleteConfirmBody": "This cannot be undone.",
 				"deleteConfirmAction": "Delete version",
 				"anonymousUser": "a member",
-				"filesStored": "{count} files stored",
+				"filesStored": "{count, plural, one {# file stored} other {# files stored}}",
 				"editedFrom": "edited from version {version}",
 				"compareAction": "Compare with published",
 				"publishedBeforeScanPill": "Published before scan",
@@ -7959,6 +7975,21 @@
 					"tooFewApprovers": "Select at least as many approvers as the approvals you require, and one more when you require more than one, so a listed approver's own proposal can still be approved.",
 					"save": "Save review policy",
 					"saved": "Review policy saved"
+				},
+				"remove": {
+					"sectionTitle": "Remove coding instructions",
+					"sectionDescription": "Delete every version, the published one included, and start over with nothing published. Settings are kept.",
+					"action": "Remove coding instructions",
+					"title": "Remove coding instructions?",
+					"description": "This deletes the published version (version {version}) and {count, plural, =0 {no other versions} one {# other version} other {# other versions}}, including proposals and rejected or failed uploads. Coding agents and teammates lose access to these instructions immediately, and their next sync reports that nothing is published. This cannot be undone.",
+					"descriptionNothingPublished": "Nothing is published. This deletes {count, plural, one {# version} other {# versions}}, including proposals and rejected or failed uploads. This cannot be undone.",
+					"blockedMigrationOpen": "A move of these instructions into a repository is open. Changes are paused until it is merged and synced, or canceled.",
+					"confirmLabel": "Type the project name, {name}, to confirm",
+					"cancel": "Cancel",
+					"confirm": "Remove coding instructions",
+					"removing": "Removing…",
+					"done": "Coding instructions removed: {count, plural, =0 {there was nothing to remove} one {# version deleted} other {# versions deleted}}.",
+					"failed": "Could not remove coding instructions. {reason}"
 				}
 			},
 			"pluginReport": {
@@ -8606,6 +8637,7 @@
 				"approvedBody": "This proposal was approved and published.",
 				"rejectedBody": "This proposal was rejected.",
 				"lineCounts": "+{added} −{removed}",
+				"restoresBranchDeletion": "Deleted on the proposer's branch; this puts the published file back. The change is shown against that branch, so the whole file reads as added.",
 				"noTextualChanges": "The text of this file did not change.",
 				"emptyFile": "This file is empty.",
 				"repositoryTitle": "Suggested changes",
@@ -9318,6 +9350,7 @@
 					"sourceRemoved": "{label} · Source removed"
 				},
 				"revisionInProgress": "Revision in progress",
+				"applyWaitsForSectionRevision": "A section revision is under way on Main. Apply it here once it is accepted or rejected.",
 				"revisionRejected": "The revision was rejected; nothing changed.",
 				"revisionRefused": "The revision was not applied: {reason}"
 			},
@@ -9470,6 +9503,22 @@
 				"notApplied": "The revision was not applied: {reason}",
 				"chatNotApplied": "The accepted changes were not applied: {reason}",
 				"offerBack": "The refused text was taken out of the editor. Copy it if you want to keep it.",
+				"instruction": {
+					"trigger": "Revise this section",
+					"triggerLabel": "Revise this section: {section}",
+					"boxLabel": "Revise “{section}”",
+					"fieldLabel": "What should change in this section?",
+					"placeholder": "For example: make it shorter and lead with the client's goal.",
+					"hint": "Only the text under this heading changes, up to the next heading. You review the change before it is saved.",
+					"counter": "{count} / {max}",
+					"shortcut": "Ctrl+Enter to revise · Esc to cancel",
+					"cancel": "Cancel",
+					"submit": "Revise",
+					"accepted": "The revised section was saved.",
+					"sectionNotFound": "the section is no longer in the document.",
+					"paused": "The editor isn't taking changes right now, so this can't be sent yet. Your instruction is kept.",
+					"headingGone": "The section's heading is no longer in the document, so its revision box was closed."
+				},
 				"reasons": {
 					"REVISION_OUTSIDE_TARGET": "it changed a section outside the one it targeted.",
 					"REVISION_CHANGED_DIAGRAM": "it changed an existing diagram.",
@@ -9877,6 +9926,15 @@
 				"regenerating": "Restore is unavailable while a regeneration started here is in progress or waiting for your review. It becomes available again once that is done.",
 				"proposalElsewhere": "Restore is unavailable while another tab reviews an assistant proposal for this document. It becomes available again once the proposal is answered.",
 				"proposalOrphaned": "Restore is unavailable while this document holds an assistant proposal that nobody is reviewing. It becomes available again once the proposal is answered or removed."
+			},
+			"change": {
+				"chatEdit": "Chat edit",
+				"editWithInstructions": "Edit with instructions",
+				"recommendationApplied": "Recommendation applied",
+				"sectionRevised": "Section revised",
+				"updatedFromContext": "Updated from context",
+				"regenerated": "Regenerated",
+				"restored": "Restored to version {version}"
 			}
 		},
 		"updateWithContext": {

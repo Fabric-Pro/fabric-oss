@@ -139,8 +139,8 @@ const CONTEXT_IN_FLIGHT_STATUSES = ["PENDING", "EXTRACTING"] as const;
 /**
  * Context kinds the living-document refresh's retrieval can never return.
  *
- * `INTEGRATION` rows are pointers with empty content, and retrieval skips them
- * by kind; the chat ones are read live instead — see
+ * This refresh skips `INTEGRATION` by kind, including pages with saved
+ * content; chat providers are read live instead — see
  * {@link LIVE_CHAT_PROVIDERS}. `CODE_FILE` / `CODE_FILE_SUMMARY` are here
  * because the indexer never writes them as rows: its vectors carry synthetic
  * `code:…` ids that retrieval cannot resolve to a row, so it drops every one.
@@ -792,11 +792,9 @@ export async function gatherCapabilityEvidence({
 				// that could never finish — "Processing your sources" on a project
 				// with none, and a stall once the clock ran out.
 				importedDocuments: { none: {} },
-				// Nor a live integration still "in flight". Slack, Teams, Notion
-				// and backlog rows are links whose ingest is owned elsewhere:
-				// their status is written PENDING and never moves, so counted
-				// here they read as Processing for good and then as a stalled
-				// source nobody could unstick. Settled ones still count.
+				// Exclude live links (Slack, Teams, backlog) and empty Notion
+				// rows from in-flight counts. Notion with content runs embedding;
+				// Google Docs run extraction. Settled rows still count.
 				...withExtractionLifecycleOrSettled(),
 			},
 			_count: { _all: true },

@@ -537,7 +537,7 @@ export function UploadFolderDialog({
 			open={open}
 			onOpenChange={(next) => (next ? onOpenChange(next) : close())}
 		>
-			<DialogContent className="max-w-3xl grid-cols-[minmax(0,1fr)]">
+			<DialogContent className="max-w-3xl md:max-w-[min(48rem,calc(100vw-4rem))] grid-cols-[minmax(0,1fr)]">
 				<DialogHeader>
 					<DialogTitle>
 						{entries ? t("reviewTitle") : t("pickTitle")}
@@ -654,7 +654,7 @@ export function UploadFolderDialog({
 										{source.kind === "folder" ? (
 											<label
 												htmlFor={`keep-name-${source.id}`}
-												className="flex items-center gap-1 text-muted-foreground"
+												className="flex min-h-6 items-center gap-1 text-muted-foreground"
 											>
 												<Checkbox
 													id={`keep-name-${source.id}`}
@@ -863,7 +863,7 @@ export function UploadFolderDialog({
 						</p>
 						<label
 							htmlFor="publish-on-ready"
-							className="flex items-center gap-2 text-muted-foreground text-sm"
+							className="flex min-h-6 items-center gap-2 text-muted-foreground text-sm"
 						>
 							<Checkbox
 								id="publish-on-ready"

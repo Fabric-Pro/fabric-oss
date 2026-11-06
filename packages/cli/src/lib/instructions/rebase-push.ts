@@ -30,14 +30,30 @@
  * third text neither side wrote. So a conflicted run records, in
  * `.fabric/rebase.json`, the version it rebased onto and the paths it wrote.
  * The next `push --rebase` onto that same version takes those files as they
- * are on disk, refusing any that still hold a conflict marker, and merges the
- * rest as before. A run onto any other version ignores the record. A
- * successful push removes it. The record only ever makes a file be taken as
- * the checkout holds it, so a tampered one cannot send anything the
+ * are on disk and merges the rest as before. A run onto any other version
+ * merges them too. Whichever version a push is stated against, a plain push
+ * included, a file the record names is refused while it still holds a conflict
+ * marker, so the markers are never sent. A file the record does not name is
+ * never refused for its text, and a marker has to start a line, so a document
+ * that mentions one in a sentence is not refused either. A successful rebased
+ * push removes the record. The record only ever makes a file be taken as the
+ * checkout holds it or refused, so a tampered one cannot send anything the
  * developer did not write.
+ *
+ * ## The proposal a rebase replaces
+ *
+ * The proposal the checkout's last push opened is stated against the version
+ * the lock names. `proposalReplacedByRebase` names it only when there is no
+ * guess in it: the caller's one open proposal on that version touching a path
+ * this rebase sends. The server's supersede path then closes it when the new
+ * proposal is READY, and only if it is the caller's own.
  */
 import { createHash } from "node:crypto";
-import type { FabricClient, InstructionManifestEntry } from "@fabricorg/sdk";
+import type {
+	FabricClient,
+	InstructionManifestEntry,
+	OpenInstructionProposal,
+} from "@fabricorg/sdk";
 import { fetchBundle } from "./bundle.js";
 import { fetchFilesByUrl } from "./file-downloads.js";
 import type { OverrideMatcher } from "./local-overrides.js";
@@ -68,6 +84,12 @@ const REBASE_STATE_PATH = `${LOCK_DIRECTORY}/rebase.json`;
 
 const REBASE_STATE_VERSION = 1;
 
+/**
+ * The way out for a file that is meant to hold lines that look like conflict
+ * markers, such as a document that shows one at the start of a line.
+ */
+export const UNRESOLVED_MARKERS_ESCAPE = `If a listed file is meant to hold those lines, delete ${REBASE_STATE_PATH}, which is what makes this check.`;
+
 /** The most paths one version-files request names; the server's own limit. */
 const VERSION_FILES_CHUNK = 200;
 
@@ -79,6 +101,12 @@ interface RebaseState {
 	fromSnapshotId: string;
 	ontoSnapshotId: string;
 	paths: string[];
+	/**
+	 * Paths an earlier rebase onto another version wrote that still hold its
+	 * markers. Refused until resolved, then merged: a resolution of those
+	 * markers was not made against this rebase's version.
+	 */
+	earlierPaths?: string[];
 }
 
 interface RebaseConflict {
@@ -243,6 +271,18 @@ async function readOurs(
 	return read;
 }
 
+function isRecordedPathList(value: unknown): value is string[] {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(p) =>
+				typeof p === "string" &&
+				checkRelativePath(p).ok &&
+				!isReservedPath(p),
+		)
+	);
+}
+
 function isRebaseState(value: unknown): value is RebaseState {
 	if (typeof value !== "object" || value === null) {
 		return false;
@@ -253,48 +293,97 @@ function isRebaseState(value: unknown): value is RebaseState {
 		typeof state.projectId === "string" &&
 		typeof state.fromSnapshotId === "string" &&
 		typeof state.ontoSnapshotId === "string" &&
-		Array.isArray(state.paths) &&
-		state.paths.every(
-			(p) =>
-				typeof p === "string" &&
-				checkRelativePath(p).ok &&
-				!isReservedPath(p),
-		)
+		isRecordedPathList(state.paths) &&
+		(state.earlierPaths === undefined ||
+			isRecordedPathList(state.earlierPaths))
 	);
 }
 
-/**
- * The paths an earlier conflicted run wrote for THIS rebase, which are taken
- * as the checkout holds them. Anything else, a record for another rebase
- * or one this build cannot read, resolves nothing.
- */
-async function resolvedPaths(input: RebaseInput): Promise<Set<string>> {
-	const read = await readFileSafely(input.root, REBASE_STATE_PATH, {
+/** This project's record, or null when there is none this build can read. */
+async function readRebaseState(
+	root: string,
+	projectId: string,
+): Promise<RebaseState | null> {
+	const read = await readFileSafely(root, REBASE_STATE_PATH, {
 		maxBytes: 1024 * 1024,
 	});
 	if (read === null) {
-		return new Set();
+		return null;
 	}
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(Buffer.from(read.bytes).toString("utf8"));
 	} catch {
-		return new Set();
+		return null;
 	}
-	if (
-		!isRebaseState(parsed) ||
-		parsed.projectId !== input.projectId ||
-		parsed.fromSnapshotId !== input.lock.snapshotId ||
-		parsed.ontoSnapshotId !== input.published.snapshot.id
-	) {
-		return new Set();
+	return isRebaseState(parsed) && parsed.projectId === projectId
+		? parsed
+		: null;
+}
+
+function recordedPathsOf(state: RebaseState): Set<string> {
+	return new Set([...state.paths, ...(state.earlierPaths ?? [])]);
+}
+
+function holdsConflictMarkers(bytes: Uint8Array): boolean {
+	const text = sideOf(bytes)?.text;
+	return typeof text === "string" && hasConflictMarkers(text);
+}
+
+/**
+ * Of the changes a plain push would send, the files a recorded rebase wrote
+ * that still hold conflict markers.
+ */
+export async function unresolvedRebasePaths(input: {
+	root: string;
+	projectId: string;
+	entries: readonly PushPlanEntry[];
+}): Promise<string[]> {
+	const state = await readRebaseState(input.root, input.projectId);
+	if (state === null) {
+		return [];
 	}
-	return new Set(parsed.paths);
+	const recorded = recordedPathsOf(state);
+	const unresolved: string[] = [];
+	for (const entry of input.entries) {
+		if (entry.action !== "put" || !recorded.has(entry.path)) {
+			continue;
+		}
+		const read = await readFileSafely(input.root, entry.path, {
+			maxBytes: MAX_INLINE_PUSH_BYTES,
+		});
+		if (read !== null && holdsConflictMarkers(read.bytes)) {
+			unresolved.push(entry.path);
+		}
+	}
+	return unresolved;
+}
+
+/**
+ * What the record says about this rebase: every file it names, which are
+ * refused while they hold markers, and those it wrote for THIS rebase, which
+ * are taken as the checkout holds them.
+ */
+async function rebaseRecord(
+	input: RebaseInput,
+): Promise<{ recorded: Set<string>; resolved: Set<string> }> {
+	const state = await readRebaseState(input.root, input.projectId);
+	if (state === null) {
+		return { recorded: new Set(), resolved: new Set() };
+	}
+	const sameRebase =
+		state.fromSnapshotId === input.lock.snapshotId &&
+		state.ontoSnapshotId === input.published.snapshot.id;
+	return {
+		recorded: recordedPathsOf(state),
+		resolved: new Set(sameRebase ? state.paths : []),
+	};
 }
 
 async function writeRebaseState(
 	input: RebaseInput,
 	paths: readonly string[],
+	earlierPaths: readonly string[],
 ): Promise<void> {
 	const state: RebaseState = {
 		version: REBASE_STATE_VERSION,
@@ -302,6 +391,9 @@ async function writeRebaseState(
 		fromSnapshotId: input.lock.snapshotId,
 		ontoSnapshotId: input.published.snapshot.id,
 		paths: [...new Set(paths)].sort(),
+		...(earlierPaths.length > 0
+			? { earlierPaths: [...earlierPaths].sort() }
+			: {}),
 	};
 	await writeFileSafely({
 		root: input.root,
@@ -360,7 +452,55 @@ export function rebaseConflictLines(
 	lines.push(
 		`Make each listed file what it should be (delete it to propose its removal), then run \`${againCommand}\` again.`,
 	);
+	if (outcome.conflicts.some((c) => c.reason === "unresolved")) {
+		lines.push(UNRESOLVED_MARKERS_ESCAPE);
+	}
 	return lines;
+}
+
+/**
+ * The proposal a rebase replaces, or none, and every other open proposal the
+ * caller keeps. Without one candidate to name, nothing is closed.
+ */
+export type RebaseReplacement = {
+	replaces: { snapshotId: string; version: number } | null;
+	stillOpen: Array<{ snapshotId: string; version: number }>;
+};
+
+/**
+ * Names the caller's open proposal this rebase replaces: on the version the
+ * rebase started from, touching a path it sends, and the only one that is. It
+ * must have finished its checks and be one Fabric reviews itself, as the
+ * server's supersede path requires, or nothing is named.
+ */
+export function proposalReplacedByRebase(input: {
+	proposals: readonly OpenInstructionProposal[];
+	fromSnapshotId: string;
+	paths: readonly string[];
+}): RebaseReplacement {
+	const sent = new Set(input.paths);
+	const snapshots = input.proposals.flatMap((proposal) =>
+		proposal.kind === "native" ? [] : [proposal],
+	);
+	const candidates = snapshots.filter(
+		(proposal) =>
+			proposal.baseSnapshotId === input.fromSnapshotId &&
+			proposal.changes.some((change) => sent.has(change.path)),
+	);
+	const only = candidates.length === 1 ? candidates[0] : undefined;
+	const replaced =
+		only?.status === "READY" && only.pullRequest === null ? only : null;
+	return {
+		replaces: replaced
+			? { snapshotId: replaced.snapshotId, version: replaced.version }
+			: null,
+		stillOpen: snapshots
+			.filter((proposal) => proposal !== replaced)
+			.map((proposal) => ({
+				snapshotId: proposal.snapshotId,
+				version: proposal.version,
+			})),
+	};
 }
 
 function putEntry(path: string, bytes: Uint8Array): PushPlanEntry {
@@ -386,7 +526,7 @@ export async function rebasePush(input: RebaseInput): Promise<RebaseOutcome> {
 		}),
 		input.isOverridden,
 	);
-	const resolved = await resolvedPaths(input);
+	const { recorded, resolved } = await rebaseRecord(input);
 	const published = new Map(
 		input.published.manifest.map((entry) => [entry.path, entry]),
 	);
@@ -424,16 +564,20 @@ export async function rebasePush(input: RebaseInput): Promise<RebaseOutcome> {
 					? (theirsEntry?.mode ?? DEFAULT_MODE)
 					: DEFAULT_MODE;
 
+		if (
+			recorded.has(entry.path) &&
+			ours !== null &&
+			holdsConflictMarkers(ours.bytes)
+		) {
+			conflicts.push({
+				path: entry.path,
+				reason: "unresolved",
+				markers: true,
+			});
+			continue;
+		}
+
 		if (resolved.has(entry.path)) {
-			const text = ours === null ? null : sideOf(ours.bytes)?.text;
-			if (typeof text === "string" && hasConflictMarkers(text)) {
-				conflicts.push({
-					path: entry.path,
-					reason: "unresolved",
-					markers: true,
-				});
-				continue;
-			}
 			const sameAsPublished =
 				ours === null
 					? theirs === null
@@ -503,13 +647,26 @@ export async function rebasePush(input: RebaseInput): Promise<RebaseOutcome> {
 			});
 		}
 		if (conflicts.length > 0) {
-			await writeRebaseState(input, [
-				...writes.map((write) => write.path),
-				...conflicts.map((conflict) => conflict.path),
-				...[...resolved].filter((p) =>
-					planned.plan.entries.some((entry) => entry.path === p),
-				),
-			]);
+			const earlier = conflicts
+				.filter(
+					(conflict) =>
+						conflict.reason === "unresolved" &&
+						!resolved.has(conflict.path),
+				)
+				.map((conflict) => conflict.path);
+			await writeRebaseState(
+				input,
+				[
+					...writes.map((write) => write.path),
+					...conflicts
+						.map((conflict) => conflict.path)
+						.filter((path) => !earlier.includes(path)),
+					...[...resolved].filter((p) =>
+						planned.plan.entries.some((entry) => entry.path === p),
+					),
+				],
+				earlier,
+			);
 		}
 	}
 

@@ -389,7 +389,9 @@ export function fitListToContext(
  * the real schema sits behind an (enumerable, synchronous) `jsonSchema` getter;
  * a bare JSON Schema is accepted too.
  */
-function rawJsonSchema(inputSchema: unknown): Record<string, unknown> | null {
+export function rawJsonSchema(
+	inputSchema: unknown,
+): Record<string, unknown> | null {
 	if (!isPlainObject(inputSchema)) {
 		return null;
 	}

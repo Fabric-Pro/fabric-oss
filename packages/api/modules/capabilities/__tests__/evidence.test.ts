@@ -544,6 +544,10 @@ describe("the context predicate", () => {
 			{ type: { not: "INTEGRATION" } },
 			{ extractionStatus: { notIn: ["PENDING", "EXTRACTING"] } },
 			{ metadata: { path: ["source"], equals: "google-docs" } },
+			{
+				metadata: { path: ["provider"], equals: "notion" },
+				content: { not: "" },
+			},
 		]);
 		expect(where.NOT).toBeUndefined();
 	});

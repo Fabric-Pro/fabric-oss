@@ -143,7 +143,32 @@ Restoring creates a new change for that file. Other files and earlier commits st
 
 ### Instructions uploaded to Fabric
 
-Editors can upload a new version or edit a file and choose **Save and publish**. To keep a change unpublished, use **Save as a new version**. If you can suggest changes but cannot publish them, submit a proposal for someone with review permission. **Review proposals** opens those suggestions; **History** lists uploaded versions and their download or publication actions.
+Editors can upload a new version or edit a file and choose **Save and publish**. To keep a change unpublished, use **Save as a new version**. If you can suggest changes but cannot publish them, submit a proposal for someone with review permission. **Review proposals** opens those suggestions; **History** lists uploaded versions and their download or publication actions. In **History** a proposal is labelled by its review state: **Proposed** while it waits, **Replaced by version N** once a rebased proposal took its place, **Proposal rejected** after a reviewer declined it, or **Proposal closed** when it ended without a review. History reads the list again each time you open it.
+
+### Set how many approvals a proposal needs
+
+For instructions uploaded to Fabric, people who can change coding instructions can set the review policy. Open the tab's settings and find **Proposal review**. Everyone else can see the policy but not change it.
+
+- **Approvals required** sets how many approvals publish a proposal, from 1 to 10. The default is one: the first approval publishes the proposal, and someone who can review may approve their own.
+- Above one approval, the person who proposed a change cannot approve it.
+- **Only selected members can approve** limits approvals to the people you list. Each must be able to change coding instructions. List at least as many people as the approvals you require, and one more when you require more than one, so a listed person's own proposal can still be approved.
+
+An approval counts only while the person who gave it can still change coding instructions. A policy change applies to the next approval of every open proposal, so proposals already open follow the new rule.
+
+The policy does not apply to instructions kept in Git, whose proposals are pull requests reviewed under your Git provider's own rules, or to a change someone publishes directly.
+
+### Remove coding instructions
+
+A project administrator can remove a project's uploaded coding instructions entirely and start over. Open the tab's settings and choose **Remove coding instructions**. The confirmation names the published version and how many other versions are deleted with it, counting proposals and rejected or failed uploads, including ones you do not see in **History**. Type the project name to confirm.
+
+Fabric then deletes every version, including the published one, and their stored files. Nothing is published afterwards: coding agents, the Fabric tools and teammates see the project as one that never had coding instructions, and a developer's next `fabric instructions sync` reports that nothing is published. The sync leaves their local copy as it is. Your ignore rules and review policy are kept, and the next upload becomes version 1. The audit log records the removal with the number of versions and the version that was published. This cannot be undone.
+
+Fabric refuses the removal, and deletes nothing, while any of the following is true. The button is then unavailable, and the reason is shown beside it:
+
+- the project keeps its instructions in a repository. Switch back to upload mode first. The repository and its sync history are not changed;
+- a move of the instructions into a repository is open;
+- an upload or an edit is still being received or checked. Wait for it to finish, or delete it from **History**;
+- a proposal waits for review, or a proposal's pull request is still open or being closed. Approve or reject it, or wait for the pull request to be merged or closed.
 
 ## When something is missing or out of date
 

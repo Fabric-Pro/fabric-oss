@@ -501,10 +501,27 @@ describe("figure numbering hooks", () => {
 		expect(caption?.textContent).toBe(CAPTION);
 	});
 
-	it("gives an uncaptioned figure an empty caption line for its number", async () => {
+	it("captions an uncaptioned figure with its section's heading, as the exports do (Fizzy #2946)", async () => {
 		const { container } = render(
 			<DiagramHarness
 				markdown={doc(processBody({ caption: null }))}
+				visual={{ paint: NAVY }}
+				editable={false}
+			/>,
+		);
+		await drawnSvgs(container);
+
+		const caption = container.querySelector(
+			".pa-figure-counted .pa-figure-caption",
+		);
+		expect(caption).not.toBeNull();
+		expect(caption?.textContent?.trim()).toBe("Delivery");
+	});
+
+	it("gives an uncaptioned figure with no heading above it an empty caption line for its number", async () => {
+		const { container } = render(
+			<DiagramHarness
+				markdown={`We start with discovery.\n\n${fence(processBody({ caption: null }))}\n`}
 				visual={{ paint: NAVY }}
 				editable={false}
 			/>,

@@ -84,6 +84,7 @@ import { useTranslations } from "next-intl";
 import { type ReactNode, useEffect, useId, useState } from "react";
 import { diffPartialText } from "./diff-utils";
 import { getEditorMarkdownForSave } from "./editor-markdown-save";
+import { useEditorEditable } from "./when-editor-editable";
 
 export const VISUAL_SLOT_NODE_NAME = "visualSlot";
 
@@ -522,6 +523,10 @@ export function VisualSlotNodeView({
 	const t = useTranslations("tooltips.documentEditor");
 	const [open, setOpen] = useState(false);
 	const descriptionId = useId();
+	// Read again on every update: ProseMirror does not draw a node view
+	// again for `setEditable`, so a slot drawn while the editor took no input
+	// stayed a plain chip once it took input again (Fizzy #2946).
+	const editable = useEditorEditable(editor);
 
 	const kind = (node.attrs.kind as string | null) ?? null;
 	const hint = (node.attrs.hint as string | null) ?? null;
@@ -570,7 +575,7 @@ export function VisualSlotNodeView({
 			className="visual-slot-wrapper"
 			contentEditable={false}
 		>
-			{editor.isEditable ? (
+			{editable ? (
 				<Popover open={open} onOpenChange={setOpen}>
 					<PopoverTrigger asChild>
 						<button
