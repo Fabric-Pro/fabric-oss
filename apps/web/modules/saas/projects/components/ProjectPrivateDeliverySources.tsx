@@ -550,16 +550,30 @@ function PrivateWatch({
 		void status.refetch();
 	};
 
- const refreshedTerminal = useRef<string | undefined>(undefined);
- useEffect(()=>{
-  const run=status.data;
-  if (!run?.requestId || !["COMPLETED","FAILED","CANCELLED"].includes(run.state)) return;
-  const identity=JSON.stringify([scope,watch.id,run.requestId,run.state]);
-  if (refreshedTerminal.current === identity) return;
-  refreshedTerminal.current=identity;
-  void client.invalidateQueries({queryKey:[...scope,"list"],exact:true});
-  void client.invalidateQueries({queryKey:[...scope,watch.id,"observations"]});
- },[client,scope,watch.id,status.data?.requestId,status.data?.state]);
+	const refreshedTerminal = useRef<string | undefined>(undefined);
+	useEffect(() => {
+		const run = status.data;
+		if (
+			!run?.requestId ||
+			!["COMPLETED", "FAILED", "CANCELLED"].includes(run.state)
+		)
+			return;
+		const identity = JSON.stringify([
+			scope,
+			watch.id,
+			run.requestId,
+			run.state,
+		]);
+		if (refreshedTerminal.current === identity) return;
+		refreshedTerminal.current = identity;
+		void client.invalidateQueries({
+			queryKey: [...scope, "list"],
+			exact: true,
+		});
+		void client.invalidateQueries({
+			queryKey: [...scope, watch.id, "observations"],
+		});
+	}, [client, scope, watch.id, status.data?.requestId, status.data?.state]);
 
 	const observations = useInfiniteQuery({
 		queryKey: [...scope, watch.id, "observations"],

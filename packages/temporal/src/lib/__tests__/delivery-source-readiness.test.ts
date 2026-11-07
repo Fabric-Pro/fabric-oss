@@ -52,9 +52,9 @@ describe("private source operator and storage readiness", () => {
 		expect(catalog).toContain("pg_catalog.pg_class");
 		expect(catalog).toContain("c.relrowsecurity AND c.relforcerowsecurity");
 		expect(catalog).toContain("count(*) = 5");
- expect(catalog).toContain("captureWindowStart");
- expect(catalog).toContain("delivery_source_capture_window_finite");
- expect(m.query.mock.calls[0].slice(1)).toEqual([true]);
+		expect(catalog).toContain("captureWindowStart");
+		expect(catalog).toContain("delivery_source_capture_window_finite");
+		expect(m.query.mock.calls[0].slice(1)).toEqual([true]);
 		expect(catalog).not.toMatch(/FROM\s+delivery_signal_/);
 	});
 	it.each(
@@ -108,7 +108,7 @@ describe("private source operator and storage readiness", () => {
 		vi.stubEnv("FABRIC_PRIVATE_SOURCE_CAPTURE_ENABLED", "false");
 		m.query.mockResolvedValue([{ ready: true }]);
 		expect(await isPrivateDeliverySourceStorageReady()).toBe(true);
- expect(m.query.mock.calls[0].slice(1)).toEqual([false]);
+		expect(m.query.mock.calls[0].slice(1)).toEqual([false]);
 		expect(await getPrivateDeliverySourceAvailability()).toEqual({
 			state: "UNAVAILABLE",
 			reason: "NOT_ENABLED",

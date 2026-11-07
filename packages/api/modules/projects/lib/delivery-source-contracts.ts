@@ -27,7 +27,11 @@ export const deliverySourceCaptureWindow = z
 	.refine(
 		isDeliverySourceCaptureWindow,
 		"Choose a window of up to seven days.",
-	).transform(window=>({start:new Date(window.start).toISOString(),end:new Date(window.end).toISOString()}));
+	)
+	.transform((window) => ({
+		start: new Date(window.start).toISOString(),
+		end: new Date(window.end).toISOString(),
+	}));
 export const deliverySourceCaptureInput = deliverySourceWatchInput
 	.extend({
 		requestId: z.uuid(),

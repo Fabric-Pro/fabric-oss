@@ -12,9 +12,9 @@ import {
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import {axe} from "vitest-axe";
 import { NextIntlClientProvider } from "next-intl";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { axe } from "vitest-axe";
 import messages from "../../../../../../../packages/i18n/translations/en.json";
 
 vi.unmock("next-intl");
@@ -1162,15 +1162,45 @@ describe("bounded history capture UX", () => {
 	});
 });
 
-it("refreshes persisted window coverage when an asynchronous capture completes",async()=>{
- const rendered=view();await openWatch();const before=m.list.mock.calls.length;
- m.list.mockResolvedValue(response([{...watch,captureWindow:{start:"2026-10-05T00:00:00.000Z",end:"2026-10-07T00:00:00.000Z",complete:true}}]));
- await act(async()=>{rendered.queryClient.setQueriesData({predicate:q=>q.queryKey.at(-1)==="status"},{version:1,state:"COMPLETED",requestId:"11111111-1111-4111-8111-111111111111",coverage:"ROOT_MESSAGES_ONLY",captured:1,hasMore:false,message:null});});
- await waitFor(()=>expect(m.list.mock.calls.length).toBeGreaterThan(before));
- expect(await screen.findByText(/Window exhausted/)).toBeVisible();
+it("refreshes persisted window coverage when an asynchronous capture completes", async () => {
+	const rendered = view();
+	await openWatch();
+	const before = m.list.mock.calls.length;
+	m.list.mockResolvedValue(
+		response([
+			{
+				...watch,
+				captureWindow: {
+					start: "2026-10-05T00:00:00.000Z",
+					end: "2026-10-07T00:00:00.000Z",
+					complete: true,
+				},
+			},
+		]),
+	);
+	await act(async () => {
+		rendered.queryClient.setQueriesData(
+			{ predicate: (q) => q.queryKey.at(-1) === "status" },
+			{
+				version: 1,
+				state: "COMPLETED",
+				requestId: "11111111-1111-4111-8111-111111111111",
+				coverage: "ROOT_MESSAGES_ONLY",
+				captured: 1,
+				hasMore: false,
+				message: null,
+			},
+		);
+	});
+	await waitFor(() =>
+		expect(m.list.mock.calls.length).toBeGreaterThan(before),
+	);
+	expect(await screen.findByText(/Window exhausted/)).toBeVisible();
 });
 
-it("provides accessible selected-history controls",async()=>{
- const rendered=view();await openWatch();await userEvent.click(screen.getByText(copy.historyTitle));
- expect((await axe(rendered.container)).violations).toEqual([]);
+it("provides accessible selected-history controls", async () => {
+	const rendered = view();
+	await openWatch();
+	await userEvent.click(screen.getByText(copy.historyTitle));
+	expect((await axe(rendered.container)).violations).toEqual([]);
 });

@@ -12,7 +12,7 @@ export function isPrivateDeliverySourceCaptureEnabled(): boolean {
 
 /** Catalog-only storage check, independent of ingestion; retention must continue while capture is off. */
 export function isPrivateDeliverySourceStorageReady(): Promise<boolean> {
- return storageReady(false);
+	return storageReady(false);
 }
 /** Capture needs the new command columns and validated constraints; cleanup needs only the base tables. */
 async function storageReady(requireHistory: boolean): Promise<boolean> {
