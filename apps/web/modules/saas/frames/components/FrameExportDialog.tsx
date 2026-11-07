@@ -1,5 +1,7 @@
 "use client";
 
+import type { ArtifactBrandSnapshot } from "@repo/utils/artifact-brand-snapshot";
+import type { FramePresentation } from "@repo/utils/frame-presentation";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -24,6 +26,9 @@ type Props = {
 	kind: "frame" | "slideshow";
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
+	branding?: ArtifactBrandSnapshot | null;
+	presentation?: FramePresentation;
+	supportsNativePdf?: boolean;
 };
 type Job = {
 	exportId: string;
@@ -54,8 +59,12 @@ function FrameExportSession({
 	open,
 	onOpenChange,
 	userId,
+	branding,
+	presentation = "DOCUMENT",
+	supportsNativePdf = true,
 }: Props & { userId?: string }) {
 	const t = useTranslations("frameExport");
+	const tBrand = useTranslations("artifactBranding");
 	const queryClient = useQueryClient();
 	const mounted = useRef(true);
 	useEffect(() => {
@@ -73,6 +82,10 @@ function FrameExportSession({
 	];
 	const [requestId, setRequestId] = useState(() => crypto.randomUUID());
 	const [job, setJob] = useState<Job | null>(null);
+	const [jobBranding, setJobBranding] =
+		useState<ArtifactBrandSnapshot | null>(null);
+	const [jobPresentation, setJobPresentation] =
+		useState<FramePresentation>("DOCUMENT");
 	const [busy, setBusy] = useState<"start" | "cancel" | "download" | null>(
 		null,
 	);
@@ -117,8 +130,10 @@ function FrameExportSession({
 	const current = status.data?.exportId === job?.exportId ? status.data : job;
 	const terminal =
 		current && !["pending", "running"].includes(current.status);
+	const reviewedBranding = job ? jobBranding : branding;
+	const reviewedPresentation = job ? jobPresentation : presentation;
 	const start = async () => {
-		if (busy || !userId) {
+		if (busy || !userId || !supportsNativePdf) {
 			return;
 		}
 		setBusy("start");
@@ -135,6 +150,8 @@ function FrameExportSession({
 				return;
 			}
 			setJob(result);
+			setJobBranding(branding ?? null);
+			setJobPresentation(presentation);
 			queryClient.setQueryData(jobKey(result.exportId), result);
 			setCancelRequested(false);
 		} catch {
@@ -224,6 +241,33 @@ function FrameExportSession({
 				</DialogHeader>
 				<div className="space-y-3 text-sm">
 					<p>{t("staticCopy")}</p>
+					{!job && !supportsNativePdf && (
+						<p className="text-muted-foreground">
+							{t("interfaceBlockLimit")}
+						</p>
+					)}
+					<p className="text-muted-foreground">
+						{reviewedPresentation === "INTERFACE"
+							? t("interfaceCopy")
+							: reviewedBranding
+								? tBrand("exportTheme", {
+										source: tBrand(
+											`source.${reviewedBranding.source}`,
+										),
+										heading:
+											reviewedBranding.displayFontFamily,
+										body: reviewedBranding.bodyFontFamily,
+										cover: tBrand(
+											`cover.${reviewedBranding.coverStyle}`,
+										),
+									})
+								: tBrand("exportUnbranded")}
+					</p>
+					{job && job.expectedUpdatedAt !== revision && (
+						<p className="text-muted-foreground">
+							{tBrand("exportOlderRevision")}
+						</p>
+					)}
 					{!userId && <p role="alert">{t("signIn")}</p>}
 					{statusKey && (
 						<output className="block font-medium">
@@ -271,7 +315,9 @@ function FrameExportSession({
 					</Button>
 					{!job && (
 						<Button
-							disabled={Boolean(busy) || !userId}
+							disabled={
+								Boolean(busy) || !userId || !supportsNativePdf
+							}
 							onClick={start}
 						>
 							{t(

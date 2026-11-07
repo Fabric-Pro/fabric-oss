@@ -38,6 +38,7 @@ export interface ProjectShortcut {
 	/** Null for a personal project; the host org's slug for a guest-held one. */
 	organizationSlug: string | null;
 	isFavorite: boolean;
+	lastVisitedAt: Date | null;
 }
 
 /**
@@ -96,6 +97,7 @@ function reachableProjectFilter(
 
 const SHORTCUT_SELECT = {
 	favoritedAt: true,
+	lastVisitedAt: true,
 	project: {
 		select: {
 			id: true,
@@ -115,6 +117,7 @@ function toShortcut(row: ShortcutRow, isFavorite: boolean): ProjectShortcut {
 		name: row.project.name,
 		organizationSlug: row.project.organization?.slug ?? null,
 		isFavorite,
+		lastVisitedAt: row.lastVisitedAt,
 	};
 }
 

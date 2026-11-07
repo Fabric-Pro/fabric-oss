@@ -1,3 +1,4 @@
+import { requireDeliverySignalProjectAccess } from "@repo/api/modules/projects/lib/delivery-signals";
 import { callMcpTool } from "@repo/mcp";
 import { isReadOnlyBlockedOutput } from "@repo/utils";
 import { getSession } from "@saas/auth/lib/server";
@@ -39,7 +40,7 @@ export async function POST(request: NextRequest) {
 			configId,
 			toolName,
 			args,
-			organizationId,
+			organizationId: requestedOrganizationId,
 			projectId,
 			durable,
 			idempotencyKey,
@@ -53,6 +54,29 @@ export async function POST(request: NextRequest) {
 		}
 
 		const userId = session.user.id;
+
+		const organizationId =
+			configId === "platform" &&
+			typeof toolName === "string" &&
+			toolName.startsWith("fabric_triage_") &&
+			typeof args?.projectId === "string"
+				? (
+						await requireDeliverySignalProjectAccess(
+							{
+								userId,
+								...(requestedOrganizationId
+									? {
+											organizationBinding: {
+												organizationId:
+													requestedOrganizationId,
+											},
+										}
+									: {}),
+							},
+							args.projectId,
+						)
+					).organizationId
+				: requestedOrganizationId;
 
 		// Executing a tool needs MCP_CONNECT in the named organization, checked
 		// before the config is read: the config's own token outlives membership.
@@ -118,7 +142,9 @@ export async function POST(request: NextRequest) {
 					})
 				: rawResult;
 
-			return Response.json(finalResult);
+			return Response.json(finalResult, {
+				headers: { "Cache-Control": "private, no-store" },
+			});
 		}
 
 		// Use @modelcontextprotocol/sdk Client directly for tool execution

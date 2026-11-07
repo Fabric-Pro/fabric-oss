@@ -539,3 +539,23 @@ ordinary caller. A credential can exist unused, can authenticate and then be ref
 every tool it calls, and can have its usage counter stamped on a request that goes on to
 return unauthorized. Only a Reach record says something arrived; everything else says
 someone was issued the means to try.
+
+## Software delivery
+
+### Delivery signal
+Attributed evidence that a project's software may need to change. A signal is distinct from a decision to do the work; several signals may support one accepted change.
+
+### Workstream
+An ongoing goal within a project, with an owner, selected sources, permitted execution targets and limits on autonomous action. A workstream can propose and coordinate several delivery changes.
+
+### Delivery change
+An accepted unit of software evolution linked to its originating signals, specification, implementation attempts, validation and observed outcome. Distinct from an execution attempt or a claim that software has been deployed.
+
+### Delivery awareness
+Fabric's attributable understanding of a team's current work, permitted context, execution state and observed outcomes. Its scope includes what is known, when it was checked, and what remains missing or uncertain; it is distinct from an agent's opinion about that work.
+
+### Suggested next step
+An optional action supported by current evidence and the recipient's current permissions. It explains why it matters and becomes obsolete when its supporting circumstances change. A suggestion is neither an assignment nor authorization to perform the action.
+
+### Source coverage
+The part of a selected source that an observation actually covers, including its time window and any omissions. A successful capture can still have partial coverage; absence from a partial observation does not establish absence from the source.

@@ -24,6 +24,7 @@ import {
 	generatePDFActivity,
 	PDF_EXPORT_CONTEXT_OPTIONS,
 	PDF_TEMPLATE_UTILITY_CSS,
+	renderFrameToHTML,
 } from "../src/activities/frame-export/generate-pdf";
 import { sanitizeFrameHtml } from "../src/activities/frame-export/sanitize-frame-html";
 import { PRINT_CHROMIUM_ARGS } from "../src/lib/print-chromium-args";
@@ -55,6 +56,22 @@ beforeEach(() => {
 });
 
 describe("generatePDFActivity", () => {
+	it("keeps document headings with the following report content in print", () => {
+		const html = renderFrameToHTML(
+			frame([
+				{
+					type: "markdown",
+					content: "## Sources\n\n- Example evidence",
+				},
+			]),
+		);
+		expect(html).toMatch(
+			/h1, h2, h3, h4, h5, h6\s*\{[^}]*break-after: avoid;[^}]*page-break-after: avoid;/,
+		);
+		expect(html).toContain("<h2>Sources</h2>");
+		expect(html).toContain("<li><p>Example evidence</p></li>");
+	});
+
 	it("launches with the shared print flags, font hinting off, and keeps its setuid flag", async () => {
 		await generatePDFActivity({
 			content: frame([{ type: "markdown", content: "hello" }]),
@@ -184,7 +201,7 @@ describe("generatePDFActivity", () => {
 			});
 			const html = (setContentMock.mock.calls.at(-1) as [string])[0];
 			expect(html).toContain(
-				'<div class="markdown-content">set online &#61; true and href&#61;javascript:x</div>',
+				'<div class="markdown-content"><p>set online &#61; true and href&#61;javascript:x</p></div>',
 			);
 		});
 	});
@@ -381,4 +398,94 @@ describe("sanitizeFrameHtml", () => {
 			expect(performance.now() - started).toBeLessThan(1000);
 		}
 	});
+});
+
+describe("interface export presentation", () => {
+	it("keeps supplied HTML and CSS without document wrappers or defaults", () => {
+		const authored =
+			'<html class="app"><head><style>body{margin:0;color:#123456;font-family:Georgia}.shell{display:grid;grid-template-columns:240px 1fr}</style></head><body style="padding:12px"><main class="shell"><h1>Example workspace</h1></main></body></html>';
+		const content = {
+			...frame([{ type: "html", content: authored }]),
+			presentation: "INTERFACE" as const,
+		};
+		const html = renderFrameToHTML(content);
+		expect(html).toBe(`<!DOCTYPE html>\n${authored}`);
+		expect(html).not.toContain("frame-container");
+		expect(html).not.toContain("<h1>Export</h1>");
+	});
+	it("keeps non-HTML interface content", () => {
+		const html = renderFrameToHTML({
+			...frame([{ type: "markdown", content: "# A useful result" }]),
+			presentation: "INTERFACE",
+		});
+		expect(html).toContain("<h1>A useful result</h1>");
+	});
+	it("forces historical report content back to document even with an interface marker", () => {
+		const html = renderFrameToHTML({
+			...frame([{ type: "html", content: "<p>Report content</p>" }]),
+			presentation: "INTERFACE",
+			metadata: { sourceRunType: "REPORT_EXECUTION" },
+		});
+		expect(html).toContain("frame-container");
+		expect(html).toContain("<h1>Export</h1>");
+	});
+	it("never grants active content to interface exports", () => {
+		const html = renderFrameToHTML({
+			...frame([
+				{
+					type: "html",
+					content:
+						'<script>steal()</script><iframe src="https://example.com"></iframe><p onclick="steal()">Kept</p>',
+				},
+			]),
+			presentation: "INTERFACE",
+		});
+		expect(html).not.toMatch(/<script|<iframe|onclick|steal/);
+		expect(html).toContain("<p>Kept</p>");
+	});
+});
+
+it("retains the existing static export limitations for interface SVG, form fields and dynamic markup", () => {
+	const html = renderFrameToHTML({
+		...frame([
+			{
+				type: "html",
+				content:
+					'<main><svg><rect width="12" height="12" /></svg><form><input value="Example" /><button>Continue</button></form><script>draw()</script><p>Static text</p></main>',
+			},
+		]),
+		presentation: "INTERFACE",
+	});
+	expect(html).not.toMatch(/<svg|<rect|<form|<input|<script|draw\(/);
+	expect(html).toContain("<p>Static text</p>");
+});
+
+it("refuses multi-document Interface PDF instead of leaking CSS across isolated preview blocks", async () => {
+	const content = {
+		...frame([
+			{
+				type: "html",
+				content:
+					'<body class="one"><style>h1{color:red}</style><h1>First</h1></body>',
+			},
+			{
+				type: "html",
+				content:
+					'<body class="two"><style>h1{color:blue}</style><h1>Second</h1></body>',
+			},
+		]),
+		presentation: "INTERFACE" as const,
+	};
+	expect(() => renderFrameToHTML(content)).toThrow(
+		/one self-contained block/,
+	);
+	await expect(
+		generatePDFActivity({ content, orientation: "portrait" }),
+	).rejects.toThrow(/one self-contained block/);
+	expect(launchMock).not.toHaveBeenCalled();
+	const report = renderFrameToHTML({
+		...content,
+		metadata: { sourceRunType: "REPORT_EXECUTION" },
+	});
+	expect(report).toContain("frame-container");
 });

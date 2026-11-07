@@ -9,6 +9,7 @@
 import { createHash } from "node:crypto";
 import {
 	canExecuteOrganizationAgents,
+	canReadOrganizationReports,
 	canRunOrganizationWorkflows,
 	OAUTH_ACCESS_TOKEN_PREFIX,
 	verifyOAuthAccessToken,
@@ -18,6 +19,9 @@ import { getBaseUrl } from "@repo/utils";
 import type { Context, Next } from "hono";
 import { verifyUserApiKey } from "../../users/procedures/api-keys/verify";
 import {
+	isDeliverySignalReadPath,
+	isDeliverySourcePath,
+	isHarnessTriagePath,
 	projectBoundRefusal,
 	projectBoundRouteAllowed,
 } from "../project-bound";
@@ -69,6 +73,7 @@ const OWNER_PERMISSION_GATES: Record<
 	(userId: string, organizationId: string) => Promise<boolean>
 > = {
 	"agents:execute": canExecuteOrganizationAgents,
+	"reports:read": canReadOrganizationReports,
 	// The in-app start requires WORKSPACE_UPDATE, which the viewer role does
 	// not hold. A key minted by a member kept triggering workflows — runs
 	// that execute externally mutating nodes — after its owner was demoted,
@@ -188,7 +193,10 @@ export function requireApiKey(requiredScope?: string) {
 			// there is or will be, and with one answer.
 			if (
 				token.projectId &&
-				!projectBoundRouteAllowed(c.req.path, token.projectId)
+				!projectBoundRouteAllowed(c.req.path, token.projectId) &&
+				!isDeliverySignalReadPath(c.req.path, c.req.method) &&
+				!isDeliverySourcePath(c.req.path, c.req.method) &&
+				!isHarnessTriagePath(c.req.path, c.req.method)
 			) {
 				const refusal = await projectBoundRefusal(token.projectId);
 				return c.json(

@@ -1,3 +1,7 @@
+import { deliverySignalsProcedures } from "./procedures/delivery-signals";
+import { deliverySnapshotProcedure } from "./procedures/delivery-snapshot";
+import { deliverySourcesProcedures } from "./procedures/delivery-sources";
+import { harnessTriageProcedures } from "./procedures/harness-triage";
 // Backlog analysis procedures
 
 import { acknowledgeDecisionPrecheckProcedure } from "./procedures/acknowledge-decision-precheck";
@@ -872,6 +876,10 @@ import { listVersionsProcedure } from "./procedures/versions/list-versions";
 import { restoreVersionProcedure } from "./procedures/versions/restore-version";
 
 export const projectsRouter = {
+	delivery: deliverySnapshotProcedure,
+	deliverySignals: deliverySignalsProcedures,
+	deliverySources: deliverySourcesProcedures,
+	triage: harnessTriageProcedures,
 	// Project operations
 	list: listProjectsProcedure,
 	get: getProjectProcedure,

@@ -1,8 +1,9 @@
 import type { FabricHttpClient } from "../client.js";
-export interface AgentTestChecks {
-	requiredPhrases?: string[];
-	forbiddenPhrases?: string[];
-}
+import type {
+	ResultQualityChecks,
+	ResultQualityGrade,
+} from "./result-quality.js";
+export interface AgentTestChecks extends ResultQualityChecks {}
 export interface AgentTestCaseCreateInput {
 	instanceId: string;
 	name: string;
@@ -29,7 +30,7 @@ export interface AgentTestListOptions extends AgentTestOptions {
 	limit?: number;
 	cursor?: string;
 }
-export interface AgentTestReport {
+export interface AgentTestLegacyReport {
 	version: 1;
 	method: "exact-text";
 	outputHash: string;
@@ -45,6 +46,15 @@ export interface AgentTestReport {
 	outputTokens: number | null;
 	totalCost: string | null;
 }
+export type AgentTestReport =
+	| AgentTestLegacyReport
+	| (ResultQualityGrade & {
+			outputHash: string;
+			durationMs: number | null;
+			inputTokens: number | null;
+			outputTokens: number | null;
+			totalCost: string | null;
+	  });
 export interface AgentTestRun {
 	id: string;
 	requestKey: string;

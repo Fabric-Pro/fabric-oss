@@ -1,4 +1,9 @@
-import { buildProposalThemeTokens } from "@repo/utils/proposal-artifact/theme-tokens";
+import {
+	buildProposalThemeTokens,
+	proposalClientPaletteFromColors,
+	resolveThemePaint,
+	themeCustomProperties,
+} from "@repo/utils/proposal-artifact/theme-tokens";
 import sharp from "sharp";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
@@ -143,6 +148,54 @@ function imageTag(key: string, extra = ""): string {
 }
 
 describe("buildThemeHtml: the document", () => {
+	it("prints the reviewed client palette and both identities with embedded logos", () => {
+		const palette = proposalClientPaletteFromColors(["#0f766e"]);
+		const savedTokens = buildProposalThemeTokens({
+			organization: { name: "Example Agency", logoKey: null },
+			style: palette,
+			brandKit: {
+				primaryColor: "#1d4ed8",
+				accentColors: ["#b91c1c"],
+			},
+			recipient: {
+				name: "Example Client",
+				logoKey: null,
+				colors: ["#0f766e"],
+			},
+		});
+		const tokens: ExportThemeTokens = {
+			proposer: {
+				...savedTokens.proposer,
+				logo: { value: png, source: "BRAND_KIT" },
+				hero: { value: null, source: "DEFAULT" },
+			},
+			recipient: {
+				...savedTokens.recipient,
+				logo: { value: jpeg, source: "MANUAL" },
+			},
+		};
+		const { html } = build("A proposal for the next delivery milestone.", {
+			tokens,
+		});
+		const properties = themeCustomProperties(
+			resolveThemePaint(savedTokens),
+		);
+		expect(properties["--pa-primary"]).toBe("#0f766e");
+		expect(properties["--pa-accent"]).toBe("#0f766e");
+		expect(html).toContain("--pa-primary: #0f766e");
+		expect(html).toContain("--pa-accent: #0f766e");
+		expect(html).not.toContain("#b91c1c");
+		expect(bodyOf(html)).toContain(
+			"<dt>Prepared by</dt><dd>Example Agency</dd>",
+		);
+		expect(bodyOf(html)).toContain(
+			"<dt>Prepared for</dt><dd>Example Client</dd>",
+		);
+		expect(bodyOf(html)).toContain("data:image/png;base64,");
+		expect(bodyOf(html)).toContain("data:image/jpeg;base64,");
+		expect(html).not.toMatch(/(?:src|url)\s*[=(]\s*["']?https?:/i);
+	});
+
 	it("is one self-contained themed page", () => {
 		const { html } = build("Intro paragraph.");
 
@@ -205,13 +258,18 @@ describe("buildThemeHtml: the document", () => {
 			signature: "00010000",
 		};
 		expect(faces).toEqual([
-			{ face: "Poppins 700", ...ttf },
 			{ face: "Inter 400", ...woff2 },
 			{ face: "Inter 600", ...woff2 },
 			{ face: "Inter 700", ...woff2 },
 			{ face: "Inter 800", ...woff2 },
+			{ face: "Poppins 400", ...ttf },
+			{ face: "Poppins 600", ...ttf },
+			{ face: "Poppins 700", ...ttf },
+			{ face: "Poppins 800", ...ttf },
 			{ face: "JetBrains Mono 400", ...woff2 },
 			{ face: "JetBrains Mono 500", ...woff2 },
+			{ face: "JetBrains Mono 700", ...woff2 },
+			{ face: "JetBrains Mono 800", ...woff2 },
 		]);
 		expect(html.match(/@font-face/g)).toHaveLength(faces.length);
 		expect(html).not.toMatch(/url\(\s*["']?(https?:)?\/\//i);
@@ -1745,4 +1803,32 @@ describe("buildThemeHtml: Markdown forms", () => {
 		);
 		expect(body).not.toContain("Never referenced");
 	});
+});
+
+describe("client cover and typography", () => {
+	it.each(["LIGHT", "MINIMAL"] as const)(
+		"renders %s without dropping key figures or identity",
+		(coverStyle) => {
+			const base = exportTokens({
+				bodyFont: "Poppins",
+				recipientLogo: { ...png, luminance: 1, opaque: false },
+			});
+			const tokens = {
+				...base,
+				appearance: { brandSource: "CLIENT" as const, coverStyle },
+			};
+			const { html } = build(
+				"Short delivery plan.\n\n```stat-tiles\nWeeks: 12\n```\n\n## Approach\n\nReviewed facts.",
+				{ tokens },
+			);
+			expect(html).toContain(`data-pa-cover="${coverStyle}"`);
+			expect(html).toContain("pa-cover-logo-ink-plate");
+			expect(html).toContain("<dt>Weeks</dt><dd>12</dd>");
+			expect(html).toContain("<dt>Prepared by</dt><dd>Example Org</dd>");
+			expect(html).toContain(
+				"<dt>Prepared for</dt><dd>Example Client</dd>",
+			);
+			expect(html).toContain("--pa-font-body: &quot;Poppins&quot;");
+		},
+	);
 });

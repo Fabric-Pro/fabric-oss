@@ -129,6 +129,7 @@ export function buildFramesCommand(): Command {
 					ID: frame.id,
 					Title: frame.title,
 					Kind: frame.kind ?? "(none)",
+					Presentation: frame.presentation ?? "DOCUMENT",
 					"File Type": frame.fileType,
 					Status: frame.status,
 					Public: frame.isPublic ? "yes" : "no",
@@ -157,7 +158,9 @@ export function buildFramesCommand(): Command {
 		});
 	frames
 		.command("update <id> <file>")
-		.description("Save content JSON with its expectedUpdatedAt revision")
+		.description(
+			"Save content JSON (including presentation) with its expectedUpdatedAt revision",
+		)
 		.option("--org <slug>", "Organization context")
 		.action(async (id: string, file: string, opts: { org?: string }) => {
 			const ctx = resolveContext(false, opts.org, false);
@@ -405,5 +408,216 @@ export function buildFramesCommand(): Command {
 			},
 		);
 
+	const branding = frames
+		.command("branding")
+		.description("Review or apply saved company/client branding");
+	branding
+		.command("show <id>")
+		.option("--org <slug>", "Organization context")
+		.action(async (id, opts) => {
+			try {
+				printOutput(
+					await getClient().frames.branding(id, {
+						org: resolveContext(false, opts.org, false)?.slug,
+					}),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError(
+					error instanceof Error ? error.message : String(error),
+					1,
+				);
+			}
+		});
+	branding
+		.command("apply <id>")
+		.requiredOption("--source <source>", "COMPANY or CLIENT")
+		.requiredOption(
+			"--brand-version <version>",
+			"Reviewed saved brand version",
+		)
+		.requiredOption(
+			"--expected-updated-at <revision>",
+			"Reviewed Frame revision",
+		)
+		.option("--org <slug>", "Organization context")
+		.action(async (id, opts) => {
+			try {
+				const source = String(opts.source).toUpperCase();
+				const expectedBrandVersion = Number(opts.brandVersion);
+				if (
+					!["COMPANY", "CLIENT"].includes(source) ||
+					!Number.isInteger(expectedBrandVersion) ||
+					expectedBrandVersion < 0 ||
+					!Number.isFinite(Date.parse(opts.expectedUpdatedAt))
+				) {
+					throw new Error(
+						"Provide a valid source, saved brand version and Frame revision.",
+					);
+				}
+				printOutput(
+					await getClient().frames.applyBranding(
+						id,
+						{
+							source: source as "COMPANY" | "CLIENT",
+							expectedBrandVersion,
+							expectedUpdatedAt: opts.expectedUpdatedAt,
+						},
+						{ org: resolveContext(false, opts.org, false)?.slug },
+					),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError(
+					error instanceof Error ? error.message : String(error),
+					1,
+				);
+			}
+		});
+	const reviewed = frames
+		.command("changes")
+		.description("Propose, inspect and apply reviewed artifact revisions");
+	function resultCommand(
+		parent: Command,
+		name: string,
+		description: string,
+		run: (
+			args: string[],
+			opts: Record<string, string>,
+			api: ReturnType<typeof getClient>["frames"],
+			org: { org?: string },
+		) => Promise<unknown>,
+		file = false,
+	) {
+		const command = parent
+			.command(name)
+			.description(description)
+			.option("--org <slug>", "Organization context");
+		if (file) {
+			command.requiredOption(
+				"--file <path>",
+				"JSON request, including stable requestId and reviewed revision where required",
+			);
+		}
+		command.action(async (...values: unknown[]) => {
+			const cmd = values.at(-1) as Command;
+			const opts = cmd.optsWithGlobals<Record<string, string>>();
+			const args = values.slice(0, -2) as string[];
+			try {
+				const data = await run(args, opts, getClient().frames, {
+					org: resolveContext(false, opts.org, false)?.slug,
+				});
+				printOutput(data, { format: "json" });
+			} catch (error) {
+				printError(
+					error instanceof Error ? error.message : String(error),
+					1,
+				);
+			}
+		});
+		return command;
+	}
+	const request = async (path: string) =>
+		JSON.parse(await readFile(path, "utf8"));
+	resultCommand(
+		frames,
+		"create",
+		"Create a private artifact",
+		async (_, o, a, c) => a.create(await request(o.file), c),
+		true,
+	);
+	resultCommand(
+		frames,
+		"validate-document",
+		"Check structure and JSON syntax; does not execute scripts",
+		async (_, o, a, c) => a.validateDocument(await request(o.file), c),
+		true,
+	);
+	resultCommand(
+		frames,
+		"from-template",
+		"Create a private artifact with typed template inputs",
+		async (_, o, a, c) => a.createFromTemplate(await request(o.file), c),
+		true,
+	);
+	const templates = frames
+		.command("templates")
+		.description("Reusable organization artifact templates");
+	resultCommand(templates, "list", "List templates", async (_, o, a, c) =>
+		a.listTemplates({ ...c, category: o.category }),
+	).option("--category <name>", "Template category");
+	resultCommand(
+		templates,
+		"show <id>",
+		"Read a template and its inputs",
+		async ([id], _, a, c) => a.getTemplate(id, c),
+	);
+	resultCommand(
+		templates,
+		"create",
+		"Create an explicitly organization-wide template",
+		async (_, o, a, c) => a.createTemplate(await request(o.file), c),
+		true,
+	);
+	resultCommand(
+		reviewed,
+		"propose <id>",
+		"Save a proposal without changing the artifact",
+		async ([id], o, a, c) => a.proposeChange(id, await request(o.file), c),
+		true,
+	);
+	resultCommand(
+		reviewed,
+		"list <id>",
+		"List bounded artifact change reviews",
+		async ([id], o, a, c) =>
+			a.listChanges(id, {
+				...c,
+				limit: Number(o.limit ?? 20),
+				offset: Number(o.offset ?? 0),
+			}),
+	)
+		.option("--limit <n>", "Maximum reviews", "20")
+		.option("--offset <n>", "Review offset", "0");
+	resultCommand(
+		reviewed,
+		"show <id> <proposalId>",
+		"Inspect original and proposed content",
+		async ([id, p], _, a, c) => a.getChange(id, p, c),
+	);
+	resultCommand(
+		reviewed,
+		"apply <id> <proposalId>",
+		"Apply the exact content hash you reviewed",
+		async ([id, p], o, a, c) =>
+			a.applyChange(
+				id,
+				{ proposalId: p, expectedProposalHash: o.expectedProposalHash },
+				c,
+			),
+	).requiredOption(
+		"--expected-proposal-hash <hash>",
+		"SHA-256 of the reviewed proposal",
+	);
+	resultCommand(
+		reviewed,
+		"dismiss <id> <proposalId>",
+		"Dismiss a pending proposal",
+		async ([id, p], _, a, c) => a.dismissChange(id, p, c),
+	);
+	resultCommand(
+		frames,
+		"review <id>",
+		"Read draft, approval and publication status",
+		async ([id], _, a, c) => a.review(id, c),
+	);
+	resultCommand(
+		frames,
+		"approve <id>",
+		"Approve the exact private revision without sharing it",
+		async ([id], o, a, c) =>
+			a.approveRevision(id, await request(o.file), c),
+		true,
+	);
 	return frames;
 }

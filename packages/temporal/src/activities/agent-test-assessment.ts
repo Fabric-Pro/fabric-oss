@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { agentRunText } from "@repo/agent-types";
 import { db, Prisma, readAgentExecutionAdmission } from "@repo/database";
+import { gradeResultQuality } from "@repo/utils/result-quality";
 import { Context, heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
 import { getTemporalClient } from "../client";
@@ -312,18 +313,7 @@ export async function assessAgentTestRun(input: AgentTestAssessmentInput) {
 			);
 		}
 		const checks = agentTestChecksSchema.parse(row.checksJson);
-		const results = [
-			...checks.requiredPhrases.map((phrase, index) => ({
-				kind: "required" as const,
-				index,
-				passed: answer.includes(phrase),
-			})),
-			...checks.forbiddenPhrases.map((phrase, index) => ({
-				kind: "forbidden" as const,
-				index,
-				passed: !answer.includes(phrase),
-			})),
-		];
+		const grade = gradeResultQuality(answer, checks);
 		const usage = record(state.tokenUsage) ?? {};
 		const integer = (value: unknown) =>
 			typeof value === "number" &&
@@ -332,12 +322,22 @@ export async function assessAgentTestRun(input: AgentTestAssessmentInput) {
 				? value
 				: null;
 		const report: AgentTestReport = agentTestReportSchema.parse({
-			version: 1,
-			method: "exact-text",
+			...(checks.version === 2
+				? grade
+				: {
+						version: 1,
+						method: "exact-text",
+						passed: grade.passed,
+						total: grade.total,
+						results: grade.results.map(
+							({ kind, index, passed }) => ({
+								kind,
+								index,
+								passed,
+							}),
+						),
+					}),
 			outputHash: createHash("sha256").update(answer).digest("hex"),
-			passed: results.filter((result) => result.passed).length,
-			total: results.length,
-			results,
 			durationMs:
 				integer(state.durationMs) ??
 				(finalDescription.closeTime
@@ -362,7 +362,12 @@ export async function assessAgentTestRun(input: AgentTestAssessmentInput) {
 			},
 			data: {
 				status: "COMPLETED",
-				verdict: report.passed === report.total ? "PASSED" : "FAILED",
+				verdict:
+					report.version === 2 && report.status === "NOT_ASSESSED"
+						? null
+						: report.passed === report.total
+							? "PASSED"
+							: "FAILED",
 				reportJson: report as unknown as Prisma.InputJsonValue,
 				completedAt: new Date(),
 				errorCode: null,

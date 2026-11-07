@@ -15,6 +15,24 @@ beforeEach(() => {
 	mocks.deleted.mockResolvedValue(false);
 });
 describe("authorized agent project configuration", () => {
+	it("preserves inherited template semantics when metadata changes without an instruction override", async () => {
+		const result = await prepareAgentProjectConfiguration({
+			...base,
+			previousInstructions: { projectId: "example-project" },
+			customInstructions: {
+				starterMessages: [
+					{ id: "example-starter", prompt: "Create a brief" },
+				],
+			},
+		});
+		expect(result.customInstructions).toEqual({
+			projectId: "example-project",
+			starterMessages: [
+				{ id: "example-starter", prompt: "Create a brief" },
+			],
+		});
+		expect(result.customInstructions).not.toHaveProperty("role");
+	});
 	it("preserves metadata and expected output on ordinary instruction edits", async () => {
 		const result = await prepareAgentProjectConfiguration({
 			...base,

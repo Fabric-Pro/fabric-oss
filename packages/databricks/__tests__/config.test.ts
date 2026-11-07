@@ -62,6 +62,21 @@ describe("getDatabricksConfig", () => {
 		expect(config?.clientSecret).toBe("client-secret");
 	});
 
+	it("defaults to the legacy all-apis scope", () => {
+		const config = getDatabricksConfig({
+			DATABRICKS_HOST: "https://ws.azuredatabricks.net",
+		});
+		expect(config?.scope).toBe("all-apis");
+	});
+
+	it("reads and normalizes scoped OAuth permissions", () => {
+		const config = getDatabricksConfig({
+			DATABRICKS_HOST: "https://ws.azuredatabricks.net",
+			DATABRICKS_SCOPE: "  sql   jobs  ",
+		});
+		expect(config?.scope).toBe("sql jobs");
+	});
+
 	it("treats empty OAuth fields as undefined", () => {
 		const config = getDatabricksConfig({
 			DATABRICKS_HOST: "https://ws.azuredatabricks.net",

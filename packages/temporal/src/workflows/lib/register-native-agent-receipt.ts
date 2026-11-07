@@ -4,6 +4,7 @@ import {
 	NATIVE_AGENT_RECEIPT_PATCH,
 	type NativeAgentAdmission,
 } from "../../lib/agent-execution-native-protocol";
+import { startRunQualityObserver } from "./start-run-quality";
 
 const { registerNativeAgentExecutionReceipt, completeNativeAgentExecution } =
 	proxyActivities<typeof receiptActivities>({
@@ -48,6 +49,15 @@ export async function registerNativeAgentReceipt(
 		return;
 	}
 	await registerNativeAgentExecutionReceipt(receiptInput(input));
+	if (input.organizationId && patched("native-run-quality-observer-v1")) {
+		await startRunQualityObserver({
+			targetType: "AGENT",
+			targetId: input.instanceId,
+			executionId: input.nativeAdmission.executionRowId,
+			userId: input.userId,
+			organizationId: input.organizationId,
+		});
+	}
 }
 
 /** Unlimited native projection retries cannot re-enter the agent loop. */

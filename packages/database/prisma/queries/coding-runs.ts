@@ -145,11 +145,43 @@ export async function updateCodingRunStatus(
 		promptText?: string;
 	},
 ) {
+	// Provider session metadata is replaceable; the admission receipt is Fabric-owned
+	// and immutable for the retained run. Preserve it across provider/status updates.
+	let providerMetadata = data?.providerMetadata;
+	if (providerMetadata !== undefined) {
+		const current = await db.codingRun.findUnique({
+			where: { id },
+			select: { providerMetadata: true },
+		});
+		const stored = current?.providerMetadata;
+		const receipt =
+			stored && typeof stored === "object" && !Array.isArray(stored)
+				? stored.fabricRequest
+				: undefined;
+		if (
+			receipt &&
+			typeof receipt === "object" &&
+			!Array.isArray(receipt) &&
+			receipt.version === 1 &&
+			typeof receipt.requestHash === "string" &&
+			/^[a-f0-9]{64}$/.test(receipt.requestHash)
+		) {
+			providerMetadata = {
+				...(providerMetadata &&
+				typeof providerMetadata === "object" &&
+				!Array.isArray(providerMetadata)
+					? providerMetadata
+					: {}),
+				fabricRequest: receipt,
+			};
+		}
+	}
 	return db.codingRun.update({
 		where: { id },
 		data: {
 			status,
 			...data,
+			...(providerMetadata !== undefined ? { providerMetadata } : {}),
 		},
 	});
 }

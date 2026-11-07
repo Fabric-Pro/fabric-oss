@@ -93,6 +93,7 @@ const READ_ONLY_SCOPES = new Set([
 	"workspaces:read",
 	"workflows:read",
 	"frames:read",
+	"reports:read",
 	"instructions:read",
 	// The one WRITE scope a viewer may hold (Fizzy #2539): it reaches the
 	// proposal path, which is what a viewer can already do in the Coding
@@ -160,6 +161,45 @@ describe("OrganizationApiKeysSettings — a read-only role's create request", ()
 		expect(sent.scopes).not.toContain("mcp:write");
 	});
 
+	it("lets a viewer explicitly request report reads without granting a write scope", async () => {
+		const user = userEvent.setup();
+		renderSettings();
+		await user.click(
+			screen.getByRole("button", { name: /create api key/i }),
+		);
+		await user.type(
+			await screen.findByLabelText("Key Name"),
+			"Report review CLI",
+		);
+		await user.click(screen.getByLabelText("reportsReadLabel"));
+		await user.click(screen.getByRole("button", { name: "Create Key" }));
+		await waitFor(() => expect(createApiKeyMock).toHaveBeenCalledTimes(1));
+		expect(createApiKeyMock.mock.calls[0][0].scopes).toEqual([
+			"mcp:read",
+			"reports:read",
+		]);
+	});
+
+	it("offers explicit report writes to members without preselecting broad write access", async () => {
+		userRole = "member";
+		const user = userEvent.setup();
+		renderSettings();
+		await user.click(
+			screen.getByRole("button", { name: /create api key/i }),
+		);
+		await user.type(
+			await screen.findByLabelText("Key Name"),
+			"Report branding CLI",
+		);
+		await user.click(screen.getByLabelText("reportsWriteLabel"));
+		await user.click(screen.getByRole("button", { name: "Create Key" }));
+		await waitFor(() => expect(createApiKeyMock).toHaveBeenCalledTimes(1));
+		expect(createApiKeyMock.mock.calls[0][0].scopes).toEqual([
+			"mcp:read",
+			"reports:write",
+		]);
+	});
+
 	/** The picker cannot compose a request the server is bound to refuse. */
 	it("withholds the scopes a read-only role cannot be granted", async () => {
 		const user = userEvent.setup();
@@ -197,6 +237,9 @@ describe("OrganizationApiKeysSettings — a read-only role's create request", ()
 			screen.queryByLabelText("Projects Write"),
 		).not.toBeInTheDocument();
 		expect(screen.queryByLabelText("Full Access")).not.toBeInTheDocument();
+		expect(
+			screen.queryByLabelText("reportsWriteLabel"),
+		).not.toBeInTheDocument();
 	});
 
 	/** A shorter list with no explanation reads as a bug rather than a rule. */

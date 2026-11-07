@@ -1,3 +1,8 @@
+// Authorization is exercised by commands-access.test.ts; these tests isolate existing admission/provider behavior.
+vi.mock("../lib/commands-access", () => ({
+	requireCodingRunProject: vi.fn(async () => "example-org"),
+}));
+
 /**
  * startCodingRun — run-start readiness gate and active-run uniqueness
  * (plan §F1 run-start checks, §F2, Slice 5). Fail-closed first.
@@ -24,6 +29,7 @@ const {
 		userStory: { findFirst: vi.fn() },
 		organization: { findUnique: vi.fn() },
 		codingRun: {
+			findUnique: vi.fn(),
 			findFirst: vi.fn(),
 			create: vi.fn(),
 			update: vi.fn(),
@@ -163,6 +169,7 @@ beforeEach(() => {
 	mockDb.userStory.findFirst.mockResolvedValue(storyRow);
 	mockDb.organization.findUnique.mockResolvedValue(null);
 	mockDb.codingRun.findFirst.mockResolvedValue(null);
+	mockDb.codingRun.findUnique.mockReset().mockResolvedValue(null);
 	mockDb.codingRun.create.mockResolvedValue({ id: "run-1" });
 	mockDb.codingRun.update.mockResolvedValue({});
 	mockGetTemporalClient.mockResolvedValue({
@@ -549,6 +556,252 @@ describe("startCodingRun — ambiguous start errors (describe the deterministic 
 		);
 		expect(error.message).toMatch(/Selected task was not found/i);
 		expect(mockDb.codingRun.create).not.toHaveBeenCalled();
+		expect(workflowStart).not.toHaveBeenCalled();
+	});
+});
+
+describe("stable implementation request identity", () => {
+	const requestId = "00000000-0000-4000-8000-000000000001";
+	async function firstRequest() {
+		let row: Record<string, unknown> | undefined;
+		mockDb.codingRun.create.mockImplementation(
+			async ({ data }: { data: Record<string, unknown> }) => {
+				row = { ...data, status: "QUEUED" };
+				return row;
+			},
+		);
+		const input = {
+			...baseInput,
+			organizationId: "example-org",
+			requestId,
+		};
+		const response = await handlers.start({ input, context });
+		if (!row) {
+			throw new Error("Expected the first admission to reserve a row");
+		}
+		return { input, response, row };
+	}
+	it("recovers the same terminal run without dispatching another workflow", async () => {
+		const first = await firstRequest();
+		const row = {
+			...first.row,
+			userId: "user-1",
+			organizationId: "example-org",
+			status: "COMPLETED",
+		};
+		mockDb.codingRun.findUnique.mockResolvedValue(row);
+		workflowStart.mockClear();
+		mockDb.codingRun.create.mockClear();
+		await expect(
+			handlers.start({ input: first.input, context }),
+		).resolves.toMatchObject({ codingRunId: row.id, status: "completed" });
+		expect(workflowStart).not.toHaveBeenCalled();
+		expect(mockDb.codingRun.create).not.toHaveBeenCalled();
+		expect(row.providerMetadata).toMatchObject({
+			fabricRequest: {
+				version: 1,
+				requestHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+			},
+		});
+		expect(JSON.stringify(row.providerMetadata)).not.toContain(
+			"spikeQuestion",
+		);
+	});
+	it.each([
+		{},
+		{ taskId: null },
+		{ taskId: undefined },
+		{
+			provider: "BACKGROUND_AGENTS",
+			executionChannel: "BACKGROUND_AGENTS",
+			kind: "IMPLEMENT",
+		},
+	])(
+		"replays semantically identical optional/default request fields %j",
+		async (defaults) => {
+			const first = await firstRequest();
+			mockDb.codingRun.findUnique.mockResolvedValue({
+				...first.row,
+				userId: "user-1",
+				organizationId: "example-org",
+				status: "COMPLETED",
+			});
+			mockDb.codingRun.create.mockClear();
+			workflowStart.mockClear();
+			await expect(
+				handlers.start({
+					input: { ...first.input, ...defaults },
+					context,
+				}),
+			).resolves.toMatchObject({
+				codingRunId: first.row.id,
+				status: "completed",
+			});
+			expect(mockDb.codingRun.create).not.toHaveBeenCalled();
+			expect(workflowStart).not.toHaveBeenCalled();
+		},
+	);
+	it("rejects the same UUID with different story/task/provider options", async () => {
+		const first = await firstRequest();
+		mockDb.codingRun.findUnique.mockResolvedValue({
+			...first.row,
+			userId: "user-1",
+			organizationId: "example-org",
+			status: "COMPLETED",
+		});
+		workflowStart.mockClear();
+		await expect(
+			handlers.start({
+				input: { ...first.input, storyId: "other-story" },
+				context,
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+		await expect(
+			handlers.start({
+				input: { ...first.input, llmConnection: "other-provider" },
+				context,
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+		expect(workflowStart).not.toHaveBeenCalled();
+	});
+	it("recovers a same-UUID winner inserted between initial lookup and active-run precheck", async () => {
+		const first = await firstRequest();
+		const row = {
+			...first.row,
+			userId: "user-1",
+			organizationId: "example-org",
+			status: "RUNNING",
+		};
+		mockDb.codingRun.findUnique.mockClear();
+		mockDb.codingRun.findUnique
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(row);
+		mockDb.codingRun.findFirst.mockResolvedValueOnce(row);
+		mockDb.codingRun.create.mockClear();
+		workflowStart.mockClear();
+		await expect(
+			handlers.start({ input: first.input, context }),
+		).resolves.toMatchObject({ codingRunId: row.id, status: "running" });
+		expect(mockDb.codingRun.findUnique).toHaveBeenCalledTimes(2);
+		expect(mockDb.codingRun.create).not.toHaveBeenCalled();
+		expect(workflowStart).not.toHaveBeenCalled();
+	});
+	it("rejects changed payload against the raced UUID receipt rather than treating it as unrelated work", async () => {
+		const first = await firstRequest();
+		const row = {
+			...first.row,
+			userId: "user-1",
+			organizationId: "example-org",
+			status: "RUNNING",
+		};
+		mockDb.codingRun.findUnique.mockClear();
+		mockDb.codingRun.findUnique
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(row);
+		mockDb.codingRun.findFirst.mockResolvedValueOnce(row);
+		mockDb.codingRun.create.mockClear();
+		workflowStart.mockClear();
+		await expect(
+			handlers.start({
+				input: {
+					...first.input,
+					spikeQuestion: "A different investigation question",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message:
+				"This requestId is already bound to a different implementation request.",
+		});
+		expect(mockDb.codingRun.create).not.toHaveBeenCalled();
+		expect(workflowStart).not.toHaveBeenCalled();
+	});
+	it("returns an explicit unconfirmed replay after an ambiguous start without resubmitting", async () => {
+		mockDb.userStory.findFirst.mockResolvedValue({
+			...storyRow,
+			project: { ...storyRow.project, organizationId: "example-org" },
+		});
+		let retained: Record<string, unknown> | undefined;
+		mockDb.codingRun.create.mockImplementation(
+			async ({ data }: { data: Record<string, unknown> }) => {
+				retained = { ...data, status: "QUEUED" };
+				return retained;
+			},
+		);
+		workflowStart.mockRejectedValue(new Error("Lost start response"));
+		workflowDescribe.mockRejectedValue(new Error("Temporal unavailable"));
+		const input = {
+			...baseInput,
+			organizationId: "example-org",
+			requestId,
+		};
+		await expect(handlers.start({ input, context })).rejects.toMatchObject({
+			code: "INTERNAL_SERVER_ERROR",
+		});
+		if (!retained) {
+			throw new Error("Admission row must survive ambiguous dispatch");
+		}
+		mockDb.codingRun.findUnique.mockResolvedValue(retained);
+		workflowStart.mockClear();
+		mockDb.codingRun.create.mockClear();
+		const result = await handlers.start({ input, context });
+		expect(result).toMatchObject({
+			codingRunId: retained.id,
+			status: "dispatch_unconfirmed",
+			inspectionRequired: true,
+			dispatchUnconfirmed: true,
+			message: expect.stringContaining("no replacement was started"),
+		});
+		expect(workflowStart).not.toHaveBeenCalled();
+		expect(mockDb.codingRun.create).not.toHaveBeenCalled();
+	});
+	it("can confirm only the exact existing queued workflow without restarting it", async () => {
+		const first = await firstRequest();
+		mockDb.codingRun.findUnique.mockResolvedValue({
+			...first.row,
+			userId: "user-1",
+			organizationId: "example-org",
+			status: "QUEUED",
+		});
+		workflowDescribe.mockResolvedValue({ runId: "example-existing-run" });
+		workflowStart.mockClear();
+		mockDb.codingRun.create.mockClear();
+		await expect(
+			handlers.start({ input: first.input, context }),
+		).resolves.toMatchObject({
+			codingRunId: first.row.id,
+			status: "queued",
+			inspectionRequired: false,
+			dispatchUnconfirmed: false,
+		});
+		expect(workflowGetHandle).toHaveBeenCalledWith(
+			`coding-run-${String(first.row.id)}`,
+		);
+		expect(workflowStart).not.toHaveBeenCalled();
+		expect(mockDb.codingRun.create).not.toHaveBeenCalled();
+	});
+	it("recovers the winning atomic insert after a concurrent identical admission", async () => {
+		const first = await firstRequest();
+		const row = {
+			...first.row,
+			userId: "user-1",
+			organizationId: "example-org",
+			status: "QUEUED",
+		};
+		mockDb.codingRun.findUnique
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce(row);
+		mockDb.codingRun.create.mockRejectedValue({ code: "P2002" });
+		workflowStart.mockClear();
+		await expect(
+			handlers.start({ input: first.input, context }),
+		).resolves.toMatchObject({
+			codingRunId: row.id,
+			status: "dispatch_unconfirmed",
+			dispatchUnconfirmed: true,
+			inspectionRequired: true,
+		});
 		expect(workflowStart).not.toHaveBeenCalled();
 	});
 });

@@ -45,7 +45,7 @@
  */
 
 import { db, hasProjectAccess } from "@repo/database";
-import { hasPermission, Permissions } from "@repo/permissions";
+import { hasPermission, type Permission, Permissions } from "@repo/permissions";
 import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { resolveEffectiveProjectPermissions } from "../../lib/effective-project-permissions";
@@ -105,10 +105,7 @@ const MAX_SYNCED_FILE_DELETE_BODY_BYTES = 16 * 1024;
 
 /** What the object-level gate asks of the key's creator, per method. */
 export interface RequiredContextPermission {
-	permission:
-		| typeof Permissions.CONTEXT_READ
-		| typeof Permissions.CONTEXT_CREATE
-		| typeof Permissions.CONTEXT_DELETE;
+	permission: Permission;
 	/** The nested 403's sentence. */
 	refusal: string;
 	/** Consumer-specific copy; authorization remains identical across surfaces. */

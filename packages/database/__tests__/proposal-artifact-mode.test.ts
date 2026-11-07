@@ -308,7 +308,12 @@ describe("resolveGuestSafeProposalThemeTokens", () => {
 
 		expect(fake.projectDocumentStyle.findFirst).toHaveBeenCalledWith({
 			where: { documentId: DOCUMENT, organizationId: ORG },
-			select: { primaryColor: true, accentColors: true },
+			select: {
+				primaryColor: true,
+				accentColors: true,
+				brandSource: true,
+				coverStyle: true,
+			},
 		});
 		expect(fake.organizationBrandKit.findUnique).toHaveBeenCalledWith({
 			where: { organizationId: ORG },
@@ -344,6 +349,9 @@ describe("resolveGuestSafeProposalThemeTokens", () => {
 				name: true,
 				logoKey: true,
 				colors: true,
+				displayFontFamily: true,
+				bodyFontFamily: true,
+				coverStyle: true,
 			},
 		});
 		expect(fake.organization.findUnique).toHaveBeenCalledWith({

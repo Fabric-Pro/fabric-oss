@@ -149,6 +149,7 @@ export const PROPOSAL_PRINT_CLASSES = {
 	recipientLogo: "pa-cover-logo-recipient",
 	/** A logo drawn for a light background, set on a light plate. */
 	coverLogoPlate: "pa-cover-logo-plate",
+	coverLogoInkPlate: "pa-cover-logo-ink-plate",
 	coverBody: "pa-cover-body",
 	coverTitle: "pa-cover-title",
 	coverLead: "pa-cover-lead",
@@ -913,6 +914,37 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		color: "var(--pa-on-ink)",
 		"background-color": "var(--pa-ink)",
 	}),
+	// Light and minimal covers reuse the contrast-tested paper paint. Rebind
+	// cover-only variables so every label, figure and party stays readable.
+	rule(
+		[
+			`${dot(THEME.cover)}[data-pa-cover="LIGHT"]`,
+			`${dot(THEME.cover)}[data-pa-cover="MINIMAL"]`,
+		],
+		{
+			"background-color": "var(--pa-surface)",
+			"--pa-on-ink": "var(--pa-ink)",
+			"--pa-on-ink-muted": "var(--pa-muted)",
+			"--pa-on-ink-accent": "var(--pa-primary)",
+			"--pa-on-ink-rule": "var(--pa-primary)",
+			"border-top": "12pt solid var(--pa-primary)",
+		},
+	),
+	rule(
+		[
+			`${dot(THEME.cover)}[data-pa-cover="LIGHT"] ${dot(PRINT.coverHero)}`,
+			`${dot(THEME.cover)}[data-pa-cover="MINIMAL"] ${dot(PRINT.coverHero)}`,
+		],
+		{ display: "none" },
+	),
+	rule(`${dot(THEME.cover)}[data-pa-cover="MINIMAL"]`, {
+		"border-top": "none",
+	}),
+	rule(
+		`${dot(THEME.cover)}[data-pa-cover="MINIMAL"] ${dot(PRINT.coverFigures)} > div`,
+		{ "border-top-width": "1pt" },
+	),
+
 	// The hero fills the upper cover under two layers of ink: a veil at the
 	// paint's opacity, worked out so the cover's text reads at 4.5:1 even
 	// over a pure white hero, and a fade into the plain ink towards the text
@@ -970,6 +1002,7 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		"border-radius": "5pt",
 		"background-color": "var(--pa-surface)",
 	}),
+	rule(dot(PRINT.coverLogoInkPlate), { "background-color": "var(--pa-ink)" }),
 	rule(dot(PRINT.coverBody), {
 		"margin-top": `calc(${COVER_BODY_TOP} - ${COVER_TOP})`,
 		// Ends a gap above the parties, whatever the title and lead hold.

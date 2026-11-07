@@ -1,6 +1,8 @@
+import { FRAME_PRESENTATIONS } from "@repo/utils/frame-presentation";
 import { FRAME_SURFACES } from "@repo/utils/frame-surfaces";
 import { z } from "zod";
 import type { FrameDocumentView } from "../components/FrameRenderer";
+import { normalizeFrameHandoffRevision } from "./frame-agent-handoff";
 
 /**
  * What `fabric_list_frames` and `fabric_get_frame` return for a frame, as the
@@ -29,10 +31,12 @@ const FrameSummarySchema = z.object({
 	title: z.string(),
 	description: z.string().optional(),
 	kind: z.enum(["frame", "slideshow"]),
+	presentation: z.enum(FRAME_PRESENTATIONS).optional(),
 	surface: FrameSurfaceSchema.optional(),
 	projectId: z.string().optional(),
 	shareScope: FrameShareScopeSchema.optional(),
 	isPublic: z.boolean().optional(),
+	isPublishedSnapshot: z.boolean().optional(),
 	ownedByCaller: z.boolean().optional(),
 	/** What produced the page; a page a workflow wrote is shown without scripts. */
 	sourceRunType: z.string().optional(),
@@ -125,12 +129,15 @@ export function shareScopeSentence(
  */
 export function agentContextOfFrame(frame: {
 	frameId: string;
+	updatedAt?: string | Date | null;
 	surface?: FrameSurfaceName | null;
 	projectId?: string | null;
 }) {
+	const revision = normalizeFrameHandoffRevision(frame.updatedAt);
 	return {
 		surface: frame.surface ?? null,
 		launchFrameId: frame.frameId,
+		...(revision ? { launchFrameUpdatedAt: revision } : {}),
 		workspaceId: frame.surface === "workspace" ? frame.frameId : null,
 		projectId: frame.projectId ?? null,
 	};
@@ -141,9 +148,13 @@ export function frameDocumentOf(frame: FrameDetail): FrameDocumentView {
 	return {
 		version: 1,
 		kind: frame.kind,
+		...(frame.presentation ? { presentation: frame.presentation } : {}),
 		title: frame.title,
 		...(frame.description ? { description: frame.description } : {}),
 		blocks: frame.blocks,
+		...(frame.sourceRunType
+			? { metadata: { sourceRunType: frame.sourceRunType } }
+			: {}),
 	};
 }
 

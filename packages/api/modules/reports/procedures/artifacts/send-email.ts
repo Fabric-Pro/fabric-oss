@@ -1,11 +1,11 @@
 import { ORPCError } from "@orpc/server";
 import { createId } from "@paralleldrive/cuid2";
 import {
-	createTemplateInstanceArtifactEmailDeliveries,
 	canAccessReportInstance,
-	readReportProjectBindings,
+	createTemplateInstanceArtifactEmailDeliveries,
 	db,
 	getTemplateInstanceArtifact,
+	readReportProjectBindings,
 } from "@repo/database";
 import { sendEmail } from "@repo/mail";
 import { downloadFile } from "@repo/storage";
@@ -16,6 +16,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import type { ReportCommandContext } from "../../lib/report-command-context";
 import { assertArtifactTenantAccess } from "./_tenant";
 
 /**
@@ -24,7 +25,7 @@ import { assertArtifactTenantAccess } from "./_tenant";
  */
 const MAX_RECIPIENTS = 50;
 
-const sendEmailInputSchema = z
+export const sendEmailInputSchema = z
 	.object({
 		artifactId: z.string(),
 		organizationId: z.string().nullable().optional(),
@@ -58,221 +59,228 @@ const sendEmailInputSchema = z
 export const sendArtifactEmailProcedure = tenantProtectedProcedure
 	.use(requireInputOrgPermission(Permissions.REPORT_SHARE))
 	.input(sendEmailInputSchema)
-	.handler(async ({ input, context }) => {
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
+	.handler(handleSendReportArtifact);
+
+export async function handleSendReportArtifact({
+	input,
+	context,
+}: {
+	input: z.infer<typeof sendEmailInputSchema>;
+	context: ReportCommandContext;
+}) {
+	const organizationId = resolveOrganizationId(
+		input.organizationId,
+		context.session,
+	);
+
+	const artifact = await getTemplateInstanceArtifact(input.artifactId, {
+		userId: context.user.id,
+		organizationId,
+	});
+
+	if (!artifact) {
+		throw new ORPCError("NOT_FOUND", {
+			message: "Report artifact not found",
+		});
+	}
+
+	assertArtifactTenantAccess(artifact, {
+		userId: context.user.id,
+		organizationId,
+	});
+
+	// Sharing permission does not make restricted project evidence visible to
+	// every member or an arbitrary external address. Authorize the audience
+	// before reading attachment bytes or producing an external effect.
+	let projectBindings: string[];
+	try {
+		projectBindings = readReportProjectBindings(
+			artifact.execution.instance.fabricConfig,
+			artifact.execution.parameters,
 		);
-
-		const artifact = await getTemplateInstanceArtifact(input.artifactId, {
-			userId: context.user.id,
-			organizationId,
+	} catch {
+		throw new ORPCError("FORBIDDEN", {
+			message: "Report audience could not be verified",
 		});
-
-		if (!artifact) {
-			throw new ORPCError("NOT_FOUND", {
-				message: "Report artifact not found",
-			});
-		}
-
-		assertArtifactTenantAccess(artifact, {
-			userId: context.user.id,
-			organizationId,
-		});
-
-		// Sharing permission does not make restricted project evidence visible to
-		// every member or an arbitrary external address. Authorize the audience
-		// before reading attachment bytes or producing an external effect.
-		let projectBindings: string[];
-		try {
-			projectBindings = readReportProjectBindings(
-				artifact.execution.instance.fabricConfig,
-				artifact.execution.parameters,
-			);
-		} catch {
+	}
+	if (projectBindings.length > 0) {
+		if (input.recipientEmails.length > 0) {
 			throw new ORPCError("FORBIDDEN", {
-				message: "Report audience could not be verified",
+				message:
+					"Project reports can only be shared with authorized project members",
 			});
 		}
-		if (projectBindings.length > 0) {
-			if (input.recipientEmails.length > 0) {
-				throw new ORPCError("FORBIDDEN", {
-					message:
-						"Project reports can only be shared with authorized project members",
-				});
-			}
-			const allowed = await Promise.all(
-				[...new Set(input.recipientUserIds)].map((userId) =>
-					canAccessReportInstance(
-						artifact.execution.instance,
-						{ userId, organizationId },
-						artifact.execution.parameters,
-					),
+		const allowed = await Promise.all(
+			[...new Set(input.recipientUserIds)].map((userId) =>
+				canAccessReportInstance(
+					artifact.execution.instance,
+					{ userId, organizationId },
+					artifact.execution.parameters,
 				),
-			);
-			if (allowed.some((value) => !value)) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "One or more recipients cannot access this report",
-				});
-			}
-		}
-
-		// Resolve the attachment payload from whichever storage backend the
-		// artifact was written to. Mirrors `downloadArtifactProcedure` so the
-		// "Send" action works for every output format the workflow emits.
-		let attachmentContent: Buffer;
-		if (artifact.content && !artifact.s3Path) {
-			attachmentContent = Buffer.from(artifact.content, "utf-8");
-		} else if (artifact.s3Path && artifact.s3Bucket) {
-			const { data } = await downloadFile(artifact.s3Path, {
-				bucket: artifact.s3Bucket,
-			});
-			attachmentContent = data;
-		} else {
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: "Artifact has no content available",
+			),
+		);
+		if (allowed.some((value) => !value)) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "One or more recipients cannot access this report",
 			});
 		}
+	}
 
-		// Resolve org-member recipients to their {id, name, email}. We only
-		// load users from the active tenant — for personal context we just
-		// confirm `userId === self`, for org context we accept any member of
-		// the same org. Anything outside is silently dropped.
-		const userRecipients = input.recipientUserIds.length
-			? await db.user.findMany({
-					where: organizationId
-						? {
-								id: { in: input.recipientUserIds },
-								members: { some: { organizationId } },
-							}
-						: {
-								id: {
-									in: input.recipientUserIds.filter(
-										(id) => id === context.user.id,
-									),
-								},
+	// Resolve the attachment payload from whichever storage backend the
+	// artifact was written to. Mirrors `downloadArtifactProcedure` so the
+	// "Send" action works for every output format the workflow emits.
+	let attachmentContent: Buffer;
+	if (artifact.content && !artifact.s3Path) {
+		attachmentContent = Buffer.from(artifact.content, "utf-8");
+	} else if (artifact.s3Path && artifact.s3Bucket) {
+		const { data } = await downloadFile(artifact.s3Path, {
+			bucket: artifact.s3Bucket,
+		});
+		attachmentContent = data;
+	} else {
+		throw new ORPCError("INTERNAL_SERVER_ERROR", {
+			message: "Artifact has no content available",
+		});
+	}
+
+	// Resolve org-member recipients to their {id, name, email}. We only
+	// load users from the active tenant — for personal context we just
+	// confirm `userId === self`, for org context we accept any member of
+	// the same org. Anything outside is silently dropped.
+	const userRecipients = input.recipientUserIds.length
+		? await db.user.findMany({
+				where: organizationId
+					? {
+							id: { in: input.recipientUserIds },
+							members: { some: { organizationId } },
+						}
+					: {
+							id: {
+								in: input.recipientUserIds.filter(
+									(id) => id === context.user.id,
+								),
 							},
-					select: { id: true, name: true, email: true },
-				})
-			: [];
-
-		// Dedupe everything by email — an org member who is also pasted in the
-		// freeform field must only receive one message.
-		const seen = new Set<string>();
-		const recipients: Array<{
-			email: string;
-			userId: string | null;
-			displayName: string | null;
-		}> = [];
-
-		for (const u of userRecipients) {
-			const key = u.email.toLowerCase();
-			if (seen.has(key)) {
-				continue;
-			}
-			seen.add(key);
-			recipients.push({
-				email: u.email,
-				userId: u.id,
-				displayName: u.name ?? null,
-			});
-		}
-		for (const e of input.recipientEmails) {
-			const key = e.toLowerCase();
-			if (seen.has(key)) {
-				continue;
-			}
-			seen.add(key);
-			recipients.push({ email: e, userId: null, displayName: null });
-		}
-
-		if (recipients.length === 0) {
-			throw new ORPCError("BAD_REQUEST", {
-				message: "No valid recipients after deduplication",
-			});
-		}
-
-		const subject = `${artifact.name} — Fabric report`;
-		const defaultText = `${context.user.name ?? context.user.email} shared a Fabric report with you.\nAttachment: ${artifact.name}\n`;
-		const textBody = input.messageBody
-			? `${input.messageBody}\n\n—\n${defaultText}`
-			: defaultText;
-
-		const deliveryRows: Array<{
-			recipient: (typeof recipients)[number];
-			status: "SENT" | "FAILED";
-			errorMessage: string | null;
-		}> = [];
-
-		for (const recipient of recipients) {
-			try {
-				const ok = await sendEmail({
-					to: recipient.email,
-					subject,
-					text: textBody,
-					attachments: [
-						{
-							filename: artifact.name,
-							content: attachmentContent,
-							contentType: artifact.mimeType,
 						},
-					],
+				select: { id: true, name: true, email: true },
+			})
+		: [];
+
+	// Dedupe everything by email — an org member who is also pasted in the
+	// freeform field must only receive one message.
+	const seen = new Set<string>();
+	const recipients: Array<{
+		email: string;
+		userId: string | null;
+		displayName: string | null;
+	}> = [];
+
+	for (const u of userRecipients) {
+		const key = u.email.toLowerCase();
+		if (seen.has(key)) {
+			continue;
+		}
+		seen.add(key);
+		recipients.push({
+			email: u.email,
+			userId: u.id,
+			displayName: u.name ?? null,
+		});
+	}
+	for (const e of input.recipientEmails) {
+		const key = e.toLowerCase();
+		if (seen.has(key)) {
+			continue;
+		}
+		seen.add(key);
+		recipients.push({ email: e, userId: null, displayName: null });
+	}
+
+	if (recipients.length === 0) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: "No valid recipients after deduplication",
+		});
+	}
+
+	const subject = `${artifact.name} — Fabric report`;
+	const defaultText = `${context.user.name ?? context.user.email} shared a Fabric report with you.\nAttachment: ${artifact.name}\n`;
+	const textBody = input.messageBody
+		? `${input.messageBody}\n\n—\n${defaultText}`
+		: defaultText;
+
+	const deliveryRows: Array<{
+		recipient: (typeof recipients)[number];
+		status: "SENT" | "FAILED";
+		errorMessage: string | null;
+	}> = [];
+
+	for (const recipient of recipients) {
+		try {
+			const ok = await sendEmail({
+				to: recipient.email,
+				subject,
+				text: textBody,
+				attachments: [
+					{
+						filename: artifact.name,
+						content: attachmentContent,
+						contentType: artifact.mimeType,
+					},
+				],
+			});
+			if (ok) {
+				deliveryRows.push({
+					recipient,
+					status: "SENT",
+					errorMessage: null,
 				});
-				if (ok) {
-					deliveryRows.push({
-						recipient,
-						status: "SENT",
-						errorMessage: null,
-					});
-				} else {
-					// sendEmail swallows provider errors and returns false —
-					// see packages/mail/src/util/send.ts. We don't have the
-					// underlying message, but we MUST record the failure.
-					deliveryRows.push({
-						recipient,
-						status: "FAILED",
-						errorMessage: "Email provider rejected the message",
-					});
-				}
-			} catch (e) {
+			} else {
+				// sendEmail swallows provider errors and returns false —
+				// see packages/mail/src/util/send.ts. We don't have the
+				// underlying message, but we MUST record the failure.
 				deliveryRows.push({
 					recipient,
 					status: "FAILED",
-					errorMessage:
-						e instanceof Error ? e.message : "Unknown error",
+					errorMessage: "Email provider rejected the message",
 				});
 			}
+		} catch (e) {
+			deliveryRows.push({
+				recipient,
+				status: "FAILED",
+				errorMessage: e instanceof Error ? e.message : "Unknown error",
+			});
 		}
+	}
 
-		// Single `sendId` ties all per-recipient rows of this Send-button click
-		// together so the history UI collapses them into one entry.
-		const sendId = createId();
+	// Single `sendId` ties all per-recipient rows of this Send-button click
+	// together so the history UI collapses them into one entry.
+	const sendId = createId();
 
-		await createTemplateInstanceArtifactEmailDeliveries(
-			deliveryRows.map((row) => ({
-				artifactId: artifact.id,
-				sendId,
-				userId: context.user.id,
-				organizationId: organizationId ?? null,
-				recipientUserId: row.recipient.userId,
-				recipientEmail: row.recipient.email,
-				messageBody: input.messageBody ?? null,
-				status: row.status,
-				errorMessage: row.errorMessage,
-			})),
-		);
+	await createTemplateInstanceArtifactEmailDeliveries(
+		deliveryRows.map((row) => ({
+			artifactId: artifact.id,
+			sendId,
+			userId: context.user.id,
+			organizationId: organizationId ?? null,
+			recipientUserId: row.recipient.userId,
+			recipientEmail: row.recipient.email,
+			messageBody: input.messageBody ?? null,
+			status: row.status,
+			errorMessage: row.errorMessage,
+		})),
+	);
 
-		const sent = deliveryRows.filter((r) => r.status === "SENT").length;
-		const failed = deliveryRows
-			.filter((r) => r.status === "FAILED")
-			.map((r) => ({
-				email: r.recipient.email,
-				error: r.errorMessage ?? "Unknown error",
-			}));
+	const sent = deliveryRows.filter((r) => r.status === "SENT").length;
+	const failed = deliveryRows
+		.filter((r) => r.status === "FAILED")
+		.map((r) => ({
+			email: r.recipient.email,
+			error: r.errorMessage ?? "Unknown error",
+		}));
 
-		return {
-			sent,
-			failed,
-			totalRecipients: recipients.length,
-		};
-	});
+	return {
+		sent,
+		failed,
+		totalRecipients: recipients.length,
+	};
+}

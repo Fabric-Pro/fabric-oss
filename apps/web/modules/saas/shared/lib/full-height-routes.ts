@@ -23,6 +23,7 @@ export function isFullHeightPath(pathname: string): boolean {
 	return (
 		isWorkflowCanvasPath(pathname) ||
 		isAgentBuilderPath(pathname) ||
+		/^\/app\/[^/]+\/agents\/fabric-ai$/.test(pathname) ||
 		pathname.endsWith("/chatbot") ||
 		pathname.endsWith("/nexus") ||
 		/\/kanban(\/|\?|$)/.test(pathname)

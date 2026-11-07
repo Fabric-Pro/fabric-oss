@@ -313,3 +313,53 @@ it("allows a reviewed expectation to be saved with another name", async () => {
 		screen.getByRole("button", { name: "Save check", exact: true }),
 	).toBeEnabled();
 });
+
+it("shows structured and unavailable check outcomes instead of claiming empty phrase checks passed", async () => {
+	m.list.mockResolvedValue({
+		cases: [
+			{
+				...check,
+				version: 2,
+				requiredPhrases: [],
+				forbiddenPhrases: [],
+				jsonAssertions: [{ pointer: "/ready", equals: true }],
+			},
+		],
+		canManage: true,
+	});
+	m.apply.mockResolvedValue({
+		baseline: { version: 1 },
+		candidate: {
+			version: 2,
+			report: { status: "not-assessed" },
+			expectations: [],
+			quality: {
+				version: 2,
+				method: "deterministic",
+				scorerVersion: "fabric-deterministic-v1",
+				status: "NOT_ASSESSED",
+				passed: 1,
+				total: 2,
+				unavailable: 1,
+				results: [
+					{ kind: "json", index: 0, passed: true, available: true },
+					{
+						kind: "grounding",
+						index: 0,
+						passed: false,
+						available: false,
+					},
+				],
+			},
+		},
+		change: "unchanged",
+	});
+	mount();
+	fireEvent.click(screen.getByRole("button", { name: "Check result" }));
+	fireEvent.click(
+		await screen.findByRole("button", { name: "Compare with baseline" }),
+	);
+	await screen.findByText(/1 not assessed/);
+	expect(screen.getByText(/JSON value check 1/)).toBeInTheDocument();
+	expect(screen.queryByText(/All checks passed/)).not.toBeInTheDocument();
+});

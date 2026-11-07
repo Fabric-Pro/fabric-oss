@@ -1,5 +1,7 @@
 export interface FrameToolResult {
 	frameId: string;
+	proposalId?: string;
+	reviewUrl?: string;
 	title?: string;
 	description?: string;
 	kind?: "frame" | "slideshow";
@@ -37,6 +39,17 @@ export function extractFrameToolResult(value: unknown): FrameToolResult | null {
 
 	return {
 		frameId,
+		proposalId:
+			typeof obj.id === "string" && obj.status === "PENDING"
+				? obj.id
+				: undefined,
+		reviewUrl:
+			typeof obj.reviewUrl === "string" &&
+			/^\/app\/[^/?#]+\/frames\/[^/?#]+\?review=[^&#]+$/.test(
+				obj.reviewUrl,
+			)
+				? obj.reviewUrl
+				: undefined,
 		title: typeof obj.title === "string" ? obj.title : undefined,
 		description:
 			typeof obj.description === "string" ? obj.description : undefined,
@@ -60,6 +73,9 @@ export function extractFrameToolResult(value: unknown): FrameToolResult | null {
 
 export function isFrameToolName(toolName: string): boolean {
 	return [
+		"fabric_propose_frame_change",
+		"fabric_create_frame_draft",
+		"fabric_create_frame_from_template",
 		"fabric_create_frame",
 		"fabric_update_frame",
 		"fabric_edit_frame_block",

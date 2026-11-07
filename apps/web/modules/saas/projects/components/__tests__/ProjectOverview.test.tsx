@@ -1,3 +1,7 @@
+vi.mock("../ProjectDeliverySnapshot", () => ({
+	ProjectDeliverySnapshot: () => null,
+}));
+
 /**
  * Tests for the Document Pipeline section of ProjectOverview.
  *

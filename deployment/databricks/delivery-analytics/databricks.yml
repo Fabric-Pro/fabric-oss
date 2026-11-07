@@ -1,0 +1,10 @@
+# Intentionally has no resources. Use render.py with an operator-owned binding.
+bundle:
+  name: delivery-analytics-unbound
+  engine: direct
+  databricks_cli_version: ">= 1.7.0"
+variables:
+  operator_binding_required:
+    description: This unbound bundle is not deployable; render a private audience binding first.
+workspace:
+  root_path: /Workspace/${var.operator_binding_required}

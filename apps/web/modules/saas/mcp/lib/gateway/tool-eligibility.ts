@@ -1,3 +1,12 @@
+import { isPrivateDeliverySourceCaptureEnabled } from "@repo/temporal/delivery-source-readiness";
+import {
+	FRAME_ORGANIZATION_AUTHORING_TOOL_NAMES,
+	FRAME_REVIEW_TOOL_NAMES,
+} from "@repo/temporal/fabric-frame-tool-definitions";
+import {
+	FABRIC_DELIVERY_SIGNAL_TOOL_DEFINITIONS,
+	FABRIC_DELIVERY_SOURCE_TOOL_DEFINITIONS,
+} from "@repo/temporal/fabric-gateway-tools";
 /**
  * Fabric MCP Gateway - Tool Eligibility
  *
@@ -62,6 +71,50 @@ function requiredToolScope(
 		: connectedToolScope(tool.name, tool.annotations, session.credential);
 }
 
+/** These handlers deliberately require exact consent; discovery must apply the same rule. */
+const PRIVATE_DELIVERY_SOURCE_TOOLS: ReadonlySet<string> = new Set(
+	FABRIC_DELIVERY_SOURCE_TOOL_DEFINITIONS.map((tool) => tool.name),
+);
+const EXACT_SCOPE_TOOLS: ReadonlySet<string> = new Set([
+	...FABRIC_DELIVERY_SIGNAL_TOOL_DEFINITIONS.map((tool) => tool.name),
+	...PRIVATE_DELIVERY_SOURCE_TOOLS,
+	...FRAME_REVIEW_TOOL_NAMES,
+	...FRAME_ORGANIZATION_AUTHORING_TOOL_NAMES,
+	"fabric_get_frame_branding",
+	"fabric_apply_frame_branding",
+	"fabric_get_report_branding",
+	"fabric_get_report_instance_branding",
+	"fabric_apply_report_branding",
+]);
+
+/** Full and discovery-mode lists use the same exact consent, including additional read scopes. */
+export function brandingToolConsentSatisfied(
+	session: Pick<GatewaySession, "credential" | "scopes"> &
+		Partial<Pick<GatewaySession, "pageProjectId">>,
+	tool: EligibilityTool,
+): boolean {
+	if (
+		PRIVATE_DELIVERY_SOURCE_TOOLS.has(tool.name) &&
+		(!isPrivateDeliverySourceCaptureEnabled() ||
+			session.credential === "service" ||
+			session.pageProjectId !== undefined)
+	) {
+		return false;
+	}
+	if (!EXACT_SCOPE_TOOLS.has(tool.name)) {
+		return true;
+	}
+	const required = requiredToolScope(session, tool);
+	return (
+		session.credential === "session" ||
+		scopeSatisfied(
+			session.scopes,
+			{ ...required, exact: true },
+			session.credential,
+		)
+	);
+}
+
 /**
  * Whether the session's credential holds the scope `tool` requires: the same
  * scope check a direct `tools/call` makes before running it. OAuth agents
@@ -69,17 +122,41 @@ function requiredToolScope(
  * they can request human approval for them.
  */
 export function credentialAllowsTool(
-	session: Pick<GatewaySession, "credential" | "scopes">,
+	session: Pick<GatewaySession, "credential" | "scopes"> &
+		Partial<Pick<GatewaySession, "pageProjectId">>,
 	tool: EligibilityTool,
 ): boolean {
 	const required = requiredToolScope(session, tool);
+	if (EXACT_SCOPE_TOOLS.has(tool.name)) {
+		return brandingToolConsentSatisfied(session, tool);
+	}
+
+	// Discovery has no arguments: offer the brand reader when either its
+	// organization or project read is consented. Execution selects the scope
+	// from the resolved project binding, then repeats live object permission.
+	if (tool.name === "fabric_get_artifact_brand") {
+		return (
+			scopeSatisfied(
+				session.scopes,
+				{ scope: "orgs:read", kind: "read" },
+				session.credential,
+			) ||
+			scopeSatisfied(
+				session.scopes,
+				{ scope: "projects:read", kind: "read" },
+				session.credential,
+			)
+		);
+	}
 	if (scopeSatisfied(session.scopes, required, session.credential)) {
 		return true;
 	}
 	return (
 		session.credential === "oauth" &&
+		!required.exact &&
 		session.scopes.includes("mcp:read") &&
 		required.kind === "write" &&
+		required.scope !== "orgs:write" &&
 		!required.scope.startsWith("chats:")
 	);
 }
@@ -105,6 +182,7 @@ export function toolRequiresAuthority(
 		const scopes = session.scopes ?? [];
 		return (
 			required.kind === "write" &&
+			required.scope !== "orgs:write" &&
 			!required.scope.startsWith("chats:") &&
 			!scopeSatisfied(scopes, required, session.credential)
 		);

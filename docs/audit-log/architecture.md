@@ -73,6 +73,9 @@ an `as const` array of 56+ action keys grouped by category prefix:
   member removing themselves) with the leaving user as both actor and resource.
 - `account.*` — personal API key lifecycle
 - `project.*`, `story.*` — project + feature management
+- `frame.*` — saved deliverable creation, edits, content restore, sharing and PDF export.
+  `frame.created` records a report run's linked Frame creation in the same transaction as
+  the report artifact; metadata carries execution ID and selected brand source, never content.
 - `audit.*` — viewer + export + retention + REST API requests
 - `admin.*` — staff-only actions (e.g. `admin.auditLog.viaApiKey`)
 - `incident.*` — bridge from `IncidentEvent` lifecycle (state transitions only)

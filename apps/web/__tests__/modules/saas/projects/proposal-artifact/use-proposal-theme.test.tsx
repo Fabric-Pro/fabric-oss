@@ -214,9 +214,7 @@ describe("useProposalTheme", () => {
 		expect(property(result, "--pa-font-display")).toBe('"Poppins"');
 		expect(property(result, "--pa-font-body")).toBe('"Inter"');
 		expect(property(result, "--pa-font-mono")).toBe('"JetBrains Mono"');
-		expect(result.current.rootProps?.className).toContain(
-			"next-font--font-poppins",
-		);
+		expect(result.current.rootProps?.className).toBe("proposal-theme");
 		expect(api.getThemeTokens).toHaveBeenCalledWith({
 			projectId: PROJECT_ID,
 			documentId: DOCUMENT_ID,
@@ -387,14 +385,8 @@ describe("useProposalTheme", () => {
 		);
 
 		const rootProps = result.current.rootProps;
-		// The theme's class, then the classes that define next/font's
-		// `--font-poppins` and `--font-jetbrains-mono` for the theme's display
-		// and mono faces (stand-in names from the setup's next/font mock).
-		expect(rootProps?.className.split(" ")).toEqual([
-			"proposal-theme",
-			"next-font--font-poppins",
-			"next-font--font-jetbrains-mono",
-		]);
+		// Literal family names use the same committed font bytes as offline print.
+		expect(rootProps?.className).toBe("proposal-theme");
 		expect(rootProps?.["data-proposal-theme"]).toBe("live");
 		// The root remaps the app's colour tokens for everything inside it, so
 		// a background or text utility on it would repaint it from them.

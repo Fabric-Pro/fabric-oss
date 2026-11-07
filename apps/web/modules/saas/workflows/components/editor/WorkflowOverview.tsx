@@ -1,5 +1,6 @@
 "use client";
 
+import { RunQualityPanel } from "@saas/run-quality/components/RunQualityPanel";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
@@ -115,6 +116,7 @@ async function copyId(workflowId: string) {
  * the workflow is in, and its steps in order (click one to select it).
  */
 export function WorkflowOverview({
+	organizationId,
 	onConfigureSchedule,
 	workflowId,
 	workflowName,
@@ -128,8 +130,10 @@ export function WorkflowOverview({
 	lastRun,
 	steps,
 	onSelectStep,
+	onInspectExecution,
 }: {
 	onConfigureSchedule?: () => void;
+	organizationId?: string | null;
 	workflowId: string;
 	workflowName: string;
 	onRename?: (name: string) => void | Promise<void>;
@@ -142,6 +146,7 @@ export function WorkflowOverview({
 	lastRun?: LastRun | null;
 	steps: Node[];
 	onSelectStep: (nodeId: string) => void;
+	onInspectExecution?: (executionId: string) => void;
 }) {
 	const t = useTranslations("workflows.lifecycle");
 	return (
@@ -206,6 +211,21 @@ export function WorkflowOverview({
 
 			<div className="h-px bg-border" aria-hidden="true" />
 
+			{workflowId && organizationId && (
+				<RunQualityPanel
+					key={workflowId}
+					organizationId={organizationId}
+					targetType="WORKFLOW"
+					targetId={workflowId}
+					onInspectExecution={onInspectExecution}
+					nodeOptions={steps
+						.filter((node) => node.type !== "trigger")
+						.map((node) => ({
+							id: node.id,
+							name: stepLabel(node.data),
+						}))}
+				/>
+			)}
 			<section aria-label="Steps" className="flex flex-col gap-1">
 				<h3 className="pb-1 text-xs text-muted-foreground">Steps</h3>
 				{steps.length === 0 ? (

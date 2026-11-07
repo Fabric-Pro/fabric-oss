@@ -114,10 +114,12 @@ async function placementRefusal(
 function describeFrameSurface(frame: FrameRecord, userId: string) {
 	return {
 		surface: frame.surface,
+		presentation: frame.presentation,
 		projectId: frame.projectId,
 		runtimeTools: frame.runtimeTools,
 		shareScope: frame.shareScope,
 		isPublic: frame.isPublic,
+		isPublishedSnapshot: frame.isPublishedSnapshot ?? false,
 		ownedByCaller: frame.userId === userId,
 		sourceRunType: frame.sourceRunType ?? undefined,
 	};
@@ -221,6 +223,7 @@ export async function createFirstClassFrame(input: {
 		title: validated.value.title,
 		description: validated.value.description,
 		kind: validated.value.kind,
+		presentation: validated.value.presentation,
 		blocks,
 		sourceRunType: input.sourceRunType,
 		sourceRunId: input.sourceRunId,
@@ -302,6 +305,7 @@ export async function updateFirstClassFrame(input: {
 		expectedUpdatedAt: validated.value.expectedUpdatedAt,
 		description: validated.value.description,
 		blocks: validated.value.blocks,
+		presentation: validated.value.presentation,
 		surface: validated.value.surface,
 		runtimeTools: validated.value.runtimeTools,
 	});
@@ -490,6 +494,7 @@ export async function getFirstClassFrame(input: {
 		return {
 			frameId: frame.id,
 			title: frame.title,
+			presentation: frame.presentation,
 			updatedAt: frame.updatedAt.toISOString(),
 			version: frame.version,
 			blocks: frame.document.blocks.map(

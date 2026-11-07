@@ -1,6 +1,7 @@
 "use client";
 
 import { BRAND_FETCH_RUNNING_TTL_MS } from "@repo/utils/proposal-artifact/brand-sources";
+import { useRecipientBrandQueryIdentity } from "@saas/projects/hooks/use-recipient-brand-query-identity";
 import { parseBrandColorList } from "@saas/shared/components/BrandColorListField";
 import {
 	brandFetchRefetchInterval,
@@ -50,14 +51,6 @@ function proposalStyleQueryKey(projectId: string, documentId: string) {
 	] as const;
 }
 
-/**
- * The key the project settings card reads the recipient brand under, so a
- * save here refreshes it too. Restated rather than imported: that card keeps
- * it private.
- */
-const recipientBrandQueryKey = (projectId: string) =>
-	["projectRecipientBrand", projectId] as const;
-
 function brandSourcesQueryKey(projectId: string, documentId: string) {
 	return [
 		"projects",
@@ -70,6 +63,7 @@ function brandSourcesQueryKey(projectId: string, documentId: string) {
 
 type SaveRequest = {
 	style: ProposalStyleInput | null;
+	styleExpectedUpdatedAt: Date | null;
 	recipient: {
 		/** The version the draft was read at. */
 		expectedVersion: number;
@@ -84,6 +78,7 @@ type SaveResult =
 	| { outcome: "saved" }
 	| { outcome: "invalid"; error: ProposalStyleError }
 	| { outcome: "styleFailed" }
+	| { outcome: "styleConflict" }
 	| { outcome: "recipientFailed" }
 	| { outcome: "recipientConflict" }
 	| { outcome: "logoRejected"; code: RecipientLogoErrorCode };
@@ -138,12 +133,21 @@ export function useProposalStyle({
 	recipientIdPrefix: string;
 }) {
 	const queryClient = useQueryClient();
-	const styleKey = proposalStyleQueryKey(projectId, documentId);
-	const recipientKey = recipientBrandQueryKey(projectId);
-	const sourcesKey = brandSourcesQueryKey(projectId, documentId);
+	const identity = useRecipientBrandQueryIdentity(projectId);
+	const actorScope = identity.queryKey.slice(2);
+	const styleKey = [
+		...proposalStyleQueryKey(projectId, documentId),
+		...actorScope,
+	];
+	const recipientKey = identity.queryKey;
+	const sourcesKey = [
+		...brandSourcesQueryKey(projectId, documentId),
+		...actorScope,
+	];
 
 	const styleQuery = useQuery({
 		queryKey: styleKey,
+		enabled: identity.enabled,
 		queryFn: () =>
 			orpcClient.projects.proposalArtifact.getStyle({
 				projectId,
@@ -154,11 +158,13 @@ export function useProposalStyle({
 	});
 	const recipientQuery = useQuery({
 		queryKey: recipientKey,
+		enabled: identity.enabled,
 		queryFn: () => orpcClient.projects.recipientBrand.get({ projectId }),
 		retry: 1,
 	});
 	const sourcesQuery = useQuery({
 		queryKey: sourcesKey,
+		enabled: identity.enabled,
 		queryFn: () =>
 			orpcClient.projects.proposalArtifact.getBrandSources({
 				projectId,
@@ -179,6 +185,10 @@ export function useProposalStyle({
 	);
 	const [styleInitial, setStyleInitial] =
 		useState<ProposalStyleDraft>(styleDraft);
+	const [styleBaseUpdatedAt, setStyleBaseUpdatedAt] = useState<Date | null>(
+		null,
+	);
+	const styleDirty = !sameDraft(styleDraft, styleInitial);
 	const [recipientDraft, setRecipientDraft] = useState<RecipientBrandDraft>(
 		() => recipientBrandDraftFrom(null),
 	);
@@ -223,13 +233,14 @@ export function useProposalStyle({
 				? "none"
 				: new Date(styleData.updatedAt).toISOString();
 	useEffect(() => {
-		if (loadedStyleAt === null) {
+		if (loadedStyleAt === null || styleDirty) {
 			return;
 		}
 		const next = proposalStyleDraftFrom(styleData ?? undefined);
 		setStyleDraft(next);
 		setStyleInitial(next);
-	}, [loadedStyleAt]);
+		setStyleBaseUpdatedAt(styleData?.updatedAt ?? null);
+	}, [loadedStyleAt, styleDirty]);
 
 	const resetRecipient = (read: RecipientBrandRead) => {
 		const next = recipientBrandDraftFrom(read.recipientBrand);
@@ -379,6 +390,7 @@ export function useProposalStyle({
 							projectId,
 							documentId,
 							...request.style,
+							expectedUpdatedAt: request.styleExpectedUpdatedAt,
 						});
 					queryClient.setQueryData(styleKey, saved);
 					// The saved values, as the server normalized them, are the
@@ -386,7 +398,11 @@ export function useProposalStyle({
 					const next = proposalStyleDraftFrom(saved);
 					setStyleDraft(next);
 					setStyleInitial(next);
+					setStyleBaseUpdatedAt(saved?.updatedAt ?? null);
 				} catch (error) {
+					if (getOrpcCode(error) === "CONFLICT") {
+						return { outcome: "styleConflict" };
+					}
 					const invalid = styleErrorOf(error);
 					return invalid
 						? { outcome: "invalid", error: invalid }
@@ -406,6 +422,9 @@ export function useProposalStyle({
 						name: draft.name.trim() || null,
 						website: draft.website.trim() || null,
 						colors,
+						displayFontFamily: draft.displayFontFamily,
+						bodyFontFamily: draft.bodyFontFamily,
+						coverStyle: draft.coverStyle,
 						logo:
 							draft.logo.action === "replace"
 								? { action: "replace", token: draft.logo.token }
@@ -517,8 +536,6 @@ export function useProposalStyle({
 		setConfirmFeedback({ kind: "none" });
 	};
 
-	const styleDirty = !sameDraft(styleDraft, styleInitial);
-
 	// The suggestion counts only for the website the recipient brand holds
 	// now: right after a save moves it, the sources may still describe the
 	// old one until they are read again.
@@ -550,6 +567,7 @@ export function useProposalStyle({
 		setLogoError(null);
 		saveMutation.mutate({
 			style: styleDirty ? style.value : null,
+			styleExpectedUpdatedAt: styleBaseUpdatedAt,
 			recipient:
 				recipientDirty && recipientBase && recipientColors
 					? {
@@ -618,6 +636,18 @@ export function useProposalStyle({
 		styleDraft,
 		editStyle,
 		styleDirty,
+		reloadStyle: async () => {
+			const result = await styleQuery.refetch();
+			if (!result.isSuccess) {
+				setFeedback({ kind: "styleFailed" });
+				return;
+			}
+			const next = proposalStyleDraftFrom(result.data ?? undefined);
+			setStyleDraft(next);
+			setStyleInitial(next);
+			setStyleBaseUpdatedAt(result.data?.updatedAt ?? null);
+			setFeedback({ kind: "none" });
+		},
 		recipientRead,
 		/** The version the recipient draft was read at; null before the first. */
 		recipientBaseVersion: recipientBase?.version ?? null,

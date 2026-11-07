@@ -126,6 +126,7 @@ The table below lists the **functional consumer** for each variable: where the v
 | `DECISION_REPLAY_EMBED_CLIENT_SECRET` | Vercel env, staging + prod | no | Server-only embedding principal secret; separate from `DATABRICKS_CLIENT_SECRET`. Also keys opaque viewer ids. |
 | `DATABRICKS_CLIENT_ID` | ConfigMap | no | Service principal OAuth M2M client ID |
 | `DATABRICKS_CLIENT_SECRET` | Secret | no | Service principal OAuth M2M client secret |
+| `DATABRICKS_SCOPE` | ConfigMap | no | Space-separated OAuth scopes for a scoped service-principal secret; blank defaults to `all-apis` |
 | `DATABRICKS_TOKEN` | Secret | no | PAT alternative; takes precedence over OAuth when set |
 | `DATABASE_AUTH_PROVIDER` | ConfigMap | no | Default `"password"`; set `"databricks-oauth"` for Lakebase OAuth rotation |
 
@@ -172,6 +173,7 @@ Consumes the same DB/Redis/AI/agent-URL set as `web`. Additionally:
 | `DATABRICKS_HOST` | ConfigMap | no | Workspace URL — required only for Databricks-backed features |
 | `DATABRICKS_CLIENT_ID` | ConfigMap | no | Service principal OAuth M2M client ID |
 | `DATABRICKS_CLIENT_SECRET` | Secret | no | Service principal OAuth M2M client secret |
+| `DATABRICKS_SCOPE` | ConfigMap | no | Space-separated OAuth scopes for a scoped service-principal secret; blank defaults to `all-apis` |
 | `DATABRICKS_TOKEN` | Secret | no | PAT alternative; takes precedence over OAuth when set |
 | `DATABASE_AUTH_PROVIDER` | ConfigMap | no | Default `"password"`; set `"databricks-oauth"` for Lakebase OAuth rotation |
 | `WORKER_RLS_MODE` | ConfigMap | no | Default `"bypassrls"`; set `"policy"` when the host forbids the BYPASSRLS role attribute — consumed by the RLS deploy scripts |

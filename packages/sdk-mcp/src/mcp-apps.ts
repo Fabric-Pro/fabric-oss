@@ -92,6 +92,16 @@ export function withFabricApp<
 export const FABRIC_MCP_APP_RESOURCES: readonly FabricMcpAppResourceDescriptor[] =
 	[
 		{
+			uri: "ui://fabric/private-triage",
+			name: "Fabric private signal review",
+			description:
+				"Inspect your selected-evidence proposals and keep or dismiss them privately after current source access checks.",
+			mimeType: "text/html;profile=mcp-app",
+			_meta: createResourceMeta(
+				"Private cited signal proposals; keeping one does not share it or create a ticket.",
+			),
+		},
+		{
 			uri: "ui://fabric/project-dashboard",
 			name: "Fabric Project Overview & Desktop Launcher",
 			description:
@@ -220,7 +230,9 @@ function buildFabricMcpViewScript(options: {
         return;
       }
 
-      if (CFG.uri === "ui://fabric/project-dashboard") {
+      if (CFG.uri === "ui://fabric/private-triage") {
+        add(box, drawTriageCard(v));
+      } else if (CFG.uri === "ui://fabric/project-dashboard") {
         add(box, drawProjectCard(v));
       } else if (CFG.uri === "ui://fabric/agent-delegation") {
         add(box, drawDelegationCard(v));
@@ -672,6 +684,34 @@ function buildFabricMcpViewScript(options: {
       return card;
     }
 
+    function drawTriageCard(v) {
+      var run = v && v.run, result = v && v.result;
+      var card = K.card({ mark: CFG.mark, title: "Private signal review", sub: "Selected evidence only. Keeping a proposal does not create a ticket or share its sources.", tools: [K.expandButton()], label: "Private signal review" });
+      if (!run) { add(card.body, K.callout({ tone: "info", title: "Choose a signal review", text: "Open a completed review to inspect its cited proposals." })); return card; }
+      add(card.body, K.table(["Status", "Selected signals", "Expires"], [[({QUEUED:"Queued",RUNNING:"Running",COMPLETED:"Completed",FAILED:"Failed",CANCELLED:"Cancelled",OUTCOME_UNKNOWN:"Outcome unconfirmed"})[run.status] || "Unavailable", String(run.selectedCount), Number.isNaN(Date.parse(run.expiresAt)) ? "Unavailable" : new Date(run.expiresAt).toLocaleString()]]));
+      if (!result) { add(card.body, K.callout({ tone: "info", title: "No result to disclose", text: "This review has no completed, freshly authorized result." })); return card; }
+      var proposals = Array.isArray(result.proposals) ? result.proposals.slice(0, 3) : [];
+      if (!proposals.length) add(card.body, K.callout({ tone: "info", title: "No proposals from this selection", text: "This is not a health verdict for the whole project." }));
+      proposals.forEach(function (p) {
+        add(card.body, K.callout({ tone: "info", title: String(p.title), text: String(p.summary) }));
+        if (p.uncertainties && p.uncertainties.length) add(card.body, K.table(["Uncertainties"], p.uncertainties.slice(0, 5).map(function (s) { return [String(s)]; })));
+        add(card.body, K.table(["Cited observation", "Source revision"], (p.citations || []).slice(0, 5).map(function (s) { return [String(s.observationId), String(s.grantRevision)]; })));
+        var decision = v.reviews && v.reviews[p.id];
+        add(card.body, K.callout({ tone: "info", title: "Your decision", text: decision === "KEEP" ? "Kept privately" : decision === "DISMISS" ? "Dismissed" : "Not reviewed" }));
+        if (v.projectId) add(card.body, K.actions(["KEEP", "DISMISS"].map(function (value) {
+          return K.button(value === "KEEP" ? "Keep privately" : "Dismiss", function () {
+            S.r = null; S.v = null; draw();
+            return callServerTool("fabric_triage_review", { projectId: String(v.projectId), runId: String(run.id), proposalId: String(p.id), decision: value }).then(function (r) { if (r) onResult(r); }).catch(function () { onResult({ isError: true, content: [{ type: "text", text: "Current access could not be verified. Request this review again to recheck access." }] }); });
+          }, { variant: "outline" });
+        })));
+      });
+      if (v.projectId) add(card.body, K.actions([K.button("Check access and refresh", function () {
+        S.r = null; S.v = null; draw();
+        return callServerTool("fabric_triage_result", { projectId: String(v.projectId), runId: String(run.id) }).then(function (r) { if (r) onResult(r); }).catch(function () { onResult({ isError: true, content: [{ type: "text", text: "Current access could not be verified. Request this review again to recheck access." }] }); });
+      }, { variant: "outline" })]));
+      return card;
+    }
+
     function drawGenericFabricCard(v) {
       var card = K.card({
         mark: CFG.mark,
@@ -718,6 +758,10 @@ export function readFabricMcpAppResource(
 	}
 
 	const defaultToolByUri: Record<string, { badge: string; tool: string }> = {
+		"ui://fabric/private-triage": {
+			badge: "Private signal review",
+			tool: "fabric_triage_result",
+		},
 		"ui://fabric/project-dashboard": {
 			badge: "Project MCP App",
 			tool: "fabric_get_project",

@@ -136,3 +136,24 @@ describe("saved agent tests SDK", () => {
 		expect(fetch).toHaveBeenCalledTimes(1);
 	});
 });
+
+it("passes versioned JSON and grounding checks without stripping fields or retrying writes", async () => {
+	const { resource, http } = setup();
+	const checks: import("../src/resources/agent-tests.js").AgentTestChecks = {
+		version: 2,
+		jsonSchema: {
+			type: "object",
+			required: ["ready"],
+			properties: { ready: { type: "boolean" } },
+			additionalProperties: false,
+		},
+		jsonAssertions: [{ pointer: "/ready", equals: true }],
+		grounding: { requireCitations: true },
+	};
+	await resource.createCase({ ...input, checks });
+	expect(http.post).toHaveBeenCalledWith(
+		"/agent-tests/cases",
+		{ ...input, checks },
+		{ retry: { maxRetries: 0 } },
+	);
+});

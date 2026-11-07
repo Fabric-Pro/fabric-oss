@@ -19,6 +19,13 @@ import {
 	FormMessage,
 } from "@ui/components/form";
 import { Input } from "@ui/components/input";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@ui/components/select";
 import { Skeleton } from "@ui/components/skeleton";
 import { Textarea } from "@ui/components/textarea";
 import { useMemo, useState } from "react";
@@ -54,21 +61,25 @@ export function TemplateVariableForm({
 			for (const [key, config] of Object.entries(template.variables)) {
 				const fieldConfig = config as {
 					type: string;
+					options?: string[];
 					label?: string;
 					required?: boolean;
-					default?: string;
+					default?: string | number | boolean;
 					placeholder?: string;
 				};
 
 				if (fieldConfig.required) {
-					schemaFields[key] = z
+					schemaFields[`input_${key}`] = z
 						.string()
 						.min(1, `${fieldConfig.label || key} is required`);
 				} else {
-					schemaFields[key] = z.string().optional().default("");
+					schemaFields[`input_${key}`] = z
+						.string()
+						.optional()
+						.default("");
 				}
 
-				defaults[key] = fieldConfig.default || "";
+				defaults[`input_${key}`] = String(fieldConfig.default ?? "");
 			}
 		}
 
@@ -96,7 +107,12 @@ export function TemplateVariableForm({
 	const onSubmit = async (values: Record<string, string>) => {
 		setIsSubmitting(true);
 		try {
-			const { title, description, ...variables } = values;
+			const { title, description } = values;
+			const variables = Object.fromEntries(
+				Object.entries(values)
+					.filter(([key]) => key.startsWith("input_"))
+					.map(([key, value]) => [key.slice(6), value]),
+			);
 			const result = await createFromTemplate({
 				templateId: template.id,
 				variables,
@@ -192,6 +208,7 @@ export function TemplateVariableForm({
 								{variableFields.map(([key, config]) => {
 									const fieldConfig = config as {
 										type: string;
+										options?: string[];
 										label?: string;
 										required?: boolean;
 										placeholder?: string;
@@ -202,7 +219,7 @@ export function TemplateVariableForm({
 										<FormField
 											key={key}
 											control={form.control}
-											name={key}
+											name={`input_${key}`}
 											render={({ field }) => (
 												<FormItem>
 													<FormLabel>
@@ -214,9 +231,67 @@ export function TemplateVariableForm({
 															</span>
 														)}
 													</FormLabel>
-													<FormControl>
-														{fieldConfig.type ===
+
+													{fieldConfig.type ===
+														"select" ||
+													fieldConfig.type ===
+														"boolean" ? (
+														<Select
+															value={field.value}
+															onValueChange={
+																field.onChange
+															}
+														>
+															<FormControl>
+																<SelectTrigger
+																	ref={
+																		field.ref
+																	}
+																	onBlur={
+																		field.onBlur
+																	}
+																>
+																	<SelectValue
+																		placeholder={`Choose ${fieldConfig.label ?? key}`}
+																	/>
+																</SelectTrigger>
+															</FormControl>
+															<SelectContent>
+																{(fieldConfig.type ===
+																"boolean"
+																	? [
+																			"true",
+																			"false",
+																		]
+																	: (fieldConfig.options ??
+																		[])
+																)
+																	.filter(
+																		Boolean,
+																	)
+																	.map(
+																		(
+																			option,
+																		) => (
+																			<SelectItem
+																				key={
+																					option
+																				}
+																				value={
+																					option
+																				}
+																			>
+																				{
+																					option
+																				}
+																			</SelectItem>
+																		),
+																	)}
+															</SelectContent>
+														</Select>
+													) : fieldConfig.type ===
 														"textarea" ? (
+														<FormControl>
 															<Textarea
 																{...field}
 																placeholder={
@@ -225,16 +300,25 @@ export function TemplateVariableForm({
 																}
 																rows={3}
 															/>
-														) : (
+														</FormControl>
+													) : (
+														<FormControl>
 															<Input
+																type={
+																	fieldConfig.type ===
+																	"number"
+																		? "number"
+																		: "text"
+																}
 																{...field}
 																placeholder={
 																	fieldConfig.placeholder ||
 																	`Enter ${key}`
 																}
 															/>
-														)}
-													</FormControl>
+														</FormControl>
+													)}
+
 													{fieldConfig.description && (
 														<FormDescription>
 															{

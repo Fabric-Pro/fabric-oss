@@ -47,6 +47,9 @@ function active(run: AgentTestRunSummary | undefined | null) {
 	return !!run && ["ADMITTING", "RUNNING"].includes(run.status);
 }
 function status(run: AgentTestRunSummary) {
+	if (run.report?.version === 2 && run.report.status === "NOT_ASSESSED") {
+		return "Not assessed";
+	}
 	return run.verdict === "PASSED"
 		? "Passed"
 		: run.verdict === "FAILED"
@@ -949,6 +952,9 @@ function TestRunReport({
 				<>
 					<p className="text-sm">
 						{run.report.passed} of {run.report.total} checks passed
+						{run.report.version === 2 && run.report.unavailable > 0
+							? ` · ${run.report.unavailable} not assessed`
+							: ""}
 					</p>
 					<ul className="space-y-2 text-sm">
 						{run.report.results.map((check) => (
@@ -958,36 +964,54 @@ function TestRunReport({
 							>
 								<span
 									className={
-										check.passed
-											? "text-success"
-											: "text-destructive"
+										"available" in check && !check.available
+											? "text-muted-foreground"
+											: check.passed
+												? "text-success"
+												: "text-destructive"
 									}
 								>
-									{check.passed ? "Passed" : "Failed"}
+									{"available" in check && !check.available
+										? "Not assessed"
+										: check.passed
+											? "Passed"
+											: "Failed"}
 								</span>{" "}
 								·{" "}
-								{check.kind === "required"
-									? "Must include"
-									: "Must not include"}{" "}
-								{run.caseRevision === testCase.revision ? (
-									<span>
-										“
-										{
-											(check.kind === "required"
-												? testCase.checks
-														.requiredPhrases
-												: testCase.checks
-														.forbiddenPhrases)[
-												check.index
-											]
-										}
-										”
-									</span>
+								{check.kind === "required" ||
+								check.kind === "forbidden" ? (
+									<>
+										{check.kind === "required"
+											? "Must include"
+											: "Must not include"}{" "}
+										{run.caseRevision ===
+										testCase.revision ? (
+											<span>
+												“
+												{
+													(check.kind === "required"
+														? testCase.checks
+																.requiredPhrases
+														: testCase.checks
+																.forbiddenPhrases)[
+														check.index
+													]
+												}
+												”
+											</span>
+										) : (
+											<span>
+												phrase {check.index + 1} from
+												revision {run.caseRevision}
+											</span>
+										)}
+									</>
 								) : (
-									<span>
-										phrase {check.index + 1} from revision{" "}
-										{run.caseRevision}
-									</span>
+									agentTestCheckDescription(
+										check,
+										run,
+										testCase,
+									)
 								)}
 							</li>
 						))}
@@ -1051,6 +1075,34 @@ function TestRunReport({
 	);
 }
 
+/** Labels never substitute unrelated phrase text for structured or unavailable checks. */
+export function agentTestCheckDescription(
+	check: NonNullable<AgentTestRunSummary["report"]>["results"][number],
+	run: AgentTestRunSummary,
+	testCase: AgentTestCaseSummary,
+): string {
+	if (check.kind === "schema") {
+		return "JSON schema";
+	}
+	if (check.kind === "json") {
+		return `JSON value check ${check.index + 1}`;
+	}
+	if (check.kind === "grounding") {
+		return "Grounding evidence (trusted retrieval receipts required)";
+	}
+	const label =
+		check.kind === "required" ? "Must include" : "Must not include";
+	const phrases =
+		check.kind === "required"
+			? testCase.checks.requiredPhrases
+			: testCase.checks.forbiddenPhrases;
+	const phrase =
+		run.caseRevision === testCase.revision
+			? phrases[check.index]
+			: undefined;
+	return `${label} ${phrase ? JSON.stringify(phrase.slice(0, 200)) : `phrase ${check.index + 1} from test revision ${run.caseRevision}`}`;
+}
+
 /** Deliberate chat prefill: share bounded check metadata, never execution output. */
 export function agentTestImprovementRequest(
 	run: AgentTestRunSummary,
@@ -1060,17 +1112,10 @@ export function agentTestImprovementRequest(
 	const failures = (run.report?.results ?? [])
 		.filter((check) => !check.passed)
 		.slice(0, 10)
-		.map((check) => {
-			const phrase = sameRevision
-				? (check.kind === "required"
-						? testCase.checks.requiredPhrases
-						: testCase.checks.forbiddenPhrases)[check.index]
-				: undefined;
-			return `${check.kind === "required" ? "Must include" : "Must not include"} ${phrase ? JSON.stringify(phrase.slice(0, 200)) : `phrase ${check.index + 1} from test revision ${run.caseRevision}`}`;
-		});
+		.map((check) => agentTestCheckDescription(check, run, testCase));
 	return [
 		"Help me improve this agent using a recorded test outcome.",
-		`Evidence: saved agent version ${run.agentVersion}; test revision ${run.caseRevision}; ${run.report?.passed ?? 0}/${run.report?.total ?? 0} exact text checks passed.`,
+		`Evidence: saved agent version ${run.agentVersion}; test revision ${run.caseRevision}; ${run.report?.passed ?? 0}/${run.report?.total ?? 0} ${run.report?.version === 2 ? "deterministic" : "exact text"} checks passed.`,
 		"The current builder draft may differ from that saved version. Do not assume this result describes the current draft.",
 		sameRevision
 			? `Saved test task (excerpt): ${testCase.input.slice(0, 4000)}`

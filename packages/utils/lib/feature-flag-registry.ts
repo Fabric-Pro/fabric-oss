@@ -322,6 +322,15 @@ export const FEATURE_FLAG_REGISTRY = {
 		orgScopable: true,
 		note: "Override-only: database capture triggers cannot read application environment variables. Resolution uses the organization override, then the global override, then false, matching lakehouse_export.capture_enabled. Application readers may cache overrides for up to 10 seconds; triggers read them at write time.",
 	},
+	DELIVERY_ANALYTICS: {
+		label: "Delivery analytics capture",
+		description:
+			"Records feature-stage and coding-run transitions for governed delivery insights.",
+		envVar: null,
+		default: false,
+		orgScopable: true,
+		note: "Override-only: lakehouse_export.delivery_capture_enabled reads the organization override, then the global override, then false. The export contains identifiers, states and timestamps only, never titles, prompts, descriptions or actor details. Native dashboard queries do not require this flag; it governs only external analytics capture.",
+	},
 	COPILOTKIT_DURABLE_ASSISTANTS: {
 		label: "Durable document, feature and topic assistants",
 		description:

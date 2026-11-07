@@ -55,6 +55,17 @@ const STRICT_ISOLATION_TABLES = new Set([
  * credentials; AI chats are per-user conversations even in org context).
  */
 const PER_USER_ORG_TABLES = new Set([
+	"HarnessTriageRun",
+	"HarnessTriageCall",
+	"DeliverySignalWatch",
+	"DeliverySignalSourceGrant",
+	"DeliverySignalObservation",
+	"DeliverySignalSourceCommand",
+	"DeliverySignalCapturePage",
+	"RunQualityPolicy",
+	"RunQualityAssessment",
+	"FrameChangeProposal",
+	"FrameApprovedRevision",
 	"AgentTestCase",
 	"AgentTestRun",
 	"MCPServer", // Each user installs servers with their own credentials
@@ -75,6 +86,7 @@ const PER_USER_ORG_TABLES = new Set([
 	"DocumentEval", // An eval run initiated by a specific user
 	"AgentWorkspaceFile", // A user's virtual workspace artifacts
 	"ProjectUserPreference", // Per-user-per-project settings
+	"DashboardCuratedPreference", // Per-user recommendation feedback
 	"CliConnectionPromptDismissal", // One person's dismissal of the CLI connection prompt
 	"ChatGptPlanOrgUse", // One person's choice to use their ChatGPT plan in an org
 ]);
@@ -272,6 +284,7 @@ const USER_OWNED_TABLES = new Set([
  * Tables that are organization-only (no personal equivalent).
  */
 const ORG_ONLY_TABLES = new Set([
+	"HarnessTriageBudget",
 	"ProjectWorkspaceDocumentLink", // References retain source permissions; projectId is independently authorized.
 	"NonMemberContact", // #2340 a contact has no owning user
 	"CloudProviderConfig",

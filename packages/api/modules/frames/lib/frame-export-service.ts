@@ -14,6 +14,10 @@ import {
 	FRAME_EXPORT_TTL_MS,
 	type FrameExportState,
 } from "@repo/temporal/frame-export-contract";
+import {
+	canExportFramePresentationToPdf,
+	FRAME_INTERFACE_PDF_BLOCK_ERROR,
+} from "@repo/utils/frame-presentation";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 
@@ -218,6 +222,18 @@ export async function startFrameExport(
 			400,
 			"BAD_REQUEST",
 			"This page is too large to export. Reduce its content first.",
+		);
+	}
+	if (
+		!canExportFramePresentationToPdf({
+			...frame.document,
+			sourceRunType: frame.sourceRunType,
+		})
+	) {
+		throw new FrameExportError(
+			400,
+			"BAD_REQUEST",
+			FRAME_INTERFACE_PDF_BLOCK_ERROR,
 		);
 	}
 	const id = exportId(actor, input.requestId);

@@ -13,7 +13,13 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, waitFor } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -144,10 +150,11 @@ interface StreamMessage {
 	streamStatus?: "streaming" | "completed" | "error" | "cancelled";
 }
 const streamMessages: StreamMessage[] = [];
+const sendMock = vi.fn(async (..._args: unknown[]) => {});
 const streamResult = () => ({
 	messages: streamMessages,
 	isLoading: false,
-	sendMessage: vi.fn(),
+	sendMessage: sendMock,
 	reset: vi.fn(),
 	stop: vi.fn(),
 	restoreContextUsage: vi.fn(),
@@ -214,8 +221,27 @@ vi.mock("@saas/agents/components/FabricChat/ConversationToolPicker", () => ({
 vi.mock("@saas/agents/components/FabricChat/shared", () => ({
 	ActiveContextIndicator: () => null,
 	AgentModelPicker: () => null,
-	ChatInput: () => null,
-	ChatWelcome: () => null,
+	ChatInput: ({
+		value,
+		onChange,
+		onSend,
+	}: {
+		value: string;
+		onChange: (value: string) => void;
+		onSend: () => void;
+	}) => (
+		<div>
+			<textarea
+				aria-label="Message"
+				value={value}
+				onChange={(event) => onChange(event.target.value)}
+			/>
+			<button type="button" onClick={onSend}>
+				Send
+			</button>
+		</div>
+	),
+	ChatWelcome: ({ composer }: { composer: React.ReactNode }) => composer,
 	getLatestSuccessfulFrameFromGroups: () => null,
 	InteractiveContentPanel: () => null,
 	ToolCallList: () => null,
@@ -323,6 +349,7 @@ beforeEach(() => {
 	access.userRole = "member";
 	access.isGuest = false;
 	streamMessages.length = 0;
+	sendMock.mockClear();
 	runtimeOptions = {};
 	legacyHookMock.mockClear();
 	runtimeHookMock.mockClear();
@@ -335,6 +362,65 @@ beforeEach(() => {
 });
 
 describe("FabricDirectChat transport", () => {
+	it.each([false, true])(
+		"keeps the persona slot unchanged and sends Frame context only with this turn (runtime %s)",
+		async (runtime) => {
+			access.flag = runtime;
+			const view = renderChat({
+				frameLaunchContext: {
+					launchFrameId: "frame-example",
+					launchFrameUpdatedAt: "2026-10-14T09:00:00.000Z",
+					surface: "artifact",
+				},
+			});
+			const hook = runtime ? runtimeHookMock : legacyHookMock;
+			let options = hook.mock.calls.at(-1)?.[0] as {
+				systemPrompt?: string;
+				launchFrameId: string;
+			};
+			expect(options.systemPrompt).toBeUndefined();
+			expect(options.launchFrameId).toBe("frame-example");
+			fireEvent.change(screen.getByLabelText("Message"), {
+				target: { value: "Match the supplied design." },
+			});
+			await act(async () => {
+				fireEvent.click(screen.getByRole("button", { name: "Send" }));
+			});
+			await waitFor(() => expect(sendMock).toHaveBeenCalledTimes(1));
+			expect(sendMock.mock.calls[0]?.[0]).toBe(
+				"Match the supplied design.",
+			);
+			const sent = sendMock.mock.calls[0]?.[2] as {
+				inlineAttachmentContexts: string[];
+			};
+			expect(sent.inlineAttachmentContexts.join("\n")).toContain(
+				'"frameId":"frame-example"',
+			);
+			expect(sent.inlineAttachmentContexts.join("\n")).toContain(
+				'"updatedAt":"2026-10-14T09:00:00.000Z"',
+			);
+			options = hook.mock.calls.at(-1)?.[0] as {
+				systemPrompt?: string;
+				launchFrameId: string;
+			};
+			expect(options.systemPrompt).toBeUndefined();
+			view.unmount();
+		},
+	);
+	it("keeps a supplied persona byte-for-byte separate from Frame context", () => {
+		renderChat({
+			systemPrompt: "Keep the delivery reporter persona.",
+			frameLaunchContext: {
+				launchFrameId: "frame-example",
+				launchFrameUpdatedAt: "2026-10-14T09:00:00.000Z",
+			},
+		});
+		expect(
+			(legacyHookMock.mock.calls.at(-1)?.[0] as { systemPrompt: string })
+				.systemPrompt,
+		).toBe("Keep the delivery reporter persona.");
+	});
+
 	it("runs the Direct stream hook and saves the turn from the browser while the flag is off", async () => {
 		finishedTurn();
 		const onConversationSaved = vi.fn();

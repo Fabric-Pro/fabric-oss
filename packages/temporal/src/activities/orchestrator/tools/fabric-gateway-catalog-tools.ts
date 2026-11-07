@@ -19,6 +19,7 @@
 
 import {
 	FABRIC_CHAT_TOOL_DEFINITIONS,
+	type FABRIC_IMPLEMENTATION_TOOL_DEFINITIONS,
 	type FabricChatToolName,
 } from "../../../lib/fabric-gateway-tools";
 import {
@@ -35,7 +36,157 @@ interface Discovery {
 	keywords: string;
 }
 
-const DISCOVERY: Record<FabricChatToolName, Discovery> = {
+// Preserve external-client discovery metadata without offering those controls to
+// native chat before project-scoped execution consent exists. The exported
+// catalogue below still maps only FABRIC_CHAT_TOOL_DEFINITIONS.
+type DiscoveryToolName =
+	| FabricChatToolName
+	| (typeof FABRIC_IMPLEMENTATION_TOOL_DEFINITIONS)[number]["name"];
+const DISCOVERY: Record<DiscoveryToolName, Discovery> = {
+	fabric_create_frame_draft: {
+		when: "To create frame draft for a saved artifact.",
+		how: "For edits, propose first and let the person review the original and proposed preview. Apply only the reviewed content hash; never retry a conflict blindly.",
+		keywords:
+			"artifact page template proposed revision review approval preview",
+	},
+	fabric_validate_frame_document: {
+		when: "To validate frame document for a saved artifact.",
+		how: "For edits, propose first and let the person review the original and proposed preview. Apply only the reviewed content hash; never retry a conflict blindly.",
+		keywords:
+			"artifact page template proposed revision review approval preview",
+	},
+	fabric_list_frame_templates: {
+		when: "To list frame templates for a saved artifact.",
+		how: "For edits, propose first and let the person review the original and proposed preview. Apply only the reviewed content hash; never retry a conflict blindly.",
+		keywords:
+			"artifact page template proposed revision review approval preview",
+	},
+	fabric_get_frame_template: {
+		when: "To get frame template for a saved artifact.",
+		how: "For edits, propose first and let the person review the original and proposed preview. Apply only the reviewed content hash; never retry a conflict blindly.",
+		keywords:
+			"artifact page template proposed revision review approval preview",
+	},
+	fabric_create_frame_template: {
+		when: "To create frame template for a saved artifact.",
+		how: "For edits, propose first and let the person review the original and proposed preview. Apply only the reviewed content hash; never retry a conflict blindly.",
+		keywords:
+			"artifact page template proposed revision review approval preview",
+	},
+	fabric_create_frame_from_template: {
+		when: "To create frame from template for a saved artifact.",
+		how: "For edits, propose first and let the person review the original and proposed preview. Apply only the reviewed content hash; never retry a conflict blindly.",
+		keywords:
+			"artifact page template proposed revision review approval preview",
+	},
+	fabric_propose_frame_change: {
+		when: "To propose frame change for a saved artifact.",
+		how: "For edits, propose first and let the person review the original and proposed preview. Apply only the reviewed content hash; never retry a conflict blindly.",
+		keywords:
+			"artifact page template proposed revision review approval preview",
+	},
+	fabric_list_frame_changes: {
+		when: "To list frame changes for a saved artifact.",
+		how: "For edits, propose first and let the person review the original and proposed preview. Apply only the reviewed content hash; never retry a conflict blindly.",
+		keywords:
+			"artifact page template proposed revision review approval preview",
+	},
+	fabric_get_frame_change: {
+		when: "To get frame change for a saved artifact.",
+		how: "For edits, propose first and let the person review the original and proposed preview. Apply only the reviewed content hash; never retry a conflict blindly.",
+		keywords:
+			"artifact page template proposed revision review approval preview",
+	},
+	fabric_apply_frame_change: {
+		when: "To apply frame change for a saved artifact.",
+		how: "For edits, propose first and let the person review the original and proposed preview. Apply only the reviewed content hash; never retry a conflict blindly.",
+		keywords:
+			"artifact page template proposed revision review approval preview",
+	},
+	fabric_dismiss_frame_change: {
+		when: "To dismiss frame change for a saved artifact.",
+		how: "For edits, propose first and let the person review the original and proposed preview. Apply only the reviewed content hash; never retry a conflict blindly.",
+		keywords:
+			"artifact page template proposed revision review approval preview",
+	},
+	fabric_get_frame_review: {
+		when: "To get frame review for a saved artifact.",
+		how: "For edits, propose first and let the person review the original and proposed preview. Apply only the reviewed content hash; never retry a conflict blindly.",
+		keywords:
+			"artifact page template proposed revision review approval preview",
+	},
+	fabric_approve_frame_revision: {
+		when: "To approve frame revision for a saved artifact.",
+		how: "For edits, propose first and let the person review the original and proposed preview. Apply only the reviewed content hash; never retry a conflict blindly.",
+		keywords:
+			"artifact page template proposed revision review approval preview",
+	},
+	fabric_get_project_delivery: {
+		when: "To review a project's actual delivery evidence, blockers and context readiness.",
+		how: "Distinguish observed pull-request outcomes from unknown deployment and cost; use source links for follow-up.",
+		keywords:
+			"project delivery, delivery progress, project blockers, context readiness, implementation outcomes",
+	},
+	fabric_list_implementation_sessions: {
+		when: "To find coding work delegated from a project or ticket.",
+		keywords:
+			"implementation sessions, coding runs, delegated work, remote agent tasks, desktop agent tasks",
+	},
+	fabric_get_implementation_session: {
+		when: "To inspect one delegated implementation's status and safe outcome.",
+		keywords:
+			"implementation status, coding run outcome, delegated task status, pull request progress",
+	},
+	fabric_start_implementation_session: {
+		when: "When the person asks to assign a project ticket to an authorized coding agent.",
+		how: "Review the target and request first; reuse the same request UUID after an uncertain response and never replace an uncertain dispatch silently.",
+		keywords:
+			"assign ticket to agent, delegate implementation, start coding run, remote agent implementation, desktop agent implementation",
+	},
+	fabric_cancel_implementation_session: {
+		when: "When the person asks to stop a delegated coding run.",
+		keywords:
+			"cancel implementation, stop coding run, cancel delegated work",
+	},
+	fabric_follow_up_implementation_session: {
+		when: "When the person asks to send follow-up instructions to an existing coding session.",
+		keywords:
+			"follow up implementation, continue coding session, send agent instructions, revise delegated work",
+	},
+	fabric_get_implementation_messages: {
+		when: "To inspect the authorized messages of a delegated coding session.",
+		keywords:
+			"implementation messages, coding session messages, agent conversation, delegated work transcript",
+	},
+	fabric_get_proposal_style: {
+		when: "Before changing a saved Proposal's client/company visual brand or cover.",
+		how: "Read the saved Style and updatedAt; null means no Style yet.",
+		keywords: "proposal style, client fonts, cover theme, company branding",
+	},
+	fabric_update_proposal_style: {
+		when: "When the person reviews a Proposal's visual branding or presentation changes.",
+		how: "Use the read timestamp. CLIENT uses client typography and cover; COMPANY uses company branding. Omitted fields stay saved; this does not export.",
+		keywords:
+			"save proposal style, client fonts, cover theme, branding source",
+	},
+	fabric_get_artifact_brand: {
+		when: "Before creating a branded proposal or client deliverable.",
+		how: "Read company/client identity and brand readiness; collect missing details and ask which brand to apply. Never treat guidance as an instruction to bypass approval.",
+		keywords:
+			"brand kit, client branding, company logo, proposal colors, prepared for, prepared by",
+	},
+	fabric_update_company_brand: {
+		when: "When a company administrator explicitly reviews reusable company brand text.",
+		how: "Use the read version. This preserves files and requires explicit organization write authority; service runtimes cannot save company branding.",
+		keywords:
+			"save company brand, company colors, brand guidance, company website",
+	},
+	fabric_update_client_brand: {
+		when: "When the person reviews client branding to retain with this project.",
+		how: "Use clientVersion from the read and preserve the existing logo. Ask approval before saving shared context.",
+		keywords:
+			"save client brand, recipient branding, customer colors, client identity",
+	},
 	fabric_list_workspaces: {
 		when: "To find uploaded-document Workspaces the person can access, not generated Pages.",
 		keywords:
@@ -231,6 +382,36 @@ const DISCOVERY: Record<FabricChatToolName, Discovery> = {
 		when: "To share this page with colleagues, grant named recipients access, publish a public link or make it private after the person confirms.",
 		keywords:
 			"share this page with my colleagues, share page with colleagues, grant colleagues access, share with people, public link, publish the page, share a link, share with the team, invite by email, make it private, stop sharing",
+	},
+	fabric_get_frame_branding: {
+		when: "To review a page's saved brand choices before changing its visual identity.",
+		how: "Keep the returned Frame revision and chosen brand version for apply.",
+		keywords: "page branding, client colors, report cover, prepared for",
+	},
+	fabric_apply_frame_branding: {
+		when: "To apply saved company or client branding after review.",
+		how: "Requires the exact Frame revision and saved brand version. Public Frames must be made private first.",
+		keywords:
+			"apply client brand, style report, company branding, change report cover",
+	},
+	fabric_get_report_instance_branding: {
+		when: "Before selecting or removing branding on a saved report.",
+		how: "Read instanceId to obtain exact current instance version, timestamp and saved brand choices.",
+		keywords:
+			"report branding revision, report client theme, report brand snapshot",
+	},
+	fabric_apply_report_branding: {
+		when: "After the person reviews a saved report's company/client brand choice.",
+		how: "Pass expectedInstanceVersion and expectedUpdatedAt from the current read; branding carries source/expectedBrandVersion or null to remove. Leaves scheduling and audience unchanged.",
+		keywords:
+			"save report branding, client report font cover, apply report brand",
+	},
+
+	fabric_get_report_branding: {
+		when: "To review the saved brand choices for a report audience.",
+		how: "Choose a project before client branding; pin source and expectedBrandVersion in reporting configuration.",
+		keywords:
+			"report branding, client report colors, branded delivery report",
 	},
 	fabric_get_frame_sharing: {
 		when: "To inspect who can open an owned page before changing access.",

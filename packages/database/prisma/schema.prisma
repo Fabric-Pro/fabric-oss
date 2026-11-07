@@ -151,6 +151,10 @@ model User {
   agentTemplateInstances AgentTemplateInstance[]
   agentTestCases         AgentTestCase[]
   agentTestRuns          AgentTestRun[]
+  runQualityPolicies     RunQualityPolicy[]
+  runQualityAssessments  RunQualityAssessment[]
+  frameChangeProposals  FrameChangeProposal[]
+  frameApprovedRevisions FrameApprovedRevision[]
 
   // Agent deployment relations
   agentDeployments    AgentDeployment[]
@@ -204,6 +208,7 @@ model User {
   projectPresences                                ProjectPresence[]
   projectActivities                               ProjectActivity[]
   projectUserPreferences                          ProjectUserPreference[]
+  dashboardCuratedPreferences                     DashboardCuratedPreference[]
   projectFunctionTags                             ProjectUserFunctionTag[]
   dailyBriefsTenant                               DailyBrief[]                            @relation("DailyBriefTenantUser")
   dailyBriefsGenerated                            DailyBrief[]                            @relation("DailyBriefGeneratedBy")
@@ -420,6 +425,10 @@ model User {
   assignedTodos          TodoItem[]              @relation("TodoAssignee")
 
   @@map("user")
+  deliverySignalWatches DeliverySignalWatch[]
+
+  harnessTriageRuns HarnessTriageRun[]
+
 }
 
 model Session {
@@ -905,6 +914,10 @@ model Organization {
   agentTemplateInstances AgentTemplateInstance[]
   agentTestCases         AgentTestCase[]
   agentTestRuns          AgentTestRun[]
+  runQualityPolicies     RunQualityPolicy[]
+  runQualityAssessments  RunQualityAssessment[]
+  frameChangeProposals  FrameChangeProposal[]
+  frameApprovedRevisions FrameApprovedRevision[]
 
   // Frame template relations
   frameTemplates FrameTemplate[]
@@ -961,6 +974,7 @@ model Organization {
   projectPresences                        ProjectPresence[]
   projectActivities                       ProjectActivity[]
   projectUserPreferences                  ProjectUserPreference[]
+  dashboardCuratedPreferences             DashboardCuratedPreference[]
   projectFunctionTags                     ProjectUserFunctionTag[]
   dailyBriefs                             DailyBrief[]
   dailyBriefViews                         DailyBriefView[]
@@ -1138,6 +1152,11 @@ model Organization {
   // migrations/20260910140100_organization_purge_index.
   @@index([scheduledPermanentDeleteAt])
   @@map("organization")
+  deliverySignalWatches DeliverySignalWatch[]
+
+  harnessTriageRuns HarnessTriageRun[]
+  harnessTriageBudgets HarnessTriageBudget[]
+
 }
 
 // Organization RAG Settings - Default settings that apply to all workspaces in the organization
@@ -2751,6 +2770,12 @@ model Project {
   // (PostgreSQL treats NULLs as distinct in standard unique indexes)
   @@index([userId, draftKey, organizationId], map: "project_userId_draftKey_composite_idx")
   @@map("project")
+  deliverySignalWatches DeliverySignalWatch[]
+
+  @@unique([id, organizationId], map: "project_id_org_delivery_key")
+
+  harnessTriageRuns HarnessTriageRun[]
+
 }
 
 model ProjectDocument {
@@ -3072,18 +3097,22 @@ model ProjectDocumentFindingResponse {
 /// Style settings of one Proposal document, applied to its next generation's
 /// visuals. The recipient brand stays project-level in ProjectRecipientBrand.
 model ProjectDocumentStyle {
-  id             String   @id @default(cuid())
+  id             String              @id @default(cuid())
   organizationId String
   projectId      String
-  documentId     String   @unique
+  documentId     String              @unique
   /// Free-text style direction, up to 500 characters.
   styleDirection String?
   /// A `#rrggbb` value.
   primaryColor   String?
   /// Up to three `#rrggbb` values.
-  accentColors   String[] @default([])
+  accentColors   String[]            @default([])
   /// Whether the next generation adds diagrams to Main.
-  autoVisuals    Boolean  @default(true)
+  autoVisuals    Boolean             @default(true)
+  /// Explicit visual identity; the prepared-by company remains separate.
+  brandSource    ArtifactBrandSource @default(COMPANY)
+  /// Null inherits the selected brand's cover treatment.
+  coverStyle     ArtifactCoverStyle?
   updatedById    String?
 
   createdAt DateTime @default(now())
@@ -4525,25 +4554,45 @@ model GlossySegmentCache {
   @@map("glossy_segment_cache")
 }
 
+/// The visual identity an artifact deliberately uses. Existing documents keep
+/// their company identity unless a person explicitly selects the client.
+enum ArtifactBrandSource {
+  COMPANY
+  CLIENT
+}
+
+/// Reviewed cover treatments rendered offline by Fabric's artifact exporters.
+enum ArtifactCoverStyle {
+  DARK
+  LIGHT
+  MINIMAL
+}
+
 /// The recipient's brand for a project: one engagement, one recipient.
+/// CHECK constraints limit both font families to the committed, licensed
+/// Inter, Poppins and JetBrains Mono catalog. Uploaded font bytes are not used.
 model ProjectRecipientBrand {
-  id             String   @id @default(cuid())
-  projectId      String   @unique
-  organizationId String
-  name           String?
+  id                String             @id @default(cuid())
+  projectId         String             @unique
+  organizationId    String
+  name              String?
   /// Normalized to `https://host` before it is fetched, stored, or audited.
-  website        String?
+  website           String?
   /// `project-brand/{projectId}/recipient-brand/current/{promotionId}.png`,
   /// server-issued only; a CHECK pins the prefix to this row's project.
-  logoKey        String?
+  logoKey           String?
   /// SHA-256 (hex) of the promoted PNG, so a fetched logo is compared by its
   /// bytes rather than its key. Null for logos promoted before it existed.
-  logoHash       String?
+  logoHash          String?
   /// `#rrggbb` values.
-  colors         String[] @default([])
+  colors            String[]           @default([])
+  /// Null selects neutral defaults for client-branded artifacts, never company fonts.
+  displayFontFamily String?
+  bodyFontFamily    String?
+  coverStyle        ArtifactCoverStyle @default(DARK)
   /// Compare-and-set token: every confirmation names the version it read.
-  version        Int      @default(1)
-  updatedById    String?
+  version           Int                @default(1)
+  updatedById       String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -7952,6 +8001,25 @@ model ProjectUserPreference {
   @@index([userId, lastVisitedAt(sort: Desc)])
   @@index([userId, favoritedAt(sort: Desc)])
   @@map("project_user_preference")
+}
+
+model DashboardCuratedPreference {
+  id             String    @id @default(cuid())
+  userId         String
+  organizationId String
+  cardKey        String
+  pinnedAt       DateTime?
+  dismissedAt    DateTime?
+  clickCount     Int       @default(0)
+  lastClickedAt  DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId, cardKey])
+  @@map("dashboard_curated_preference")
 }
 
 enum FunctionTag {
@@ -13446,15 +13514,15 @@ model Prompt {
 }
 
 model PromptVersion {
-  id         String   @id @default(cuid())
-  promptId   String
-  version    Int
-  content    String
-  variables  Json?
+  id               String   @id @default(cuid())
+  promptId         String
+  version          Int
+  content          String
+  variables        Json?
   responseContract Json?
-  changeNote String?
-  createdBy  String
-  createdAt  DateTime @default(now())
+  changeNote       String?
+  createdBy        String
+  createdAt        DateTime @default(now())
 
   // Tenant isolation (copied from parent Prompt for scope-based access)
   userId         String?
@@ -14767,6 +14835,7 @@ model Workflow {
   executions       WorkflowExecution[]
   integrations     WorkflowIntegration[]
   apiKeys          WorkflowApiKey[]
+  qualityPolicies  RunQualityPolicy[]
 
   @@index([userId])
   @@index([organizationId])
@@ -14827,9 +14896,10 @@ model WorkflowExecution {
   pipelineId     String? // For pipeline executions (PRD → Tasks)
 
   // Relations
-  workflow    Workflow?              @relation(fields: [workflowId], references: [id], onDelete: Cascade)
-  logs        WorkflowExecutionLog[]
-  aiUsageLogs AiUsageLog[]
+  workflow           Workflow?              @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  logs               WorkflowExecutionLog[]
+  aiUsageLogs        AiUsageLog[]
+  qualityAssessments RunQualityAssessment[]
 
   @@index([workflowId])
   @@index([status])
@@ -14934,6 +15004,8 @@ model WorkflowIntegration {
   @@index([organizationId])
   @@index([provider])
   @@map("workflow_integration")
+  deliverySignalWatches DeliverySignalWatch[]
+
 }
 
 /// Project-level Databricks Vector Search knowledge binding (read-only).
@@ -15421,6 +15493,8 @@ model AgentWorkspaceFile {
   isPublic           Boolean             @default(false)
   sharingGrants      FrameSharingGrant[]
   editHistory        FrameEditHistory[]
+  changeProposals    FrameChangeProposal[]
+  approvedRevisions  FrameApprovedRevision[]
   pageRecords        FramePageRecord[]
   aiUsageLogs        AiUsageLog[]
   sourceRunType      String?
@@ -17335,8 +17409,9 @@ model AgentTemplateInstance {
   memoryEdits   AgentMemoryEdit[]
   toolApprovals MCPToolApproval[] // Approved tool+target combinations for this instance
 
-  testCases AgentTestCase[] @relation("AgentTestCaseOrigin")
-  testRuns  AgentTestRun[]  @relation("AgentTestRunVersion")
+  testCases       AgentTestCase[]    @relation("AgentTestCaseOrigin")
+  testRuns        AgentTestRun[]     @relation("AgentTestRunVersion")
+  qualityPolicies RunQualityPolicy[]
 
   // Enhanced configuration relations (replaces loose JSON fields)
   mcpServerConfigurations   AgentMCPServerConfiguration[] // MCP server bindings
@@ -17721,9 +17796,10 @@ model AgentDeploymentExecution {
   updatedAt DateTime @updatedAt
 
   // Relations
-  deployment AgentDeployment      @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
-  steps      AgentExecutionStep[]
-  testRun    AgentTestRun?
+  deployment         AgentDeployment        @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  steps              AgentExecutionStep[]
+  testRun            AgentTestRun?
+  qualityAssessments RunQualityAssessment[]
 
   @@index([deploymentId])
   @@index([status])
@@ -18232,10 +18308,10 @@ model Skill {
   organizationId String?
 
   // Publishing & versioning
-  version     Int     @default(1)
-  isPublished Boolean @default(true)
-  isDiscoverable Boolean @default(false)
-  archivedAt DateTime?
+  version          Int       @default(1)
+  isPublished      Boolean   @default(true)
+  isDiscoverable   Boolean   @default(false)
+  archivedAt       DateTime?
   importProvenance Json?
 
   // Usage tracking
@@ -21512,7 +21588,7 @@ model AgentTestCase {
 
 /// An immutable case revision tested by the existing saved-agent executor.
 /// The assessment workflow waits for that native execution; it never runs another agent loop.
-/// Migration-owned CHECKs bound payload sizes, status and verdict.
+/// Migration-owned CHECKs bound payload sizes, status, verdict and minimized v1/v2 reports.
 model AgentTestRun {
   id                   String                    @id @default(cuid())
   organizationId       String
@@ -21551,4 +21627,356 @@ model AgentTestRun {
   @@index([instanceId])
   @@index([userId])
   @@map("agent_test_run")
+}
+
+/// Actor-owned automatic checks. Configuring these never changes or invokes the target.
+/// Migration CHECK requires exactly one workflow or saved-instance target.
+model RunQualityPolicy {
+  id             String                 @id @default(cuid())
+  organizationId String
+  userId         String
+  workflowId     String?
+  instanceId     String?
+  enabled        Boolean                @default(false)
+  revision       Int                    @default(1)
+  rulesJson      Json
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  organization   Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workflow       Workflow?              @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  instance       AgentTemplateInstance? @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  assessments    RunQualityAssessment[]
+
+  @@unique([id, organizationId, userId], map: "run_quality_policy_id_org_user_key")
+  @@unique([organizationId, userId, workflowId], map: "run_quality_policy_workflow_actor_key")
+  @@unique([organizationId, userId, instanceId], map: "run_quality_policy_instance_actor_key")
+  @@index([userId])
+  @@index([workflowId])
+  @@index([instanceId])
+  @@map("run_quality_policy")
+}
+
+/// Minimized assessment of one existing native execution. Never admits business work.
+/// Definitions and native identity are immutable; output text is never copied here.
+model RunQualityAssessment {
+  id                   String                    @id @default(cuid())
+  organizationId       String
+  userId               String
+  policyId             String
+  policyRevision       Int
+  sourceVersion        Int
+  workflowExecutionId  String?
+  agentExecutionId     String?
+  nativeWorkflowId     String                    @db.VarChar(256)
+  nativeRunId          String                    @db.VarChar(64)
+  assessmentWorkflowId String                    @unique @db.VarChar(256)
+  assessmentRunId      String?                   @db.VarChar(64)
+  sourceScopeJson      Json
+  rulesJson            Json
+  rulesHash            String                    @db.VarChar(64)
+  status               String                    @default("PENDING") @db.VarChar(20)
+  verdict              String?                   @db.VarChar(20)
+  reportJson           Json?
+  errorCode            String?                   @db.VarChar(64)
+  deadlineAt           DateTime
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+  completedAt          DateTime?
+  organization         Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                 User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  policy               RunQualityPolicy          @relation(fields: [policyId, organizationId, userId], references: [id, organizationId, userId], onDelete: Cascade)
+  workflowExecution    WorkflowExecution?        @relation(fields: [workflowExecutionId], references: [id], onDelete: Cascade)
+  agentExecution       AgentDeploymentExecution? @relation(fields: [agentExecutionId], references: [id], onDelete: Cascade)
+
+  @@unique([policyId, workflowExecutionId, nativeRunId], map: "run_quality_assessment_native_workflow_key")
+  @@unique([policyId, agentExecutionId, nativeRunId], map: "run_quality_assessment_native_agent_key")
+  @@index([organizationId, userId, createdAt(sort: Desc)])
+  @@index([status, deadlineAt])
+  @@index([workflowExecutionId])
+  @@index([agentExecutionId])
+  @@index([userId])
+  @@map("run_quality_assessment")
+}
+
+
+/// A reviewed edit stays separate from the saved page until its owner applies it.
+/// Migration guards bind owner/organization to the parent Frame, bound snapshots,
+/// and fence terminal transitions. Source access is rechecked by canonical commands.
+model FrameChangeProposal {
+  id String @id
+  frameId String
+  userId String
+  organizationId String
+  requestId String
+  requestHash String
+  baseUpdatedAt DateTime
+  baseContentHash String
+  baseContent String @db.Text
+  proposedContent String @db.Text
+  proposedContentHash String
+  status String @default("PENDING")
+  appliedUpdatedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  frame AgentWorkspaceFile @relation(fields: [frameId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  @@unique([frameId, userId, requestId])
+  @@index([organizationId, userId, frameId, createdAt(sort: Desc), id])
+  @@map("frame_change_proposal")
+}
+
+/// Immutable approved content. Publishing and later draft edits keep separate identities.
+/// LEGACY_PUBLICATION preserves an existing share without inventing an approval.
+model FrameApprovedRevision {
+  id String @id
+  frameId String
+  userId String
+  organizationId String
+  contentHash String
+  content String @db.Text
+  sourceUpdatedAt DateTime
+  origin String
+  createdAt DateTime @default(now())
+  frame AgentWorkspaceFile @relation(fields: [frameId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  @@unique([frameId, contentHash, origin])
+  @@index([organizationId, userId, frameId, createdAt(sort: Desc)])
+  @@map("frame_approved_revision")
+}
+
+// Private source watches are separate from the project's outbound PM destination and legacy monitors.
+// Only the owner can read these rows; project membership alone never grants source-content access.
+// CHECK constraints bound provider/state/retention and checkpoint shape in the migration.
+// Migration triggers pin watch/grant scope, immutable evidence/receipts and one-way grant revocation.
+// integration owner/org consistency is checked by the invoker trigger on binding changes.
+model DeliverySignalWatch {
+  id String @id @default(cuid())
+  organizationId String
+  projectId String
+  userId String
+  integrationId String?
+  provider String @default("SLACK")
+  installationId String
+  containerId String
+  label String
+  state String @default("ACTIVE")
+  version Int @default(1)
+  grantRevision Int @default(1)
+  retentionDays Int @default(7)
+  verifiedAt DateTime
+  captureWindowStart DateTime?
+  captureWindowEnd DateTime?
+  captureCursorCiphertext String? @db.Text
+  captureCheckpointVersion Int @default(0)
+  captureComplete Boolean @default(false)
+  captureGrantRevision Int?
+  lastWorkflowId String?
+  lastRequestId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  integration WorkflowIntegration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  grants DeliverySignalSourceGrant[]
+  commands DeliverySignalSourceCommand[]
+  pages DeliverySignalCapturePage[]
+
+  @@unique([id, organizationId, projectId, userId], map: "delivery_watch_scope_key")
+  @@unique([organizationId, userId, projectId, provider, installationId, containerId], map: "delivery_watch_source_key")
+  @@index([organizationId, userId, projectId, createdAt(sort: Desc), id(sort: Desc)], map: "delivery_watch_owner_order_idx")
+  @@index([integrationId])
+  @@map("delivery_signal_watch")
+}
+
+// An immutable owner-only source/audience revision. Revocation never changes its pinned principals.
+model DeliverySignalSourceGrant {
+  id String @id @default(cuid())
+  watchId String
+  organizationId String
+  projectId String
+  userId String
+  revision Int
+  audience String @default("ONLY_ME")
+  humanUserId String
+  botId String
+  botUserId String
+  adapterVersion String
+  verifiedAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  watch DeliverySignalWatch @relation(fields: [watchId, organizationId, projectId, userId], references: [id, organizationId, projectId, userId], onDelete: Cascade)
+  observations DeliverySignalObservation[]
+
+  @@unique([watchId, revision], map: "delivery_grant_revision_key")
+  @@unique([id, watchId, organizationId, projectId, userId], map: "delivery_grant_scope_key")
+  @@index([organizationId, userId, projectId])
+  @@map("delivery_signal_source_grant")
+}
+
+// Immutable variants preserve conflicting evidence at the same upstream revision. Content is
+// encrypted and never projected into project context, Inbox, search indexes or workflow history.
+// Expiry is enforced by reads independently of the bounded maintenance purge.
+model DeliverySignalObservation {
+  id String @id @default(cuid())
+  watchId String
+  grantId String
+  organizationId String
+  projectId String
+  userId String
+  externalItemId String
+  revisionKind String
+  revisionValue String
+  receiptKey String
+  variantKey String
+  evidenceDigest String
+  ciphertext String? @db.Text
+  hasReplies Boolean @default(false)
+  occurredAt DateTime
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  grant DeliverySignalSourceGrant @relation(fields: [grantId, watchId, organizationId, projectId, userId], references: [id, watchId, organizationId, projectId, userId], onDelete: Cascade)
+
+  @@unique([watchId, grantId, variantKey], map: "delivery_observation_variant_key")
+  @@index([organizationId, userId, projectId, watchId, createdAt(sort: Desc), id(sort: Desc)], map: "delivery_observation_owner_order_idx")
+  @@index([watchId, grantId, receiptKey], map: "delivery_observation_receipt_idx")
+  @@index([expiresAt, id], map: "delivery_observation_expiry_idx")
+  @@map("delivery_signal_observation")
+}
+
+// Command intent, not a mirrored workflow state. Native Temporal owns execution/status/cancellation.
+model DeliverySignalSourceCommand {
+  id String @id @default(cuid())
+  watchId String
+  organizationId String
+  projectId String
+  userId String
+  requestId String
+  operation String
+  payloadHash String
+  workflowId String?
+  expectedVersion Int?
+  grantRevision Int?
+  captureMode String?
+  captureWindowStart DateTime?
+  captureWindowEnd DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  watch DeliverySignalWatch @relation(fields: [watchId, organizationId, projectId, userId], references: [id, organizationId, projectId, userId], onDelete: Cascade)
+
+  @@unique([organizationId, userId, requestId], map: "delivery_source_command_request_key")
+  @@index([watchId, createdAt(sort: Desc)])
+  @@map("delivery_signal_source_command")
+}
+
+// A per-effect receipt makes an activity retry after a committed page return that page's result,
+// rather than reading the newly advanced cursor and unintentionally consuming another page.
+model DeliverySignalCapturePage {
+  id String @id @default(cuid())
+  watchId String
+  organizationId String
+  projectId String
+  userId String
+  workflowId String
+  pageIndex Int
+  result Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  watch DeliverySignalWatch @relation(fields: [watchId, organizationId, projectId, userId], references: [id, organizationId, projectId, userId], onDelete: Cascade)
+
+  @@unique([watchId, workflowId, pageIndex], map: "delivery_capture_page_receipt_key")
+  @@index([organizationId, userId, projectId])
+  @@map("delivery_signal_capture_page")
+}
+
+
+// Finite read/propose jobs: private owner scope; no source or model bodies in Temporal history.
+model HarnessTriageRun {
+  id String @id
+  organizationId String
+  projectId String
+  userId String
+  requestId String
+  inputHash String
+  goalCiphertext String
+  evidence Json
+  credential Json
+  model Json
+  workflowId String @unique
+  nativeRunId String?
+  status String @default("QUEUED")
+  failureCode String?
+  cancelRequestedAt DateTime?
+  resultCiphertext String?
+  reviews Json @default("{}")
+  maxTokens Int
+  maxMicroUsd BigInt
+  measuredTokens BigInt @default(0)
+  measuredMicroUsd BigInt @default(0)
+  outstandingTokens BigInt @default(0)
+  outstandingMicroUsd BigInt @default(0)
+  periodStart DateTime
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation(fields:[organizationId],references:[id],onDelete:Cascade)
+  project Project @relation(fields:[projectId],references:[id],onDelete:Cascade)
+  user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+  calls HarnessTriageCall[]
+  @@unique([organizationId,userId,requestId])
+  @@unique([id,organizationId,projectId,userId])
+  @@index([organizationId,userId,projectId,createdAt(sort:Desc),id])
+  @@index([expiresAt])
+  @@map("harness_triage_run")
+}
+
+// Content-free, monotonic accounting; unknown/dispatched spend remains reserved.
+model HarnessTriageCall {
+  id String @id
+  runId String
+  organizationId String
+  projectId String
+  userId String
+  ordinal Int
+  requestDigest String
+  state String @default("RESERVED")
+  reservedTokens BigInt
+  reservedMicroUsd BigInt
+  measuredTokens BigInt?
+  measuredMicroUsd BigInt?
+  responseCiphertext String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  run HarnessTriageRun @relation(fields:[runId,organizationId,projectId,userId], references:[id,organizationId,projectId,userId],onDelete:Cascade)
+  @@unique([runId,ordinal])
+  @@index([organizationId,userId,projectId])
+  @@index([expiresAt])
+  @@map("harness_triage_call")
+}
+
+// All triage runs serialize reservations against the same organization/month.
+model HarnessTriageBudget {
+  id String @id
+  organizationId String
+  periodStart DateTime
+  measuredTokens BigInt @default(0)
+  measuredMicroUsd BigInt @default(0)
+  outstandingTokens BigInt @default(0)
+  outstandingMicroUsd BigInt @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  organization Organization @relation(fields:[organizationId],references:[id],onDelete:Cascade)
+  @@unique([organizationId,periodStart])
+  @@map("harness_triage_budget")
 }

@@ -94,6 +94,7 @@ const written = () => mocks.create.mock.calls[0][0] as Written;
 function writtenDocument() {
 	return JSON.parse(String(written().data.content)) as {
 		kind: string;
+		presentation?: "DOCUMENT" | "INTERFACE";
 		title: string;
 		blocks: Array<{ id: string; type: string; content: string }>;
 		theme?: { mode?: string };
@@ -372,4 +373,27 @@ describe("duplicateFrame", () => {
 		expect(writtenDocument().kind).toBe("slideshow");
 		expect(written().data.fileType).toBe("SLIDESHOW");
 	});
+});
+
+it("copies authored presentation without granting scripts or old runtime tools", async () => {
+	const page = original();
+	page.document.presentation = "INTERFACE";
+	await duplicateFrame({ original: page, userId: "forker-1" });
+	expect(writtenDocument().presentation).toBe("INTERFACE");
+	expect(writtenDocument().metadata?.runtime).toBeUndefined();
+});
+it("keeps legacy presentation omitted on copies", async () => {
+	await duplicateFrame({ original: original(), userId: "forker-1" });
+	expect(writtenDocument()).not.toHaveProperty("presentation");
+});
+it("retains document presentation when copying report-origin content with an interface hint", async () => {
+	const page = original({ sourceRunType: "REPORT_EXECUTION" });
+	page.document.presentation = "INTERFACE";
+	await duplicateFrame({
+		original: page,
+		userId: "forker-1",
+		organizationId: "org-1",
+	});
+	expect(writtenDocument().presentation).toBe("DOCUMENT");
+	expect(written().data.sourceRunType).toBe("REPORT_EXECUTION");
 });

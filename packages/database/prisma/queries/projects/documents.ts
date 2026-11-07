@@ -22,6 +22,10 @@ import {
 	type ProjectDocumentStatus,
 	type ProjectDocumentType,
 } from "../../client";
+import {
+	type InitialProposalBrandingInput,
+	resolveInitialProposalStyle,
+} from "./initial-proposal-brand";
 
 /**
  * Freshly compute the content hash the document editor's decision-precheck
@@ -98,15 +102,17 @@ export function sanitizeContent(content: string): string {
  * the project grants no access: every caller has already cleared a project
  * permission check, and this only labels the row to match what it belongs to.
  */
-export async function createDocument(data: {
-	projectId: string;
-	type: ProjectDocumentType;
-	title: string;
-	content: string;
-	status?: ProjectDocumentStatus;
-	lastEditedBy?: string;
-	userId: string;
-}) {
+export async function createDocument(
+	data: InitialProposalBrandingInput & {
+		projectId: string;
+		type: ProjectDocumentType;
+		title: string;
+		content: string;
+		status?: ProjectDocumentStatus;
+		lastEditedBy?: string;
+		userId: string;
+	},
+) {
 	const sanitizedContent = sanitizeContent(data.content);
 
 	// Use transaction to ensure document + initial version are created atomically
@@ -125,6 +131,13 @@ export async function createDocument(data: {
 		}
 
 		const organizationId = project.organizationId;
+		const initialStyle = await resolveInitialProposalStyle(tx, {
+			projectId: data.projectId,
+			organizationId,
+			type: data.type,
+			proposalBranding: data.proposalBranding,
+			recipientBrandVersion: data.recipientBrandVersion,
+		});
 
 		const doc = await tx.projectDocument.create({
 			data: {
@@ -138,6 +151,18 @@ export async function createDocument(data: {
 				lastEditedBy: data.lastEditedBy,
 				userId: data.userId,
 				organizationId,
+				...(initialStyle && organizationId
+					? {
+							style: {
+								create: {
+									...initialStyle,
+									projectId: data.projectId,
+									organizationId,
+									updatedById: data.userId,
+								},
+							},
+						}
+					: {}),
 			},
 		});
 

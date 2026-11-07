@@ -62,6 +62,7 @@ export const ORG_API_KEY_SCOPES = [
 	// able to read everything else. These name the areas the platform tools
 	// actually divide into; the coarse `mcp:*` pair still covers all of them.
 	"orgs:read", // List and read organizations
+	"orgs:write", // Save reviewed company branding (administrator only)
 	"features:read", // Read features, bugs and their decision history
 	"features:write", // Create and update features, bugs and their tasks
 	"workspaces:read", // Read workspaces and run RAG queries
@@ -69,6 +70,8 @@ export const ORG_API_KEY_SCOPES = [
 	"workflows:write", // Create, edit, publish, pause and resume workflows
 	"workflows:run", // Trigger workflow executions
 	"frames:read", // Read frames and slideshows
+	"reports:read", // Read report choices, templates and executions
+	"reports:write", // Save reviewed report branding with current report authority
 	"frames:write", // Create, update and share frames
 	"instructions:read", // Read the published coding instructions of a project
 	"instructions:write", // Propose a change to a project's coding instructions
@@ -83,6 +86,8 @@ export const ORG_API_KEY_SCOPES = [
 	// `INSTRUCTION_CREATE` on the project.
 	"instructions:publish", // Publish a project's coding instructions directly
 	"chats:read", // Read AI chat threads
+	"dashboard:read", // Read own dashboard recommendation feedback
+	"dashboard:write", // Record own dashboard recommendation feedback
 	"audit_log:read", // Read the org's audit log via GET /api/v1/audit-log
 	"audit_log:export", // Export the org's audit log via GET /api/v1/audit-log/export
 	"system_health:read", // GET /api/v1/system-health (includes the org's own signals)
@@ -148,6 +153,8 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  * | `instructions:publish` | `INSTRUCTION_CREATE`        | no      |
  * | `memory:write`         | `CONTEXT_CREATE` (live)     | yes     |
  * | `chats:read`           | none — own threads only     | yes     |
+ * | `dashboard:read`       | none — own feedback only    | yes     |
+ * | `dashboard:write`      | none — own feedback only    | yes     |
  * | `audit_log:read`       | `ORG_AUDIT_LOG_READ`        | no      |
  * | `audit_log:export`     | `ORG_AUDIT_LOG_EXPORT`      | no      |
  * | `system_health:read`   | none — any authenticated    | yes     |
@@ -233,6 +240,7 @@ const READ_ONLY_ORG_API_KEY_SCOPES: ReadonlySet<OrgApiKeyScope> = new Set([
 	"workspaces:read",
 	"workflows:read",
 	"frames:read",
+	"reports:read",
 	"instructions:read",
 	// A write scope on the read-only list, deliberately. See the table above:
 	// what it reaches is the proposal path, which the viewer role already has
@@ -243,6 +251,9 @@ const READ_ONLY_ORG_API_KEY_SCOPES: ReadonlySet<OrgApiKeyScope> = new Set([
 	// Inert for a viewer: every use re-checks `CONTEXT_CREATE` live. See the table.
 	"memory:write",
 	"chats:read",
+	"dashboard:read",
+	// Personal recommendation preferences only; no shared dashboard data is written.
+	"dashboard:write",
 	"system_health:read",
 	"status_updates:read",
 ]);
@@ -348,12 +359,13 @@ export const createOrganizationApiKeyProcedure = tenantProtectedProcedure
 		}
 
 		if (
-			input.scopes.includes("governance:write") &&
+			(input.scopes.includes("governance:write") ||
+				input.scopes.includes("orgs:write")) &&
 			!["owner", "admin"].includes(membership.role)
 		) {
 			throw new ORPCError("FORBIDDEN", {
 				message:
-					"Only organization owners and administrators can grant governance:write.",
+					"Only organization owners and administrators can grant governance:write or orgs:write.",
 			});
 		}
 

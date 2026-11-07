@@ -1394,3 +1394,34 @@ describe("getBrandKitProcedure", () => {
 		expect(storage.getSignedUrl).not.toHaveBeenCalled();
 	});
 });
+
+describe("awaited brand audit delivery", () => {
+	it("waits for an asynchronous audit callback before reporting success", async () => {
+		let release = () => {};
+		const pending = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		mocks.recordAudit.mockImplementationOnce(() => pending);
+		let complete = false;
+		const mutation = update("user_admin", { expectedVersion: 0 }).then(
+			(value) => {
+				complete = true;
+				return value;
+			},
+		);
+		await vi.waitFor(() => expect(mocks.recordAudit).toHaveBeenCalled());
+		expect(complete).toBe(false);
+		release();
+		expect(await mutation).toMatchObject({ outcome: "applied" });
+	});
+	it("handles an asynchronous audit rejection without detaching it", async () => {
+		mocks.recordAudit.mockImplementationOnce(async () => {
+			throw Error("Example audit unavailable");
+		});
+		await expect(
+			update("user_admin", { expectedVersion: 0 }),
+		).rejects.toThrow("Example audit unavailable");
+		// Persistence already committed; callers must reread rather than assume rollback.
+		expect(world.kits.get(ORG)).toBeDefined();
+	});
+});

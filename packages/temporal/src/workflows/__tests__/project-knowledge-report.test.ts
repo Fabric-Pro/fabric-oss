@@ -1,3 +1,4 @@
+import { patched } from "@temporalio/workflow";
 import { beforeEach, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
@@ -15,6 +16,7 @@ const m = vi.hoisted(() => ({
 		executeAiAnalysis: vi.fn(),
 		renderInstanceReport: vi.fn(),
 		storeInstanceArtifact: vi.fn(),
+		generateReportPdfArtifact: vi.fn(),
 		indexInstanceArtifactForRag: vi.fn(),
 		cleanupRagCollection: vi.fn(),
 		emitReportExecutionNotification: vi.fn(),
@@ -40,7 +42,7 @@ vi.mock("@repo/database", async () => ({
 }));
 vi.mock("@temporalio/workflow", () => ({
 	proxyActivities: () => m.activities,
-	patched: () => false,
+	patched: vi.fn(() => false),
 	ApplicationFailure: class extends Error {
 		static create(input: { message: string }) {
 			return new Error(input.message);
@@ -92,6 +94,7 @@ const snapshot = buildReportExecutionSnapshot({
 });
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.mocked(patched).mockReturnValue(false);
 	m.access.mockResolvedValue(true);
 	m.execution.mockResolvedValue({
 		id: "execution-1",
@@ -266,3 +269,50 @@ it("uses admitted skill text after the current skill changes or detaches", async
 		m.activities.executeAiAnalysis.mock.calls[0][0].skillsContent,
 	).not.toContain("MUTATED FORMAT");
 });
+
+it.each(["MARKDOWN", "PDF", "HTML"])(
+	"generates an actual metadata-only PDF activity from the exact saved %s document when requested",
+	async (outputFormat) => {
+		vi.mocked(patched).mockImplementation(
+			(id) => id === "report-native-pdf-2026-11-06",
+		);
+		m.activities.fetchTemplateInstanceWithTemplate.mockResolvedValue({
+			...instance,
+			template: { ...instance.template, outputFormat },
+			reportingExecution: {
+				...snapshot,
+				config: { ...snapshot.config, generatePdf: true },
+			},
+			reportingParameters: {},
+		});
+		m.activities.generateReportPdfArtifact.mockResolvedValue({
+			id: "example-pdf",
+			name: "Monthly delivery.pdf",
+			artifactType: "PDF",
+			mimeType: "application/pdf",
+			size: 53025,
+		});
+		const result = await templateInstanceExecutionWorkflow({
+			executionId: "execution-1",
+			instanceId: "report-1",
+			organizationId: "org-1",
+			userId: "user-1",
+			reportingProtocol: 1,
+		});
+		expect(m.activities.generateReportPdfArtifact).toHaveBeenCalledWith({
+			executionId: "execution-1",
+			sourceArtifactId: "artifact-1",
+			organizationId: "org-1",
+			userId: "user-1",
+		});
+		expect(result.status).toBe("COMPLETED");
+		expect(result.artifacts).toContainEqual({
+			id: "example-pdf",
+			name: "Monthly delivery.pdf",
+			artifactType: "PDF",
+			mimeType: "application/pdf",
+			size: 53025,
+		});
+		expect(JSON.stringify(result)).not.toContain("%PDF");
+	},
+);

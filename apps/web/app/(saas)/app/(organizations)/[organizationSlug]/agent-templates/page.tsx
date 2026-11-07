@@ -5,8 +5,8 @@ import { TopRightControls } from "@saas/shared/components/TopRightControls";
 import { redirect } from "next/navigation";
 
 export const metadata = {
-	title: "Agent Templates - Fabric",
-	description: "Pre-built AI agents for every department",
+	title: "Templates - Fabric",
+	description: "Delivery report starters and reusable agent blueprints",
 };
 
 type Props = {
@@ -43,7 +43,7 @@ export default async function OrganizationAgentTemplatesPage({
 						label: organization.name,
 						href: `/app/${organizationSlug}`,
 					},
-					{ label: "Agent Templates" },
+					{ label: "Templates" },
 				]}
 			/>
 			<AgentTemplatesPageTabs

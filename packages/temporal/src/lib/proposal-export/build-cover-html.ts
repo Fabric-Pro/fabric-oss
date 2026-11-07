@@ -204,7 +204,18 @@ export function coverHtml(
 		if (raster === null || src === null) {
 			return "";
 		}
-		const plate = needsPlate(raster) ? ` ${PRINT.coverLogoPlate}` : "";
+		const lightCover =
+			tokens.appearance?.coverStyle === "LIGHT" ||
+			tokens.appearance?.coverStyle === "MINIMAL";
+		const plate =
+			lightCover &&
+			raster.opaque !== true &&
+			raster.luminance !== undefined &&
+			raster.luminance > 0.18
+				? ` ${PRINT.coverLogoPlate} ${PRINT.coverLogoInkPlate}`
+				: needsPlate(raster)
+					? ` ${PRINT.coverLogoPlate}`
+					: "";
 		return `<img class="${PRINT.coverLogo} ${role}${plate}" src="${escapeHtml(src)}" alt="${escapeHtml(name ? `${name} logo` : fallback)}">`;
 	};
 	const logos =
@@ -256,7 +267,7 @@ export function coverHtml(
 		.join(" · ");
 
 	return [
-		`<section class="${THEME.cover}">`,
+		`<section class="${THEME.cover}"${tokens.appearance?.coverStyle && tokens.appearance.coverStyle !== "DARK" ? ` data-pa-cover="${tokens.appearance.coverStyle}"` : ""}>`,
 		hero,
 		brands,
 		`<div class="${PRINT.coverBody}">`,

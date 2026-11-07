@@ -1501,6 +1501,7 @@ export {
 } from "./teams-mention";
 // Template Instance activities (replaces legacy report-generation)
 export {
+	generateReportPdfArtifact,
 	emitReportExecutionNotification,
 	executeAgentDataGatheringLoop,
 	executeInstanceAiAnalysis,
@@ -1640,3 +1641,16 @@ export {
 	assessAgentTestRun,
 	failAgentTestAssessment,
 } from "./agent-test-assessment";
+
+export {
+	admitRecordedRunQuality,
+	assessRecordedRunQuality,
+	failRecordedRunQuality,
+	settleUnconfirmedRunQualityAdmission,
+} from "./run-quality";
+
+// Private source capture keeps credentials and source snapshots inside activities.
+export {
+	captureDeliverySourcePageActivity,
+	purgeExpiredDeliverySourceObservationsActivity,
+} from "./delivery-source-capture";

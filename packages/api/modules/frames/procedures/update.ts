@@ -37,6 +37,7 @@ export const updateFrameProcedure = tenantProtectedProcedure
 			title: input.title,
 			description: input.description,
 			blocks: input.blocks,
+			presentation: input.presentation,
 			theme: input.theme,
 			expectedUpdatedAt: input.expectedUpdatedAt
 				? new Date(input.expectedUpdatedAt)

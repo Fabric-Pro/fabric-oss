@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ArtifactBrandSelection } from "@repo/utils/artifact-brand-snapshot";
 import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import {
 	FRAME_SURFACES,
@@ -13,16 +14,34 @@ import type {
 	AgentWorkspaceFile,
 	FrameShareScope,
 } from "../generated/client";
+import {
+	ArtifactBrandingError,
+	getArtifactBrandingChoices,
+	resolveArtifactBrandSnapshot,
+} from "./artifact-branding";
 import { recordAuditTx } from "./audit-log";
 import {
 	assertFrameRevision,
 	FrameUpdateConflictError,
 	nextFrameRevision,
 } from "./frame-revision";
+import {
+	canReadOrganizationFrames,
+	canUpdateOrganizationFrames,
+} from "./organization-permissions";
+import {
+	canReadReportDerivedFrame,
+	canWriteReportDerivedFrame,
+} from "./report-frame-access";
 
 export { FrameUpdateConflictError } from "./frame-revision";
 
+import {
+	preserveLegacyFramePublication,
+	publicFrameSnapshot,
+} from "./frame-approved-revisions";
 import { saveFrameEdit } from "./frame-edit-history";
+import { canAccessFrameProject } from "./frame-project-access";
 import {
 	assertPublicSharingAllowed,
 	PublicSharingDisabledError,
@@ -36,6 +55,7 @@ import {
 	projectPlacementRefusal,
 } from "./projects/project-placement";
 import {
+	canEditProject,
 	getProjectAccessContext,
 	isProjectSoftDeleted,
 } from "./projects/projects";
@@ -71,6 +91,9 @@ export type FrameBlock = z.infer<typeof FrameBlockSchema>;
 export type FrameDocument = z.infer<typeof FrameDocumentSchema>;
 
 export interface CreateFrameInput {
+	/** Trusted admission fields; never accepted as document metadata. */
+	id?: string;
+	creationRequestHash?: string;
 	userId: string;
 	organizationId?: string;
 	conversationId?: string;
@@ -79,6 +102,7 @@ export interface CreateFrameInput {
 	kind?: "frame" | "slideshow";
 	blocks: FrameBlock[];
 	theme?: FrameDocument["theme"];
+	presentation?: FrameDocument["presentation"];
 	sourceRunType?: string;
 	sourceRunId?: string;
 	authoritySessionId?: string;
@@ -105,6 +129,8 @@ export interface CreateFrameInput {
 }
 
 export interface UpdateFrameInput {
+	/** Internal canonical branding selection. Transport edits cannot supply snapshot content. */
+	brandSelection?: ArtifactBrandSelection;
 	expectedUpdatedAt?: Date;
 	requestedUpdatedAt?: Date;
 	id: string;
@@ -115,6 +141,7 @@ export interface UpdateFrameInput {
 	description?: string;
 	blocks?: FrameBlock[];
 	theme?: FrameDocument["theme"];
+	presentation?: FrameDocument["presentation"];
 	isPublic?: boolean;
 	runtimeTools?: string[];
 	surface?: FrameSurface;
@@ -147,13 +174,22 @@ function buildFramePath(title: string, kind: "frame" | "slideshow") {
 }
 
 function parseFrameContent(
-	file: Pick<AgentWorkspaceFile, "content">,
+	file: Pick<AgentWorkspaceFile, "content" | "sourceRunType">,
 ): FrameDocument {
 	const parsed = JSON.parse(file.content) as unknown;
-	return FrameDocumentSchema.parse(parsed);
+	const document = FrameDocumentSchema.parse(parsed);
+	// Origin is authoritative on the row, including historical documents whose
+	// metadata predates sourceRunType or whose presentation was string-edited.
+	// Every renderer/export receives the same document-only report contract.
+	return file.sourceRunType === "REPORT_EXECUTION"
+		? { ...document, presentation: "DOCUMENT" }
+		: document;
 }
 
-export type FrameRecord = ReturnType<typeof mapFrameRecord>;
+export type FrameRecord = Omit<
+	ReturnType<typeof mapFrameRecord>,
+	"isPublishedSnapshot"
+> & { isPublishedSnapshot?: boolean };
 
 function mapFrameRecord(file: AgentWorkspaceFile) {
 	const document = parseFrameContent(file);
@@ -169,11 +205,15 @@ function mapFrameRecord(file: AgentWorkspaceFile) {
 		title: document.title,
 		description: document.description,
 		kind: document.kind,
+		...(document.presentation
+			? { presentation: document.presentation }
+			: {}),
 		contentType: file.mimeType || getFrameContentType(document.kind),
 		fileType: file.fileType,
 		status: file.status,
 		version: file.version,
 		isPublic: file.isPublic,
+		isPublishedSnapshot: false,
 		shareToken: file.shareToken,
 		shareScope: file.shareScope,
 		sourceRunType: file.sourceRunType,
@@ -188,7 +228,10 @@ function mapFrameRecord(file: AgentWorkspaceFile) {
 	};
 }
 
-export async function createFrame(input: CreateFrameInput) {
+export async function createFrame(
+	input: CreateFrameInput,
+	client: Prisma.TransactionClient = db,
+) {
 	const kind = input.kind ?? "frame";
 	if (input.storyId && !input.projectId) {
 		throw new Error("storyId requires projectId on a frame");
@@ -203,6 +246,10 @@ export async function createFrame(input: CreateFrameInput) {
 		description: input.description,
 		blocks: input.blocks,
 		theme: input.theme,
+		presentation:
+			input.sourceRunType === "REPORT_EXECUTION"
+				? "DOCUMENT"
+				: input.presentation,
 		metadata: {
 			generatedByTool: "fabric_create_frame",
 			conversationId: input.conversationId,
@@ -221,12 +268,18 @@ export async function createFrame(input: CreateFrameInput) {
 	// stopped, nothing is created (the ambient dispatch guard; a no-op
 	// outside a turn).
 	throwIfDispatchStopped();
-	const file = await db.agentWorkspaceFile.create({
+	const file = await client.agentWorkspaceFile.create({
 		data: {
+			...(input.id ? { id: input.id } : {}),
 			conversationId: input.conversationId,
 			userId: input.userId,
 			organizationId: input.organizationId ?? null,
-			path: buildFramePath(input.title, kind),
+			path: input.id
+				? buildFramePath(input.title, kind).replace(
+						".frame.json",
+						`-${input.id.slice(-12)}.frame.json`,
+					)
+				: buildFramePath(input.title, kind),
 			name: `${input.title}.frame.json`,
 			extension: "json",
 			mimeType: getFrameContentType(kind),
@@ -247,6 +300,9 @@ export async function createFrame(input: CreateFrameInput) {
 			description: input.description,
 			metadata: {
 				frameVersion: 1,
+				...(input.creationRequestHash
+					? { creationRequestHash: input.creationRequestHash }
+					: {}),
 				...(input.surface ? { surface: input.surface } : {}),
 				...(input.sourceNodeId
 					? { sourceNodeId: input.sourceNodeId }
@@ -319,6 +375,7 @@ export async function duplicateFrame(input: {
 		title: input.title ?? `${original.title} (Copy)`,
 		description: original.description,
 		kind: original.kind,
+		presentation: original.document.presentation,
 		blocks: original.document.blocks.map((block) => ({
 			...block,
 			id: `block-${randomUUID()}`,
@@ -326,10 +383,16 @@ export async function duplicateFrame(input: {
 		theme: original.document.theme,
 		// A copy of a page an unattended run wrote is still that run's content,
 		// so it stays drawn without scripts (`isUnattendedFrame`).
-		sourceRunType: isUnattendedFrame(original)
-			? UNATTENDED_FRAME_SOURCE_RUN_TYPE
-			: input.sourceRunType,
-		sourceRunId: input.sourceRunId,
+		sourceRunType:
+			original.sourceRunType === "REPORT_EXECUTION"
+				? "REPORT_EXECUTION"
+				: isUnattendedFrame(original)
+					? UNATTENDED_FRAME_SOURCE_RUN_TYPE
+					: input.sourceRunType,
+		sourceRunId:
+			original.sourceRunType === "REPORT_EXECUTION"
+				? (original.sourceRunId ?? undefined)
+				: input.sourceRunId,
 		authoritySessionId: input.authoritySessionId,
 		providerKeys: input.providerKeys,
 		isPublic: false,
@@ -365,7 +428,9 @@ export async function findFrameForSourceRun(input: {
 		},
 		orderBy: { createdAt: "asc" },
 	});
-	return file ? mapFrameRecord(file) : null;
+	return file && (await canReadReportDerivedFrame(file, input))
+		? mapFrameRecord(file)
+		: null;
 }
 
 export async function getFrameById(input: {
@@ -378,12 +443,17 @@ export async function getFrameById(input: {
 		where: {
 			id: input.id,
 			projectId: input.projectId,
-			userId: input.userId,
 			organizationId: input.organizationId ?? null,
 			fileType: { in: ["FRAME", "SLIDESHOW"] },
 		},
 	});
-	return file ? mapFrameRecord(file) : null;
+	return file &&
+		(await canAccessFrameProject(file, input.userId)) &&
+		(file.userId === input.userId ||
+			file.sourceRunType === "REPORT_EXECUTION") &&
+		(await canReadReportDerivedFrame(file, input))
+		? mapFrameRecord(file)
+		: null;
 }
 
 /**
@@ -403,7 +473,9 @@ export async function getProjectFrameById(input: {
 			fileType: { in: ["FRAME", "SLIDESHOW"] },
 		},
 	});
-	return file ? mapFrameRecord(file) : null;
+	return file && file.sourceRunType !== "REPORT_EXECUTION"
+		? mapFrameRecord(file)
+		: null;
 }
 
 /**
@@ -449,7 +521,10 @@ export async function listFrames(input: {
 		take: input.limit ?? 50,
 		skip: input.offset ?? 0,
 	});
-	return files.map(mapFrameRecord);
+	const allowed = await Promise.all(
+		files.map((file) => canReadReportDerivedFrame(file, input)),
+	);
+	return files.filter((_, index) => allowed[index]).map(mapFrameRecord);
 }
 
 /*
@@ -560,7 +635,10 @@ export async function listWorkspaceFrames(input: {
 		take: input.limit ?? SURFACE_LIST_DEFAULT_LIMIT,
 		skip: input.offset ?? 0,
 	});
-	return files.map(mapFrameRecord);
+	const allowed = await Promise.all(
+		files.map((file) => canReadReportDerivedFrame(file, input)),
+	);
+	return files.filter((_, index) => allowed[index]).map(mapFrameRecord);
 }
 
 /**
@@ -630,7 +708,10 @@ export async function listProjectFrames(input: {
 		take: input.limit ?? SURFACE_LIST_DEFAULT_LIMIT,
 		skip: input.offset ?? 0,
 	});
-	return files.map(mapFrameRecord);
+	const allowed = await Promise.all(
+		files.map((file) => canReadReportDerivedFrame(file, input)),
+	);
+	return files.filter((_, index) => allowed[index]).map(mapFrameRecord);
 }
 
 /**
@@ -652,11 +733,17 @@ export async function getAccessibleFrameById(input: {
 			fileType: FRAME_FILE_TYPES,
 		},
 	});
-	if (!file) {
+	if (!file || !(await canReadReportDerivedFrame(file, input))) {
 		return null;
 	}
-	if (file.userId === input.userId) {
+	// Report previews inherit the report audience, including permitted teammates.
+	if (file.sourceRunType === "REPORT_EXECUTION") {
 		return mapFrameRecord(file);
+	}
+	if (file.userId === input.userId) {
+		return (await canAccessFrameProject(file, input.userId))
+			? mapFrameRecord(file)
+			: null;
 	}
 	if (file.projectId) {
 		// A trashed project is gone for the people who only had it through the
@@ -679,11 +766,56 @@ export async function getAccessibleFrameById(input: {
 			input.organizationId,
 		),
 	});
-	return shared.hasAccess ? mapFrameRecord(file) : null;
+	if (!shared.hasAccess) {
+		return null;
+	}
+	if (shared.scope === "PUBLIC") {
+		const snapshot = await publicFrameSnapshot(file);
+		return snapshot ? mapPublicFrameRecord(snapshot) : null;
+	}
+	return mapFrameRecord(file);
 }
 
-export async function updateFrame(input: UpdateFrameInput) {
-	const existing = await db.agentWorkspaceFile.findFirst({
+export function frameDocumentForEdit(
+	current: FrameDocument,
+	input: Pick<
+		UpdateFrameInput,
+		| "title"
+		| "description"
+		| "blocks"
+		| "presentation"
+		| "theme"
+		| "runtimeTools"
+	>,
+	sourceRunType?: string | null,
+): FrameDocument {
+	return FrameDocumentSchema.parse({
+		...current,
+		title: input.title ?? current.title,
+		description: input.description ?? current.description,
+		blocks: input.blocks ?? current.blocks,
+		presentation:
+			sourceRunType === "REPORT_EXECUTION"
+				? "DOCUMENT"
+				: (input.presentation ?? current.presentation),
+		theme: input.theme
+			? { ...input.theme, branding: current.theme?.branding }
+			: current.theme,
+		metadata: input.runtimeTools
+			? { ...current.metadata, runtime: { tools: input.runtimeTools } }
+			: current.metadata,
+	});
+}
+
+export async function updateFrame(
+	input: UpdateFrameInput,
+	client?: Prisma.TransactionClient,
+) {
+	if (input.isPublic === true && !input.organizationId) {
+		await assertPublicSharingAllowed(input.organizationId);
+	}
+	const store = client ?? db;
+	const existing = await store.agentWorkspaceFile.findFirst({
 		where: {
 			id: input.id,
 			userId: input.userId,
@@ -693,7 +825,11 @@ export async function updateFrame(input: UpdateFrameInput) {
 		},
 	});
 
-	if (!existing) {
+	if (
+		!existing ||
+		!(await canAccessFrameProject(existing, input.userId, true, client)) ||
+		!(await canWriteReportDerivedFrame(existing, input, client))
+	) {
 		return null;
 	}
 	if (input.isPublic === true && !existing.isPublic) {
@@ -704,21 +840,12 @@ export async function updateFrame(input: UpdateFrameInput) {
 		input.expectedUpdatedAt ?? input.requestedUpdatedAt,
 		existing.updatedAt,
 	);
-	const current = parseFrameContent(existing);
-	const nextDocument = FrameDocumentSchema.parse({
-		...current,
-		title: input.title ?? current.title,
-		description: input.description ?? current.description,
-		blocks: input.blocks ?? current.blocks,
-		theme: input.theme ?? current.theme,
-		metadata: {
-			...current.metadata,
-			...(input.runtimeTools
-				? { runtime: { tools: input.runtimeTools } }
-				: {}),
-		},
-	});
-	const content = JSON.stringify(nextDocument, null, 2);
+	let nextDocument = frameDocumentForEdit(
+		parseFrameContent(existing),
+		input,
+		existing.sourceRunType,
+	);
+	let content = JSON.stringify(nextDocument, null, 2);
 
 	// Immediately before the write, after the read above: inside an Advisor
 	// chat turn that has stopped, nothing is written (the ambient dispatch
@@ -727,102 +854,233 @@ export async function updateFrame(input: UpdateFrameInput) {
 	// The history row and the update stand or fall together: a row for an edit
 	// that never landed would be a version of the page nobody ever saw, and it
 	// would shift the number of every version after it.
-	const updated = await db
-		.$transaction(async (tx) => {
-			await tx.$queryRaw`SELECT id FROM agent_workspace_file WHERE id = ${existing.id} FOR UPDATE`;
-			let surfaceMetadata: Prisma.InputJsonObject | undefined;
-			if (input.surface) {
-				const latest = await tx.agentWorkspaceFile.findFirst({
-					where: {
-						id: existing.id,
-						userId: input.userId,
-						organizationId: input.organizationId ?? null,
-						projectId: input.projectId,
-					},
-					select: { metadata: true },
-				});
-				if (!latest) {
-					return null;
-				}
-				const metadata = latest.metadata;
-				const currentMetadata =
-					metadata &&
-					typeof metadata === "object" &&
-					!Array.isArray(metadata)
-						? metadata
-						: {};
-				const { workflowBindings, ...rest } = currentMetadata;
-				surfaceMetadata = {
-					...rest,
-					...(input.surface === "workspace" &&
-					workflowBindings !== undefined
-						? { workflowBindings }
-						: {}),
-					surface: input.surface,
-				};
+	const write = async (tx: Prisma.TransactionClient) => {
+		await tx.$queryRaw`SELECT id FROM agent_workspace_file WHERE id = ${existing.id} FOR UPDATE`;
+		const locked = await tx.agentWorkspaceFile.findFirst({
+			where: {
+				id: existing.id,
+				userId: input.userId,
+				organizationId: input.organizationId ?? null,
+			},
+		});
+		if (
+			!locked ||
+			!(await canAccessFrameProject(locked, input.userId, true, tx)) ||
+			!(await canWriteReportDerivedFrame(locked, input, tx))
+		) {
+			return null;
+		}
+		assertFrameRevision(existing.updatedAt, locked.updatedAt);
+		await preserveLegacyFramePublication(tx, locked);
+		if (input.brandSelection) {
+			if (!input.organizationId) {
+				throw new ArtifactBrandingError("NOT_FOUND");
 			}
-			if (
-				input.requestedUpdatedAt &&
-				input.requestedUpdatedAt.getTime() !==
-					existing.updatedAt.getTime()
-			) {
-				throw new FrameUpdateConflictError();
-			}
-			if (content !== existing.content) {
-				await saveFrameEdit(
-					{
-						frameId: existing.id,
-						editType: "full_update",
-						contentSnapshot: existing.content,
-						editedBy: input.userId,
-					},
-					tx,
-				);
-			}
-			const saved = await tx.agentWorkspaceFile.update({
+			const latest = await tx.agentWorkspaceFile.findFirst({
 				where: {
 					id: existing.id,
-					projectId: input.projectId,
-					updatedAt: input.expectedUpdatedAt ?? existing.updatedAt,
+					userId: input.userId,
+					organizationId: input.organizationId,
 				},
-				data: {
-					updatedAt: nextFrameRevision(existing.updatedAt),
-					name: `${nextDocument.title}.frame.json`,
-					content,
-					size: Buffer.byteLength(content, "utf8"),
-					description: nextDocument.description,
-					isPublic: input.isPublic ?? existing.isPublic,
-					...(surfaceMetadata ? { metadata: surfaceMetadata } : {}),
+				select: {
+					isPublic: true,
+					shareScope: true,
+					updatedAt: true,
 				},
 			});
-			if (input.organizationId) {
-				await recordAuditTx(tx, {
-					action: "frame.updated",
-					organizationId: input.organizationId,
-					actor: { type: "user", userId: input.userId },
-					resource: { type: "frame", id: existing.id },
-					projectId: existing.projectId,
-					metadata: {
-						previousRevision: existing.updatedAt.toISOString(),
-						revision: saved.updatedAt.toISOString(),
-					},
-				});
+			if (!latest) {
+				return null;
 			}
-			return saved;
-		})
-		.catch((error: unknown) => {
 			if (
-				error &&
-				typeof error === "object" &&
-				"code" in error &&
-				error.code === "P2025"
+				existing.projectId &&
+				!(await canEditProject(existing.projectId, input.userId, tx))
 			) {
-				throw new FrameUpdateConflictError();
+				return null;
 			}
-			throw error;
+			assertFrameRevision(input.expectedUpdatedAt, latest.updatedAt);
+			if (latest.isPublic || latest.shareScope === "PUBLIC") {
+				throw new ArtifactBrandingError("PUBLIC_FRAME");
+			}
+			const branding = await resolveArtifactBrandSnapshot(
+				{
+					organizationId: input.organizationId,
+					userId: input.userId,
+					projectId: existing.projectId,
+					...input.brandSelection,
+				},
+				tx,
+			);
+			nextDocument = FrameDocumentSchema.parse({
+				...nextDocument,
+				theme: { ...nextDocument.theme, branding },
+			});
+			content = JSON.stringify(nextDocument, null, 2);
+		}
+
+		let surfaceMetadata: Prisma.InputJsonObject | undefined;
+		if (input.surface) {
+			const latest = await tx.agentWorkspaceFile.findFirst({
+				where: {
+					id: existing.id,
+					userId: input.userId,
+					organizationId: input.organizationId ?? null,
+					projectId: input.projectId,
+				},
+				select: { metadata: true },
+			});
+			if (!latest) {
+				return null;
+			}
+			const metadata = latest.metadata;
+			const currentMetadata =
+				metadata &&
+				typeof metadata === "object" &&
+				!Array.isArray(metadata)
+					? metadata
+					: {};
+			const { workflowBindings, ...rest } = currentMetadata;
+			surfaceMetadata = {
+				...rest,
+				...(input.surface === "workspace" &&
+				workflowBindings !== undefined
+					? { workflowBindings }
+					: {}),
+				surface: input.surface,
+			};
+		}
+		if (
+			input.requestedUpdatedAt &&
+			input.requestedUpdatedAt.getTime() !== existing.updatedAt.getTime()
+		) {
+			throw new FrameUpdateConflictError();
+		}
+		if (content !== existing.content) {
+			await saveFrameEdit(
+				{
+					frameId: existing.id,
+					editType: "full_update",
+					contentSnapshot: existing.content,
+					editedBy: input.userId,
+				},
+				tx,
+			);
+		}
+		const saved = await tx.agentWorkspaceFile.update({
+			where: {
+				id: existing.id,
+				projectId: input.projectId,
+				updatedAt: input.expectedUpdatedAt ?? existing.updatedAt,
+			},
+			data: {
+				updatedAt: nextFrameRevision(existing.updatedAt),
+				name: `${nextDocument.title}.frame.json`,
+				content,
+				size: Buffer.byteLength(content, "utf8"),
+				description: nextDocument.description,
+				isPublic: input.isPublic ?? existing.isPublic,
+				...(surfaceMetadata ? { metadata: surfaceMetadata } : {}),
+			},
 		});
+		if (input.organizationId) {
+			await recordAuditTx(tx, {
+				action: "frame.updated",
+				organizationId: input.organizationId,
+				actor: { type: "user", userId: input.userId },
+				resource: { type: "frame", id: existing.id },
+				projectId: existing.projectId,
+				metadata: {
+					previousRevision: existing.updatedAt.toISOString(),
+					revision: saved.updatedAt.toISOString(),
+					...(input.brandSelection
+						? {
+								brandSource: input.brandSelection.source,
+								brandVersion:
+									input.brandSelection.expectedBrandVersion,
+							}
+						: {}),
+				},
+			});
+		}
+		return saved;
+	};
+	const updated = await (client
+		? write(client)
+		: db.$transaction(write)
+	).catch((error: unknown) => {
+		if (
+			error &&
+			typeof error === "object" &&
+			"code" in error &&
+			error.code === "P2025"
+		) {
+			throw new FrameUpdateConflictError();
+		}
+		throw error;
+	});
 
 	return updated ? mapFrameRecord(updated) : null;
+}
+
+/** Brand choices use the Frame's own project; callers cannot substitute another audience. */
+export async function getFrameBranding(input: {
+	id: string;
+	userId: string;
+	userEmail?: string;
+	organizationId: string;
+}) {
+	const frame = await getAccessibleFrameById(input);
+	if (!frame) {
+		return null;
+	}
+	const choices = await getArtifactBrandingChoices({
+		...input,
+		projectId: frame.projectId,
+	});
+	const blockedReason =
+		frame.userId !== input.userId ||
+		!(await canUpdateOrganizationFrames(
+			input.userId,
+			input.organizationId,
+		)) ||
+		(!!frame.projectId &&
+			!(await canEditProject(frame.projectId, input.userId)))
+			? ("READ_ONLY" as const)
+			: frame.isPublic || frame.shareScope === "PUBLIC"
+				? ("PUBLISHED" as const)
+				: null;
+	return {
+		frameUpdatedAt: frame.updatedAt.toISOString(),
+		projectId: frame.projectId ?? null,
+		current: frame.document.theme?.branding ?? null,
+		canApply: blockedReason === null,
+		blockedReason,
+		...choices,
+	};
+}
+
+export async function applyFrameBranding(
+	input: {
+		id: string;
+		userId: string;
+		organizationId: string;
+		expectedUpdatedAt: Date;
+	} & ArtifactBrandSelection,
+) {
+	if (
+		!(await canUpdateOrganizationFrames(input.userId, input.organizationId))
+	) {
+		return null;
+	}
+	return updateFrame({
+		id: input.id,
+		userId: input.userId,
+		organizationId: input.organizationId,
+		expectedUpdatedAt: input.expectedUpdatedAt,
+		brandSelection: {
+			source: input.source,
+			expectedBrandVersion: input.expectedBrandVersion,
+		},
+	});
 }
 
 export async function publishFrame(input: {
@@ -876,6 +1134,25 @@ export async function revokeFrameShare(input: {
 	return getFrameById(input);
 }
 
+function mapPublicFrameRecord(file: AgentWorkspaceFile) {
+	const { metadata: _metadata, ...document } = parseFrameContent(file);
+	const mapped = mapFrameRecord({
+		...file,
+		content: JSON.stringify(document),
+	});
+	return {
+		...mapped,
+		conversationId: null,
+		authoritySessionId: null,
+		providerKeys: [],
+		sourceRunType: null,
+		sourceRunId: null,
+		shareToken: null,
+		runtimeTools: [],
+		isPublishedSnapshot: true,
+	};
+}
+
 export async function getFrameByShareToken(token: string) {
 	const file = await db.agentWorkspaceFile.findFirst({
 		where: {
@@ -885,12 +1162,16 @@ export async function getFrameByShareToken(token: string) {
 		},
 	});
 	if (
+		file?.sourceRunType === "REPORT_EXECUTION" ||
 		!file?.organizationId ||
-		(await publicSharingRefusal(file.organizationId))
+		(await publicSharingRefusal(file.organizationId)) ||
+		!(await canReadOrganizationFrames(file.userId, file.organizationId)) ||
+		!(await canAccessFrameProject(file, file.userId))
 	) {
 		return null;
 	}
-	return mapFrameRecord(file);
+	const snapshot = await publicFrameSnapshot(file);
+	return snapshot ? mapPublicFrameRecord(snapshot) : null;
 }
 
 export async function deleteFrame(input: {

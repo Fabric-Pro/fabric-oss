@@ -18,6 +18,7 @@ import {
 	FileJson,
 	Fullscreen,
 	Loader2,
+	Paintbrush,
 	PanelTop,
 	Share2,
 	Sparkles,
@@ -36,7 +37,8 @@ export type FrameShareControl =
 			onRevoke?: () => void;
 			revokePending: boolean;
 	  }
-	| { type: "publish"; onPublish: () => void; pending: boolean };
+	| { type: "publish"; onPublish: () => void; pending: boolean }
+	| { type: "restricted"; reason: string };
 
 interface FrameShellExport {
 	/** False when the frame's JSON is not known, which leaves a panel no menu. */
@@ -73,6 +75,7 @@ export interface FrameShellHeaderProps {
 	exportNotice: string | null;
 	share: FrameShareControl | null;
 	onClose?: () => void;
+	onBranding?: () => void;
 }
 
 function copyToClipboard(value: string) {
@@ -142,6 +145,17 @@ function ShareMenu({
 	isPublic: boolean;
 	compact: boolean;
 }) {
+	if (share.type === "restricted") {
+		return (
+			<span
+				className="text-muted-foreground text-xs"
+				role="note"
+				title={share.reason}
+			>
+				{share.reason}
+			</span>
+		);
+	}
 	if (share.type === "sheet") {
 		return compact ? (
 			<Button
@@ -237,7 +251,9 @@ function PanelHeader({
 	share,
 	isPublic,
 	onClose,
+	onBranding,
 }: FrameShellHeaderProps) {
+	const tBrand = useTranslations("artifactBranding");
 	const codeToggleLabel = showCode
 		? "Show rendered frame"
 		: "Show source code";
@@ -254,6 +270,18 @@ function PanelHeader({
 				) : null}
 			</div>
 			<div className="flex shrink-0 items-center gap-1">
+				{onBranding && (
+					<Button
+						variant="ghost"
+						size="icon"
+						className="h-8 w-8"
+						onClick={onBranding}
+						title={tBrand("title")}
+						aria-label={tBrand("title")}
+					>
+						<Paintbrush className="h-4 w-4" />
+					</Button>
+				)}
 				<Button
 					variant="ghost"
 					size="icon"
@@ -317,7 +345,9 @@ function PageHeader({
 	exporter,
 	exportNotice,
 	share,
+	onBranding,
 }: FrameShellHeaderProps) {
+	const tBrand = useTranslations("artifactBranding");
 	return (
 		<>
 			<div className="flex flex-wrap items-start justify-between gap-4">
@@ -370,6 +400,16 @@ function PageHeader({
 					</div>
 				</div>
 				<div className="flex flex-wrap items-start gap-2">
+					{onBranding && (
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={onBranding}
+						>
+							<Paintbrush className="h-4 w-4" />
+							{tBrand("title")}
+						</Button>
+					)}
 					<Button variant="outline" size="sm" onClick={onToggleCode}>
 						{showCode ? (
 							<>

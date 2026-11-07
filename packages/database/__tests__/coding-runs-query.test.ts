@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { findFirst, findMany } = vi.hoisted(() => ({
+const { findFirst, findMany, findUnique, update } = vi.hoisted(() => ({
 	findFirst: vi.fn(),
 	findMany: vi.fn(),
+	findUnique: vi.fn(),
+	update: vi.fn(),
 }));
 
 vi.mock("../prisma/client", () => ({
@@ -10,6 +12,8 @@ vi.mock("../prisma/client", () => ({
 		codingRun: {
 			findFirst,
 			findMany,
+			findUnique,
+			update,
 		},
 		codingRunEvent: {
 			create: vi.fn(),
@@ -21,6 +25,7 @@ import {
 	getCodingRun,
 	listCodingRunsForStory,
 	listCodingRunsForTask,
+	updateCodingRunStatus,
 } from "../prisma/queries/coding-runs";
 
 describe("coding run query tenant isolation", () => {
@@ -82,5 +87,56 @@ describe("coding run query tenant isolation", () => {
 				},
 			}),
 		);
+	});
+});
+
+describe("immutable coding admission receipt", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		findUnique.mockResolvedValue(null);
+	});
+	it("preserves the exact admission hash when native session metadata replaces provider configuration", async () => {
+		const receipt = { version: 1, requestHash: "a".repeat(64) };
+		findUnique.mockResolvedValue({
+			providerMetadata: {
+				executionRuntime: "fabric-agent-server",
+				fabricRequest: receipt,
+			},
+		});
+		await updateCodingRunStatus("example-run", "RUNNING", {
+			providerMetadata: {
+				nativeSessionId: "example-session",
+				fabricRequest: { version: 1, requestHash: "b".repeat(64) },
+			},
+		});
+		expect(update).toHaveBeenCalledWith({
+			where: { id: "example-run" },
+			data: {
+				status: "RUNNING",
+				providerMetadata: {
+					nativeSessionId: "example-session",
+					fabricRequest: receipt,
+				},
+			},
+		});
+	});
+	it("does not fetch or alter metadata for a status-only update", async () => {
+		await updateCodingRunStatus("example-run", "COMPLETED");
+		expect(findUnique).not.toHaveBeenCalled();
+		expect(update).toHaveBeenCalledWith({
+			where: { id: "example-run" },
+			data: { status: "COMPLETED" },
+		});
+	});
+	it("preserves legacy replacement behavior when there is no receipt", async () => {
+		findUnique.mockResolvedValue({
+			providerMetadata: { executionRuntime: "legacy-background-agents" },
+		});
+		await updateCodingRunStatus("example-run", "RUNNING", {
+			providerMetadata: { nativeSessionId: "example-session" },
+		});
+		expect(update.mock.calls[0][0].data.providerMetadata).toEqual({
+			nativeSessionId: "example-session",
+		});
 	});
 });

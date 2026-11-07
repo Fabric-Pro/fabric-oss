@@ -100,6 +100,14 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	}),
 }));
 
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({ user: { id: "example-user" } }),
+}));
+
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		aiConfig: {

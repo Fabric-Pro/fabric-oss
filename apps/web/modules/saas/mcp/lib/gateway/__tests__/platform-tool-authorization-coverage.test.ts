@@ -38,6 +38,42 @@ import {
 // Resolved from the vitest root (`apps/web`) rather than from `import.meta.url`,
 // which this runner does not give as a file URL.
 const GATEWAY_DIRECTORY = "modules/saas/mcp/lib/gateway";
+const BRAND_FAMILY_SOURCE = readFileSync(
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/brand-tools.ts"),
+	"utf8",
+);
+const BRAND_COMMAND_SOURCE = readFileSync(
+	resolve(
+		process.cwd(),
+		"../../packages/api/modules/branding/lib/brand-commands.ts",
+	),
+	"utf8",
+);
+const STYLE_COMMAND_SOURCE = readFileSync(
+	resolve(
+		process.cwd(),
+		"../../packages/api/modules/branding/lib/proposal-style-commands.ts",
+	),
+	"utf8",
+);
+const STYLE_WRITE_SOURCE = readFileSync(
+	resolve(
+		process.cwd(),
+		"../../packages/api/modules/projects/procedures/proposal-artifact/update-style.ts",
+	),
+	"utf8",
+);
+
+const BRAND_HANDLER_BODY =
+	BRAND_FAMILY_SOURCE.match(
+		/handlers\.set\(definition\.name, async \(args, session\) => \{([\s\S]*?)\n\t\t\}\);/,
+	)?.[1] ?? "";
+const BRAND_PROJECT_TOOLS = [
+	"fabric_get_artifact_brand",
+	"fabric_update_client_brand",
+	"fabric_get_proposal_style",
+	"fabric_update_proposal_style",
+];
 const PM_FAMILY_SOURCE = readFileSync(
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/project-pm-tools.ts"),
 	"utf8",
@@ -127,6 +163,71 @@ const PROJECT_CLOSURE_FAMILIES = [
 	return { ...family, source, body: source.match(family.pattern)?.[1] ?? "" };
 });
 
+// These families enforce binding locally and reuse the exact authorized API command.
+const DELIVERY_FAMILIES = [
+	{
+		file: "delivery-source-tools.ts",
+		registry: "DELIVERY_SOURCE_TOOLS",
+		factory: "createDeliverySourceTools",
+		tools: [
+			"fabric_delivery_source_list",
+			"fabric_delivery_source_inspect",
+			"fabric_delivery_source_configure",
+			"fabric_delivery_source_pause",
+			"fabric_delivery_source_resume",
+			"fabric_delivery_source_disconnect",
+			"fabric_delivery_source_capture",
+			"fabric_delivery_source_status",
+			"fabric_delivery_source_cancel",
+			"fabric_delivery_source_observations",
+			"fabric_delivery_source_evidence",
+		],
+		pattern:
+			/handlers\.set\(definition\.name, async \(args, session\) => \{([\s\S]*?)\n\t\t\}\);/,
+	},
+	{
+		file: "delivery-signal-tools.ts",
+		registry: "DELIVERY_SIGNAL_TOOLS",
+		factory: "createDeliverySignalTools",
+		tools: [
+			"fabric_list_delivery_signals",
+			"fabric_get_delivery_signal",
+			"fabric_get_delivery_signal_sources",
+		],
+		pattern:
+			/handlers\.set\(definition\.name, async \(args, session\) => \{([\s\S]*?)\n\t\t\}\);/,
+	},
+	{
+		file: "project-delivery-tools.ts",
+		registry: "PROJECT_DELIVERY_TOOLS",
+		factory: "createProjectDeliveryTools",
+		tools: ["fabric_get_project_delivery"],
+		pattern:
+			/const handler: PlatformToolHandler = async \(args, session\) => \{([\s\S]*?)\n\t\};/,
+	},
+	{
+		file: "implementation-session-tools.ts",
+		registry: "IMPLEMENTATION_TOOLS",
+		factory: "createImplementationSessionTools",
+		tools: [
+			"fabric_list_implementation_sessions",
+			"fabric_get_implementation_session",
+			"fabric_start_implementation_session",
+			"fabric_cancel_implementation_session",
+			"fabric_follow_up_implementation_session",
+			"fabric_get_implementation_messages",
+		],
+		pattern:
+			/handlers\.set\(definition\.name, async \(args, session\) => \{([\s\S]*?)\n\t\t\}\);/,
+	},
+].map((family) => {
+	const source = readFileSync(
+		resolve(process.cwd(), GATEWAY_DIRECTORY, "tools", family.file),
+		"utf8",
+	);
+	return { ...family, source, body: source.match(family.pattern)?.[1] ?? "" };
+});
+
 function handlerOf(tool: string): string {
 	return `handle${tool
 		.replace(/^fabric_/, "")
@@ -152,6 +253,9 @@ const SOURCES = [
 
 /** Resolves what the caller may *do*. */
 const PERMISSION_GATES = [
+	// The finite triage facade repeats current project role checks for writes;
+	// its runtime/owner/scope tests exercise all six operations separately.
+	"privateTriageCommands[op](",
 	"canEditProject",
 	"canUpdateProjectStory",
 	"canCreateProjectStory",
@@ -181,6 +285,9 @@ const VISIBILITY_GATES = [
 
 /** Handler name prefixes that mean the handler changes something. */
 const WRITE_PREFIXES = [
+	"handleTriageStart",
+	"handleTriageCancel",
+	"handleTriageReview",
 	"handleCreate",
 	"handleUpdate",
 	// `fabric_upsert_project_context` creates or replaces a context row. Without
@@ -225,10 +332,6 @@ const WRITE_EXEMPT = new Map<string, string>([
 	[
 		"handleUpdateFrame",
 		"delegates to the frame service, which gates on WORKSPACE_UPDATE",
-	],
-	[
-		"handleShareFrame",
-		"delegates to the frame service, which gates on WORKSPACE_UPDATE, shares only a page the caller owns and follows the organization's public-link policy",
 	],
 	...[
 		"handleSetPageData",
@@ -324,10 +427,38 @@ function handlerBodies(): Array<{ name: string; body: string }> {
 		})),
 	);
 	out.push(
-		...PROJECT_CLOSURE_FAMILIES.flatMap(({ tools, body }) =>
-			tools.map((tool) => ({ name: handlerOf(tool), body })),
+		...[...PROJECT_CLOSURE_FAMILIES, ...DELIVERY_FAMILIES].flatMap(
+			({ tools, body }) =>
+				tools.map((tool) => ({ name: handlerOf(tool), body })),
 		),
 	);
+	out.push(
+		...BRAND_PROJECT_TOOLS.map((tool) => ({
+			name: handlerOf(tool),
+			body: BRAND_HANDLER_BODY,
+		})),
+	);
+	const triageSource = readFileSync(
+		resolve(
+			process.cwd(),
+			"modules/saas/mcp/lib/gateway/tools/harness-triage-tools.ts",
+		),
+		"utf8",
+	);
+	for (const op of [
+		"list",
+		"start",
+		"status",
+		"result",
+		"cancel",
+		"review",
+	]) {
+		out.push({
+			name: handlerOf(`fabric_triage_${op}`),
+			body: triageSource,
+		});
+	}
+
 	return out;
 }
 
@@ -335,6 +466,211 @@ const isWrite = (name: string) =>
 	WRITE_PREFIXES.some((prefix) => name.startsWith(prefix));
 
 describe("platform tool authorization coverage", () => {
+	it("keeps finite triage behind canonical current-actor commands and a private runtime gate", () => {
+		const source = readFileSync(
+			resolve(
+				process.cwd(),
+				"modules/saas/mcp/lib/gateway/tools/harness-triage-tools.ts",
+			),
+			"utf8",
+		);
+		expect(source).toContain("triageScopeRefusal(");
+		expect(source).toContain("sessionMayReachProject(");
+		expect(source).toContain("privateTriageCommands[op](actor, args)");
+		expect(source).toContain("s.keyIdentity");
+		expect(source).toContain('s.credential === "service"');
+	});
+
+	it.each(DELIVERY_FAMILIES)(
+		"proves $file binding and canonical actor authority before dispatch",
+		(family) => {
+			const platform = readFileSync(SOURCES[0], "utf8");
+			expect(platform).toContain(
+				`const ${family.registry} = ${family.factory}()`,
+			);
+			expect(platform).toContain(`${family.registry}.`);
+			expect(family.body.length).toBeGreaterThan(100);
+			expect(family.body).toContain("sessionMayReachProject(");
+			expect(family.body).toContain("session.organizationId");
+			expect(family.body).toContain("session.credential");
+			if (family.file === "delivery-signal-tools.ts") {
+				expect(family.body).toContain("deliverySignalScopeRefusal(");
+				expect(family.source).toContain("requireDeliverySignalScopes(");
+				expect(family.source).toContain("session.scopes");
+			} else if (family.file === "delivery-source-tools.ts") {
+				expect(family.body).toContain("deliverySourceScopeRefusal(");
+				expect(family.source).toContain(
+					"deliverySourceRequiredScopes(",
+				);
+			} else {
+				expect(family.body).toContain("session.scopes.includes(");
+			}
+			expect(family.body).toContain("userId: session.userId");
+			expect(family.body.indexOf("return jsonResult(")).toBeGreaterThan(
+				family.body.indexOf("sessionMayReachProject("),
+			);
+			for (const tool of family.tools) {
+				expect(PLATFORM_TOOL_DEFINITIONS.map((x) => x.name)).toContain(
+					tool,
+				);
+			}
+			if (family.file === "project-delivery-tools.ts") {
+				expect(family.body).toContain(
+					"await getProjectDeliverySnapshot(",
+				);
+				const command = readFileSync(
+					resolve(
+						process.cwd(),
+						"../../packages/api/modules/projects/lib/delivery-snapshot.ts",
+					),
+					"utf8",
+				);
+				expect(command).toContain(
+					"resolveEffectiveProjectPermissions(",
+				);
+				expect(command).toContain("hasProjectAccess(");
+				expect(command).toContain(
+					"hasPermission(access.permissions, Permissions.PROJECT_READ)",
+				);
+			} else if (family.file === "delivery-signal-tools.ts") {
+				for (const command of [
+					"listDeliverySignals",
+					"getDeliverySignal",
+					"getDeliverySignalSourceConfiguration",
+				]) {
+					expect(family.body).toContain(command);
+				}
+				const command = readFileSync(
+					resolve(
+						process.cwd(),
+						"../../packages/api/modules/projects/lib/delivery-signals.ts",
+					),
+					"utf8",
+				);
+				const sources = readFileSync(
+					resolve(
+						process.cwd(),
+						"../../packages/api/modules/projects/lib/delivery-signal-sources.ts",
+					),
+					"utf8",
+				);
+				expect(command).toContain(
+					"requireDeliverySignalProjectAccess(",
+				);
+				expect(command).toContain("assertProjectVisible(");
+				expect(command).toContain(
+					"resolveEffectiveProjectPermissions(",
+				);
+				expect(command).toContain("Permissions.PROJECT_READ");
+				expect(command).toContain("Permissions.STORY_READ");
+				expect(sources).toContain(
+					"requireDeliverySignalProjectAccess(",
+				);
+				expect(sources).toContain(
+					"requireDeliverySignalIntegrationRead(",
+				);
+			} else if (family.file === "delivery-source-tools.ts") {
+				for (const command of [
+					"listDeliverySourceWatches",
+					"inspectDeliverySource",
+					"configureDeliverySource",
+					"updateDeliverySourceState",
+					"startDeliverySourceCapture",
+					"getDeliverySourceCaptureStatus",
+					"cancelDeliverySourceCapture",
+					"listDeliverySourceObservations",
+					"getDeliverySourceEvidence",
+				]) {
+					expect(family.body).toContain(command);
+				}
+			} else {
+				for (const command of [
+					"listImplementationSessions",
+					"getImplementationSession",
+					"startImplementationSession",
+					"cancelImplementationSession",
+					"followUpImplementationSession",
+					"getImplementationMessages",
+				]) {
+					expect(family.body).toContain(command);
+				}
+				const commands = readFileSync(
+					resolve(
+						process.cwd(),
+						"../../packages/api/modules/coding-runs/lib/implementation-commands.ts",
+					),
+					"utf8",
+				);
+				const access = readFileSync(
+					resolve(
+						process.cwd(),
+						"../../packages/api/modules/coding-runs/lib/commands-access.ts",
+					),
+					"utf8",
+				);
+				expect(commands).toContain("requireCodingRunProject(");
+				expect(access).toContain("resolveEffectiveProjectPermissions(");
+				expect(access).toContain("hasProjectAccess(");
+				expect(access).toContain(
+					"hasPermission(access.permissions, permission)",
+				);
+				expect(access).toContain("canEditProject(");
+			}
+		},
+	);
+	it("credits only the wired project-bound brand family and its canonical object guards", () => {
+		const platform = readFileSync(
+			resolve(process.cwd(), GATEWAY_DIRECTORY, "platform-tools.ts"),
+			"utf8",
+		);
+		expect(platform).toContain("const BRAND_TOOLS = createBrandTools()");
+		expect(platform).toContain("...BRAND_TOOLS.handlers");
+		expect(BRAND_HANDLER_BODY.length).toBeGreaterThan(100);
+		expect(BRAND_HANDLER_BODY).toContain(
+			"sessionMayReachProject(session, projectId)",
+		);
+		expect(BRAND_HANDLER_BODY).toContain("getArtifactBrandCommand(");
+		expect(BRAND_HANDLER_BODY).toContain("saveClientBrandCommand(");
+		expect(BRAND_HANDLER_BODY).toContain("getProposalStyleCommand(");
+		expect(BRAND_HANDLER_BODY).toContain("saveProposalStyleCommand(");
+		expect(STYLE_COMMAND_SOURCE).toMatch(
+			/await assertProjectPermission\([\s\S]*?Permissions\.DOCUMENT_READ/,
+		);
+		expect(STYLE_COMMAND_SOURCE).toContain(
+			"permission.organizationId !== actor.organizationId",
+		);
+		expect(STYLE_COMMAND_SOURCE).toContain(
+			"return updateProposalStyleCommand(",
+		);
+		const styleWrite = STYLE_WRITE_SOURCE.slice(
+			STYLE_WRITE_SOURCE.indexOf(
+				"export async function updateProposalStyleCommand",
+			),
+		);
+		expect(styleWrite).toMatch(
+			/await assertProjectPermission\([\s\S]*?Permissions\.DOCUMENT_UPDATE/,
+		);
+		expect(styleWrite).toContain(
+			"permission.organizationId !== actor.organizationId",
+		);
+		expect(styleWrite).toContain("await loadProposalArtifactDocument(");
+
+		expect(BRAND_COMMAND_SOURCE).toMatch(
+			/await assertProjectPermission\([\s\S]*?Permissions\.DOCUMENT_READ/,
+		);
+		const save = BRAND_COMMAND_SOURCE.slice(
+			BRAND_COMMAND_SOURCE.indexOf(
+				"export async function saveClientBrandCommand",
+			),
+		);
+		expect(save).toMatch(
+			/await assertProjectPermission\([\s\S]*?Permissions\.DOCUMENT_UPDATE/,
+		);
+		expect(save).toContain(
+			"authorized.organizationId !== actor.organizationId",
+		);
+	});
+
 	it.each(PROJECT_CLOSURE_FAMILIES)(
 		"proves the $file closure checks binding and canonical project authority before calling commands",
 		(family) => {

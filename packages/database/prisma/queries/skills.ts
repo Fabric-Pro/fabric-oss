@@ -355,6 +355,7 @@ export async function assertPinnedSkillAccess(
 		name: string;
 		content: string;
 	}>,
+	client: Prisma.TransactionClient = db,
 ) {
 	if (!skills.length) {
 		return;
@@ -365,9 +366,9 @@ export async function assertPinnedSkillAccess(
 	) {
 		throw new Error("Invalid pinned skill selection.");
 	}
-	await assertSkillReadAccess(actor);
+	await assertSkillReadAccess(actor, client);
 	// Compare exact source bytes inside SQL; never load a newly enlarged or changed body.
-	const current = await db.skill.findMany({
+	const current = await client.skill.findMany({
 		where: {
 			AND: [
 				skillVisibilityWhere(actor),
@@ -383,7 +384,7 @@ export async function assertPinnedSkillAccess(
 		},
 		select: { id: true },
 	});
-	await assertSkillReadAccess(actor);
+	await assertSkillReadAccess(actor, client);
 	if (current.length !== skills.length) {
 		throw new Error(
 			"A selected skill is unavailable or changed. Refresh its attachment and start a new run.",

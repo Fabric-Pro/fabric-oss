@@ -614,3 +614,41 @@ describe("isProjectFrameHeightMessage", () => {
 		expect(isProjectFrameHeightMessage(null)).toBe(false);
 	});
 });
+
+describe("interface presentation", () => {
+	it("preserves authored document classes, inline layout and CSS without brand overrides", () => {
+		const html =
+			'<html class="design-root"><head><style>body{margin:0;font-family:Georgia;color:#123456}.app{display:grid;grid-template-columns:240px 1fr}</style></head><body class="app" style="padding:12px"><h1>Workspace</h1></body></html>';
+		const output = buildProjectFrameSrcdoc(html, {
+			presentation: "INTERFACE",
+			branding: {
+				version: 1,
+				source: "COMPANY",
+				companyName: "Example",
+				primaryColor: "#ff0000",
+				clientName: null,
+				accentColors: [],
+				displayFontFamily: "Poppins",
+				bodyFontFamily: "Inter",
+				coverStyle: "LIGHT",
+				companyBrandVersion: 1,
+				clientBrandVersion: 0,
+			},
+		});
+		expect(output).toContain('<html class="design-root">');
+		expect(output).toContain('<body class="app" style="padding:12px">');
+		expect(output).toContain("grid-template-columns:240px 1fr");
+		expect(output).not.toContain("@font-face");
+		expect(output).not.toContain("--artifact-brand");
+		expect(output).toContain(PROJECT_FRAME_CSP);
+	});
+	it("cannot enable report scripts by choosing interface", () => {
+		const output = buildProjectFrameSrcdoc(
+			'<body onload="steal()"><script>steal()</script><h1>Report</h1></body>',
+			{ presentation: "INTERFACE", sourceRunType: "REPORT_EXECUTION" },
+		);
+		expect(output).not.toContain("steal");
+		expect(output).not.toContain(FABRIC_RUNTIME_SCRIPT);
+		expect(output).toContain(PROJECT_FRAME_CSP);
+	});
+});

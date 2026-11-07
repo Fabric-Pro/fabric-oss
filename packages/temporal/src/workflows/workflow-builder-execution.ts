@@ -21,6 +21,7 @@ import {
 import type * as preflightActivities from "../activities/preflight-validation";
 import type * as activities from "../activities/workflow-builder-execution";
 import { withChatGptPlanWait } from "./lib/chatgpt-plan-wait";
+import { startRunQualityObserver } from "./lib/start-run-quality";
 import {
 	isAgentTaskNodeType,
 	isNonRetryableNodeType,
@@ -218,6 +219,20 @@ export async function workflowBuilderExecutionWorkflow(
 			nodes = (workflow.nodes as unknown as WorkflowNode[]) || [];
 			edges = (workflow.edges as unknown as WorkflowEdge[]) || [];
 			projectId = workflow.projectId ?? undefined;
+		}
+
+		if (
+			input.organizationId &&
+			patched("builder-run-quality-observer-v1")
+		) {
+			await startRunQualityObserver({
+				targetType: "WORKFLOW",
+				targetId: input.workflowId,
+				executionId: input.executionId,
+				userId: input.userId,
+				organizationId: input.organizationId,
+				executedGraph: { nodes, projectId: projectId ?? null },
+			});
 		}
 
 		// === PRE-FLIGHT GRAPH VALIDATION (CUGA-inspired) ===

@@ -27,6 +27,8 @@ vi.mock("@repo/database", async (importOriginal) => {
 	const real = await importOriginal<typeof import("@repo/database")>();
 	return {
 		reportScheduleInputSchema: real.reportScheduleInputSchema,
+		ReportInstanceConflictError: real.ReportInstanceConflictError,
+		ArtifactBrandingError: real.ArtifactBrandingError,
 		reportEvidenceConfigSchema: real.reportEvidenceConfigSchema,
 		readReportEvidenceConfig: real.readReportEvidenceConfig,
 		assertPublicReportParameters: real.assertPublicReportParameters,
@@ -94,6 +96,10 @@ vi.mock("../../../../../orpc/procedures", () => {
 // Import procedure modules AFTER mock declarations so vi.mock hoisting applies.
 import "../update";
 import "../create";
+import {
+	ArtifactBrandingError,
+	ReportInstanceConflictError,
+} from "@repo/database";
 import { updateInstanceInputSchema } from "../update";
 
 // ── Schema-validation tests (Task 7 TDD) ────────────────────────────────────
@@ -408,4 +414,62 @@ describe("report audience and reserved configuration", () => {
 		).rejects.toThrow("access denied");
 		expect(mockUpdateTemplateInstance).not.toHaveBeenCalled();
 	});
+});
+
+it("forwards the reviewed report tokens and returns a conflict without scheduling changes", async () => {
+	const reviewed = new Date("2026-11-01T00:00:00Z");
+	mockUpdateTemplateInstance.mockRejectedValueOnce(
+		new ReportInstanceConflictError(),
+	);
+	await expect(
+		handlers.update({
+			input: {
+				id: "inst-1",
+				expectedVersion: 2,
+				expectedUpdatedAt: reviewed,
+				name: "Reviewed draft",
+			},
+			context: ctx,
+		}),
+	).rejects.toMatchObject({ code: "CONFLICT" });
+	expect(mockUpdateTemplateInstance).toHaveBeenCalledWith(
+		expect.objectContaining({
+			expectedVersion: 2,
+			expectedUpdatedAt: reviewed,
+		}),
+	);
+	expect(mockUpdateTemplateInstance.mock.calls[0][0]).not.toHaveProperty(
+		"scheduleUpdate",
+	);
+});
+
+it("returns actionable review guidance when the client theme changed before report creation", async () => {
+	mockGetReportTemplate.mockResolvedValue({
+		id: "t1",
+		scope: "ORGANIZATION",
+		userId: "u1",
+		organizationId: "org-1",
+		definition: null,
+		schedule: null,
+	});
+	mockTemplateScheduleForInheritance.mockReturnValue(null);
+	mockCreateTemplateInstance.mockRejectedValueOnce(
+		new ArtifactBrandingError("REVIEW_REQUIRED"),
+	);
+	await expect(
+		handlers.create({
+			input: {
+				templateId: "t1",
+				name: "Reviewed report",
+				connections: {
+					mcpConfigs: [],
+					workflows: [],
+					agents: [],
+					workspaces: [],
+					integrations: [],
+				},
+			},
+			context: ctx,
+		}),
+	).rejects.toMatchObject({ code: "CONFLICT" });
 });

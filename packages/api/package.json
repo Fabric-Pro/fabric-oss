@@ -15,6 +15,7 @@
 		"@paralleldrive/cuid2": "^3.1.0",
 		"@repo/agent-core": "workspace:*",
 		"@repo/agent-prompts": "workspace:*",
+		"@repo/agent-runtime": "workspace:*",
 		"@repo/agent-types": "workspace:*",
 		"@repo/ai": "workspace:*",
 		"@repo/ai-token": "workspace:*",

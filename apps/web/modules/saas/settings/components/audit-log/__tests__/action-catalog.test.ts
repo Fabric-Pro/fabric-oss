@@ -142,7 +142,7 @@ describe("ACTION_CATALOG", () => {
 				/^(info|warning|error|critical)$/,
 			);
 			expect(descriptor.category, `category for ${key}`).toMatch(
-				/^(auth|org|project|story|audit|error|incident|weave)$/,
+				/^(auth|org|project|story|audit|error|incident|weave|frame)$/,
 			);
 		}
 	});

@@ -1,9 +1,23 @@
 "use client";
 
+import {
+	ARTIFACT_COVER_STYLES,
+	isArtifactCoverStyle,
+} from "@repo/utils/artifact-brand-theme";
+import { proposalClientPaletteFromColors } from "@repo/utils/proposal-artifact/theme-tokens";
+import { useRecipientBrandQueryIdentity } from "@saas/projects/hooks/use-recipient-brand-query-identity";
 import { Alert, AlertDescription } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
 import { Label } from "@ui/components/label";
+import { RadioGroup, RadioGroupItem } from "@ui/components/radio-group";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@ui/components/select";
 import { Switch } from "@ui/components/switch";
 import { Loader2Icon } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -60,7 +74,17 @@ export type ProposalStylePanelProps = {
  * style and saves with it. Turning it off adds none from then on and keeps
  * the diagrams already in the document.
  */
-export function ProposalStylePanel({
+export function ProposalStylePanel(props: ProposalStylePanelProps) {
+	const identity = useRecipientBrandQueryIdentity(props.projectId);
+	return (
+		<ProposalStylePanelContent
+			key={JSON.stringify(identity.queryKey)}
+			{...props}
+		/>
+	);
+}
+
+function ProposalStylePanelContent({
 	projectId,
 	documentId,
 	canEdit,
@@ -128,6 +152,19 @@ export function ProposalStylePanel({
 	const dirty = state.styleDirty || state.recipientDirty;
 	const locked = !canEdit || state.saving;
 	const sourcesErrorId = `${idPrefix}-sources-error`;
+	const clientPalette = proposalClientPaletteFromColors(
+		recipientRead?.recipientBrand?.colors ?? [],
+	);
+	const clientThemeSelected = styleDraft.brandSource === "CLIENT";
+	const fieldProposer =
+		(styleQuery.data?.brandSource ?? "COMPANY") === styleDraft.brandSource
+			? proposer
+			: null;
+	const themeLocked =
+		locked ||
+		state.recipientDirty ||
+		state.fieldsPending ||
+		state.confirming;
 
 	return (
 		<StylePanelShell rootRef={state.rootRef}>
@@ -141,6 +178,128 @@ export function ProposalStylePanel({
 			{!canEdit && (
 				<p className="text-muted-foreground text-sm">{t("readOnly")}</p>
 			)}
+
+			<section
+				aria-label={t("theme.title")}
+				className="space-y-4 border-b pb-4"
+			>
+				<h3 className="font-medium text-base">{t("theme.title")}</h3>
+				<p className="text-muted-foreground text-sm">
+					{t("theme.help")}
+				</p>
+				<RadioGroup
+					value={styleDraft.brandSource}
+					disabled={themeLocked}
+					aria-label={t("theme.source")}
+					className="grid gap-3 sm:grid-cols-2"
+					onValueChange={(brandSource) => {
+						if (
+							brandSource !== "COMPANY" &&
+							brandSource !== "CLIENT"
+						) {
+							return;
+						}
+						if (brandSource === "CLIENT" && !clientPalette) {
+							return;
+						}
+						state.editStyle({
+							brandSource,
+							primary: [],
+							accents: [],
+							coverStyle: null,
+						});
+					}}
+				>
+					<div className="flex items-center gap-2">
+						<RadioGroupItem
+							id={`${idPrefix}-company-theme`}
+							value="COMPANY"
+						/>
+						<Label htmlFor={`${idPrefix}-company-theme`}>
+							{t("theme.company")}
+						</Label>
+					</div>
+					<div className="flex items-center gap-2">
+						<RadioGroupItem
+							id={`${idPrefix}-client-theme`}
+							value="CLIENT"
+							disabled={!clientPalette}
+						/>
+						<Label htmlFor={`${idPrefix}-client-theme`}>
+							{t("theme.client")}
+						</Label>
+					</div>
+				</RadioGroup>
+				{!clientPalette && (
+					<p className="text-muted-foreground text-sm">
+						{t(
+							canEdit
+								? "clientPalette.missing"
+								: "clientPalette.missingReadOnly",
+						)}
+					</p>
+				)}
+				{state.recipientDirty && (
+					<p className="text-muted-foreground text-xs">
+						{t("clientPalette.saveClientFirst")}
+					</p>
+				)}
+				{clientThemeSelected && (
+					<dl className="grid gap-3 text-sm sm:grid-cols-2">
+						<div>
+							<dt className="text-muted-foreground text-xs">
+								{t("theme.headingFont")}
+							</dt>
+							<dd>
+								{recipientRead?.recipientBrand
+									?.displayFontFamily ?? "Poppins"}
+							</dd>
+						</div>
+						<div>
+							<dt className="text-muted-foreground text-xs">
+								{t("theme.bodyFont")}
+							</dt>
+							<dd>
+								{recipientRead?.recipientBrand
+									?.bodyFontFamily ?? "Inter"}
+							</dd>
+						</div>
+					</dl>
+				)}
+				<div className="space-y-2">
+					<Label htmlFor={`${idPrefix}-cover-style`}>
+						{t("theme.coverStyle")}
+					</Label>
+					<Select
+						value={styleDraft.coverStyle ?? "INHERIT"}
+						disabled={locked}
+						onValueChange={(next) =>
+							state.editStyle({
+								coverStyle: isArtifactCoverStyle(next)
+									? next
+									: null,
+							})
+						}
+					>
+						<SelectTrigger id={`${idPrefix}-cover-style`}>
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="INHERIT">
+								{t("theme.inheritCover")}
+							</SelectItem>
+							{ARTIFACT_COVER_STYLES.map((cover) => (
+								<SelectItem value={cover} key={cover}>
+									{t(`theme.cover.${cover}`)}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+				</div>
+				<p className="text-muted-foreground text-xs">
+					{t("theme.reviewHelp")}
+				</p>
+			</section>
 
 			<StyleDirectionField
 				idPrefix={idPrefix}
@@ -209,7 +368,7 @@ export function ProposalStylePanel({
 						kind="primary"
 						id={`${idPrefix}-primary`}
 						entries={styleDraft.primary}
-						proposer={proposer}
+						proposer={fieldProposer}
 						disabled={locked}
 						onChange={(primary) => state.editStyle({ primary })}
 					/>
@@ -217,13 +376,15 @@ export function ProposalStylePanel({
 						kind="accents"
 						id={`${idPrefix}-accents`}
 						entries={styleDraft.accents}
-						proposer={proposer}
+						proposer={fieldProposer}
 						disabled={locked}
 						onChange={(accents) => state.editStyle({ accents })}
 					/>
 				</div>
 
-				{proposer && <BrandKitValues proposer={proposer} />}
+				{!clientThemeSelected && fieldProposer && (
+					<BrandKitValues proposer={fieldProposer} />
+				)}
 			</div>
 
 			<div className="space-y-4">
@@ -281,6 +442,7 @@ export function ProposalStylePanel({
 				)}
 				{recipientRead ? (
 					<RecipientBrandFields
+						showThemeFields
 						// Remounted when the draft is read again, not on every
 						// newer version a background read brings.
 						key={
@@ -357,6 +519,7 @@ export function ProposalStylePanel({
 					</div>
 					<SaveFeedback
 						feedback={feedback}
+						onReloadStyle={state.reloadStyle}
 						isGenerating={isGenerating}
 						onRegenerate={
 							onRegenerate

@@ -925,6 +925,7 @@ export {
 
 export { agentDraftPreviewWorkflow } from "./agent-draft-preview";
 export { agentExecutionReceiptRecoveryWorkflow } from "./agent-execution-receipt-recovery";
+export { agentTestAssessmentWorkflow } from "./agent-test-assessment";
 export { codingRunFollowUpWorkflow } from "./coding-run-follow-up";
 export {
 	type ContextQualityEvaluationWorkflowInput,
@@ -932,5 +933,12 @@ export {
 	contextQualityEvaluationWorkflow,
 } from "./context-quality-evaluation";
 export { contextQualityRecoveryWorkflow } from "./context-quality-recovery";
-
-export { agentTestAssessmentWorkflow } from "./agent-test-assessment";
+// Finite on-demand capture; native daily retention registration requires qualified worker storage.
+export {
+	deliverySourceCaptureWorkflow,
+	deliverySourceObservationRetentionWorkflow,
+} from "./delivery-source-capture";
+export {
+	recordedRunQualityAdmissionRecoveryWorkflow,
+	recordedRunQualityWorkflow,
+} from "./run-quality";

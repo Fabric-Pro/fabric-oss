@@ -1,5 +1,6 @@
 "use client";
 
+import { artifactBrandFontFaceCss } from "@repo/utils/artifact-brand-fonts";
 import {
 	PROPOSAL_THEME_ATTRIBUTE,
 	PROPOSAL_THEME_CLASSES,
@@ -17,7 +18,6 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { type QueryClient, skipToken, useQuery } from "@tanstack/react-query";
 import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import { getOrpcCode } from "../field-mapping/orpc-error";
-import { PROPOSAL_FONT_VARIABLES } from "./proposal-fonts";
 
 /**
  * What the theme root wears: the theme's class and target attribute, the
@@ -260,7 +260,7 @@ function withLoadedFonts(
 
 function rootPropsFor(paint: ProposalThemePaint): ProposalThemeRootProps {
 	return {
-		className: `${PROPOSAL_THEME_CLASSES.root} ${PROPOSAL_FONT_VARIABLES}`,
+		className: PROPOSAL_THEME_CLASSES.root,
 		[PROPOSAL_THEME_ATTRIBUTE]: "live",
 		style: themeCustomProperties(paint) as CSSProperties,
 	};
@@ -379,6 +379,7 @@ export function useProposalTheme({
 
 /** The static live stylesheet; brand values arrive on the root, never here. */
 const LIVE_THEME_CSS = proposalThemeCss("live");
+const BUNDLED_FONT_CSS = artifactBrandFontFaceCss();
 
 /**
  * The theme's live stylesheet. React hoists it into the document head and
@@ -387,7 +388,7 @@ const LIVE_THEME_CSS = proposalThemeCss("live");
 export function ProposalThemeStyle() {
 	return (
 		<style href="proposal-theme-live" precedence="default">
-			{LIVE_THEME_CSS}
+			{`${LIVE_THEME_CSS}\n${BUNDLED_FONT_CSS}`}
 		</style>
 	);
 }

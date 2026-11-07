@@ -293,6 +293,7 @@ describe("opening an artifact", () => {
 					kind: "frame",
 					surface: "artifact",
 					projectId: PROJECT,
+					updatedAt: frames[0].updatedAt,
 					blocks: [
 						{ id: "page", type: "html", content: "<p>page</p>" },
 					],
@@ -354,12 +355,17 @@ describe("opening an artifact", () => {
 			projectId: PROJECT,
 			projectName: "Example project",
 			surface: "artifact",
+			launchFrameId: "frame-1",
+			launchFrameUpdatedAt: frames[0].updatedAt,
+			workspaceId: null,
 			prompt: "Explain this",
 		});
 		expect(mocks.openLauncher).toHaveBeenNthCalledWith(
 			2,
 			expect.objectContaining({
 				surface: "artifact",
+				launchFrameId: "frame-1",
+				launchFrameUpdatedAt: frames[0].updatedAt,
 				prompt: expect.stringContaining("frame id frame-1"),
 			}),
 		);

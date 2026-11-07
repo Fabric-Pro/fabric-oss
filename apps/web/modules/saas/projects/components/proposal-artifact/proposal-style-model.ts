@@ -6,6 +6,12 @@
  */
 
 import {
+	ARTIFACT_BRAND_SOURCES,
+	type ArtifactBrandSource,
+	type ArtifactCoverStyle,
+	isArtifactCoverStyle,
+} from "@repo/utils/artifact-brand-theme";
+import {
 	type BrandCandidate,
 	type BrandFetchFailureCode,
 	brandAlternatives,
@@ -53,6 +59,8 @@ export type ProposalStyleDraft = {
 	accents: string[];
 	/** Whether Fabric adds diagrams after each generation. */
 	autoVisuals: boolean;
+	brandSource: ArtifactBrandSource;
+	coverStyle: ArtifactCoverStyle | null;
 };
 
 /** No saved Style means diagrams are added. */
@@ -64,6 +72,8 @@ export function proposalStyleDraftFrom(
 		primary: style?.primaryColor ? [style.primaryColor] : [],
 		accents: style?.accentColors ?? [],
 		autoVisuals: style?.autoVisuals ?? true,
+		brandSource: style?.brandSource ?? "COMPANY",
+		coverStyle: style?.coverStyle ?? null,
 	};
 }
 
@@ -71,12 +81,14 @@ export function proposalStyleDraftFrom(
 export type ProposalStyleError =
 	| "directionTooLong"
 	| "invalidColor"
-	| "tooManyAccentColors";
+	| "tooManyAccentColors"
+	| "invalidTheme";
 
 const STYLE_ERRORS = new Set<string>([
 	"directionTooLong",
 	"invalidColor",
 	"tooManyAccentColors",
+	"invalidTheme",
 ]);
 
 export type ProposalStyleInput = {
@@ -88,6 +100,8 @@ export type ProposalStyleInput = {
 	 * which is what an older client's save looks like.
 	 */
 	autoVisuals: boolean;
+	brandSource: ArtifactBrandSource;
+	coverStyle: ArtifactCoverStyle | null;
 };
 
 /**
@@ -109,6 +123,14 @@ export function validateProposalStyleDraft(
 	if (styleDirection.length > PROPOSAL_STYLE_DIRECTION_MAX_CHARS) {
 		return { ok: false, error: "directionTooLong" };
 	}
+	if (
+		!ARTIFACT_BRAND_SOURCES.some(
+			(source) => source === draft.brandSource,
+		) ||
+		(draft.coverStyle !== null && !isArtifactCoverStyle(draft.coverStyle))
+	) {
+		return { ok: false, error: "invalidTheme" };
+	}
 	const primary = parseBrandColorList(draft.primary);
 	const accents = parseBrandColorList(draft.accents);
 	if (!primary || !accents || primary.length > 1) {
@@ -124,6 +146,8 @@ export function validateProposalStyleDraft(
 			primaryColor: primary[0] ?? null,
 			accentColors: accents,
 			autoVisuals: draft.autoVisuals,
+			brandSource: draft.brandSource,
+			coverStyle: draft.coverStyle,
 		},
 	};
 }
@@ -286,6 +310,7 @@ export type SaveFeedbackState =
 	| { kind: "saved" }
 	| { kind: "invalid"; error: ProposalStyleError }
 	| { kind: "styleFailed" }
+	| { kind: "styleConflict" }
 	| { kind: "recipientFailed" }
 	| { kind: "recipientConflict" };
 

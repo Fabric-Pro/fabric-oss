@@ -15,12 +15,17 @@ import {
 	type TemplateInstanceStatus,
 } from "../generated/client";
 import {
+	lockArtifactBrandSelection,
+	resolveArtifactBrandSnapshot,
+} from "./artifact-branding";
+import {
 	canAccessReportInstance,
 	createReportAccessChecker,
 	type ReportCaller,
 	reportScopeWhere,
 } from "./lib/report-access";
 import {
+	assertReportBrandingOutputFormat,
 	buildReportExecutionSnapshot as buildReportSnapshot,
 	getProjectReportSetupReason,
 	readReportEvidenceConfig,
@@ -676,9 +681,61 @@ export interface CreateTemplateInstanceParams {
 
 export async function createTemplateInstance(
 	params: CreateTemplateInstanceParams,
-) {
+	client: Prisma.TransactionClient = db,
+): Promise<
+	Prisma.TemplateInstanceGetPayload<{
+		include: {
+			template: {
+				select: {
+					id: true;
+					name: true;
+					templateType: true;
+					definition: true;
+					parameters: true;
+					connections: true;
+					fabricConfig: true;
+					outputFormat: true;
+				};
+			};
+		};
+	}>
+> {
+	const brandingConfig = readReportEvidenceConfig(params.fabricConfig);
+	const selectedBrand = brandingConfig?.branding;
+	const owningOrganizationId = params.organizationId;
+	if (selectedBrand && client === db) {
+		if (!owningOrganizationId) {
+			throw new Error("An organization is required for report branding");
+		}
+		return db.$transaction(async (tx) => {
+			const template = await tx.reportTemplate.findUnique({
+				where: { id: params.templateId },
+				select: { outputFormat: true },
+			});
+			assertReportBrandingOutputFormat(template?.outputFormat);
+			await lockArtifactBrandSelection(
+				{
+					organizationId: owningOrganizationId,
+					userId: params.userId,
+					projectId: brandingConfig?.projectId,
+					...selectedBrand,
+				},
+				tx,
+			);
+			await resolveArtifactBrandSnapshot(
+				{
+					organizationId: owningOrganizationId,
+					userId: params.userId,
+					projectId: brandingConfig?.projectId,
+					...selectedBrand,
+				},
+				tx,
+			);
+			return createTemplateInstance(params, tx);
+		});
+	}
 	const template = readReportEvidenceConfig(params.fabricConfig)?.projectId
-		? await db.reportTemplate.findUnique({
+		? await client.reportTemplate.findUnique({
 				where: { id: params.templateId },
 				select: { definition: true },
 			})
@@ -697,7 +754,7 @@ export async function createTemplateInstance(
 		? normalizeReportSchedule(params.schedule, new Date())
 		: null;
 
-	return db.templateInstance.create({
+	return client.templateInstance.create({
 		data: {
 			templateId: params.templateId,
 			userId: params.userId,
@@ -875,6 +932,7 @@ export async function getTemplateInstance({
 					artifacts: {
 						select: {
 							id: true,
+							metadata: true,
 							name: true,
 							artifactType: true,
 							mimeType: true,
@@ -1079,6 +1137,9 @@ export async function listTemplateInstances({
 
 export interface UpdateTemplateInstanceParams {
 	id: string;
+	/** Reviewed record CAS; omission preserves old callers. */
+	expectedVersion?: number;
+	expectedUpdatedAt?: Date;
 	name?: string;
 	description?: string;
 	heroEmojis?: string[];
@@ -1105,13 +1166,88 @@ export interface UpdateTemplateInstanceParams {
 	createNewVersion?: boolean;
 }
 
-export async function updateTemplateInstance({
-	id,
-	createNewVersion = false,
-	...data
-}: UpdateTemplateInstanceParams): Promise<TemplateInstance> {
+export class ReportInstanceConflictError extends Error {
+	constructor() {
+		super("The report settings changed. Read them again before saving.");
+		this.name = "ReportInstanceConflictError";
+	}
+}
+export async function updateTemplateInstance(
+	params: UpdateTemplateInstanceParams,
+	client: Prisma.TransactionClient = db,
+): Promise<TemplateInstance> {
+	const config = readReportEvidenceConfig(params.fabricConfig);
+	const selectedBrand = config?.branding;
+	try {
+		if (!selectedBrand) {
+			return await updateTemplateInstanceWithClient(params, client);
+		}
+		return await inClientTransaction(client, async (tx) => {
+			const current = await tx.templateInstance.findUnique({
+				where: { id: params.id },
+				select: {
+					userId: true,
+					organizationId: true,
+					template: { select: { outputFormat: true } },
+				},
+			});
+			if (!current?.organizationId) {
+				throw new Error("Report branding is unavailable");
+			}
+			assertReportBrandingOutputFormat(current.template.outputFormat);
+			await lockArtifactBrandSelection(
+				{
+					organizationId: current.organizationId,
+					userId: current.userId,
+					projectId: config?.projectId,
+					...selectedBrand,
+				},
+				tx,
+			);
+			await resolveArtifactBrandSnapshot(
+				{
+					organizationId: current.organizationId,
+					userId: current.userId,
+					projectId: config?.projectId,
+					...selectedBrand,
+				},
+				tx,
+			);
+			return updateTemplateInstanceWithClient(params, tx);
+		});
+	} catch (error) {
+		if (
+			params.expectedUpdatedAt !== undefined &&
+			error &&
+			typeof error === "object" &&
+			"code" in error &&
+			error.code === "P2025"
+		) {
+			throw new ReportInstanceConflictError();
+		}
+		throw error;
+	}
+}
+
+function inClientTransaction<T>(
+	client: Prisma.TransactionClient,
+	work: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+	return client === db ? db.$transaction(work) : work(client);
+}
+
+async function updateTemplateInstanceWithClient(
+	{
+		id,
+		createNewVersion = false,
+		expectedVersion,
+		expectedUpdatedAt,
+		...data
+	}: UpdateTemplateInstanceParams,
+	client: Prisma.TransactionClient = db,
+): Promise<TemplateInstance> {
 	// Get the current instance
-	const current = await db.templateInstance.findUnique({
+	const current = await client.templateInstance.findUnique({
 		where: { id },
 		include: { template: true },
 	});
@@ -1120,6 +1256,21 @@ export async function updateTemplateInstance({
 		throw new Error(`Template instance not found: ${id}`);
 	}
 
+	if (
+		(expectedVersion !== undefined &&
+			current.version !== expectedVersion) ||
+		(expectedUpdatedAt !== undefined &&
+			current.updatedAt.getTime() !== expectedUpdatedAt.getTime())
+	) {
+		throw new ReportInstanceConflictError();
+	}
+	const reviewedWhere = {
+		id,
+		...(expectedVersion === undefined ? {} : { version: expectedVersion }),
+		...(expectedUpdatedAt === undefined
+			? {}
+			: { updatedAt: expectedUpdatedAt }),
+	};
 	// Resolve the schedule command into concrete column writes (Part 2, §7.2).
 	// undefined => no-op (write none of the three columns).
 	const su = data.scheduleUpdate;
@@ -1156,10 +1307,10 @@ export async function updateTemplateInstance({
 
 	if (createNewVersion) {
 		// Archive current version and create new one
-		return db.$transaction(async (tx) => {
+		return inClientTransaction(client, async (tx) => {
 			// Archive the current version
 			await tx.templateInstance.update({
-				where: { id },
+				where: reviewedWhere,
 				data: { status: "ARCHIVED" },
 			});
 
@@ -1231,7 +1382,16 @@ export async function updateTemplateInstance({
 
 	// Simple in-place update (no versioning).
 	const { scheduleUpdate: _su, ...restData } = data;
-	const inPlaceData: Prisma.TemplateInstanceUpdateInput = { ...restData };
+	const inPlaceData: Prisma.TemplateInstanceUpdateInput = {
+		...restData,
+		...(expectedUpdatedAt === undefined
+			? {}
+			: {
+					updatedAt: new Date(
+						Math.max(Date.now(), current.updatedAt.getTime() + 1),
+					),
+				}),
+	};
 	if (schedWrite) {
 		inPlaceData.scheduleMode = schedWrite.scheduleMode;
 		if ("schedule" in schedWrite) {
@@ -1242,8 +1402,8 @@ export async function updateTemplateInstance({
 		} // off: omit `schedule` to retain current
 		inPlaceData.nextRunAt = schedWrite.nextRunAt;
 	}
-	return db.templateInstance.update({
-		where: { id },
+	return client.templateInstance.update({
+		where: reviewedWhere,
 		data: inPlaceData,
 		include: {
 			template: {
@@ -1550,8 +1710,9 @@ export interface CreateTemplateInstanceExecutionParams {
 
 export async function createTemplateInstanceExecution(
 	params: CreateTemplateInstanceExecutionParams,
+	client: Prisma.TransactionClient = db,
 ) {
-	return db.templateInstanceExecution.create({
+	return client.templateInstanceExecution.create({
 		data: {
 			id: params.id,
 			instanceId: params.instanceId,
@@ -1689,10 +1850,27 @@ export async function finalizeTemplateInstanceExecutionStatus(
 export async function deleteTemplateInstanceArtifactsForExecution(
 	executionId: string,
 ): Promise<number> {
-	const result = await db.templateInstanceArtifact.deleteMany({
-		where: { executionId },
+	return db.$transaction(async (tx) => {
+		const execution = await tx.templateInstanceExecution.findUnique({
+			where: { id: executionId },
+			select: { userId: true, organizationId: true },
+		});
+		const result = await tx.templateInstanceArtifact.deleteMany({
+			where: { executionId },
+		});
+		if (execution?.organizationId) {
+			await tx.agentWorkspaceFile.deleteMany({
+				where: {
+					userId: execution.userId,
+					organizationId: execution.organizationId,
+					sourceRunType: "REPORT_EXECUTION",
+					sourceRunId: executionId,
+					fileType: { in: ["FRAME", "SLIDESHOW"] },
+				},
+			});
+		}
+		return result.count;
 	});
-	return result.count;
 }
 
 export async function getTemplateInstanceExecution(
@@ -2410,6 +2588,31 @@ export async function admitTemplateInstanceExecution(
 	}
 
 	try {
+		const rawSnapshot =
+			params.parameters &&
+			typeof params.parameters === "object" &&
+			!Array.isArray(params.parameters)
+				? (params.parameters as Record<string, unknown>)
+						.__fabricReportExecution
+				: undefined;
+		const snapshot = rawSnapshot
+			? reportExecutionSnapshotSchema.parse(rawSnapshot)
+			: undefined;
+		const selectedBrand = snapshot?.config?.branding;
+		if (selectedBrand) {
+			return await db.$transaction(async (tx) => {
+				await lockArtifactBrandSelection(
+					{
+						organizationId: params.organizationId,
+						userId: params.userId,
+						projectId: snapshot?.config?.projectId,
+						...selectedBrand,
+					},
+					tx,
+				);
+				return createTemplateInstanceExecution(params, tx);
+			});
+		}
 		return await createTemplateInstanceExecution(params);
 	} catch (error) {
 		if (
@@ -2462,6 +2665,14 @@ export async function buildReportExecutionSnapshot(
 	input: Parameters<typeof buildReportSnapshot>[0],
 ) {
 	const snapshot = buildReportSnapshot(input);
+	if (snapshot.config?.branding) {
+		snapshot.branding = await resolveArtifactBrandSnapshot({
+			organizationId: input.organizationId,
+			userId: input.userId,
+			projectId: snapshot.config.projectId,
+			...snapshot.config.branding,
+		});
+	}
 	await assertSkillReadAccess(input);
 	const visible = Prisma.sql`(s."archivedAt" IS NULL AND ((s.scope = 'SYSTEM' AND s."organizationId" IS NULL AND s."userId" IS NULL AND s."isPublished" = true) OR (s.scope = 'ORGANIZATION' AND s."organizationId" = ${input.organizationId} AND (s."userId" = ${input.userId} OR s."isPublished" = true))))`;
 	const attached = await db.$queryRaw<
@@ -2517,6 +2728,7 @@ export async function buildReportExecutionSnapshot(
 			config: hash({
 				instance: snapshot.instance,
 				skills: snapshot.skills,
+				branding: snapshot.branding,
 			}),
 			window: hash(snapshot.window),
 			target: hash({

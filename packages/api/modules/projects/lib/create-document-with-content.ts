@@ -35,6 +35,10 @@ import {
 	countDocumentWords,
 	sanitizeContent,
 } from "@repo/database/prisma/queries/projects/documents";
+import {
+	type InitialProposalBrandingInput,
+	resolveInitialProposalStyle,
+} from "@repo/database/prisma/queries/projects/initial-proposal-brand";
 import type {
 	DocumentSource,
 	ProjectContextType,
@@ -65,7 +69,8 @@ interface CreateDocumentSourceContext {
 	link: boolean;
 }
 
-export interface CreateDocumentWithContentInput {
+export interface CreateDocumentWithContentInput
+	extends InitialProposalBrandingInput {
 	projectId: string;
 	type: ProjectDocumentType;
 	title: string;
@@ -140,6 +145,13 @@ export async function createDocumentWithContent(
 		: null;
 
 	return await db.$transaction(async (tx) => {
+		const initialStyle = await resolveInitialProposalStyle(tx, {
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			type: input.type,
+			proposalBranding: input.proposalBranding,
+			recipientBrandVersion: input.recipientBrandVersion,
+		});
 		const context = sourceContext
 			? await tx.projectContext.create({
 					data: {
@@ -190,6 +202,18 @@ export async function createDocumentWithContent(
 				lastEditedBy: input.lastEditedBy,
 				userId: input.userId,
 				organizationId: input.organizationId,
+				...(initialStyle && input.organizationId
+					? {
+							style: {
+								create: {
+									...initialStyle,
+									projectId: input.projectId,
+									organizationId: input.organizationId,
+									updatedById: input.userId,
+								},
+							},
+						}
+					: {}),
 			},
 		});
 

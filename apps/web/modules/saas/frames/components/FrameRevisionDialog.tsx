@@ -1,5 +1,10 @@
 "use client";
 
+import {
+	effectiveFramePresentation,
+	type FramePresentation,
+} from "@repo/utils/frame-presentation";
+import type { FrameChangeProposalView } from "@repo/utils/frame-review-contracts";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -12,10 +17,18 @@ import {
 } from "@ui/components/dialog";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@ui/components/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { Textarea } from "@ui/components/textarea";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { FrameChangeReview } from "./FrameChangeReview";
 import type { FrameDocumentView } from "./FrameRenderer";
 
 type FrameDraft = {
@@ -39,15 +52,78 @@ export function FrameRevisionDialog({
 	onClose: () => void;
 	onSaved: () => Promise<void>;
 }) {
+	const [proposal, setProposal] = useState<FrameChangeProposalView | null>(
+		null,
+	);
+	const request = useRef<{ key: string; id: string } | null>(null);
+	const [latest, setLatest] = useState<FrameDocumentView | null>(null);
+	const reviewDraft = async () => {
+		if (busy || committed) {
+			return;
+		}
+		setBusy(true);
+		setError(null);
+		try {
+			const input = {
+				expectedUpdatedAt: revision,
+				edit: {
+					title,
+					blocks,
+					...(selectedPresentation !== initialPresentation
+						? { presentation: selectedPresentation }
+						: {}),
+				},
+			};
+			const key = JSON.stringify(input);
+			if (request.current?.key !== key) {
+				request.current = { key, id: crypto.randomUUID() };
+			}
+			const review = await orpcClient.frames.proposeChange({
+				id: frame.id,
+				organizationId,
+				...input,
+				requestId: request.current.id,
+			});
+			setProposal(review);
+		} catch (e) {
+			setError(
+				e &&
+					typeof e === "object" &&
+					"code" in e &&
+					e.code === "CONFLICT"
+					? "conflict"
+					: "failure",
+			);
+		} finally {
+			setBusy(false);
+		}
+	};
+
 	const t = useTranslations("frameRevisions");
 	const [tab, setTab] = useState(initialTab);
-	const [revision, setRevision] = useState(
+	const [revision, _setRevision] = useState(
 		new Date(frame.updatedAt).toISOString(),
 	);
 	const [title, setTitle] = useState(frame.title);
 	const [blocks, setBlocks] = useState(frame.document.blocks);
-	const [initial, setInitial] = useState(
-		JSON.stringify({ title: frame.title, blocks: frame.document.blocks }),
+	const [presentation, setPresentation] = useState(
+		frame.document.presentation,
+	);
+	const reportDocument =
+		frame.document.metadata?.sourceRunType === "REPORT_EXECUTION";
+	const selectedPresentation = effectiveFramePresentation({
+		presentation,
+		metadata: frame.document.metadata,
+	});
+	const [initialPresentation, _setInitialPresentation] = useState(
+		effectiveFramePresentation(frame.document),
+	);
+	const [initial, _setInitial] = useState(
+		JSON.stringify({
+			title: frame.title,
+			blocks: frame.document.blocks,
+			presentation: effectiveFramePresentation(frame.document),
+		}),
 	);
 	const [busy, setBusy] = useState(false);
 	const [committed, setCommitted] = useState(false);
@@ -56,7 +132,12 @@ export function FrameRevisionDialog({
 	>(null);
 	const [confirmRestore, setConfirmRestore] = useState<string | null>(null);
 	const [confirmDiscard, setConfirmDiscard] = useState(false);
-	const dirty = JSON.stringify({ title, blocks }) !== initial;
+	const dirty =
+		JSON.stringify({
+			title,
+			blocks,
+			presentation: selectedPresentation,
+		}) !== initial;
 	const history = useQuery({
 		queryKey: ["frame-history", organizationId, userId, frame.id],
 		queryFn: () =>
@@ -130,17 +211,9 @@ export function FrameRevisionDialog({
 				id: frame.id,
 				organizationId,
 			});
-			setTitle(latest.title);
-			setBlocks(latest.document.blocks);
-			setRevision(new Date(latest.updatedAt).toISOString());
-			setInitial(
-				JSON.stringify({
-					title: latest.title,
-					blocks: latest.document.blocks,
-				}),
-			);
-			setError(null);
-			setConfirmRestore(null);
+			setLatest(latest.document);
+			// Keep the unsaved draft and its base revision intact on conflict.
+
 			await history.refetch();
 		} catch {
 			setError("failure");
@@ -185,12 +258,35 @@ export function FrameRevisionDialog({
 								disabled={busy || committed}
 								onClick={reload}
 							>
-								{t("reload")}
+								{t("compareLatest")}
 							</Button>
 						)}
 					</div>
 				)}
-				{confirmDiscard ? (
+				{latest && (
+					<details className="max-h-48 overflow-auto">
+						<summary>{t("latestKept")}</summary>
+						<pre className="whitespace-pre-wrap break-words text-xs">
+							{JSON.stringify(latest, null, 2)}
+						</pre>
+					</details>
+				)}
+				{proposal ? (
+					<FrameChangeReview
+						proposal={proposal}
+						organizationId={organizationId}
+						kind={frame.document.kind}
+						onApplied={async () => {
+							setCommitted(true);
+							await onSaved();
+							onClose();
+						}}
+						onDismissed={() => {
+							setProposal(null);
+							request.current = null;
+						}}
+					/>
+				) : confirmDiscard ? (
 					<div role="alert" className="space-y-3">
 						<p>{t("discardQuestion")}</p>
 						<Button
@@ -235,6 +331,51 @@ export function FrameRevisionDialog({
 										setTitle(event.target.value)
 									}
 								/>
+							</div>
+
+							<div className="space-y-2">
+								<Label htmlFor="frame-presentation">
+									{t("presentation")}
+								</Label>
+								<Select
+									value={selectedPresentation}
+									disabled={
+										busy || committed || reportDocument
+									}
+									onValueChange={(value) =>
+										setPresentation(
+											value as FramePresentation,
+										)
+									}
+								>
+									<SelectTrigger
+										id="frame-presentation"
+										aria-describedby="frame-presentation-summary"
+									>
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										<SelectItem value="DOCUMENT">
+											{t("documentPresentation")}
+										</SelectItem>
+										<SelectItem value="INTERFACE">
+											{t("interfacePresentation")}
+										</SelectItem>
+									</SelectContent>
+								</Select>
+								<p
+									id="frame-presentation-summary"
+									className="text-sm text-muted-foreground"
+								>
+									{t(
+										reportDocument
+											? "reportPresentationSummary"
+											: selectedPresentation ===
+													"INTERFACE"
+												? "interfacePresentationSummary"
+												: "documentPresentationSummary",
+									)}
+								</p>
 							</div>
 							{blocks.map((block, index) => (
 								<div key={block.id} className="space-y-2">
@@ -372,7 +513,7 @@ export function FrameRevisionDialog({
 						</TabsContent>
 					</Tabs>
 				)}
-				{!confirmDiscard && (
+				{!confirmDiscard && !proposal && (
 					<div className="flex shrink-0 justify-end gap-2 border-t border-border pt-3">
 						<Button
 							variant="outline"
@@ -390,19 +531,9 @@ export function FrameRevisionDialog({
 									!title.trim() ||
 									Boolean(error === "conflict")
 								}
-								onClick={() =>
-									mutate(() =>
-										orpcClient.frames.update({
-											id: frame.id,
-											organizationId,
-											title,
-											blocks,
-											expectedUpdatedAt: revision,
-										}),
-									)
-								}
+								onClick={reviewDraft}
 							>
-								{busy ? t("saving") : t("save")}
+								{busy ? t("saving") : t("reviewChanges")}
 							</Button>
 						)}
 					</div>

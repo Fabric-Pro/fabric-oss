@@ -187,6 +187,7 @@ describe("a Page page", () => {
 		expect(mocks.registerContext).toHaveBeenLastCalledWith({
 			surface: "workspace",
 			launchFrameId: "frame-1",
+			launchFrameUpdatedAt: frame.updatedAt,
 			workspaceId: "frame-1",
 			projectId: "project-1",
 		});
@@ -252,6 +253,7 @@ describe("a Page page", () => {
 		const context = {
 			surface: "workspace",
 			launchFrameId: "frame-1",
+			launchFrameUpdatedAt: frame.updatedAt,
 			workspaceId: "frame-1",
 			projectId: "project-1",
 		};

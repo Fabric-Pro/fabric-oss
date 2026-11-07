@@ -36,10 +36,7 @@ function getConversationExecutionCounts(
 		updatedAt: Date;
 	}>,
 	since?: Date,
-): Record<
-	"pending" | "running" | "completed" | "failed" | "cancelled",
-	number
-> {
+) {
 	const counts = {
 		pending: 0,
 		running: 0,
@@ -47,7 +44,6 @@ function getConversationExecutionCounts(
 		failed: 0,
 		cancelled: 0,
 	};
-
 	for (const conversation of conversations) {
 		const metadata = conversation.metadata as
 			| DashboardConversationMetadata
@@ -56,7 +52,6 @@ function getConversationExecutionCounts(
 		const executions = Array.isArray(metadata?.executions)
 			? metadata.executions
 			: [];
-
 		if (executions.length > 0) {
 			for (const execution of executions) {
 				const eventDate = execution.startedAt
@@ -65,7 +60,6 @@ function getConversationExecutionCounts(
 				if (since && eventDate < since) {
 					continue;
 				}
-
 				const normalized = normalizeTaskStatus(execution.status);
 				if (normalized === "pending") {
 					counts.pending += 1;
@@ -83,13 +77,10 @@ function getConversationExecutionCounts(
 					normalized === "canceled"
 				) {
 					counts.cancelled += 1;
-				} else {
-					counts.completed += 1;
 				}
 			}
 			continue;
 		}
-
 		if (metadata?.mode === "direct") {
 			const eventDate = conversation.updatedAt || conversation.createdAt;
 			if (since && eventDate < since) {
@@ -98,7 +89,6 @@ function getConversationExecutionCounts(
 			counts.completed += 1;
 		}
 	}
-
 	return counts;
 }
 
@@ -271,11 +261,7 @@ export async function getUserDashboardStats(userId: string, since?: Date) {
 				organizationId: null,
 				...(since ? { updatedAt: { gte: since } } : {}),
 			},
-			select: {
-				metadata: true,
-				createdAt: true,
-				updatedAt: true,
-			},
+			select: { metadata: true, createdAt: true, updatedAt: true },
 		}),
 		// MCP configs (user's configured MCP servers, not the registry)
 		db.mCPConfig.count({
@@ -346,7 +332,7 @@ export async function getUserDashboardStats(userId: string, since?: Date) {
 		error: agents.find((a) => a.status === "ERROR")?._count || 0,
 	};
 
-	// Calculate agent task statistics
+	// Preserve the legacy personal dashboard's execution counts.
 	const conversationTaskCounts = getConversationExecutionCounts(
 		conversations,
 		since,
@@ -459,7 +445,6 @@ export async function getOrganizationDashboardStats(
 		projects,
 		agents,
 		agentTasks,
-		conversations,
 		mcpConfigs,
 		prompts,
 		aiChats,
@@ -486,17 +471,6 @@ export async function getOrganizationDashboardStats(
 			by: ["status"],
 			where: { organizationId, ...activityFilter },
 			_count: true,
-		}),
-		db.agentConversation.findMany({
-			where: {
-				organizationId,
-				...(since ? { updatedAt: { gte: since } } : {}),
-			},
-			select: {
-				metadata: true,
-				createdAt: true,
-				updatedAt: true,
-			},
 		}),
 		// MCP configs (user's configured MCP servers in this org)
 		db.mCPConfig.count({
@@ -569,31 +543,21 @@ export async function getOrganizationDashboardStats(
 		error: agents.find((a) => a.status === "ERROR")?._count || 0,
 	};
 
-	const conversationTaskCounts = getConversationExecutionCounts(
-		conversations,
-		since,
-	);
 	const taskStats = {
-		total:
-			agentTasks.reduce((sum, t) => sum + t._count, 0) +
-			conversationTaskCounts.pending +
-			conversationTaskCounts.running +
-			conversationTaskCounts.completed +
-			conversationTaskCounts.failed +
-			conversationTaskCounts.cancelled,
+		total: agentTasks.reduce((sum, t) => sum + t._count, 0),
 		pending:
-			(agentTasks.find((t) => normalizeTaskStatus(t.status) === "pending")
-				?._count || 0) + conversationTaskCounts.pending,
+			agentTasks.find((t) => normalizeTaskStatus(t.status) === "pending")
+				?._count || 0,
 		running:
-			(agentTasks.find((t) => normalizeTaskStatus(t.status) === "running")
-				?._count || 0) + conversationTaskCounts.running,
+			agentTasks.find((t) => normalizeTaskStatus(t.status) === "running")
+				?._count || 0,
 		completed:
-			(agentTasks.find(
+			agentTasks.find(
 				(t) => normalizeTaskStatus(t.status) === "completed",
-			)?._count || 0) + conversationTaskCounts.completed,
+			)?._count || 0,
 		failed:
-			(agentTasks.find((t) => normalizeTaskStatus(t.status) === "failed")
-				?._count || 0) + conversationTaskCounts.failed,
+			agentTasks.find((t) => normalizeTaskStatus(t.status) === "failed")
+				?._count || 0,
 	};
 
 	const documentStats = {
@@ -868,40 +832,35 @@ export async function getUserRecentActivity(
 }
 
 /**
- * Get recent activity for an organization
- * If userId provided, only show activity from projects user can access
+ * Get recent activity for an organization scoped to the current caller.
  */
 export async function getOrganizationRecentActivity(
 	organizationId: string,
-	limit = 10,
-	userId?: string,
+	limit: number,
+	userId: string,
 	since?: Date,
 ) {
 	const dateFilter = since ? { updatedAt: { gte: since } } : {};
-	// Build project access filter - if userId provided, only show projects user can access
-	// Always exclude soft-deleted projects
-	const projectAccessFilter: any = userId
-		? {
-				organizationId,
-				deletedAt: null,
-				...dateFilter,
-				OR: [
-					{ userId }, // User is owner
-					{
-						members: {
-							some: {
-								userId,
-								acceptedAt: { not: null },
-								OR: [
-									{ expiresAt: null },
-									{ expiresAt: { gt: new Date() } },
-								],
-							},
-						},
+	const projectAccessFilter: any = {
+		organizationId,
+		deletedAt: null,
+		...dateFilter,
+		OR: [
+			{ userId },
+			{
+				members: {
+					some: {
+						userId,
+						acceptedAt: { not: null },
+						OR: [
+							{ expiresAt: null },
+							{ expiresAt: { gt: new Date() } },
+						],
 					},
-				],
-			}
-		: { organizationId, deletedAt: null, ...dateFilter };
+				},
+			},
+		],
+	};
 
 	const [
 		recentProjects,
@@ -938,7 +897,7 @@ export async function getOrganizationRecentActivity(
 		}),
 		// Recent agent tasks
 		db.agentTask.findMany({
-			where: { organizationId, ...dateFilter },
+			where: { organizationId, userId, ...dateFilter },
 			orderBy: { updatedAt: "desc" },
 			take: limit,
 			select: {
@@ -957,7 +916,7 @@ export async function getOrganizationRecentActivity(
 			},
 		}),
 		db.agentConversation.findMany({
-			where: { organizationId, ...dateFilter },
+			where: { organizationId, userId, ...dateFilter },
 			orderBy: { updatedAt: "desc" },
 			take: limit,
 			select: {
@@ -1005,7 +964,7 @@ export async function getOrganizationRecentActivity(
 		}),
 		// Recent prompts
 		db.prompt.findMany({
-			where: { organizationId, ...dateFilter },
+			where: { organizationId, createdBy: userId, ...dateFilter },
 			orderBy: { updatedAt: "desc" },
 			take: limit,
 			select: {
@@ -1036,7 +995,7 @@ export async function getOrganizationRecentActivity(
 		}),
 		// Recent workflows
 		db.workflow.findMany({
-			where: { organizationId, ...dateFilter },
+			where: { organizationId, userId, ...dateFilter },
 			orderBy: { updatedAt: "desc" },
 			take: limit,
 			select: {
@@ -1054,7 +1013,7 @@ export async function getOrganizationRecentActivity(
 		}),
 		// Recent agents - org's agents
 		db.agent.findMany({
-			where: { organizationId, ...dateFilter },
+			where: { organizationId, userId, ...dateFilter },
 			orderBy: { updatedAt: "desc" },
 			take: limit,
 			select: {
@@ -1103,7 +1062,7 @@ export async function getOrganizationRecentActivity(
 		}),
 		// Recent SDLC pipelines
 		db.sDLCPipeline.findMany({
-			where: { organizationId, ...dateFilter },
+			where: { organizationId, userId, ...dateFilter },
 			orderBy: { updatedAt: "desc" },
 			take: limit,
 			select: {

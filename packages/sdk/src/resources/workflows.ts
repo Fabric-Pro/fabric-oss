@@ -1,5 +1,9 @@
 import type { FabricHttpClient } from "../client.js";
 import type { FabricExecution, FabricWorkflow, ListOptions } from "../types.js";
+import type {
+	ResultQualityChecks,
+	ResultQualityGrade,
+} from "./result-quality.js";
 
 export interface ListWorkflowsOptions extends ListOptions {
 	status?: "DRAFT" | "ACTIVE" | "PAUSED" | "ARCHIVED";
@@ -94,7 +98,7 @@ export interface WorkflowLifecycleResult {
 	webhookUrl?: string;
 	webhookSecret?: string;
 }
-export interface WorkflowCheck {
+export interface WorkflowCheck extends ResultQualityChecks {
 	id: string;
 	revision: string;
 	name: string;
@@ -120,10 +124,11 @@ export interface WorkflowResultInspection {
 	retrievalEvidence: "not-evaluated";
 }
 export interface WorkflowCheckScore {
+	quality?: ResultQualityGrade;
 	report: {
-		status: "passed" | "failed";
+		status: "passed" | "failed" | "not-assessed";
 		scorerVersion: string;
-		counts: { cases: number; passed: number; failed: number };
+		counts?: { cases: number; passed: number; failed: number };
 		[key: string]: unknown;
 	};
 	expectations: {
@@ -137,7 +142,7 @@ export interface WorkflowCheckComparison {
 	baseline: {
 		executionId: string;
 		version: number;
-		status: "passed" | "failed";
+		status: "passed" | "failed" | "not-assessed";
 	};
 	candidate: WorkflowCheckScore & { executionId: string; version: number };
 	change: "unchanged" | "improved" | "regressed";
@@ -178,9 +183,7 @@ export class WorkflowsResource {
 			executionId: string;
 			nodeId: string;
 			expectedRevision: string;
-			requiredPhrases: string[];
-			forbiddenPhrases: string[];
-		},
+		} & ResultQualityChecks,
 		options: { org?: string } = {},
 	): Promise<WorkflowCheckScore & { saved: false }> {
 		return this.resultCheck(id, "preview", input, options);
@@ -192,9 +195,7 @@ export class WorkflowsResource {
 			nodeId: string;
 			expectedRevision: string;
 			name: string;
-			requiredPhrases: string[];
-			forbiddenPhrases: string[];
-		},
+		} & ResultQualityChecks,
 		options: { org?: string } = {},
 	): Promise<{ check: WorkflowCheck }> {
 		return this.resultCheck(id, "save", input, options);

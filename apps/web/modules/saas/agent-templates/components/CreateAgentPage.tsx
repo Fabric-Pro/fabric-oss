@@ -171,6 +171,7 @@ export type AgentBuilderInitialValues = {
 	expectedOutput?: string;
 	description?: string;
 	instructions?: string;
+	instructionsInherited?: boolean;
 	model?: string;
 	selectedDataSources?: string[];
 	selectedTools?: string[];
@@ -1068,7 +1069,11 @@ function AgentCreationForm({
 					name: trimmedName,
 					description: trimmedDescription,
 					customInstructions: {
-						role: trimmedInstructions,
+						...(initialValues?.instructionsInherited &&
+						trimmedInstructions ===
+							initialValues.instructions?.trim()
+							? {}
+							: { role: trimmedInstructions }),
 						starterMessages:
 							starterMessages.length > 0
 								? starterMessages
@@ -1801,11 +1806,10 @@ function AgentCreationForm({
 													</span>
 												</h3>
 												<p className="text-sm text-muted-foreground">
-													Write the instructions for
-													this agent before
-													{isEditMode
-														? " saving your agent."
-														: " creating your agent."}
+													{isEditMode &&
+													initialValues?.instructionsInherited
+														? "Using saved template instructions. Editing them customizes this agent."
+														: `Write the instructions for this agent before ${isEditMode ? "saving" : "creating"} your agent.`}
 												</p>
 											</div>
 										</div>

@@ -1,5 +1,6 @@
 "use client";
 
+import { RunQualityPanel } from "@saas/run-quality/components/RunQualityPanel";
 import { Button } from "@ui/components/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import Link from "next/link";
@@ -53,6 +54,23 @@ export function AgentBuilderInsights({
 					<TabsTrigger value="tests">Your tests</TabsTrigger>
 				</TabsList>
 				<TabsContent value="tests" className="m-0">
+					<RunQualityPanel
+						key={instanceId}
+						organizationId={organizationId}
+						targetType="AGENT"
+						targetId={instanceId}
+						hasUnsavedChanges={hasUnsavedChanges}
+						onImprove={onImprove}
+						onInspectExecution={(executionId) => {
+							setSelected({
+								id: executionId,
+								instanceId,
+								agentName: "Agent",
+							});
+							setSection("runs");
+						}}
+					/>
+
 					<AgentBuilderTests
 						organizationId={organizationId}
 						instanceId={instanceId}

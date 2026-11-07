@@ -1,5 +1,6 @@
 "use client";
 
+import type { MyWorkItem, MyWorkResult } from "@repo/database";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -15,36 +16,16 @@ import {
 	FolderIcon,
 	LayersIcon,
 	PencilLineIcon,
+	TerminalIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-type MyWorkItemKind = "feature" | "document" | "project" | "task" | "pipeline";
-
-interface MyWorkItem {
-	id: string;
-	kind: MyWorkItemKind;
-	title: string;
-	subtitle?: string | null;
-	identifier?: string | null;
-	projectId?: string | null;
-	projectName?: string | null;
-	status?: string | null;
-	href: string;
-	updatedAt: string | Date;
-}
-
-interface MyWorkBucket {
-	items: MyWorkItem[];
-	total: number;
-}
-
-interface MyWorkData {
-	inProgress: MyWorkBucket;
-	needsReview: MyWorkBucket;
-	blocked: MyWorkBucket;
-	drafts: MyWorkBucket;
-}
+type MyWorkItemKind = MyWorkItem["kind"];
+type MyWorkData = Pick<
+	MyWorkResult,
+	"inProgress" | "needsReview" | "blocked" | "drafts"
+>;
 
 interface MyWorkPanelProps {
 	organizationId?: string | null;
@@ -95,8 +76,9 @@ function kindIcon(kind: MyWorkItemKind) {
 		case "project":
 			return FolderIcon;
 		case "task":
-		case "pipeline":
 			return AlertCircleIcon;
+		case "codingRun":
+			return TerminalIcon;
 	}
 }
 
@@ -112,7 +94,7 @@ function kindTone(kind: MyWorkItemKind, isBlocked: boolean): string {
 		case "project":
 			return "text-secondary bg-secondary/10";
 		case "task":
-		case "pipeline":
+		case "codingRun":
 			return "text-muted-foreground bg-muted";
 	}
 }
@@ -122,7 +104,7 @@ function MyWorkList({
 	tabKey,
 	loading,
 }: {
-	bucket?: MyWorkBucket;
+	bucket?: MyWorkResult[TabKey];
 	tabKey: TabKey;
 	loading: boolean;
 }) {
@@ -218,6 +200,11 @@ function MyWorkList({
 										)}
 									>
 										{item.status}
+									</span>
+								) : null}
+								{item.subtitle ? (
+									<span className="truncate">
+										· {item.subtitle}
 									</span>
 								) : null}
 								<span aria-hidden="true">·</span>

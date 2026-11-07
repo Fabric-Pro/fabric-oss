@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { useFrameTemplates } from "../hooks/use-frame-templates";
+import { FrameAuthoringPanel } from "./FrameAuthoringPanel";
 import { TemplateVariableForm } from "./template-variable-form";
 
 interface TemplateGalleryProps {
@@ -44,6 +45,7 @@ export function TemplateGallery({
 	onOpenChange,
 	onFrameCreated,
 }: TemplateGalleryProps) {
+	const [authoring, setAuthoring] = useState(false);
 	const [searchQuery, setSearchQuery] = useState("");
 	const [selectedCategory, setSelectedCategory] = useState<string | null>(
 		null,
@@ -52,9 +54,10 @@ export function TemplateGallery({
 		null,
 	);
 
-	const { templates, categories, isLoading, isError } = useFrameTemplates({
-		category: selectedCategory || undefined,
-	});
+	const { templates, categories, isLoading, isError, refetch } =
+		useFrameTemplates({
+			category: selectedCategory || undefined,
+		});
 
 	const filteredTemplates = templates.filter((template) =>
 		template.name.toLowerCase().includes(searchQuery.toLowerCase()),
@@ -83,8 +86,26 @@ export function TemplateGallery({
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="max-w-4xl max-h-[85vh] p-0">
-				{selectedTemplate && selectedTemplateData ? (
-					<div className="p-6">
+				{authoring ? (
+					<FrameAuthoringPanel
+						onBack={() => setAuthoring(false)}
+						onCreated={handleFrameCreated}
+						onTemplateCreated={() => {
+							setAuthoring(false);
+							void refetch();
+						}}
+					/>
+				) : selectedTemplate && selectedTemplateData ? (
+					<div className="max-h-[85dvh] overflow-y-auto p-6">
+						<DialogHeader className="sr-only">
+							<DialogTitle>
+								{selectedTemplateData.name}
+							</DialogTitle>
+							<DialogDescription>
+								{selectedTemplateData.description ??
+									"Customize template inputs to create a private artifact."}
+							</DialogDescription>
+						</DialogHeader>
 						<div className="flex items-center gap-2 mb-6">
 							<Button
 								variant="ghost"
@@ -114,6 +135,12 @@ export function TemplateGallery({
 						</DialogHeader>
 
 						<div className="px-6 py-4 space-y-4">
+							<Button
+								variant="outline"
+								onClick={() => setAuthoring(true)}
+							>
+								Create from scratch
+							</Button>
 							{/* Search */}
 							<div className="relative">
 								<Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />

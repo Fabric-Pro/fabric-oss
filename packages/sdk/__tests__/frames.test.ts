@@ -45,6 +45,7 @@ it("does not retry an ambiguous content write", async () => {
 		client.frames.update("example/frame", {
 			expectedUpdatedAt: "2026-11-01T00:00:00Z",
 			title: "Changed",
+			presentation: "INTERFACE",
 		}),
 	).rejects.toThrow();
 	expect(fetch).toHaveBeenCalledOnce();
@@ -147,4 +148,81 @@ it("keeps sharing inspection apart from explicit grant and revoke commands", asy
 			"/api/v1/frames/example-frame/revoke-sharing",
 		],
 	);
+});
+
+it("forwards appearance-only edits with the reviewed revision", async () => {
+	const fetch = vi.fn<typeof globalThis.fetch>(
+		async () =>
+			new Response(
+				JSON.stringify({
+					data: { id: "example-frame", presentation: "INTERFACE" },
+				}),
+				{ headers: { "Content-Type": "application/json" } },
+			),
+	);
+	const client = createFabric({
+		apiKey: "example-key",
+		baseUrl: "https://example.com",
+		org: "example-org",
+		fetch,
+	});
+	const edit = {
+		expectedUpdatedAt: "2026-11-01T00:00:00Z",
+		presentation: "INTERFACE" as const,
+	};
+	expect(await client.frames.update("example-frame", edit)).toMatchObject({
+		presentation: "INTERFACE",
+	});
+	expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual(edit);
+});
+
+it("encodes review identifiers, preserves typed inputs and never retries an ambiguous apply", async () => {
+	const fetch = vi.fn<typeof globalThis.fetch>(
+		async () =>
+			new Response(
+				JSON.stringify({ data: { id: "example", proposals: [] } }),
+				{ headers: { "Content-Type": "application/json" } },
+			),
+	);
+	const client = createFabric({
+		apiKey: "example-key",
+		baseUrl: "https://example.com",
+		org: "example-org",
+		fetch,
+	});
+	const requestId = "11111111-1111-4111-8111-111111111111";
+	await client.frames.createFromTemplate({
+		requestId,
+		templateId: "example-template",
+		variables: {
+			enabled: false,
+			count: 0,
+			client: 'Example "Client"\nLine',
+		},
+	});
+	expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toMatchObject({
+		requestId,
+		variables: {
+			enabled: false,
+			count: 0,
+			client: 'Example "Client"\nLine',
+		},
+	});
+	await client.frames.getChange("example/frame", "example/change");
+	expect(String(fetch.mock.calls[1][0])).toContain(
+		"/frames/example%2Fframe/changes/example%2Fchange",
+	);
+	await client.frames.listChanges("example/frame", { limit: 20, offset: 40 });
+	expect(
+		new URL(String(fetch.mock.calls[2][0])).searchParams.get("offset"),
+	).toBe("40");
+	fetch.mockRejectedValue(new TypeError("Lost acknowledgement"));
+	const before = fetch.mock.calls.length;
+	await expect(
+		client.frames.applyChange("example/frame", {
+			proposalId: "example/change",
+			expectedProposalHash: "a".repeat(64),
+		}),
+	).rejects.toThrow();
+	expect(fetch.mock.calls.length - before).toBe(1);
 });

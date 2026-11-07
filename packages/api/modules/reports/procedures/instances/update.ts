@@ -1,10 +1,12 @@
 import { ORPCError } from "@orpc/server";
 import {
+	ArtifactBrandingError,
 	assertPublicReportParameters,
 	canAccessReportInstance,
 	getProjectReportSetupReason,
 	getTemplateInstance,
 	publicReportParametersSchema,
+	ReportInstanceConflictError,
 	readReportEvidenceConfig,
 	reportEvidenceConfigSchema,
 	reportScheduleInputSchema,
@@ -15,16 +17,20 @@ import type {
 	TemplateInstanceStatus,
 } from "@repo/database/prisma/generated/client";
 import { z } from "zod";
+import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
 	Permissions,
 	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import type { ReportCommandContext } from "../../lib/report-command-context";
 import { validateReportConnections } from "../../lib/validate-connections";
 
 export const updateInstanceInputSchema = z.object({
 	id: z.string(),
+	expectedVersion: z.number().int().positive().optional(),
+	expectedUpdatedAt: z.date().optional(),
 	organizationId: z.string().nullable().optional(),
 	name: z.string().min(1).max(255).optional(),
 	description: z.string().optional(),
@@ -96,142 +102,165 @@ export const updateInstanceInputSchema = z.object({
 export const updateInstanceProcedure = tenantProtectedProcedure
 	.use(requireInputOrgPermission(Permissions.REPORT_UPDATE))
 	.input(updateInstanceInputSchema)
-	.handler(async ({ input, context }) => {
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
+	.handler(handleUpdateReportInstance);
 
-		// Verify instance exists and user has access
-		const existing = await getTemplateInstance({
-			id: input.id,
-			userId: context.user.id,
-			organizationId,
+export async function handleUpdateReportInstance({
+	input,
+	context,
+}: {
+	input: z.infer<typeof updateInstanceInputSchema>;
+	context: ReportCommandContext;
+}) {
+	const organizationId = resolveOrganizationId(
+		input.organizationId,
+		context.session,
+	);
+
+	// Verify instance exists and user has access
+	const existing = await getTemplateInstance({
+		id: input.id,
+		userId: context.user.id,
+		organizationId,
+	});
+
+	if (!existing) {
+		throw new ORPCError("NOT_FOUND", {
+			message: "Template instance not found or access denied",
 		});
+	}
 
-		if (!existing) {
-			throw new ORPCError("NOT_FOUND", {
-				message: "Template instance not found or access denied",
-			});
-		}
+	if (!organizationId) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: "An organization is required",
+		});
+	}
+	assertPublicReportParameters(input.parameterDefaults);
+	const originalReporting = readReportEvidenceConfig(existing.fabricConfig);
+	if (
+		input.fabricConfig?.reporting &&
+		input.fabricConfig.reporting.projectId !== originalReporting?.projectId
+	) {
+		throw new ORPCError("BAD_REQUEST", {
+			message:
+				"A report audience cannot be changed. Create a new report for the project audience you need.",
+		});
+	}
 
-		if (!organizationId) {
-			throw new ORPCError("BAD_REQUEST", {
-				message: "An organization is required",
-			});
-		}
-		assertPublicReportParameters(input.parameterDefaults);
-		const originalReporting = readReportEvidenceConfig(
-			existing.fabricConfig,
-		);
-		if (
-			input.fabricConfig?.reporting &&
-			input.fabricConfig.reporting.projectId !==
-				originalReporting?.projectId
-		) {
-			throw new ORPCError("BAD_REQUEST", {
-				message:
-					"A report audience cannot be changed. Create a new report for the project audience you need.",
-			});
-		}
-
-		const mergedFabricConfig = input.fabricConfig
-			? {
-					...(existing.fabricConfig as Record<
-						string,
-						unknown
-					> | null),
-					...input.fabricConfig,
-				}
-			: undefined;
-		if (
+	const mergedFabricConfig = input.fabricConfig
+		? {
+				...(existing.fabricConfig as Record<string, unknown> | null),
+				...input.fabricConfig,
+			}
+		: undefined;
+	if (
+		!(await canAccessReportInstance(
+			existing,
+			{ userId: context.user.id, organizationId },
+			undefined,
+			true,
+		)) ||
+		(mergedFabricConfig &&
 			!(await canAccessReportInstance(
-				existing,
+				{ ...existing, fabricConfig: mergedFabricConfig },
 				{ userId: context.user.id, organizationId },
 				undefined,
 				true,
-			)) ||
-			(mergedFabricConfig &&
-				!(await canAccessReportInstance(
-					{ ...existing, fabricConfig: mergedFabricConfig },
-					{ userId: context.user.id, organizationId },
-					undefined,
-					true,
-				)))
-		) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "Project report access denied",
+			)))
+	) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "Project report access denied",
+		});
+	}
+
+	const setupReason = getProjectReportSetupReason(
+		mergedFabricConfig ?? existing.fabricConfig,
+		existing.template.definition,
+		input.connections ?? existing.connections,
+	);
+	if (
+		setupReason &&
+		(input.isActive === true ||
+			input.status === "ACTIVE" ||
+			(input.scheduleUpdate && input.scheduleUpdate.mode !== "off"))
+	) {
+		throw new ORPCError("BAD_REQUEST", { message: setupReason });
+	}
+
+	// Validate connections if provided. Pass the template's data sources so a
+	// binding keyed by a data source id (e.g. "task-board") can self-heal via
+	// its server provider (e.g. "fizzy").
+	if (input.connections) {
+		const templateDataSources = (
+			existing.template?.definition as {
+				dataSources?: Array<{
+					id?: string;
+					key?: string;
+					provider?: string;
+				}>;
+			} | null
+		)?.dataSources;
+		const validation = await validateReportConnections(
+			input.connections,
+			context.user.id,
+			organizationId ?? undefined,
+			templateDataSources,
+		);
+		if (!validation.valid) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: `Invalid connections: ${validation.errors.join("; ")}`,
 			});
 		}
+	}
 
-		const setupReason = getProjectReportSetupReason(
-			mergedFabricConfig ?? existing.fabricConfig,
-			existing.template.definition,
-			input.connections ?? existing.connections,
-		);
-		if (
-			setupReason &&
-			(input.isActive === true ||
-				input.status === "ACTIVE" ||
-				(input.scheduleUpdate && input.scheduleUpdate.mode !== "off"))
-		) {
-			throw new ORPCError("BAD_REQUEST", { message: setupReason });
+	// Update the instance
+	const updated = await updateTemplateInstance({
+		expectedVersion: input.expectedVersion,
+		expectedUpdatedAt: input.expectedUpdatedAt,
+		id: input.id,
+		name: input.name,
+		description: input.description,
+		connections: input.connections as Prisma.InputJsonValue | undefined,
+		parameterDefaults: input.parameterDefaults as
+			| Prisma.InputJsonValue
+			| undefined,
+		fabricConfig: mergedFabricConfig as Prisma.InputJsonValue | undefined,
+		...(input.scheduleUpdate && {
+			scheduleUpdate: input.scheduleUpdate,
+		}),
+		isActive: input.isActive,
+		status: input.status as TemplateInstanceStatus | undefined,
+		createNewVersion: input.createNewVersion,
+	}).catch((error) => {
+		if (error instanceof ReportInstanceConflictError) {
+			throw new ORPCError("CONFLICT", { message: error.message });
 		}
-
-		// Validate connections if provided. Pass the template's data sources so a
-		// binding keyed by a data source id (e.g. "task-board") can self-heal via
-		// its server provider (e.g. "fizzy").
-		if (input.connections) {
-			const templateDataSources = (
-				existing.template?.definition as {
-					dataSources?: Array<{
-						id?: string;
-						key?: string;
-						provider?: string;
-					}>;
-				} | null
-			)?.dataSources;
-			const validation = await validateReportConnections(
-				input.connections,
-				context.user.id,
-				organizationId ?? undefined,
-				templateDataSources,
+		if (error instanceof ArtifactBrandingError) {
+			throw new ORPCError(
+				error.code === "NOT_FOUND" ? "NOT_FOUND" : "CONFLICT",
+				{ message: error.message },
 			);
-			if (!validation.valid) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: `Invalid connections: ${validation.errors.join("; ")}`,
-				});
-			}
 		}
-
-		// Update the instance
-		const updated = await updateTemplateInstance({
-			id: input.id,
-			name: input.name,
-			description: input.description,
-			connections: input.connections as Prisma.InputJsonValue | undefined,
-			parameterDefaults: input.parameterDefaults as
-				| Prisma.InputJsonValue
-				| undefined,
-			fabricConfig: mergedFabricConfig as
-				| Prisma.InputJsonValue
-				| undefined,
-			...(input.scheduleUpdate && {
-				scheduleUpdate: input.scheduleUpdate,
-			}),
-			isActive: input.isActive,
-			status: input.status as TemplateInstanceStatus | undefined,
-			createNewVersion: input.createNewVersion,
-		});
-
-		return {
-			id: updated.id,
-			sId: updated.sId,
-			version: updated.version,
-			status: updated.status,
-			name: updated.name,
-			description: updated.description,
-			isActive: updated.isActive,
-			updatedAt: updated.updatedAt.toISOString(),
-		};
+		throw error;
 	});
+
+	recordAuditFromRequest(
+		{ headers: context.headers },
+		{
+			category: "org",
+			action: "report.instance_updated",
+			organizationId,
+			actor: { type: "user", userId: context.user.id },
+			resource: { type: "report_instance", id: updated.id },
+		},
+	);
+	return {
+		id: updated.id,
+		sId: updated.sId,
+		version: updated.version,
+		status: updated.status,
+		name: updated.name,
+		description: updated.description,
+		isActive: updated.isActive,
+		updatedAt: updated.updatedAt.toISOString(),
+	};
+}

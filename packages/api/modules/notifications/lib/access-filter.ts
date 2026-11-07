@@ -9,21 +9,64 @@
  * carry no projectId.
  */
 
-import { db, type Notification } from "@repo/database";
+import {
+	db,
+	getTemplateInstanceExecution,
+	type Notification,
+} from "@repo/database";
 
 export async function filterByCurrentAccess(
 	notifications: Notification[],
 	userId: string,
 ): Promise<Notification[]> {
+	// Report deliveries retain their original admitted audience. Re-check that
+	// audience even for company-wide reports with no projectId.
+	const executions = new Map<string, Promise<boolean>>();
+	const visibility = await Promise.all(
+		notifications.map(async (notification) => {
+			if (
+				notification.type !== "REPORT_COMPLETED" &&
+				notification.type !== "REPORT_FAILED"
+			) {
+				return true;
+			}
+			const payload = notification.payload;
+			if (
+				!notification.organizationId ||
+				!payload ||
+				typeof payload !== "object" ||
+				Array.isArray(payload) ||
+				typeof payload.executionId !== "string"
+			) {
+				return false;
+			}
+			const key = `${notification.organizationId}:${payload.executionId}`;
+			let access = executions.get(key);
+			if (!access) {
+				access = getTemplateInstanceExecution(payload.executionId, {
+					userId,
+					organizationId: notification.organizationId,
+				}).then(
+					(execution) =>
+						!!execution && execution.status !== "CANCELLED",
+				);
+				executions.set(key, access);
+			}
+			return access;
+		}),
+	);
+	const visibleNotifications = notifications.filter(
+		(_, index) => visibility[index],
+	);
 	const projectIds = Array.from(
 		new Set(
-			notifications
+			visibleNotifications
 				.map((n) => n.projectId)
 				.filter((id): id is string => typeof id === "string"),
 		),
 	);
 	if (projectIds.length === 0) {
-		return notifications;
+		return visibleNotifications;
 	}
 
 	// Single bulk query mirroring `requireProjectPermission` resolution paths:
@@ -63,7 +106,7 @@ export async function filterByCurrentAccess(
 	});
 	const allowed = new Set(allowedProjects.map((p) => p.id));
 
-	return notifications.filter(
+	return visibleNotifications.filter(
 		(n) => n.projectId === null || allowed.has(n.projectId),
 	);
 }

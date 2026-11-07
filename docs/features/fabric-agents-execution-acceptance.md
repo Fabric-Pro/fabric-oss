@@ -224,3 +224,84 @@ This command invokes authenticated readiness and drain reads only. It creates no
 4. Stop admission and drain active/paused application work and native background work; resolve any unbound reservation or unknown cancellation. Enable the bridge on both API and worker for the isolated environment. The flag is global, not a tenant-percentage canary. Observe accepted receipts, startup/poll latency, cancellation, recovery events and real PR delivery.
 5. For rollback, stop admission and drain again before changing mode/endpoint/secret/profile. Preserve registry, native sessions, worktrees and Temporal history during reconciliation. Never clear the registry to make a drain check pass.
 6. Retire legacy services/webhooks only after this qualification and the canary observation window pass. Keep historical URLs, enum compatibility and workflow replay support. Multi-host placement, HA, remaining provider qualification and branch-only Spike remain separate capabilities.
+
+
+## Delivery evidence and external implementation controls
+
+The existing project Overview includes **Delivery at a glance**: a bounded sample
+of permitted work items, implementation results, explicit source relationships,
+documents and context ingestion/indexing observations. Open a work item to use
+its existing task discussion, durable `@Fabric` mentions and attached files. This
+does not introduce a separate team-chat store or grant edit access to shared
+agent transcripts. A PR merge is observed delivery evidence, not proof of
+deployment. External agent costs, whole-project lead time and content accuracy
+are unavailable unless independently collected; they are never inferred as zero.
+
+`GET /api/v1/projects/{projectId}/delivery`, SDK `projects.delivery`, CLI
+`fabric projects delivery` and MCP `fabric_get_project_delivery` read the same
+authorized snapshot. Context records distinguish stored extraction from confirmed
+indexing, show source update/sync times and keep private error details out of the
+snapshot. Inspect sources in the existing project Context view.
+
+Implementation-session transports reuse the Portal's CodingRun commands and
+Temporal execution. They do not create a second provider runtime.
+
+| Operation | REST under `/api/v1/projects/{projectId}/implementation-sessions` | SDK `projects` method | CLI `fabric projects implementations` | MCP tool suffix after `fabric_` |
+| --- | --- | --- | --- | --- |
+| List | `GET /` | `listImplementationSessions` | `list` | `list_implementation_sessions` |
+| Inspect | `GET /{id}` | `getImplementationSession` | `show` | `get_implementation_session` |
+| Start | `POST /` | `startImplementationSession` | `start --input <json-file>` | `start_implementation_session` |
+| Cancel | `POST /{id}/cancel` | `cancelImplementationSession` | `cancel` | `cancel_implementation_session` |
+| Follow up | `POST /{id}/follow-up` | `followUpImplementationSession` | `follow-up --prompt-id <uuid> --message-file <file>` | `follow_up_implementation_session` |
+| Messages | `GET /{id}/messages` | `getImplementationMessages` | `messages` | `get_implementation_messages` |
+
+List accepts a bounded `limit`, optional `storyId` and the preceding page's
+`nextCursor`. Reads require `agents:read`; mutations require `agents:execute` and
+the creator's current action-specific project permission. Cancellation additionally
+requires the current delete permission. Credential scope never substitutes for
+current object access. Project execution uses the same explicit project grants as the Portal,
+including accepted guests; an organization-wide execution role is not substituted
+for project authority. Credential verification still validates the live creator. Messages independently recheck the private/team server grant and return
+a bounded conversation transcript without provider events, private host links,
+credentials or working directories.
+
+External starts require a stable UUID `requestId`; follow-ups require a stable UUID
+`promptId`. Retrying the same start identity and identical parameters returns the
+same retained CodingRun, including after completion. Reusing that start identity
+with different parameters conflicts. Start receipts contain only a parameter hash,
+not copied prompt or provider credentials. Concurrent requests reserve one row.
+An uncertain outcome must be inspected using that existing identity; a retained
+queued receipt alone does not prove dispatch, and these commands do not silently
+launch a replacement for a pre-dispatch failure. Existing operator recovery
+procedures apply. The Portal retains compatibility with starts that omit requestId.
+
+SDK start, cancel and follow-up calls disable automatic transport retries, even
+when the client enables retries globally. Inspect uncertain outcomes before an
+explicit retry. The native bridge can recover a stable prompt receipt; the legacy
+follow-up webhook does not deduplicate `promptId`, so repeating an unconfirmed
+legacy follow-up may repeat the business action. MCP consequently does not
+advertise follow-up as idempotent across all configured execution profiles.
+
+Implementation controls are available through the explicit Portal task journey
+and externally authenticated API/SDK/CLI/MCP connections. They are deliberately
+not offered as native Genie or meeting tools: current runtime acting grants do
+not consent to agent execution. Native Genie delegation requires a separately
+reviewed, project-scoped approval grant before those controls can be exposed;
+adding an organization-wide execution scope is not a substitute. The read-only
+project delivery snapshot remains available under current project access. Snapshot
+decision and document sections carry `available` plus `items`; unreadable evidence
+is distinguishable from a permitted empty list in every transport.
+
+A retained queued receipt with no confirmed dispatch returns
+`status: "dispatch_unconfirmed"`, `dispatchUnconfirmed: true` and
+`inspectionRequired: true`. Replaying that UUID may describe its exact Temporal
+workflow; a confirmed existing workflow is reported without resubmission. A
+not-found or unavailable description never launches a replacement. Terminal
+receipts remain terminal.
+
+Project outcome projections reuse `publicCodingRuns`: permitted teammates may
+see task progress, status and PR evidence even when a developer's server is
+private. Private host links, native session identifiers, provider metadata and
+events stay hidden; message access and execution controls independently require
+the live private/team server grant. The list and Overview do not introduce a
+stricter or broader outcome policy than the existing single-run view.

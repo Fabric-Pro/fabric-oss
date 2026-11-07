@@ -153,6 +153,7 @@ export function createOAuthM2MProvider(
 	clientId: string,
 	clientSecret: string,
 	fetchImpl: typeof fetch = globalThis.fetch,
+	scope = "all-apis",
 ): DatabricksTokenProvider {
 	let cache: TokenCache | null = null;
 	let inflight: Promise<string> | null = null;
@@ -171,7 +172,7 @@ export function createOAuthM2MProvider(
 		);
 		const body = new URLSearchParams({
 			grant_type: "client_credentials",
-			scope: "all-apis",
+			scope,
 		});
 
 		// The intrinsic timeout is deliberately NOT combined with the caller's
@@ -360,6 +361,7 @@ export function createDatabricksTokenProvider(opts?: {
 		config.clientId,
 		config.clientSecret,
 		fetchImpl,
+		config.scope,
 	);
 }
 

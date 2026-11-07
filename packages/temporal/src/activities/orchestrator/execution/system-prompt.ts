@@ -6,15 +6,17 @@ export function buildIterationSystemPrompt(input: {
 	systemPrompt: string;
 	systemPromptParts?: { reusable: string; variable: string };
 	skillsSystemBlock: string;
+	artifactInstructions?: string;
 	promptCacheTarget: boolean;
 }): {
 	instructions: string | SystemModelMessage | SystemModelMessage[];
 	reusable?: string;
 } {
+	const additions = [input.skillsSystemBlock, input.artifactInstructions]
+		.filter(Boolean)
+		.join("\n\n");
 	const withSkills = (text: string) =>
-		input.skillsSystemBlock
-			? `${text}\n\n${input.skillsSystemBlock}`
-			: text;
+		additions ? `${text}\n\n${additions}` : text;
 	if (!input.systemPromptParts) {
 		const legacy = withSkills(input.systemPrompt);
 		return {

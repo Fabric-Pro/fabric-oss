@@ -1016,6 +1016,7 @@ export function CreateInstanceDialog({
 							Reporting period and audience
 						</h3>
 						<ReportEvidenceSettings
+							outputFormat={template.outputFormat}
 							value={reporting}
 							sourceDefinition={{ dataSources }}
 							requireProject={requiresProjectKnowledge}

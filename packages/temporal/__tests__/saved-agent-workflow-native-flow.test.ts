@@ -5,8 +5,10 @@ const m = vi.hoisted(() => ({
 	externalSignal: vi.fn(),
 	cancelAtPatch: false,
 	candidatePatch: true,
+	qualityPatch: true,
 	cancelHook: undefined as undefined | (() => void),
 	acts: {
+		admitRecordedRunQuality: vi.fn(async () => null),
 		registerNativeAgentExecutionReceipt: vi.fn(),
 		completeNativeAgentExecution: vi.fn(),
 		loadDeploymentConfiguration: vi.fn(),
@@ -39,6 +41,9 @@ vi.mock("@temporalio/workflow", async () => ({
 	patched: (name: string) => {
 		if (m.cancelAtPatch) {
 			m.cancelHook?.();
+		}
+		if (name === "native-quality-loaded-configuration-v1") {
+			return m.qualityPatch;
 		}
 		return name === "saved-agent-goal-candidate-output-v1"
 			? m.candidatePatch
@@ -102,6 +107,7 @@ beforeEach(() => {
 	m.externalSignal.mockResolvedValue(undefined);
 	m.cancelAtPatch = false;
 	m.candidatePatch = true;
+	m.qualityPatch = true;
 	m.cancelHook = undefined;
 	m.acts.loadDeploymentConfiguration.mockResolvedValue({
 		template: { name: "Example", displayName: "Example" },
@@ -677,5 +683,64 @@ it.each(["deployment", "goal"])(
 		expect(writer).toHaveBeenCalledWith(
 			expect.objectContaining({ status: "CANCELLED" }),
 		);
+	},
+);
+
+it.each([
+	["deployment", true],
+	["deployment", false],
+	["goal", true],
+	["goal", false],
+] as const)(
+	"returns the actual loaded quality marker for %s only under its replay patch (%s)",
+	async (kind, enabled) => {
+		m.qualityPatch = enabled;
+		const marker = {
+			version: 1,
+			assessmentId: "example-assessment",
+			configHash: "b".repeat(64),
+		};
+		m.acts.loadDeploymentConfiguration.mockResolvedValue({
+			template: { name: "Example", displayName: "Example" },
+			instance: { name: "Example" },
+			integrationConfigurations: [],
+			toolConnections: {},
+			workspaceIds: [],
+			qualityConfiguration: marker,
+		});
+		m.turn.mockResolvedValue({
+			success: true,
+			response: "Ready",
+			toolCalls: [],
+		});
+		m.acts.finishDeploymentAgentTurn.mockResolvedValue({
+			output: { response: "Ready" },
+			toolCalls: [],
+		});
+		m.acts.finishGoalStep.mockResolvedValue({
+			response: "Ready",
+			outputs: { rawResponse: "Ready" },
+			toolCalls: [],
+		});
+		m.acts.verifyGoalAchievement.mockResolvedValue({
+			achieved: true,
+			confidence: 1,
+			reasoning: "Example verified",
+		});
+		const result =
+			kind === "deployment"
+				? await deploymentExecutionWorkflow(input)
+				: await goalOrientedAgentWorkflow({
+						...input,
+						goal: "Write a brief",
+						maxIterations: 1,
+					});
+		expect(result.status).toBe("COMPLETED");
+		if (enabled) {
+			expect(result.qualityConfiguration).toEqual(marker);
+		} else {
+			expect(result).not.toHaveProperty("qualityConfiguration");
+		}
+		expect(m.turn).toHaveBeenCalledTimes(1);
 	},
 );

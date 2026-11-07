@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
 	verifyOAuthAccessToken: vi.fn(),
 	canExecuteOrganizationAgents: vi.fn(),
 	canRunOrganizationWorkflows: vi.fn(),
+	canReadOrganizationReports: vi.fn(),
 }));
 
 vi.mock("@repo/database", async (importOriginal) => {
@@ -34,6 +35,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 		verifyOAuthAccessToken: mocks.verifyOAuthAccessToken,
 		canExecuteOrganizationAgents: mocks.canExecuteOrganizationAgents,
 		canRunOrganizationWorkflows: mocks.canRunOrganizationWorkflows,
+		canReadOrganizationReports: mocks.canReadOrganizationReports,
 	};
 });
 
@@ -517,4 +519,23 @@ describe("a signed-in agent's access token", () => {
 			expect(mocks.findProject).not.toHaveBeenCalled();
 		});
 	});
+});
+
+describe("current report-read authority", () => {
+	it.each(["reports:read", "*"])(
+		"rechecks current permission for %j",
+		async (scope) => {
+			mocks.verifyOrganizationApiKey.mockResolvedValue(
+				orgKeyWith([scope]),
+			);
+			mocks.canReadOrganizationReports.mockResolvedValue(false);
+			expect(
+				(await call(appRequiring("reports:read"), ORG_KEY)).status,
+			).toBe(403);
+			expect(mocks.canReadOrganizationReports).toHaveBeenCalledWith(
+				"user-demoted",
+				"org-123",
+			);
+		},
+	);
 });

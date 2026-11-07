@@ -10,8 +10,12 @@ vi.mock("../../hooks/use-frame-runtime-bridge", () => ({
 	}),
 }));
 
+const header = vi.hoisted(() => ({ rendered: vi.fn() }));
 vi.mock("../FrameShellHeader", () => ({
-	FrameShellHeader: () => null,
+	FrameShellHeader: (props: Record<string, unknown>) => {
+		header.rendered(props);
+		return null;
+	},
 }));
 
 vi.mock("../FrameRenderer", () => ({
@@ -51,6 +55,33 @@ describe("FrameVizShell", () => {
 			"Report body",
 		);
 		expect(embedIframes(container)).toHaveLength(0);
+	});
+
+	it("keeps report-derived artifacts within report access instead of offering public sharing", () => {
+		render(
+			<FrameVizShell
+				title="Delivery report"
+				kind="frame"
+				embedUrl={EMBED_URL}
+				frameId="example-frame"
+				organizationId="example-org"
+				updatedAt="2026-11-05T10:00:00.000Z"
+				canManageSharing
+				onPublish={vi.fn()}
+				frameDocument={{
+					...frameDocument,
+					metadata: {
+						sourceRunType: "REPORT_EXECUTION",
+						sourceRunId: "example-execution",
+					},
+				}}
+			/>,
+		);
+		expect(header.rendered).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				share: { type: "restricted", reason: "reportAccessSharing" },
+			}),
+		);
 	});
 
 	it("loads an interactive page through the embed route behind a visible loading state", () => {

@@ -842,6 +842,18 @@ function sameCredentialAuthority(
 	) {
 		return false;
 	}
+	if (
+		session.credential !== "session" &&
+		session.credential !== "service" &&
+		(!session.keyIdentity ||
+			!authResult.keyIdentity ||
+			session.keyIdentity.credentialKind !==
+				authResult.keyIdentity.credentialKind ||
+			session.keyIdentity.credentialId !==
+				authResult.keyIdentity.credentialId)
+	) {
+		return false;
+	}
 	const granted = new Set(session.scopes);
 	return (
 		granted.size === new Set(authResult.scopes).size &&
@@ -953,6 +965,7 @@ async function getOrCreateSession(
 
 	// Create new session
 	const session = await createGatewaySession({
+		keyIdentity: authResult.keyIdentity,
 		userId: authResult.userId,
 		organizationId: authResult.organizationId,
 		projectId: authResult.projectId,
@@ -1018,6 +1031,7 @@ function jsonRpcSuccess(
 		{
 			headers: {
 				"Content-Type": "application/json",
+				"Cache-Control": "private, no-store",
 				"Mcp-Session-Id": mcpSessionId,
 			},
 		},
@@ -1032,6 +1046,7 @@ function jsonRpcError(
 ): NextResponse {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
+		"Cache-Control": "private, no-store",
 	};
 	if (mcpSessionId) {
 		headers["Mcp-Session-Id"] = mcpSessionId;

@@ -10,6 +10,8 @@ import { useFabricToolQuery } from "@saas/mcp/lib/fabric-tool-client";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { LayoutPanelTopIcon, SparklesIcon } from "lucide-react";
+import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { PagesHero } from "./PagesHero";
 
 const NEW_PAGE_PROMPT = "Create a new Page that shows ";
@@ -25,6 +27,7 @@ const PAGE_CONTEXT = { surface: "workspace" } as const;
  * an agent reads it.
  */
 export function PagesList({ organizationSlug }: { organizationSlug: string }) {
+	const t = useTranslations("frameAuthoring");
 	const openAgent = useFrameAgentContext(PAGE_CONTEXT);
 	const list = useFabricToolQuery(
 		"fabric_list_frames",
@@ -38,15 +41,28 @@ export function PagesList({ organizationSlug }: { organizationSlug: string }) {
 		<div className="space-y-8">
 			<PagesHero
 				actions={
-					startPage ? (
-						<Button
-							data-onboarding-target="pages-new"
-							onClick={startPage}
-						>
-							<SparklesIcon className="mr-2 size-4" aria-hidden />
-							New page
+					<div className="flex flex-wrap gap-2">
+						<Button asChild variant="outline">
+							<Link
+								data-onboarding-target="pages-artifacts"
+								href={`/app/${organizationSlug}/frames`}
+							>
+								{t("browse")}
+							</Link>
 						</Button>
-					) : undefined
+						{startPage ? (
+							<Button
+								data-onboarding-target="pages-new"
+								onClick={startPage}
+							>
+								<SparklesIcon
+									className="mr-2 size-4"
+									aria-hidden
+								/>
+								New page
+							</Button>
+						) : null}
+					</div>
 				}
 			/>
 

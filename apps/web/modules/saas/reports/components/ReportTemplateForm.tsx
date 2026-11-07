@@ -34,8 +34,13 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import {
+	buildDeliveryReportStarter,
+	getDeliveryReportStarter,
+} from "../lib/delivery-report-starters";
 import {
 	type EvidenceConfig,
 	EvidenceConfigSection,
@@ -88,12 +93,14 @@ type Section = {
 };
 
 type Props = {
+	starterId?: string | null;
 	templateId?: string;
 	organizationId?: string;
 	basePath?: string;
 };
 
 export function ReportTemplateForm({
+	starterId,
 	templateId,
 	organizationId,
 	basePath = "/app/reports",
@@ -101,36 +108,57 @@ export function ReportTemplateForm({
 	const router = useRouter();
 	const queryClient = useQueryClient();
 	const isEditing = Boolean(templateId);
+	const t = useTranslations("deliveryStarters");
+	const starter = !isEditing
+		? getDeliveryReportStarter(starterId)
+		: undefined;
+	const initial = starter
+		? buildDeliveryReportStarter(starter, {
+				name: t(`names.${starter.id}`),
+				description: t("draftDescription"),
+				task: t(`tasks.${starter.id}`),
+				guardrails: t("guardrails"),
+				sections: starter.sections.map((_, index) =>
+					t(`sections.${starter.id}.${index}`),
+				),
+			})
+		: undefined;
 	const skillsRef = useRef<ReportTemplateSkillsSectionRef>(null);
 
-	const [name, setName] = useState("");
-	const [description, setDescription] = useState("");
-	const [templateType, setTemplateType] = useState("CUSTOM");
+	const [name, setName] = useState<string>(initial?.name ?? "");
+	const [description, setDescription] = useState(initial?.description ?? "");
+	const [templateType, setTemplateType] = useState<string>(
+		initial?.templateType ?? "CUSTOM",
+	);
 	const [outputFormat, setOutputFormat] = useState("MARKDOWN");
 	const [scope, setScope] = useState(
 		organizationId ? "ORGANIZATION" : "USER",
 	);
-	const [category, setCategory] = useState("");
-	const [tags, setTags] = useState<string[]>([]);
+	const [category, setCategory] = useState(initial?.category ?? "");
+	const [tags, setTags] = useState<string[]>(initial?.tags ?? []);
 	const [tagInput, setTagInput] = useState("");
 	const [isScheduled, setIsScheduled] = useState(false);
 	const [scheduleFrequency, setScheduleFrequency] = useState("weekly");
 	const [aiAgents, setAiAgents] = useState<AiAgent[]>([]);
-	const [dataSources, setDataSources] = useState<DataSourceDefinition[]>([]);
-	const [sections, setSections] = useState<Section[]>([
-		{
-			id: "intro",
-			title: "Introduction",
-			type: "text",
-			config: { template: "" },
-		},
-	]);
+	const [dataSources, setDataSources] = useState<DataSourceDefinition[]>(
+		initial?.dataSources ?? [],
+	);
+	const [sections, setSections] = useState<Section[]>(
+		initial?.sections ?? [
+			{
+				id: "intro",
+				title: "Introduction",
+				type: "text",
+				config: { template: "" },
+			},
+		],
+	);
 	const [fabricConfig, setFabricConfig] = useState<FabricConfig>({
 		enableAutoDetection: true,
 	});
 	const [evidenceConfig, setEvidenceConfig] = useState<EvidenceConfig>({});
 	// User prompt for the AI - defines the task/question
-	const [userPrompt, setUserPrompt] = useState("");
+	const [userPrompt, setUserPrompt] = useState(initial?.userPrompt ?? "");
 
 	const templateQueryOptions = orpc.reports.templates.get.queryOptions({
 		// biome-ignore lint/style/noNonNullAssertion: templateId is defined when isEditing is true
@@ -449,6 +477,12 @@ export function ReportTemplateForm({
 					)}
 				</div>
 			</div>
+
+			{starter && (
+				<p className="rounded-md bg-muted p-4 text-sm">
+					{t("builderNotice", { name: t(`names.${starter.id}`) })}
+				</p>
+			)}
 
 			{/* What This Report Will Generate - Show prominently for system templates */}
 			{isSystemTemplate && templateData && (

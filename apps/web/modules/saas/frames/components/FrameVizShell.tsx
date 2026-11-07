@@ -1,10 +1,16 @@
 "use client";
 
+import {
+	canExportFramePresentationToPdf,
+	effectiveFramePresentation,
+} from "@repo/utils/frame-presentation";
+
 import type { FrameDocumentView } from "@saas/frames/components/FrameRenderer";
 import { Button } from "@ui/components/button";
 import { cn } from "@ui/lib";
 import { ChevronLeft, ChevronRight, Loader2, X } from "lucide-react";
 import dynamic from "next/dynamic";
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Response } from "../../../../components/ai-elements/response";
@@ -18,6 +24,7 @@ import type {
 } from "../lib/frame-embed-protocol";
 import { frameShellLabels } from "../lib/frame-shell-labels";
 import type { FrameSurfaceName } from "../lib/frame-tool-types";
+import { FrameBrandingDialog } from "./FrameBrandingDialog";
 import { FrameExportDialog } from "./FrameExportDialog";
 import { FrameRuntimeConfirmDialog } from "./FrameRuntimeConfirmDialog";
 import { type FrameShareControl, FrameShellHeader } from "./FrameShellHeader";
@@ -125,12 +132,17 @@ export function FrameVizShell({
 	const iframeRef = useRef<HTMLIFrameElement>(null);
 	const fullscreenIframeRef = useRef<HTMLIFrameElement>(null);
 	const inlineRootRef = useRef<HTMLDivElement>(null);
+	const tBrand = useTranslations("artifactBranding");
+	const reportScoped =
+		frameDocument?.metadata?.sourceRunType === "REPORT_EXECUTION";
 	const [showCode, setShowCode] = useState(false);
 	const [isFullscreen, setIsFullscreen] = useState(false);
 	const [currentSlide, setCurrentSlide] = useState(0);
 	const [shareSheetOpen, setShareSheetOpen] = useState(false);
 	const [exportDialogOpen, setExportDialogOpen] = useState(false);
 	const [exportDialogViewed, setExportDialogViewed] = useState(false);
+	const [brandingDialogOpen, setBrandingDialogOpen] = useState(false);
+	const [brandingDialogViewed, setBrandingDialogViewed] = useState(false);
 	const nativePdf = Boolean(
 		frameId && organizationId && updatedAt && headerMode !== "public",
 	);
@@ -141,9 +153,12 @@ export function FrameVizShell({
 	const effectiveSlide = isSlideshow
 		? Math.min(Math.max(currentSlide, 0), totalSlides - 1)
 		: 0;
-	const effectiveEmbedUrl = isSlideshow
-		? `${embedUrl}${embedUrl.includes("?") ? "&" : "?"}slide=${effectiveSlide}`
+	const revisionEmbedUrl = updatedAt
+		? `${embedUrl}${embedUrl.includes("?") ? "&" : "?"}frameRevision=${encodeURIComponent(new Date(updatedAt).toISOString())}`
 		: embedUrl;
+	const effectiveEmbedUrl = isSlideshow
+		? `${revisionEmbedUrl}${revisionEmbedUrl.includes("?") ? "&" : "?"}slide=${effectiveSlide}`
+		: revisionEmbedUrl;
 	const labels = frameShellLabels({ surface, headerMode });
 	// A page drawn without its scripts needs nothing the embed route provides,
 	// so it is drawn here from the document already loaded instead of from a
@@ -278,19 +293,22 @@ export function FrameVizShell({
 		}).catch(() => undefined);
 	};
 
-	const canManageSharingHere = Boolean(frameId) && canManageSharing;
-	const share: FrameShareControl | null = canManageSharingHere
-		? { type: "sheet", onOpen: () => setShareSheetOpen(true) }
-		: shareUrl
-			? {
-					type: "link",
-					url: shareUrl,
-					onRevoke: onRevokeShare,
-					revokePending,
-				}
-			: onPublish
-				? { type: "publish", onPublish, pending: publishPending }
-				: null;
+	const canManageSharingHere =
+		Boolean(frameId) && canManageSharing && !reportScoped;
+	const share: FrameShareControl | null = reportScoped
+		? { type: "restricted", reason: tBrand("reportAccessSharing") }
+		: canManageSharingHere
+			? { type: "sheet", onOpen: () => setShareSheetOpen(true) }
+			: shareUrl
+				? {
+						type: "link",
+						url: shareUrl,
+						onRevoke: onRevokeShare,
+						revokePending,
+					}
+				: onPublish
+					? { type: "publish", onPublish, pending: publishPending }
+					: null;
 
 	return (
 		<>
@@ -336,6 +354,14 @@ export function FrameVizShell({
 						exportNotice={exporter.exportNotice}
 						share={share}
 						onClose={onClose}
+						onBranding={
+							nativePdf
+								? () => {
+										setBrandingDialogViewed(true);
+										setBrandingDialogOpen(true);
+									}
+								: undefined
+						}
 					/>
 				)}
 
@@ -519,6 +545,20 @@ export function FrameVizShell({
 				frameId &&
 				organizationId &&
 				updatedAt &&
+				brandingDialogViewed && (
+					<FrameBrandingDialog
+						frameId={frameId}
+						organizationId={organizationId}
+						updatedAt={updatedAt}
+						open={brandingDialogOpen}
+						onOpenChange={setBrandingDialogOpen}
+					/>
+				)}
+
+			{nativePdf &&
+				frameId &&
+				organizationId &&
+				updatedAt &&
 				exportDialogViewed && (
 					<FrameExportDialog
 						frameId={frameId}
@@ -527,6 +567,15 @@ export function FrameVizShell({
 						title={title}
 						kind={kind}
 						open={exportDialogOpen}
+						branding={frameDocument?.theme?.branding}
+						supportsNativePdf={
+							frameDocument
+								? canExportFramePresentationToPdf(frameDocument)
+								: true
+						}
+						presentation={effectiveFramePresentation(
+							frameDocument ?? {},
+						)}
 						onOpenChange={setExportDialogOpen}
 					/>
 				)}
@@ -537,7 +586,7 @@ export function FrameVizShell({
 				onAnswer={answerConfirmation}
 			/>
 
-			{frameId && canManageSharing ? (
+			{frameId && canManageSharingHere ? (
 				<ShareFrameSheet
 					frameId={frameId}
 					organizationId={organizationId}

@@ -16,9 +16,10 @@ These env vars identify and authenticate the Fabric service principal to the Dat
 | `DATABRICKS_HOST` | Workspace URL — `https://` required, no trailing slash | `https://adb-1234567890123456.7.azuredatabricks.net` |
 | `DATABRICKS_CLIENT_ID` | Service principal OAuth M2M client ID (preferred) | `a1b2c3d4-e5f6-...` |
 | `DATABRICKS_CLIENT_SECRET` | Service principal OAuth M2M client secret | `dose...` |
+| `DATABRICKS_SCOPE` | Space-separated OAuth scopes; defaults to `all-apis` when blank | `sql:read:restricted-query` |
 | `DATABRICKS_TOKEN` | Personal access token alternative; takes precedence over OAuth when set | `dapi...` |
 
-**Service principal OAuth M2M (preferred).** Create a service principal in the Databricks account console, grant it the `User` role on the workspace, and generate a client ID/secret pair under the SP's OAuth credentials. Set `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET`; leave `DATABRICKS_TOKEN` unset.
+**Service principal OAuth M2M (preferred).** Create a service principal in the Databricks account console, grant it the `User` role on the workspace, and generate a client ID/secret pair under the SP's OAuth credentials. Set `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET`; leave `DATABRICKS_TOKEN` unset. For a scoped secret, set `DATABRICKS_SCOPE` to the exact space-separated scopes assigned to that secret (for example, `sql` or `sql:read:restricted-query`). Blank preserves the legacy `all-apis` request.
 
 **PAT alternative.** Generate a token under User Settings → Access tokens. Set `DATABRICKS_TOKEN`; leave the `CLIENT_*` vars unset. When `DATABRICKS_TOKEN` is present the `@repo/databricks` package short-circuits OAuth and passes the token directly.
 

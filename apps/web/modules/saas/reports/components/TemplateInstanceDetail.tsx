@@ -123,7 +123,6 @@ import {
 	CodeIcon,
 	DownloadIcon,
 	ExpandIcon,
-	EyeIcon,
 	FileTextIcon,
 	HistoryIcon,
 	LayoutListIcon,
@@ -132,7 +131,6 @@ import {
 	PencilIcon,
 	PlayIcon,
 	SaveIcon,
-	SendIcon,
 	ServerIcon,
 	SettingsIcon,
 	SparklesIcon,
@@ -161,8 +159,10 @@ import {
 	IntegrationSetupGuide,
 	type IntegrationType,
 } from "./IntegrationSetupGuide";
+import { ReportArtifactBrowserDialog } from "./ReportArtifactBrowserDialog";
 import { ReportConfigBanner } from "./ReportConfigBanner";
 import { ReportEvidenceSettings } from "./ReportEvidenceSettings";
+import { ReportInboxShareDialog } from "./ReportInboxShareDialog";
 import { ReportReadinessRail } from "./ReportReadinessRail";
 import { RunDiagnosticsPanel } from "./RunDiagnosticsPanel";
 import { SendArtifactEmailDialog } from "./SendArtifactEmailDialog";
@@ -232,6 +232,7 @@ export function TemplateInstanceDetail({
 	basePath = "/app/report-templates",
 }: Props) {
 	const tTooltips = useTranslations("tooltips.reports");
+	const tBrand = useTranslations("artifactBranding");
 	const router = useRouter();
 
 	// Viewer identity + org role — gate the per-execution Cancel control (R11):
@@ -244,6 +245,7 @@ export function TemplateInstanceDetail({
 	// Used by the connection issue banner's "Reconnect" action.
 	const mcpSettingsUrl = useContextPath("settings/mcp");
 	const projectSourcePath = useContextPath("projects");
+	const framePreviewPath = useContextPath("frames");
 
 	const {
 		data: instance,
@@ -332,6 +334,12 @@ export function TemplateInstanceDetail({
 		Record<string, Record<string, string>>
 	>({});
 	const [hasChanges, setHasChanges] = useState(false);
+	const [settingsConflict, setSettingsConflict] = useState(false);
+	const settingsReview = useRef<{
+		id: string;
+		version: number;
+		updatedAt: Date;
+	} | null>(null);
 
 	// Scheduling state
 	const [reporting, setReporting] = useState<ReportEvidenceConfig>();
@@ -366,8 +374,10 @@ export function TemplateInstanceDetail({
 		id: string;
 		name: string;
 		content: string;
+		pdfUrl?: string;
 	} | null>(null);
 	const [loadingArtifact, setLoadingArtifact] = useState<string | null>(null);
+	const artifactPreviewRequest = useRef<string | null>(null);
 	const [isViewerFullscreen, setIsViewerFullscreen] = useState(false);
 
 	// State for artifact email send / delivery history dialogs. Exactly one of
@@ -375,7 +385,7 @@ export function TemplateInstanceDetail({
 	const [artifactDialog, setArtifactDialog] = useState<{
 		artifactId: string;
 		artifactName: string;
-		mode: "send" | "history";
+		mode: "send" | "history" | "inbox";
 	} | null>(null);
 
 	// Active tab is derived from the `?tab` query param — the URL is the single
@@ -470,6 +480,11 @@ export function TemplateInstanceDetail({
 	// after a save (both leave hasChanges === false).
 	useEffect(() => {
 		if (instance && !hasChanges) {
+			settingsReview.current = {
+				id: instance.id,
+				version: instance.version,
+				updatedAt: new Date(instance.updatedAt),
+			};
 			// Initialize instance settings
 			setInstanceName(instance.name);
 			setInstanceDescription(instance.description || "");
@@ -537,14 +552,10 @@ export function TemplateInstanceDetail({
 			setBindings(initialBindings);
 
 			// Initialize data source operation parameters (project, team, etc.)
-			if (conn?.parameterBindings) {
-				setDataSourceParams(conn.parameterBindings);
-			}
+			setDataSourceParams(conn?.parameterBindings ?? {});
 
 			// Initialize context values (project, team for AI-driven gathering)
-			if (conn?.context) {
-				setContextValues(conn.context);
-			}
+			setContextValues(conn?.context ?? {});
 
 			// Initialize user prompt from connections override or template definition
 			const promptOverride = (conn as { promptOverride?: string } | null)
@@ -565,13 +576,11 @@ export function TemplateInstanceDetail({
 				string,
 				unknown
 			> | null;
-			if (defaults) {
-				const stringDefaults: Record<string, string> = {};
-				for (const [key, value] of Object.entries(defaults)) {
-					stringDefaults[key] = String(value ?? "");
-				}
-				setParameterDefaults(stringDefaults);
+			const stringDefaults: Record<string, string> = {};
+			for (const [key, value] of Object.entries(defaults ?? {})) {
+				stringDefaults[key] = String(value ?? "");
 			}
+			setParameterDefaults(stringDefaults);
 
 			setReporting(readReportEvidenceConfig(instance.fabricConfig));
 
@@ -584,18 +593,14 @@ export function TemplateInstanceDetail({
 				customAiTasks?: Record<string, string>;
 				customSystemPrompt?: string;
 			} | null;
-			if (fabricConfig) {
-				setFabricStrategy(fabricConfig.strategy || "");
-				setFabricContext(fabricConfig.context || "");
-				setFabricPattern(fabricConfig.pattern || "");
-				setFabricAutoDetect(fabricConfig.enableAutoDetection ?? true);
-				if (fabricConfig.customAiTasks) {
-					setCustomAiTasks(fabricConfig.customAiTasks);
-				}
-				if (fabricConfig.customSystemPrompt) {
-					setCustomSystemPrompt(fabricConfig.customSystemPrompt);
-				}
-			}
+			// Absence is a persisted value too. In particular, Discard/load latest
+			// must clear optional draft instructions before another setting is saved.
+			setFabricStrategy(fabricConfig?.strategy ?? "");
+			setFabricContext(fabricConfig?.context ?? "");
+			setFabricPattern(fabricConfig?.pattern ?? "");
+			setFabricAutoDetect(fabricConfig?.enableAutoDetection ?? true);
+			setCustomAiTasks(fabricConfig?.customAiTasks ?? {});
+			setCustomSystemPrompt(fabricConfig?.customSystemPrompt ?? "");
 
 			// Initialize scheduling state
 			setScheduleMode(
@@ -609,26 +614,12 @@ export function TemplateInstanceDetail({
 				minute?: number;
 				timezone?: string;
 			};
-			if (s) {
-				if (s.frequency) {
-					setScheduleFrequency(s.frequency);
-				}
-				if (typeof s.dayOfWeek === "number") {
-					setScheduleDayOfWeek(s.dayOfWeek);
-				}
-				if (typeof s.dayOfMonth === "number") {
-					setScheduleDayOfMonth(s.dayOfMonth);
-				}
-				if (typeof s.hour === "number") {
-					setScheduleHour(s.hour);
-				}
-				if (typeof s.minute === "number") {
-					setScheduleMinute(s.minute);
-				}
-				if (s.timezone) {
-					setScheduleTimezone(s.timezone);
-				}
-			}
+			setScheduleFrequency(s?.frequency ?? "weekly");
+			setScheduleDayOfWeek(s?.dayOfWeek ?? 1);
+			setScheduleDayOfMonth(s?.dayOfMonth ?? 1);
+			setScheduleHour(s?.hour ?? 9);
+			setScheduleMinute(s?.minute ?? 0);
+			setScheduleTimezone(s?.timezone ?? "UTC");
 			setScheduleDirty(false);
 		}
 	}, [instance, hasChanges]);
@@ -637,10 +628,16 @@ export function TemplateInstanceDetail({
 		orpc.reports.instances.update.mutationOptions({
 			onSuccess: () => {
 				toast.success("Instance updated successfully");
+				setSettingsConflict(false);
 				setHasChanges(false);
 				refetch();
 			},
 			onError: (error) => {
+				if ("code" in error && error.code === "CONFLICT") {
+					setSettingsConflict(true);
+					toast.error(tBrand("reportSettingsChanged"));
+					return;
+				}
 				showReportError(error.message, "save");
 			},
 		}),
@@ -675,6 +672,72 @@ export function TemplateInstanceDetail({
 
 	// Auto-refresh when there are running or pending executions
 	const executions = instance?.executions || [];
+	type HistoryPage = Awaited<
+		ReturnType<typeof orpcClient.reports.executions.list>
+	>;
+	const [historyPage, setHistoryPage] = useState<HistoryPage>();
+	const [historyCursors, setHistoryCursors] = useState<
+		Array<string | undefined>
+	>([undefined]);
+	const [historyStatus, setHistoryStatus] = useState<
+		"all" | "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED"
+	>("all");
+	const [historyLoading, setHistoryLoading] = useState(false);
+	const [historyError, setHistoryError] = useState(false);
+	const [historyRefresh, setHistoryRefresh] = useState(0);
+	const [artifactBrowserExecution, setArtifactBrowserExecution] = useState<
+		string | null
+	>(null);
+	const historyCursor = historyCursors.at(-1);
+	useEffect(() => {
+		setHistoryCursors([undefined]);
+		setHistoryPage(undefined);
+	}, [instanceId, instanceOrgId]);
+	useEffect(() => {
+		if (activeTab !== "history" || !instanceOrgId) {
+			return;
+		}
+		let active = true;
+		setHistoryLoading(true);
+		setHistoryError(false);
+		void orpcClient.reports.executions
+			.list({
+				instanceId,
+				organizationId: instanceOrgId,
+				limit: 10,
+				cursor: historyCursor,
+				...(historyStatus !== "all" ? { status: historyStatus } : {}),
+			})
+			.then((page) => {
+				if (active) {
+					setHistoryPage(page);
+				}
+			})
+			.catch(() => {
+				if (active) {
+					setHistoryPage(undefined);
+					setHistoryError(true);
+				}
+			})
+			.finally(() => {
+				if (active) {
+					setHistoryLoading(false);
+				}
+			});
+		return () => {
+			active = false;
+		};
+	}, [
+		activeTab,
+		instanceId,
+		instanceOrgId,
+		historyCursor,
+		historyStatus,
+		historyRefresh,
+		instance?.executions,
+	]);
+	const historyExecutions = historyPage?.executions ?? [];
+
 	const hasActiveExecution = executions.some(
 		(e) => e.status === "RUNNING" || e.status === "PENDING",
 	);
@@ -731,9 +794,7 @@ export function TemplateInstanceDetail({
 				organizationId: instanceOrgId,
 			}),
 		onSuccess: (res) => {
-			const bad = res.diagnostics.filter(
-				(d) => d.outcome !== "connected",
-			);
+			const bad = res.diagnostics.filter((d) => d.status !== "connected");
 			if (bad.length) {
 				toast.warning(
 					`${bad.length} data source${bad.length === 1 ? "" : "s"} need attention`,
@@ -987,8 +1048,14 @@ export function TemplateInstanceDetail({
 			timezone: scheduleTimezone,
 		});
 
+		const reviewed = settingsReview.current;
+		if (!reviewed || reviewed.id !== instanceId) {
+			return;
+		}
 		updateMutation.mutate({
 			id: instanceId,
+			expectedVersion: reviewed.version,
+			expectedUpdatedAt: reviewed.updatedAt,
 			organizationId: instanceOrgId,
 			name: instanceName.trim() || undefined,
 			description: instanceDescription.trim() || undefined,
@@ -1086,26 +1153,134 @@ export function TemplateInstanceDetail({
 		});
 	};
 
-	const handleViewArtifact = async (
-		artifactId: string,
-		artifactName: string,
-	) => {
-		setLoadingArtifact(artifactId);
-		try {
-			const response = await fetch(
-				`/api/reports/artifacts/${artifactId}/download`,
-			);
-			if (!response.ok) {
-				throw new Error("Failed to fetch artifact");
+	const handleViewArtifact = useCallback(
+		async (
+			artifactId: string,
+			artifactName: string,
+			signal?: AbortSignal,
+		) => {
+			if (artifactPreviewRequest.current) {
+				return false;
 			}
-			const content = await response.text();
-			setViewingArtifact({ id: artifactId, name: artifactName, content });
-		} catch {
-			toast.error("Failed to load report");
-		} finally {
-			setLoadingArtifact(null);
+			artifactPreviewRequest.current = artifactId;
+			setLoadingArtifact(artifactId);
+			try {
+				const response = await fetch(
+					`/api/reports/artifacts/${artifactId}/download`,
+					{ signal },
+				);
+				if (!response.ok) {
+					throw new Error("Failed to fetch artifact");
+				}
+				if (
+					response.headers
+						.get("content-type")
+						?.includes("application/pdf")
+				) {
+					const blob = await response.blob();
+					if (blob.size > 20 * 1024 * 1024) {
+						throw new Error("Report PDF exceeds 20 MiB");
+					}
+					if (signal?.aborted) {
+						return false;
+					}
+					setViewingArtifact({
+						id: artifactId,
+						name: artifactName,
+						content: "",
+						pdfUrl: URL.createObjectURL(blob),
+					});
+					return true;
+				}
+				const content = await response.text();
+				if (signal?.aborted) {
+					return false;
+				}
+				setViewingArtifact({
+					id: artifactId,
+					name: artifactName,
+					content,
+				});
+				return true;
+			} catch {
+				if (!signal?.aborted) {
+					toast.error("Failed to load report");
+				}
+				return false;
+			} finally {
+				artifactPreviewRequest.current = null;
+				setLoadingArtifact(null);
+			}
+		},
+		[],
+	);
+
+	useEffect(() => {
+		const url = viewingArtifact?.pdfUrl;
+		return () => {
+			if (url) {
+				URL.revokeObjectURL(url);
+			}
+		};
+	}, [viewingArtifact?.pdfUrl]);
+	const requestedExecutionId = searchParams.get("executionId");
+	const requestedArtifactId = searchParams.get("artifactId");
+	const [linkedRunMessage, setLinkedRunMessage] = useState<string | null>(
+		null,
+	);
+	useEffect(() => {
+		if (!requestedExecutionId || !requestedArtifactId || !instanceOrgId) {
+			return;
 		}
-	};
+		let active = true;
+		const controller = new AbortController();
+		setLinkedRunMessage("Opening the shared report…");
+		void orpcClient.reports.executions
+			.get({
+				executionId: requestedExecutionId,
+				organizationId: instanceOrgId,
+			})
+			.then(async (execution) => {
+				if (!active) {
+					return;
+				}
+				const artifact = execution.artifacts.find(
+					(item) => item.id === requestedArtifactId,
+				);
+				if (execution.instanceId !== instanceId || !artifact) {
+					setLinkedRunMessage(
+						"This shared report is no longer available with your current access.",
+					);
+					return;
+				}
+				setLinkedRunMessage(
+					`Shared report · ${artifact.name} · ${execution.status}`,
+				);
+				await handleViewArtifact(
+					artifact.id,
+					artifact.name,
+					controller.signal,
+				);
+			})
+			.catch(() => {
+				if (active) {
+					setLinkedRunMessage(
+						"This shared report could not be opened. Check your current access or try again.",
+					);
+				}
+			});
+		return () => {
+			active = false;
+			controller.abort();
+		};
+		// The link identifies an exact saved artifact, independently of the recent ten runs.
+	}, [
+		requestedExecutionId,
+		requestedArtifactId,
+		instanceId,
+		instanceOrgId,
+		handleViewArtifact,
+	]);
 
 	// Helper: Check if a parameter is used in template sections
 	const isUsedInTemplateOutput = (paramKey: string): boolean => {
@@ -1327,7 +1502,9 @@ export function TemplateInstanceDetail({
 		})),
 		bindings,
 		dataSourcesMissingProject,
-		diagnostics: testConnections.data?.diagnostics,
+		diagnostics: testConnections.data?.diagnostics.map((d) => ({
+			outcome: d.status === "unavailable" ? "error" : d.status,
+		})),
 		// Required data sources bound to a config that can't resolve for this user
 		// (not the stored id, not a self-heal fallback) → surfaced as "Reconnect
 		// required". Gated on the configs query so nothing flashes while loading.
@@ -1389,6 +1566,54 @@ export function TemplateInstanceDetail({
 				onScrollToParams={scrollToParameters}
 				reconnectHref={mcpSettingsUrl}
 			/>
+
+			{settingsConflict && (
+				<div
+					role="alert"
+					className="space-y-3 rounded-lg border border-border p-4"
+				>
+					<p className="text-sm">{tBrand("reportSettingsChanged")}</p>
+					<AlertDialog>
+						<AlertDialogTrigger asChild>
+							<Button type="button" variant="outline" size="sm">
+								{tBrand("reloadReportSettings")}
+							</Button>
+						</AlertDialogTrigger>
+						<AlertDialogContent>
+							<AlertDialogHeader>
+								<AlertDialogTitle>
+									{tBrand("discardReportTitle")}
+								</AlertDialogTitle>
+								<AlertDialogDescription>
+									{tBrand("discardReportHelp")}
+								</AlertDialogDescription>
+							</AlertDialogHeader>
+							<AlertDialogFooter>
+								<AlertDialogCancel>
+									{tBrand("cancel")}
+								</AlertDialogCancel>
+								<AlertDialogAction
+									onClick={async () => {
+										const latest = await refetch();
+										if (latest.isError || !latest.data) {
+											toast.error(
+												tBrand(
+													"reportSettingsReloadFailed",
+												),
+											);
+											return;
+										}
+										setHasChanges(false);
+										setSettingsConflict(false);
+									}}
+								>
+									{tBrand("reloadReportSettings")}
+								</AlertDialogAction>
+							</AlertDialogFooter>
+						</AlertDialogContent>
+					</AlertDialog>
+				</div>
+			)}
 
 			{/* Header */}
 			<div className="flex items-start justify-between">
@@ -1492,11 +1717,7 @@ export function TemplateInstanceDetail({
 							Connection test
 						</p>
 						<RunDiagnosticsPanel
-							diagnostics={
-								testConnections.data.diagnostics as Parameters<
-									typeof RunDiagnosticsPanel
-								>[0]["diagnostics"]
-							}
+							diagnostics={testConnections.data.diagnostics}
 						/>
 					</div>
 				)}
@@ -1799,6 +2020,9 @@ export function TemplateInstanceDetail({
 								</CardHeader>
 								<CardContent>
 									<ReportEvidenceSettings
+										outputFormat={
+											instance.template.outputFormat
+										}
 										value={reporting}
 										sourceDefinition={
 											instance.template.definition
@@ -3670,15 +3894,86 @@ export function TemplateInstanceDetail({
 
 						{/* Execution History Tab */}
 						<TabsContent value="history" className="space-y-4">
+							{linkedRunMessage && (
+								<p
+									role="status"
+									className="rounded-lg border p-3 text-sm"
+								>
+									{linkedRunMessage}
+								</p>
+							)}
 							<Card>
 								<CardHeader>
 									<CardTitle>Execution History</CardTitle>
 									<CardDescription>
-										Recent report generations
+										All report runs you can currently access
 									</CardDescription>
+									<div className="flex flex-wrap items-center gap-3 pt-3">
+										<label className="flex items-center gap-2 text-sm">
+											Status
+											<select
+												value={historyStatus}
+												onChange={(event) => {
+													setHistoryStatus(
+														event.target
+															.value as typeof historyStatus,
+													);
+													setHistoryCursors([
+														undefined,
+													]);
+												}}
+												className="rounded-md border bg-background p-2"
+											>
+												<option value="all">
+													All statuses
+												</option>
+												{[
+													"PENDING",
+													"RUNNING",
+													"COMPLETED",
+													"FAILED",
+													"CANCELLED",
+												].map((status) => (
+													<option
+														key={status}
+														value={status}
+													>
+														{status[0] +
+															status
+																.slice(1)
+																.toLowerCase()}
+													</option>
+												))}
+											</select>
+										</label>
+										<Button
+											variant="outline"
+											size="sm"
+											disabled={historyLoading}
+											onClick={() =>
+												setHistoryRefresh(
+													(value) => value + 1,
+												)
+											}
+										>
+											Refresh runs
+										</Button>
+									</div>
 								</CardHeader>
 								<CardContent>
-									{executions.length > 0 ? (
+									{historyLoading ? (
+										<output className="block py-8 text-center text-sm">
+											Loading report runs…
+										</output>
+									) : historyError ? (
+										<p
+											role="alert"
+											className="py-6 text-sm text-destructive"
+										>
+											Run history could not be loaded.
+											Refresh to try again.
+										</p>
+									) : historyExecutions.length > 0 ? (
 										<Table>
 											<TableHeader>
 												<TableRow>
@@ -3698,235 +3993,194 @@ export function TemplateInstanceDetail({
 												</TableRow>
 											</TableHeader>
 											<TableBody>
-												{executions.map((exec) => (
-													<TableRow key={exec.id}>
-														<TableCell>
-															<div className="flex items-center gap-2">
-																<ExecutionStatusBadge
-																	status={
-																		exec.status
-																	}
-																/>
-																<CancelExecutionButton
-																	executionId={
-																		exec.id
-																	}
-																	executionStatus={
-																		exec.status
-																	}
-																	executionUserId={
-																		exec.userId
-																	}
-																	organizationId={
-																		instanceOrgId
-																	}
-																	viewerUserId={
-																		user?.id
-																	}
-																	viewerIsOrgAdmin={
-																		isOrganizationAdmin
-																	}
-																	onCancelled={
-																		refetch
-																	}
-																/>
-															</div>
-														</TableCell>
-														<TableCell>
-															{exec.startedAt
-																? formatDistanceToNow(
-																		new Date(
-																			exec.startedAt,
-																		),
-																		{
-																			addSuffix: true,
-																		},
-																	)
-																: exec.createdAt
+												{historyExecutions.map(
+													(exec) => (
+														<TableRow key={exec.id}>
+															<TableCell>
+																<div className="flex items-center gap-2">
+																	<ExecutionStatusBadge
+																		status={
+																			exec.status
+																		}
+																	/>
+																	<CancelExecutionButton
+																		executionId={
+																			exec.id
+																		}
+																		executionStatus={
+																			exec.status
+																		}
+																		executionUserId={
+																			exec.userId
+																		}
+																		organizationId={
+																			instanceOrgId
+																		}
+																		viewerUserId={
+																			user?.id
+																		}
+																		viewerIsOrgAdmin={
+																			isOrganizationAdmin
+																		}
+																		onCancelled={
+																			refetch
+																		}
+																	/>
+																</div>
+															</TableCell>
+															<TableCell>
+																{exec.startedAt
 																	? formatDistanceToNow(
 																			new Date(
-																				exec.createdAt,
+																				exec.startedAt,
 																			),
 																			{
 																				addSuffix: true,
 																			},
 																		)
+																	: exec.createdAt
+																		? formatDistanceToNow(
+																				new Date(
+																					exec.createdAt,
+																				),
+																				{
+																					addSuffix: true,
+																				},
+																			)
+																		: "-"}
+															</TableCell>
+															<TableCell>
+																{exec.duration
+																	? `${(exec.duration / 1000).toFixed(1)}s`
 																	: "-"}
-														</TableCell>
-														<TableCell>
-															{exec.duration
-																? `${(exec.duration / 1000).toFixed(1)}s`
-																: "-"}
-														</TableCell>
-														<TableCell className="text-center">
-															{exec.status !==
-																"CANCELLED" &&
-															exec.artifacts &&
-															exec.artifacts
-																.length > 0 ? (
-																<div className="flex justify-center gap-1">
-																	{exec.artifacts.map(
-																		(artifact: {
-																			id: string;
-																			name: string;
-																			artifactType: string;
-																		}) => (
-																			<div
-																				key={
-																					artifact.id
-																				}
-																				className="flex gap-0.5"
-																			>
-																				<Button
-																					variant="ghost"
-																					size="sm"
-																					className="h-7 px-2 text-xs"
-																					onClick={() =>
-																						handleViewArtifact(
-																							artifact.id,
-																							artifact.name,
-																						)
-																					}
-																					disabled={
-																						loadingArtifact ===
-																						artifact.id
-																					}
-																					aria-label={`View ${artifact.name}`}
-																					title={`View ${artifact.name}`}
-																				>
-																					{loadingArtifact ===
-																					artifact.id ? (
-																						<Loader2Icon className="h-3 w-3 animate-spin" />
-																					) : (
-																						<EyeIcon className="h-3 w-3" />
-																					)}
-																				</Button>
-																				<Button
-																					variant="ghost"
-																					size="sm"
-																					className="h-7 px-2 text-xs"
-																					onClick={() =>
-																						window.open(
-																							`/api/reports/artifacts/${artifact.id}/download`,
-																							"_blank",
-																						)
-																					}
-																					aria-label={`Download ${artifact.name}`}
-																					title={`Download ${artifact.name}`}
-																				>
-																					<DownloadIcon className="h-3 w-3" />
-																				</Button>
-																				<Button
-																					variant="ghost"
-																					size="sm"
-																					className="h-7 px-2 text-xs"
-																					onClick={() =>
-																						setArtifactDialog(
-																							{
-																								artifactId:
-																									artifact.id,
-																								artifactName:
-																									artifact.name,
-																								mode: "send",
-																							},
-																						)
-																					}
-																					title={`Send ${artifact.name} by email`}
-																					aria-label={`Send ${artifact.name} by email`}
-																				>
-																					<SendIcon className="h-3 w-3" />
-																				</Button>
-																				<Button
-																					variant="ghost"
-																					size="sm"
-																					className="h-7 px-2 text-xs"
-																					onClick={() =>
-																						setArtifactDialog(
-																							{
-																								artifactId:
-																									artifact.id,
-																								artifactName:
-																									artifact.name,
-																								mode: "history",
-																							},
-																						)
-																					}
-																					title={`Send history for ${artifact.name}`}
-																					aria-label={`Send history for ${artifact.name}`}
-																				>
-																					<HistoryIcon className="h-3 w-3" />
-																				</Button>
-																			</div>
-																		),
-																	)}
-																</div>
-															) : exec.status ===
-																"COMPLETED" ? (
-																<span className="text-xs text-muted-foreground">
-																	No artifacts
-																</span>
-															) : null}
-														</TableCell>
-														<TableCell className="max-w-[300px]">
-															{exec.error && (
-																<div className="flex items-start gap-1">
-																	<AlertCircleIcon className="h-3 w-3 text-destructive flex-shrink-0 mt-0.5" />
-																	{/* The message itself is already visible and
+															</TableCell>
+															<TableCell className="text-center">
+																{exec.status !==
+																	"CANCELLED" &&
+																exec.artifacts
+																	.length >
+																	0 ? (
+																	<Button
+																		variant="outline"
+																		size="sm"
+																		onClick={() =>
+																			setArtifactBrowserExecution(
+																				exec.id,
+																			)
+																		}
+																	>
+																		Browse
+																		outputs
+																	</Button>
+																) : (
+																	"—"
+																)}
+															</TableCell>
+															<TableCell className="max-w-[300px]">
+																{exec.error && (
+																	<div className="flex items-start gap-1">
+																		<AlertCircleIcon className="h-3 w-3 text-destructive flex-shrink-0 mt-0.5" />
+																		{/* The message itself is already visible and
 																		wraps in full, so the tooltip adds context
 																		rather than repeating it. Not focusable, so
 																		the copy also goes in an `sr-only` child —
 																		`aria-label` would replace the visible
 																		message in the accessible name. */}
-																	<Tooltip>
-																		<TooltipTrigger
-																			asChild
-																		>
-																			<span className="text-xs text-destructive break-words">
-																				{humanizeReportError(
-																					exec.error,
-																					"generate",
-																				)}
-																				<span className="sr-only">
-																					{tTooltips(
-																						"generationError",
+																		<Tooltip>
+																			<TooltipTrigger
+																				asChild
+																			>
+																				<span className="text-xs text-destructive break-words">
+																					{humanizeReportError(
+																						exec.error,
+																						"generate",
 																					)}
+																					<span className="sr-only">
+																						{tTooltips(
+																							"generationError",
+																						)}
+																					</span>
 																				</span>
-																			</span>
-																		</TooltipTrigger>
-																		<TooltipContent>
-																			{tTooltips(
-																				"generationError",
-																			)}
-																		</TooltipContent>
-																	</Tooltip>
-																</div>
-															)}
-															{Array.isArray(
-																exec.mcpDiagnostics,
-															) &&
-																exec
-																	.mcpDiagnostics
-																	.length >
-																	0 && (
-																	<RunDiagnosticsPanel
-																		diagnostics={
-																			exec.mcpDiagnostics as Parameters<
-																				typeof RunDiagnosticsPanel
-																			>[0]["diagnostics"]
-																		}
-																	/>
+																			</TooltipTrigger>
+																			<TooltipContent>
+																				{tTooltips(
+																					"generationError",
+																				)}
+																			</TooltipContent>
+																		</Tooltip>
+																	</div>
 																)}
-														</TableCell>
-													</TableRow>
-												))}
+																{Array.isArray(
+																	exec.mcpDiagnostics,
+																) &&
+																	exec
+																		.mcpDiagnostics
+																		.length >
+																		0 && (
+																		<RunDiagnosticsPanel
+																			diagnostics={
+																				exec.mcpDiagnostics
+																			}
+																		/>
+																	)}
+															</TableCell>
+														</TableRow>
+													),
+												)}
 											</TableBody>
 										</Table>
 									) : (
 										<p className="text-sm text-muted-foreground text-center py-8">
-											No executions yet. Click "Generate
-											Report" to create your first report.
+											No report runs on this page. Try
+											another status or page.
 										</p>
 									)}
+									<div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+										<span className="text-sm text-muted-foreground">
+											Page {historyCursors.length} ·{" "}
+											{historyExecutions.length} runs
+										</span>
+										<div className="flex gap-2">
+											<Button
+												variant="outline"
+												size="sm"
+												disabled={
+													historyLoading ||
+													historyCursors.length === 1
+												}
+												onClick={() =>
+													setHistoryCursors((value) =>
+														value.slice(0, -1),
+													)
+												}
+											>
+												Previous runs
+											</Button>
+											<Button
+												variant="outline"
+												size="sm"
+												disabled={
+													historyLoading ||
+													!historyPage?.hasMore ||
+													!historyPage.nextCursor
+												}
+												onClick={() => {
+													const cursor =
+														historyPage?.nextCursor;
+													if (cursor) {
+														setHistoryCursors(
+															(value) => [
+																...value,
+																cursor,
+															],
+														);
+													}
+												}}
+											>
+												Next runs
+											</Button>
+										</div>
+									</div>
 								</CardContent>
 							</Card>
 						</TabsContent>
@@ -3962,6 +4216,11 @@ export function TemplateInstanceDetail({
 				</div>
 			</Tabs>
 
+			{loadingArtifact && !artifactBrowserExecution && (
+				<output className="block text-sm text-muted-foreground">
+					Opening report preview…
+				</output>
+			)}
 			{/* Report Viewer Dialog */}
 			<Dialog
 				open={!!viewingArtifact}
@@ -4007,7 +4266,19 @@ export function TemplateInstanceDetail({
 							)}
 						</Button>
 					</DialogHeader>
-					<div className="flex-1 overflow-auto border rounded-lg bg-background">
+					<section
+						aria-label="Report preview"
+						// biome-ignore lint/a11y/noNoninteractiveTabindex: This named scroll region must be keyboard reachable, including on phones.
+						tabIndex={0}
+						className="flex-1 overflow-auto border rounded-lg bg-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+					>
+						{viewingArtifact?.pdfUrl && (
+							<iframe
+								src={viewingArtifact.pdfUrl}
+								title={viewingArtifact.name}
+								className="h-[65vh] w-full border-0"
+							/>
+						)}
 						{viewingArtifact?.content && (
 							<>
 								{/* Detect if content is HTML (by file extension or content) */}
@@ -4143,7 +4414,7 @@ export function TemplateInstanceDetail({
 								)}
 							</>
 						)}
-					</div>
+					</section>
 					<DialogFooter>
 						<Button
 							variant="outline"
@@ -4166,6 +4437,52 @@ export function TemplateInstanceDetail({
 				</DialogContent>
 			</Dialog>
 
+			{artifactBrowserExecution && instanceOrgId && (
+				<ReportArtifactBrowserDialog
+					executionId={artifactBrowserExecution}
+					organizationId={instanceOrgId}
+					frameBasePath={framePreviewPath}
+					loadingArtifactId={loadingArtifact}
+					onClose={() => setArtifactBrowserExecution(null)}
+					onView={async (id, name) => {
+						if (await handleViewArtifact(id, name)) {
+							setArtifactBrowserExecution(null);
+						}
+					}}
+					onShare={(id, name) => {
+						setArtifactBrowserExecution(null);
+						setArtifactDialog({
+							artifactId: id,
+							artifactName: name,
+							mode: "inbox",
+						});
+					}}
+					onHistory={(id, name) => {
+						setArtifactBrowserExecution(null);
+						setArtifactDialog({
+							artifactId: id,
+							artifactName: name,
+							mode: "history",
+						});
+					}}
+					onEmail={(id, name) => {
+						setArtifactBrowserExecution(null);
+						setArtifactDialog({
+							artifactId: id,
+							artifactName: name,
+							mode: "send",
+						});
+					}}
+				/>
+			)}
+			{artifactDialog?.mode === "inbox" && instanceOrgId && (
+				<ReportInboxShareDialog
+					artifactId={artifactDialog.artifactId}
+					artifactName={artifactDialog.artifactName}
+					organizationId={instanceOrgId}
+					onClose={() => setArtifactDialog(null)}
+				/>
+			)}
 			{artifactDialog?.mode === "send" && (
 				<SendArtifactEmailDialog
 					artifactId={artifactDialog.artifactId}

@@ -4,12 +4,13 @@ import { useSession } from "@saas/auth/hooks/use-session";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { useOpenFrameAgent } from "../hooks/use-open-frame-agent";
 import { agentContextOfFrame, frameEmbedUrl } from "../lib/frame-tool-types";
 import { isUnattendedFrame } from "../lib/strict-sandbox";
+import { FrameReviewDialog } from "./FrameReviewDialog";
 import { FrameRevisionDialog } from "./FrameRevisionDialog";
 import { FrameVizShell } from "./FrameVizShell";
 
@@ -20,6 +21,16 @@ export function FrameViewer({
 	frameId: string;
 	organizationId?: string | null;
 }) {
+	const search = useSearchParams();
+	const [showReviews, setShowReviews] = useState(
+		Boolean(search.get("review")),
+	);
+	const [initialProposalId, setInitialProposalId] = useState(
+		search.get("review") === "1"
+			? undefined
+			: (search.get("review") ?? undefined),
+	);
+
 	const { organizationSlug } = useParams<{ organizationSlug: string }>();
 	const { user } = useSession();
 	const t = useTranslations("frameRevisions");
@@ -42,6 +53,7 @@ export function FrameViewer({
 			frameId,
 			surface: frameQuery.data?.surface,
 			projectId: frameQuery.data?.projectId,
+			updatedAt: frameQuery.data?.updatedAt,
 		}),
 	);
 
@@ -69,9 +81,19 @@ export function FrameViewer({
 	const embedUrl = frameEmbedUrl(frame.id, organizationSlug);
 
 	return (
-		<div className="mx-auto max-w-7xl p-6">
+		<div className="mx-auto w-full min-w-0 max-w-7xl p-4 sm:p-6">
 			{frame.userId === user?.id && organizationId && (
-				<div className="mb-3 flex justify-end gap-2">
+				<div className="mb-3 flex flex-wrap justify-end gap-2">
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => {
+							setInitialProposalId(undefined);
+							setShowReviews(true);
+						}}
+					>
+						{t("reviews")}
+					</Button>
 					<Button
 						variant="outline"
 						size="sm"
@@ -108,6 +130,26 @@ export function FrameViewer({
 						}}
 					/>
 				)}
+			{showReviews && frame.userId === user.id && (
+				<FrameReviewDialog
+					viewedUpdatedAt={frame.updatedAt}
+					frameId={frame.id}
+					organizationId={organizationId}
+					userId={user.id}
+					kind={frame.kind}
+					initialProposalId={initialProposalId}
+					onClose={() => {
+						setInitialProposalId(undefined);
+						setShowReviews(false);
+					}}
+					onSaved={async () => {
+						await queryClient.invalidateQueries({
+							queryKey: ["frame", frameId, organizationId],
+						});
+					}}
+				/>
+			)}
+
 			<FrameVizShell
 				key={`${frame.id}:${frame.updatedAt}`}
 				frameId={frame.id}
@@ -130,7 +172,9 @@ export function FrameViewer({
 					});
 				}}
 				isProjectFrame={Boolean(frame.projectId)}
-				interactive={!isUnattendedFrame(frame)}
+				interactive={
+					!frame.isPublishedSnapshot && !isUnattendedFrame(frame)
+				}
 				organizationId={frame.organizationId ?? null}
 			/>
 		</div>

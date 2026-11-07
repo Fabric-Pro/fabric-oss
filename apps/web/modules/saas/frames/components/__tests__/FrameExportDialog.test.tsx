@@ -37,7 +37,11 @@ const job = {
 	expectedUpdatedAt: "2026-11-01T00:00:00.000Z",
 	expiresAt: "2026-11-02T00:00:00.000Z",
 };
-function setup(open = true) {
+function setup(
+	open = true,
+	presentation: "DOCUMENT" | "INTERFACE" = "DOCUMENT",
+	supportsNativePdf = true,
+) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
@@ -50,6 +54,8 @@ function setup(open = true) {
 					updatedAt={job.expectedUpdatedAt}
 					title="Example report"
 					kind="frame"
+					presentation={presentation}
+					supportsNativePdf={supportsNativePdf}
 					open={open}
 					onOpenChange={m.close}
 				/>
@@ -142,4 +148,24 @@ it("immediately shows a confirmed cancellation instead of stale cached progress"
 	);
 	await screen.findByText("Export cancelled");
 	expect(screen.queryByRole("button", { name: "Cancel export" })).toBeNull();
+});
+
+it("explains static interface limitations before export without claiming a document theme", () => {
+	setup(true, "INTERFACE");
+	expect(
+		screen.getByText(
+			/Inline SVG, form fields and dynamic content are not supported/,
+		),
+	).toBeVisible();
+	expect(screen.queryByText(/without a saved brand theme/)).toBeNull();
+});
+
+it("explains unsupported multi-block Interface export before admission", () => {
+	setup(true, "INTERFACE", false);
+	expect(
+		screen.getByText(/Combine the interface into one HTML block/),
+	).toBeVisible();
+	expect(screen.getByRole("button", { name: "Create PDF" })).toBeDisabled();
+	fireEvent.click(screen.getByRole("button", { name: "Create PDF" }));
+	expect(m.start).not.toHaveBeenCalled();
 });

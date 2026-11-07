@@ -60,6 +60,7 @@ import {
 	clearLiveContent,
 	completeAnalysisRun,
 	createAnalysisRun,
+	DocumentStyleConflictError,
 	DocumentStyleValidationError,
 	FindingResponseChangedError,
 	FindingResponseValidationError,
@@ -309,6 +310,8 @@ function rawSql(strings: TemplateStringsArray): string {
 }
 
 function installFake(): void {
+	// Each test starts with a working lock; the lock-timeout regression overrides it locally.
+	fake.$executeRaw.mockReset().mockResolvedValue(0);
 	fake.$transaction.mockImplementation(
 		async (fn: (tx: typeof fake) => unknown) => fn(fake),
 	);
@@ -536,16 +539,22 @@ function installFake(): void {
 		const row = store.styles.find((s) => matches(s, where));
 		return row ? selectScalars(row, select) : null;
 	});
+	style.findUnique.mockImplementation(({ where, select }) => {
+		const row = store.styles.find((s) => matches(s, where));
+		return row ? selectScalars(row, select) : null;
+	});
 	style.upsert.mockImplementation(({ where, create, update, select }) => {
 		const existing = store.styles.find(
 			(s) => s.documentId === where.documentId,
 		);
 		if (existing) {
-			Object.assign(existing, update, { updatedAt: new Date() });
+			Object.assign(existing, update);
 			return selectScalars(existing, select);
 		}
 		const created: Row = {
 			id: nextId("style"),
+			brandSource: "COMPANY",
+			coverStyle: null,
 			updatedAt: new Date(),
 			...create,
 		};
@@ -3611,6 +3620,60 @@ describe("document style", () => {
 		).toBeNull();
 	});
 
+	it("preserves omitted branding, clears a cover override and rejects stale reviewed saves", async () => {
+		seedDocument({ status: "COMPLETE" });
+		const base = {
+			documentId: DOC,
+			projectId: PROJECT,
+			organizationId: ORG,
+			styleDirection: null,
+			primaryColor: "#112233",
+			accentColors: [],
+			updatedById: "user-example",
+		};
+		const first = await upsertDocumentStyle({
+			...base,
+			expectedUpdatedAt: null,
+			brandSource: "CLIENT",
+			coverStyle: "LIGHT",
+		});
+		expect(first).toMatchObject({
+			brandSource: "CLIENT",
+			coverStyle: "LIGHT",
+		});
+		expect(fake.$executeRaw).toHaveBeenCalledWith(
+			expect.anything(),
+			`proposal-style:${DOC}`,
+		);
+		expect(
+			fake.$queryRaw.mock.calls.some(([strings]) =>
+				rawSql(strings).includes("pg_advisory_xact_lock"),
+			),
+		).toBe(false);
+		const second = await upsertDocumentStyle({
+			...base,
+			expectedUpdatedAt: first.updatedAt,
+			coverStyle: null,
+		});
+		expect(second).toMatchObject({
+			brandSource: "CLIENT",
+			coverStyle: null,
+		});
+		expect(second.updatedAt.getTime()).toBeGreaterThan(
+			first.updatedAt.getTime(),
+		);
+		await expect(
+			upsertDocumentStyle({
+				...base,
+				expectedUpdatedAt: first.updatedAt,
+				brandSource: "COMPANY",
+			}),
+		).rejects.toBeInstanceOf(DocumentStyleConflictError);
+		await expect(
+			upsertDocumentStyle({ ...base, expectedUpdatedAt: null }),
+		).rejects.toBeInstanceOf(DocumentStyleConflictError);
+		expect(store.styles[0]?.brandSource).toBe("CLIENT");
+	});
 	it("starts automatic diagrams on, and keeps a stored switch a save leaves out", async () => {
 		seedDocument({ status: "COMPLETE" });
 		const base = {

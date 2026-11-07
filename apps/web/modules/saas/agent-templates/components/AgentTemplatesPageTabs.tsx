@@ -1,5 +1,6 @@
 "use client";
 
+import { DeliveryReportStarterPicker } from "@saas/reports/components/DeliveryReportStarterPicker";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { LayoutGridIcon } from "lucide-react";
@@ -60,6 +61,9 @@ export function AgentTemplatesPageTabs({
 				</TabsList>
 
 				<TabsContent value="gallery" className="mt-0">
+					<DeliveryReportStarterPicker
+						reportBasePath={`${basePath.replace(/\/agent-templates$/, "")}/report-templates`}
+					/>
 					<AgentTemplatesList
 						organizationId={organizationId}
 						basePath={basePath}

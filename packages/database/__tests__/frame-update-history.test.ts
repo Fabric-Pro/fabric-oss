@@ -74,6 +74,7 @@ vi.mock("../prisma/client", async (importOriginal) => {
 	return {
 		...actual,
 		db: {
+			templateInstanceExecution: { findFirst: async () => null },
 			agentWorkspaceFile: frameTable(store.frames),
 			frameEditHistory: {
 				create: async ({ data }: { data: Row }) => {
@@ -347,4 +348,99 @@ it("rolls content and history back when the audit insert fails", async () => {
 	).rejects.toThrow("Audit unavailable");
 	expect(store.frames[0].content).toBe(before);
 	expect(store.history).toHaveLength(0);
+});
+
+it("refuses a legacy string edit that changes only the reviewed brand", async () => {
+	const { editFrameString } = await import(
+		"../prisma/queries/frame-edit-history"
+	);
+	const doc = JSON.parse(String(store.frames[0].content));
+	doc.theme = {
+		branding: {
+			version: 1,
+			source: "CLIENT",
+			companyName: "Example Studio",
+			clientName: "Example Client",
+			primaryColor: "#123456",
+			accentColors: [],
+			displayFontFamily: "Poppins",
+			bodyFontFamily: "Inter",
+			coverStyle: "DARK",
+			companyBrandVersion: 1,
+			clientBrandVersion: 2,
+		},
+	};
+	const original = JSON.stringify(doc, null, 2);
+	store.frames[0].content = original;
+	store.frames[0].isPublic = true;
+	const result = await editFrameString({
+		frameId: "frame-1",
+		userId: USER,
+		organizationId: ORG,
+		oldString: '"coverStyle": "DARK"',
+		newString: '"coverStyle": "LIGHT"',
+	});
+	expect(result.success).toBe(false);
+	expect(result.error).toContain("branding");
+	expect(store.frames[0].content).toBe(original);
+	expect(store.history).toHaveLength(0);
+});
+
+it("refuses string edits after a generated report becomes inaccessible", async () => {
+	const { editFrameString } = await import(
+		"../prisma/queries/frame-edit-history"
+	);
+	store.frames[0].sourceRunType = "REPORT_EXECUTION";
+	store.frames[0].sourceRunId = "example-inaccessible-execution";
+	const before = store.frames[0].content;
+	const result = await editFrameString({
+		frameId: "frame-1",
+		userId: USER,
+		organizationId: ORG,
+		oldString: "v1",
+		newString: "v2",
+	});
+	expect(result).toMatchObject({ success: false, error: "Frame not found" });
+	expect(store.frames[0].content).toBe(before);
+	expect(store.history).toHaveLength(0);
+});
+
+it("retains interface presentation when an older writer omits it and records explicit switches in history", async () => {
+	const before = JSON.parse(String(store.frames[0].content));
+	before.presentation = "INTERFACE";
+	before.metadata.runtime = { tools: ["fabric_list_projects"] };
+	store.frames[0].content = JSON.stringify(before, null, 2);
+	await updateFrame({
+		id: "frame-1",
+		userId: USER,
+		organizationId: ORG,
+		title: "Renamed",
+	});
+	expect(JSON.parse(String(store.frames[0].content))).toMatchObject({
+		presentation: "INTERFACE",
+		metadata: before.metadata,
+	});
+	await updateFrame({
+		id: "frame-1",
+		userId: USER,
+		organizationId: ORG,
+		presentation: "DOCUMENT",
+	});
+	expect(JSON.parse(String(store.frames[0].content)).presentation).toBe(
+		"DOCUMENT",
+	);
+	expect(
+		JSON.parse(String(store.history[1].contentSnapshot)).presentation,
+	).toBe("INTERFACE");
+});
+it("keeps presentation omitted on legacy content edits", async () => {
+	await updateFrame({
+		id: "frame-1",
+		userId: USER,
+		organizationId: ORG,
+		title: "Legacy renamed",
+	});
+	expect(JSON.parse(String(store.frames[0].content))).not.toHaveProperty(
+		"presentation",
+	);
 });

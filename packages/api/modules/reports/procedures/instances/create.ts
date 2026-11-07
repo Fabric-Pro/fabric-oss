@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import {
+	ArtifactBrandingError,
 	canAccessReportInstance,
 	createTemplateInstance,
 	getReportTemplate,
@@ -9,6 +10,7 @@ import {
 } from "@repo/database";
 import type { Prisma } from "@repo/database/prisma/generated/client";
 import { z } from "zod";
+import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
 	Permissions,
 	requireInputOrgPermission,
@@ -16,10 +18,11 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import type { ReportCommandContext } from "../../lib/report-command-context";
 import { templateScheduleForInheritance } from "../../lib/resolve-instance-schedule";
 import { validateReportConnections } from "../../lib/validate-connections";
 
-const createInstanceInputSchema = z.object({
+export const createInstanceInputSchema = z.object({
 	templateId: z.string(),
 	name: z.string().min(1).max(255),
 	description: z.string().optional(),
@@ -58,122 +61,145 @@ export const createInstanceProcedure = tenantProtectedProcedure
 		}),
 	)
 	.input(createInstanceInputSchema)
-	.handler(async ({ input, context }) => {
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
+	.handler(handleCreateReportInstance);
 
-		if (!organizationId) {
-			throw new ORPCError("BAD_REQUEST", {
-				message: "An organization is required",
-			});
-		}
-		if (
-			input.reporting?.projectId &&
-			!(await canAccessReportInstance(
-				{
-					userId: context.user.id,
-					organizationId,
-					fabricConfig: { reporting: input.reporting },
-				},
-				{ userId: context.user.id, organizationId },
-				undefined,
-				true,
-			))
-		) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "Project report access denied",
-			});
-		}
+export async function handleCreateReportInstance({
+	input,
+	context,
+}: {
+	input: z.infer<typeof createInstanceInputSchema>;
+	context: ReportCommandContext;
+}) {
+	const organizationId = resolveOrganizationId(
+		input.organizationId,
+		context.session,
+	);
 
-		// Verify template exists and user has access
-		const template = await getReportTemplate({
-			id: input.templateId,
-			userId: context.user.id,
-			organizationId,
+	if (!organizationId) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: "An organization is required",
 		});
-
-		if (!template) {
-			throw new ORPCError("NOT_FOUND", {
-				message: "Report template not found or access denied",
-			});
-		}
-
-		if (
-			hasProjectKnowledgeSource(template.definition) &&
-			!input.reporting?.projectId
-		) {
-			throw new ORPCError("BAD_REQUEST", {
-				message: "Choose a project audience for Project knowledge",
-			});
-		}
-
-		// Verify organization membership if org-scoped
-		if (organizationId) {
-			await requireOrganizationMembership(
+	}
+	if (
+		input.reporting?.projectId &&
+		!(await canAccessReportInstance(
+			{
+				userId: context.user.id,
 				organizationId,
-				context.user.id,
-			);
-		}
-
-		// Validate connections before storing. Pass the template's data sources so
-		// a binding keyed by a data source id (e.g. "task-board") can self-heal via
-		// its server provider (e.g. "fizzy").
-		const templateDataSources = (
-			template.definition as {
-				dataSources?: Array<{
-					id?: string;
-					key?: string;
-					provider?: string;
-				}>;
-			} | null
-		)?.dataSources;
-		const validation = await validateReportConnections(
-			input.connections,
-			context.user.id,
-			organizationId ?? undefined,
-			templateDataSources,
-		);
-		if (!validation.valid) {
-			throw new ORPCError("BAD_REQUEST", {
-				message: `Invalid connections: ${validation.errors.join("; ")}`,
-			});
-		}
-
-		// Inherit the template's schedule when the instance create omits one — but only
-		// from a template this owner actually owns (never SYSTEM/public → cross-tenant). D3.
-		const effectiveSchedule =
-			input.schedule ??
-			templateScheduleForInheritance(
-				template,
-				context.user.id,
-				organizationId ?? null,
-			);
-
-		// Create the instance
-		const instance = await createTemplateInstance({
-			templateId: input.templateId,
-			userId: context.user.id,
-			organizationId,
-			name: input.name,
-			description: input.description,
-			connections: input.connections,
-			fabricConfig: input.reporting
-				? { reporting: input.reporting }
-				: undefined,
-			schedule: effectiveSchedule as Prisma.InputJsonValue | undefined,
-			// CUSTOM iff the caller supplied an explicit per-instance schedule; otherwise the
-			// instance follows the template (INHERITED), even when a schedule was inherited. (D2/§7.1)
-			scheduleMode: input.schedule !== undefined ? "CUSTOM" : "INHERITED",
+				fabricConfig: { reporting: input.reporting },
+			},
+			{ userId: context.user.id, organizationId },
+			undefined,
+			true,
+		))
+	) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "Project report access denied",
 		});
+	}
 
-		return {
-			id: instance.id,
-			sId: instance.sId,
-			version: instance.version,
-			name: instance.name,
-			templateId: instance.templateId,
-			createdAt: instance.createdAt.toISOString(),
-		};
+	// Verify template exists and user has access
+	const template = await getReportTemplate({
+		id: input.templateId,
+		userId: context.user.id,
+		organizationId,
 	});
+
+	if (!template) {
+		throw new ORPCError("NOT_FOUND", {
+			message: "Report template not found or access denied",
+		});
+	}
+
+	if (
+		hasProjectKnowledgeSource(template.definition) &&
+		!input.reporting?.projectId
+	) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: "Choose a project audience for Project knowledge",
+		});
+	}
+
+	// Verify organization membership if org-scoped
+	if (organizationId) {
+		await requireOrganizationMembership(organizationId, context.user.id);
+	}
+
+	// Validate connections before storing. Pass the template's data sources so
+	// a binding keyed by a data source id (e.g. "task-board") can self-heal via
+	// its server provider (e.g. "fizzy").
+	const templateDataSources = (
+		template.definition as {
+			dataSources?: Array<{
+				id?: string;
+				key?: string;
+				provider?: string;
+			}>;
+		} | null
+	)?.dataSources;
+	const validation = await validateReportConnections(
+		input.connections,
+		context.user.id,
+		organizationId ?? undefined,
+		templateDataSources,
+	);
+	if (!validation.valid) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: `Invalid connections: ${validation.errors.join("; ")}`,
+		});
+	}
+
+	// Inherit the template's schedule when the instance create omits one — but only
+	// from a template this owner actually owns (never SYSTEM/public → cross-tenant). D3.
+	const effectiveSchedule =
+		input.schedule ??
+		templateScheduleForInheritance(
+			template,
+			context.user.id,
+			organizationId ?? null,
+		);
+
+	// Create the instance
+	const instance = await createTemplateInstance({
+		templateId: input.templateId,
+		userId: context.user.id,
+		organizationId,
+		name: input.name,
+		description: input.description,
+		connections: input.connections,
+		fabricConfig: input.reporting
+			? { reporting: input.reporting }
+			: undefined,
+		schedule: effectiveSchedule as Prisma.InputJsonValue | undefined,
+		// CUSTOM iff the caller supplied an explicit per-instance schedule; otherwise the
+		// instance follows the template (INHERITED), even when a schedule was inherited. (D2/§7.1)
+		scheduleMode: input.schedule !== undefined ? "CUSTOM" : "INHERITED",
+	}).catch((error) => {
+		if (error instanceof ArtifactBrandingError) {
+			throw new ORPCError(
+				error.code === "NOT_FOUND" ? "NOT_FOUND" : "CONFLICT",
+				{ message: error.message },
+			);
+		}
+		throw error;
+	});
+
+	recordAuditFromRequest(
+		{ headers: context.headers },
+		{
+			category: "org",
+			action: "report.instance_created",
+			organizationId,
+			actor: { type: "user", userId: context.user.id },
+			resource: { type: "report_instance", id: instance.id },
+		},
+	);
+	return {
+		id: instance.id,
+		sId: instance.sId,
+		version: instance.version,
+		name: instance.name,
+		templateId: instance.templateId,
+		createdAt: instance.createdAt.toISOString(),
+	};
+}

@@ -37,6 +37,7 @@ vi.mock("../prisma/client", async (importOriginal) => {
 	return {
 		...actual,
 		db: {
+			templateInstanceExecution: { findFirst: async () => null },
 			agentWorkspaceFile: { update: bare, findFirst: bare },
 			frameEditHistory: { create: bare, findMany: bare },
 			$transaction: async <T>(
@@ -46,6 +47,7 @@ vi.mock("../prisma/client", async (importOriginal) => {
 				const stagedHistory: Row[] = [];
 				const stagedFrames = store.frames.map((row) => ({ ...row }));
 				const tx = {
+					templateInstanceExecution: { findFirst: async () => null },
 					auditLog: {
 						create: async ({ data }: { data: Row }) => ({
 							id: "example-audit",
@@ -376,3 +378,72 @@ describe("revertFrameToVersion", () => {
 		});
 	});
 });
+
+describe("reviewed branding survives content restore", () => {
+	const brand = (coverStyle: "DARK" | "LIGHT") => ({
+		version: 1,
+		source: "CLIENT",
+		companyName: "Example Studio",
+		clientName: "Example Client",
+		primaryColor: "#123456",
+		accentColors: [],
+		displayFontFamily: "Poppins",
+		bodyFontFamily: "Inter",
+		coverStyle,
+		companyBrandVersion: 1,
+		clientBrandVersion: 2,
+	});
+	it("keeps the currently reviewed brand instead of a historical selection", async () => {
+		const now = JSON.parse(CURRENT);
+		now.theme = { branding: brand("LIGHT") };
+		store.frames[0].content = JSON.stringify(now);
+		const historic = JSON.parse(BEFORE_FIRST_EDIT);
+		historic.theme = { branding: brand("DARK") };
+		store.history[0].contentSnapshot = JSON.stringify(historic);
+		expect((await revertFrameToVersion(input)).success).toBe(true);
+		const restored = JSON.parse(String(store.frames[0].content));
+		expect(restored.title).toBe("Original");
+		expect(restored.theme.branding).toEqual(brand("LIGHT"));
+	});
+	it("does not resurrect a removed brand from history", async () => {
+		const historic = JSON.parse(BEFORE_FIRST_EDIT);
+		historic.theme = { branding: brand("DARK") };
+		store.history[0].contentSnapshot = JSON.stringify(historic);
+		expect((await revertFrameToVersion(input)).success).toBe(true);
+		expect(
+			JSON.parse(String(store.frames[0].content)).theme?.branding,
+		).toBeUndefined();
+	});
+});
+
+it("refuses history restore after the source report becomes inaccessible", async () => {
+	store.frames[0].sourceRunType = "REPORT_EXECUTION";
+	store.frames[0].sourceRunId = "example-inaccessible-execution";
+	const before = store.frames[0].content;
+	const result = await revertFrameToVersion(input);
+	expect(result).toMatchObject({ success: false, error: "Frame not found" });
+	expect(store.frames[0].content).toBe(before);
+	expect(store.history).toHaveLength(1);
+});
+
+it.each(["INTERFACE", undefined])(
+	"restores recorded presentation %j while preserving current tool grants",
+	async (presentation) => {
+		const historic = JSON.parse(BEFORE_FIRST_EDIT);
+		if (presentation) {
+			historic.presentation = presentation;
+		}
+		historic.metadata.runtime = { tools: ["fabric_delete_project"] };
+		const now = JSON.parse(CURRENT);
+		now.presentation = "DOCUMENT";
+		store.frames[0].content = JSON.stringify(now);
+		store.history[0].contentSnapshot = JSON.stringify(historic);
+		expect((await revertFrameToVersion(input)).success).toBe(true);
+		const restored = JSON.parse(String(store.frames[0].content));
+		expect(restored.presentation).toBe(presentation);
+		expect(restored.metadata.runtime).toEqual(now.metadata.runtime);
+		if (!presentation) {
+			expect(restored).not.toHaveProperty("presentation");
+		}
+	},
+);

@@ -65,16 +65,15 @@ import { answerModelInfo } from "../../answer-model-info";
 import { resolveCompanyContextChatAccess } from "../../lib/company-context-chat-access";
 import { companyContextHintLine } from "../../lib/company-context-hint";
 import { directApprovalRefusal } from "../../lib/direct-approval-policy";
+import { frameDesignInstructions } from "../../lib/frame-design-instructions";
+import { detectRequestedFrameOutput } from "../../lib/frame-output-request";
 import type {
 	ActivityHeartbeatDetails,
 	DirectChatToolCall,
 	DirectChatWorkflowInput,
 	DirectChatWorkflowOutput,
 } from "../../types";
-import {
-	DIAGRAM_RENDERING_GUIDANCE,
-	isInlineDiagramRequest,
-} from "../../workflows/orchestrator/diagram-rendering";
+import { DIAGRAM_RENDERING_GUIDANCE } from "../../workflows/orchestrator/diagram-rendering";
 import { activityCancellationSignal } from "../lib/activity-liveness";
 import { resolveDirectChatMemoryPrompt } from "../lib/memory-context-prompt";
 import {
@@ -177,64 +176,6 @@ const logger = {
 	warn: (message: string, data?: Record<string, unknown>) =>
 		console.warn(`[DirectChat AI] ${message}`, data || ""),
 };
-
-function detectRequestedFrameOutput(
-	message: string,
-): "frame" | "slideshow" | null {
-	const lower = message.toLowerCase();
-	const slideshowPatterns = [
-		"slideshow",
-		"slide deck",
-		"slide-deck",
-		"slides about",
-		"create slides",
-		"make slides",
-		"presentation",
-		"presentation deck",
-		"deck about",
-		"5-slide",
-		"5 slide",
-	];
-	if (slideshowPatterns.some((pattern) => lower.includes(pattern))) {
-		return "slideshow";
-	}
-
-	const framePatterns = [
-		"create a frame",
-		"make a frame",
-		"build a frame",
-		"interactive frame",
-		"fabric frame",
-		"wireframe",
-		// Visualization / chart / dashboard
-		"create a visualization",
-		"make a visualization",
-		"generate a visualization",
-		"build a visualization",
-		"data visualization",
-		"interactive visualization",
-		"create a chart",
-		"make a chart",
-		"generate a chart",
-		"build a chart",
-		"interactive chart",
-		"create a graph",
-		"make a graph",
-		"interactive graph",
-		"create a dashboard",
-		"make a dashboard",
-		"build a dashboard",
-		"interactive dashboard",
-	];
-	if (
-		framePatterns.some((pattern) => lower.includes(pattern)) &&
-		!isInlineDiagramRequest(message)
-	) {
-		return "frame";
-	}
-
-	return null;
-}
 
 function isExecutableToolDefinition(toolDef: unknown): toolDef is {
 	description?: string;
@@ -1193,10 +1134,16 @@ async function runDirectChatTurnBody(
 	// the prompt has to name the tool the model was actually given.
 	const webSearchToolName =
 		"webSearch" in builtInTools ? "webSearch" : "fabric_web_search";
-	const requestedFrameOutput = detectRequestedFrameOutput(message);
+	const requestedFrameOutput = detectRequestedFrameOutput(message, "direct");
+	const requestedFrameToolName =
+		requestedFrameOutput === "slideshow"
+			? "fabric_create_slideshow"
+			: requestedFrameOutput === "frame"
+				? "fabric_create_frame"
+				: undefined;
 	const hasFrameTool =
-		"fabric_create_frame" in builtInTools ||
-		"fabric_create_slideshow" in builtInTools;
+		requestedFrameToolName !== undefined &&
+		requestedFrameToolName in builtInTools;
 	const approvedAction = await runApprovedAction(input, fabricPlatform);
 
 	if (hasBuiltInWebSearch) {
@@ -1512,13 +1459,20 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 - Never put citations at the end - cite immediately after the relevant information`
 			: "";
 
-	const frameOutputInstructions =
+	const explicitFrameOutputInstructions =
 		hasFrameTool && requestedFrameOutput
 			? `FRAME OUTPUT REQUIREMENT:
 - The user explicitly asked for a ${requestedFrameOutput}.
 - You MUST call ${requestedFrameOutput === "slideshow" ? "fabric_create_slideshow" : "fabric_create_frame"} instead of answering with plain-text slide/frame content.
-- Do not outline the ${requestedFrameOutput} in prose first. Produce the first-class Fabric artifact directly.`
+- Do not outline the ${requestedFrameOutput} in prose first. Produce the first-class Fabric artifact directly.
+- Create it once. After a successful creation, explain the saved artifact; do not call a creation tool again unless the user requested another artifact.`
 			: "";
+	const frameOutputInstructions = [
+		explicitFrameOutputInstructions,
+		toolsEnabled ? frameDesignInstructions(Object.keys(allTools)) : "",
+	]
+		.filter(Boolean)
+		.join("\n\n");
 	const currentDateContext = getCurrentDateContext();
 	const promptCacheEnabled = isAnthropicProvider(
 		metadata.provider,
@@ -1994,6 +1948,22 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			hasTools: shouldUseTools,
 		});
 
+		// A top-level forced tool applies to every SDK step. Force creation once,
+		// then allow the model to explain its saved result without creating again.
+		// Keep the rolling cache callback intact on every step.
+		const prepareModelStep: Parameters<
+			typeof streamText
+		>[0]["prepareStep"] =
+			typeof forcedToolChoice === "object"
+				? (options) => ({
+						...(prepareStep?.(options) ?? {}),
+						toolChoice:
+							options.stepNumber === 0
+								? forcedToolChoice
+								: "auto",
+					})
+				: prepareStep;
+
 		const llmStartedAt = Date.now();
 		recordTurnValue("direct.preLlmMs", llmStartedAt - startTime);
 		const result = streamText({
@@ -2001,7 +1971,7 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			instructions: promptCacheRequest.system,
 			stopWhen: isStepCount(maxSteps),
 			messages: promptCacheRequest.messages,
-			...(prepareStep ? { prepareStep } : {}),
+			...(prepareModelStep ? { prepareStep: prepareModelStep } : {}),
 			// Anthropic's mid-conversation-system rolling-history path (only
 			// active when both prompt caching and the mid-conversation-system
 			// beta are supported) appends the variable system context as the

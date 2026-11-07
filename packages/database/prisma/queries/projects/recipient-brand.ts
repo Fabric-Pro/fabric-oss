@@ -1,3 +1,9 @@
+import {
+	type ArtifactCoverStyle,
+	type ArtifactFontFamily,
+	isArtifactCoverStyle,
+	isArtifactFontFamily,
+} from "@repo/utils/artifact-brand-theme";
 /**
  * A project's recipient brand (Fizzy #2589): the name, website, logo and
  * colors of the party an edition is prepared for. One row per project.
@@ -46,7 +52,9 @@ export type RecipientBrandValidationCode =
 	| "invalidWebsite"
 	| "invalidLogoKey"
 	| "tooManyColors"
-	| "invalidColor";
+	| "invalidColor"
+	| "invalidFontFamily"
+	| "invalidCoverStyle";
 
 export class RecipientBrandValidationError extends Error {
 	constructor(readonly code: RecipientBrandValidationCode) {
@@ -60,6 +68,9 @@ export interface RecipientBrandFields {
 	website: string | null;
 	logoKey: string | null;
 	colors: string[];
+	displayFontFamily?: ArtifactFontFamily | null;
+	bodyFontFamily?: ArtifactFontFamily | null;
+	coverStyle?: ArtifactCoverStyle;
 }
 
 /**
@@ -75,6 +86,9 @@ export function normalizeRecipientBrandFields(
 		website?: string | null;
 		logoKey?: string | null;
 		colors?: string[];
+		displayFontFamily?: string | null;
+		bodyFontFamily?: string | null;
+		coverStyle?: string;
 	},
 ): RecipientBrandFields {
 	const name = input.name?.trim() || null;
@@ -97,11 +111,35 @@ export function normalizeRecipientBrandFields(
 		throw new RecipientBrandValidationError("invalidColor");
 	}
 
+	const fonts: Pick<
+		RecipientBrandFields,
+		"displayFontFamily" | "bodyFontFamily"
+	> = {};
+	for (const field of ["displayFontFamily", "bodyFontFamily"] as const) {
+		const value = input[field];
+		if (value === undefined) {
+			continue;
+		}
+		if (value !== null && !isArtifactFontFamily(value)) {
+			throw new RecipientBrandValidationError("invalidFontFamily");
+		}
+		fonts[field] = value;
+	}
+	if (
+		input.coverStyle !== undefined &&
+		!isArtifactCoverStyle(input.coverStyle)
+	) {
+		throw new RecipientBrandValidationError("invalidCoverStyle");
+	}
 	return {
 		name,
 		website,
 		logoKey,
 		colors: colors.map((color) => color.toLowerCase()),
+		...fonts,
+		...(input.coverStyle === undefined
+			? {}
+			: { coverStyle: input.coverStyle as ArtifactCoverStyle }),
 	};
 }
 
@@ -134,7 +172,11 @@ function normalizeWebsite(website: string | null | undefined): string | null {
 	return url.origin;
 }
 
-export interface RecipientBrandView extends RecipientBrandFields {
+export interface RecipientBrandView
+	extends Omit<RecipientBrandFields, "displayFontFamily" | "bodyFontFamily"> {
+	displayFontFamily: string | null;
+	bodyFontFamily: string | null;
+	coverStyle: ArtifactCoverStyle;
 	projectId: string;
 	organizationId: string;
 	/** SHA-256 of the promoted logo; null for a logo promoted before it existed. */
@@ -152,6 +194,9 @@ const RECIPIENT_BRAND_SELECT = {
 	logoKey: true,
 	logoHash: true,
 	colors: true,
+	displayFontFamily: true,
+	bodyFontFamily: true,
+	coverStyle: true,
 	version: true,
 	updatedById: true,
 	updatedAt: true,
@@ -178,6 +223,9 @@ export interface ConfirmRecipientBrandInput {
 	/** SHA-256 (hex) of the promoted logo's bytes; kept only with a logo. */
 	logoHash?: string | null;
 	colors?: string[];
+	displayFontFamily?: ArtifactFontFamily | null;
+	bodyFontFamily?: ArtifactFontFamily | null;
+	coverStyle?: ArtifactCoverStyle;
 	updatedById: string;
 	/** The organization the gate resolved; checked against the project's. */
 	organizationId?: string;

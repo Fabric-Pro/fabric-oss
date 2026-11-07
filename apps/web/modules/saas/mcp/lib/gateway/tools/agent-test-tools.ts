@@ -169,7 +169,7 @@ export function createAgentTestTools() {
 	}
 	add(
 		"fabric_list_agent_test_cases",
-		"List your saved exact-text regression examples for an agent family.",
+		"List your saved recorded-result regression examples for an agent family.",
 		agentTestCaseListSchema,
 		false,
 		async (actor, input, _audit, policy) =>
@@ -179,7 +179,7 @@ export function createAgentTestTools() {
 	);
 	add(
 		"fabric_create_agent_test_case",
-		"Save an agent test case with a sample task and exact phrases that must or must not appear. Does not run the agent.",
+		"Save an agent test case with a sample task and versioned deterministic checks (exact phrases or bounded JSON assertions). Does not run the agent.",
 		agentTestCaseCreateSchema,
 		true,
 		async (actor, input, audit, policy) =>
@@ -219,7 +219,7 @@ export function createAgentTestTools() {
 	);
 	add(
 		"fabric_get_agent_test_run",
-		"Read your actual agent test status and exact-text check results. Current source access remains required.",
+		"Read your actual agent test status and deterministic check results. Current source access remains required.",
 		agentTestRunIdentitySchema,
 		false,
 		async (actor, input, _audit, policy) =>

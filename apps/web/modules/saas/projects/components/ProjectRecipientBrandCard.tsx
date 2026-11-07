@@ -1,5 +1,6 @@
 "use client";
 
+import { useRecipientBrandQueryIdentity } from "@saas/projects/hooks/use-recipient-brand-query-identity";
 import { parseBrandColorList } from "@saas/shared/components/BrandColorListField";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -18,9 +19,6 @@ import {
 	recipientBrandDraftFrom,
 } from "./RecipientBrandFields";
 
-const recipientBrandQueryKey = (projectId: string) =>
-	["projectRecipientBrand", projectId] as const;
-
 /** What `projects.recipientBrand.get` returns. */
 type RecipientBrandRead = Awaited<
 	ReturnType<typeof orpcClient.projects.recipientBrand.get>
@@ -34,6 +32,8 @@ type Props = {
 	 * only, Fizzy #2946).
 	 */
 	canEdit: boolean;
+	/** Prevent a containing action from discarding an unsaved or in-flight brand edit. */
+	onDraftStateChange?: (blocked: boolean) => void;
 };
 
 /** What the brand is used by, which is what the card's description says. */
@@ -47,16 +47,23 @@ type RecipientBrandAudience = "glossy" | "proposalArtifact";
  * same either-gate the `recipientBrand.*` procedures apply. With both off
  * nothing renders or loads.
  */
-export function ProjectRecipientBrandCard({ projectId, canEdit }: Props) {
+export function ProjectRecipientBrandCard({
+	projectId,
+	canEdit,
+	onDraftStateChange,
+}: Props) {
 	const glossyEnabled = useFeatureFlag("GLOSSY_EDITION");
 	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
+	const identity = useRecipientBrandQueryIdentity(projectId);
 	if (!glossyEnabled && !proposalArtifactEnabled) {
 		return null;
 	}
 	return (
 		<RecipientBrandCard
+			key={JSON.stringify(identity.queryKey)}
 			projectId={projectId}
 			canEdit={canEdit}
+			onDraftStateChange={onDraftStateChange}
 			audience={glossyEnabled ? "glossy" : "proposalArtifact"}
 		/>
 	);
@@ -65,15 +72,18 @@ export function ProjectRecipientBrandCard({ projectId, canEdit }: Props) {
 function RecipientBrandCard({
 	projectId,
 	canEdit,
+	onDraftStateChange,
 	audience,
 }: Props & { audience: RecipientBrandAudience }) {
 	const t = useTranslations("projects.glossy.recipientBrand");
 	const queryClient = useQueryClient();
-	const queryKey = recipientBrandQueryKey(projectId);
+	const identity = useRecipientBrandQueryIdentity(projectId);
+	const queryKey = identity.queryKey;
 
 	const query = useQuery({
 		queryKey,
 		queryFn: () => orpcClient.projects.recipientBrand.get({ projectId }),
+		enabled: identity.enabled,
 		retry: 1,
 	});
 
@@ -141,6 +151,9 @@ function RecipientBrandCard({
 				name: input.draft.name.trim() || null,
 				website: input.draft.website.trim() || null,
 				colors: input.colors,
+				displayFontFamily: input.draft.displayFontFamily,
+				bodyFontFamily: input.draft.bodyFontFamily,
+				coverStyle: input.draft.coverStyle,
 				logo:
 					input.draft.logo.action === "replace"
 						? { action: "replace", token: input.draft.logo.token }
@@ -172,6 +185,12 @@ function RecipientBrandCard({
 			);
 		},
 	});
+	useEffect(() => {
+		onDraftStateChange?.(
+			hasChanges || fieldsPending || saveMutation.isPending,
+		);
+	}, [hasChanges, fieldsPending, saveMutation.isPending, onDraftStateChange]);
+	useEffect(() => () => onDraftStateChange?.(false), [onDraftStateChange]);
 
 	if (query.isLoading) {
 		return (
@@ -228,6 +247,7 @@ function RecipientBrandCard({
 				</Alert>
 			)}
 			<RecipientBrandFields
+				showThemeFields
 				key={version}
 				projectId={projectId}
 				value={draft}

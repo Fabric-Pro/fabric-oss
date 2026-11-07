@@ -135,10 +135,48 @@ export function ArtifactDeliveryHistoryDialog({
 						Send history
 					</DialogTitle>
 					<DialogDescription>
-						Past email sends for{" "}
+						Reviewed inbox deliveries and email sends for{" "}
 						<span className="font-medium">{artifactName}</span>.
 					</DialogDescription>
 				</DialogHeader>
+
+				{!!data?.inboxDeliveries?.length && (
+					<section
+						aria-label="Fabric inbox deliveries"
+						className="rounded-lg border p-3"
+					>
+						<h3 className="text-sm font-medium">
+							Fabric inbox deliveries
+						</h3>
+						<ul className="mt-2 max-h-40 space-y-2 overflow-y-auto text-sm">
+							{[...data.inboxDeliveries]
+								.reverse()
+								.map((delivery) => (
+									<li
+										key={`${delivery.senderUserId}:${delivery.id}`}
+										className="flex justify-between gap-3"
+									>
+										<span>
+											Shared with{" "}
+											{delivery.recipientUserIds.length}{" "}
+											{delivery.recipientUserIds
+												.length === 1
+												? "recipient"
+												: "recipients"}
+										</span>
+										<time dateTime={delivery.distributedAt}>
+											{formatDistanceToNow(
+												new Date(
+													delivery.distributedAt,
+												),
+												{ addSuffix: true },
+											)}
+										</time>
+									</li>
+								))}
+						</ul>
+					</section>
+				)}
 
 				<div className="relative">
 					<SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />

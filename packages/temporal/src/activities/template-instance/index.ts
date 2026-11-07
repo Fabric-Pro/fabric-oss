@@ -26,6 +26,7 @@ import {
 	type ReportExecutionSnapshot,
 	readReportProjectBindings,
 	reportExecutionSnapshotSchema,
+	storeBrandedReportArtifact,
 	updateTemplateInstanceArtifactRag,
 	updateTemplateInstanceLastRunAt,
 } from "@repo/database";
@@ -36,6 +37,9 @@ import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
 // Import standard AI model selector from orchestrator
 import { getAiModel } from "../orchestrator/utils/model-selector";
 import { capRenderedReport } from "./gathered-data-budget";
+import { loadReportPublication } from "./report-publication";
+
+export { generateReportPdfArtifact } from "./generate-report-pdf";
 
 // =============================================================================
 // Types
@@ -1376,8 +1380,39 @@ export async function renderInstanceReport(input: {
 
 	// Render sections
 	const sections = definition.sections || [];
+	// Delivery starters describe one complete report, produced by the native
+	// default analysis agent. Their unbound AI sections are not independent
+	// agent outputs. Render that report once instead of missing placeholders
+	// followed by a second, trailing Analysis report.
+	const defaultAnalysis =
+		aiResults.length === 1 &&
+		aiResults[0]?.agentId === "default" &&
+		aiResults[0]?.outputVariable === "analysis" &&
+		sections.some((section) => section.type === "ai-generated") &&
+		!sections.some(
+			(section) =>
+				section.type === "ai-generated" &&
+				(section.config?.agentId || section.config?.outputVariable),
+		)
+			? aiResults[0]
+			: undefined;
+	let renderedDefaultAnalysis = false;
 
 	for (const section of sections) {
+		if (defaultAnalysis && section.type === "ai-generated") {
+			if (!renderedDefaultAnalysis) {
+				lines.push(
+					defaultAnalysis.error
+						? isHtmlFormat
+							? `<p class="warning"><em>Error: ${escapeHtml(defaultAnalysis.error)}</em></p>`
+							: `_Error: ${defaultAnalysis.error}_`
+						: defaultAnalysis.output,
+				);
+				lines.push("");
+				renderedDefaultAnalysis = true;
+			}
+			continue;
+		}
 		if (isHtmlFormat) {
 			lines.push(`<h2>${escapeHtml(section.title)}</h2>`);
 		} else {
@@ -1527,6 +1562,10 @@ export async function renderInstanceReport(input: {
 	// Track which AI results were already used in sections
 	const usedAgentIds = new Set<string>();
 	const usedOutputVariables = new Set<string>();
+	if (renderedDefaultAnalysis && defaultAnalysis) {
+		usedAgentIds.add(defaultAnalysis.agentId);
+		usedOutputVariables.add("analysis");
+	}
 
 	for (const section of sections) {
 		if (section.type === "ai-generated") {
@@ -1612,46 +1651,16 @@ export async function storeInstanceArtifact(input: {
 	mimeType: string;
 	metadata?: Prisma.InputJsonValue;
 }): Promise<{ id: string }> {
-	if (!input.organizationId) {
-		throw new Error("An organization is required for report artifacts");
-	}
-	const caller = {
-		userId: input.userId,
-		organizationId: input.organizationId,
-	};
-	const execution = await getTemplateInstanceExecution(
-		input.executionId,
-		caller,
-	);
-	if (
-		!execution ||
-		execution.userId !== input.userId ||
-		execution.status === "CANCELLED" ||
-		!execution.instance.isActive ||
-		!(await canExecuteReportInstance(
-			execution.instance,
-			caller,
-			execution.parameters,
-		))
-	) {
-		throw new Error("Report artifact access was revoked");
-	}
-	assertProjectReportSourcesReady(
-		execution.instance.fabricConfig,
-		execution.parameters,
-		execution.instance.template.definition,
-		execution.instance.connections,
-	);
-	const admitted = (execution.parameters as Record<string, unknown> | null)?.[
-		REPORT_EXECUTION_SNAPSHOT_KEY
-	];
-	if (
-		admitted &&
-		reportExecutionSnapshotSchema.parse(admitted).origin === "scheduled" &&
-		(execution.instance.status !== "ACTIVE" ||
-			execution.instance.scheduleMode === "OFF")
-	) {
-		throw new Error("Scheduled report was paused before publication");
+	const { snapshot, organizationId } = await loadReportPublication(input);
+	if (input.artifactType === "MARKDOWN" || input.artifactType === "HTML") {
+		const artifact = await storeBrandedReportArtifact({
+			...input,
+			organizationId,
+			artifactType: input.artifactType,
+			projectId: snapshot?.config?.projectId,
+			branding: snapshot?.branding,
+		});
+		return { id: artifact.id };
 	}
 	const artifact = await createTemplateInstanceArtifact({
 		executionId: input.executionId,

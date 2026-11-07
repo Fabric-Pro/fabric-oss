@@ -1,3 +1,4 @@
+import { FRAME_PRESENTATIONS } from "@repo/utils/frame-presentation";
 import { z } from "zod";
 
 export const frameRevisionSchema = z.string().datetime({ offset: true });
@@ -5,6 +6,7 @@ export const frameContentEditSchema = z.strictObject({
 	expectedUpdatedAt: frameRevisionSchema,
 	title: z.string().trim().min(1).max(300).optional(),
 	description: z.string().max(20000).optional(),
+	presentation: z.enum(FRAME_PRESENTATIONS).optional(),
 	blocks: z
 		.array(
 			z.object({

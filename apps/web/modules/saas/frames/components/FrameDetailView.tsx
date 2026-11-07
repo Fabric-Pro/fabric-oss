@@ -72,7 +72,9 @@ export function FrameDetailView({
 			frameDocument={document}
 			isPublic={frame.isPublic ?? frame.shareScope === "PUBLIC"}
 			isProjectFrame={Boolean(frame.projectId)}
-			interactive={!isUnattendedFrame(frame)}
+			interactive={
+				!frame.isPublishedSnapshot && !isUnattendedFrame(frame)
+			}
 			organizationId={organizationId}
 			runtimeTools={frame.runtimeTools}
 			onOpenAgent={onOpenAgent}

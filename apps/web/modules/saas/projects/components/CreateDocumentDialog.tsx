@@ -11,11 +11,13 @@ import {
 	DOCUMENT_TYPE_OPTIONS,
 	documentTypeLabel,
 } from "@repo/utils/document-type-catalog";
+import { proposalClientPaletteFromColors } from "@repo/utils/proposal-artifact/theme-tokens";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { CapabilityGateBanner } from "@saas/projects/components/capability-gates/CapabilityGateBanner";
 import { CapabilityRestoreControl } from "@saas/projects/components/capability-gates/CapabilityRestoreControl";
 import { useCapabilityGate } from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { PromptSelector } from "@saas/prompts/components/PromptSelector";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -47,6 +49,10 @@ import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CompanyContextNotice } from "./CompanyContextNotice";
 import { describeGenerationRefusal } from "./proposal-artifact/generation-feedback";
+import {
+	ProposalBrandReadiness,
+	useProposalBrandReadiness,
+} from "./proposal-artifact/ProposalBrandReadiness";
 import { ProposalPromptField } from "./proposal-artifact/ProposalPromptField";
 
 type DocumentType = (typeof DOCUMENT_TYPE_OPTIONS)[number]["value"];
@@ -348,6 +354,7 @@ export function CreateDocumentDialog({
 	initialType,
 }: Props) {
 	const t = useTranslations("projects.documents.create");
+	const tBrand = useTranslations("projects.proposalArtifact.brandReadiness");
 	const tFeedback = useTranslations(
 		"projects.proposalArtifact.generationFeedback",
 	);
@@ -360,6 +367,12 @@ export function CreateDocumentDialog({
 		documentTypeLabel(DEFAULT_DOCUMENT_TYPE),
 	);
 	const [type, setType] = useState<DocumentType>(DEFAULT_DOCUMENT_TYPE);
+	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
+	const [proposalBranding, setProposalBranding] = useState<
+		"CLIENT" | "COMPANY"
+	>("CLIENT");
+	const [clientBrandDraftBlocked, setClientBrandDraftBlocked] =
+		useState(false);
 	/**
 	 * Source material the user pasted. Distinct from `aiInstructions`: one is
 	 * the raw material the document is written from, the other steers how this
@@ -371,6 +384,19 @@ export function CreateDocumentDialog({
 	 * source; the Context tab remains the place to bring several in at once.
 	 */
 	const [sourceFile, setSourceFile] = useState<File | null>(null);
+	// Imported files keep their own appearance; only Fabric-authored proposals
+	// can apply a saved palette before their first generation.
+	const proposalBrandingActive =
+		proposalArtifactEnabled && type === "PROPOSAL" && !sourceFile;
+	const proposalBrandQuery = useProposalBrandReadiness(
+		projectId,
+		open && proposalBrandingActive,
+	);
+	const clientPaletteReady =
+		!proposalBrandQuery.isError &&
+		proposalClientPaletteFromColors(
+			proposalBrandQuery.data?.recipientBrand?.colors ?? [],
+		) !== null;
 	const [fileRefusal, setFileRefusal] = useState<string | null>(null);
 	const [sourceUsage, setSourceUsage] = useState<SourceUsage>("CONTEXT");
 	const [aiInstructions, setAiInstructions] = useState("");
@@ -529,6 +555,8 @@ export function CreateDocumentDialog({
 		const resolvedInitialType = initialType ?? DEFAULT_DOCUMENT_TYPE;
 		setTitle(documentTypeLabel(resolvedInitialType));
 		setType(resolvedInitialType);
+		setProposalBranding("CLIENT");
+		setClientBrandDraftBlocked(false);
 		setSourceText("");
 		setSourceFile(null);
 		setFileRefusal(null);
@@ -599,6 +627,7 @@ export function CreateDocumentDialog({
 		setPromptId(undefined);
 		setPromptVersionId(undefined);
 		setType(nextType);
+		setProposalBranding("CLIENT");
 	};
 
 	/**
@@ -623,9 +652,25 @@ export function CreateDocumentDialog({
 		!isSubmitting &&
 		title.trim().length > 0 &&
 		aiAvailability !== "pending" &&
-		!generationBlocked;
+		!generationBlocked &&
+		!(proposalBrandingActive && clientBrandDraftBlocked) &&
+		!(
+			proposalBrandingActive &&
+			proposalBranding === "CLIENT" &&
+			!clientPaletteReady
+		);
 
 	const handleCreate = async () => {
+		if (proposalBrandingActive && clientBrandDraftBlocked) {
+			return;
+		}
+		if (
+			proposalBrandingActive &&
+			proposalBranding === "CLIENT" &&
+			!clientPaletteReady
+		) {
+			return;
+		}
 		const trimmedTitle = title.trim();
 		if (!trimmedTitle) {
 			setValidationError("title");
@@ -677,6 +722,17 @@ export function CreateDocumentDialog({
 				title: trimmedTitle,
 				type,
 				generateWithAi: generateWithAI,
+				...(proposalBrandingActive
+					? {
+							proposalBranding,
+							...(proposalBranding === "CLIENT"
+								? {
+										recipientBrandVersion:
+											proposalBrandQuery.data?.version,
+									}
+								: {}),
+						}
+					: {}),
 				...(sourceFile ? { awaitingSourceFile: true } : {}),
 				...(hasPastedSource && !sourceFile
 					? {
@@ -792,6 +848,30 @@ export function CreateDocumentDialog({
 				`${basePath}/projects/${projectId}/documents/${data.document.id}`,
 			);
 		} catch (error) {
+			const brandingCode =
+				error &&
+				typeof error === "object" &&
+				"data" in error &&
+				error.data &&
+				typeof error.data === "object" &&
+				"code" in error.data
+					? error.data.code
+					: null;
+			if (
+				brandingCode === "RECIPIENT_BRAND_CHANGED" ||
+				brandingCode === "RECIPIENT_BRAND_MISSING"
+			) {
+				await proposalBrandQuery.refetch();
+				toast.error(
+					tBrand(
+						brandingCode === "RECIPIENT_BRAND_CHANGED"
+							? "changed"
+							: "clientRequired",
+					),
+					{ id: toastId },
+				);
+				return;
+			}
 			// Deliberately generic. The server already replaces internal
 			// failures with a fixed message, and anything that reaches here
 			// from the transport has no business being read by a user. The
@@ -863,8 +943,11 @@ export function CreateDocumentDialog({
 				onOpenChange(next);
 			}}
 		>
-			<DialogContent className="max-w-2xl" ref={dialogContentRef}>
-				<DialogHeader>
+			<DialogContent
+				className="flex max-w-2xl flex-col overflow-hidden"
+				ref={dialogContentRef}
+			>
+				<DialogHeader className="shrink-0">
 					<DialogTitle>{t("title")}</DialogTitle>
 					<DialogDescription>{t("description")}</DialogDescription>
 				</DialogHeader>
@@ -877,7 +960,7 @@ export function CreateDocumentDialog({
 				 * Later units add controls inside these groups; they do not
 				 * reorder the groups.
 				 */}
-				<div className="space-y-4">
+				<div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
 					{/* 1. What the document is */}
 					<div>
 						<Label htmlFor="type">{t("typeLabel")}</Label>
@@ -930,6 +1013,17 @@ export function CreateDocumentDialog({
 							</p>
 						)}
 					</div>
+
+					{proposalBrandingActive && (
+						<ProposalBrandReadiness
+							projectId={projectId}
+							query={proposalBrandQuery}
+							value={proposalBranding}
+							onValueChange={setProposalBranding}
+							onDraftStateChange={setClientBrandDraftBlocked}
+							disabled={isSubmitting}
+						/>
+					)}
 
 					{/* 2. How it gets written */}
 					{aiAvailability === "pending" && (
@@ -1274,67 +1368,66 @@ export function CreateDocumentDialog({
 							</div>
 						)}
 					</div>
+					{/*
+					 * What this type needs before it can be generated, and where to
+					 * get it (Fizzy #1930). Shown only while AI generation is the
+					 * chosen path — a manual document is never gated — and directly
+					 * above the button it explains, so the reason for a disabled
+					 * Create is next to the Create.
+					 */}
+					{generateWithAI && (
+						<>
+							{/*
+							 * Whether this draft has any company context to draw on
+							 * (Fizzy #2719). Advice, never a gate: it cannot disable
+							 * Create and has no dismissal, and it sits above the gate
+							 * banner so that banner stays next to the button it
+							 * explains. Each keeps its own action.
+							 */}
+							{COMPANY_CONTEXT_DOCUMENT_TYPES.has(type) && (
+								<CompanyContextNotice
+									projectId={projectId}
+									organizationSlug={organizationSlug}
+									onNavigate={() => {
+										// Same rule as the dialog's own
+										// dismissal paths: never close mid-submit.
+										if (!isSubmitting) {
+											onOpenChange(false);
+										}
+									}}
+								/>
+							)}
+							{/*
+							 * Not while pasted text answers the block — the banner
+							 * would ask for a source the person is looking at.
+							 */}
+							{!sourceWaivesGate && (
+								<CapabilityGateBanner
+									capabilityKey={
+										CAPABILITY_BY_DOCUMENT_TYPE[type] ?? ""
+									}
+								/>
+							)}
+							{/*
+							 * The banner can dismiss a warning — including "do not show
+							 * again for this project" — so the way back has to live on the
+							 * same surface, or a permanent dismissal becomes unreachable
+							 * (AC-8). Scoped to the document type on screen, mirroring the
+							 * banner above it and the Security tab's precedent: restoring
+							 * here never undoes a dismissal made against another generator.
+							 * Renders nothing until there is something to restore, so it
+							 * costs the ungated case nothing.
+							 */}
+							<CapabilityRestoreControl
+								capabilityKeys={[
+									CAPABILITY_BY_DOCUMENT_TYPE[type] ?? "",
+								]}
+							/>
+						</>
+					)}
 				</div>
 
-				{/*
-				 * What this type needs before it can be generated, and where to
-				 * get it (Fizzy #1930). Shown only while AI generation is the
-				 * chosen path — a manual document is never gated — and directly
-				 * above the button it explains, so the reason for a disabled
-				 * Create is next to the Create.
-				 */}
-				{generateWithAI && (
-					<>
-						{/*
-						 * Whether this draft has any company context to draw on
-						 * (Fizzy #2719). Advice, never a gate: it cannot disable
-						 * Create and has no dismissal, and it sits above the gate
-						 * banner so that banner stays next to the button it
-						 * explains. Each keeps its own action.
-						 */}
-						{COMPANY_CONTEXT_DOCUMENT_TYPES.has(type) && (
-							<CompanyContextNotice
-								projectId={projectId}
-								organizationSlug={organizationSlug}
-								onNavigate={() => {
-									// Same rule as the dialog's own
-									// dismissal paths: never close mid-submit.
-									if (!isSubmitting) {
-										onOpenChange(false);
-									}
-								}}
-							/>
-						)}
-						{/*
-						 * Not while pasted text answers the block — the banner
-						 * would ask for a source the person is looking at.
-						 */}
-						{!sourceWaivesGate && (
-							<CapabilityGateBanner
-								capabilityKey={
-									CAPABILITY_BY_DOCUMENT_TYPE[type] ?? ""
-								}
-							/>
-						)}
-						{/*
-						 * The banner can dismiss a warning — including "do not show
-						 * again for this project" — so the way back has to live on the
-						 * same surface, or a permanent dismissal becomes unreachable
-						 * (AC-8). Scoped to the document type on screen, mirroring the
-						 * banner above it and the Security tab's precedent: restoring
-						 * here never undoes a dismissal made against another generator.
-						 * Renders nothing until there is something to restore, so it
-						 * costs the ungated case nothing.
-						 */}
-						<CapabilityRestoreControl
-							capabilityKeys={[
-								CAPABILITY_BY_DOCUMENT_TYPE[type] ?? "",
-							]}
-						/>
-					</>
-				)}
-
-				<DialogFooter>
+				<DialogFooter className="shrink-0 border-t pt-4">
 					<Button
 						variant="outline"
 						onClick={() => onOpenChange(false)}

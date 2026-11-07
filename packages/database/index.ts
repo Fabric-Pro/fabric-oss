@@ -4,6 +4,7 @@ export * from "./prisma";
 export * from "./prisma/queries/frame-edit-history";
 // Frame page records (what a published page keeps between visits)
 export * from "./prisma/queries/frame-page-records";
+export * from "./prisma/queries/frame-reviews";
 // Frame sharing
 export * from "./prisma/queries/frame-share";
 export * from "./prisma/queries/frame-sharing";

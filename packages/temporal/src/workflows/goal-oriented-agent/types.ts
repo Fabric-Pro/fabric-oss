@@ -1,4 +1,5 @@
 import type { NativeTestAuthority } from "../../activities/shared/native-agent-test-authority";
+import type { NativeQualityConfiguration } from "../../lib/run-quality-configuration";
 /**
  * Goal-Oriented Agent Workflow Types
  *
@@ -74,6 +75,7 @@ export interface GoalOrientedAgentInput {
 }
 
 export interface GoalOrientedAgentOutput {
+	qualityConfiguration?: NativeQualityConfiguration;
 	executionId: string;
 	status: "COMPLETED" | "FAILED" | "CANCELLED" | "MAX_ITERATIONS_REACHED";
 
@@ -173,6 +175,7 @@ export interface ExecutedStep {
 // =============================================================================
 
 export interface GoalOrientedWorkflowState {
+	qualityConfiguration?: NativeQualityConfiguration;
 	executionId: string;
 	startTime: number;
 	status:

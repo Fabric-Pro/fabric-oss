@@ -21,6 +21,7 @@ import {
 	orchestratorPreferencesQueryKey,
 	setCachedUiMode,
 } from "@saas/agents/lib/interface-mode-preference";
+import { normalizeFrameHandoffRevision } from "@saas/frames/lib/frame-agent-handoff";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import type { AttachedFile } from "@saas/shared/components/copilot/use-copilot-document-upload";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
@@ -235,6 +236,8 @@ export interface FabricAgentLaunchContext {
 	workspaceId?: string | null;
 	/** The frame on either surface; validated server-side for usage attribution. */
 	launchFrameId?: string | null;
+	/** Displayed revision is context only; tools recheck current access and revision. */
+	launchFrameUpdatedAt?: string | null;
 	codeContext?: CodeContext | null;
 	// Repository connection
 	repositoryUrl?: string | null;
@@ -294,6 +297,9 @@ function normalizeContext(
 		surface: context.surface ?? null,
 		workspaceId: context.workspaceId ?? null,
 		launchFrameId: context.launchFrameId ?? null,
+		launchFrameUpdatedAt: normalizeFrameHandoffRevision(
+			context.launchFrameUpdatedAt,
+		),
 		codeContext: context.codeContext
 			? {
 					filePath: context.codeContext.filePath?.trim() || null,
@@ -348,7 +354,7 @@ function buildContextDetails(context: FabricAgentLaunchContext): string {
 			: null,
 		context.surface === "workspace"
 			? context.workspaceId
-				? `Page: the generated Page the user has open (frame id: ${context.workspaceId}). For partial edits, use fabric_get_frame outline, read the needed source window, then fabric_edit_frame_block. Use fabric_update_frame for block structure or full rewrites.`
+				? "Page: the generated Page the user has open. Read fabric_get_frame for the current source and revision, then use fabric_propose_frame_change to prepare a reviewed edit. Show its review link before applying. Legacy fabric_update_frame is a direct edit, not a substitute for the review flow."
 				: "Page: the organization's Pages list. A new Page is a frame created with surface workspace. Document Workspaces are separate document repositories."
 			: null,
 		context.codeContext?.filePath

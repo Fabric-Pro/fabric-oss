@@ -3,6 +3,7 @@ export interface DatabricksConfig {
 	clientId?: string;
 	clientSecret?: string;
 	token?: string; // PAT — takes precedence over OAuth M2M when set
+	scope: string; // OAuth scope(s), space-separated; defaults to all-apis
 }
 
 /**
@@ -39,8 +40,9 @@ export function getDatabricksConfig(
 	const clientId = readCredential(env.DATABRICKS_CLIENT_ID);
 	const clientSecret = readCredential(env.DATABRICKS_CLIENT_SECRET);
 	const token = readCredential(env.DATABRICKS_TOKEN);
+	const scope = readCredential(env.DATABRICKS_SCOPE)?.replace(/\s+/g, " ");
 
-	return { host, clientId, clientSecret, token };
+	return { host, clientId, clientSecret, token, scope: scope ?? "all-apis" };
 }
 
 /**

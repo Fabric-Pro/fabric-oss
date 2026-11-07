@@ -63,6 +63,10 @@ import {
 } from "../lib/dispatch-document-generation";
 import { assertNotGenerationOwnedStatus } from "../lib/generation-owned-status";
 import {
+	prepareProposalBrandingInput,
+	proposalBrandingAdmissionError,
+} from "../lib/proposal-branding-input";
+import {
 	isBlankSuppliedText,
 	MAX_SUPPLIED_SOURCE_TEXT_CHARS,
 	prepareSuppliedText,
@@ -127,6 +131,8 @@ export const createDocumentProcedure = tenantProtectedProcedure
 	.input(
 		z.object({
 			projectId: z.string(),
+			proposalBranding: z.enum(["CLIENT", "COMPANY"]).optional(),
+			recipientBrandVersion: z.number().int().positive().optional(),
 			/**
 			 * Accepted for wire compatibility and used only by the plain route.
 			 * The content-supplied routes ignore it on purpose — see the module
@@ -211,6 +217,7 @@ export const createDocumentProcedure = tenantProtectedProcedure
 		}
 
 		const generationRequested = input.generateWithAi === true;
+		const branding = await prepareProposalBrandingInput(input);
 
 		// A file is the one source that does not exist yet at this point: the
 		// caller needs the document's id before it can upload, because the
@@ -343,6 +350,7 @@ export const createDocumentProcedure = tenantProtectedProcedure
 		try {
 			created = await createDocumentWithContent({
 				projectId: input.projectId,
+				...branding,
 				type: input.type,
 				title,
 				// As-is stores the user's words; the generation route creates the
@@ -382,6 +390,8 @@ export const createDocumentProcedure = tenantProtectedProcedure
 					: undefined,
 			});
 		} catch (error) {
+			const brandingError = proposalBrandingAdmissionError(error);
+			if (brandingError) throw brandingError;
 			// The raw error can carry schema names, constraint text, and
 			// connection details. Log it for operators; hand the client a fixed
 			// message. R32: a failed write is a failed call — this never
@@ -613,6 +623,8 @@ async function createPlainDocument({
 	input: {
 		projectId: string;
 		organizationId?: string | null;
+		proposalBranding?: "CLIENT" | "COMPANY";
+		recipientBrandVersion?: number;
 		type: z.infer<typeof ProjectDocumentTypeSchema>;
 		title: string;
 		content: string;
@@ -649,6 +661,12 @@ async function createPlainDocument({
 	}
 
 	const document = await createDocument({
+		...(input.proposalBranding
+			? {
+					proposalBranding: input.proposalBranding,
+					recipientBrandVersion: input.recipientBrandVersion,
+				}
+			: {}),
 		projectId: input.projectId,
 		type: input.type,
 		title: input.title,
@@ -656,6 +674,8 @@ async function createPlainDocument({
 		status: input.status,
 		lastEditedBy: user.id,
 		userId: user.id,
+	}).catch((error: unknown) => {
+		throw proposalBrandingAdmissionError(error) ?? error;
 	});
 
 	if (!document) {

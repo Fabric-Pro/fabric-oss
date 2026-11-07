@@ -32,6 +32,7 @@ import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
 import type { FrameLaunchContext } from "@saas/agents/lib/expand-handoff";
 import { LimitBanner } from "@saas/ai/components/shared/LimitBanner";
 import { useSession } from "@saas/auth/hooks/use-session";
+import { appendFrameAgentHandoffContext } from "@saas/frames/lib/frame-agent-handoff";
 import type { FrameToolResult } from "@saas/frames/lib/frame-result";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { ChatMessageInsertDiagramButton } from "@saas/projects/components/excalidraw-auto-insert/ChatMessageInsertDiagramButton";
@@ -2584,6 +2585,10 @@ export const FabricDirectChat = forwardRef<
 
 		// Use streaming hook to send message with document IDs and chatId for RAG
 		// The chatId is critical - it tells the RAG system where to find the document chunks
+		const turnInlineContexts = appendFrameAgentHandoffContext(
+			inlineAttachmentContexts,
+			effectiveFrameLaunchContext,
+		);
 		await streamSendMessage(messageContent, history, {
 			forceNewChat: isFirstMessage,
 			attachedDocumentIds:
@@ -2595,9 +2600,7 @@ export const FabricDirectChat = forwardRef<
 			attachmentNames:
 				attachmentNames.length > 0 ? attachmentNames : undefined,
 			inlineAttachmentContexts:
-				inlineAttachmentContexts.length > 0
-					? inlineAttachmentContexts
-					: undefined,
+				turnInlineContexts.length > 0 ? turnInlineContexts : undefined,
 		});
 	};
 
@@ -3610,7 +3613,7 @@ export const FabricDirectChat = forwardRef<
 				{/* Messages Area */}
 				{messages.length === 0 ? (
 					compactMode ? (
-						/* The launcher's empty state: Databricks Genie style
+						/* The launcher's empty state: Genie
 						   centered hero + structured starter rows, sized for a drawer. */
 						<div className="flex h-full flex-col overflow-y-auto px-4 py-6 sm:px-6">
 							<div className="mx-auto my-auto flex w-full max-w-2xl flex-col gap-6">

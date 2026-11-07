@@ -2,8 +2,16 @@ import { randomUUID } from "node:crypto";
 import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { db, type Prisma } from "../client";
 import { recordAuditTx } from "./audit-log";
+import {
+	FRAME_APPROVED_POINTER,
+	FRAME_PUBLISHED_POINTER,
+	frameMetadata,
+	saveFrameApprovedSnapshot,
+} from "./frame-approved-revisions";
+import { canAccessFrameProject } from "./frame-project-access";
 import { assertFrameRevision, nextFrameRevision } from "./frame-revision";
 import type { FrameShareScope, SharingGrant } from "./frame-sharing";
+import { canWriteReportDerivedFrame } from "./report-frame-access";
 
 /**
  * Who can open a frame, changed in one place.
@@ -176,6 +184,13 @@ async function lockedFrame(
 			fileType: { in: ["FRAME", "SLIDESHOW"] },
 		},
 	});
+	if (
+		frame &&
+		(!(await canAccessFrameProject(frame, input.userId, true, tx)) ||
+			!(await canWriteReportDerivedFrame(frame, input, tx)))
+	) {
+		return null;
+	}
 	if (frame) {
 		assertFrameRevision(input.expectedUpdatedAt, frame.updatedAt);
 	}
@@ -210,6 +225,16 @@ export async function shareFrame(
 			return refusal("frame_not_found", "Frame not found.");
 		}
 		const resulting = input.scope ?? frame.shareScope;
+		if (
+			frame.sourceRunType === "REPORT_EXECUTION" &&
+			((resulting !== "PRIVATE" && resulting !== "PROJECT") ||
+				emails.length > 0)
+		) {
+			return refusal(
+				"frame_not_found",
+				"Report previews retain their report audience.",
+			);
+		}
 		if (
 			emails.length > 0 &&
 			!["EMAILS_ONLY", "WORKSPACE_AND_EMAILS"].includes(resulting)
@@ -277,6 +302,10 @@ export async function shareFrame(
 				})
 			).count;
 		}
+		const publication =
+			input.scope === "PUBLIC"
+				? await saveFrameApprovedSnapshot(tx, frame, "APPROVED")
+				: null;
 		const token =
 			resulting === "PUBLIC" ? (frame.shareToken ?? randomUUID()) : null;
 		throwIfDispatchStopped();
@@ -284,6 +313,15 @@ export async function shareFrame(
 			where: { id: frame.id, updatedAt: frame.updatedAt },
 			data: {
 				shareScope: resulting,
+				...(publication
+					? {
+							metadata: {
+								...frameMetadata(frame.metadata),
+								[FRAME_PUBLISHED_POINTER]: publication.id,
+								[FRAME_APPROVED_POINTER]: publication.id,
+							} as Prisma.InputJsonValue,
+						}
+					: {}),
 				isPublic: resulting === "PUBLIC",
 				shareToken: token,
 				updatedAt: nextFrameRevision(frame.updatedAt),

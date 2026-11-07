@@ -1,3 +1,5 @@
+import { DELIVERY_SOURCE_TOOL_NAMES } from "./fabric-delivery-source-tool-definitions";
+import { TRIAGE_TOOL_NAMES } from "./fabric-triage-tool-definitions";
 /**
  * What Fabric tells a client about the tools a page uses to keep things, know
  * who is viewing, ask the model, hold files and read the viewer's connected
@@ -65,6 +67,25 @@ export const PAGE_ASK_PER_MINUTE = 10;
  * "allow" for a tool cannot be allowed to cover any of them.
  */
 export const NOT_FOR_PAGES: ReadonlySet<string> = new Set([
+	...DELIVERY_SOURCE_TOOL_NAMES,
+	...TRIAGE_TOOL_NAMES,
+	"fabric_list_delivery_signals",
+	"fabric_get_delivery_signal",
+	"fabric_get_delivery_signal_sources",
+	"fabric_create_frame_draft",
+	"fabric_validate_frame_document",
+	"fabric_list_frame_templates",
+	"fabric_get_frame_template",
+	"fabric_create_frame_template",
+	"fabric_create_frame_from_template",
+	"fabric_propose_frame_change",
+	"fabric_list_frame_changes",
+	"fabric_get_frame_change",
+	"fabric_apply_frame_change",
+	"fabric_dismiss_frame_change",
+	"fabric_get_frame_review",
+	"fabric_approve_frame_revision",
+
 	"fabric_list_page_tools",
 	"fabric_switch_organization",
 	"fabric_request_authority",

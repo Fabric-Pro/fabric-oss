@@ -25,6 +25,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../prisma/client", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../prisma/client")>();
 	const tx = {
+		frameApprovedRevision: {
+			findFirst: vi.fn().mockResolvedValue(null),
+			create: vi.fn(async ({ data }) => ({ id: data.id, ...data })),
+		},
+		member: { findFirst: vi.fn().mockResolvedValue({ role: "owner" }) },
 		$queryRaw: vi.fn().mockResolvedValue([]),
 		auditLog: {
 			create: vi.fn().mockResolvedValue({ id: "example-audit" }),
@@ -42,6 +47,7 @@ vi.mock("../prisma/client", async (importOriginal) => {
 	return {
 		...actual,
 		db: {
+			...tx,
 			agentWorkspaceFile: {
 				findFirst: mocks.findFrame,
 				findUnique: mocks.findFrame,
@@ -266,7 +272,13 @@ describe("updateFrame", () => {
 			isPublic: true,
 		});
 
-		expect(mocks.updateFile).toHaveBeenCalledTimes(1);
+		// First pin the legacy public snapshot, then save the draft. Both are transactional.
+		expect(mocks.updateFile).toHaveBeenCalledTimes(2);
+		expect(
+			mocks.updateFile.mock.calls[0][0].data.metadata
+				.publishedFrameRevisionId,
+		).toMatch(/^frame-approved-/);
+		expect(mocks.updateFile.mock.calls[1][0].data.content).toBeDefined();
 	});
 
 	it("does not consult the policy for an edit that does not touch visibility", async () => {

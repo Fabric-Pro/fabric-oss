@@ -187,6 +187,11 @@ async function applyRLS() {
 				policy: "export_org_only",
 				schema: "lakehouse_export",
 			},
+			{
+				name: "delivery_event",
+				policy: "export_org_only",
+				schema: "lakehouse_export",
+			},
 			// Strict isolation: EITHER userId OR orgId, never both
 			{ name: "mcp_config", policy: "per_user_within_org" },
 			{ name: "mcp_server", policy: "per_user_within_org_with_system" },
@@ -235,6 +240,31 @@ async function applyRLS() {
 			// per-member scope as the conversation it belongs to.
 			{ name: "agent_test_case", policy: "per_user_within_org" },
 			{ name: "agent_test_run", policy: "per_user_within_org" },
+			{ name: "run_quality_policy", policy: "per_user_within_org" },
+			{ name: "harness_triage_run", policy: "per_user_within_org" },
+			{ name: "harness_triage_call", policy: "per_user_within_org" },
+			{ name: "harness_triage_budget", policy: "org_only" },
+			{ name: "delivery_signal_watch", policy: "per_user_within_org" },
+			{
+				name: "delivery_signal_source_grant",
+				policy: "per_user_within_org",
+			},
+			{
+				name: "delivery_signal_observation",
+				policy: "per_user_within_org",
+			},
+			{
+				name: "delivery_signal_source_command",
+				policy: "per_user_within_org",
+			},
+			{
+				name: "delivery_signal_capture_page",
+				policy: "per_user_within_org",
+			},
+
+			{ name: "run_quality_assessment", policy: "per_user_within_org" },
+			{ name: "frame_change_proposal", policy: "per_user_within_org" },
+			{ name: "frame_approved_revision", policy: "per_user_within_org" },
 			{ name: "conversation_turn", policy: "per_user_within_org" },
 			{ name: "conversation_turn_event", policy: "per_user_within_org" },
 			// Advisor summaries and preferences belong to a user within a tenant.
@@ -540,6 +570,10 @@ async function applyRLS() {
 				policy: "project_member_or_tenant_consistent",
 			},
 			{ name: "project_user_preference", policy: "per_user_within_org" },
+			{
+				name: "dashboard_curated_preference",
+				policy: "per_user_within_org",
+			},
 			// One person's dismissal of the CLI connection prompt (Fizzy #2457).
 			// Per-user within the org for the same reason the read markers below
 			// are: whether a colleague dismissed a prompt is not this member's
@@ -656,6 +690,8 @@ async function applyRLS() {
 				name: "glossy_segment_cache",
 				policy: "project_member_or_tenant_consistent",
 			},
+			// Client font and cover fields share this existing project-bound row;
+			// choosing a visual identity never grants new context or data access.
 			{
 				name: "project_recipient_brand",
 				policy: "project_member_or_tenant_consistent",

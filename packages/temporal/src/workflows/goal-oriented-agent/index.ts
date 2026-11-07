@@ -33,6 +33,7 @@ import type * as deploymentActivities from "../../activities/deployment-executio
 import type * as goalOrientedActivities from "../../activities/goal-oriented-agent";
 import type * as orchestratorActivities from "../../activities/orchestrator";
 import { hasUnconfirmedAgentEffect } from "../../lib/agent-execution-native-protocol";
+import { NATIVE_QUALITY_CONFIGURATION_PATCH } from "../../lib/run-quality-configuration";
 import {
 	persistNativeAgentCompletion,
 	registerNativeAgentReceipt,
@@ -326,6 +327,12 @@ export async function goalOrientedAgentWorkflow(
 				organizationId: input.organizationId,
 			});
 
+		if (
+			deploymentConfig?.qualityConfiguration &&
+			patched(NATIVE_QUALITY_CONFIGURATION_PATCH)
+		) {
+			state.qualityConfiguration = deploymentConfig.qualityConfiguration;
+		}
 		if (!deploymentConfig) {
 			throw new Error(`Deployment ${input.deploymentId} not found`);
 		}
@@ -1039,6 +1046,9 @@ function buildOutput(
 			: undefined;
 
 	return {
+		...(state.qualityConfiguration
+			? { qualityConfiguration: state.qualityConfiguration }
+			: {}),
 		executionId: state.executionId,
 		status,
 		goalAchieved,

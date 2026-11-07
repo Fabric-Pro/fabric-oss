@@ -312,3 +312,182 @@ describe("a failing routing query", () => {
 		);
 	});
 });
+
+describe("full-list branding consent after shared-cache lookup", () => {
+	it("checks all delivery read scopes after shared-cache lookup and for bound sessions", async () => {
+		setRows([]);
+		const base = {
+			...session("delivery-consent"),
+			credential: "organization-key" as const,
+		};
+		const names = [
+			"fabric_list_delivery_signals",
+			"fabric_get_delivery_signal",
+			"fabric_get_delivery_signal_sources",
+		];
+		for (const projectId of [null, "example-project"]) {
+			const scoped = { ...base, projectId };
+			const history = await getAggregatedTools({
+				...scoped,
+				scopes: ["projects:read", "features:read"],
+			});
+			expect(toolNames(history.tools)).toEqual(
+				expect.arrayContaining(names.slice(0, 2)),
+			);
+			expect(toolNames(history.tools)).not.toContain(names[2]);
+			const full = await getAggregatedTools({
+				...scoped,
+				scopes: ["projects:read", "features:read", "integrations:read"],
+			});
+			expect(toolNames(full.tools)).toEqual(
+				expect.arrayContaining(names),
+			);
+			for (const scopes of [
+				["projects:read"],
+				["mcp:read", "mcp:write"],
+			]) {
+				const limited = await getAggregatedTools({ ...scoped, scopes });
+				expect(
+					toolNames(limited.tools).filter((name) =>
+						names.includes(name),
+					),
+				).toEqual([]);
+			}
+		}
+	});
+
+	it("never caches one key's branding scopes into another key's tools/list", async () => {
+		setRows([]);
+		const base = session("branding-consent");
+		const generic = {
+			...base,
+			credential: "organization-key" as const,
+			scopes: ["mcp:read", "mcp:write"],
+		};
+		const exact = {
+			...base,
+			credential: "organization-key" as const,
+			scopes: ["reports:read", "reports:write"],
+		};
+		const names = [
+			"fabric_get_frame_branding",
+			"fabric_apply_frame_branding",
+			"fabric_get_report_branding",
+			"fabric_get_report_instance_branding",
+			"fabric_apply_report_branding",
+		];
+		expect(
+			toolNames((await getAggregatedTools(generic)).tools).filter(
+				(name) => names.includes(name),
+			),
+		).toEqual([]);
+		const allowed = toolNames((await getAggregatedTools(exact)).tools);
+		expect(allowed).toEqual(
+			expect.arrayContaining([
+				"fabric_get_report_branding",
+				"fabric_get_report_instance_branding",
+				"fabric_apply_report_branding",
+			]),
+		);
+		expect(allowed).not.toContain("fabric_apply_frame_branding");
+		expect(
+			toolNames((await getAggregatedTools(generic)).tools).filter(
+				(name) => names.includes(name),
+			),
+		).toEqual([]);
+	});
+});
+
+describe("private-source full-list consent", () => {
+	it("omits private capture from Page and native service discovery even with wildcard scope", async () => {
+		setRows([]);
+		for (const runtime of [
+			{
+				credential: "session" as const,
+				pageProjectId: "example-project",
+			},
+			{ credential: "service" as const },
+		]) {
+			const tools = await getAggregatedTools({
+				...session("private-runtime-hidden"),
+				...runtime,
+				scopes: ["*"],
+			});
+			expect(
+				toolNames(tools.tools).filter((name) =>
+					name.startsWith("fabric_delivery_source_"),
+				),
+			).toEqual([]);
+		}
+	});
+
+	beforeEach(() =>
+		vi.stubEnv("FABRIC_PRIVATE_SOURCE_CAPTURE_ENABLED", "true"),
+	);
+	afterEach(() => vi.unstubAllEnvs());
+	it("omits private capture from cached full and project-bound discovery immediately when disabled", async () => {
+		setRows([]);
+		for (const projectId of [null, "example-project"]) {
+			const base = {
+				...session("private-source-off"),
+				credential: "organization-key" as const,
+				projectId,
+				scopes: ["*"],
+			};
+			vi.stubEnv("FABRIC_PRIVATE_SOURCE_CAPTURE_ENABLED", "true");
+			const enabled = toolNames(
+				(await getAggregatedTools(base)).tools,
+			).filter((name) => name.startsWith("fabric_delivery_source_"));
+			expect(enabled).toHaveLength(11);
+			vi.stubEnv("FABRIC_PRIVATE_SOURCE_CAPTURE_ENABLED", "false");
+			expect(
+				toolNames((await getAggregatedTools(base)).tools).filter(
+					(name) => name.startsWith("fabric_delivery_source_"),
+				),
+			).toEqual([]);
+		}
+	});
+
+	it("applies every operation ceiling to full and project-bound discovery after cache reuse", async () => {
+		setRows([]);
+		const { FABRIC_DELIVERY_SOURCE_TOOL_DEFINITIONS } = await import(
+			"@repo/temporal/fabric-gateway-tools"
+		);
+		const { deliverySourceRequiredScopes } = await import(
+			"@repo/api/modules/projects/lib/delivery-source-contracts"
+		);
+		for (const projectId of [null, "example-project"]) {
+			const base = {
+				...session("private-source-consent"),
+				credential: "organization-key" as const,
+				projectId,
+			};
+			for (const tool of FABRIC_DELIVERY_SOURCE_TOOL_DEFINITIONS) {
+				const op = tool.name.slice(
+					"fabric_delivery_source_".length,
+				) as Parameters<typeof deliverySourceRequiredScopes>[0];
+				const scopes = deliverySourceRequiredScopes(op);
+				expect(
+					toolNames(
+						(await getAggregatedTools({ ...base, scopes })).tools,
+					),
+				).toContain(tool.name);
+				for (const ceiling of [
+					scopes.slice(0, -1),
+					["mcp:read", "mcp:write"],
+				]) {
+					expect(
+						toolNames(
+							(
+								await getAggregatedTools({
+									...base,
+									scopes: ceiling,
+								})
+							).tools,
+						),
+					).not.toContain(tool.name);
+				}
+			}
+		}
+	});
+});

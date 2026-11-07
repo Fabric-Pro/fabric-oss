@@ -38,6 +38,8 @@ import { Context, heartbeat } from "@temporalio/activity";
 import { CancelledFailure } from "@temporalio/common";
 import { asSchema, type ModelMessage } from "ai";
 import { flushExecutionEvents } from "../../../lib/execution-output-drain";
+import { frameDesignInstructions } from "../../../lib/frame-design-instructions";
+import { detectRequestedFrameOutput } from "../../../lib/frame-output-request";
 import { publishExecutionEvent } from "../../../lib/redis-publisher";
 import type { DirectChatUsageLimitRefusal } from "../../../types";
 import type {
@@ -46,7 +48,6 @@ import type {
 } from "../../../workflows/orchestrator/advisor-answer-snapshot";
 import { estimateIterationInputTokens } from "../../../workflows/orchestrator/advisor-history-retention";
 import { normalizeAdvisorToolDefinition } from "../../../workflows/orchestrator/advisor-tool-definition";
-import { isInlineDiagramRequest } from "../../../workflows/orchestrator/diagram-rendering";
 import type {
 	AssistantResponsePart,
 	ImageAttachmentReference,
@@ -89,63 +90,6 @@ function sanitizeProviderError(message: string): string {
 		.replace(/api-key:\s*\S+/gi, "api-key: [redacted]")
 		.replace(/bearer\s+\S+/gi, "Bearer [redacted]")
 		.replace(/authorization:\s*\S+/gi, "Authorization: [redacted]");
-}
-
-function detectRequestedFrameOutput(
-	message: string,
-): "frame" | "slideshow" | null {
-	const lower = message.toLowerCase();
-	const slideshowPatterns = [
-		"slideshow",
-		"slide deck",
-		"slide-deck",
-		"presentation",
-		"presentation deck",
-		"deck",
-		"5-slide",
-		"5 slide",
-		"slides",
-	];
-	if (slideshowPatterns.some((pattern) => lower.includes(pattern))) {
-		return "slideshow";
-	}
-
-	const framePatterns = [
-		"create a frame",
-		"make a frame",
-		"build a frame",
-		"interactive frame",
-		"fabric frame",
-		"wireframe",
-		"dashboard",
-		// Visualization / chart / dashboard
-		"create a visualization",
-		"make a visualization",
-		"generate a visualization",
-		"build a visualization",
-		"data visualization",
-		"interactive visualization",
-		"create a chart",
-		"make a chart",
-		"generate a chart",
-		"build a chart",
-		"interactive chart",
-		"create a graph",
-		"make a graph",
-		"interactive graph",
-		"create a dashboard",
-		"make a dashboard",
-		"build a dashboard",
-		"interactive dashboard",
-	];
-	if (
-		framePatterns.some((pattern) => lower.includes(pattern)) &&
-		!isInlineDiagramRequest(message)
-	) {
-		return "frame";
-	}
-
-	return null;
 }
 
 /**
@@ -1271,7 +1215,7 @@ async function runAgentIterationRound(
 			.reverse()
 			.find((message) => message.role === "user")?.content;
 		const requestedFrameOutput = latestUserMessage
-			? detectRequestedFrameOutput(latestUserMessage)
+			? detectRequestedFrameOutput(latestUserMessage, "advisor")
 			: null;
 		const forcedFrameToolName =
 			requestedFrameOutput === "slideshow"
@@ -1343,10 +1287,14 @@ async function runAgentIterationRound(
 		// Use streamText to enable real-time text delta publishing via Redis
 		// maxTokens set high to allow long outputs (e.g. full HTML pages).
 		// Without this the provider default may silently truncate responses.
+		const artifactInstructions = frameDesignInstructions(
+			Object.keys(aiSdkTools),
+		);
+		const systemAdditions = [skillsSystemBlock, artifactInstructions]
+			.filter(Boolean)
+			.join("\n\n");
 		setRequestAdditions({
-			systemCharacters: skillsSystemBlock
-				? skillsSystemBlock.length + 2
-				: 0,
+			systemCharacters: systemAdditions ? systemAdditions.length + 2 : 0,
 			callerToolNames: Object.keys(availableTools),
 			skillToolNames: skillsSystemBlock
 				? Object.keys(aiSdkTools).filter((name) =>
@@ -1358,13 +1306,14 @@ async function runAgentIterationRound(
 					)
 				: [],
 		});
-		const effectiveSystemPrompt = skillsSystemBlock
-			? `${systemPrompt}\n\n${skillsSystemBlock}`
+		const effectiveSystemPrompt = systemAdditions
+			? `${systemPrompt}\n\n${systemAdditions}`
 			: systemPrompt;
 		const system = buildIterationSystemPrompt({
 			systemPrompt,
 			systemPromptParts: input.systemPromptParts,
 			skillsSystemBlock: skillsSystemBlock ?? "",
+			artifactInstructions,
 			promptCacheTarget,
 		});
 		if (system.reusable !== undefined) {

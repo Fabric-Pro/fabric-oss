@@ -1,3 +1,8 @@
+import { registerProjectDeliveryCommand } from "./delivery.js";
+import { registerImplementationCommands } from "./implementations.js";
+import { registerProjectSignalCommands } from "./signals.js";
+import { registerProjectSourceCommands } from "./sources.js";
+import { registerProjectTriageCommands } from "./triage.js";
 /**
  * fabric projects
  *
@@ -16,6 +21,7 @@ import {
 	printRecord,
 	printSuccess,
 } from "../../lib/output.js";
+import { registerProjectDocumentCommands } from "./documents.js";
 
 export function buildProjectsCommand(): Command {
 	const projects = new Command("projects").description("Manage projects");
@@ -236,5 +242,11 @@ export function buildProjectsCommand(): Command {
 			},
 		);
 
+	registerProjectDocumentCommands(projects);
+	registerProjectDeliveryCommand(projects);
+	registerProjectSignalCommands(projects);
+	registerProjectSourceCommands(projects);
+	registerProjectTriageCommands(projects);
+	registerImplementationCommands(projects);
 	return projects;
 }

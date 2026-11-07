@@ -93,6 +93,7 @@ type Side = "top" | "bottom";
 /** Project tab ids (must match ProjectDetails `tabs`). */
 export type ProjectTabId =
 	| "overview"
+	| "delivery"
 	| "daily-brief"
 	| "meeting-digest"
 	| "release-notes"
@@ -283,6 +284,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 		},
 	},
 	{
+		// Genie artifact edits use proposed previews; Pages also links to the artifact/template library.
 		id: "assistant",
 		area: "assistant",
 		icon: SparklesIcon,
@@ -345,7 +347,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 		target: {
 			kind: "projectComponent",
 			tab: "overview",
-			anchorId: "overview-readiness",
+			anchorId: "overview-delivery-evidence",
 			side: "bottom",
 		},
 	},

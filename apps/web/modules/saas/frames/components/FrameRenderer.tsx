@@ -1,8 +1,19 @@
 "use client";
 
+import { artifactBrandFontFaceCss } from "@repo/utils/artifact-brand-fonts";
+import {
+	type ArtifactBrandSnapshot,
+	artifactBrandCoverHtml,
+	artifactBrandPresentationCss,
+	artifactBrandSnapshotSchema,
+} from "@repo/utils/artifact-brand-snapshot";
+import {
+	effectiveFramePresentation,
+	type FramePresentation,
+} from "@repo/utils/frame-presentation";
 import { cn } from "@ui/lib";
 import html2canvas from "html2canvas";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useId, useMemo, useRef } from "react";
 import { Response } from "../../../../components/ai-elements/response";
 import { Mermaid } from "../../../marketing/blog/components/Mermaid";
 import {
@@ -34,6 +45,7 @@ interface FrameBlockView {
 
 export interface FrameDocumentView {
 	version: 1;
+	presentation?: FramePresentation;
 	kind: "frame" | "slideshow";
 	title: string;
 	description?: string;
@@ -41,6 +53,7 @@ export interface FrameDocumentView {
 	theme?: {
 		mode?: "light" | "dark" | "system";
 		accentColor?: string;
+		branding?: ArtifactBrandSnapshot;
 	};
 	metadata?: {
 		format?: "html" | "json" | "mermaid" | "markdown";
@@ -76,6 +89,18 @@ export function FrameRenderer({
 	allowScripts?: boolean;
 }) {
 	const rootRef = useRef<HTMLDivElement>(null);
+	const scopeId = `frame-brand-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+	const parsedBranding = artifactBrandSnapshotSchema.safeParse(
+		frame.theme?.branding,
+	);
+	const presentation = effectiveFramePresentation(frame);
+	const isInterface = presentation === "INTERFACE";
+	const branding =
+		!isInterface && parsedBranding.success
+			? parsedBranding.data
+			: undefined;
+	const scriptsAllowed =
+		allowScripts && frame.metadata?.sourceRunType !== "REPORT_EXECUTION";
 	const visibleBlocks = useMemo(() => {
 		if (
 			frame.kind === "slideshow" &&
@@ -176,19 +201,36 @@ export function FrameRenderer({
 	return (
 		<div
 			ref={rootRef}
+			id={scopeId}
 			className={cn(
-				"space-y-6",
-				embedded && "min-h-full bg-background p-4 md:p-6",
+				!isInterface && "space-y-6",
+				embedded &&
+					!isInterface &&
+					"min-h-full bg-background p-4 md:p-6",
 				className,
 			)}
 		>
+			{branding ? (
+				<>
+					<style>{`${artifactBrandFontFaceCss(branding)}${artifactBrandPresentationCss(branding, `#${scopeId}`)}`}</style>
+					<div
+						dangerouslySetInnerHTML={{
+							__html: artifactBrandCoverHtml(
+								branding,
+								frame.title,
+							),
+						}}
+					/>
+				</>
+			) : null}
 			{visibleBlocks.map((block, index) => {
 				// Embedded, the page around the frame already names it; a block
 				// titled just like the frame would say the same thing again.
 				const blockTitle =
-					embedded &&
-					frame.kind !== "slideshow" &&
-					block.title?.trim() === frame.title.trim()
+					isInterface ||
+					(embedded &&
+						frame.kind !== "slideshow" &&
+						block.title?.trim() === frame.title.trim())
 						? undefined
 						: block.title;
 				return (
@@ -196,16 +238,20 @@ export function FrameRenderer({
 						key={block.id}
 						className={cn(
 							"overflow-hidden",
-							!embedded && "rounded-lg border bg-card shadow-sm",
-							frame.kind === "slideshow" &&
+							!embedded &&
+								!isInterface &&
+								"rounded-lg border bg-card shadow-sm",
+							!isInterface &&
+								frame.kind === "slideshow" &&
 								"min-h-[70vh] rounded-lg p-0",
-							frame.kind !== "slideshow" &&
+							!isInterface &&
+								frame.kind !== "slideshow" &&
 								(embedded ? "" : "p-4 md:p-5"),
 						)}
 					>
 						<div
 							className={cn(
-								frame.kind === "slideshow"
+								!isInterface && frame.kind === "slideshow"
 									? "border-b px-6 py-4"
 									: blockTitle
 										? "mb-3"
@@ -233,13 +279,17 @@ export function FrameRenderer({
 						</div>
 						<div
 							className={cn(
-								frame.kind === "slideshow" &&
+								!isInterface &&
+									frame.kind === "slideshow" &&
 									"px-6 py-6 md:px-8 md:py-8",
 							)}
 						>
 							<FrameBlockRenderer
 								block={block}
-								allowScripts={allowScripts}
+								branding={branding}
+								allowScripts={scriptsAllowed}
+								presentation={presentation}
+								sourceRunType={frame.metadata?.sourceRunType}
 								hasHost={embedded}
 							/>
 						</div>
@@ -277,11 +327,17 @@ let relayedCallCounter = 0;
  * `runtime-hello` (one that came up after this component attached).
  */
 function ProjectHtmlBlockFrame({
+	sourceRunType,
+	presentation,
 	block,
+	branding,
 	hasHost,
 	allowScripts,
 }: {
 	block: FrameBlockView;
+	presentation?: FramePresentation;
+	sourceRunType?: string;
+	branding?: ArtifactBrandSnapshot;
 	hasHost: boolean;
 	allowScripts: boolean;
 }) {
@@ -289,8 +345,14 @@ function ProjectHtmlBlockFrame({
 	const hostAvailable = useRef(hasHost);
 	hostAvailable.current = hasHost;
 	const srcdoc = useMemo(
-		() => buildProjectFrameSrcdoc(block.content, { scripts: allowScripts }),
-		[block.content, allowScripts],
+		() =>
+			buildProjectFrameSrcdoc(block.content, {
+				scripts: allowScripts,
+				sourceRunType,
+				presentation,
+				branding,
+			}),
+		[block.content, allowScripts, branding, presentation, sourceRunType],
 	);
 
 	useEffect(() => {
@@ -460,11 +522,17 @@ function ProjectHtmlBlockFrame({
 }
 
 function FrameBlockRenderer({
+	sourceRunType,
+	presentation,
 	block,
+	branding,
 	allowScripts,
 	hasHost,
 }: {
 	block: FrameBlockView;
+	presentation?: FramePresentation;
+	sourceRunType?: string;
+	branding?: ArtifactBrandSnapshot;
 	allowScripts: boolean;
 	hasHost: boolean;
 }) {
@@ -472,7 +540,10 @@ function FrameBlockRenderer({
 		case "html":
 			return (
 				<ProjectHtmlBlockFrame
+					sourceRunType={sourceRunType}
+					presentation={presentation}
 					block={block}
+					branding={branding}
 					hasHost={hasHost}
 					allowScripts={allowScripts}
 				/>

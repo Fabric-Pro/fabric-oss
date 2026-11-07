@@ -147,6 +147,10 @@ vi.mock(
 	},
 );
 
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({ user: { id: "example-user" } }),
+}));
+
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		aiConfig: {

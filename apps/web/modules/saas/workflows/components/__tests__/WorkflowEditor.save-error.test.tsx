@@ -6,8 +6,19 @@ const mocks = vi.hoisted(() => ({
 	updateError: undefined as unknown,
 	toastError: vi.fn(),
 	toastSuccess: vi.fn(),
+	quality: vi.fn(),
 }));
 
+vi.mock("@saas/run-quality/components/RunQualityPanel", () => ({
+	RunQualityPanel: (props: Record<string, unknown>) => {
+		mocks.quality(props);
+		return (
+			<section aria-label="Automatic checks">
+				Existing recorded checks
+			</section>
+		);
+	},
+}));
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({
 		organizationId: "org-example",
@@ -165,4 +176,31 @@ describe("WorkflowEditor — a save the server refuses", () => {
 		expect(mocks.toastSuccess).toHaveBeenCalledWith("Workflow saved");
 		expect(mocks.toastError).not.toHaveBeenCalled();
 	});
+});
+
+it("keeps authorized result checks available in the phone fallback without a hidden canvas action", () => {
+	window.matchMedia = vi.fn().mockReturnValue({
+		matches: true,
+		addEventListener: vi.fn(),
+		removeEventListener: vi.fn(),
+		addListener: vi.fn(),
+		removeListener: vi.fn(),
+	});
+	render(<WorkflowEditor workflowId="wf-1" />);
+	expect(
+		screen.getByRole("heading", { name: "Workflow Editor" }),
+	).toBeVisible();
+	expect(
+		screen.getByRole("region", { name: "Automatic checks" }),
+	).toBeVisible();
+	expect(mocks.quality).toHaveBeenCalledWith(
+		expect.objectContaining({
+			organizationId: "org-example",
+			targetType: "WORKFLOW",
+			targetId: "wf-1",
+		}),
+	);
+	expect(mocks.quality.mock.calls.at(-1)?.[0]).not.toHaveProperty(
+		"onInspectExecution",
+	);
 });

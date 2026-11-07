@@ -1,4 +1,8 @@
 import { TZDate } from "@date-fns/tz";
+import {
+	artifactBrandSelectionSchema,
+	artifactBrandSnapshotSchema,
+} from "@repo/utils/artifact-brand-snapshot";
 import { addDays, addMonths, addYears, startOfDay } from "date-fns";
 import { z } from "zod";
 
@@ -35,6 +39,9 @@ export const reportEvidenceConfigSchema = z.strictObject({
 	publication: z.enum(["draft", "review"]).default("draft"),
 	// Organization ownership remains unchanged. This narrows both evidence and readers.
 	projectId: z.string().min(1).max(128).optional(),
+	branding: artifactBrandSelectionSchema.optional(),
+	/** Generate an offline PDF from this occurrence's exact report document. */
+	generatePdf: z.boolean().optional(),
 });
 export type ReportEvidenceConfig = z.infer<typeof reportEvidenceConfigSchema>;
 const interval = z.strictObject({
@@ -133,6 +140,7 @@ export const reportExecutionSnapshotSchema = z.strictObject({
 			target: z.string().regex(/^[a-f0-9]{64}$/),
 		})
 		.optional(),
+	branding: artifactBrandSnapshotSchema.optional(),
 	config: reportEvidenceConfigSchema.optional(),
 	window: reportEvidenceWindowSchema.optional(),
 	// Pinned non-secret configuration, bounded before persistence. Credentials are resolved at use.
@@ -182,6 +190,12 @@ export function buildReportExecutionSnapshot(input: {
 	origin: "manual" | "scheduled";
 }): ReportExecutionSnapshot {
 	const config = readReportEvidenceConfig(input.instance.fabricConfig);
+	if (config?.branding) {
+		assertReportBrandingOutputFormat(
+			(input.instance.template as { outputFormat?: unknown } | undefined)
+				?.outputFormat,
+		);
+	}
 	assertPublicReportParameters(input.instance.parameterDefaults);
 	const snapshot = reportExecutionSnapshotSchema.parse({
 		version: 1,
@@ -329,5 +343,18 @@ export function assertProjectReportSourcesReady(
 		) {
 			throw new Error(PROJECT_REPORT_SETUP_REQUIRED);
 		}
+	}
+}
+
+/** Document formats share one report-derived Frame; native PDF uses its exact revision. */
+export function assertReportBrandingOutputFormat(outputFormat: unknown): void {
+	if (
+		!["MARKDOWN", "HTML", "PDF", "MULTI_FORMAT"].includes(
+			String(outputFormat),
+		)
+	) {
+		throw new Error(
+			"Choose a document report format (Markdown, HTML, PDF or multi-format) to apply branding.",
+		);
 	}
 }

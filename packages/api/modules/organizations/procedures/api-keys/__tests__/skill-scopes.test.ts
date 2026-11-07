@@ -154,6 +154,22 @@ describe("Skill and governance API-key consent", () => {
 			);
 		},
 	);
+	it.each(["org", "user"] as const)(
+		"reserves company-brand write consent for current administrators on %s keys",
+		async (kind) => {
+			await expect(create(kind, ["orgs:write"])).rejects.toMatchObject({
+				code: "FORBIDDEN",
+			});
+			expect(m.orgCreate).not.toHaveBeenCalled();
+			expect(m.userCreate).not.toHaveBeenCalled();
+			m.role = "admin";
+			await create(kind, ["orgs:write"]);
+			expect(
+				kind === "org" ? m.orgCreate : m.userCreate,
+			).toHaveBeenCalled();
+		},
+	);
+
 	it("keeps wildcard minting outside both public consent schemas", () => {
 		for (const procedure of [org, user]) {
 			expect(

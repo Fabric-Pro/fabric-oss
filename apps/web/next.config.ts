@@ -457,7 +457,9 @@ const nextConfig: NextConfig = {
 	// Results in 15-70% faster dev boot, 28% faster builds, 40% faster cold starts
 	experimental: {
 		inlineCss: true,
-		turbopackFileSystemCacheForDev: true,
+		// Avoid reusing stale development compiler artifacts across restarts.
+		// Keep in-memory HMR; production build caching is configured separately.
+		turbopackFileSystemCacheForDev: false,
 		// The build cache pushes clean compiles against the 16 GB builder limit.
 		turbopackFileSystemCacheForBuild: false,
 

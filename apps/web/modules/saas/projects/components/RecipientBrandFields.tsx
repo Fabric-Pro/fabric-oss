@@ -1,6 +1,14 @@
 "use client";
 
 import {
+	ARTIFACT_COVER_STYLES,
+	ARTIFACT_FONT_FAMILIES,
+	type ArtifactCoverStyle,
+	type ArtifactFontFamily,
+	isArtifactCoverStyle,
+	isArtifactFontFamily,
+} from "@repo/utils/artifact-brand-theme";
+import {
 	brandAssetAcceptAttribute,
 	checkBrandAssetFile,
 	type LogoUploadContentType,
@@ -10,8 +18,20 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation } from "@tanstack/react-query";
 import { Alert, AlertDescription } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
+import {
+	Collapsible,
+	CollapsibleContent,
+	CollapsibleTrigger,
+} from "@ui/components/collapsible";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@ui/components/select";
 import { ImageIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import {
@@ -70,6 +90,9 @@ export type RecipientBrandDraft = {
 	/** As typed; `parseBrandColorList` turns them into `#rrggbb`. */
 	colors: string[];
 	logo: RecipientLogoDraft;
+	displayFontFamily: ArtifactFontFamily | null;
+	bodyFontFamily: ArtifactFontFamily | null;
+	coverStyle: ArtifactCoverStyle;
 };
 
 export function recipientBrandDraftFrom(
@@ -77,6 +100,9 @@ export function recipientBrandDraftFrom(
 		name: string | null;
 		website: string | null;
 		colors: string[];
+		displayFontFamily?: string | null;
+		bodyFontFamily?: string | null;
+		coverStyle?: string | null;
 	} | null,
 ): RecipientBrandDraft {
 	return {
@@ -84,6 +110,15 @@ export function recipientBrandDraftFrom(
 		website: brand?.website ?? "",
 		colors: brand?.colors ?? [],
 		logo: { action: "keep" },
+		displayFontFamily: isArtifactFontFamily(brand?.displayFontFamily)
+			? brand.displayFontFamily
+			: null,
+		bodyFontFamily: isArtifactFontFamily(brand?.bodyFontFamily)
+			? brand.bodyFontFamily
+			: null,
+		coverStyle: isArtifactCoverStyle(brand?.coverStyle)
+			? brand.coverStyle
+			: "DARK",
 	};
 }
 
@@ -132,6 +167,8 @@ type RecipientBrandFieldsProps = {
 	onPendingChange?: (pending: boolean) => void;
 	/** Told the website a Fetch filled the fields from, as it will be stored. */
 	onFetched?: (website: string) => void;
+	/** Glossy retains its existing presentation controls; its brand saves preserve these fields. */
+	showThemeFields?: boolean;
 };
 
 /**
@@ -164,6 +201,7 @@ export function RecipientBrandFields({
 	idPrefix = "recipient-brand",
 	onPendingChange,
 	onFetched,
+	showThemeFields = false,
 }: RecipientBrandFieldsProps) {
 	const t = useTranslations("projects.glossy.recipientBrand");
 	const [fetchStatus, setFetchStatus] = useState<FetchStatus>({
@@ -542,6 +580,97 @@ export function RecipientBrandFields({
 				}}
 				onChange={(colors) => onChange((prev) => ({ ...prev, colors }))}
 			/>
+			{showThemeFields && (
+				<Collapsible className="space-y-3 border-t pt-4">
+					<CollapsibleTrigger asChild>
+						<Button type="button" variant="outline" size="sm">
+							{t("theme.title")}
+						</Button>
+					</CollapsibleTrigger>
+					<CollapsibleContent className="space-y-4">
+						<p className="text-muted-foreground text-xs">
+							{t("theme.help")}
+						</p>
+						{(["displayFontFamily", "bodyFontFamily"] as const).map(
+							(field) => (
+								<div className="space-y-2" key={field}>
+									<Label htmlFor={`${idPrefix}-${field}`}>
+										{t(`theme.${field}`)}
+									</Label>
+									<Select
+										value={value[field] ?? "DEFAULT"}
+										disabled={locked}
+										onValueChange={(next) =>
+											onChange((prev) => ({
+												...prev,
+												[field]: isArtifactFontFamily(
+													next,
+												)
+													? next
+													: null,
+											}))
+										}
+									>
+										<SelectTrigger
+											id={`${idPrefix}-${field}`}
+										>
+											<SelectValue />
+										</SelectTrigger>
+										<SelectContent>
+											<SelectItem value="DEFAULT">
+												{t(
+													field ===
+														"displayFontFamily"
+														? "theme.defaultHeading"
+														: "theme.defaultBody",
+												)}
+											</SelectItem>
+											{ARTIFACT_FONT_FAMILIES.map(
+												(family) => (
+													<SelectItem
+														key={family}
+														value={family}
+													>
+														{family}
+													</SelectItem>
+												),
+											)}
+										</SelectContent>
+									</Select>
+								</div>
+							),
+						)}
+						<div className="space-y-2">
+							<Label htmlFor={`${idPrefix}-cover-style`}>
+								{t("theme.coverStyle")}
+							</Label>
+							<Select
+								value={value.coverStyle}
+								disabled={locked}
+								onValueChange={(coverStyle) => {
+									if (isArtifactCoverStyle(coverStyle)) {
+										onChange((prev) => ({
+											...prev,
+											coverStyle,
+										}));
+									}
+								}}
+							>
+								<SelectTrigger id={`${idPrefix}-cover-style`}>
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									{ARTIFACT_COVER_STYLES.map((style) => (
+										<SelectItem key={style} value={style}>
+											{t(`theme.cover.${style}`)}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+						</div>
+					</CollapsibleContent>
+				</Collapsible>
+			)}
 		</div>
 	);
 }

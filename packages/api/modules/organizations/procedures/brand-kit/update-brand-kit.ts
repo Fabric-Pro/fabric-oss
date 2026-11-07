@@ -13,7 +13,10 @@ import { normalizeWebsiteUrl } from "@repo/integrations/website-brand";
 import { BRAND_ASSET_REJECTION_CODES } from "@repo/utils/brand-assets";
 import { HEX_COLOR_PATTERN } from "@repo/utils/brand-colors";
 import { z } from "zod";
-import { recordAuditFromRequest } from "../../../../lib/audit";
+import {
+	type RecordAuditFromRequestInput,
+	recordAuditFromRequest,
+} from "../../../../lib/audit";
 import {
 	Permissions,
 	requireInputOrgPermission,
@@ -129,6 +132,27 @@ async function deleteUnsavedBrandKitKeys(
  * or owner membership of it, then the Brand kit gate (GLOSSY_EDITION or
  * PROPOSAL_ARTIFACT for that organization).
  */
+export const companyBrandInputSchema = z.object({
+	organizationId: z.string(),
+	/** The version `brandKit.get` returned; 0 when there was none. */
+	expectedVersion: z.number().int().min(0).optional(),
+	accentColors: z
+		.array(z.string().regex(HEX_COLOR_PATTERN))
+		.max(BRAND_KIT_MAX_ACCENTS),
+	guidance: z.string().max(BRAND_KIT_MAX_GUIDANCE_LENGTH).nullable(),
+	primaryColor: z.string().regex(HEX_COLOR_PATTERN).nullable().optional(),
+	displayFontFamily: z.string().max(128).nullable().optional(),
+	bodyFontFamily: z.string().max(128).nullable().optional(),
+	website: z.string().max(2048).nullable().optional(),
+	assets: z
+		.object({
+			hero: assetActionSchema.optional(),
+			displayFont: assetActionSchema.optional(),
+			bodyFont: assetActionSchema.optional(),
+		})
+		.optional(),
+});
+
 export const updateBrandKitProcedure = tenantProtectedProcedure
 	.use(
 		requireInputOrgPermission(Permissions.ORG_UPDATE, {
@@ -143,32 +167,7 @@ export const updateBrandKitProcedure = tenantProtectedProcedure
 		description:
 			"Set the colors, fonts, hero image, website and brand guidance used to style the organization's Glossy editions and Proposals.",
 	})
-	.input(
-		z.object({
-			organizationId: z.string(),
-			/** The version `brandKit.get` returned; 0 when there was none. */
-			expectedVersion: z.number().int().min(0).optional(),
-			accentColors: z
-				.array(z.string().regex(HEX_COLOR_PATTERN))
-				.max(BRAND_KIT_MAX_ACCENTS),
-			guidance: z.string().max(BRAND_KIT_MAX_GUIDANCE_LENGTH).nullable(),
-			primaryColor: z
-				.string()
-				.regex(HEX_COLOR_PATTERN)
-				.nullable()
-				.optional(),
-			displayFontFamily: z.string().max(128).nullable().optional(),
-			bodyFontFamily: z.string().max(128).nullable().optional(),
-			website: z.string().max(2048).nullable().optional(),
-			assets: z
-				.object({
-					hero: assetActionSchema.optional(),
-					displayFont: assetActionSchema.optional(),
-					bodyFont: assetActionSchema.optional(),
-				})
-				.optional(),
-		}),
-	)
+	.input(companyBrandInputSchema)
 	.output(
 		z.discriminatedUnion("outcome", [
 			z.object({
@@ -182,172 +181,185 @@ export const updateBrandKitProcedure = tenantProtectedProcedure
 			}),
 		]),
 	)
-	.handler(async ({ context, input }) => {
-		const { organizationId, expectedVersion } = input;
+	.handler(async ({ input, context }) =>
+		updateCompanyBrandCommand(
+			{ userId: context.user.id, organizationId: input.organizationId },
+			input,
+			(event) => recordAuditFromRequest(context, event),
+		),
+	);
 
-		const membership = await requireOrgMembership(
-			context.user.id,
-			organizationId,
-			["admin", "owner"],
-		);
-		if (!membership) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "You must be an admin or owner of this organization",
-			});
-		}
-		await assertGlossyOrProposalArtifactEnabledForOrganization(
-			organizationId,
-		);
-
-		// Everything the compare-and-set will validate, validated BEFORE a
-		// file is promoted, so a typo cannot leave an orphaned object behind.
-		let website: string | null | undefined;
-		if (input.website !== undefined) {
-			website = input.website?.trim()
-				? normalizeWebsiteUrl(input.website)
-				: null;
-			if (input.website?.trim() && !website) {
-				throw new ORPCError("BAD_REQUEST", {
-					message:
-						"Enter the organization's public website, like example.com",
-					data: { code: "invalidWebsite" },
-				});
-			}
-		}
-		let fields: BrandKitFields;
-		try {
-			fields = normalizeBrandKitFields({
-				accentColors: input.accentColors,
-				guidance: input.guidance,
-				primaryColor: input.primaryColor,
-				displayFontFamily: input.displayFontFamily,
-				bodyFontFamily: input.bodyFontFamily,
-				website,
-			});
-		} catch (error) {
-			if (error instanceof BrandKitValidationError) {
-				throw invalid(error.code);
-			}
-			throw error;
-		}
-
-		const actions: [BrandKitAssetKind, AssetAction][] =
-			BRAND_KIT_ASSET_KINDS.map((kind) => [
-				kind,
-				input.assets?.[kind] ?? { action: "keep" },
-			]);
-		for (const [, action] of actions) {
-			if (action.action === "replace") {
-				// Refuses a key, a path or another organization's prefix
-				// before storage is touched.
-				brandKitPendingKey(organizationId, action.token);
-			}
-		}
-
-		// An early answer for the common stale case, and the stored state a
-		// font file is checked against. The compare-and-set below stays the
-		// authority; this only spares a promotion that could not win.
-		const current = await getBrandKit(organizationId);
-		if (
-			expectedVersion !== undefined &&
-			(current?.version ?? 0) !== expectedVersion
-		) {
-			throw conflict();
-		}
-		for (const kind of ["displayFont", "bodyFont"] as const) {
-			const action = input.assets?.[kind]?.action ?? "keep";
-			const family = FONT_FAMILIES[kind];
-			const hasFile =
-				action === "replace" ||
-				(action === "keep" && Boolean(current?.[ASSET_COLUMNS[kind]]));
-			const nextFamily =
-				fields[family] !== undefined
-					? fields[family]
-					: (current?.[family] ?? null);
-			if (hasFile && !nextFamily) {
-				throw invalid("fontWithoutFamily");
-			}
-		}
-
-		const assets: BrandKitAssetKeys = {};
-		const promotedKeys: string[] = [];
-		try {
-			for (const [kind, action] of actions) {
-				if (action.action === "remove") {
-					assets[ASSET_COLUMNS[kind]] = null;
-				} else if (action.action === "replace") {
-					const promotion = await promoteBrandKitAsset(
-						organizationId,
-						kind,
-						action.token,
-					);
-					if (!promotion.ok) {
-						await deleteBrandKitObjects(
-							organizationId,
-							promotedKeys,
-						);
-						return {
-							outcome: "assetRejected" as const,
-							kind,
-							code: promotion.code,
-						};
-					}
-					promotedKeys.push(promotion.key);
-					assets[ASSET_COLUMNS[kind]] = promotion.key;
-				}
-			}
-		} catch (error) {
-			await deleteBrandKitObjects(organizationId, promotedKeys);
-			throw error;
-		}
-
-		let saved: Awaited<ReturnType<typeof upsertBrandKit>>;
-		try {
-			saved = await upsertBrandKit({
-				organizationId,
-				...fields,
-				assets,
-				expectedVersion,
-				updatedById: context.user.id,
-			});
-		} catch (error) {
-			if (error instanceof BrandKitValidationError) {
-				await deleteBrandKitObjects(organizationId, promotedKeys);
-				throw invalid(error.code);
-			}
-			await deleteUnsavedBrandKitKeys(organizationId, promotedKeys);
-			throw error;
-		}
-		if (saved.outcome === "conflict") {
-			await deleteBrandKitObjects(organizationId, promotedKeys);
-			throw conflict();
-		}
-
-		const usedUploads = actions.flatMap(([, action]) =>
-			action.action === "replace"
-				? [brandKitPendingKey(organizationId, action.token)]
-				: [],
-		);
-		const pendingKeys = await listBrandKitPendingKeys(organizationId);
-		await deleteBrandKitObjects(organizationId, [
-			...saved.supersededKeys,
-			...usedUploads,
-			...pendingKeys,
-		]);
-
-		// Field names only — guidance is free text an audit reader does not
-		// need, colors are visible on the settings page itself, and storage
-		// keys stay out of the audit row.
-		recordAuditFromRequest(context, {
-			action: "org.brand_kit.updated",
-			category: "org",
-			organizationId,
-			resource: { type: "organization", id: organizationId, name: null },
-			metadata: { changedFields: saved.changedFields },
+/** Shared brand mutation used by Portal, API and agent transports. */
+export async function updateCompanyBrandCommand(
+	actor: { userId: string; organizationId: string },
+	input: z.infer<typeof companyBrandInputSchema>,
+	audit: (event: RecordAuditFromRequestInput) => unknown,
+) {
+	if (actor.organizationId !== input.organizationId) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "Organization context does not match",
 		});
+	}
+	const { organizationId, expectedVersion } = input;
 
-		return {
-			outcome: "applied" as const,
-			brandKit: await presentBrandKit(organizationId, saved.brandKit),
-		};
+	const membership = await requireOrgMembership(
+		actor.userId,
+		organizationId,
+		["admin", "owner"],
+	);
+	if (!membership) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "You must be an admin or owner of this organization",
+		});
+	}
+	await assertGlossyOrProposalArtifactEnabledForOrganization(organizationId);
+
+	// Everything the compare-and-set will validate, validated BEFORE a
+	// file is promoted, so a typo cannot leave an orphaned object behind.
+	let website: string | null | undefined;
+	if (input.website !== undefined) {
+		website = input.website?.trim()
+			? normalizeWebsiteUrl(input.website)
+			: null;
+		if (input.website?.trim() && !website) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Enter the organization's public website, like example.com",
+				data: { code: "invalidWebsite" },
+			});
+		}
+	}
+	let fields: BrandKitFields;
+	try {
+		fields = normalizeBrandKitFields({
+			accentColors: input.accentColors,
+			guidance: input.guidance,
+			primaryColor: input.primaryColor,
+			displayFontFamily: input.displayFontFamily,
+			bodyFontFamily: input.bodyFontFamily,
+			website,
+		});
+	} catch (error) {
+		if (error instanceof BrandKitValidationError) {
+			throw invalid(error.code);
+		}
+		throw error;
+	}
+
+	const actions: [BrandKitAssetKind, AssetAction][] =
+		BRAND_KIT_ASSET_KINDS.map((kind) => [
+			kind,
+			input.assets?.[kind] ?? { action: "keep" },
+		]);
+	for (const [, action] of actions) {
+		if (action.action === "replace") {
+			// Refuses a key, a path or another organization's prefix
+			// before storage is touched.
+			brandKitPendingKey(organizationId, action.token);
+		}
+	}
+
+	// An early answer for the common stale case, and the stored state a
+	// font file is checked against. The compare-and-set below stays the
+	// authority; this only spares a promotion that could not win.
+	const current = await getBrandKit(organizationId);
+	if (
+		expectedVersion !== undefined &&
+		(current?.version ?? 0) !== expectedVersion
+	) {
+		throw conflict();
+	}
+	for (const kind of ["displayFont", "bodyFont"] as const) {
+		const action = input.assets?.[kind]?.action ?? "keep";
+		const family = FONT_FAMILIES[kind];
+		const hasFile =
+			action === "replace" ||
+			(action === "keep" && Boolean(current?.[ASSET_COLUMNS[kind]]));
+		const nextFamily =
+			fields[family] !== undefined
+				? fields[family]
+				: (current?.[family] ?? null);
+		if (hasFile && !nextFamily) {
+			throw invalid("fontWithoutFamily");
+		}
+	}
+
+	const assets: BrandKitAssetKeys = {};
+	const promotedKeys: string[] = [];
+	try {
+		for (const [kind, action] of actions) {
+			if (action.action === "remove") {
+				assets[ASSET_COLUMNS[kind]] = null;
+			} else if (action.action === "replace") {
+				const promotion = await promoteBrandKitAsset(
+					organizationId,
+					kind,
+					action.token,
+				);
+				if (!promotion.ok) {
+					await deleteBrandKitObjects(organizationId, promotedKeys);
+					return {
+						outcome: "assetRejected" as const,
+						kind,
+						code: promotion.code,
+					};
+				}
+				promotedKeys.push(promotion.key);
+				assets[ASSET_COLUMNS[kind]] = promotion.key;
+			}
+		}
+	} catch (error) {
+		await deleteBrandKitObjects(organizationId, promotedKeys);
+		throw error;
+	}
+
+	let saved: Awaited<ReturnType<typeof upsertBrandKit>>;
+	try {
+		saved = await upsertBrandKit({
+			organizationId,
+			...fields,
+			assets,
+			expectedVersion,
+			updatedById: actor.userId,
+		});
+	} catch (error) {
+		if (error instanceof BrandKitValidationError) {
+			await deleteBrandKitObjects(organizationId, promotedKeys);
+			throw invalid(error.code);
+		}
+		await deleteUnsavedBrandKitKeys(organizationId, promotedKeys);
+		throw error;
+	}
+	if (saved.outcome === "conflict") {
+		await deleteBrandKitObjects(organizationId, promotedKeys);
+		throw conflict();
+	}
+
+	const usedUploads = actions.flatMap(([, action]) =>
+		action.action === "replace"
+			? [brandKitPendingKey(organizationId, action.token)]
+			: [],
+	);
+	const pendingKeys = await listBrandKitPendingKeys(organizationId);
+	await deleteBrandKitObjects(organizationId, [
+		...saved.supersededKeys,
+		...usedUploads,
+		...pendingKeys,
+	]);
+
+	// Field names only — guidance is free text an audit reader does not
+	// need, colors are visible on the settings page itself, and storage
+	// keys stay out of the audit row.
+	await audit({
+		action: "org.brand_kit.updated",
+		category: "org",
+		organizationId,
+		resource: { type: "organization", id: organizationId, name: null },
+		metadata: { changedFields: saved.changedFields },
 	});
+
+	return {
+		outcome: "applied" as const,
+		brandKit: await presentBrandKit(organizationId, saved.brandKit),
+	};
+}

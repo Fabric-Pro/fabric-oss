@@ -14,6 +14,12 @@
  * must not pull in anything the browser bundle cannot carry.
  */
 
+import {
+	type ArtifactBrandSource,
+	type ArtifactCoverStyle,
+	isArtifactCoverStyle,
+	isArtifactFontFamily,
+} from "../artifact-brand-theme";
 import { contrastRatio, rgbToHex } from "../brand-colors";
 import {
 	GRAPHIC_CONTRAST,
@@ -87,6 +93,11 @@ export interface ThemeFontFiles {
  * signed URLs on the page, data URLs in print.
  */
 export interface ProposalThemeTokens<TAsset = ThemeAssetRef> {
+	/** Absent on historical snapshots, which retain company/dark defaults. */
+	appearance?: {
+		brandSource: ArtifactBrandSource;
+		coverStyle: ArtifactCoverStyle;
+	};
 	proposer: {
 		name: SourcedValue<string | null>;
 		logo: SourcedValue<TAsset | null>;
@@ -130,6 +141,37 @@ type ThemeFontRole = keyof typeof NEUTRAL_THEME.fonts;
 const MAX_COLORS = 3;
 
 /**
+ * A reviewed client's palette, ready to save as this document's Style.
+ * Identity remains separate: this never replaces the prepared-by company,
+ * logos, fonts or cover imagery. Call only with the project's saved client
+ * colors, not an unconfirmed website suggestion.
+ *
+ * An empty or malformed palette cannot become an accidental company-brand
+ * fallback. A sole color is also the accent, because an empty accent list
+ * deliberately inherits the company's accents in the normal resolver.
+ */
+export function proposalClientPaletteFromColors(
+	colors: readonly string[],
+): { primaryColor: string; accentColors: string[] } | null {
+	if (
+		colors.length === 0 ||
+		colors.length > MAX_COLORS ||
+		colors.some((color) => !strictHex(color))
+	) {
+		return null;
+	}
+	const palette = normalizeHexColorList([...colors], MAX_COLORS);
+	const primaryColor = palette[0];
+	if (!primaryColor) {
+		return null;
+	}
+	return {
+		primaryColor,
+		accentColors: palette.length > 1 ? palette.slice(1) : [primaryColor],
+	};
+}
+
+/**
  * Letters, digits, spaces and hyphens only: a family name is written into CSS
  * and into DOCX styles, so anything that could close a string or a rule is
  * refused, not stripped.
@@ -155,7 +197,12 @@ function fromDefault<T>(value: T): SourcedValue<T> {
  */
 export interface ProposalThemeSources {
 	organization: { name: string | null; logoKey: string | null } | null;
-	style: { primaryColor: string | null; accentColors: string[] } | null;
+	style: {
+		primaryColor: string | null;
+		accentColors: string[];
+		brandSource?: ArtifactBrandSource;
+		coverStyle?: ArtifactCoverStyle | null;
+	} | null;
 	brandKit: {
 		accentColors: string[];
 		primaryColor?: string | null;
@@ -176,6 +223,9 @@ export interface ProposalThemeSources {
 		name: string | null;
 		logoKey: string | null;
 		colors: string[];
+		displayFontFamily?: string | null;
+		bodyFontFamily?: string | null;
+		coverStyle?: ArtifactCoverStyle;
 	} | null;
 }
 
@@ -198,19 +248,35 @@ export function buildProposalThemeTokens(
 		sources.style?.accentColors,
 		MAX_COLORS,
 	);
-	const kitPrimary = strictHex(sources.brandKit?.primaryColor);
+	const client = sources.style?.brandSource === "CLIENT";
+	const selectedKit = client ? null : sources.brandKit;
+	const selectedSite = client ? null : sources.vendorSite;
+	const clientPalette = client
+		? proposalClientPaletteFromColors(sources.recipient?.colors ?? [])
+		: null;
+	const kitPrimary = client
+		? (clientPalette?.primaryColor ?? null)
+		: strictHex(selectedKit?.primaryColor);
 	const kitAccents = normalizeHexColorList(
-		sources.brandKit?.accentColors,
+		client ? clientPalette?.accentColors : selectedKit?.accentColors,
 		MAX_COLORS,
 	);
-	const sitePrimary = strictHex(sources.vendorSite?.primaryColor);
+	const sitePrimary = strictHex(selectedSite?.primaryColor);
 	const siteAccents = normalizeHexColorList(
-		sources.vendorSite?.accentColors,
+		selectedSite?.accentColors,
 		MAX_COLORS,
 	);
-	const displayFamily = safeFontFamily(sources.brandKit?.displayFontFamily);
-	const bodyFamily = safeFontFamily(sources.brandKit?.bodyFontFamily);
-	const heroKey = sources.brandKit?.heroKey ?? null;
+	const displayFamily = client
+		? isArtifactFontFamily(sources.recipient?.displayFontFamily)
+			? sources.recipient.displayFontFamily
+			: null
+		: safeFontFamily(selectedKit?.displayFontFamily);
+	const bodyFamily = client
+		? isArtifactFontFamily(sources.recipient?.bodyFontFamily)
+			? sources.recipient.bodyFontFamily
+			: null
+		: safeFontFamily(selectedKit?.bodyFontFamily);
+	const heroKey = selectedKit?.heroKey ?? null;
 	const organizationName = sources.organization?.name?.trim() || null;
 	const organizationLogo = sources.organization?.logoKey ?? null;
 	const recipientName = sources.recipient?.name?.trim() || null;
@@ -221,6 +287,14 @@ export function buildProposalThemeTokens(
 	);
 
 	return {
+		appearance: {
+			brandSource: client ? "CLIENT" : "COMPANY",
+			coverStyle: isArtifactCoverStyle(sources.style?.coverStyle)
+				? sources.style.coverStyle
+				: client && isArtifactCoverStyle(sources.recipient?.coverStyle)
+					? sources.recipient.coverStyle
+					: "DARK",
+		},
 		proposer: {
 			name: organizationName
 				? { value: organizationName, source: "BRAND_KIT" }
@@ -237,7 +311,10 @@ export function buildProposalThemeTokens(
 			primary: stylePrimary
 				? { value: stylePrimary, source: "MANUAL" }
 				: kitPrimary
-					? { value: kitPrimary, source: "BRAND_KIT" }
+					? {
+							value: kitPrimary,
+							source: client ? "MANUAL" : "BRAND_KIT",
+						}
 					: sitePrimary
 						? { value: sitePrimary, source: "VENDOR_SITE" }
 						: fromDefault(NEUTRAL_THEME.primary),
@@ -245,7 +322,10 @@ export function buildProposalThemeTokens(
 				styleAccents.length > 0
 					? { value: styleAccents, source: "MANUAL" }
 					: kitAccents.length > 0
-						? { value: kitAccents, source: "BRAND_KIT" }
+						? {
+								value: kitAccents,
+								source: client ? "MANUAL" : "BRAND_KIT",
+							}
 						: siteAccents.length > 0
 							? { value: siteAccents, source: "VENDOR_SITE" }
 							: fromDefault([...NEUTRAL_THEME.accents]),
@@ -253,26 +333,32 @@ export function buildProposalThemeTokens(
 			ink: fromDefault(NEUTRAL_THEME.ink),
 			fonts: {
 				display: displayFamily
-					? { value: displayFamily, source: "BRAND_KIT" }
+					? {
+							value: displayFamily,
+							source: client ? "MANUAL" : "BRAND_KIT",
+						}
 					: fromDefault(NEUTRAL_THEME.fonts.display),
 				body: bodyFamily
-					? { value: bodyFamily, source: "BRAND_KIT" }
+					? {
+							value: bodyFamily,
+							source: client ? "MANUAL" : "BRAND_KIT",
+						}
 					: fromDefault(NEUTRAL_THEME.fonts.body),
 				mono: fromDefault(NEUTRAL_THEME.fonts.mono),
 			},
 			// A file counts only with the family it is uploaded for.
 			fontFiles: {
 				display:
-					displayFamily && sources.brandKit?.displayFontFileId
+					displayFamily && selectedKit?.displayFontFileId
 						? {
-								value: sources.brandKit.displayFontFileId,
+								value: selectedKit.displayFontFileId,
 								source: "BRAND_KIT",
 							}
 						: fromDefault(null),
 				body:
-					bodyFamily && sources.brandKit?.bodyFontFileId
+					bodyFamily && selectedKit?.bodyFontFileId
 						? {
-								value: sources.brandKit.bodyFontFileId,
+								value: selectedKit.bodyFontFileId,
 								source: "BRAND_KIT",
 							}
 						: fromDefault(null),
@@ -323,6 +409,7 @@ export async function mapThemeAssets<A, B>(
 		map(tokens.recipient.logo),
 	]);
 	return {
+		...tokens,
 		proposer: { ...tokens.proposer, logo: proposerLogo, hero },
 		recipient: { ...tokens.recipient, logo: recipientLogo },
 	};
@@ -770,7 +857,7 @@ function hashHex(value: string, seed: number): string {
  * #2946): print now sets display, body and mono in their own families, so a
  * record made before reads as a design change, not a brand change.
  */
-const TOKEN_HASH_VERSION = "t3";
+const TOKEN_HASH_VERSION = "t4";
 
 /**
  * A stable hash of what the tokens look like (values, not sources), so a
@@ -780,6 +867,10 @@ const TOKEN_HASH_VERSION = "t3";
 export function themeTokenHash(tokens: ProposalThemeTokens): string {
 	const strip = <T>(token: SourcedValue<T>) => token.value;
 	const canonical = canonicalize({
+		appearance: tokens.appearance ?? {
+			brandSource: "COMPANY",
+			coverStyle: "DARK",
+		},
 		proposer: {
 			name: strip(tokens.proposer.name),
 			logo: strip(tokens.proposer.logo),

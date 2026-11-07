@@ -31,6 +31,7 @@ type AuditCategoryId =
 	| "org"
 	| "account"
 	| "project"
+	| "frame"
 	| "story"
 	| "audit"
 	| "admin"
@@ -64,6 +65,7 @@ export interface AuditCategory {
  * states).
  */
 const CATEGORY_ORDER: AuditCategoryId[] = [
+	"frame",
 	"auth",
 	"org",
 	"account",
@@ -79,6 +81,12 @@ const CATEGORY_ORDER: AuditCategoryId[] = [
 ];
 
 const CATEGORIES: Record<AuditCategoryId, AuditCategory> = {
+	frame: {
+		id: "frame",
+		label: "Frames",
+		description:
+			"Saved deliverables, reviewed branding, sharing and PDF exports.",
+	},
 	auth: {
 		id: "auth",
 		label: "Authentication",
@@ -152,6 +160,446 @@ const CATEGORIES: Record<AuditCategoryId, AuditCategory> = {
 };
 
 export const AUDIT_ACTIONS: AuditActionEntry[] = [
+	{
+		key: "project.triage.started",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.triage.started",
+		description:
+			"A member starts a private review of selected delivery signals.",
+	},
+	{
+		key: "project.triage.cancelled",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.triage.cancelled",
+		description: "A member cancels their private signal review.",
+	},
+	{
+		key: "project.triage.completed",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.triage.completed",
+		description:
+			"A private signal review finishes with freshly checked evidence.",
+	},
+	{
+		key: "project.triage.reviewed",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.triage.reviewed",
+		description: "A member keeps or dismisses a private review proposal.",
+	},
+	{
+		key: "project.delivery_source.configured",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.delivery_source.configured",
+		description:
+			"A member connects a private delivery source and records its permitted scope.",
+	},
+	{
+		key: "project.delivery_source.paused",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.delivery_source.paused",
+		description:
+			"A member pauses capture for their private delivery source.",
+	},
+	{
+		key: "project.delivery_source.resumed",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.delivery_source.resumed",
+		description:
+			"A member resumes private capture after a fresh source access check.",
+	},
+	{
+		key: "project.delivery_source.disconnected",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.delivery_source.disconnected",
+		description:
+			"A member disconnects a private source and removes its captured content.",
+	},
+	{
+		key: "project.delivery_source.capture_requested",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.delivery_source.capture_requested",
+		description:
+			"A member starts a bounded capture of their selected private source.",
+	},
+	{
+		key: "project.delivery_source.capture_cancelled",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.delivery_source.capture_cancelled",
+		description:
+			"A member cancels a private source capture before it finishes.",
+	},
+	{
+		key: "project.coding_run.start_requested",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.coding_run.start_requested",
+		description:
+			"A person requests an implementation session with a stable request identity; the event does not confirm dispatch.",
+	},
+	{
+		key: "project.coding_run.cancel_requested",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.coding_run.cancel_requested",
+		description:
+			"A person requests cancellation of an implementation session; the runtime outcome is inspected separately.",
+	},
+	{
+		key: "project.coding_run.follow_up_requested",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.coding_run.follow_up_requested",
+		description:
+			"A person requests a follow-up on an existing implementation session using a stable prompt identity.",
+	},
+	{
+		key: "report.instance_created",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.report.instance_created",
+		description:
+			"A person creates a report configuration from a selected template and permitted sources.",
+	},
+	{
+		key: "report.instance_updated",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.report.instance_updated",
+		description:
+			"A person updates a report configuration, schedule, selected template or permitted sources.",
+	},
+	{
+		key: "report.execution_started",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.report.execution_started",
+		description:
+			"A person starts a durable report execution using the saved configuration and current access.",
+	},
+	{
+		key: "report.execution_cancelled",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.report.execution_cancelled",
+		description:
+			"A person requests cancellation of a report execution; the execution status records the final outcome.",
+	},
+	{
+		key: "report.artifact_distributed",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.report.artifact_distributed",
+		description:
+			"A report distribution step delivers a saved artifact through an explicitly configured destination.",
+	},
+	{
+		key: "report.artifact_generated",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.report.artifact_generated",
+		description:
+			"A report execution saves a generated artifact linked to its source execution and revision.",
+	},
+	{
+		key: "quality.policy_configured",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.quality.policy_configured",
+		description:
+			"A person saves or disables the checks used to assess results for a permitted Fabric resource.",
+	},
+	{
+		key: "quality.assessment_started",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.quality.assessment_started",
+		description:
+			"An assessment starts against a saved result and the recorded checking policy revision.",
+	},
+	{
+		key: "quality.assessment_completed",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.quality.assessment_completed",
+		description:
+			"An assessment records a verdict against the checked result revision, including unavailable evidence.",
+	},
+	{
+		key: "quality.assessment_cancelled",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.quality.assessment_cancelled",
+		description:
+			"A person requests cancellation of a pending result assessment without changing the source result.",
+	},
+
+	{
+		key: "org.agent_execution.admitted",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.agent_execution.admitted",
+		description:
+			"A requested agent task is durably admitted to the native execution engine.",
+	},
+	{
+		key: "org.agent_execution.cancel_requested",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.agent_execution.cancel_requested",
+		description:
+			"A person requests cancellation of an agent run that is still in progress.",
+	},
+	{
+		key: "org.agent_schedule.updated",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.agent_schedule.updated",
+		description:
+			"A person saves or disables the schedule for an agent background task.",
+	},
+	{
+		key: "org.agent_test_case.created",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.agent_test_case.created",
+		description:
+			"A person saves a reusable task and expected result for testing an agent.",
+	},
+	{
+		key: "org.agent_test_case.updated",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.agent_test_case.updated",
+		description:
+			"A person changes a saved agent test task, assertion or expected result.",
+	},
+	{
+		key: "org.agent_test_case.archived",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.agent_test_case.archived",
+		description:
+			"A person archives a saved agent test case so later tests no longer select it.",
+	},
+	{
+		key: "org.agent_test.started",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.agent_test.started",
+		description:
+			"A person starts a saved agent test against a specific agent revision.",
+	},
+	{
+		key: "org.agent_test.cancel_requested",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.agent_test.cancel_requested",
+		description:
+			"A person requests cancellation of a saved agent test that is still running.",
+	},
+	{
+		key: "org.agent_preview.started",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.agent_preview.started",
+		description:
+			"A person starts a draft agent preview using their current permitted context.",
+	},
+	{
+		key: "org.agent_preview.cancel_requested",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.agent_preview.cancel_requested",
+		description:
+			"A person requests cancellation of a draft agent preview that is still running.",
+	},
+	{
+		key: "org.skill.created",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.skill.created",
+		description:
+			"A person creates a reusable package of instructions for agents in the organization.",
+	},
+	{
+		key: "org.skill.updated",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.skill.updated",
+		description:
+			"A person saves changes to a skill draft or its permitted tools and availability.",
+	},
+	{
+		key: "org.skill.published",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.skill.published",
+		description:
+			"A person publishes a reviewed skill revision for its permitted agent audience.",
+	},
+	{
+		key: "org.skill.archived",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.skill.archived",
+		description:
+			"A person archives a skill to remove it from active discovery and selection.",
+	},
+	{
+		key: "org.skill.restored",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.skill.restored",
+		description:
+			"A person restores an archived skill to its permitted organization audience.",
+	},
+	{
+		key: "org.skill.deleted",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.skill.deleted",
+		description:
+			"A person permanently deletes a skill and its saved instruction revisions.",
+	},
+	{
+		key: "org.skill_governance.updated",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.skill_governance.updated",
+		description:
+			"An authorized person changes who may create, publish or discover shared skills.",
+	},
+	{
+		key: "project.context_quality.binding_configured",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_quality.binding_configured",
+		description:
+			"A person saves the governed destination used to evaluate project context quality.",
+	},
+	{
+		key: "project.context_quality.binding_disabled",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_quality.binding_disabled",
+		description:
+			"A person disables the configured destination for project context evaluations.",
+	},
+	{
+		key: "project.context_quality.binding_deleted",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_quality.binding_deleted",
+		description:
+			"A person removes a configured project context evaluation destination.",
+	},
+	{
+		key: "project.context_quality.run_requested",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_quality.run_requested",
+		description:
+			"A person requests an evaluation of the selected project context and its quality.",
+	},
+	{
+		key: "project.context_quality.cancel_requested",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_quality.cancel_requested",
+		description:
+			"A person requests cancellation of a project context evaluation still in progress.",
+	},
+	{
+		key: "project.context_source.workspace_document_linked",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_source.workspace_document_linked",
+		description:
+			"A person adds a permitted workspace document to the project context sources.",
+	},
+	{
+		key: "project.context_source.workspace_document_unlinked",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context_source.workspace_document_unlinked",
+		description:
+			"A person removes a workspace document link from the project context sources.",
+	},
+	{
+		key: "prompt.response_contract_changed",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.prompt.response_contract_changed",
+		description:
+			"A person changes the structured response format expected from a saved prompt.",
+	},
+	{
+		key: "frame.change_proposed",
+		categoryId: "frame",
+		labelKey: "settings.auditLog.actions.frame.change_proposed",
+		description:
+			"An agent proposes changes to a Frame for a member to review.",
+	},
+	{
+		key: "frame.change_applied",
+		categoryId: "frame",
+		labelKey: "settings.auditLog.actions.frame.change_applied",
+		description: "Reviewed page change applied.",
+	},
+	{
+		key: "frame.change_dismissed",
+		categoryId: "frame",
+		labelKey: "settings.auditLog.actions.frame.change_dismissed",
+		description:
+			"A member dismisses proposed Frame changes without applying them.",
+	},
+	{
+		key: "frame.approved",
+		categoryId: "frame",
+		labelKey: "settings.auditLog.actions.frame.approved",
+		description:
+			"A member approves the current Frame revision after reviewing it.",
+	},
+	{
+		key: "frame.template_created",
+		categoryId: "frame",
+		labelKey: "settings.auditLog.actions.frame.template_created",
+		description: "Organization page template created.",
+	},
+	{
+		key: "frame.created",
+		categoryId: "frame",
+		labelKey: "settings.auditLog.actions.frame.created",
+		description:
+			"A report run saves a linked Frame for reviewing its generated deliverable.",
+	},
+	{
+		key: "frame.updated",
+		categoryId: "frame",
+		labelKey: "settings.auditLog.actions.frame.updated",
+		description:
+			"A person saves content or applies a reviewed brand selection to a Frame.",
+	},
+	{
+		key: "frame.restored",
+		categoryId: "frame",
+		labelKey: "settings.auditLog.actions.frame.restored",
+		description:
+			"A person restores an earlier content revision while preserving current tool access and branding.",
+	},
+	{
+		key: "frame.sharing.updated",
+		categoryId: "frame",
+		labelKey: "settings.auditLog.actions.frame.sharing.updated",
+		description:
+			"A person changes the permitted audience or publication state of a Frame.",
+	},
+	{
+		key: "frame.sharing.revoked",
+		categoryId: "frame",
+		labelKey: "settings.auditLog.actions.frame.sharing.revoked",
+		description:
+			"A person revokes a previously granted Frame sharing permission.",
+	},
+	{
+		key: "frame.export_started",
+		categoryId: "frame",
+		labelKey: "settings.auditLog.actions.frame.export_started",
+		description:
+			"A person starts an offline PDF export of a saved Frame revision.",
+	},
+	{
+		key: "frame.export_cancelled",
+		categoryId: "frame",
+		labelKey: "settings.auditLog.actions.frame.export_cancelled",
+		description:
+			"A person requests cancellation of a Frame PDF export that is still running.",
+	},
+	{
+		key: "frame.export_downloaded",
+		categoryId: "frame",
+		labelKey: "settings.auditLog.actions.frame.export_downloaded",
+		description:
+			"An authorized person downloads the PDF produced from a saved Frame revision.",
+	},
 	// ---- Authentication -------------------------------------------------
 	{
 		key: "auth.login.success",

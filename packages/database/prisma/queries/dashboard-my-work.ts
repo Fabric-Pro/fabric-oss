@@ -1,17 +1,3 @@
-/**
- * Dashboard "My Work" query
- *
- * Returns focused, actionable items for the current user across four buckets:
- *   - inProgress: features the user is actively working on
- *   - needsReview: documents/features awaiting review or sanity-check
- *   - blocked:     failed agent tasks, pipelines, or document generations
- *   - drafts:      projects/features the user has started but not returned to
- *
- * Tenant XOR: user context filters by { userId, organizationId: null };
- * organization context filters by { organizationId } and restricts to the
- * current user's assigned / owned items where relevant.
- */
-
 import { db, type Prisma } from "../client";
 import { storySemanticActivityAt } from "./projects/story-semantic-activity";
 
@@ -63,7 +49,15 @@ export type MyWorkItemKind =
 	| "document"
 	| "project"
 	| "task"
-	| "pipeline";
+	| "codingRun";
+
+export type MyWorkDeliveryStage =
+	| "drafting"
+	| "sanityCheck"
+	| "readyForDev"
+	| "implementing"
+	| "review"
+	| "blocked";
 
 export interface MyWorkItem {
 	id: string;
@@ -74,6 +68,7 @@ export interface MyWorkItem {
 	projectId?: string | null;
 	projectName?: string | null;
 	status?: string | null;
+	deliveryStage?: MyWorkDeliveryStage;
 	href: string;
 	updatedAt: Date;
 }
@@ -83,11 +78,19 @@ export interface MyWorkBucket {
 	total: number;
 }
 
+export interface MyWorkProjectVisit {
+	projectId: string;
+	lastVisitedAt: Date | null;
+}
+
 export interface MyWorkResult {
 	inProgress: MyWorkBucket;
 	needsReview: MyWorkBucket;
 	blocked: MyWorkBucket;
 	drafts: MyWorkBucket;
+	assignedFeatures: MyWorkBucket;
+	projectCount: number;
+	projectVisits: MyWorkProjectVisit[];
 }
 
 function basePath(organizationSlug?: string | null): string {
@@ -121,15 +124,115 @@ function agentTaskHref(slug: string | null | undefined): string {
 	return `${basePath(slug)}/agents?tab=tasks`;
 }
 
-function pipelineHref(slug: string | null | undefined): string {
-	return `${basePath(slug)}/projects`;
-}
-
 export interface GetMyWorkInput {
 	userId: string;
 	organizationId?: string | null;
 	organizationSlug?: string | null;
 	limit?: number;
+	featureStage?: "all" | MyWorkDeliveryStage;
+	now?: Date;
+}
+
+export function reachableProjectScope(
+	userId: string,
+	organizationId: string | null | undefined,
+	now: Date,
+): Prisma.ProjectWhereInput {
+	if (!organizationId) {
+		return { organizationId: null, deletedAt: null, userId };
+	}
+	return {
+		organizationId,
+		deletedAt: null,
+		OR: [
+			{ userId },
+			{
+				members: {
+					some: {
+						userId,
+						acceptedAt: { not: null },
+						OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+					},
+				},
+			},
+		],
+	};
+}
+
+function storyItem(
+	story: MyWorkStoryRow,
+	organizationSlug: string | null | undefined,
+	status?: string,
+): MyWorkItem {
+	return {
+		id: story.id,
+		kind: "feature",
+		title: story.title,
+		identifier: story.identifier,
+		projectId: story.projectId,
+		projectName: story.project.name,
+		status: status ?? story.status?.name ?? story.draftingStage,
+		deliveryStage: deliveryStage(story.draftingStage),
+		href: storyHref(organizationSlug, story.projectId, story.id),
+		updatedAt: story.lastEditedAt ?? story.createdAt,
+	};
+}
+
+function deliveryStage(stage: string): MyWorkDeliveryStage {
+	if (stage === "SANITY_CHECK") {
+		return "sanityCheck";
+	}
+	if (stage === "PUBLISHED") {
+		return "readyForDev";
+	}
+	return "drafting";
+}
+
+const CODING_RUN_SELECT = {
+	id: true,
+	status: true,
+	lastError: true,
+	updatedAt: true,
+	storyId: true,
+	story: {
+		select: {
+			identifier: true,
+			title: true,
+			projectId: true,
+			project: { select: { name: true } },
+		},
+	},
+} as const;
+
+type CodingRunRow = Prisma.CodingRunGetPayload<{
+	select: typeof CODING_RUN_SELECT;
+}>;
+
+function codingRunItem(
+	run: CodingRunRow,
+	organizationSlug: string | null | undefined,
+	failed: boolean,
+): MyWorkItem {
+	const reviewStatus = {
+		AWAITING_REVIEW: "Review run",
+		PR_OPENED: "Pull request open",
+		DEMO_READY: "Demo ready",
+	} as const;
+	return {
+		id: run.id,
+		kind: "codingRun",
+		title: run.story.title,
+		identifier: run.story.identifier,
+		projectId: run.story.projectId,
+		projectName: run.story.project.name,
+		status: failed
+			? "Run failed"
+			: (reviewStatus[run.status as keyof typeof reviewStatus] ??
+				"Review run"),
+		subtitle: failed ? run.lastError : null,
+		href: storyHref(organizationSlug, run.story.projectId, run.storyId),
+		updatedAt: run.updatedAt,
+	};
 }
 
 export async function getMyWork({
@@ -137,59 +240,118 @@ export async function getMyWork({
 	organizationId,
 	organizationSlug,
 	limit = 6,
+	featureStage = "all",
+	now = new Date(),
 }: GetMyWorkInput): Promise<MyWorkResult> {
-	const isOrg = Boolean(organizationId);
-
-	// XOR tenant filter for resources owned directly by a user (project, doc, task, pipeline).
-	// In user context: strictly personal (organizationId: null + userId).
-	// In org context: scope to organizationId; most buckets also require the user to be
-	// the owner/assignee so "My Work" remains personal even inside an org.
-	const userScopedProject = isOrg
-		? { organizationId, deletedAt: null, userId }
-		: { organizationId: null, deletedAt: null, userId };
-
-	// Scope for a UserStory assigned to the current user (stories don't carry
-	// userId/organizationId directly — filter via the parent project).
-	const storyProjectScope = isOrg
-		? { organizationId, deletedAt: null }
-		: { organizationId: null, deletedAt: null, userId };
+	const projectScope = reachableProjectScope(userId, organizationId, now);
+	const storyScope = { assigneeId: userId, project: projectScope };
+	const documentScope = {
+		project: projectScope,
+		OR: [{ userId }, { lastEditedBy: userId }],
+	};
+	const runScope = { userId, project: projectScope };
+	const failedTaskWhere = {
+		userId,
+		...(organizationId ? { organizationId } : { organizationId: null }),
+		status: { in: ["failed", "error", "FAILED", "ERROR"] },
+	};
+	const reviewRunWhere: Prisma.CodingRunWhereInput = {
+		...runScope,
+		status: { in: ["AWAITING_REVIEW", "PR_OPENED", "DEMO_READY"] },
+	};
+	const blockedRunWhere: Prisma.CodingRunWhereInput = {
+		...runScope,
+		status: { in: ["FAILED", "TERMINATED_STALE"] },
+	};
+	const openStage = {
+		notIn: ["DECLINED", "CLOSED"] as Array<"DECLINED" | "CLOSED">,
+	};
+	const assignedFeaturesWhere: Prisma.UserStoryWhereInput = {
+		...storyScope,
+		...(featureStage === "blocked"
+			? { blocked: true, draftingStage: openStage }
+			: featureStage === "implementing"
+				? {
+						draftingStage: openStage,
+						codingRuns: {
+							some: {
+								status: {
+									in: ["QUEUED", "STARTING", "RUNNING"],
+								},
+							},
+						},
+					}
+				: featureStage === "review"
+					? {
+							draftingStage: openStage,
+							codingRuns: {
+								some: {
+									status: {
+										in: [
+											"AWAITING_REVIEW",
+											"PR_OPENED",
+											"DEMO_READY",
+										],
+									},
+								},
+							},
+						}
+					: {
+							draftingStage:
+								featureStage === "all"
+									? openStage
+									: featureStage === "sanityCheck"
+										? "SANITY_CHECK"
+										: featureStage === "readyForDev"
+											? "PUBLISHED"
+											: {
+													notIn: [
+														"SANITY_CHECK",
+														"PUBLISHED",
+														"DECLINED",
+														"CLOSED",
+													],
+												},
+						}),
+	};
 
 	const [
 		inProgressStories,
 		needsReviewStories,
 		needsReviewDocs,
+		reviewRuns,
 		blockedTasks,
-		blockedPipelines,
 		blockedDocs,
+		blockedRuns,
 		draftProjects,
 		draftStories,
+		assignedFeatures,
+		inProgressTotal,
+		reviewStoriesTotal,
+		reviewDocsTotal,
+		reviewRunsTotal,
+		blockedTasksTotal,
+		blockedDocsTotal,
+		blockedRunsTotal,
+		draftProjectsTotal,
+		draftStoriesTotal,
+		assignedFeaturesTotal,
+		projectCount,
+		projectVisits,
 	] = await Promise.all([
-		// ───── In Progress ─────────────────────────────────────────────
 		findRecentMyWorkStories(
 			{
-				assigneeId: userId,
-				project: storyProjectScope,
+				...storyScope,
 				draftingStage: { in: ["ACTIVE_ANALYSIS", "DRAFT"] },
 			},
 			limit,
 		),
-
-		// ───── Needs Review ────────────────────────────────────────────
 		findRecentMyWorkStories(
-			{
-				assigneeId: userId,
-				project: storyProjectScope,
-				draftingStage: "SANITY_CHECK",
-			},
+			{ ...storyScope, draftingStage: "SANITY_CHECK" },
 			limit,
 		),
 		db.projectDocument.findMany({
-			where: {
-				...(isOrg
-					? { organizationId }
-					: { organizationId: null, userId }),
-				status: "REVIEW",
-			},
+			where: { ...documentScope, status: "REVIEW" },
 			orderBy: { updatedAt: "desc" },
 			take: limit,
 			select: {
@@ -201,14 +363,14 @@ export async function getMyWork({
 				project: { select: { name: true } },
 			},
 		}),
-
-		// ───── Blocked ─────────────────────────────────────────────────
+		db.codingRun.findMany({
+			where: reviewRunWhere,
+			orderBy: { updatedAt: "desc" },
+			take: limit,
+			select: CODING_RUN_SELECT,
+		}),
 		db.agentTask.findMany({
-			where: {
-				userId,
-				...(isOrg ? { organizationId } : { organizationId: null }),
-				status: { in: ["failed", "error", "FAILED", "ERROR"] },
-			},
+			where: failedTaskWhere,
 			orderBy: { updatedAt: "desc" },
 			take: limit,
 			select: {
@@ -220,29 +382,8 @@ export async function getMyWork({
 				updatedAt: true,
 			},
 		}),
-		db.sDLCPipeline.findMany({
-			where: {
-				userId,
-				...(isOrg ? { organizationId } : { organizationId: null }),
-				status: { in: ["failed", "error", "FAILED", "ERROR"] },
-			},
-			orderBy: { updatedAt: "desc" },
-			take: limit,
-			select: {
-				id: true,
-				name: true,
-				status: true,
-				currentStage: true,
-				updatedAt: true,
-			},
-		}),
 		db.projectDocument.findMany({
-			where: {
-				...(isOrg
-					? { organizationId }
-					: { organizationId: null, userId }),
-				status: "FAILED",
-			},
+			where: { ...documentScope, status: "FAILED" },
 			orderBy: { updatedAt: "desc" },
 			take: limit,
 			select: {
@@ -254,133 +395,154 @@ export async function getMyWork({
 				project: { select: { name: true } },
 			},
 		}),
-
-		// ───── Drafts ──────────────────────────────────────────────────
-		db.project.findMany({
-			where: { ...userScopedProject, status: "DRAFT" },
+		db.codingRun.findMany({
+			where: blockedRunWhere,
 			orderBy: { updatedAt: "desc" },
 			take: limit,
-			select: {
-				id: true,
-				name: true,
-				updatedAt: true,
-			},
+			select: CODING_RUN_SELECT,
+		}),
+		db.project.findMany({
+			where: { ...projectScope, userId, status: "DRAFT" },
+			orderBy: { updatedAt: "desc" },
+			take: limit,
+			select: { id: true, name: true, updatedAt: true },
 		}),
 		findRecentMyWorkStories(
-			{
-				assigneeId: userId,
-				project: storyProjectScope,
-				draftingStage: "PLACEHOLDER",
-			},
+			{ ...storyScope, draftingStage: "PLACEHOLDER" },
 			limit,
 		),
+		findRecentMyWorkStories(assignedFeaturesWhere, limit),
+		db.userStory.count({
+			where: {
+				...storyScope,
+				draftingStage: { in: ["ACTIVE_ANALYSIS", "DRAFT"] },
+			},
+		}),
+		db.userStory.count({
+			where: { ...storyScope, draftingStage: "SANITY_CHECK" },
+		}),
+		db.projectDocument.count({
+			where: { ...documentScope, status: "REVIEW" },
+		}),
+		db.codingRun.count({ where: reviewRunWhere }),
+		db.agentTask.count({ where: failedTaskWhere }),
+		db.projectDocument.count({
+			where: { ...documentScope, status: "FAILED" },
+		}),
+		db.codingRun.count({ where: blockedRunWhere }),
+		db.project.count({
+			where: { ...projectScope, userId, status: "DRAFT" },
+		}),
+		db.userStory.count({
+			where: { ...storyScope, draftingStage: "PLACEHOLDER" },
+		}),
+		db.userStory.count({ where: assignedFeaturesWhere }),
+		db.project.count({ where: projectScope }),
+		db.projectUserPreference.findMany({
+			where: { userId, project: projectScope },
+			orderBy: { lastVisitedAt: { sort: "desc", nulls: "last" } },
+			take: 50,
+			select: { projectId: true, lastVisitedAt: true },
+		}),
 	]);
 
-	const inProgressItems: MyWorkItem[] = inProgressStories.map((s) => ({
-		id: s.id,
-		kind: "feature",
-		title: s.title,
-		identifier: s.identifier,
-		projectId: s.projectId,
-		projectName: s.project.name,
-		status: s.status?.name ?? s.draftingStage,
-		href: storyHref(organizationSlug, s.projectId, s.id),
-		updatedAt: s.lastEditedAt ?? s.createdAt,
-	}));
-
 	const needsReviewItems: MyWorkItem[] = [
-		...needsReviewStories.map<MyWorkItem>((s) => ({
-			id: s.id,
-			kind: "feature",
-			title: s.title,
-			identifier: s.identifier,
-			projectId: s.projectId,
-			projectName: s.project.name,
-			status: "Sanity Check",
-			href: storyHref(organizationSlug, s.projectId, s.id),
-			updatedAt: s.lastEditedAt ?? s.createdAt,
-		})),
-		...needsReviewDocs.map<MyWorkItem>((d) => ({
-			id: d.id,
+		...needsReviewStories.map((story) =>
+			storyItem(story, organizationSlug, "Sanity Check"),
+		),
+		...needsReviewDocs.map<MyWorkItem>((document) => ({
+			id: document.id,
 			kind: "document",
-			title: d.title,
-			identifier: d.type,
-			projectId: d.projectId,
-			projectName: d.project.name,
+			title: document.title,
+			identifier: document.type,
+			projectId: document.projectId,
+			projectName: document.project.name,
 			status: "Review",
-			href: documentHref(organizationSlug, d.projectId, d.id),
-			updatedAt: d.updatedAt,
+			href: documentHref(
+				organizationSlug,
+				document.projectId,
+				document.id,
+			),
+			updatedAt: document.updatedAt,
 		})),
+		...reviewRuns.map((run) => codingRunItem(run, organizationSlug, false)),
 	]
 		.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
 		.slice(0, limit);
 
 	const blockedItems: MyWorkItem[] = [
-		...blockedTasks.map<MyWorkItem>((t) => ({
-			id: t.id,
+		...blockedTasks.map<MyWorkItem>((task) => ({
+			id: task.id,
 			kind: "task",
-			title: formatAgentName(t.agentId),
-			subtitle: t.error ?? t.stage ?? null,
+			title: formatAgentName(task.agentId),
+			subtitle: task.error ?? task.stage ?? null,
 			status: "Failed",
 			href: agentTaskHref(organizationSlug),
-			updatedAt: t.updatedAt,
+			updatedAt: task.updatedAt,
 		})),
-		...blockedPipelines.map<MyWorkItem>((p) => ({
-			id: p.id,
-			kind: "pipeline",
-			title: p.name,
-			subtitle: p.currentStage ?? null,
-			status: "Failed",
-			href: pipelineHref(organizationSlug),
-			updatedAt: p.updatedAt,
-		})),
-		...blockedDocs.map<MyWorkItem>((d) => ({
-			id: d.id,
+		...blockedDocs.map<MyWorkItem>((document) => ({
+			id: document.id,
 			kind: "document",
-			title: d.title,
-			identifier: d.type,
-			projectId: d.projectId,
-			projectName: d.project.name,
+			title: document.title,
+			identifier: document.type,
+			projectId: document.projectId,
+			projectName: document.project.name,
 			status: "Generation failed",
-			href: documentHref(organizationSlug, d.projectId, d.id),
-			updatedAt: d.updatedAt,
+			href: documentHref(
+				organizationSlug,
+				document.projectId,
+				document.id,
+			),
+			updatedAt: document.updatedAt,
 		})),
+		...blockedRuns.map((run) => codingRunItem(run, organizationSlug, true)),
 	]
 		.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
 		.slice(0, limit);
 
 	const draftItems: MyWorkItem[] = [
-		...draftProjects.map<MyWorkItem>((p) => ({
-			id: p.id,
+		...draftProjects.map<MyWorkItem>((project) => ({
+			id: project.id,
 			kind: "project",
-			title: p.name,
+			title: project.name,
 			status: "Draft",
-			href: projectHref(organizationSlug, p.id),
-			updatedAt: p.updatedAt,
+			href: projectHref(organizationSlug, project.id),
+			updatedAt: project.updatedAt,
 		})),
-		...draftStories.map<MyWorkItem>((s) => ({
-			id: s.id,
-			kind: "feature",
-			title: s.title,
-			identifier: s.identifier,
-			projectId: s.projectId,
-			projectName: s.project.name,
-			status: "Placeholder",
-			href: storyHref(organizationSlug, s.projectId, s.id),
-			updatedAt: s.lastEditedAt ?? s.createdAt,
-		})),
+		...draftStories.map((story) =>
+			storyItem(story, organizationSlug, "Placeholder"),
+		),
 	]
 		.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
 		.slice(0, limit);
 
 	return {
-		inProgress: { items: inProgressItems, total: inProgressItems.length },
+		inProgress: {
+			items: inProgressStories.map((story) =>
+				storyItem(story, organizationSlug),
+			),
+			total: inProgressTotal,
+		},
 		needsReview: {
 			items: needsReviewItems,
-			total: needsReviewItems.length,
+			total: reviewStoriesTotal + reviewDocsTotal + reviewRunsTotal,
 		},
-		blocked: { items: blockedItems, total: blockedItems.length },
-		drafts: { items: draftItems, total: draftItems.length },
+		blocked: {
+			items: blockedItems,
+			total: blockedTasksTotal + blockedDocsTotal + blockedRunsTotal,
+		},
+		drafts: {
+			items: draftItems,
+			total: draftProjectsTotal + draftStoriesTotal,
+		},
+		assignedFeatures: {
+			items: assignedFeatures.map((story) =>
+				storyItem(story, organizationSlug),
+			),
+			total: assignedFeaturesTotal,
+		},
+		projectCount,
+		projectVisits,
 	};
 }
 
@@ -394,5 +556,5 @@ function formatAgentName(agentId: string): string {
 	}
 	return agentId
 		.replace(/[-_]/g, " ")
-		.replace(/\b\w/g, (l) => l.toUpperCase());
+		.replace(/\b\w/g, (letter) => letter.toUpperCase());
 }

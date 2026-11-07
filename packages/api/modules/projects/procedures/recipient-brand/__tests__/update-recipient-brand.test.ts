@@ -103,6 +103,7 @@ const { mocks, world, objects, storage } = vi.hoisted(() => {
 			brands: new Map<string, Record<string, unknown>>(),
 		},
 		mocks: {
+			organizationRead: vi.fn(),
 			isFeatureEnabled: vi.fn(),
 			confirmRecipientBrand: vi.fn(),
 			recordAudit: vi.fn(),
@@ -132,6 +133,7 @@ vi.mock("@repo/database", async () => {
 	return {
 		...actual,
 		db: {
+			organization: { findUnique: mocks.organizationRead },
 			project: {
 				findUnique: async ({ where }: { where: { id: string } }) =>
 					project(where.id),
@@ -464,6 +466,10 @@ function compareAndSet(input: Record<string, unknown>) {
 	}
 	const fields = normalizeRecipientBrandFields(projectId, input);
 	world.brands.set(projectId, {
+		displayFontFamily: null,
+		bodyFontFamily: null,
+		coverStyle: "DARK",
+		...current,
 		projectId,
 		organizationId: ORG,
 		...fields,
@@ -482,6 +488,9 @@ function compareAndSet(input: Record<string, unknown>) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.organizationRead.mockResolvedValue({
+		name: "Example Delivery Company",
+	});
 	objects.clear();
 	world.projects.clear();
 	world.orgMembers.clear();
@@ -1042,6 +1051,7 @@ describe("recipient brand gate", () => {
 				GUEST_VIEWER,
 			),
 		).resolves.toEqual({
+			companyName: "Example Delivery Company",
 			version: 0,
 			canEdit: false,
 			recipientBrand: null,
@@ -1070,13 +1080,59 @@ describe("recipient brand gate", () => {
 });
 
 describe("getRecipientBrandProcedure", () => {
+	it("uses the project's company for a guest working from a different active organization", async () => {
+		await assertProjectPermission(PROJECT, GUEST_VIEWER, "document:read");
+		const wired = getRecipientBrandProcedure as unknown as Wired;
+		const result = await wired.__handler({
+			input: { projectId: PROJECT },
+			context: {
+				...context(GUEST_VIEWER),
+				session: {
+					id: "example-session",
+					activeOrganizationId: "example-guest-org",
+				},
+			},
+		});
+		expect(result.companyName).toBe("Example Delivery Company");
+		expect(mocks.organizationRead).toHaveBeenCalledWith({
+			where: { id: ORG },
+			select: { name: true },
+		});
+		expect(result.canEdit).toBe(false);
+	});
+
+	it("does not read company identity for an inaccessible project", async () => {
+		expect(
+			await rejection(
+				call(
+					getRecipientBrandProcedure,
+					{ projectId: OTHER_PROJECT },
+					GUEST_VIEWER,
+				),
+			),
+		).toBe("NOT_FOUND");
+		expect(mocks.organizationRead).not.toHaveBeenCalled();
+	});
+
+	it("does not invent a company name when its saved name is unavailable", async () => {
+		mocks.organizationRead.mockResolvedValueOnce(null);
+		expect(
+			await call(getRecipientBrandProcedure, { projectId: PROJECT }),
+		).toMatchObject({ companyName: null });
+	});
+
 	it("declares DOCUMENT_READ and reports version 0 before anything is confirmed", async () => {
 		expect(
 			(getRecipientBrandProcedure as unknown as Wired).__permission,
 		).toBe("document:read");
 		await expect(
 			call(getRecipientBrandProcedure, { projectId: PROJECT }),
-		).resolves.toEqual({ version: 0, canEdit: true, recipientBrand: null });
+		).resolves.toEqual({
+			companyName: "Example Delivery Company",
+			version: 0,
+			canEdit: true,
+			recipientBrand: null,
+		});
 	});
 
 	// Only members of the owning organization change the recipient brand
@@ -1121,7 +1177,12 @@ describe("getRecipientBrandProcedure", () => {
 
 		await expect(
 			call(getRecipientBrandProcedure, { projectId: PROJECT }),
-		).resolves.toEqual({ version: 0, canEdit: true, recipientBrand: null });
+		).resolves.toEqual({
+			companyName: "Example Delivery Company",
+			version: 0,
+			canEdit: true,
+			recipientBrand: null,
+		});
 		expect(storage.getSignedUrl).not.toHaveBeenCalled();
 
 		expect(await confirm({ expectedVersion: 3 })).toEqual({
@@ -1155,5 +1216,85 @@ describe("getRecipientBrandProcedure", () => {
 			responseContentType: "image/png",
 			responseContentDisposition: "inline",
 		});
+	});
+});
+
+describe("awaited brand audit delivery", () => {
+	it("waits for an asynchronous audit callback before reporting success", async () => {
+		let release = () => {};
+		const pending = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		mocks.recordAudit.mockImplementationOnce(() => pending);
+		let complete = false;
+		const mutation = confirm().then((value) => {
+			complete = true;
+			return value;
+		});
+		await vi.waitFor(() => expect(mocks.recordAudit).toHaveBeenCalled());
+		expect(complete).toBe(false);
+		release();
+		expect(await mutation).toMatchObject({ outcome: "applied" });
+	});
+	it("handles an asynchronous audit rejection without detaching it", async () => {
+		mocks.recordAudit.mockImplementationOnce(async () => {
+			throw Error("Example audit unavailable");
+		});
+		await expect(confirm()).rejects.toThrow("Example audit unavailable");
+		// Persistence already committed; callers must reread rather than assume rollback.
+		expect(world.brands.get(PROJECT)).toBeDefined();
+	});
+});
+
+describe("catalog client typography and cover", () => {
+	it("saves reviewed catalog choices, preserves omissions, and clears a font explicitly", async () => {
+		await confirm({
+			displayFontFamily: "Poppins",
+			bodyFontFamily: "Inter",
+			coverStyle: "LIGHT",
+		});
+		expect(world.brands.get(PROJECT)).toMatchObject({
+			displayFontFamily: "Poppins",
+			bodyFontFamily: "Inter",
+			coverStyle: "LIGHT",
+			version: 1,
+		});
+		const read = await call(getRecipientBrandProcedure, {
+			projectId: PROJECT,
+		});
+		expect(read.recipientBrand).toMatchObject({
+			displayFontFamily: "Poppins",
+			bodyFontFamily: "Inter",
+			coverStyle: "LIGHT",
+		});
+		await confirm({ expectedVersion: 1, name: "Reviewed client" });
+		expect(world.brands.get(PROJECT)).toMatchObject({
+			displayFontFamily: "Poppins",
+			bodyFontFamily: "Inter",
+			coverStyle: "LIGHT",
+			version: 2,
+		});
+		await confirm({
+			expectedVersion: 2,
+			displayFontFamily: null,
+			coverStyle: "MINIMAL",
+		});
+		expect(world.brands.get(PROJECT)).toMatchObject({
+			displayFontFamily: null,
+			bodyFontFamily: "Inter",
+			coverStyle: "MINIMAL",
+			version: 3,
+		});
+	});
+	it("rejects unsupported or injected font names and unrecognized covers before mutating", async () => {
+		for (const change of [
+			{ displayFontFamily: "Unbundled font" },
+			{ bodyFontFamily: "Inter; url(https://example.com/font)" },
+			{ coverStyle: "UNREVIEWED" },
+		]) {
+			await expect(confirm(change)).rejects.toBeTruthy();
+		}
+		expect(mocks.confirmRecipientBrand).not.toHaveBeenCalled();
+		expect(world.brands.size).toBe(0);
 	});
 });

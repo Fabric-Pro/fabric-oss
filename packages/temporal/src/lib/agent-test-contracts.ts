@@ -1,3 +1,9 @@
+import {
+	resultQualityCheckFields,
+	resultQualityGradeFields,
+	validResultQualityChecks,
+	validResultQualityGrade,
+} from "@repo/utils/result-quality";
 import { z } from "zod";
 
 export const AGENT_TEST_WORKFLOW = "agentTestAssessmentWorkflow";
@@ -6,11 +12,13 @@ const id = z.string().trim().min(1).max(200);
 const phrase = z.string().trim().min(1).max(512);
 export const agentTestChecksSchema = z
 	.strictObject({
+		...resultQualityCheckFields,
 		requiredPhrases: z.array(phrase).max(20).default([]),
 		forbiddenPhrases: z.array(phrase).max(20).default([]),
 	})
-	.refine((x) => x.requiredPhrases.length + x.forbiddenPhrases.length > 0, {
-		message: "Add at least one text check.",
+	.refine(validResultQualityChecks, {
+		message:
+			"Add at least one check; JSON and grounding checks require version 2.",
 	});
 export const agentTestScopeSchema = z.strictObject({
 	instanceId: id,
@@ -80,7 +88,7 @@ export interface AgentTestActor {
 }
 export type AgentTestChecks = z.infer<typeof agentTestChecksSchema>;
 export type AgentTestScope = z.infer<typeof agentTestScopeSchema>;
-export const agentTestReportSchema = z
+const agentTestLegacyReportSchema = z
 	.strictObject({
 		version: z.literal(1),
 		method: z.literal("exact-text"),
@@ -111,6 +119,26 @@ export const agentTestReportSchema = z
 			x.passed === x.results.filter((r) => r.passed).length,
 		{ message: "The report counts must match its checks." },
 	);
+const agentTestDeterministicReportSchema = z
+	.strictObject({
+		...resultQualityGradeFields,
+		outputHash: z.string().regex(/^[a-f0-9]{64}$/),
+		durationMs: z.number().int().nonnegative().nullable(),
+		inputTokens: z.number().int().nonnegative().nullable(),
+		outputTokens: z.number().int().nonnegative().nullable(),
+		totalCost: z
+			.string()
+			.max(40)
+			.regex(/^[0-9]+(?:\.[0-9]+)?$/)
+			.nullable(),
+	})
+	.refine(validResultQualityGrade, {
+		message: "The report counts must match its checks.",
+	});
+export const agentTestReportSchema = z.union([
+	agentTestLegacyReportSchema,
+	agentTestDeterministicReportSchema,
+]);
 export type AgentTestReport = z.infer<typeof agentTestReportSchema>;
 export interface AgentTestRunSummary {
 	id: string;

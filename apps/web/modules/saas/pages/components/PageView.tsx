@@ -63,6 +63,7 @@ export function PageView({
 			frameId,
 			surface: "workspace",
 			projectId: frame?.projectId,
+			updatedAt: frame?.updatedAt,
 		}),
 	);
 
@@ -82,6 +83,13 @@ export function PageView({
 					<div className="flex flex-wrap items-center gap-2">
 						{frame.ownedByCaller ? (
 							<>
+								<Button variant="outline" size="sm" asChild>
+									<Link
+										href={`/app/${organizationSlug}/frames/${frame.frameId}?review=1`}
+									>
+										Reviews
+									</Link>
+								</Button>
 								<Button
 									variant="outline"
 									size="sm"

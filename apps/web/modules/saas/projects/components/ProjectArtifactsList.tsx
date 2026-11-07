@@ -4,6 +4,7 @@ import { FrameCollection } from "@saas/frames/components/FrameCollection";
 import { FrameDetailView } from "@saas/frames/components/FrameDetailView";
 import { useOpenFrameAgent } from "@saas/frames/hooks/use-open-frame-agent";
 import {
+	agentContextOfFrame,
 	FrameDetailSchema,
 	FrameListSchema,
 	type FrameSummary,
@@ -65,6 +66,8 @@ export function ProjectArtifactsList({
 		return (
 			<ArtifactView
 				frameId={selectedId}
+				projectId={projectId}
+				projectName={projectName}
 				organizationSlug={slug}
 				onBack={() => setSelectedId(null)}
 				onEdit={openAgent}
@@ -153,11 +156,15 @@ export function ProjectArtifactsList({
 
 function ArtifactView({
 	frameId,
+	projectId,
+	projectName,
 	organizationSlug,
 	onBack,
 	onEdit,
 }: {
 	frameId: string;
+	projectId: string;
+	projectName?: string;
 	organizationSlug: string;
 	onBack: () => void;
 	onEdit?: (prompt: string) => void;
@@ -170,6 +177,16 @@ function ArtifactView({
 	);
 
 	const frame = detail.data;
+	const openFrameAgent = useOpenFrameAgent({
+		...agentContextOfFrame({
+			frameId,
+			surface: "artifact",
+			projectId,
+			updatedAt: frame?.updatedAt,
+		}),
+		projectName: projectName ?? null,
+	});
+	const editFrame = openFrameAgent ?? onEdit;
 
 	return (
 		<div className="space-y-4">
@@ -178,11 +195,11 @@ function ArtifactView({
 					<ArrowLeftIcon className="mr-2 size-4" aria-hidden />
 					All artifacts
 				</Button>
-				{frame && onEdit ? (
+				{frame && editFrame ? (
 					<Button
 						variant="outline"
 						size="sm"
-						onClick={() => onEdit(editPrompt(frame))}
+						onClick={() => editFrame(editPrompt(frame))}
 					>
 						<SparklesIcon className="mr-2 size-4" aria-hidden />
 						Change with Fabric Agent
@@ -195,7 +212,7 @@ function ArtifactView({
 				surface="artifact"
 				organizationId={organizationId}
 				organizationSlug={organizationSlug}
-				onOpenAgent={onEdit}
+				onOpenAgent={editFrame}
 			/>
 		</div>
 	);

@@ -5,9 +5,10 @@ import {
 	screen,
 	waitFor,
 } from "@testing-library/react";
-import { useState, type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { WorkflowNode, WorkflowEdge } from "../../lib/types";
+import type { WorkflowEdge, WorkflowNode } from "../../lib/types";
+
 vi.mock("@xyflow/react", () => ({
 	ReactFlow: ({
 		nodes,
@@ -44,6 +45,11 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 	useFeatureFlag: () => true,
 }));
+// The automatic-check panel has its own query/provider and permission tests;
+// this fixture isolates graph persistence and save acknowledgement behavior.
+vi.mock("@saas/run-quality/components/RunQualityPanel", () => ({
+	RunQualityPanel: () => null,
+}));
 vi.mock("../PublishDialog", () => ({
 	PublishDialog: ({ open }: { open: boolean }) =>
 		open ? <div>Publish saved version</div> : null,
@@ -76,7 +82,9 @@ vi.mock("../editor/StepInspector", () => ({
 		</button>
 	),
 }));
+
 import { WorkflowBuilder } from "../WorkflowBuilder";
+
 const nodes: WorkflowNode[] = [
 	{
 		id: "start",

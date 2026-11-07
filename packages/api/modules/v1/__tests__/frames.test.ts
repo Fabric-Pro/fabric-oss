@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
 	list: vi.fn(),
+	brandingGet: vi.fn(),
+	brandingApply: vi.fn(),
 	get: vi.fn(),
 	context: vi.fn(),
 	update: vi.fn(),
@@ -20,8 +22,16 @@ const m = vi.hoisted(() => ({
 	cancelExport: vi.fn(),
 	downloadExport: vi.fn(),
 }));
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async (original) => ({
+	...(await original<typeof import("@repo/database")>()),
 	listFrames: m.list,
+	getFrameBranding: m.brandingGet,
+	applyFrameBranding: m.brandingApply,
+	ArtifactBrandingError: class extends Error {
+		constructor(readonly code: string) {
+			super(code);
+		}
+	},
 	getFrameById: m.get,
 	updateFrame: m.update,
 	revertFrameToVersion: m.restore,
@@ -386,4 +396,55 @@ it("requires the same live delete authority as UI revocation even when sharing u
 	expect(result.status).toBe(403);
 	expect(m.revoke).not.toHaveBeenCalled();
 	expect(m.canDelete).toHaveBeenCalledWith("example-user", "example-org");
+});
+
+describe("Frame branding transport contract", () => {
+	it("reads reviewed source choices with the exact actor and organization", async () => {
+		m.brandingGet.mockResolvedValue({
+			frameUpdatedAt: "2026-11-05T00:00:00.000Z",
+			projectId: "example-project",
+			company: { version: 1 },
+			client: { version: 2 },
+		});
+		const r = await get("/frames/example-frame/branding");
+		expect(r.status).toBe(200);
+		expect(m.brandingGet).toHaveBeenCalledWith({
+			id: "example-frame",
+			userId: "example-user",
+			organizationId: "example-org",
+		});
+	});
+	it("never reaches a writer from a read-only key", async () => {
+		const r = await app.request("/frames/example-frame/branding", {
+			method: "POST",
+			headers: {
+				"x-example-scope": "frames:read",
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				source: "CLIENT",
+				expectedBrandVersion: 1,
+				expectedUpdatedAt: "2026-11-05T00:00:00.000Z",
+			}),
+		});
+		expect(r.status).toBe(403);
+		expect(m.brandingApply).not.toHaveBeenCalled();
+	});
+	it("bounds the original JSON stream before applying a brand", async () => {
+		const r = await app.request("/frames/example-frame/branding", {
+			method: "POST",
+			headers: {
+				"x-example-scope": "frames:write",
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				source: "CLIENT",
+				padding: "x".repeat(17000),
+				expectedBrandVersion: 1,
+				expectedUpdatedAt: "2026-11-05T00:00:00.000Z",
+			}),
+		});
+		expect(r.status).toBe(413);
+		expect(m.brandingApply).not.toHaveBeenCalled();
+	});
 });

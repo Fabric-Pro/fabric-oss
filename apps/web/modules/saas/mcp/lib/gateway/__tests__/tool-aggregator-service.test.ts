@@ -1,4 +1,8 @@
-import { FABRIC_WORKSPACE_TOOL_DEFINITIONS } from "@repo/temporal/fabric-gateway-tools";
+import {
+	FABRIC_BRAND_TOOL_DEFINITIONS,
+	FABRIC_PROJECT_DELIVERY_TOOL_DEFINITIONS,
+	FABRIC_WORKSPACE_TOOL_DEFINITIONS,
+} from "@repo/temporal/fabric-gateway-tools";
 /**
  * What Fabric's own agent runtime is offered through the gateway: the platform
  * tools its scopes reach, and none of the person's connected servers. It
@@ -76,6 +80,10 @@ describe("tools offered to the service credential", () => {
 			]),
 		);
 		const expected = [
+			...FABRIC_PROJECT_DELIVERY_TOOL_DEFINITIONS,
+			...FABRIC_BRAND_TOOL_DEFINITIONS.filter(
+				(tool) => tool.annotations.readOnlyHint,
+			),
 			...FABRIC_WORKSPACE_TOOL_DEFINITIONS,
 			...FABRIC_WORKFLOW_TOOL_DEFINITIONS,
 			...FABRIC_FRAME_TOOL_DEFINITIONS,
@@ -88,6 +96,14 @@ describe("tools offered to the service credential", () => {
 			.filter(
 				(tool) =>
 					!("pageOnly" in tool) || tool.name === "fabric_page_ask",
+			)
+			.filter(
+				(tool) =>
+					![
+						"fabric_get_report_branding",
+						"fabric_get_report_instance_branding",
+						"fabric_apply_report_branding",
+					].includes(tool.name),
 			)
 			.map((tool) => tool.name)
 			.sort();

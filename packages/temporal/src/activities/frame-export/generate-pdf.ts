@@ -14,10 +14,21 @@
  */
 
 import type { FrameDocument } from "@repo/database";
+import { artifactBrandFontFaceCss } from "@repo/utils/artifact-brand-fonts";
+import {
+	artifactBrandCoverHtml,
+	artifactBrandPresentationCss,
+} from "@repo/utils/artifact-brand-snapshot";
+import {
+	canExportFramePresentationToPdf,
+	effectiveFramePresentation,
+	FRAME_INTERFACE_PDF_BLOCK_ERROR,
+} from "@repo/utils/frame-presentation";
 import { Context } from "@temporalio/activity";
 import { type BrowserContextOptions, chromium } from "playwright";
 import { FRAME_EXPORT_MAX_BYTES } from "../../lib/frame-export-contract";
 import { PRINT_CHROMIUM_ARGS } from "../../lib/print-chromium-args";
+import { renderFrameMarkdown } from "./render-markdown";
 import { sanitizeFrameHtml } from "./sanitize-frame-html";
 
 /**
@@ -41,7 +52,10 @@ export interface GeneratePDFInput {
 /**
  * Render frame document to HTML
  */
-function renderFrameToHTML(document: FrameDocument): string {
+export function renderFrameToHTML(document: FrameDocument): string {
+	if (!canExportFramePresentationToPdf(document)) {
+		throw new Error(FRAME_INTERFACE_PDF_BLOCK_ERROR);
+	}
 	// Sanitised once, over the joined blocks, not block by block: a construct
 	// split across two `html` blocks — `<img src=x` then `onerror=…>`, or
 	// `<a href="java` then `script:…">` — only exists once the blocks are
@@ -58,8 +72,7 @@ function renderFrameToHTML(document: FrameDocument): string {
 					case "html":
 						return block.content;
 					case "markdown":
-						// Simple markdown to HTML (in production, use a proper converter)
-						return `<div class="markdown-content">${escapeHtml(block.content)}</div>`;
+						return `<div class="markdown-content">${renderFrameMarkdown(block.content)}</div>`;
 					case "json":
 						return `<pre><code>${escapeHtml(JSON.stringify(JSON.parse(block.content), null, 2))}</code></pre>`;
 					case "mermaid":
@@ -71,6 +84,12 @@ function renderFrameToHTML(document: FrameDocument): string {
 			})
 			.join("\n"),
 	);
+
+	if (effectiveFramePresentation(document) === "INTERFACE") {
+		// Authored HTML owns layout and typography. No document cover, report
+		// heading, body font, table styles or extra layout wrapper is added.
+		return `<!DOCTYPE html>\n${blocks}`;
+	}
 
 	const isDark = document.theme?.mode === "dark";
 	// The accent colour is written into the style block, so only a hex
@@ -100,6 +119,8 @@ function renderFrameToHTML(document: FrameDocument): string {
       color: ${accentColor};
       margin-top: 1.5rem;
       margin-bottom: 0.75rem;
+      break-after: avoid;
+      page-break-after: avoid;
     }
     pre {
       background: ${isDark ? "#2d2d2d" : "#f5f5f5"};
@@ -125,11 +146,12 @@ function renderFrameToHTML(document: FrameDocument): string {
       background: ${isDark ? "#333" : "#f5f5f5"};
     }
 ${PDF_TEMPLATE_UTILITY_CSS}
+${document.theme?.branding ? artifactBrandFontFaceCss(document.theme.branding) + artifactBrandPresentationCss(document.theme.branding) : ""}
   </style>
 </head>
 <body>
   <div class="frame-container">
-    ${document.title ? `<h1>${escapeHtml(document.title)}</h1>` : ""}
+    ${document.theme?.branding ? artifactBrandCoverHtml(document.theme.branding, document.title) : document.title ? `<h1>${escapeHtml(document.title)}</h1>` : ""}
     ${document.description ? `<p class="text-gray-600 mb-4">${escapeHtml(document.description)}</p>` : ""}
     ${blocks}
   </div>
@@ -193,6 +215,7 @@ export async function generatePDFActivity(
 		/* Direct renderer use has no activity context. */
 	}
 	signal?.throwIfAborted();
+	const html = renderFrameToHTML(input.content);
 	const browser = await chromium.launch({
 		// The print flags every server-side PDF shares, font hinting off
 		// among them (see `print-chromium-args.ts`).
@@ -213,8 +236,15 @@ export async function generatePDFActivity(
 		const page = await context.newPage();
 
 		// Render HTML content
-		const html = renderFrameToHTML(input.content);
 		await page.setContent(html, { waitUntil: "load", timeout: 30000 });
+		if (
+			input.content.theme?.branding &&
+			effectiveFramePresentation(input.content) === "DOCUMENT"
+		) {
+			await page.evaluate(() =>
+				document.fonts.ready.then(() => undefined),
+			);
+		}
 		signal?.throwIfAborted();
 
 		// Generate PDF
@@ -222,12 +252,15 @@ export async function generatePDFActivity(
 			format: "A4",
 			landscape: input.orientation === "landscape",
 			printBackground: true,
-			margin: {
-				top: "20px",
-				right: "20px",
-				bottom: "20px",
-				left: "20px",
-			},
+			margin:
+				effectiveFramePresentation(input.content) === "INTERFACE"
+					? { top: "0", right: "0", bottom: "0", left: "0" }
+					: {
+							top: "20px",
+							right: "20px",
+							bottom: "20px",
+							left: "20px",
+						},
 		});
 
 		signal?.throwIfAborted();

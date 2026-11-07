@@ -13,6 +13,7 @@ import { INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_ID } from "@repo/instr
 import { ScheduleAlreadyRunning, ScheduleClient } from "@temporalio/client";
 import { createConnection, getTemporalConfig } from "./client";
 import { retireAgentExecutionReceiptRecoverySchedule } from "./schedules/agent-execution-receipt-recovery";
+import { registerDeliverySourceRetentionSchedule } from "./schedules/delivery-source-retention";
 import { ensureAiUsageSchedules } from "./scripts/ensure-ai-usage-schedules";
 import { ensureContextSummarizationSchedules } from "./scripts/ensure-context-summarization-schedules";
 import { ensureMonitoringSchedules } from "./scripts/ensure-monitoring-schedules";
@@ -493,6 +494,7 @@ export async function registerSystemSchedules(): Promise<void> {
 		await registerPmSyncStuckWatchdogSchedule(scheduleClient);
 		await registerMcpOAuthStateCleanupSchedule(scheduleClient);
 		await registerBackgroundJobRetentionSchedule(scheduleClient);
+		await registerDeliverySourceRetentionSchedule(scheduleClient);
 		await registerMeetingArchiveRetentionSchedule(scheduleClient);
 		await registerBackgroundJobWatchdogSchedule(scheduleClient);
 		await registerProjectInstructionReaperSchedule(scheduleClient);

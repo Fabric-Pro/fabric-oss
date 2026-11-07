@@ -1,4 +1,4 @@
-import { getRecipientBrand } from "@repo/database";
+import { db, getRecipientBrand } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -45,6 +45,8 @@ export const getRecipientBrandProcedure = tenantProtectedProcedure
 	.input(z.object({ projectId: z.string() }))
 	.output(
 		z.object({
+			/** The prepared-by party, from the project's owning organization. */
+			companyName: z.string().nullable(),
 			version: z.number().int(),
 			/** Whether the caller may change the recipient brand. */
 			canEdit: z.boolean(),
@@ -58,20 +60,26 @@ export const getRecipientBrandProcedure = tenantProtectedProcedure
 			write: false,
 		});
 
-		const [row, canEdit] = await Promise.all([
+		const [row, canEdit, company] = await Promise.all([
 			getRecipientBrand(input.projectId),
 			canEditRecipientBrand({
 				projectId: input.projectId,
 				organizationId,
 				userId: context.user.id,
 			}),
+			db.organization.findUnique({
+				where: { id: organizationId },
+				select: { name: true },
+			}),
 		]);
+		const companyName = company?.name?.trim() || null;
 		// A row left behind in another organization is no recipient brand.
 		const brand = row?.organizationId === organizationId ? row : null;
 		if (!brand) {
-			return { version: 0, canEdit, recipientBrand: null };
+			return { companyName, version: 0, canEdit, recipientBrand: null };
 		}
 		return {
+			companyName,
 			version: brand.version,
 			canEdit,
 			recipientBrand: await presentRecipientBrand(brand),

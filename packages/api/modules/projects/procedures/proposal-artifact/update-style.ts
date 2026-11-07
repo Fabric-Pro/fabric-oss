@@ -1,13 +1,23 @@
-import { ORPCError } from "@orpc/client";
+import { ORPCError } from "@orpc/server";
 import {
+	DocumentStyleConflictError,
 	DocumentStyleValidationError,
 	PROPOSAL_STYLE_MAX_ACCENT_COLORS,
 	PROPOSAL_STYLE_MAX_DIRECTION_LENGTH,
 	ProposalArtifactTenantError,
 	upsertDocumentStyle,
 } from "@repo/database";
+import {
+	ARTIFACT_BRAND_SOURCES,
+	ARTIFACT_COVER_STYLES,
+} from "@repo/utils/artifact-brand-theme";
 import { HEX_COLOR_PATTERN } from "@repo/utils/brand-colors";
 import { z } from "zod";
+import {
+	type RecordAuditFromRequestInput,
+	recordAuditFromRequest,
+} from "../../../../lib/audit";
+import { assertProjectPermission } from "../../../../orpc/middleware/require-permission";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -24,6 +34,9 @@ const hexColorSchema = z
 	.regex(HEX_COLOR_PATTERN, { message: "Colours must be #rrggbb" });
 
 export const updateProposalStyleInputSchema = z.object({
+	brandSource: z.enum(ARTIFACT_BRAND_SOURCES).optional(),
+	coverStyle: z.enum(ARTIFACT_COVER_STYLES).nullable().optional(),
+	expectedUpdatedAt: z.date().nullable().optional(),
 	projectId: z.string(),
 	documentId: z.string(),
 	/** Trimmed; empty clears it. */
@@ -52,10 +65,9 @@ export const updateProposalStyleInputSchema = z.object({
  * BAD_REQUEST before anything is read, and the query re-validates whatever
  * reaches it, which this maps to BAD_REQUEST as well.
  *
- * No audit row, deliberately: a style direction and three colours are
- * document presentation, not a security-relevant change — no permission,
- * credential or data boundary moves — and the closed `AUDIT_ACTIONS`
- * taxonomy has no action for a document's presentation settings.
+ * All transports record the existing project.updated action with field names
+ * only, so shared client/company visual selection is visible without logging
+ * brand guidance or client content.
  *
  * AUTHORIZATION: `requireProposalArtifactEnabled` first (gate off → NOT_FOUND
  * for every caller), then `requireProjectPermission(DOCUMENT_UPDATE)`, then
@@ -75,42 +87,83 @@ export const updateProposalStyleProcedure = tenantProtectedProcedure
 	})
 	.input(updateProposalStyleInputSchema)
 	.output(proposalStyleSchema)
-	.handler(async ({ input, context }) => {
-		const { document, organizationId } = await loadProposalArtifactDocument(
+	.handler(async ({ input, context }) =>
+		updateProposalStyleCommand(
 			{
-				projectId: input.projectId,
-				documentId: input.documentId,
 				userId: context.user.id,
-				write: true,
+				organizationId: (
+					await loadProposalArtifactDocument({
+						...input,
+						userId: context.user.id,
+						write: true,
+					})
+				).organizationId,
 			},
-		);
+			input,
+			(event) => recordAuditFromRequest(context, event),
+		),
+	);
 
-		try {
-			const style = await upsertDocumentStyle({
-				documentId: document.id,
-				projectId: input.projectId,
-				organizationId,
-				styleDirection: input.styleDirection,
-				primaryColor: input.primaryColor,
-				accentColors: input.accentColors,
-				autoVisuals: input.autoVisuals,
-				updatedById: context.user.id,
-			});
-			return presentProposalStyle(style);
-		} catch (error) {
-			if (error instanceof DocumentStyleValidationError) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: "The style is not valid",
-					data: { code: error.code },
-				});
-			}
-			if (error instanceof ProposalArtifactTenantError) {
-				// The access check above read the same rows; reaching this
-				// means the document moved or went away in between.
-				throw new ORPCError("NOT_FOUND", {
-					message: "Document not found",
-				});
-			}
-			throw error;
-		}
+/** One live authorization and persistence path for Portal and external transports. */
+export async function updateProposalStyleCommand(
+	actor: { userId: string; organizationId: string },
+	input: z.infer<typeof updateProposalStyleInputSchema>,
+	audit: (event: RecordAuditFromRequestInput) => unknown,
+) {
+	const permission = await assertProjectPermission(
+		input.projectId,
+		actor.userId,
+		Permissions.DOCUMENT_UPDATE,
+	);
+	if (permission.organizationId !== actor.organizationId) {
+		throw new ORPCError("NOT_FOUND", { message: "Document not found" });
+	}
+	const { document, organizationId } = await loadProposalArtifactDocument({
+		projectId: input.projectId,
+		documentId: input.documentId,
+		userId: actor.userId,
+		write: true,
 	});
+	try {
+		const style = await upsertDocumentStyle({
+			...input,
+			documentId: document.id,
+			organizationId,
+			updatedById: actor.userId,
+		});
+		await audit({
+			action: "project.updated",
+			category: "project",
+			organizationId,
+			projectId: input.projectId,
+			resource: { type: "project", id: input.projectId, name: null },
+			metadata: {
+				operation: "proposal_style.updated",
+				documentId: document.id,
+				changedFields: [
+					"styleDirection",
+					"primaryColor",
+					"accentColors",
+					"autoVisuals",
+					"brandSource",
+					"coverStyle",
+				].filter((field) => Object.hasOwn(input, field)),
+			},
+		});
+		return presentProposalStyle(style);
+	} catch (error) {
+		if (error instanceof DocumentStyleConflictError) {
+			throw new ORPCError("CONFLICT", { message: error.message });
+		}
+		if (error instanceof DocumentStyleValidationError) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "The style is not valid",
+				data: { code: error.code },
+			});
+		}
+		if (error instanceof ProposalArtifactTenantError) {
+			throw new ORPCError("NOT_FOUND", { message: "Document not found" });
+		}
+		throw error;
+	}
+}

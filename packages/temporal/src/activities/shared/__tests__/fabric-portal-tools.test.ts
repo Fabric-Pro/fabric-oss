@@ -31,6 +31,7 @@ vi.mock("../read-only-gate", () => ({
 
 import {
 	FABRIC_CHAT_TOOL_DEFINITIONS,
+	FABRIC_IMPLEMENTATION_TOOL_DEFINITIONS,
 	isFabricChatTool,
 } from "../../../lib/fabric-gateway-tools";
 import {
@@ -147,7 +148,7 @@ describe("which portal tools the model is given", () => {
 			"fabric_compare_context_quality_runs",
 		];
 		expect(FABRIC_PORTAL_TOOL_NAMES).toHaveLength(
-			41 + savedEvaluationTools.length + 2,
+			41 + savedEvaluationTools.length + 3,
 		);
 		expect(
 			FABRIC_PORTAL_TOOL_NAMES.filter((name) =>
@@ -406,4 +407,22 @@ describe("foreignProjectId", () => {
 		expect(foreignProjectId({ projectId: "" }, "mine")).toBeNull();
 		expect(foreignProjectId(undefined, "mine")).toBeNull();
 	});
+});
+
+describe("implementation execution consent boundary", () => {
+	it.each(FABRIC_IMPLEMENTATION_TOOL_DEFINITIONS)(
+		"keeps $name external until a reviewed execution grant exists",
+		(definition) => {
+			expect(
+				FABRIC_CHAT_TOOL_DEFINITIONS.some(
+					(tool) => String(tool.name) === definition.name,
+				),
+			).toBe(false);
+			expect(isFabricChatTool(definition.name)).toBe(false);
+			expect(isFabricPortalTool(definition.name)).toBe(false);
+			expect(FABRIC_PORTAL_EXCLUDED_TOOL_NAMES).toContain(
+				definition.name,
+			);
+		},
+	);
 });

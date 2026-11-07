@@ -41,3 +41,26 @@ it("chooses exactly one stable restore target", () => {
 		false,
 	);
 });
+
+it("accepts appearance edits with the same reviewed revision and no runtime grants", () => {
+	const edit = {
+		expectedUpdatedAt: "2026-11-01T00:00:00Z",
+		presentation: "INTERFACE",
+	};
+	expect(frameContentEditSchema.parse(edit)).toEqual(edit);
+	expect(
+		frameContentEditSchema.safeParse({ presentation: "INTERFACE" }).success,
+	).toBe(false);
+	expect(
+		frameContentEditSchema.safeParse({
+			...edit,
+			presentation: "EXECUTABLE",
+		}).success,
+	).toBe(false);
+	expect(
+		frameContentEditSchema.safeParse({
+			...edit,
+			runtimeTools: ["fabric_delete_project"],
+		}).success,
+	).toBe(false);
+});

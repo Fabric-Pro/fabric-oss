@@ -30,6 +30,17 @@ vi.mock("@fabricorg/mcp-server", () => ({
 	UpstashSessionStore: vi.fn(),
 }));
 
+const triageList = vi.hoisted(() => vi.fn());
+vi.mock(
+	"@repo/api/modules/projects/lib/harness-triage-commands",
+	async (original) => ({
+		...(await original<
+			typeof import("@repo/api/modules/projects/lib/harness-triage-commands")
+		>()),
+		privateTriageCommands: { list: triageList },
+	}),
+);
+
 const verifyUserApiKey = vi.fn();
 vi.mock("@repo/api/modules/users/procedures/api-keys", () => ({
 	verifyUserApiKey: (rawKey: string) => verifyUserApiKey(rawKey),
@@ -99,7 +110,10 @@ function resultText(payload: Record<string, unknown>): string {
  * Authenticate, take the session id, then call a tool on that session — which
  * is what every real client does and what no existing test did.
  */
-async function initializeThenCall(tool: string): Promise<string> {
+async function initializeThenCall(
+	tool: string,
+	args: Record<string, unknown> = {},
+): Promise<string> {
 	const { POST } = await import("../../app/mcp/route");
 
 	const init = await POST(
@@ -132,7 +146,7 @@ async function initializeThenCall(tool: string): Promise<string> {
 				jsonrpc: "2.0",
 				id: 2,
 				method: "tools/call",
-				params: { name: tool, arguments: {} },
+				params: { name: tool, arguments: args },
 			}),
 		}) as never,
 	);
@@ -150,6 +164,12 @@ function keyWithScopes(scopes: string[]) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	triageList.mockResolvedValue({
+		version: 1,
+		availability: "NOT_ENABLED",
+		runs: [],
+		nextBefore: null,
+	});
 	vi.resetModules();
 	// Force the in-memory session store; Upstash is not exercised here.
 	vi.stubEnv("UPSTASH_REDIS_REST_URL", "");
@@ -353,5 +373,25 @@ describe("recording an instruction lesson requires instructions:write", () => {
 		const body = await initializeThenCall("fabric_add_instruction_lesson");
 
 		expect(body).toContain("does not have the");
+	});
+});
+
+describe("private triage on the restored /mcp host", () => {
+	it("passes the live verified key identity to the canonical command", async () => {
+		keyWithScopes(["*"]);
+		const body = await initializeThenCall("fabric_triage_list", {
+			projectId: "example-project",
+		});
+		expect(body).not.toContain("unavailable to this runtime");
+		expect(triageList).toHaveBeenCalledWith(
+			expect.objectContaining({
+				credential: {
+					kind: "ORGANIZATION_API_KEY",
+					id: "key-1",
+					scopes: ["*"],
+				},
+			}),
+			{ projectId: "example-project" },
+		);
 	});
 });

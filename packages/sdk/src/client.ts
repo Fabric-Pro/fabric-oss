@@ -615,11 +615,15 @@ export class FabricHttpClient {
 	patch<T>(
 		path: string,
 		body: unknown,
-		options: { idempotencyKey?: string } = {},
+		options: {
+			idempotencyKey?: string;
+			retry?: { maxRetries: number };
+		} = {},
 	) {
 		return this.request<T>("PATCH", path, {
 			body,
 			idempotencyKey: options.idempotencyKey,
+			retry: options.retry,
 		});
 	}
 

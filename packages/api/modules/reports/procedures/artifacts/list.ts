@@ -1,53 +1,42 @@
-import { listReportArtifacts } from "@repo/database";
+import { ORPCError } from "@orpc/server";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-
-const listInputSchema = z.object({
-	executionId: z.string().optional(),
-	templateId: z.string().optional(),
-	organizationId: z.string().nullable().optional(),
-	artifactType: z
-		.enum([
-			"MARKDOWN",
-			"PDF",
-			"HTML",
-			"EVIDENCE_EMBED",
-			"CHART_DATA",
-			"CSV",
-			"JSON",
-		])
-		.optional(),
-	limit: z.number().min(1).max(100).default(50),
-	offset: z.number().min(0).default(0),
-});
-
+import { runReportCommand } from "../../lib/report-commands";
+import {
+	nativeArtifactHistoryInput,
+	nativeArtifactHistoryOutput,
+} from "../../lib/report-history-contract";
+/** Native template-instance artifacts only. The retired ReportArtifact model is never merged into these results. */
 export const listArtifactsProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.REPORT_READ))
-	.input(listInputSchema)
+	.use(
+		requireInputOrgPermission(Permissions.REPORT_READ, {
+			requireOrganization: true,
+		}),
+	)
+	.input(
+		nativeArtifactHistoryInput.extend({
+			organizationId: z.string().optional(),
+		}),
+	)
+	.output(nativeArtifactHistoryOutput)
 	.handler(async ({ input, context }) => {
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			context.session,
 		);
-
-		const { artifacts, total } = await listReportArtifacts({
-			executionId: input.executionId,
-			templateId: input.templateId,
-			userId: context.user.id,
-			organizationId,
-			artifactType: input.artifactType,
-			limit: input.limit,
-			offset: input.offset,
-		});
-
-		return {
-			artifacts,
-			total,
-			hasMore: input.offset + artifacts.length < total,
-		};
+		if (!organizationId) {
+			throw new ORPCError("FORBIDDEN");
+		}
+		return nativeArtifactHistoryOutput.parse(
+			await runReportCommand(
+				{ userId: context.user.id, organizationId, scopes: ["*"] },
+				"artifacts",
+				input,
+			),
+		);
 	});

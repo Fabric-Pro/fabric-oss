@@ -1,8 +1,9 @@
 "use client";
 
+import { useOrganizationId } from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useParams } from "next/navigation";
+import { useRef } from "react";
 import { toast } from "sonner";
 
 interface UseFrameTemplatesOptions {
@@ -11,19 +12,20 @@ interface UseFrameTemplatesOptions {
 }
 
 export function useFrameTemplates(options: UseFrameTemplatesOptions = {}) {
-	const params = useParams();
-	const organizationSlug = params?.organizationSlug as string | undefined;
+	const organizationId = useOrganizationId();
 
 	const query = useQuery({
+		enabled: !!organizationId,
+		retry: false,
 		queryKey: [
 			"frame-templates",
-			organizationSlug,
+			organizationId,
 			options.category,
 			options.includeSystem,
 		],
 		queryFn: async () => {
 			const result = await orpcClient.frames.listTemplates({
-				organizationId: organizationSlug || null,
+				organizationId,
 				category: options.category,
 				includeSystem: options.includeSystem ?? true,
 			});
@@ -43,10 +45,11 @@ export function useFrameTemplates(options: UseFrameTemplatesOptions = {}) {
 
 export function useCreateFrameFromTemplate() {
 	const queryClient = useQueryClient();
-	const params = useParams();
-	const organizationSlug = params?.organizationSlug as string | undefined;
+	const organizationId = useOrganizationId();
 
+	const requests = useRef(new Map<string, string>());
 	const mutation = useMutation({
+		retry: false,
 		mutationFn: async ({
 			templateId,
 			variables,
@@ -58,8 +61,24 @@ export function useCreateFrameFromTemplate() {
 			title?: string;
 			description?: string;
 		}) => {
+			if (!organizationId) {
+				throw new Error(
+					"Select an organization before creating a page.",
+				);
+			}
+			const intent = JSON.stringify([
+				organizationId,
+				templateId,
+				variables,
+				title,
+				description,
+			]);
+			const requestId =
+				requests.current.get(intent) ?? crypto.randomUUID();
+			requests.current.set(intent, requestId);
 			const result = await orpcClient.frames.createFromTemplate({
-				organizationId: organizationSlug || null,
+				requestId,
+				organizationId,
 				templateId,
 				variables,
 				title,
@@ -72,12 +91,10 @@ export function useCreateFrameFromTemplate() {
 				toast.success("Frame created from template");
 				// Invalidate frames list to show the new frame
 				queryClient.invalidateQueries({
-					queryKey: ["frames", organizationSlug],
+					queryKey: ["frames", organizationId],
 				});
 			} else {
-				toast.error(
-					data.error || "Failed to create frame from template",
-				);
+				toast.error("Failed to create frame from template");
 			}
 		},
 		onError: (error) => {
@@ -96,6 +113,9 @@ export function useCreateFrameFromTemplate() {
 		isError: mutation.isError,
 		data: mutation.data,
 		error: mutation.error,
-		reset: mutation.reset,
+		reset: () => {
+			requests.current.clear();
+			mutation.reset();
+		},
 	};
 }

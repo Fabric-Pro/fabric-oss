@@ -38,6 +38,23 @@ describe("transferableAttachments", () => {
 });
 
 describe("buildExpandHandoff", () => {
+	it("preserves a displayed revision without treating it as write authority", () => {
+		const handoff = buildExpandHandoff({
+			conversationId: null,
+			draft: "",
+			attachments: [],
+			projectId: null,
+			launchContext: {
+				launchFrameId: "frame-example",
+				launchFrameUpdatedAt: "2026-10-14T09:00:00.000Z",
+			},
+			now: 0,
+		});
+		expect(handoff?.frameLaunchContext).toMatchObject({
+			launchFrameId: "frame-example",
+			launchFrameUpdatedAt: "2026-10-14T09:00:00.000Z",
+		});
+	});
 	it.each([
 		{
 			launchFrameId: "frame-workspace",

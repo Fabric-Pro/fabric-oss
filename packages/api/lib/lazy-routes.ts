@@ -62,10 +62,10 @@ export function lazyRoutes(
 		// eagerly the sub-app's later `c.header()` calls win, so give its own
 		// headers precedence again.
 		c.res = response;
-		for (const [name, value] of response.headers) {
+		response.headers.forEach((value, name) => {
 			if (name !== "set-cookie") {
 				c.res.headers.set(name, value);
 			}
-		}
+		});
 	};
 }

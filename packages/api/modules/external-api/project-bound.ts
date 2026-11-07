@@ -15,6 +15,37 @@ import { db } from "@repo/database";
 /** Where the public v1 API is mounted. */
 const V1_PATH = "/api/v1";
 
+/** These read handlers repeat scopes BEFORE their opaque project-binding refusal. */
+export function isDeliverySignalReadPath(
+	path: string,
+	method: string,
+): boolean {
+	return (
+		method === "GET" &&
+		/^\/api\/v1\/projects\/[^/]+\/delivery\/(?:sources|signals(?:\/[^/]+)?)\/?$/.test(
+			path,
+		)
+	);
+}
+
+/** Exact implemented paths only; handlers repeat scopes before opaque binding checks. */
+export function isDeliverySourcePath(path: string, method: string): boolean {
+	const suffix = path.match(
+		/^\/api\/v1\/projects\/[^/]+\/delivery\/private-sources(.*)$/,
+	)?.[1];
+	if (suffix === undefined) {
+		return false;
+	}
+	return method === "GET"
+		? /^(?:\/?|\/[^/]+\/capture\/?|\/[^/]+\/observations(?:\/[^/]+)?\/?)$/.test(
+				suffix,
+			)
+		: method === "POST" &&
+				/^(?:\/?|\/inspect\/?|\/[^/]+\/state\/?|\/[^/]+\/capture(?:\/cancel)?\/?)$/.test(
+					suffix,
+				);
+}
+
 /** Routes of the v1 API that name no project and are about the caller. */
 const CALLER_ROUTES: ReadonlySet<string> = new Set([
 	"/auth/whoami",
@@ -58,4 +89,18 @@ export async function projectBoundRefusal(
 		error: `This sign-in is limited to project ${project?.name ?? boundProjectId}`,
 		status: 403,
 	};
+}
+
+/** Exact private triage routes; canonical commands independently check scope and current access. */
+export function isHarnessTriagePath(path: string, method: string): boolean {
+	const suffix = path.match(
+		/^\/api\/v1\/projects\/[^/]+\/delivery\/triage(.*)$/,
+	)?.[1];
+	return (
+		suffix !== undefined &&
+		(method === "GET"
+			? /^(?:\/?|\/[^/]+(?:\/result)?\/?)$/.test(suffix)
+			: method === "POST" &&
+				/^(?:\/?|\/[^/]+\/(?:cancel|review)\/?)$/.test(suffix))
+	);
 }

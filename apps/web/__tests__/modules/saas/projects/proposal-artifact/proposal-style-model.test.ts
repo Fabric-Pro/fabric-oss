@@ -94,6 +94,8 @@ describe("proposalStyleDraftFrom", () => {
 			primary: [],
 			accents: [],
 			autoVisuals: true,
+			brandSource: "COMPANY",
+			coverStyle: null,
 		});
 	});
 
@@ -104,6 +106,8 @@ describe("proposalStyleDraftFrom", () => {
 				primaryColor: null,
 				accentColors: ["#ff8800"],
 				autoVisuals: false,
+				brandSource: "COMPANY",
+				coverStyle: null,
 				updatedAt: NOW,
 			}),
 		).toEqual({
@@ -111,6 +115,8 @@ describe("proposalStyleDraftFrom", () => {
 			primary: [],
 			accents: ["#ff8800"],
 			autoVisuals: false,
+			brandSource: "COMPANY",
+			coverStyle: null,
 		});
 	});
 });
@@ -123,6 +129,8 @@ describe("validateProposalStyleDraft", () => {
 				primary: ["#ABC"],
 				accents: ["#FF8800", "", "  "],
 				autoVisuals: false,
+				brandSource: "COMPANY",
+				coverStyle: null,
 			}),
 		).toEqual({
 			ok: true,
@@ -131,6 +139,8 @@ describe("validateProposalStyleDraft", () => {
 				primaryColor: "#aabbcc",
 				accentColors: ["#ff8800"],
 				autoVisuals: false,
+				brandSource: "COMPANY",
+				coverStyle: null,
 			},
 		});
 	});
@@ -142,6 +152,8 @@ describe("validateProposalStyleDraft", () => {
 				primary: [],
 				accents: [],
 				autoVisuals: true,
+				brandSource: "COMPANY",
+				coverStyle: null,
 			}),
 		).toEqual({
 			ok: true,
@@ -150,6 +162,8 @@ describe("validateProposalStyleDraft", () => {
 				primaryColor: null,
 				accentColors: [],
 				autoVisuals: true,
+				brandSource: "COMPANY",
+				coverStyle: null,
 			},
 		});
 	});
@@ -161,6 +175,8 @@ describe("validateProposalStyleDraft", () => {
 				primary: [],
 				accents: [],
 				autoVisuals: true,
+				brandSource: "COMPANY",
+				coverStyle: null,
 			}),
 		).toEqual({ ok: false, error: "directionTooLong" });
 		expect(
@@ -169,6 +185,8 @@ describe("validateProposalStyleDraft", () => {
 				primary: [],
 				accents: [],
 				autoVisuals: true,
+				brandSource: "COMPANY",
+				coverStyle: null,
 			}).ok,
 		).toBe(true);
 		expect(
@@ -177,6 +195,8 @@ describe("validateProposalStyleDraft", () => {
 				primary: ["red"],
 				accents: [],
 				autoVisuals: true,
+				brandSource: "COMPANY",
+				coverStyle: null,
 			}),
 		).toEqual({ ok: false, error: "invalidColor" });
 		expect(
@@ -185,6 +205,8 @@ describe("validateProposalStyleDraft", () => {
 				primary: [],
 				accents: ["#12345g"],
 				autoVisuals: true,
+				brandSource: "COMPANY",
+				coverStyle: null,
 			}),
 		).toEqual({ ok: false, error: "invalidColor" });
 		expect(
@@ -193,6 +215,8 @@ describe("validateProposalStyleDraft", () => {
 				primary: [],
 				accents: ["#111111", "#222222", "#333333", "#444444"],
 				autoVisuals: true,
+				brandSource: "COMPANY",
+				coverStyle: null,
 			}),
 		).toEqual({ ok: false, error: "tooManyAccentColors" });
 	});

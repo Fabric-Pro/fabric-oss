@@ -100,3 +100,31 @@ describe("frame-args", () => {
 		});
 	});
 });
+
+it.each(["DOCUMENT", "INTERFACE"])(
+	"accepts explicit presentation %s for create and presentation-only update",
+	(presentation) => {
+		for (const result of [
+			validateCreateFrameArgs({ title: "Example", presentation }),
+			validateUpdateFrameArgs({
+				frameId: "example-frame",
+				presentation,
+				expectedUpdatedAt: "2026-11-01T00:00:00Z",
+			}),
+		]) {
+			expect(result).toMatchObject({ ok: true, value: { presentation } });
+		}
+	},
+);
+it.each([null, "EXECUTABLE", "interface", false])(
+	"refuses invalid presentation %j before mutation",
+	(presentation) => {
+		expect(
+			validateCreateFrameArgs({ title: "Example", presentation }).ok,
+		).toBe(false);
+		expect(
+			validateUpdateFrameArgs({ frameId: "example-frame", presentation })
+				.ok,
+		).toBe(false);
+	},
+);

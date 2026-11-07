@@ -2434,6 +2434,19 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 		setCreateDialogOpen(true);
 	}, [statuses]);
 
+	const createStoryDeepLinkHandledRef = useRef(false);
+	useEffect(() => {
+		if (
+			createStoryDeepLinkHandledRef.current ||
+			searchParams.get("createStory") !== "true" ||
+			statuses.length === 0
+		) {
+			return;
+		}
+		createStoryDeepLinkHandledRef.current = true;
+		handleAddStory();
+	}, [searchParams, statuses.length, handleAddStory]);
+
 	const firstStoryId = stories[0]?.id;
 	useEffect(() => {
 		if (!firstStoryId) {

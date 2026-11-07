@@ -32,7 +32,7 @@ function streamTextCallBlock(): string {
 describe("Direct chat streamText — per-step cache breakpoint wiring", () => {
 	it("passes the prepareStep built for this call", () => {
 		expect(streamTextCallBlock()).toContain(
-			"...(prepareStep ? { prepareStep } : {}),",
+			"...(prepareModelStep ? { prepareStep: prepareModelStep } : {}),",
 		);
 	});
 

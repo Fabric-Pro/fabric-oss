@@ -26,10 +26,12 @@ import { AgentTestsResource } from "./resources/agent-tests.js";
 import { AgentsResource } from "./resources/agents.js";
 import { ApprovalsResource } from "./resources/approvals.js";
 import { AuthResource } from "./resources/auth.js";
+import { BrandingResource } from "./resources/branding.js";
 import { ChannelsResource } from "./resources/channels.js";
 import { ChatsResource } from "./resources/chats.js";
 import { ContextQualityResource } from "./resources/context-quality.js";
 import { ContextsResource } from "./resources/contexts.js";
+import { DashboardResource } from "./resources/dashboard.js";
 import { FramesResource } from "./resources/frames.js";
 import { InstructionsResource } from "./resources/instructions.js";
 import {
@@ -43,6 +45,7 @@ import { OrgsResource } from "./resources/orgs.js";
 import { ProjectsResource } from "./resources/projects.js";
 import { PromptsResource } from "./resources/prompts.js";
 import { ReportsResource } from "./resources/reports.js";
+import { RunQualityResource } from "./resources/run-quality.js";
 import { SkillsResource } from "./resources/skills.js";
 import { WorkflowsResource } from "./resources/workflows.js";
 import { WorkspacesResource } from "./resources/workspaces.js";
@@ -59,6 +62,7 @@ export function createFabric(options: FabricClientOptions = {}): FabricClient {
 }
 
 export class FabricClient {
+	readonly branding: BrandingResource;
 	readonly auth: AuthResource;
 	readonly orgs: OrgsResource;
 	readonly projects: ProjectsResource;
@@ -68,6 +72,7 @@ export class FabricClient {
 	readonly agentRuns: AgentRunsResource;
 	readonly agentPreviews: AgentPreviewsResource;
 	readonly agentTests: AgentTestsResource;
+	readonly runQuality: RunQualityResource;
 	readonly skills: SkillsResource;
 	readonly mcp: McpResource;
 	readonly frames: FramesResource;
@@ -77,6 +82,7 @@ export class FabricClient {
 	readonly memory: MemoryResource;
 	readonly workspaces: WorkspacesResource;
 	readonly chats: ChatsResource;
+	readonly dashboard: DashboardResource;
 	readonly reports: ReportsResource;
 	readonly integrations: IntegrationsResource;
 	readonly channels: ChannelsResource;
@@ -98,6 +104,7 @@ export class FabricClient {
 				: new FabricHttpClient(optionsOrHttp);
 		this.defaultProject = this.http.defaults.project;
 
+		this.branding = new BrandingResource(this.http);
 		this.auth = new AuthResource(this.http);
 		this.orgs = new OrgsResource(this.http);
 		this.projects = new ProjectsResource(this.http);
@@ -107,6 +114,7 @@ export class FabricClient {
 		this.agentRuns = new AgentRunsResource(this.http);
 		this.agentPreviews = new AgentPreviewsResource(this.http);
 		this.agentTests = new AgentTestsResource(this.http);
+		this.runQuality = new RunQualityResource(this.http);
 		this.skills = new SkillsResource(this.http);
 		this.mcp = new McpResource(this.http);
 		this.frames = new FramesResource(this.http);
@@ -116,6 +124,7 @@ export class FabricClient {
 		this.memory = new MemoryResource(this.http);
 		this.workspaces = new WorkspacesResource(this.http);
 		this.chats = new ChatsResource(this.http);
+		this.dashboard = new DashboardResource(this.http);
 		this.reports = new ReportsResource(this.http);
 		this.integrations = createIntegrationsResource(this.http);
 		this.channels = new ChannelsResource(this.http);
@@ -207,6 +216,16 @@ export type {
 } from "./resources/approvals.js";
 export type { CreateKeyOptions } from "./resources/auth.js";
 export type {
+	ArtifactBrand,
+	ArtifactBrandSource,
+	ArtifactCoverStyle,
+	ArtifactFontFamily,
+	ClientBrandUpdate,
+	CompanyBrandUpdate,
+	ProposalStyle,
+	ProposalStyleUpdate,
+} from "./resources/branding.js";
+export type {
 	ChannelInfo,
 	SendChannelMessageInput,
 	SendChannelMessageResult,
@@ -263,16 +282,59 @@ export {
 	type UpsertSyncedContextFileOptions,
 } from "./resources/contexts.js";
 export type {
+	DashboardCuratedFeedbackAction,
+	DashboardCuratedFeedbackInput,
+	DashboardCuratedPreference,
+	DashboardOptions,
+} from "./resources/dashboard.js";
+export type {
+	DeliverySignalPage,
+	DeliverySignalProvider,
+	DeliverySignalRecord,
+	DeliverySignalSourceConfiguration,
+	ListDeliverySignalsOptions,
+} from "./resources/delivery-signals.js";
+export type {
+	CaptureDeliverySourceOptions,
+	ConfigureDeliverySourceOptions,
+	DeliverySourceAvailability,
+	DeliverySourceContext,
+	DeliverySourceEvidence,
+	DeliverySourceInspection,
+	DeliverySourceList,
+	DeliverySourceMutationOptions,
+	DeliverySourceObservation,
+	DeliverySourceObservationOptions,
+	DeliverySourceObservationPage,
+	DeliverySourceRun,
+	DeliverySourceSelection,
+	DeliverySourceWatch,
+} from "./resources/delivery-sources.js";
+export type {
+	FrameAuthoringDocument,
+	FrameChangeProposal,
 	FrameContentEdit,
+	FrameCreateInput,
+	FrameDetail,
 	FrameExportInput,
 	FrameExportStatus,
+	FrameFromTemplateInput,
+	FrameReviewState,
+	FrameRevisionApproval,
 	FrameRevokeSharingInput,
 	FrameShareInput,
 	FrameSharingResult,
 	FrameSharingState,
+	FrameTemplate,
+	FrameTemplateInput,
+	FrameTemplateVariable,
 	FrameVersionEntry,
 	ListFramesOptions,
 } from "./resources/frames.js";
+export type {
+	ImplementationSession,
+	StartImplementationOptions,
+} from "./resources/implementation-sessions.js";
 export type {
 	DirectInstructionRepositoryFilesRead,
 	ReadDirectInstructionRepositoryFilesInput,
@@ -354,6 +416,7 @@ export type {
 	SubmitMemoryWriteInput,
 	SubmittedMemoryWrite,
 } from "./resources/memory.js";
+export type { ProjectDeliverySnapshot } from "./resources/projects.js";
 export {
 	type CreateDocumentOptions,
 	type CreateFeatureOptions,
@@ -382,9 +445,42 @@ export type {
 	UpdatePromptOptions,
 } from "./resources/prompts.js";
 export type {
+	ConfiguredReport,
 	ListReportExecutionsOptions,
+	ListReportInstanceExecutionsOptions,
 	ListReportTemplatesOptions,
+	NativeReportPage,
+	ReportArtifactDownload,
+	ReportArtifactReference,
+	ReportConfigurationUpdate,
+	ReportConnectionDiagnostic,
+	ReportDistributionInput,
+	ReportDistributionReceipt,
+	ReportExecutionStatus,
+	ReportHistoryExecution,
+	ReportInstanceBrandingChoices,
+	ReportInstanceBrandingResult,
+	ReportInstanceBrandingSelection,
+	ReportInstanceBrandingUpdate,
+	ReportSettings,
 } from "./resources/reports.js";
+export type {
+	ResultJsonSchema,
+	ResultQualityChecks,
+	ResultQualityGrade,
+} from "./resources/result-quality.js";
+export type {
+	ConfigureRunQualityInput,
+	RunQualityAssessment,
+	RunQualityAssessmentIdentity,
+	RunQualityComparison,
+	RunQualityComparisonInput,
+	RunQualityOptions,
+	RunQualityPolicy,
+	RunQualityPolicyResult,
+	RunQualityRule,
+	RunQualityTarget,
+} from "./resources/run-quality.js";
 export type {
 	ListSkillsOptions,
 	SkillAssistInput,
@@ -410,6 +506,16 @@ export type {
 	SkillUpdateInput,
 	SkillVersionInput,
 } from "./resources/skills.js";
+export type {
+	PrivateTriageDetail,
+	PrivateTriageList,
+	PrivateTriageResult,
+	PrivateTriageRun,
+	ReviewPrivateTriageOptions,
+	StartPrivateTriageOptions,
+	TriageContext,
+	TriagePin,
+} from "./resources/triage.js";
 export type {
 	FabricExecutionStatus,
 	ListExecutionsOptions,

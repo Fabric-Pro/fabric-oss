@@ -17,6 +17,7 @@ vi.mock("../../../../../orpc/procedures", async () =>
 );
 
 import {
+	DocumentStyleConflictError,
 	DocumentStyleValidationError,
 	ProposalArtifactTenantError,
 } from "@repo/database";
@@ -113,6 +114,8 @@ describe("getStyle", () => {
 			accentColors: ["#abcdef", "#fedcba"],
 			autoVisuals: true,
 			updatedAt: UPDATED_AT,
+			brandSource: "COMPANY",
+			coverStyle: null,
 		});
 		expect(mocks.getDocumentStyle).toHaveBeenCalledWith({
 			documentId: DOC_A,
@@ -154,6 +157,8 @@ describe("updateStyle", () => {
 			accentColors: ["#abcdef", "#fedcba"],
 			autoVisuals: true,
 			updatedAt: UPDATED_AT,
+			brandSource: "COMPANY",
+			coverStyle: null,
 		});
 	});
 
@@ -270,5 +275,83 @@ describe("updateStyle", () => {
 		mocks.upsertDocumentStyle.mockRejectedValue(new Error("database down"));
 
 		await expect(updateStyle()).rejects.toThrow("database down");
+	});
+});
+
+describe("reviewed proposal style transport command", () => {
+	it("preserves omitted presentation fields and passes the reviewed timestamp to the shared writer", async () => {
+		const { saveProposalStyleCommand } = await import(
+			"../../../../branding/lib/proposal-style-commands"
+		);
+		mocks.getDocumentStyle.mockResolvedValue(
+			storedStyle({ autoVisuals: false }),
+		);
+		const audit = vi.fn();
+		await saveProposalStyleCommand(
+			{ userId: USERS.editor, organizationId: ORG_A },
+			{
+				projectId: PROJECT_A,
+				documentId: DOC_A,
+				expectedUpdatedAt: UPDATED_AT.toISOString(),
+				brandSource: "CLIENT",
+				coverStyle: "MINIMAL",
+			},
+			audit,
+		);
+		expect(mocks.upsertDocumentStyle).toHaveBeenCalledWith(
+			expect.objectContaining({
+				expectedUpdatedAt: UPDATED_AT,
+				brandSource: "CLIENT",
+				coverStyle: "MINIMAL",
+				styleDirection: "Calm and precise.",
+				primaryColor: "#123456",
+				accentColors: ["#abcdef", "#fedcba"],
+			}),
+		);
+		expect(
+			mocks.upsertDocumentStyle.mock.calls[0][0].autoVisuals,
+		).toBeUndefined();
+		expect(audit).toHaveBeenCalledWith(
+			expect.objectContaining({
+				action: "project.updated",
+				metadata: expect.objectContaining({
+					operation: "proposal_style.updated",
+				}),
+			}),
+		);
+		expect(JSON.stringify(audit.mock.calls)).not.toContain(
+			"Calm and precise.",
+		);
+	});
+	it("fails closed for cross-tenant actors and invited guests", async () => {
+		const { getProposalStyleCommand } = await import(
+			"../../../../branding/lib/proposal-style-commands"
+		);
+		for (const actor of [
+			{ userId: USERS.editor, organizationId: "example-other-org" },
+			{ userId: USERS.guestEditor, organizationId: ORG_A },
+		]) {
+			await expect(
+				getProposalStyleCommand(actor, {
+					projectId: PROJECT_A,
+					documentId: DOC_A,
+				}),
+			).rejects.toBeTruthy();
+		}
+		expect(mocks.getDocumentStyle).not.toHaveBeenCalled();
+	});
+	it("maps reviewed timestamp conflicts without recording a success audit", async () => {
+		mocks.upsertDocumentStyle.mockRejectedValue(
+			new DocumentStyleConflictError(),
+		);
+		const outcome = await refusal(
+			updateStyle({
+				...VALID,
+				expectedUpdatedAt: UPDATED_AT,
+				brandSource: "CLIENT",
+			}),
+		);
+		expect(outcome.code).toBe("CONFLICT");
+		expect(mocks.recordAudit).not.toHaveBeenCalled();
 	});
 });

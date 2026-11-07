@@ -18,12 +18,33 @@ export function SaveFeedback({
 	feedback,
 	isGenerating,
 	onRegenerate,
+	onReloadStyle,
 }: {
 	feedback: SaveFeedbackState;
 	isGenerating: boolean;
 	onRegenerate?: () => void;
+	onReloadStyle?: () => void;
 }) {
 	const t = useTranslations("projects.proposalArtifact.style");
+	if (feedback.kind === "styleConflict") {
+		return (
+			<Alert variant="warning" role="status">
+				<AlertDescription className="mt-0 space-y-3">
+					<p>{t("styleConflict")}</p>
+					{onReloadStyle && (
+						<Button
+							type="button"
+							size="sm"
+							variant="outline"
+							onClick={onReloadStyle}
+						>
+							{t("reloadStyle")}
+						</Button>
+					)}
+				</AlertDescription>
+			</Alert>
+		);
+	}
 
 	if (feedback.kind === "saved") {
 		return (

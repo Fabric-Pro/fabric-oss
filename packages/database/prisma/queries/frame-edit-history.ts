@@ -1,12 +1,15 @@
 import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { db, type Prisma } from "../client";
 import { recordAuditTx } from "./audit-log";
+import { preserveLegacyFramePublication } from "./frame-approved-revisions";
 import { FrameDocumentSchema } from "./frame-document";
+import { canAccessFrameProject } from "./frame-project-access";
 import {
 	assertFrameRevision,
 	FrameUpdateConflictError,
 	nextFrameRevision,
 } from "./frame-revision";
+import { canWriteReportDerivedFrame } from "./report-frame-access";
 
 export interface SaveFrameEditInput {
 	frameId: string;
@@ -148,7 +151,11 @@ export async function editFrameString(
 		},
 	});
 
-	if (!frame) {
+	if (
+		!frame ||
+		!(await canAccessFrameProject(frame, input.userId, true)) ||
+		!(await canWriteReportDerivedFrame(frame, input))
+	) {
 		return {
 			success: false,
 			replacementsMade: 0,
@@ -190,13 +197,16 @@ export async function editFrameString(
 		const after = JSON.parse(newContent);
 		if (
 			!FrameDocumentSchema.safeParse(after).success ||
-			JSON.stringify(before.metadata) !== JSON.stringify(after.metadata)
+			JSON.stringify(before.metadata) !==
+				JSON.stringify(after.metadata) ||
+			JSON.stringify(before.theme?.branding ?? null) !==
+				JSON.stringify(after.theme?.branding ?? null)
 		) {
 			return {
 				success: false,
 				replacementsMade: 0,
 				newContent: content,
-				error: "String edits must preserve a valid page and its tool access. Use the content editor instead.",
+				error: "String edits must preserve a valid page, its tool access and branding. Use the content editor or reviewed Branding action instead.",
 			};
 		}
 	} catch {
@@ -210,9 +220,16 @@ export async function editFrameString(
 	// A legacy string edit is still a compare-and-swap, and its snapshot is restorable.
 	assertFrameRevision(input.expectedUpdatedAt, frame.updatedAt);
 	throwIfDispatchStopped();
-	await db
+	const committed = await db
 		.$transaction(async (tx) => {
 			await tx.$queryRaw`SELECT id FROM agent_workspace_file WHERE id = ${input.frameId} FOR UPDATE`;
+			await preserveLegacyFramePublication(tx, frame);
+			if (
+				!(await canAccessFrameProject(frame, input.userId, true, tx)) ||
+				!(await canWriteReportDerivedFrame(frame, input, tx))
+			) {
+				return false;
+			}
 			await saveFrameEdit(
 				{
 					frameId: input.frameId,
@@ -248,6 +265,7 @@ export async function editFrameString(
 					},
 				});
 			}
+			return true;
 		})
 		.catch((error: unknown) => {
 			if (
@@ -261,6 +279,14 @@ export async function editFrameString(
 			throw error;
 		});
 
+	if (!committed) {
+		return {
+			success: false,
+			replacementsMade: 0,
+			newContent: content,
+			error: "Frame not found",
+		};
+	}
 	return {
 		success: true,
 		replacementsMade: occurrences,
@@ -313,9 +339,17 @@ function restoredDocument(snapshot: string, current: string): string | null {
 	const { runtime: _historic, ...metadata } = asRecord(before.metadata) ?? {};
 	const runtime = asRecord(asRecord(now.metadata)?.runtime);
 	const next = { ...metadata, ...(runtime ? { runtime } : {}) };
+	// Restore content, never an older brand selection. Applying a different
+	// saved brand requires the reviewed Branding command and current authority.
+	const { branding: _historicBrand, ...theme } = asRecord(before.theme) ?? {};
+	const branding = asRecord(asRecord(now.theme)?.branding);
+	const nextTheme = { ...theme, ...(branding ? { branding } : {}) };
 	return JSON.stringify(
 		{
 			...before,
+			...(before.theme !== undefined || branding
+				? { theme: nextTheme }
+				: {}),
 			...(before.metadata !== undefined || runtime
 				? { metadata: next }
 				: {}),
@@ -346,7 +380,11 @@ export async function revertFrameToVersion(
 			},
 		});
 
-		if (!frame) {
+		if (
+			!frame ||
+			!(await canAccessFrameProject(frame, input.userId, true, tx)) ||
+			!(await canWriteReportDerivedFrame(frame, input, tx))
+		) {
 			return {
 				success: false,
 				error: "Frame not found",
@@ -354,6 +392,7 @@ export async function revertFrameToVersion(
 		}
 
 		assertFrameRevision(input.expectedUpdatedAt, frame.updatedAt);
+		await preserveLegacyFramePublication(tx, frame);
 		const historyEntry = input.historyEntryId
 			? await tx.frameEditHistory.findFirst({
 					where: { id: input.historyEntryId, frameId: input.frameId },

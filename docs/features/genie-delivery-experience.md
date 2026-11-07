@@ -6,7 +6,7 @@ interactive deliverables coherent for software delivery teams.
 - **Audience**: Product, design, application engineering, platform engineering and pilot teams
 - **Owner**: Product and Platform engineering
 - **Status**: In progress; incremental implementation and qualification. Milestones remain open until their acceptance evidence is complete.
-- **Date**: 2026-11-05
+- **Date**: 2026-11-06
 
 ## Product outcome
 
@@ -27,7 +27,7 @@ The baseline is current source plus browser inspection, not older feature-comple
 
 | Area | Existing Fabric foundation | Work still required |
 | --- | --- | --- |
-| Workflow lifecycle | Published snapshots, rollback, pause/resume, schedules and manual recorded-output checks across transports | Automatic assessment after execution, durable assessment records and useful quality summaries |
+| Workflow lifecycle | Published snapshots, rollback, pause/resume, schedules and manual recorded-output checks across transports | Qualify automatic deterministic assessments across native entrypoints; governed model grading and export remain separate extensions |
 | Saved agents | Single-turn and goal-oriented Temporal execution, draft Preview, saved tests, Insights and run inspection | Qualify these together with Genie handoffs; reuse saved tests rather than add a second agent-testing product |
 | Genie | Dedicated page, omnipresent launcher, contextual actions, Simple/Advanced modes, attachments, memory, voice and history | Consistent presentation, context selection, truthful activity, output actions and drawer/full-page continuity |
 | Responses | Existing Markdown response, source components, tool renderers, approval cards, feedback and MCP App rendering | An explicit shared presentation contract across direct, orchestrated, multi-agent and builder surfaces |
@@ -42,11 +42,10 @@ Concrete source findings:
   pagination. Preserve published pagination; any cursor alternative is additive and explicitly versioned.
 - `frames/router.ts` exposes mutations/history/sharing internally. The public `v1/frames.ts`, SDK
   `FramesResource` and CLI now provide list/get plus content edit, history and restore. MCP reuses the
-  same database commands. Creation, validation, sharing and export parity remain separate M2 work.
+  same database commands. The same command implementations now serve creation, structural validation, templates, reviewed proposals, approval, sharing and exports across transports.
 - Frame content update, string-edit and restore procedures now require reviewed revision tokens;
-  remaining proposal, approval, sharing and export transport work is tracked in M2.
-  The database serializes history/content/audit writes and checks `expectedUpdatedAt`; no new
-  revision table or schema migration is introduced by these controls.
+  The viewer stages content changes as durable proposals and offers static preview, original and content comparisons before Apply.
+  The database serializes history/content/audit writes and checks `expectedUpdatedAt`; the additive reviewed-revision schema keeps proposal receipts and approved/publication snapshots separate from edit history.
 - The viewer has browser capture/export helpers, and a separate authenticated API starts the existing
   `exportFrameToPDF` Temporal workflow with activities and a status route. Qualify that end-to-end
   path and consolidate commands; do not propose another export engine. API-key access, exact-revision
@@ -190,6 +189,153 @@ tool call server-side to current viewer, organization/project, Frame revision, a
 validated arguments. Read-tool output cannot feed arbitrary external requests. Public/static output
 uses embedded or explicitly approved assets and never calls live Fabric tools. Preview is passive;
 refresh or a runtime invocation requires its own explicit action and applicable approval.
+
+## Brand-aware proposals and delivery report starters
+
+The Templates gallery offers five starting outcomes: weekly delivery update, sprint review,
+release readiness, architecture decision and incident review. Selection opens the existing report
+builder with editable instructions, sections and the Project knowledge source. It does not create,
+run or schedule work. Choose the actual project, reporting period and audience when creating the
+report instance; the existing report engine and Temporal schedules own execution. English and
+German portals prefill their own localized report content. Unknown starter IDs select no preset,
+and editing an existing template never applies a starter.
+
+For client proposals, keep **Prepared by** (the organization) separate from **Prepared for**
+(the project's client). Save company colors, typography, imagery and guidance in the existing
+organization Brand kit, and the client's name, website, logo and colors in the existing project
+recipient-brand record, including optional heading/body fonts and a cover style. These are reusable company/project context, not a second document store.
+Website extraction remains an unconfirmed suggestion; people review it before saving. Genie can
+read confirmed branding, ask for missing details and propose reviewed text changes. Logo/font
+uploads and website-suggestion review use the existing Portal forms.
+
+With Proposal artifacts enabled, new Proposal setup offers **Client theme** by default and an
+explicit **Company theme** alternative. A client theme requires a saved palette. Creation names
+the reviewed client-brand version; the document transaction locks that row, checks its version and
+stores the palette in the new document's Style before generation can start. A changed version
+returns `RECIPIENT_BRAND_CHANGED` without creating a document or dispatching generation. The
+client palette remains in that Style if the project brand changes later. Existing API clients that
+omit the selection retain their previous behavior. Imported source files retain their appearance.
+
+The Style panel can stage the client or company theme for an existing Proposal; **Save** applies
+the reviewed draft. Client themes use the project's heading/body font choices and Dark, Light or
+Minimal cover. A document can override its cover or colors. Client mode never inherits company
+hero imagery or uploaded company fonts; both parties' identities remain distinct. The document
+keeps its saved palette while inherited client typography and cover follow the project brand.
+The design hash includes source, fonts and cover so a later export detects presentation changes.
+Live preview and PDF read the same Style/theme resolver. The existing offline PDF renderer embeds validated, authorized assets and
+never fetches arbitrary logo/font URLs. Creating Markdown is not a PDF export; the saved Proposal
+must be opened, reviewed and exported through its existing export controls.
+
+| Operation | API / SDK | CLI | MCP |
+| --- | --- | --- | --- |
+| Read company or project client branding | `GET /api/v1/branding`, `GET /api/v1/projects/:id/branding`; `branding.get` | `fabric branding show [--project <id>]` | `fabric_get_artifact_brand` |
+| Save reviewed company text/palette | `PUT /api/v1/branding/company`; `branding.updateCompany` | `fabric branding update-company --file <json>` | `fabric_update_company_brand` |
+| Save reviewed client name/site/palette | `PUT /api/v1/projects/:id/branding/client`; `branding.updateClient` | `fabric branding update-client --project <id> --file <json>` | `fabric_update_client_brand` |
+| Create a saved branded Proposal | Existing document create with `proposalBranding: "CLIENT"` and `recipientBrandVersion`, or explicit `"COMPANY"`; `projects.createDocument` | `fabric projects documents create <project-id> --type PROPOSAL --title <title> --content-file <path> --branding client --recipient-version <n>` | `fabric_create_document` with the same selection |
+
+Text saves require the inspected `expectedVersion` and preserve uploaded assets. Reads return safe
+brand values, presence flags and version tokens, never private storage keys or signed URLs. Every
+transport checks its credential scope and the actor's current object permissions. Project guests
+may read branding for their permitted project; changing a client brand requires an editable project
+and membership of its owning organization. Company writes require an organization administrator and
+`orgs:write`; service runtimes cannot acquire company-wide writes through these tools. MCP brand
+writes require confirmation. Feature gates and project bindings apply to the shared commands, not
+only to Portal buttons.
+
+Local Portal and Temporal worker processes must receive the same `AGENT_SERVICE_SECRET` for
+Fabric tool authentication. This authenticates the service transport; actor scopes and current
+permissions are still checked independently. A provider API key is not a replacement for this
+service credential. Development keeps in-memory HMR enabled and disables persistent Turbopack
+filesystem caching so stale compiler artifacts are not reused across restarts; production build
+settings are separate.
+
+Uploaded client font files, client hero images, automated client distribution,
+and the complete feedback-to-template improvement loop remain separate work. This increment does
+not claim complete Dust parity or production qualification.
+
+### Client typography and cover themes
+
+Project client branding offers a compact **Typography and cover** section. Heading and body fonts
+use the bundled Inter, Poppins and JetBrains Mono catalog; absent selections use Poppins and Inter.
+No uploaded font bytes or remote font URLs are embedded. A generated shared font module keeps
+browser previews and offline PDF exports on the same committed, licensed files. Cover choices
+are Dark, Light and Minimal, with contrast-tested text and separate Prepared by / Prepared for.
+Existing proposals keep company styling until the user selects a client theme.
+
+Proposal Style updates accept a reviewed `expectedUpdatedAt` token through external transports;
+stale writes return a conflict and retain the Portal draft. Old internal callers remain compatible.
+A font/cover omission by an older client preserves saved project settings; explicit font null
+restores the neutral font. Existing proposal version and object-permission checks still apply.
+
+
+### Reusing branding in Frames and reports
+
+A saved private Frame offers **Branding** in its existing viewer. Review the company/client theme
+and version, then Apply to the exact Frame revision. This stores a bounded formatting snapshot
+with the Frame and its history; no private storage keys, logo bytes or signed URLs travel in it.
+Preview and PDF read that same snapshot. A changed Frame or saved brand returns a conflict, and
+a public Frame must first be made private. Branding is formatting configuration, never evidence
+of authorization or approval. Generic Frame themes currently include names, colors, fonts and
+cover treatment; embedded party logos remain a Proposal-specific capability.
+
+Report setup can select reviewed branding beside its existing project audience and reporting
+period. The existing report API accepts `reporting.branding: { source, expectedBrandVersion }`.
+Admission resolves the selected saved brand into the immutable execution snapshot. A later brand
+version change requires review before the next run, rather than silently changing a scheduled
+client report. Existing Temporal schedules and workflows remain responsible for execution.
+
+A branded Markdown or HTML report stores its normal artifact and links a saved Frame for review
+and native PDF export. Authorized report teammates can open and export that preview; both the
+current and admitted project audience still apply. Report-derived Frames retain report sharing
+restrictions, including refusal of anonymous publication. An activity retry returns the same artifact and Frame. It does not silently
+generate, send or publish a PDF by itself. Configured reports can explicitly request automatic private PDF artifacts; PDF-format templates always produce a PDF. Uploaded font files, client hero images and automatic external distribution remain outside this increment. Reviewed inbox distribution is explicit and idempotent.
+
+| Operation | API / SDK | CLI | MCP |
+| --- | --- | --- | --- |
+| Read / save Proposal Style | `GET/PUT /api/v1/projects/:projectId/documents/:documentId/proposal-style`; `branding.getProposalStyle/updateProposalStyle` | `fabric branding show-proposal-style`, `update-proposal-style` | `fabric_get_proposal_style`, `fabric_update_proposal_style` |
+| Review / apply Frame branding | `GET/POST /api/v1/frames/:id/branding`; `frames.branding/applyBranding` | `fabric frames branding show/apply` | `fabric_get_frame_branding`, `fabric_apply_frame_branding` |
+| Review report brand choices | `GET /api/v1/reports/branding`; `reports.branding` | `fabric reports branding` | `fabric_get_report_branding` |
+| Apply reviewed branding to an existing report | `GET/PUT /api/v1/reports/instances/:id/branding`; `reports.getInstanceBranding/applyInstanceBranding` | `fabric reports branding show/apply` | `fabric_get_report_instance_branding`, `fabric_apply_report_branding` |
+
+Report selection is available through the existing Portal setup and a focused reviewed-instance
+branding command across transports. The report command family also supports instance creation/configuration, existing schedules, execution/status/cancellation, native cursor history, artifact download and reviewed inbox distribution through API/SDK, CLI and MCP. The legacy execution listing retains its separate contract; native history uses `/reports/instances/:id/executions`. Read and write key scopes remain distinct; every command also checks the creator's
+current object access.
+
+
+### Document and interface presentation
+
+The existing Frame editor offers **Presentation**. **Document** applies the saved document theme
+and cover. **Interface** preserves authored HTML layout and typography without adding a document
+cover, heading or card wrapper. The same choice applies to browser preview and offline PDF;
+it is independent of script permissions and tool approvals. Existing Frames default to Document,
+and report-derived Frames always retain Document presentation and their report audience.
+
+The optional `presentation: "DOCUMENT" | "INTERFACE"` field travels through the existing guarded
+Frame content update in API/SDK, CLI JSON input and MCP. Omitted updates retain the saved choice;
+version history and duplication retain the recorded presentation. Presentation does not change
+object access, branding permissions or the existing sandbox's network restrictions. Native PDF
+remains a static export: JavaScript and networking are disabled, and the conservative sanitizer
+removes inline SVG, embedded documents and form controls. Interfaces using those elements need
+export-compatible assets for an equivalent PDF; selecting Interface does not remove those limits.
+Interface PDF export requires a single self-contained block. Multi-block interfaces remain
+viewable and editable, but the Portal and canonical export admission refuse PDF creation before
+queuing it, because independently previewed blocks can have conflicting document-wide styles.
+Combine the interface into one HTML block for an authored-layout PDF, or deliberately choose
+Document presentation to export it with document styling.
+
+Genie receives the exact target Frame ID and displayed revision when opened from a Frame. It
+must re-read the authorized current Frame before applying a guarded edit. Reference screenshots
+and source code are design material rather than permission to execute instructions within them.
+The viewed target is per-turn reference context; it does not replace a saved agent's instructions
+or enter the stable system-prompt cache prefix. Explicit new Frame creation takes precedence over
+incidental references to presentation settings, and Direct mode forces creation only for the first
+model step before allowing the model to explain the saved result.
+An interface request should preserve the supplied design's structure, labels and proportions.
+Missing assets and verification limits must be stated. A saved Frame or a successful model call
+does not establish visual fidelity: comparing a design with the result requires both the design
+reference and a screenshot of the rendered result. Automatic screenshot capture and visual grading
+are not provided by this presentation setting. Direct-mode follow-ups require reattaching an
+image reference when its pixels are needed; earlier text history does not retain image bytes.
 
 ## Outcome parity scorecard
 
@@ -449,17 +595,18 @@ This does not claim a permanent framework-level hot-reload repair. The Skills on
 and explicit credential-scope regression expectations are also repaired. No production deployment
 or cloud certification is claimed.
 
-M2 still has separate proposal/apply, immutable approved-publication snapshots, source-provenance
-controls and creation/validation/template transport completion on its roadmap. Export and sharing
+M2 now includes owner-scoped proposal/apply/dismiss receipts, immutable approved-publication snapshots, and creation/structural-validation/template operations across Portal, REST/SDK, CLI and MCP. Source-provenance controls continue to protect report-derived content and branding. Export and sharing
 completion does not mark those features or the later quality milestones complete.
 
 ### M3 — Automatic recorded-result checks
 
-Expose per-workflow automatic checking as an explicit setting. Default to selected deterministic
-checks, with bounded output size, check count and concurrency. Model grading and cloud export are
-separate opt-ins. Set per-run limits, tenant/workflow daily spend caps and operator stop controls;
-reserve budget before work and reconcile actual usage. Budget exhaustion never reruns the business
-task. Disabling checking prevents new admissions; in-flight assessments are cancelled explicitly.
+Automatic deterministic checks are explicit owner-scoped policies on saved agents and visual workflows, configured inside existing Insights and workflow inspection surfaces. Policies default off. A failed check never changes a completed business run to failed; cancellation of a check never cancels its business work. Required checks must be nonempty. Text, bounded JSON-schema and JSON-pointer checks share the explicit-test grader. Grounding without trusted retrieval receipts is **Not assessed**, never a fabricated pass. No grading model or retrieval call runs during automatic assessment.
+
+A policy is snapshotted before business effects with its revision, selected sources and the exact native workflow/run. Each policy/native attempt has at most one assessment; a real Temporal reset receives a distinct pinned assessment rather than silently substituting its new output into an old one. Native Temporal owns activity retries and child-workflow recovery. Initial optional admission is bounded to 30 seconds; its independent observer uses `ABANDON` in a non-cancellable startup scope. A committed admission whose acknowledgement is lost is terminalized by an independent native recovery child, without creating new checks after execution or rerunning business work. Unavailable infrastructure never implies a pass.
+
+Quality definitions and result DTOs are minimized and bounded. History pages skip source-authorized malformed receipts with an explicit unavailable count; current source failures do not leak row counts, and database outages remain errors. Comparisons require completed matching checks/scorer and warn when recorded context or saved versions differ. A pass certifies the selected checks only; comparisons do not claim a controlled experiment over changing memory or project data. Automatic checks use the ordinary native configuration loader and record its effective saved-configuration fingerprint; enabling checks does not freeze or replace live agent memory. The fingerprint includes saved instructions, model, selected connections and execution mode, while retrieved content and live memory remain outside that configuration proof.
+
+Every quality operation shares canonical authorized commands across Portal/oRPC, REST, SDK, CLI and MCP. Organization membership, current owner/object/source permission and exact key scopes are independent requirements. External keys also need access to selected workspace/skill sources. Global quality controls require a member organization connection; project-bound or meeting service grants cannot use them. Cloud/model grading, governed exports and their spend reservations/caps require their own qualified opt-in before activation.
 
 At admission capture the selected immutable check definitions and workflow version, their revision,
 actor and source/connection ceilings, and the native execution identity. Add only the persistence
@@ -474,7 +621,7 @@ the latter is an explicitly approved narrow binding, never an implicit privilege
 Assessment attaches to an existing business execution and never admits another one. Qualify each
 native entrypoint's existing stable request/occurrence/effect identities. Where a start seam is
 missing, allocate the admission and deterministic Temporal workflow identity before side effects,
-atomically persist pending admission/outbox state, and reconcile Temporal start using that same ID.
+persist the missing admission state and reconcile Temporal start using that same ID; reuse the existing native receipt rather than adding a second business outbox.
 An acknowledged or ambiguous retry returns the same native execution. Use existing native admission
 and receipt helpers; do not replace Temporal or build a parallel business-invocation engine.
 
@@ -685,3 +832,54 @@ gates. Avoid a new admin dashboard, evaluation engine, scheduler, permission sys
 Reuse [software factory contracts](software-factory.md),
 [workflow checks](../workflows/workflow-editor.md#saved-result-checks) and the
 [Databricks backend plan](databricks-context-platform.md).
+
+## Reviewed artifact commands
+
+Pages links to **Artifacts & templates**. A person may create a private artifact, check its structure,
+preview content without executing scripts, and optionally author a reusable organization template.
+Template creation requires an explicit organization-audience confirmation. Template definitions
+cannot carry saved runtime tools, source authority or a client's branding snapshot. Inputs preserve
+numbers, booleans, quotes and newlines through typed, single-pass rendering. HTML inputs are text
+only; attributes and scripts cannot interpolate them.
+
+The artifact's **Reviews** dialog lists bounded, paginated proposals. **Edit page → Review changes**
+saves a proposal without changing the artifact. The person compares **Proposed preview**, **Original**
+and **Changes**, then applies its exact hash or dismisses it. A conflict retains the original and
+proposal and offers **Compare current version**. Automatic rebasing is intentionally unsupported;
+edit the current version to prepare a new review. A lost apply acknowledgement can be retried without
+another edit/history row. Dismissal fences later apply attempts.
+
+**Approve current revision** records the exact private content hash. Sharing remains explicit.
+A public link reads its publication snapshot during later draft edits. Revocation takes effect
+immediately; restoring content never restores a bearer link or audience. Existing public Frames
+receive a `LEGACY_PUBLICATION` snapshot before their first content edit, including generic file
+updates; this preserves the old publication without claiming human approval. Public snapshot
+previews are static and omit runtime/source authority metadata. Malformed pointers fail closed.
+
+| Operation | REST under `/api/v1` | CLI under `fabric frames` | MCP |
+| --- | --- | --- | --- |
+| Create private artifact | `POST /frames` | `create --file request.json` | `fabric_create_frame_draft` |
+| Check structure / JSON syntax | `POST /frames/validate` | `validate-document --file document.json` | `fabric_validate_frame_document` |
+| List / read / create templates | `GET/POST /frame-templates`, `GET /frame-templates/:id` | `templates list/show/create` | `fabric_list_frame_templates`, `fabric_get_frame_template`, `fabric_create_frame_template` |
+| Create from template | `POST /frames/from-template` | `from-template --file request.json` | `fabric_create_frame_from_template` |
+| Propose / list / read changes | `POST/GET /frames/:id/changes`, `GET /frames/:id/changes/:proposalId` | `changes propose/list/show` | `fabric_propose_frame_change`, `fabric_list_frame_changes`, `fabric_get_frame_change` |
+| Apply / dismiss | `POST /frames/:id/changes/:proposalId/apply`, `/dismiss` | `changes apply/dismiss` | `fabric_apply_frame_change`, `fabric_dismiss_frame_change` |
+| Status / approve private revision | `GET /frames/:id/review`, `POST /frames/:id/approve` | `review`, `approve --file request.json` | `fabric_get_frame_review`, `fabric_approve_frame_revision` |
+
+Creation and proposal requests require a stable UUID `requestId`; reuse it only for the same intent.
+Apply requires `expectedProposalHash`. Approval requires `expectedUpdatedAt` and
+`expectedContentHash`. Reads require `frames:read`; mutations require `frames:write` plus the
+creator's current organization role, ownership and current project/report access. Review snapshots
+use forced owner-within-organization RLS. Organization authoring/template operations are unavailable to project-bound and pinned runtime credentials.
+A signed native runtime grant may review only an owned artifact in its bound project; the canonical
+commands repeat current project/report access. External project-bound connections do not gain these controls. Embedded page scripts
+cannot declare them. Orchestrated Genie uses its existing explicit confirmation mechanism for apply,
+dismiss, approval and organization-template creation. Direct chat can propose a change and link to
+its review, but cannot resume an inline approval; complete that approval in the artifact's Reviews
+dialog. These commands do not add a workflow engine or scheduler. Temporal continues to own agent
+execution, recovery and exports.
+
+Validation certifies structure and JSON syntax only. Layout, script behavior and factual accuracy
+remain separate checks. The new reviewed-authoring contract is private by default and rejects
+caller-supplied sharing, runtime authority and branding provenance. Legacy automation content-edit
+commands retain their existing guarded contract; conversational guidance prefers a reviewed proposal.

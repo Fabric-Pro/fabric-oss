@@ -46,6 +46,7 @@ const {
 	storeInstanceArtifact,
 	indexInstanceArtifactForRag,
 	fetchReportTemplateSkills,
+	generateReportPdfArtifact,
 } = proxyActivities<typeof templateInstanceActivities>({
 	startToCloseTimeout: "10 minutes",
 	heartbeatTimeout: "30 seconds",
@@ -839,6 +840,9 @@ export async function templateInstanceExecutionWorkflow(
 			typeof template.outputFormat === "string"
 				? template.outputFormat
 				: "MARKDOWN";
+		const generatePdf =
+			patched("report-native-pdf-2026-11-06") &&
+			(outputFormat === "PDF" || reporting?.config?.generatePdf === true);
 
 		if (effectiveAiAgents.length > 0) {
 			// Use custom system prompt: instance override > template default > Fabric-enriched prompt
@@ -932,7 +936,11 @@ export async function templateInstanceExecutionWorkflow(
 			renderedReport.markdown += `\n\n## Sources\n${reportingQuality.sourceRevisions.map((reference) => `- [${(reference.title ?? "Project source").replace(/[[\]\\]/g, "\\$&")}](${reference.citation}) · revision ${reference.revision.slice(0, 40)}`).join("\n")}`;
 		}
 
-		if (outputFormat === "MARKDOWN" || outputFormat === "MULTI_FORMAT") {
+		if (
+			outputFormat === "MARKDOWN" ||
+			outputFormat === "MULTI_FORMAT" ||
+			(generatePdf && outputFormat !== "HTML")
+		) {
 			const artifact = await storeInstanceArtifact({
 				executionId: input.executionId,
 				userId: input.userId,
@@ -1005,6 +1013,25 @@ export async function templateInstanceExecutionWorkflow(
 				mimeType: "text/html",
 				size: new TextEncoder().encode(htmlContent).length,
 			});
+		}
+
+		if (generatePdf) {
+			const source = artifacts.find(
+				(artifact) =>
+					artifact.artifactType === "MARKDOWN" ||
+					artifact.artifactType === "HTML",
+			);
+			if (!source || !input.organizationId) {
+				throw new Error("A report document is required for PDF output");
+			}
+			artifacts.push(
+				await generateReportPdfArtifact({
+					executionId: input.executionId,
+					sourceArtifactId: source.id,
+					userId: input.userId,
+					organizationId: input.organizationId,
+				}),
+			);
 		}
 
 		// 8. Generate Evidence dashboard if output format is EVIDENCE_EMBED

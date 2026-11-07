@@ -7,7 +7,12 @@
 
 import type { GatewayCredential } from "./types";
 
-export type ToolScope = { scope: string; kind: "read" | "write" };
+export type ToolScope = {
+	scope: string;
+	kind: "read" | "write";
+	exact?: boolean;
+	additionalScopes?: readonly string[];
+};
 
 /**
  * The most Fabric's own agent runtime may reach through the gateway: the
@@ -108,16 +113,32 @@ export function scopeSatisfied(
 	required: ToolScope,
 	credential: GatewayCredential,
 ): boolean {
+	if (
+		required.additionalScopes?.some(
+			(scope) =>
+				!scopeSatisfied(
+					granted,
+					{ scope, kind: "read", exact: required.exact },
+					credential,
+				),
+		)
+	) {
+		return false;
+	}
 	if (credential === "oauth" && reachesPersonalData(required)) {
 		return granted.includes(required.scope);
 	}
 	if (granted.includes("*") || granted.includes(required.scope)) {
 		return true;
 	}
+	if (required.exact) {
+		return false;
+	}
 	// Skill publication and organization policy are deliberate consent, never
 	// implied by a general MCP read/write umbrella. Wildcard keys still undergo
 	// the same live actor/role/owner checks in the shared command.
 	if (
+		required.scope === "orgs:write" ||
 		required.scope.startsWith("skills:") ||
 		required.scope.startsWith("governance:")
 	) {

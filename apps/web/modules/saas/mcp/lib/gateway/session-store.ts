@@ -42,6 +42,7 @@ if (typeof setInterval !== "undefined") {
  * Create a new gateway session.
  */
 export async function createGatewaySession(params: {
+	keyIdentity?: GatewaySession["keyIdentity"];
 	userId: string;
 	organizationId: string | null;
 	projectId?: string | null;
@@ -82,6 +83,9 @@ export async function createGatewaySession(params: {
 		email: params.email,
 		role: params.role,
 		credential: params.credential,
+		...(params.credential !== "session" && params.keyIdentity
+			? { keyIdentity: structuredClone(params.keyIdentity) }
+			: {}),
 		...(params.oauthClientId
 			? { oauthClientId: params.oauthClientId }
 			: {}),

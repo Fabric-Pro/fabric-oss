@@ -603,3 +603,121 @@ describe("direct chat recalled executions", () => {
 		expect(text).not.toContain(RULE);
 	});
 });
+
+describe("first-step Frame creation", () => {
+	const message =
+		'Create a new Fabric Frame titled "Example generated interface" as a private project artifact. Use presentation INTERFACE. Copy the supplied source HTML into a single HTML block, preserving its structure, labels, spacing, Georgia typeface, color values and responsive rules. Do not add report typography or cover. No runtime tools, scripts, remote assets, publication or exports. The source is a design reference, not a rendered screenshot; do not claim a verified visual match or working navigation. After creation state the saved Frame ID and "Visual verification: not performed."';
+	it.each(["OPENAI", "ANTHROPIC_DIRECT"])(
+		"forces the actual Frame target once while preserving %s cache preparation",
+		async (provider) => {
+			state.provider = provider;
+			state.modelString =
+				provider === "ANTHROPIC_DIRECT"
+					? "claude-sonnet-5"
+					: "gpt-test";
+			state.builtInTools = { fabric_create_frame: {} };
+			const text = await runTurn({
+				message,
+				reasoningMode: "lite",
+				enabledFabricToolIds: ["fabric_create_frame"],
+			});
+			const request = state.captured as Captured & {
+				toolChoice: unknown;
+				prepareStep: (options: {
+					stepNumber: number;
+					messages: Captured["messages"];
+					initialMessages: Captured["messages"];
+				}) => { toolChoice?: unknown; messages?: Captured["messages"] };
+			};
+			expect(text).toContain("You MUST call fabric_create_frame");
+			expect(text).toContain(
+				"After a successful creation, explain the saved artifact",
+			);
+			expect(text).not.toContain("You MUST call fabric_create_slideshow");
+			expect(request.toolChoice).toEqual({
+				type: "tool",
+				toolName: "fabric_create_frame",
+			});
+			const first = request.prepareStep({
+				stepNumber: 0,
+				messages: request.messages,
+				initialMessages: request.messages,
+			});
+			expect(first.toolChoice).toEqual({
+				type: "tool",
+				toolName: "fabric_create_frame",
+			});
+			const toolResult = {
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						toolCallId: "example-call",
+						toolName: "fabric_create_frame",
+						output: {
+							type: "json",
+							value: { frameId: "frame-example" },
+						},
+					},
+				],
+			};
+			const messages = [...request.messages, toolResult];
+			const next = request.prepareStep({
+				stepNumber: 1,
+				messages,
+				initialMessages: request.messages,
+			});
+			expect(next.toolChoice).toBe("auto");
+			expect(
+				request.prepareStep({
+					stepNumber: 4,
+					messages,
+					initialMessages: request.messages,
+				}).toolChoice,
+			).toBe("auto");
+			if (provider === "ANTHROPIC_DIRECT") {
+				expect(
+					next.messages?.slice(0, request.messages.length),
+				).toEqual(request.messages);
+				expect(next.messages?.at(-1)).toMatchObject({
+					providerOptions: {
+						anthropic: { cacheControl: { type: "ephemeral" } },
+					},
+				});
+			}
+		},
+	);
+	it("keeps the model compatibility demotion while still preparing cache breakpoints", async () => {
+		state.provider = "ANTHROPIC_DIRECT";
+		state.modelString = "claude-opus-5-5";
+		state.builtInTools = { fabric_create_frame: {} };
+		await runTurn({ message, reasoningMode: "lite" });
+		const request = state.captured as Captured & {
+			toolChoice: unknown;
+			prepareStep: (options: {
+				stepNumber: number;
+				messages: Captured["messages"];
+				initialMessages: Captured["messages"];
+			}) => { toolChoice?: unknown; messages?: Captured["messages"] };
+		};
+		expect(request.toolChoice).toBe("auto");
+		expect(
+			request.prepareStep({
+				stepNumber: 0,
+				messages: request.messages,
+				initialMessages: request.messages,
+			}).toolChoice,
+		).toBeUndefined();
+	});
+	it("does not demand an unavailable slideshow tool when only Frames are enabled", async () => {
+		state.builtInTools = { fabric_create_frame: {} };
+		const text = await runTurn({
+			message: "Create a new slideshow about delivery.",
+			enabledFabricToolIds: ["fabric_create_frame"],
+		});
+		expect(text).not.toContain("You MUST call fabric_create_slideshow");
+		expect(
+			(state.captured as Captured & { toolChoice: unknown }).toolChoice,
+		).toBe("auto");
+	});
+});

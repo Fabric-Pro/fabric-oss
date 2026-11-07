@@ -121,6 +121,7 @@ export {
 	readProposalEvidenceSources,
 } from "./proposal-artifact-source-manifest";
 export {
+	DocumentStyleConflictError,
 	type DocumentStyleFields,
 	type DocumentStyleValidationCode,
 	DocumentStyleValidationError,

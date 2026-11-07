@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import type { ReportInstanceBrandingUpdate } from "@fabricorg/sdk";
+import { registerReportLifecycleCommands } from "./lifecycle.js";
 /**
  * fabric reports
  *
@@ -7,8 +10,8 @@
  */
 
 import type {
-	FabricReportExecution,
 	FabricReportTemplate,
+	ReportHistoryExecution,
 } from "@fabricorg/sdk";
 import { Command } from "commander";
 import { getClient } from "../../lib/client.js";
@@ -20,6 +23,74 @@ export function buildReportsCommand(): Command {
 		"Manage report templates and executions",
 	);
 
+	const branding = reports
+		.command("branding")
+		.description("Review saved company/client report branding")
+		.option("--org <slug>", "Organization context")
+		.option("--project <id>", "Report audience project")
+		.action(async (opts) => {
+			try {
+				printOutput(
+					await getClient().reports.branding({
+						org: resolveContext(false, opts.org, false)?.slug,
+						projectId: opts.project,
+					}),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError(
+					error instanceof Error ? error.message : String(error),
+					1,
+				);
+			}
+		});
+	branding
+		.command("show <id>")
+		.description("Review the report revision and saved branding choices")
+		.option("--org <slug>", "Organization context")
+		.action(async (id, opts) => {
+			try {
+				printOutput(
+					await getClient().reports.getInstanceBranding(id, {
+						org: resolveContext(false, opts.org, false)?.slug,
+					}),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError(
+					error instanceof Error ? error.message : String(error),
+					1,
+				);
+			}
+		});
+	branding
+		.command("apply <id>")
+		.description("Save reviewed branding JSON; null branding removes it")
+		.requiredOption(
+			"--file <path>",
+			"JSON with expectedInstanceVersion, expectedUpdatedAt and branding selection",
+		)
+		.option("--org <slug>", "Organization context")
+		.action(async (id, opts) => {
+			try {
+				const text = await readFile(opts.file, "utf8");
+				if (Buffer.byteLength(text) > 16384) {
+					throw new Error("Brand request exceeds 16 KiB");
+				}
+				const input = JSON.parse(text) as ReportInstanceBrandingUpdate;
+				printOutput(
+					await getClient().reports.applyInstanceBranding(id, input, {
+						org: resolveContext(false, opts.org, false)?.slug,
+					}),
+					{ format: "json" },
+				);
+			} catch (error) {
+				printError(
+					error instanceof Error ? error.message : String(error),
+					1,
+				);
+			}
+		});
 	// -- templates -----------------------------------------------------------
 	const templates = new Command("templates").description(
 		"Manage report templates",
@@ -135,7 +206,23 @@ export function buildReportsCommand(): Command {
 
 	executions
 		.command("list", { isDefault: true })
-		.description("List report executions")
+		.description(
+			"List legacy executions, or use --report for native cursor history",
+		)
+		.option(
+			"--report <id>",
+			"Configured report ID for native cursor history",
+		)
+		.option("--cursor <token>", "Next cursor from previous page")
+		.option(
+			"--offset <n>",
+			"Legacy list offset; use cursor with --report",
+			"0",
+		)
+		.option(
+			"--status <status>",
+			"Filter PENDING|RUNNING|COMPLETED|FAILED|CANCELLED",
+		)
 		.option("--org <slug>", "Organization context")
 		.option("--personal", "Retired — context is organization-only")
 		.option("--limit <n>", "Max results (default 20)", "20")
@@ -146,21 +233,104 @@ export function buildReportsCommand(): Command {
 		)
 		.option("-q, --quiet", "Print IDs only")
 		.action(
-			async (opts: {
-				org?: string;
-				personal?: boolean;
-				limit: string;
-				format: string;
-				quiet?: boolean;
-			}) => {
+			async (
+				opts: {
+					org?: string;
+					personal?: boolean;
+					limit: string;
+					report?: string;
+					offset: string;
+					cursor?: string;
+					status?:
+						| "PENDING"
+						| "RUNNING"
+						| "COMPLETED"
+						| "FAILED"
+						| "CANCELLED";
+					format: string;
+					quiet?: boolean;
+				},
+				command: Command,
+			) => {
+				const inherited = command.optsWithGlobals();
+				const format = inherited.json
+					? "json"
+					: inherited.plain
+						? "plain"
+						: command.getOptionValueSource("format") === "cli"
+							? opts.format
+							: (inherited.format ?? opts.format);
 				const ctx = resolveContext(opts.personal, opts.org, false);
 				const client = getClient();
-				let list: FabricReportExecution[];
+				if (!opts.report) {
+					if (opts.cursor) {
+						printError("Use --report for native cursor history", 1);
+					}
+					try {
+						const legacy = await client.reports.listExecutions({
+							org: ctx?.type === "org" ? ctx.slug : undefined,
+							limit: Number(opts.limit),
+							offset: Number(opts.offset),
+							status: opts.status,
+						});
+						if (opts.quiet) {
+							for (const execution of legacy) {
+								process.stdout.write(`${execution.id}\n`);
+							}
+						} else {
+							printOutput(legacy, {
+								format: format as
+									| "table"
+									| "json"
+									| "yaml"
+									| "csv",
+								columns: [
+									"id",
+									"templateId",
+									"status",
+									"startedAt",
+									"completedAt",
+								],
+							});
+						}
+						return;
+					} catch (error) {
+						printError(
+							error instanceof Error
+								? error.message
+								: String(error),
+							1,
+						);
+					}
+				}
+				if (Number(opts.offset) !== 0) {
+					printError(
+						"Native report history uses --cursor; omit --offset",
+						1,
+					);
+				}
+
+				let list: ReportHistoryExecution[];
 				try {
-					list = await client.reports.listExecutions({
-						org: ctx?.type === "org" ? ctx.slug : undefined,
-						limit: Number(opts.limit),
-					});
+					const page = await client.reports.listInstanceExecutions(
+						opts.report,
+						{
+							cursor: opts.cursor,
+							status: opts.status,
+							org: ctx?.type === "org" ? ctx.slug : undefined,
+							limit: Number(opts.limit),
+						},
+					);
+					list = page.executions;
+					if (format === "json") {
+						printOutput(page, { format: "json" });
+						return;
+					}
+					if (page.nextCursor) {
+						process.stderr.write(
+							`Next cursor: ${page.nextCursor}\n`,
+						);
+					}
 				} catch (err: unknown) {
 					printError((err as Error).message, 1);
 				}
@@ -173,10 +343,10 @@ export function buildReportsCommand(): Command {
 				}
 
 				printOutput(list, {
-					format: opts.format as "table" | "json" | "yaml" | "csv",
+					format: format as "table" | "json" | "yaml" | "csv",
 					columns: [
 						"id",
-						"templateId",
+						"instanceId",
 						"status",
 						"startedAt",
 						"completedAt",
@@ -187,5 +357,6 @@ export function buildReportsCommand(): Command {
 
 	reports.addCommand(executions);
 
+	registerReportLifecycleCommands(reports, executions);
 	return reports;
 }

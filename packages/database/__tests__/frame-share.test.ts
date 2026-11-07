@@ -18,6 +18,10 @@ const calls = vi.hoisted(() => ({
 vi.mock("../prisma/client", async (original) => {
 	const actual = await original<typeof import("../prisma/client")>();
 	const tx = {
+		frameApprovedRevision: {
+			findFirst: vi.fn().mockResolvedValue(null),
+			create: vi.fn(async ({ data }) => ({ id: data.id, ...data })),
+		},
 		$queryRaw: calls.lock,
 		agentWorkspaceFile: {
 			findFirst: async ({ where }: any) =>
@@ -103,7 +107,18 @@ beforeEach(() => {
 		shareToken: null,
 		isPublic: false,
 		updatedAt: revision,
-		content: "example private content",
+		content: JSON.stringify({
+			version: 1,
+			kind: "frame",
+			title: "Example private page",
+			blocks: [
+				{
+					id: "main",
+					type: "markdown",
+					content: "Example private content",
+				},
+			],
+		}),
 	};
 	store.grants = [];
 	store.audits = [];

@@ -61,13 +61,13 @@ export function createWorkflowResultCheckTools() {
 			inputSchema,
 			description:
 				operation === "saveWorkflowCheck"
-					? "Save a passing recorded result as a reusable exact-phrase check. Requires an inspected revision. Never runs a workflow or invokes a model."
+					? "Save a passing recorded result as a reusable deterministic result check. Requires an inspected revision. Never runs a workflow or invokes a model."
 					: operation === "applyWorkflowCheck"
-						? "Compare a completed workflow result with a saved baseline using identical exact-phrase checks. No target or retrieval is invoked."
+						? "Compare a completed workflow result with a saved baseline using identical versioned deterministic checks. No target or retrieval is invoked."
 						: operation === "removeWorkflowCheck"
 							? "Remove a saved workflow result check. Does not delete its original run."
 							: operation === "previewWorkflowCheck"
-								? "Preview exact-phrase checks against an inspected recorded workflow result. No target is invoked or evidence exported."
+								? "Preview exact-phrase or versioned bounded JSON checks against an inspected recorded workflow result. No target is invoked or evidence exported."
 								: operation === "inspectWorkflowResult"
 									? "Inspect an authorized completed workflow step's exact text and revision for checking."
 									: "List an owned workflow's reusable recorded-result checks.",

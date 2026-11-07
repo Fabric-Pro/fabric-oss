@@ -1,7 +1,9 @@
 "use client";
 
 import {
+	AGENT_TEST_MAX_BYTES,
 	type AgentTestCaseSummary,
+	type AgentTestChecks,
 	agentTestChecksSchema,
 } from "@repo/temporal/agent-test-contracts";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -65,7 +67,14 @@ export function AgentTestCaseDialog({
 	const [forbidden, setForbidden] = useState(
 		testCase?.checks.forbiddenPhrases.join("\n") ?? "",
 	);
-	const checks = agentTestChecksSchema.safeParse({
+	const [baseChecks, setBaseChecks] = useState<AgentTestChecks>(
+		testCase?.checks ?? { requiredPhrases: [], forbiddenPhrases: [] },
+	);
+	const [advanced, setAdvanced] = useState(false);
+	const [json, setJson] = useState("");
+	const [advancedError, setAdvancedError] = useState("");
+	const formChecks = {
+		...baseChecks,
 		requiredPhrases: required
 			.split("\n")
 			.map((s) => s.trim())
@@ -74,11 +83,50 @@ export function AgentTestCaseDialog({
 			.split("\n")
 			.map((s) => s.trim())
 			.filter(Boolean),
-	});
+	};
+	const rawChecks = advanced
+		? (() => {
+				try {
+					return JSON.parse(json);
+				} catch {
+					return null;
+				}
+			})()
+		: formChecks;
+	const checks = agentTestChecksSchema.safeParse(rawChecks);
+	const tooLarge =
+		new TextEncoder().encode(
+			JSON.stringify({
+				name,
+				input,
+				checks: checks.success ? checks.data : rawChecks,
+				instanceId,
+				organizationId,
+				sourcePreview,
+			}),
+		).byteLength > AGENT_TEST_MAX_BYTES;
+	function toggleAdvanced() {
+		if (advanced) {
+			if (!checks.success || tooLarge) {
+				setAdvancedError(
+					"Fix the structured check definition before returning to the phrase form.",
+				);
+				return;
+			}
+			setBaseChecks(checks.data);
+			setRequired(checks.data.requiredPhrases.join("\n"));
+			setForbidden(checks.data.forbiddenPhrases.join("\n"));
+		} else {
+			setJson(JSON.stringify({ ...formChecks, version: 2 }, null, 2));
+		}
+		setAdvancedError("");
+		setAdvanced(!advanced);
+	}
+
 	const save = useMutation({
 		mutationFn: async () => {
 			if (!checks.success) {
-				throw new Error("Add an exact text check.");
+				throw new Error("Add at least one valid deterministic check.");
 			}
 			const values = {
 				name: name.trim(),
@@ -137,7 +185,12 @@ export function AgentTestCaseDialog({
 					className="space-y-4"
 					onSubmit={(event) => {
 						event.preventDefault();
-						if (checks.success && name.trim() && input.trim()) {
+						if (
+							checks.success &&
+							!tooLarge &&
+							name.trim() &&
+							input.trim()
+						) {
 							save.mutate();
 						}
 					}}
@@ -168,38 +221,101 @@ export function AgentTestCaseDialog({
 							conversation context it needs.
 						</p>
 					</div>
-					<div className="space-y-2">
-						<Label htmlFor={`${id}-required`}>Must include</Label>
-						<Textarea
-							id={`${id}-required`}
-							value={required}
-							onChange={(e) => setRequired(e.target.value)}
-							rows={3}
-							placeholder="One exact phrase per line"
-						/>
-					</div>
-					<div className="space-y-2">
-						<Label htmlFor={`${id}-forbidden`}>
-							Must not include
-						</Label>
-						<Textarea
-							id={`${id}-forbidden`}
-							value={forbidden}
-							onChange={(e) => setForbidden(e.target.value)}
-							rows={2}
-							placeholder="One exact phrase per line"
-						/>
-						<p className="text-xs text-muted-foreground">
-							Case-sensitive text checks. Up to 20 phrases per
-							field, 512 characters each. These checks do not
-							establish factual accuracy.
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						onClick={toggleAdvanced}
+					>
+						{advanced ? "Use phrase form" : "Advanced JSON checks"}
+					</Button>
+					{advanced ? (
+						<div className="space-y-2">
+							<Label htmlFor={`${id}-json`}>
+								Versioned checks
+							</Label>
+							<Textarea
+								id={`${id}-json`}
+								rows={10}
+								maxLength={AGENT_TEST_MAX_BYTES}
+								value={json}
+								onChange={(event) => {
+									setJson(event.target.value);
+									setAdvancedError("");
+								}}
+							/>
+							<p className="text-xs text-muted-foreground">
+								Use version: 2 for jsonSchema or jsonAssertions.
+								Fabric supports a bounded schema subset, with no
+								remote references, patterns or code. Grounding
+								is not assessed in this release; trusted runtime
+								retrieval receipts are required.
+							</p>
+						</div>
+					) : (
+						<>
+							<div className="space-y-2">
+								<Label htmlFor={`${id}-required`}>
+									Must include
+								</Label>
+								<Textarea
+									id={`${id}-required`}
+									value={required}
+									onChange={(e) =>
+										setRequired(e.target.value)
+									}
+									rows={3}
+									placeholder="One exact phrase per line"
+								/>
+							</div>
+							<div className="space-y-2">
+								<Label htmlFor={`${id}-forbidden`}>
+									Must not include
+								</Label>
+								<Textarea
+									id={`${id}-forbidden`}
+									value={forbidden}
+									onChange={(e) =>
+										setForbidden(e.target.value)
+									}
+									rows={2}
+									placeholder="One exact phrase per line"
+								/>
+								<p className="text-xs text-muted-foreground">
+									Case-sensitive text checks. Up to 20 phrases
+									per field, 512 characters each. These checks
+									do not establish factual accuracy.
+								</p>
+							</div>
+							{(baseChecks.jsonSchema ||
+								baseChecks.jsonAssertions ||
+								baseChecks.grounding) && (
+								<p className="text-xs text-muted-foreground">
+									This test includes structured checks. They
+									are preserved when you edit phrases; open
+									Advanced to review them.
+								</p>
+							)}
+						</>
+					)}
+					{tooLarge && (
+						<output className="block text-sm text-destructive">
+							This test is larger than 128 KiB. Use a shorter task
+							or fewer structured expectations.
+						</output>
+					)}
+					{advancedError && (
+						<p role="alert" className="text-sm text-destructive">
+							{advancedError}
 						</p>
-					</div>
+					)}
+
 					{!checks.success &&
-						(required.trim() || forbidden.trim()) && (
+						(advanced || required.trim() || forbidden.trim()) && (
 							<output className="block text-sm text-destructive">
 								Use at most 20 phrases per field, each under 513
-								characters.
+								characters, or a valid bounded version 2
+								definition.
 							</output>
 						)}
 					{save.isError && (
@@ -225,6 +341,7 @@ export function AgentTestCaseDialog({
 								!name.trim() ||
 								!input.trim() ||
 								!checks.success ||
+								tooLarge ||
 								save.isPending
 							}
 						>

@@ -10,10 +10,11 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import type { ReportCommandContext } from "../../lib/report-command-context";
 
 const statusEnum = z.enum(["PENDING", "ACTIVE", "ARCHIVED", "DRAFT"]);
 
-const listInstancesInputSchema = z.object({
+export const listInstancesInputSchema = z.object({
 	templateId: z.string().optional(),
 	projectId: z.string().min(1).max(128).optional(),
 	organizationId: z.string().nullable().optional(),
@@ -28,58 +29,66 @@ const listInstancesInputSchema = z.object({
 export const listInstancesProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.REPORT_READ))
 	.input(listInstancesInputSchema)
-	.handler(async ({ input, context }) => {
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
+	.handler(handleListReportInstances);
 
-		const result = await listTemplateInstances({
-			userId: context.user.id,
-			organizationId,
-			templateId: input.templateId,
-			projectId: input.projectId,
-			limit: input.limit,
-			offset: input.offset,
-			isActive: input.isActive,
-			status: input.status as
-				| TemplateInstanceStatus
-				| TemplateInstanceStatus[]
-				| undefined,
-			search: input.search,
-			latestVersionOnly: input.latestVersionOnly,
-		});
+export async function handleListReportInstances({
+	input,
+	context,
+}: {
+	input: z.infer<typeof listInstancesInputSchema>;
+	context: ReportCommandContext;
+}) {
+	const organizationId = resolveOrganizationId(
+		input.organizationId,
+		context.session,
+	);
 
-		return {
-			instances: result.instances.map((instance) => {
-				const latestExec = instance.executions?.[0];
-				return {
-					id: instance.id,
-					sId: instance.sId,
-					version: instance.version,
-					status: instance.status,
-					name: instance.name,
-					description: instance.description,
-					templateId: instance.templateId,
-					templateName: instance.template.name,
-					isActive: instance.isActive,
-					setupRequiredReason: getProjectReportSetupReason(
-						instance.fabricConfig,
-						instance.template.definition,
-						instance.connections,
-					),
-					schedule: instance.schedule,
-					scheduleMode: instance.scheduleMode,
-					lastRunAt: instance.lastRunAt?.toISOString() || null,
-					nextRunAt: instance.nextRunAt?.toISOString() || null,
-					executionCount: instance._count.executions,
-					latestExecutionStatus: latestExec?.status || null,
-					latestExecutionStartedAt:
-						latestExec?.startedAt?.toISOString() || null,
-					createdAt: instance.createdAt.toISOString(),
-					updatedAt: instance.updatedAt.toISOString(),
-				};
-			}),
-			total: result.total,
-		};
+	const result = await listTemplateInstances({
+		userId: context.user.id,
+		organizationId,
+		templateId: input.templateId,
+		projectId: input.projectId,
+		limit: input.limit,
+		offset: input.offset,
+		isActive: input.isActive,
+		status: input.status as
+			| TemplateInstanceStatus
+			| TemplateInstanceStatus[]
+			| undefined,
+		search: input.search,
+		latestVersionOnly: input.latestVersionOnly,
 	});
+
+	return {
+		instances: result.instances.map((instance) => {
+			const latestExec = instance.executions?.[0];
+			return {
+				id: instance.id,
+				sId: instance.sId,
+				version: instance.version,
+				status: instance.status,
+				name: instance.name,
+				description: instance.description,
+				templateId: instance.templateId,
+				templateName: instance.template.name,
+				isActive: instance.isActive,
+				setupRequiredReason: getProjectReportSetupReason(
+					instance.fabricConfig,
+					instance.template.definition,
+					instance.connections,
+				),
+				schedule: instance.schedule,
+				scheduleMode: instance.scheduleMode,
+				lastRunAt: instance.lastRunAt?.toISOString() || null,
+				nextRunAt: instance.nextRunAt?.toISOString() || null,
+				executionCount: instance._count.executions,
+				latestExecutionStatus: latestExec?.status || null,
+				latestExecutionStartedAt:
+					latestExec?.startedAt?.toISOString() || null,
+				createdAt: instance.createdAt.toISOString(),
+				updatedAt: instance.updatedAt.toISOString(),
+			};
+		}),
+		total: result.total,
+	};
+}

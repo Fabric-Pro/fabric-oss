@@ -1,0 +1,7 @@
+{
+	"workflowId": "example-quality-builder-pre-patch-1793956630607",
+	"eventCount": 65,
+	"sha256": "3496038dae7fdd3f138bc628fe168b2bdad9ec28015ef0f6e38c6bb62ea2eef0",
+	"baselineSourceHash": "95d241a0b8bd712357a54fa157ec2edb0af41f5ba51cc0b2379c833379e9506d",
+	"anonymizedFields": ["worker identity", "sticky queue name"]
+}

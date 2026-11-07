@@ -521,3 +521,29 @@ describe("audit taxonomy — closed action set", () => {
 		);
 	});
 });
+
+it("records report Frame creation through the closed taxonomy without content or unknown-action warnings", async () => {
+	const tx = { auditLog: { create: mocks.auditLogCreateMock } };
+	mocks.auditLogCreateMock.mockResolvedValue({ id: "example-audit" });
+	await recordAuditTx(tx as never, {
+		action: "frame.created",
+		organizationId: "example-org",
+		actor: { type: "user", userId: "example-user" },
+		resource: { type: "frame", id: "example-frame" },
+		metadata: {
+			sourceRunType: "REPORT_EXECUTION",
+			sourceRunId: "example-execution",
+			brandSource: "CLIENT",
+		},
+	});
+	expect(mocks.loggerWarnMock).not.toHaveBeenCalled();
+	expect(mocks.auditLogCreateMock).toHaveBeenCalledWith(
+		expect.objectContaining({
+			data: expect.objectContaining({
+				action: "frame.created",
+				category: "frame",
+				resourceId: "example-frame",
+			}),
+		}),
+	);
+});

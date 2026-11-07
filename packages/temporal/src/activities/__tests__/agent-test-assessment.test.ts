@@ -479,3 +479,59 @@ it("does not grade a goal's display placeholder as a real deliverable for forbid
 	});
 	expect(m.update).not.toHaveBeenCalled();
 });
+
+it("grades richer checks on the same native result without executing another business run", async () => {
+	m.row.mockResolvedValue({
+		...row,
+		checksJson: {
+			version: 2,
+			jsonSchema: {
+				type: "object",
+				required: ["ready"],
+				properties: { ready: { type: "boolean" } },
+				additionalProperties: false,
+			},
+			jsonAssertions: [{ pointer: "/ready", equals: true }],
+		},
+	});
+	m.result.mockResolvedValue({
+		status: "COMPLETED",
+		output: { response: '{"ready":true}' },
+	});
+	await assessAgentTestRun(input);
+	expect(m.result).toHaveBeenCalledTimes(1);
+	expect(m.update).toHaveBeenCalledWith(
+		expect.objectContaining({
+			data: expect.objectContaining({
+				status: "COMPLETED",
+				verdict: "PASSED",
+				reportJson: expect.objectContaining({
+					version: 2,
+					method: "deterministic",
+					passed: 2,
+					total: 2,
+				}),
+			}),
+		}),
+	);
+	expect(JSON.stringify(m.update.mock.calls)).not.toContain('\\"ready\\"');
+});
+it("records unavailable grounding separately from business success and never supplies a passing verdict", async () => {
+	m.row.mockResolvedValue({
+		...row,
+		checksJson: { version: 2, grounding: { requireCitations: true } },
+	});
+	await assessAgentTestRun(input);
+	expect(m.update).toHaveBeenCalledWith(
+		expect.objectContaining({
+			data: expect.objectContaining({
+				status: "COMPLETED",
+				verdict: null,
+				reportJson: expect.objectContaining({
+					status: "NOT_ASSESSED",
+					unavailable: 1,
+				}),
+			}),
+		}),
+	);
+});

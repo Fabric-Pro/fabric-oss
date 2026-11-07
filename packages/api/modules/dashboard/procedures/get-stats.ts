@@ -13,13 +13,12 @@ import { logger } from "@repo/logs";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 
 export const getDashboardStats = tenantProtectedProcedure
-	.use(requirePermission(Permissions.DASHBOARD_READ))
+	.use(requireInputOrgPermission(Permissions.DASHBOARD_READ))
 	.route({
 		method: "GET",
 		path: "/dashboard/stats",
@@ -40,19 +39,7 @@ export const getDashboardStats = tenantProtectedProcedure
 		const sinceDate = since ? new Date(since) : undefined;
 
 		try {
-			// If organizationId provided, verify membership
 			if (organizationId) {
-				const membership = await verifyOrganizationMembership(
-					organizationId,
-					user.id,
-				);
-
-				if (!membership) {
-					throw new ORPCError("FORBIDDEN", {
-						message: "You are not a member of this organization",
-					});
-				}
-
 				// Return organization stats - pass userId for project-level access control
 				return await getOrganizationDashboardStats(
 					organizationId,

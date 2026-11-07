@@ -32,6 +32,7 @@ import { useStableHandlers } from "@saas/agents/hooks/useStableHandlers";
 import { multiAgentExecutionFields } from "@saas/agents/lib/multi-agent-turn";
 import { LimitBanner } from "@saas/ai/components/shared/LimitBanner";
 import { useSession } from "@saas/auth/hooks/use-session";
+import { appendFrameAgentHandoffContext } from "@saas/frames/lib/frame-agent-handoff";
 import type { FrameToolResult } from "@saas/frames/lib/frame-result";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 // F2 (spec § 8.1 / § 22.1) — chat → editor auto-insert button. Rendered
@@ -3019,6 +3020,10 @@ export function FabricTemporalOrchestratorChat({
 			isNewChat ? undefined : latestGeneratedImagePath(messages),
 		);
 		lastUserImageUrlsRef.current = turnImageUrls;
+		const turnInlineContexts = appendFrameAgentHandoffContext(
+			inlineAttachmentContexts,
+			effectiveFrameLaunchContext,
+		);
 
 		// Everything that can reject the send has run, so an empty
 		// conversation is never left behind by a failed upload. From here the
@@ -3066,9 +3071,7 @@ export function FabricTemporalOrchestratorChat({
 				workflowImageUrls,
 				turnImageUrls,
 				sessionDocumentIds.length > 0 ? sessionDocumentIds : undefined,
-				inlineAttachmentContexts.length > 0
-					? inlineAttachmentContexts
-					: undefined,
+				turnInlineContexts.length > 0 ? turnInlineContexts : undefined,
 				turnConversationId
 					? {
 							conversationId: turnConversationId,
@@ -3536,7 +3539,7 @@ export function FabricTemporalOrchestratorChat({
 				    notice renders, rather than the landing. */}
 				{isEmptyThread ? (
 					compactMode ? (
-						/* The drawer's empty state: Databricks Genie style
+						/* The drawer's empty state: Genie
 						   centered hero + structured starter rows, sized for a side panel. */
 						<div className="flex h-full flex-col overflow-y-auto px-4 py-6 sm:px-6">
 							<div className="mx-auto my-auto flex w-full max-w-2xl flex-col gap-6">

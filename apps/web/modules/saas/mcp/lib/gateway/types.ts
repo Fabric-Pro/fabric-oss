@@ -54,6 +54,13 @@ export interface GatewayActingContext {
 
 export interface GatewaySession {
 	sessionId: string;
+	keyIdentity?: {
+		credentialKind:
+			| "USER_API_KEY"
+			| "ORGANIZATION_API_KEY"
+			| "OAUTH_CLIENT";
+		credentialId: string;
+	};
 	userId: string;
 	organizationId: string | null;
 	/**

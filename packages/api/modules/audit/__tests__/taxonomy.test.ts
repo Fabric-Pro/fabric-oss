@@ -311,7 +311,39 @@ describe("audit.taxonomy handler", () => {
 		// run id and version only, never text), plus native session continuation = 225.
 		// Include saved context-quality lifecycle and durable agent admission.
 		// Two background-run control actions: cancellation request and managed schedule save.
-		expect(result.actions).toHaveLength(233);
+		// A generated report creates an audited linked Frame.
+		// HEAD already emitted 257 keys; its stale 233-key assertion omitted
+		// the existing Frame, skill, context and prompt lifecycle additions.
+		// Thirteen delivery, reporting and result-check lifecycle actions.
+		// Eleven existing private-source and governed-quality actions brought the
+		// pre-triage taxonomy to 282. Four private triage lifecycle actions are
+		// added here; keep the closed count and assert each contract explicitly.
+		expect(result.actions).toHaveLength(286);
+		expect(result.actions).toEqual(
+			expect.arrayContaining([
+				"project.triage.started",
+				"project.triage.cancelled",
+				"project.triage.completed",
+				"project.triage.reviewed",
+			]),
+		);
+		expect(result.actions).toContain("project.coding_run.start_requested");
+		expect(result.actions).toContain("project.coding_run.cancel_requested");
+		expect(result.actions).toContain(
+			"project.coding_run.follow_up_requested",
+		);
+		expect(result.actions).toContain("report.instance_created");
+		expect(result.actions).toContain("report.instance_updated");
+		expect(result.actions).toContain("report.execution_started");
+		expect(result.actions).toContain("report.execution_cancelled");
+		expect(result.actions).toContain("report.artifact_distributed");
+		expect(result.actions).toContain("report.artifact_generated");
+		expect(result.actions).toContain("quality.policy_configured");
+		expect(result.actions).toContain("quality.assessment_started");
+		expect(result.actions).toContain("quality.assessment_completed");
+		expect(result.actions).toContain("quality.assessment_cancelled");
+
+		expect(result.actions).toContain("frame.created");
 		expect(result.actions).toContain(
 			"org.agent_execution.cancel_requested",
 		);
@@ -605,7 +637,10 @@ describe("audit.taxonomy handler", () => {
 			"org.company_context.metadata_updated",
 		);
 
+		// Existing backend categories include Frame and prompt lifecycle events.
 		expect(result.categories).toEqual([
+			"frame",
+			"prompt",
 			"auth",
 			"org",
 			"account",

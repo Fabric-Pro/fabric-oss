@@ -92,6 +92,38 @@ beforeEach(() => {
 	agentReplies(`Here you go.\n\`\`\`html\n${HTML_PAGE}\n\`\`\``);
 });
 
+describe("executeAgentTaskStep - uncertain receipts", () => {
+	it.each(["error", "pending"])(
+		"retains %s after the tool summary limit",
+		async (status) => {
+			executeAgentTurn.mockResolvedValue({
+				response: `\`\`\`html\n${HTML_PAGE}\n\`\`\``,
+				success: true,
+				toolCalls: [
+					...Array.from({ length: 101 }, (_, index) => ({
+						id: `example-read-${index}`,
+						name: "example_read",
+						serverName: "example",
+						status: "success",
+					})),
+					{
+						id: "example-unconfirmed",
+						name: "example_write",
+						serverName: "example",
+						status,
+					},
+				],
+			});
+			const result = await executeAgentTaskStep(params());
+			expect(result.success).toBe(true);
+			expect(result.output).toMatchObject({ inspectionRequired: true });
+			expect(JSON.stringify(result.output)).not.toContain(
+				"example_write",
+			);
+		},
+	);
+});
+
 describe("executeAgentTaskStep - agent turn input", () => {
 	it("hands the node's tools, scope and attribution to the agent turn", async () => {
 		const step = params({
@@ -589,6 +621,7 @@ describe("executeAgentTaskStep - output", () => {
 				name: "list_work_items",
 				serverName: "work-tracker",
 				status: "success",
+				inspectionRequired: false,
 			},
 		]);
 	});

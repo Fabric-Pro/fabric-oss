@@ -9,6 +9,7 @@ import { Card, CardContent } from "@ui/components/card";
 import { AlertCircleIcon } from "lucide-react";
 import Link from "next/link";
 import { useMemo } from "react";
+import { agentInstructionFormState } from "../lib/agent-instruction-form";
 import { agentProjectFormState } from "../lib/agent-project-form";
 import { ReadOnlyAgentImplementation } from "./AgentImplementationNotice";
 import {
@@ -157,12 +158,10 @@ export function AgentInstanceEdit({
 				typeof customInstructions.expectedOutput === "string"
 					? customInstructions.expectedOutput
 					: "",
-			instructions:
-				typeof customInstructions.additionalContext === "string"
-					? customInstructions.additionalContext
-					: typeof customInstructions.role === "string"
-						? customInstructions.role
-						: "",
+			...agentInstructionFormState(
+				instance.template?.instructions,
+				customInstructions,
+			),
 			selectedDataSources,
 			selectedTools,
 			selectedSkillIds,

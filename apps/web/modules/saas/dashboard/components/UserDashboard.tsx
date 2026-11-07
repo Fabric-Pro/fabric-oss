@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useMemo, useState } from "react";
-import { DashboardHero, type TimeRange } from "./DashboardHero";
+import { UserDashboardHero, type TimeRange } from "./UserDashboardHero";
 import { DashboardLineChart } from "./DashboardLineChart";
 import { MetricCard } from "./MetricCard";
 import { MyWorkPanel } from "./MyWorkPanel";
@@ -310,7 +310,7 @@ export function UserDashboard() {
 			)}
 
 			{/* Hero */}
-			<DashboardHero
+			<UserDashboardHero
 				userName={user?.name}
 				timeRange={timeRange}
 				onTimeRangeChange={setTimeRange}

@@ -1,5 +1,9 @@
 import { resolveGuestSafeProposalThemeTokens } from "@repo/database";
 import {
+	ARTIFACT_BRAND_SOURCES,
+	ARTIFACT_COVER_STYLES,
+} from "@repo/utils/artifact-brand-theme";
+import {
 	mapThemeAssets,
 	type ProposalThemeTokens,
 	THEME_TOKEN_SOURCES,
@@ -31,6 +35,12 @@ const themeAssetUrlSchema = z.object({ url: z.string() }).nullable();
  * is added here too.
  */
 const proposalThemeTokensSchema = z.object({
+	appearance: z
+		.object({
+			brandSource: z.enum(ARTIFACT_BRAND_SOURCES),
+			coverStyle: z.enum(ARTIFACT_COVER_STYLES),
+		})
+		.optional(),
 	proposer: z.object({
 		name: sourced(z.string().nullable()),
 		logo: sourced(themeAssetUrlSchema),

@@ -101,9 +101,17 @@ function sanitizePrefix(name: string): string {
  * `servers` keep only the servers the selection names, so a deselected
  * server's prefix resolves to nothing for a caller that executes through them.
  */
+// Keep the raw discovery cache shared; consent-filtered views are bounded by
+// the five branding capability bits and never retain credentials or actor data.
+const brandingConsentViews = new WeakMap<
+	GatewayToolDefinition[],
+	Map<string, GatewayToolDefinition[]>
+>();
+
 export async function getAggregatedTools(
 	session: GatewaySession,
 ): Promise<{ tools: GatewayToolDefinition[]; servers: ConnectedServerInfo[] }> {
+	const { brandingToolConsentSatisfied } = await import("./tool-eligibility");
 	// A session bound to one project is offered that project's platform tools
 	// and no connected server's: those belong to the person and the
 	// organization, with no tie to a project. It never reaches the discovery
@@ -111,7 +119,9 @@ export async function getAggregatedTools(
 	if (boundProjectId(session) !== null) {
 		const { PLATFORM_TOOL_DEFINITIONS } = await import("./platform-tools");
 		return {
-			tools: projectBoundTools(PLATFORM_TOOL_DEFINITIONS),
+			tools: projectBoundTools(PLATFORM_TOOL_DEFINITIONS).filter((tool) =>
+				brandingToolConsentSatisfied(session, tool),
+			),
 			servers: [],
 		};
 	}
@@ -127,6 +137,7 @@ export async function getAggregatedTools(
 		const reachable = PLATFORM_TOOL_DEFINITIONS.filter(
 			(tool) =>
 				serviceSessionHasTool(session, tool.name) &&
+				brandingToolConsentSatisfied(session, tool) &&
 				scopeSatisfied(
 					session.scopes,
 					platformToolScope(tool.name),
@@ -144,7 +155,28 @@ export async function getAggregatedTools(
 		};
 	}
 
-	return applyServerSelection(await getFullToolList(session), session);
+	const listed = applyServerSelection(
+		await getFullToolList(session),
+		session,
+	);
+	const permitted = listed.tools.map((tool) =>
+		brandingToolConsentSatisfied(session, tool),
+	);
+	if (permitted.every(Boolean)) {
+		return listed;
+	}
+	const fingerprint = permitted.map((value) => (value ? "1" : "0")).join("");
+	let views = brandingConsentViews.get(listed.tools);
+	if (!views) {
+		views = new Map();
+		brandingConsentViews.set(listed.tools, views);
+	}
+	let tools = views.get(fingerprint);
+	if (!tools) {
+		tools = listed.tools.filter((_, index) => permitted[index]);
+		views.set(fingerprint, tools);
+	}
+	return { ...listed, tools };
 }
 
 /**

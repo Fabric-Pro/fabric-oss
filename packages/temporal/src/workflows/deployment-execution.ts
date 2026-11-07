@@ -31,6 +31,10 @@ import {
 	type NativeAgentAdmission,
 } from "../lib/agent-execution-native-protocol";
 import {
+	NATIVE_QUALITY_CONFIGURATION_PATCH,
+	type NativeQualityConfiguration,
+} from "../lib/run-quality-configuration";
+import {
 	persistNativeAgentCompletion,
 	registerNativeAgentReceipt,
 } from "./lib/register-native-agent-receipt";
@@ -75,6 +79,7 @@ export interface DeploymentExecutionInput {
 }
 
 export interface DeploymentExecutionOutput {
+	qualityConfiguration?: NativeQualityConfiguration;
 	executionId: string;
 	status: "COMPLETED" | "FAILED" | "CANCELLED";
 	output?: Record<string, unknown>;
@@ -282,6 +287,7 @@ export async function deploymentExecutionWorkflow(
 	await registerNativeAgentReceipt(input);
 	const nativeSteps = patched(SAVED_AGENT_DURABLE_STEPS_PATCH);
 	let nativeFinalizing = false;
+	let qualityConfiguration: NativeQualityConfiguration | undefined;
 	async function completeExecution(
 		params: Parameters<typeof activities.completeExecution>[0],
 	) {
@@ -376,6 +382,12 @@ export async function deploymentExecutionWorkflow(
 			organizationId: input.organizationId,
 		});
 
+		if (
+			config?.qualityConfiguration &&
+			patched(NATIVE_QUALITY_CONFIGURATION_PATCH)
+		) {
+			qualityConfiguration = config.qualityConfiguration;
+		}
 		if (!config) {
 			throw new Error(`Deployment ${input.deploymentId} not found`);
 		}
@@ -742,6 +754,7 @@ export async function deploymentExecutionWorkflow(
 		});
 
 		return {
+			...(qualityConfiguration ? { qualityConfiguration } : {}),
 			executionId: input.executionId,
 			status: "COMPLETED",
 			output: result.output,

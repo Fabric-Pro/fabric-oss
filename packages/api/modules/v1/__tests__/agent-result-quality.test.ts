@@ -22,6 +22,7 @@ vi.mock("@repo/database", () => ({
 	db: { organization: { findFirst: m.organization } },
 	hasProjectAccess: m.access,
 	canExecuteOrganizationAgents: vi.fn(),
+	canReadOrganizationReports: vi.fn(),
 	canRunOrganizationWorkflows: vi.fn(),
 }));
 vi.mock("../../users/procedures/api-keys/verify", () => ({

@@ -12,6 +12,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
+	type DeliverySourceClient,
+	registerDeliverySourceTools,
+} from "./delivery-source-tools.js";
+import {
 	buildFabricVisualizePayload,
 	FABRIC_BRAND,
 	FABRIC_MARK_DATA_URI,
@@ -66,7 +70,24 @@ export type FabricLike = {
 			}>;
 		}>;
 	};
-	projects?: {
+	projects?: DeliverySourceClient & {
+		listTriageRuns?(
+			projectId: string,
+			options?: { before?: string },
+		): Promise<unknown>;
+		startTriage?(
+			projectId: string,
+			options: { requestId: string; goal: string; evidenceIds: string[] },
+		): Promise<unknown>;
+		getTriageRun?(projectId: string, runId: string): Promise<unknown>;
+		getTriageResult?(projectId: string, runId: string): Promise<unknown>;
+		cancelTriageRun?(projectId: string, runId: string): Promise<unknown>;
+		reviewTriageProposal?(
+			projectId: string,
+			runId: string,
+			options: { proposalId: string; decision: "KEEP" | "DISMISS" },
+		): Promise<unknown>;
+
 		list(options?: Record<string, unknown>): Promise<
 			Array<{
 				id: string;
@@ -157,6 +178,171 @@ export function createFabricMcpServer(
 		);
 	}
 
+	registerDeliverySourceTools(server, fabric.projects);
+	const triageProject = fabric.projects;
+	if (
+		triageProject?.listTriageRuns &&
+		triageProject.startTriage &&
+		triageProject.getTriageRun &&
+		triageProject.getTriageResult &&
+		triageProject.cancelTriageRun &&
+		triageProject.reviewTriageProposal
+	) {
+		for (const op of [
+			"list",
+			"start",
+			"status",
+			"result",
+			"cancel",
+			"review",
+		] as const) {
+			const properties = {
+				projectId: z.string().regex(/^[A-Za-z0-9._:-]{1,200}$/),
+				...(op !== "start" && op !== "list"
+					? { runId: z.string().min(1).max(200) }
+					: {}),
+				...(op === "list"
+					? { before: z.string().max(2048).optional() }
+					: {}),
+				...(op === "start"
+					? {
+							requestId: z.uuid(),
+							goal: z.string().min(1).max(2000),
+							evidenceIds: z
+								.array(z.string().min(1).max(200))
+								.min(1)
+								.max(5),
+						}
+					: {}),
+				...(op === "review"
+					? {
+							proposalId: z.string().regex(/^[a-f0-9]{64}$/),
+							decision: z.enum(["KEEP", "DISMISS"]),
+						}
+					: {}),
+			};
+			const write = ["start", "cancel", "review"].includes(op);
+			server.registerTool(
+				`fabric_triage_${op}`,
+				{
+					description: `${op} your private selected-evidence signal review. Reuse start requestId and original input after uncertainty. Keeping does not create a ticket or share content.`,
+					inputSchema: z.strictObject(properties),
+					annotations: {
+						readOnlyHint: !write,
+						destructiveHint: false,
+						idempotentHint: op !== "start",
+					},
+					_meta: {
+						...(write ? { "fabric/confirm": true } : {}),
+						...(["result", "review"].includes(op)
+							? withFabricApp("ui://fabric/private-triage")
+							: {}),
+					},
+				},
+				async (args) => {
+					try {
+						const a = args as {
+							projectId: string;
+							runId?: string;
+							before?: string;
+							requestId?: string;
+							goal?: string;
+							evidenceIds?: string[];
+							proposalId?: string;
+							decision?: "KEEP" | "DISMISS";
+						};
+						let data: unknown;
+						switch (op) {
+							case "list":
+								data = await triageProject.listTriageRuns!(
+									a.projectId,
+									{ before: a.before },
+								);
+								break;
+							case "start":
+								data = await triageProject.startTriage!(
+									a.projectId,
+									{
+										requestId: a.requestId!,
+										goal: a.goal!,
+										evidenceIds: a.evidenceIds!,
+									},
+								);
+								break;
+							case "status":
+								data = await triageProject.getTriageRun!(
+									a.projectId,
+									a.runId!,
+								);
+								break;
+							case "result":
+								data = await triageProject.getTriageResult!(
+									a.projectId,
+									a.runId!,
+								);
+								break;
+							case "cancel":
+								data = await triageProject.cancelTriageRun!(
+									a.projectId,
+									a.runId!,
+								);
+								break;
+							case "review":
+								data =
+									await triageProject.reviewTriageProposal!(
+										a.projectId,
+										a.runId!,
+										{
+											proposalId: a.proposalId!,
+											decision: a.decision!,
+										},
+									);
+								break;
+						}
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: JSON.stringify(data),
+								},
+							],
+							structuredContent: {
+								...(data as Record<string, unknown>),
+								projectId: a.projectId,
+							},
+							...(["result", "review"].includes(op)
+								? {
+										_meta: withFabricApp(
+											"ui://fabric/private-triage",
+										),
+									}
+								: {}),
+						};
+					} catch (error) {
+						const code =
+							error &&
+							typeof error === "object" &&
+							"code" in error &&
+							typeof error.code === "string"
+								? error.code
+								: "TRIAGE_UNAVAILABLE";
+						return {
+							isError: true,
+							content: [
+								{
+									type: "text" as const,
+									text: JSON.stringify({
+										code,
+										error: "Private signal review unavailable. Check current scope, project and source access.",
+									}),
+								},
+							],
+						};
+					}
+				},
+			);
+		}
+	}
 	server.registerTool(
 		"fabric_list_integrations",
 		{

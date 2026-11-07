@@ -8,6 +8,7 @@ import {
 	NEUTRAL_THEME,
 	type ProposalThemeSources,
 	type ProposalThemeTokens,
+	proposalClientPaletteFromColors,
 	resolveThemePaint,
 	resolveVisualRoleColors,
 	type SourcedValue,
@@ -62,6 +63,84 @@ function withProposer(
 }
 
 const HEX = /^#[0-9a-f]{6}$/;
+
+describe("a saved client palette applied to a document", () => {
+	it("changes the document colors while retaining both parties and company assets", () => {
+		const palette = proposalClientPaletteFromColors(["#0F766E", "#BE123C"]);
+		expect(palette).not.toBeNull();
+		const tokens = buildProposalThemeTokens(
+			sources({
+				organization: {
+					name: "Example Agency",
+					logoKey: "example-org.png",
+				},
+				brandKit: {
+					primaryColor: "#1d4ed8",
+					accentColors: ["#b91c1c"],
+					displayFontFamily: "Example Sans",
+					heroKey: "organization-brand/example-org/hero/example.png",
+				},
+				recipient: {
+					name: "Example Client",
+					logoKey:
+						"project-brand/example-project/recipient-brand/current/example.png",
+					colors: ["#0f766e", "#be123c"],
+				},
+				style: palette,
+			}),
+		);
+		expect(tokens.proposer.primary).toEqual({
+			value: "#0f766e",
+			source: "MANUAL",
+		});
+		expect(tokens.proposer.accents).toEqual({
+			value: ["#be123c"],
+			source: "MANUAL",
+		});
+		expect(tokens.proposer.name.value).toBe("Example Agency");
+		expect(tokens.recipient.name.value).toBe("Example Client");
+		expect(tokens.proposer.logo.value?.kind).toBe("organization-logo");
+		expect(tokens.recipient.logo.value?.kind).toBe("recipient-logo");
+		expect(tokens.proposer.fonts.display.value).toBe("Example Sans");
+		expect(tokens.proposer.hero.value?.kind).toBe("organization-hero");
+	});
+
+	it("does not inherit a company's accent when the client saved only one color", () => {
+		const tokens = buildProposalThemeTokens(
+			sources({
+				style: proposalClientPaletteFromColors(["#0f766e"]),
+				brandKit: {
+					primaryColor: "#1d4ed8",
+					accentColors: ["#b91c1c"],
+				},
+			}),
+		);
+		expect(tokens.proposer.primary.value).toBe("#0f766e");
+		expect(tokens.proposer.accents.value).toEqual(["#0f766e"]);
+	});
+
+	it("refuses unavailable or malformed client palettes instead of selecting company colors", () => {
+		for (const colors of [
+			[],
+			["red"],
+			["#0f766e", "url(example.com)"],
+			["#111111", "#222222", "#333333", "#444444"],
+		]) {
+			expect(proposalClientPaletteFromColors(colors)).toBeNull();
+		}
+	});
+
+	it("returns an independent normalized palette without mutating the saved client brand", () => {
+		const colors = Object.freeze(["#0F766E", "#0f766e", "#BE123C"]);
+		const palette = proposalClientPaletteFromColors(colors);
+		expect(palette).toEqual({
+			primaryColor: "#0f766e",
+			accentColors: ["#be123c"],
+		});
+		palette?.accentColors.push("#ffffff");
+		expect(colors).toEqual(["#0F766E", "#0f766e", "#BE123C"]);
+	});
+});
 
 describe("buildProposalThemeTokens", () => {
 	it("gives the neutral theme, no logos and DEFAULT everywhere when nothing is set", () => {
@@ -981,12 +1060,12 @@ describe("themeTokenHash", () => {
 		const hash = themeTokenHash(branded());
 
 		expect(themeTokenHash(branded())).toBe(hash);
-		expect(hash).toMatch(/^t3:[0-9a-f]{16}$/);
+		expect(hash).toMatch(/^t4:[0-9a-f]{16}$/);
 	});
 
 	it("reads a record made before the three print faces as a different design", () => {
 		// A `t2` record named Inter for every role; the same brand now hashes
-		// under `t3`, so a later comparison cannot mistake it for unchanged.
+		// under `t4`, so a later comparison cannot mistake it for unchanged.
 		const hash = themeTokenHash(buildProposalThemeTokens(NO_SOURCES));
 
 		expect(hash.startsWith("t2:")).toBe(false);

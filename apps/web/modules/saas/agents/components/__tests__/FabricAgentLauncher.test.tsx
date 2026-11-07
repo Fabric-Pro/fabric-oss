@@ -757,7 +757,7 @@ describe("FabricAgentLauncher", () => {
 
 		const prompt = (await screen.findByTestId("system-prompt")).textContent;
 		expect(prompt).toContain("the generated Page the user has open");
-		expect(prompt).toContain("frame id: workspace_1");
+		expect(prompt).not.toContain("frame id: workspace_1");
 		expect(prompt).toContain("fabric_update_frame");
 	});
 
@@ -786,6 +786,7 @@ describe("FabricAgentLauncher", () => {
 						openLauncher({
 							surface: "artifact",
 							launchFrameId: "frame-example",
+							launchFrameUpdatedAt: "2026-10-14T09:00:00.000Z",
 							projectId: "project-example",
 						})
 					}
@@ -803,6 +804,9 @@ describe("FabricAgentLauncher", () => {
 		expect(
 			await screen.findByRole("button", { name: "frame-example" }),
 		).toBeInTheDocument();
+		const prompt = (await screen.findByTestId("system-prompt")).textContent;
+		expect(prompt).not.toContain("Viewed Frame");
+		expect(prompt).not.toContain("2026-10-14T09:00:00.000Z");
 	});
 
 	it("keeps the surface and Page of an explicit launch", async () => {
@@ -834,7 +838,7 @@ describe("FabricAgentLauncher", () => {
 		);
 
 		const prompt = (await screen.findByTestId("system-prompt")).textContent;
-		expect(prompt).toContain("frame id: workspace_2");
+		expect(prompt).not.toContain("frame id: workspace_2");
 		expect(document.body).toHaveTextContent(
 			"initial input: Add a refresh button.",
 		);

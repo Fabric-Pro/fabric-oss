@@ -22,6 +22,18 @@ describe("isWorkflowCanvasPath", () => {
 });
 
 describe("isFullHeightPath", () => {
+	it("keeps Genie inside the viewport without changing neighboring agent pages", () => {
+		expect(isFullHeightPath("/app/example-org/agents/fabric-ai")).toBe(
+			true,
+		);
+		expect(isFullHeightPath("/app/example-org/agents")).toBe(false);
+		expect(isFullHeightPath("/app/example-org/agents/example-agent")).toBe(
+			false,
+		);
+		expect(
+			isFullHeightPath("/app/example-org/agents/fabric-ai/memory"),
+		).toBe(false);
+	});
 	it("takes the workflow editor under an organization, which is where it lives", () => {
 		expect(isFullHeightPath("/app/example-org/workflows/wf-example")).toBe(
 			true,

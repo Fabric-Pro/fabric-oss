@@ -1806,6 +1806,127 @@ jobs:
           }
           EOF
 
+  private-source-capture-tests:
+    name: Private source capture RLS (isolated Postgres)
+    needs: [changes, promotion_policy]
+    if: >-
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.changes.result == 'success' && ((github.event_name == 'workflow_dispatch' || needs.changes.outputs.db == 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The suite intentionally rejects the shared 5432 fixture and any cluster
+    # already containing fabric_worker. This service is fresh for this job;
+    # its database name and port satisfy the unchanged owned-fixture guard.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: example_signal_s2_direct_c1c1c1c1c1
+        ports:
+          - 55463:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -h 127.0.0.1 -p 5432"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 15s
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:55463/example_signal_s2_direct_c1c1c1c1c1
+      DIRECT_URL: postgresql://postgres:postgres@localhost:55463/example_signal_s2_direct_c1c1c1c1c1
+      # Never provision or modify a preexisting worker identity in this job.
+      # The suite creates its own restricted worker role and removes it.
+      WORKER_DB_PASSWORD: ''
+      WORKER_ROLE_PREPROVISIONED: ''
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        env:
+          npm_config_audit: "false"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          check-latest: true
+
+      - name: Install dependencies
+        uses: ./.github/actions/pnpm-install
+
+      - name: Restore generated Prisma client
+        id: prisma-client-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/database/prisma/generated
+          key: prisma-client-${{ runner.os }}-${{ hashFiles('packages/database/prisma.config.ts', 'packages/database/prisma/schema.prisma', 'packages/database/prisma/zod-generator.config.json', 'packages/database/prisma/tsconfig.generated.json', 'packages/database/scripts/generate-client.mts', 'packages/database/scripts/fix-zod-imports.ts', 'packages/database/tsconfig.json', 'packages/database/package.json', 'tooling/typescript/base.json', 'tooling/typescript/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml') }}
+
+      - name: Generate Prisma client
+        if: steps.prisma-client-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @repo/database generate
+
+      - name: Apply migrations to the fresh owned database
+        run: pnpm --filter @repo/database exec prisma migrate deploy --schema=./prisma/schema.prisma
+
+      # The reviewed capture migration installs its forced RLS policies.
+      # Do not run the general RLS/worker provisioning script in this cluster.
+      - name: Verify the isolated cluster has no existing worker role
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          count="$(docker exec "$POSTGRES_SERVICE_ID" psql -U postgres -d example_signal_s2_direct_c1c1c1c1c1 -v ON_ERROR_STOP=1 -Atc "SELECT count(*) FROM pg_roles WHERE rolname='fabric_worker'")"
+          test "$count" = 0 || { echo "::error::Private capture requires a fresh cluster without fabric_worker"; exit 1; }
+
+      - name: Run the private capture production-store RLS suite
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/delivery-source-capture.integration.test.ts \
+            __tests__/harness-triage.integration.test.ts \
+            --reporter=json --outputFile=private-source-capture-results.json
+
+      - name: 'Guard: require all private capture RLS cases with zero skips'
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          const report = JSON.parse(readFileSync("packages/database/private-source-capture-results.json", "utf8"));
+          const assertions = report.testResults?.flatMap((suite) => suite.assertionResults ?? []) ?? [];
+          const minimum = 29;
+          const requiredTitles = [
+            "runs with neither superuser nor RLS bypass authority",
+            "cancels without releasing dispatched spend, but releases known-unsent reservations",
+            "refuses global expiry scans on an unqualified app role",
+            "executes the production store on a non-owner NOSUPERUSER NOBYPASSRLS role",
+            "retains evidence and the old cancellation fence across a fresh capture admission",
+            "purges expired evidence across owners only as the policy-qualified worker",
+            "persists selected history intent under forced owner RLS and rejects a changed retry",
+            "fences historical page dates and resumes exactly the selected window",
+          ];
+          const titles = new Set(assertions.map((test) => test.title));
+          if (report.success !== true || report.numTotalTests < minimum ||
+              report.numPassedTests !== report.numTotalTests || report.numFailedTests !== 0 ||
+              report.numPendingTests !== 0 || report.numTodoTests !== 0 ||
+              assertions.length !== report.numTotalTests || assertions.some((test) => test.status !== "passed") ||
+              requiredTitles.some((title) => !titles.has(title))) {
+            throw new Error(`Private capture RLS must execute at least ${minimum} passing cases, including recovery and worker checks, with zero skips, todos or failures`);
+          }
+          console.log(`Verified ${assertions.length} private capture RLS cases passed with zero skips`);
+          NODE
+
+      - name: Preserve private capture RLS results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: private-source-capture-rls-results
+          path: packages/database/private-source-capture-results.json
+          if-no-files-found: error
+          retention-days: 7
+
   temporal-tests:
     name: Temporal publishing tests (real Postgres)
     needs: [changes, promotion_policy]

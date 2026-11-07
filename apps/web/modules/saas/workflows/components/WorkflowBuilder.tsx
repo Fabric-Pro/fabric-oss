@@ -86,6 +86,7 @@ interface WorkflowBuilderProps {
 		edges: WorkflowEdge[],
 	) => void | Promise<void>;
 	onDirtyChange?: (dirty: boolean) => void;
+	onInspectExecution?: (executionId: string) => void;
 	isLoading?: boolean;
 	workflowName?: string;
 	workflowId?: string;
@@ -148,6 +149,7 @@ function WorkflowBuilderInner({
 	onSave,
 	onRun,
 	onDirtyChange,
+	onInspectExecution,
 	isLoading = false,
 	workflowName = "Untitled Workflow",
 	workflowId = "",
@@ -826,6 +828,8 @@ function WorkflowBuilderInner({
 			/>
 		) : (
 			<WorkflowOverview
+				organizationId={organizationId}
+				onInspectExecution={onInspectExecution}
 				onConfigureSchedule={
 					workflowId && organizationId && onSave
 						? () => void commitGraph("schedule")

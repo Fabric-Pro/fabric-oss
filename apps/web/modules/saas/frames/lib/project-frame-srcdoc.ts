@@ -1,3 +1,12 @@
+import { artifactBrandFontFaceCss } from "@repo/utils/artifact-brand-fonts";
+import {
+	type ArtifactBrandSnapshot,
+	artifactBrandPresentationCss,
+} from "@repo/utils/artifact-brand-snapshot";
+import {
+	effectiveFramePresentation,
+	type FramePresentation,
+} from "@repo/utils/frame-presentation";
 import DOMPurify from "isomorphic-dompurify";
 import { FABRIC_RUNTIME_SCRIPT } from "./fabric-runtime-script";
 import { FRAME_RUNTIME_HOST_READY_TYPE } from "./frame-embed-protocol";
@@ -376,8 +385,23 @@ function shieldScriptBodies(html: string): {
  */
 export function buildProjectFrameSrcdoc(
 	html: string,
-	{ scripts = true }: { scripts?: boolean } = {},
+	{
+		scripts = true,
+		branding,
+		presentation,
+		sourceRunType,
+	}: {
+		scripts?: boolean;
+		branding?: ArtifactBrandSnapshot;
+		presentation?: FramePresentation;
+		sourceRunType?: string;
+	} = {},
 ): string {
+	const isInterface =
+		effectiveFramePresentation({ presentation, sourceRunType }) ===
+		"INTERFACE";
+	// Presentation never enables scripts for report-derived pages.
+	scripts = scripts && sourceRunType !== "REPORT_EXECUTION";
 	const forbiddenTags = scripts
 		? FORBIDDEN_PROJECT_TAGS
 		: [...FORBIDDEN_PROJECT_TAGS, "script"];
@@ -426,17 +450,30 @@ export function buildProjectFrameSrcdoc(
 	const body = sanitised.querySelector("body");
 	const headHtml = head?.innerHTML ?? "";
 	const bodyHtml = body?.innerHTML ?? "";
+	// Keep authored document selectors and inline geometry after sanitization.
+	const attributes = (element: Element | null | undefined) =>
+		isInterface && element
+			? Array.from(element.attributes)
+					.map(
+						({ name, value }) =>
+							` ${name}="${escapeAttribute(value)}"`,
+					)
+					.join("")
+			: "";
 
 	return [
 		"<!doctype html>",
-		"<html>",
+		`<html${attributes(sanitised)}>`,
 		"<head>",
 		`<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(PROJECT_FRAME_CSP)}">`,
 		'<meta charset="utf-8">',
 		scripts ? `<script>${FABRIC_RUNTIME_SCRIPT}</script>` : "",
 		headHtml,
+		branding && !isInterface
+			? `<style>${artifactBrandFontFaceCss(branding)}${artifactBrandPresentationCss(branding)}</style>`
+			: "",
 		"</head>",
-		"<body>",
+		`<body${attributes(body)}>`,
 		bodyHtml,
 		`<script>${RESIZE_SCRIPT}</script>`,
 		"</body>",

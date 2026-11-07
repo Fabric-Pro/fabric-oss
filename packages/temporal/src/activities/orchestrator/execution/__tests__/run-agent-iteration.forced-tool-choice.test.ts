@@ -168,3 +168,61 @@ describe("runAgentIteration — forced frame toolChoice by model", () => {
 		},
 	);
 });
+
+describe("existing Frame design revisions", () => {
+	it.each([
+		"Change this Frame presentation to INTERFACE.",
+		"Make this dashboard match the reference.",
+	])(
+		"leaves the actual model request free to read and revise: %s",
+		async (message) => {
+			stubs.streamTextMock.mockClear();
+			stubs.streamTextMock.mockReturnValue(makeStreamResult());
+			const result = await toolChoiceFor("claude-sonnet-5", {
+				conversationHistory: [
+					{
+						role: "user",
+						content: message,
+						timestamp: "2026-09-27T00:00:00.000Z",
+					},
+				],
+			});
+			expect(result).toBe("auto");
+		},
+	);
+	it("still forces an explicitly new dashboard in the actual request", async () => {
+		stubs.streamTextMock.mockClear();
+		stubs.streamTextMock.mockReturnValue(makeStreamResult());
+		expect(
+			await toolChoiceFor("claude-sonnet-5", {
+				conversationHistory: [
+					{
+						role: "user",
+						content:
+							"Create a new dashboard matching this reference.",
+						timestamp: "2026-09-27T00:00:00.000Z",
+					},
+				],
+			}),
+		).toEqual({ type: "tool", toolName: "fabric_create_frame" });
+	});
+});
+
+describe("explicit Frame creation with presentation settings", () => {
+	it("honors the target type in the actual model request", async () => {
+		stubs.streamTextMock.mockClear();
+		stubs.streamTextMock.mockReturnValue(makeStreamResult());
+		expect(
+			await toolChoiceFor("claude-sonnet-5", {
+				conversationHistory: [
+					{
+						role: "user",
+						content:
+							'Create a new Fabric Frame titled "Example generated interface" as a private project artifact. Use presentation INTERFACE. Copy the supplied source HTML into a single HTML block, preserving its structure, labels, spacing, Georgia typeface, color values and responsive rules. Do not add report typography or cover. No runtime tools, scripts, remote assets, publication or exports. The source is a design reference, not a rendered screenshot; do not claim a verified visual match or working navigation. After creation state the saved Frame ID and "Visual verification: not performed."',
+						timestamp: "2026-09-27T00:00:00.000Z",
+					},
+				],
+			}),
+		).toEqual({ type: "tool", toolName: "fabric_create_frame" });
+	});
+});

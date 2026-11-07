@@ -19,6 +19,7 @@ import {
 import { syncDeploymentTriggers } from "../../../agent-deployments/lib/sync-triggers";
 import { resolvedOrganizationId } from "../../../agents/procedures/conversations/resolved-organization";
 import { assertAgentDefinitionConfigUpdate } from "../../lib/agent-definition";
+import { agentInstructionPatchSchema } from "../../lib/agent-instruction-patch";
 import { prepareAgentProjectConfiguration } from "../../lib/agent-project-configuration";
 import {
 	knowledgeConnectionsSchema,
@@ -29,35 +30,6 @@ import {
 
 const optionalTrimmedText = (field: string, max: number) =>
 	z.string().trim().min(1, `${field} is required`).max(max).optional();
-
-const customInstructionsSchema = z
-	.object({
-		role: z.string().trim().optional(),
-		additionalContext: z.string().trim().optional(),
-		constraints: z.string().trim().optional(),
-	})
-	.passthrough()
-	.refine(
-		(value) =>
-			value.role !== undefined ||
-			value.additionalContext !== undefined ||
-			value.constraints !== undefined,
-		{
-			message: "Instructions are required",
-		},
-	)
-	.refine(
-		(value) =>
-			typeof value.role === "string"
-				? value.role.length > 0
-				: typeof value.additionalContext === "string"
-					? value.additionalContext.length > 0
-					: false,
-		{
-			message: "Instructions are required",
-		},
-	)
-	.optional();
 
 const agentInstanceStatusSchema = z.enum([
 	"DRAFT",
@@ -76,7 +48,7 @@ const updateInputSchema = z
 		description: optionalTrimmedText("Description", 500),
 		heroEmojis: z.array(z.string()).optional(),
 		heroImageUrl: z.string().url().nullable().optional(),
-		customInstructions: customInstructionsSchema,
+		customInstructions: agentInstructionPatchSchema,
 		knowledgeConnections: knowledgeConnectionsSchema,
 		knowledgeResources: knowledgeResourcesSchema,
 		toolConnections: toolConnectionsSchema,

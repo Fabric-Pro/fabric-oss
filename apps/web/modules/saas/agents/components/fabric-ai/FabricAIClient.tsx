@@ -1007,7 +1007,7 @@ export default function FabricAIPage({
 	return (
 		<div
 			className={cn(
-				"fixed inset-y-0 right-0 top-16 left-0 md:top-0",
+				"fixed inset-y-0 right-0 top-16 left-0 flex flex-col md:top-0",
 				// The page pins itself to the viewport, so it has to step
 				// past the rail itself: 232px expanded, 72px collapsed.
 				isFullscreen || sidebarCollapsed
@@ -1035,7 +1035,7 @@ export default function FabricAIPage({
 			</div>
 
 			{/* Content - Full height */}
-			<div className={isFullscreen ? "h-screen" : "h-[calc(100vh-48px)]"}>
+			<div className="min-h-0 flex-1">
 				<AgentErrorBoundary>
 					<FabricChatContent
 						key={JSON.stringify([

@@ -7,7 +7,9 @@
  *   fabric workflows status <id> <execId>      Get execution status
  */
 
+import { readFile } from "node:fs/promises";
 import type {
+	AgentTestChecks,
 	FabricExecution,
 	FabricWorkflow,
 	WorkflowStarter,
@@ -458,6 +460,10 @@ export function buildWorkflowsCommand(): Command {
 			.option("--org <slug>", "Organization context")
 			.requiredOption("--revision <sha256>", "Inspected result revision")
 			.option(
+				"--checks-file <path>",
+				"Versioned JSON checks, including structured assertions; use instead of --require/--forbid",
+			)
+			.option(
 				"--require <phrase>",
 				"Required exact phrase; repeat for more",
 				collect,
@@ -474,12 +480,55 @@ export function buildWorkflowsCommand(): Command {
 		}
 		command.action(
 			async (id: string, executionId: string, nodeId: string, opts) => {
+				let checks: AgentTestChecks = {
+					requiredPhrases: opts.require,
+					forbiddenPhrases: opts.forbid,
+				};
+				try {
+					if (opts.checksFile) {
+						if (opts.require.length || opts.forbid.length) {
+							throw new Error(
+								"Use either --checks-file or phrase flags, not both.",
+							);
+						}
+						const bytes = await readFile(opts.checksFile);
+						if (bytes.byteLength > 128 * 1024) {
+							throw new Error(
+								"Check files must not exceed 128 KiB.",
+							);
+						}
+						const raw: unknown = JSON.parse(bytes.toString("utf8"));
+						if (
+							!raw ||
+							typeof raw !== "object" ||
+							Array.isArray(raw) ||
+							Object.keys(raw).some(
+								(key) =>
+									![
+										"version",
+										"requiredPhrases",
+										"forbiddenPhrases",
+										"jsonSchema",
+										"jsonAssertions",
+										"grounding",
+									].includes(key),
+							)
+						) {
+							throw new Error(
+								"Check files may contain check fields only; execution, actor and organization fields are not accepted.",
+							);
+						}
+						checks = raw as AgentTestChecks;
+					}
+				} catch (error) {
+					printError((error as Error).message, 1);
+					return;
+				}
 				const input = {
 					executionId,
 					nodeId,
 					expectedRevision: opts.revision,
-					requiredPhrases: opts.require,
-					forbiddenPhrases: opts.forbid,
+					...checks,
 				};
 				try {
 					const resource = getClient().workflows;

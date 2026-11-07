@@ -13,6 +13,7 @@
  * it, so that call asks the person first, in both engines.
  */
 
+import { FRAME_PRESENTATIONS } from "@repo/utils/frame-presentation";
 import { defineFabricTools } from "./fabric-tool-definition";
 
 const BLOCKS_SCHEMA = {
@@ -35,6 +36,13 @@ const BLOCKS_SCHEMA = {
 const SURFACE_SCHEMA = {
 	type: "string",
 	enum: ["artifact", "workspace"],
+} as const;
+
+const PRESENTATION_SCHEMA = {
+	type: "string",
+	enum: [...FRAME_PRESENTATIONS],
+	description:
+		"DOCUMENT applies report typography and a saved brand cover. INTERFACE preserves authored layout; it does not grant script or tool access. Omitted on edits preserves the saved choice.",
 } as const;
 
 const RUNTIME_TOOLS_SCHEMA = {
@@ -72,6 +80,569 @@ export type FrameShareScopeName = (typeof FRAME_SHARE_SCOPES)[number];
 
 export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
+		name: "fabric_create_frame_draft",
+		description:
+			"Create a private page with a stable requestId. No tools or external sharing are granted.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				title: { type: "string" },
+				description: { type: "string" },
+				kind: { type: "string", enum: ["frame", "slideshow"] },
+				presentation: {
+					type: "string",
+					enum: ["DOCUMENT", "INTERFACE"],
+				},
+				blocks: {
+					type: "array",
+					minItems: 1,
+					maxItems: 100,
+					items: {
+						type: "object",
+						properties: {
+							id: { type: "string" },
+							type: {
+								type: "string",
+								enum: ["html", "json", "mermaid", "markdown"],
+							},
+							title: { type: "string" },
+							content: { type: "string" },
+							language: { type: "string" },
+						},
+						required: ["id", "type", "content"],
+						additionalProperties: false,
+					},
+				},
+				theme: {
+					type: "object",
+					properties: {
+						mode: {
+							type: "string",
+							enum: ["light", "dark", "system"],
+						},
+						accentColor: { type: "string" },
+					},
+					additionalProperties: false,
+				},
+				requestId: { type: "string" },
+				projectId: { type: "string" },
+				conversationId: { type: "string" },
+			},
+			required: ["title", "blocks", "requestId"],
+			additionalProperties: false,
+		},
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+		},
+		scope: "frames:write",
+	},
+	{
+		name: "fabric_validate_frame_document",
+		description:
+			"Check page structure and JSON syntax; does not execute code or verify facts.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				document: {
+					type: "object",
+					properties: {
+						title: { type: "string" },
+						description: { type: "string" },
+						kind: { type: "string", enum: ["frame", "slideshow"] },
+						presentation: {
+							type: "string",
+							enum: ["DOCUMENT", "INTERFACE"],
+						},
+						blocks: {
+							type: "array",
+							minItems: 1,
+							maxItems: 100,
+							items: {
+								type: "object",
+								properties: {
+									id: { type: "string" },
+									type: {
+										type: "string",
+										enum: [
+											"html",
+											"json",
+											"mermaid",
+											"markdown",
+										],
+									},
+									title: { type: "string" },
+									content: { type: "string" },
+									language: { type: "string" },
+								},
+								required: ["id", "type", "content"],
+								additionalProperties: false,
+							},
+						},
+						theme: {
+							type: "object",
+							properties: {
+								mode: {
+									type: "string",
+									enum: ["light", "dark", "system"],
+								},
+								accentColor: { type: "string" },
+							},
+							additionalProperties: false,
+						},
+					},
+					required: ["title", "blocks"],
+					additionalProperties: false,
+				},
+			},
+			required: ["document"],
+			additionalProperties: false,
+		},
+		annotations: { readOnlyHint: true },
+		scope: "frames:read",
+	},
+	{
+		name: "fabric_list_frame_templates",
+		description: "List reusable page templates in the organization.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				category: { type: "string" },
+				includeSystem: { type: "boolean" },
+			},
+			required: [],
+			additionalProperties: false,
+		},
+		annotations: { readOnlyHint: true },
+		scope: "frames:read",
+	},
+	{
+		name: "fabric_get_frame_template",
+		description: "Read a template and its declared typed inputs.",
+		inputSchema: {
+			type: "object",
+			properties: { templateId: { type: "string" } },
+			required: ["templateId"],
+			additionalProperties: false,
+		},
+		annotations: { readOnlyHint: true },
+		scope: "frames:read",
+	},
+	{
+		name: "fabric_create_frame_template",
+		description:
+			"Create a reusable organization-wide template from an authored definition. Do not copy private/project content or branding into an organization template.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				requestId: { type: "string" },
+				name: { type: "string" },
+				description: { type: "string" },
+				category: { type: "string" },
+				content: {
+					type: "object",
+					properties: {
+						title: { type: "string" },
+						description: { type: "string" },
+						kind: { type: "string", enum: ["frame", "slideshow"] },
+						presentation: {
+							type: "string",
+							enum: ["DOCUMENT", "INTERFACE"],
+						},
+						blocks: {
+							type: "array",
+							minItems: 1,
+							maxItems: 100,
+							items: {
+								type: "object",
+								properties: {
+									id: { type: "string" },
+									type: {
+										type: "string",
+										enum: [
+											"html",
+											"json",
+											"mermaid",
+											"markdown",
+										],
+									},
+									title: { type: "string" },
+									content: { type: "string" },
+									language: { type: "string" },
+								},
+								required: ["id", "type", "content"],
+								additionalProperties: false,
+							},
+						},
+						theme: {
+							type: "object",
+							properties: {
+								mode: {
+									type: "string",
+									enum: ["light", "dark", "system"],
+								},
+								accentColor: { type: "string" },
+							},
+							additionalProperties: false,
+						},
+					},
+					required: ["title", "blocks"],
+					additionalProperties: false,
+				},
+				variables: {
+					type: "object",
+					additionalProperties: {
+						type: "object",
+						properties: {
+							type: {
+								type: "string",
+								enum: ["string", "number", "boolean", "select"],
+							},
+							label: { type: "string" },
+							default: { type: ["string", "number", "boolean"] },
+							required: { type: "boolean" },
+							options: {
+								type: "array",
+								items: { type: "string" },
+							},
+						},
+						required: ["type", "label"],
+						additionalProperties: false,
+					},
+				},
+				confirmOrganizationAudience: { type: "boolean", const: true },
+			},
+			required: [
+				"requestId",
+				"name",
+				"category",
+				"content",
+				"confirmOrganizationAudience",
+			],
+			additionalProperties: false,
+		},
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+		},
+		scope: "frames:write",
+		confirm: "always",
+	},
+	{
+		name: "fabric_create_frame_from_template",
+		description:
+			"Create a private page from a template; values support text, numbers and booleans.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				requestId: { type: "string" },
+				templateId: { type: "string" },
+				variables: {
+					type: "object",
+					additionalProperties: {
+						type: ["string", "number", "boolean"],
+					},
+				},
+				title: { type: "string" },
+				description: { type: "string" },
+				projectId: { type: "string" },
+				conversationId: { type: "string" },
+			},
+			required: ["requestId", "templateId"],
+			additionalProperties: false,
+		},
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+		},
+		scope: "frames:write",
+	},
+	{
+		name: "fabric_propose_frame_change",
+		description:
+			"Propose content changes to a saved page using its current updatedAt and a stable requestId. This does not change the saved page. Show the review URL; the person reviews original, proposed and preview before applying. Prefer this for conversational edits.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				frameId: { type: "string" },
+				requestId: { type: "string" },
+				expectedUpdatedAt: { type: "string" },
+				edit: {
+					type: "object",
+					properties: {
+						title: { type: "string" },
+						description: { type: "string" },
+						presentation: {
+							type: "string",
+							enum: ["DOCUMENT", "INTERFACE"],
+						},
+						blocks: {
+							type: "array",
+							minItems: 1,
+							maxItems: 100,
+							items: {
+								type: "object",
+								properties: {
+									id: { type: "string" },
+									type: {
+										type: "string",
+										enum: [
+											"html",
+											"json",
+											"mermaid",
+											"markdown",
+										],
+									},
+									title: { type: "string" },
+									content: { type: "string" },
+									language: { type: "string" },
+								},
+								required: ["id", "type", "content"],
+								additionalProperties: false,
+							},
+						},
+						theme: {
+							type: "object",
+							properties: {
+								mode: {
+									type: "string",
+									enum: ["light", "dark", "system"],
+								},
+								accentColor: { type: "string" },
+							},
+							additionalProperties: false,
+						},
+					},
+					additionalProperties: false,
+				},
+			},
+			required: ["frameId", "requestId", "expectedUpdatedAt", "edit"],
+			additionalProperties: false,
+		},
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+		},
+		scope: "frames:write",
+	},
+	{
+		name: "fabric_list_frame_changes",
+		description: "List bounded change reviews for a page.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				frameId: { type: "string" },
+				limit: { type: "integer", minimum: 1, maximum: 50 },
+				offset: { type: "integer", minimum: 0 },
+			},
+			required: ["frameId"],
+			additionalProperties: false,
+		},
+		annotations: { readOnlyHint: true },
+		scope: "frames:read",
+	},
+	{
+		name: "fabric_get_frame_change",
+		description:
+			"Read the complete original and proposed page change. Conflict means the saved page has changed; never blindly reapply.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				frameId: { type: "string" },
+				proposalId: { type: "string" },
+			},
+			required: ["frameId", "proposalId"],
+			additionalProperties: false,
+		},
+		annotations: { readOnlyHint: true },
+		scope: "frames:read",
+	},
+	{
+		name: "fabric_apply_frame_change",
+		description:
+			"Apply the exact proposal hash the person reviewed. Asks confirmation; a conflict preserves the proposal and never overwrites newer work.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				frameId: { type: "string" },
+				proposalId: { type: "string" },
+				expectedProposalHash: { type: "string" },
+			},
+			required: ["frameId", "proposalId", "expectedProposalHash"],
+			additionalProperties: false,
+		},
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+		},
+		scope: "frames:write",
+		confirm: "always",
+	},
+	{
+		name: "fabric_dismiss_frame_change",
+		description:
+			"Dismiss a pending page change; it cannot subsequently be applied.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				frameId: { type: "string" },
+				proposalId: { type: "string" },
+			},
+			required: ["frameId", "proposalId"],
+			additionalProperties: false,
+		},
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+		},
+		scope: "frames:write",
+		confirm: "always",
+	},
+	{
+		name: "fabric_get_frame_review",
+		description: "Read draft, approved and published revision status.",
+		inputSchema: {
+			type: "object",
+			properties: { frameId: { type: "string" } },
+			required: ["frameId"],
+			additionalProperties: false,
+		},
+		annotations: { readOnlyHint: true },
+		scope: "frames:read",
+	},
+	{
+		name: "fabric_approve_frame_revision",
+		description:
+			"Approve the exact saved draft hash after review. Approval never makes the page public.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				frameId: { type: "string" },
+				expectedUpdatedAt: { type: "string" },
+				expectedContentHash: { type: "string" },
+			},
+			required: ["frameId", "expectedUpdatedAt", "expectedContentHash"],
+			additionalProperties: false,
+		},
+		annotations: {
+			readOnlyHint: false,
+			destructiveHint: false,
+			idempotentHint: true,
+		},
+		scope: "frames:write",
+		confirm: "always",
+	},
+	{
+		name: "fabric_get_frame_branding",
+		description:
+			"Review a Frame's saved company/client brand choices and current formatting snapshot.",
+		inputSchema: {
+			type: "object",
+			properties: { frameId: { type: "string" } },
+			required: ["frameId"],
+		},
+		annotations: READ,
+		scope: "frames:read",
+	},
+	{
+		name: "fabric_apply_frame_branding",
+		description:
+			"Apply reviewed saved branding to a private Frame revision. Read its branding choices first. No private logos or uploaded fonts are copied.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				frameId: { type: "string" },
+				expectedUpdatedAt: { type: "string", format: "date-time" },
+				source: { type: "string", enum: ["COMPANY", "CLIENT"] },
+				expectedBrandVersion: { type: "integer", minimum: 0 },
+			},
+			required: [
+				"frameId",
+				"expectedUpdatedAt",
+				"source",
+				"expectedBrandVersion",
+			],
+		},
+		annotations: WRITE,
+		scope: "frames:write",
+		confirm: "always",
+	},
+	{
+		name: "fabric_get_report_branding",
+		description:
+			"Review saved company/client brand choices before selecting a report's branding source and saved version.",
+		inputSchema: {
+			type: "object",
+			properties: { projectId: { type: "string" } },
+		},
+		annotations: READ,
+		scope: "reports:read",
+	},
+
+	{
+		name: "fabric_get_report_instance_branding",
+		description:
+			"Read the saved report's exact audience, current branding and instance version/timestamp before changing branding.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: { instanceId: { type: "string", minLength: 1 } },
+			required: ["instanceId"],
+		},
+		annotations: READ,
+		scope: "reports:read",
+	},
+	{
+		name: "fabric_apply_report_branding",
+		description:
+			"Save reviewed branding on an existing configured report only. Get its current instance/brand versions first. branding:null removes branding. Keeps audience, period, schedule and generator settings unchanged. Does not run or publish the report.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				instanceId: { type: "string", minLength: 1 },
+				expectedInstanceVersion: { type: "integer", minimum: 1 },
+				expectedUpdatedAt: { type: "string", format: "date-time" },
+				branding: {
+					anyOf: [
+						{ type: "null" },
+						{
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								source: {
+									type: "string",
+									enum: ["COMPANY", "CLIENT"],
+								},
+								expectedBrandVersion: {
+									type: "integer",
+									minimum: 0,
+								},
+							},
+							required: ["source", "expectedBrandVersion"],
+						},
+					],
+				},
+			},
+			required: [
+				"instanceId",
+				"expectedInstanceVersion",
+				"expectedUpdatedAt",
+				"branding",
+			],
+		},
+		annotations: WRITE,
+		scope: "reports:write",
+		confirm: "always",
+	},
+
+	{
 		name: "fabric_create_frame",
 		description:
 			"Creates html/json/mermaid/markdown blocks only when asked (chat renders ```mermaid). surface=artifact: current/projectId; workspace: organization Pages. Html: inline <style>, light/dark, tiles/cards/tables/SVG; no network. Scripts act as viewer: window.fabric.call(tool, args)->Promise, fabric.openAgent(prompt), fabric.navigate('/app/...'). Discover fabric_list_page_tools; declare runtimeTools. PRIVATE: owner-only outside projects, linked project members retain access. Artifact/Pages grant project/org access; shareOnCreate adds an allowed public link.",
@@ -85,6 +656,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 				},
 				blocks: { ...BLOCKS_SCHEMA, description: "Content blocks" },
 				surface: SURFACE_SCHEMA,
+				presentation: PRESENTATION_SCHEMA,
 				projectId: { type: "string" },
 				runtimeTools: RUNTIME_TOOLS_SCHEMA,
 				sharedWithOrganization: { type: "boolean", default: true },
@@ -118,6 +690,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 				description: { type: "string" },
 				blocks: { ...BLOCKS_SCHEMA, description: "Replacement blocks" },
 				surface: SURFACE_SCHEMA,
+				presentation: PRESENTATION_SCHEMA,
 				runtimeTools: RUNTIME_TOOLS_SCHEMA,
 			},
 			required: ["expectedUpdatedAt"],
@@ -342,3 +915,23 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 
 export type FabricFrameToolName =
 	(typeof FABRIC_FRAME_TOOL_DEFINITIONS)[number]["name"];
+
+/** Runtime reviews stay on a signed grant's project; organization authoring/catalog operations do not. */
+export const FRAME_REVIEW_TOOL_NAMES: ReadonlySet<string> = new Set([
+	"fabric_propose_frame_change",
+	"fabric_list_frame_changes",
+	"fabric_get_frame_change",
+	"fabric_apply_frame_change",
+	"fabric_dismiss_frame_change",
+	"fabric_get_frame_review",
+	"fabric_approve_frame_revision",
+]);
+export const FRAME_ORGANIZATION_AUTHORING_TOOL_NAMES: ReadonlySet<string> =
+	new Set([
+		"fabric_create_frame_draft",
+		"fabric_validate_frame_document",
+		"fabric_list_frame_templates",
+		"fabric_get_frame_template",
+		"fabric_create_frame_template",
+		"fabric_create_frame_from_template",
+	]);

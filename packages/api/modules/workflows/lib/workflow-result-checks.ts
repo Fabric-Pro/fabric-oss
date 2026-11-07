@@ -9,6 +9,10 @@ import {
 	writeWorkflowRunState,
 } from "@repo/database";
 import { evaluateContextQuality } from "@repo/rag/lib/context-quality";
+import {
+	gradeResultQuality,
+	type ResultQualityChecks,
+} from "@repo/utils/result-quality";
 import { ZodError } from "zod";
 import {
 	applyWorkflowCheckSchema,
@@ -172,12 +176,51 @@ async function readRecordedResult(
 		retrievalEvidence: "not-evaluated" as const,
 	};
 }
-function score(
-	answer: string,
-	expectations: { requiredPhrases: string[]; forbiddenPhrases: string[] },
-) {
+function score(answer: string, expectations: ResultQualityChecks) {
 	const requiredPhrases = [...new Set(expectations.requiredPhrases)];
 	const forbiddenPhrases = [...new Set(expectations.forbiddenPhrases)];
+	const quality = gradeResultQuality(answer, {
+		requiredPhrases,
+		forbiddenPhrases,
+		...(expectations.version !== undefined
+			? { version: expectations.version }
+			: {}),
+		...(expectations.jsonSchema
+			? { jsonSchema: expectations.jsonSchema }
+			: {}),
+		...(expectations.jsonAssertions
+			? { jsonAssertions: expectations.jsonAssertions }
+			: {}),
+		...(expectations.grounding
+			? { grounding: expectations.grounding }
+			: {}),
+	});
+	const expectationResults = [
+		...requiredPhrases.map((phrase) => ({
+			kind: "required" as const,
+			phrase,
+			passed: answer.includes(phrase),
+		})),
+		...forbiddenPhrases.map((phrase) => ({
+			kind: "forbidden" as const,
+			phrase,
+			passed: !answer.includes(phrase),
+		})),
+	];
+	if (expectations.version === 2)
+		return {
+			report: {
+				...quality,
+				status:
+					quality.status === "NOT_ASSESSED"
+						? ("not-assessed" as const)
+						: quality.status === "PASSED"
+							? ("passed" as const)
+							: ("failed" as const),
+			},
+			quality,
+			expectations: expectationResults,
+		};
 	let report: ReturnType<typeof evaluateContextQuality>;
 	try {
 		report = evaluateContextQuality({
@@ -206,21 +249,7 @@ function score(
 		throw error;
 	}
 
-	return {
-		report,
-		expectations: [
-			...requiredPhrases.map((phrase) => ({
-				kind: "required" as const,
-				phrase,
-				passed: answer.includes(phrase),
-			})),
-			...forbiddenPhrases.map((phrase) => ({
-				kind: "forbidden" as const,
-				phrase,
-				passed: !answer.includes(phrase),
-			})),
-		],
-	};
+	return { report, expectations: expectationResults };
 }
 export async function previewWorkflowCheck(actor: WorkflowActor, raw: unknown) {
 	const input = previewWorkflowCheckSchema.parse(raw);
@@ -351,6 +380,10 @@ function definitionHash(
 		| "baselineRevision"
 		| "requiredPhrases"
 		| "forbiddenPhrases"
+		| "version"
+		| "jsonSchema"
+		| "jsonAssertions"
+		| "grounding"
 	>,
 ) {
 	return digest({
@@ -361,6 +394,12 @@ function definitionHash(
 		baselineRevision: check.baselineRevision,
 		requiredPhrases: check.requiredPhrases,
 		forbiddenPhrases: check.forbiddenPhrases,
+		...(check.version !== undefined ? { version: check.version } : {}),
+		...(check.jsonSchema ? { jsonSchema: check.jsonSchema } : {}),
+		...(check.jsonAssertions
+			? { jsonAssertions: check.jsonAssertions }
+			: {}),
+		...(check.grounding ? { grounding: check.grounding } : {}),
 	});
 }
 export async function saveWorkflowCheck(actor: WorkflowActor, raw: unknown) {
@@ -372,6 +411,12 @@ export async function saveWorkflowCheck(actor: WorkflowActor, raw: unknown) {
 		expectedRevision: input.expectedRevision,
 		requiredPhrases: input.requiredPhrases,
 		forbiddenPhrases: input.forbiddenPhrases,
+		...(input.version !== undefined ? { version: input.version } : {}),
+		...(input.jsonSchema ? { jsonSchema: input.jsonSchema } : {}),
+		...(input.jsonAssertions
+			? { jsonAssertions: input.jsonAssertions }
+			: {}),
+		...(input.grounding ? { grounding: input.grounding } : {}),
 	});
 	if (evaluated.report.status !== "passed") {
 		throw new WorkflowCommandError(
@@ -387,6 +432,12 @@ export async function saveWorkflowCheck(actor: WorkflowActor, raw: unknown) {
 		baselineRevision: input.expectedRevision,
 		requiredPhrases: [...new Set(input.requiredPhrases)],
 		forbiddenPhrases: [...new Set(input.forbiddenPhrases)],
+		...(input.version !== undefined ? { version: input.version } : {}),
+		...(input.jsonSchema ? { jsonSchema: input.jsonSchema } : {}),
+		...(input.jsonAssertions
+			? { jsonAssertions: input.jsonAssertions }
+			: {}),
+		...(input.grounding ? { grounding: input.grounding } : {}),
 	};
 	const fingerprint = definitionHash(content);
 	return {

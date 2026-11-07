@@ -6,6 +6,7 @@ import { FABRIC_FRAME_VERSION_TOOL_DEFINITIONS } from "../fabric-frame-version-t
 import {
 	FABRIC_CHAT_TOOL_DEFINITIONS,
 	FABRIC_GATEWAY_TOOL_DEFINITIONS,
+	FABRIC_IMPLEMENTATION_TOOL_DEFINITIONS,
 	gatewayCallNeedsConfirmation,
 	gatewayToolAccess,
 	isFabricChatTool,
@@ -130,6 +131,13 @@ describe("Fabric's tool definitions", () => {
 		expect(
 			GATEWAY_TOOLS.filter(
 				(tool) =>
+					!new Set([
+						"orgs:write",
+						"agents:read",
+						"agents:execute",
+						"reports:read",
+						"reports:write",
+					]).has(tool.scope) &&
 					!/^(workflows|frames|projects|instructions|mcp|workspaces):(read|write|run)$/.test(
 						tool.scope,
 					),
@@ -160,7 +168,13 @@ describe("Fabric's tool definitions", () => {
 		}
 		expect(chat).toContain("fabric_page_data_set");
 		expect(chat).toContain("fabric_get_page_viewer");
-		expect(chat).toHaveLength(GATEWAY_TOOLS.length - pageOnly.length);
+		const external = FABRIC_IMPLEMENTATION_TOOL_DEFINITIONS.map(
+			(t) => t.name,
+		);
+		for (const name of external) expect(chat).not.toContain(name);
+		expect(chat).toHaveLength(
+			GATEWAY_TOOLS.length - pageOnly.length - external.length,
+		);
 	});
 
 	it("ask for every call of every workflow write", () => {
@@ -185,6 +199,12 @@ describe("Fabric's tool definitions", () => {
 		const asking = FRAME_TOOLS.filter((tool) => tool.confirm !== undefined);
 
 		expect(asking.map((tool) => [tool.name, tool.confirm])).toEqual([
+			["fabric_create_frame_template", "always"],
+			["fabric_apply_frame_change", "always"],
+			["fabric_dismiss_frame_change", "always"],
+			["fabric_approve_frame_revision", "always"],
+			["fabric_apply_frame_branding", "always"],
+			["fabric_apply_report_branding", "always"],
 			["fabric_create_frame", { whenArgumentPresent: "runtimeTools" }],
 			["fabric_update_frame", { whenArgumentPresent: "runtimeTools" }],
 			[

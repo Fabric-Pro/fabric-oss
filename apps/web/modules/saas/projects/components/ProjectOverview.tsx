@@ -35,6 +35,7 @@ import {
 	PROJECT_READINESS_ACTION_EVENT,
 	type ProjectReadinessActionEventDetail,
 } from "../lib/readiness-actions";
+import { ProjectDeliverySnapshot } from "./ProjectDeliverySnapshot";
 import {
 	type EditSection,
 	ProjectSectionEditDialog,
@@ -339,6 +340,10 @@ export function ProjectOverview({
 
 	return (
 		<div className="space-y-6">
+			<ProjectDeliverySnapshot
+				projectId={projectId}
+				onNavigateToTab={onNavigateToTab}
+			/>
 			{/* Status band: what the project has to work with, in one surface,
 			    with the pipeline beside it. Coverage, the four counts and the
 			    document list used to sit in a hero, an aside, four icon cards

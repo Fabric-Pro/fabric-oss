@@ -12,6 +12,10 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const configMock = vi.hoisted(() => vi.fn());
+vi.mock("../../lib/load-instance-agent-config", () => ({
+	loadInstanceAgentConfig: configMock,
+}));
 const toastMock = vi.fn();
 vi.mock("../../lib/cancel-telemetry", () => ({
 	emitCancelEvent: vi.fn(),
@@ -93,6 +97,7 @@ let respond: (request: RuntimeRequest) => Response = () => sse([]);
 
 beforeEach(() => {
 	requests.length = 0;
+	configMock.mockReset().mockResolvedValue(null);
 	toastMock.mockReset();
 	vi.mocked(emitCancelEvent).mockClear();
 	respond = () => sse([]);
@@ -1289,5 +1294,53 @@ describe("useDirectRuntimeStream — workflow confirmation", () => {
 		});
 		expect(result.current.workflow.confirmation?.status).toBe("declined");
 		expect(executeBodies).toHaveLength(1);
+	});
+});
+
+describe("Frame context while saved-agent configuration is pending", () => {
+	it("resolves saved instructions at send time and keeps reference metadata out of the persona and displayed user text", async () => {
+		let resolveConfig: (config: unknown) => void = () => {};
+		configMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					resolveConfig = resolve;
+				}),
+		);
+		respond = ({ body }) =>
+			sse([
+				started(body.threadId, body.runId),
+				finished(body.threadId, body.runId),
+			]);
+		const { result } = renderRuntime({
+			instanceId: "instance-example",
+			systemPrompt: undefined,
+		});
+		const context =
+			'FABRIC VIEW CONTEXT: {"frameId":"frame-example","updatedAt":"2026-10-14T09:00:00.000Z"}';
+		let sent: Promise<unknown> | undefined;
+		act(() => {
+			sent = result.current.sendMessage("Match the design.", [], {
+				inlineAttachmentContexts: [context],
+			});
+		});
+		await waitFor(() => expect(configMock).toHaveBeenCalled());
+		expect(requests).toHaveLength(0);
+		await act(async () => {
+			resolveConfig({
+				instructions: "Saved agent instructions.",
+				enabledFabricToolIds: [],
+				enabledMcpConfigIds: [],
+				hasMcpConfiguration: false,
+			});
+			await sent;
+		});
+		const run = requests.find((request) => request.url === RUN_URL);
+		expect(run?.body.forwardedProps?.systemPrompt).toBe(
+			"Saved agent instructions.",
+		);
+		expect(run?.body.forwardedProps?.inlineAttachmentContexts).toEqual([
+			context,
+		]);
+		expect(run?.body.messages.at(-1)?.content).toBe("Match the design.");
 	});
 });

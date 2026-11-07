@@ -2,6 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
 	list: vi.fn(),
+	proposeChange: vi.fn(),
+	applyChange: vi.fn(),
+	listChanges: vi.fn(),
+	review: vi.fn(),
+	create: vi.fn(),
+	createTemplate: vi.fn(),
+	getTemplate: vi.fn(),
+	listTemplates: vi.fn(),
+	createFromTemplate: vi.fn(),
+	validateDocument: vi.fn(),
+	approveRevision: vi.fn(),
+	dismissChange: vi.fn(),
+	getChange: vi.fn(),
 	history: vi.fn(),
 	update: vi.fn(),
 	restore: vi.fn(),
@@ -23,6 +36,19 @@ vi.mock("../src/lib/client.js", () => ({
 	getClient: () => ({
 		frames: {
 			list: m.list,
+			proposeChange: m.proposeChange,
+			applyChange: m.applyChange,
+			listChanges: m.listChanges,
+			review: m.review,
+			create: m.create,
+			createTemplate: m.createTemplate,
+			getTemplate: m.getTemplate,
+			listTemplates: m.listTemplates,
+			createFromTemplate: m.createFromTemplate,
+			validateDocument: m.validateDocument,
+			approveRevision: m.approveRevision,
+			dismissChange: m.dismissChange,
+			getChange: m.getChange,
 			history: m.history,
 			update: m.update,
 			restore: m.restore,
@@ -91,6 +117,7 @@ it("forwards exact reviewed revisions and stable restore targets", async () => {
 	const edit = {
 		expectedUpdatedAt: "2026-11-01T00:00:00Z",
 		title: "Example revised",
+		presentation: "INTERFACE",
 	};
 	m.read.mockResolvedValue(JSON.stringify(edit));
 	await run([
@@ -190,4 +217,43 @@ it("requires deliberate revoke modes and forwards explicit sharing JSON", async 
 			expectedUpdatedAt,
 		]),
 	).rejects.toThrow("Choose public-link");
+});
+
+it("forwards an explicit reviewed hash without reading or applying another proposal", async () => {
+	m.applyChange.mockResolvedValue({ replayed: false });
+	await run([
+		"changes",
+		"apply",
+		"example/frame",
+		"example/change",
+		"--expected-proposal-hash",
+		"a".repeat(64),
+		"--org",
+		"example-org",
+	]);
+	expect(m.applyChange).toHaveBeenCalledWith(
+		"example/frame",
+		{ proposalId: "example/change", expectedProposalHash: "a".repeat(64) },
+		{ org: "example-org" },
+	);
+	expect(m.proposeChange).not.toHaveBeenCalled();
+});
+it("preserves a stable creation request and typed template variables from a JSON file", async () => {
+	const body = {
+		requestId: "11111111-1111-4111-8111-111111111111",
+		templateId: "example-template",
+		variables: { enabled: false, count: 0 },
+	};
+	m.read.mockResolvedValue(JSON.stringify(body));
+	m.createFromTemplate.mockResolvedValue({ id: "example-frame" });
+	await run([
+		"from-template",
+		"--file",
+		"example-request.json",
+		"--org",
+		"example-org",
+	]);
+	expect(m.createFromTemplate).toHaveBeenCalledWith(body, {
+		org: "example-org",
+	});
 });

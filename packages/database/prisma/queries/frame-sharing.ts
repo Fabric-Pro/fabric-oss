@@ -1,6 +1,7 @@
 import { db } from "../client";
 import type { FrameShareScope } from "../generated/client";
 import { publicSharingRefusal, shareFrame } from "./frame-share";
+import { canReadReportDerivedFrame } from "./report-frame-access";
 
 // Re-export the enum type for use in other packages
 export type { FrameShareScope };
@@ -175,9 +176,18 @@ export async function checkFrameAccess(input: CheckFrameAccessInput): Promise<{
 		include: { sharingGrants: true },
 	});
 
-	if (!frame || !["FRAME", "SLIDESHOW"].includes(frame.fileType)) {
+	if (
+		!frame ||
+		!["FRAME", "SLIDESHOW"].includes(frame.fileType) ||
+		!(await canReadReportDerivedFrame(frame, input))
+	) {
 		return { hasAccess: false };
 	}
+
+	// A report's current and admitted audience is authoritative; anonymous
+	// callers already failed the report predicate above.
+	if (frame.sourceRunType === "REPORT_EXECUTION")
+		return { hasAccess: true, scope: frame.shareScope };
 
 	// Owner always has access
 	if (input.userId && frame.userId === input.userId) {

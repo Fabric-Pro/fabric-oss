@@ -29,6 +29,7 @@ export interface ReportInstanceScope {
 export async function createReportAccessChecker(
 	caller: ReportCaller | undefined,
 	write = false,
+	client: Prisma.TransactionClient = db,
 ): Promise<
 	(instance: ReportInstanceScope, parameters?: unknown) => Promise<boolean>
 > {
@@ -36,7 +37,7 @@ export async function createReportAccessChecker(
 		return async () => false;
 	}
 	const organizationId = caller.organizationId;
-	const member = await db.member.findUnique({
+	const member = await client.member.findUnique({
 		where: {
 			organizationId_userId: { organizationId, userId: caller.userId },
 		},
@@ -69,7 +70,7 @@ export async function createReportAccessChecker(
 						REPORT_EXECUTION_SNAPSHOT_KEY
 					],
 				);
-				await assertPinnedSkillAccess(caller, snapshot.skills);
+				await assertPinnedSkillAccess(caller, snapshot.skills, client);
 			}
 			for (const projectId of readReportProjectBindings(
 				instance.fabricConfig,
@@ -78,7 +79,7 @@ export async function createReportAccessChecker(
 				let allowed = projects.get(projectId);
 				if (!allowed) {
 					allowed = (async () => {
-						const project = await db.project.findFirst({
+						const project = await client.project.findFirst({
 							where: {
 								id: projectId,
 								organizationId,
@@ -89,11 +90,16 @@ export async function createReportAccessChecker(
 						return (
 							!!project &&
 							(write
-								? canEditProject(projectId, caller.userId)
+								? canEditProject(
+										projectId,
+										caller.userId,
+										client,
+									)
 								: hasProjectAccess(
 										projectId,
 										caller.userId,
 										organizationId,
+										client,
 									))
 						);
 					})();
@@ -115,6 +121,7 @@ export async function canAccessReportInstance(
 	caller: ReportCaller | undefined,
 	executionParameters?: unknown,
 	write = false,
+	client: Prisma.TransactionClient = db,
 ): Promise<boolean> {
 	if (
 		!caller?.organizationId ||
@@ -122,7 +129,7 @@ export async function canAccessReportInstance(
 	) {
 		return false;
 	}
-	return (await createReportAccessChecker(caller, write))(
+	return (await createReportAccessChecker(caller, write, client))(
 		instance,
 		executionParameters,
 	);

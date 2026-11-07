@@ -7,6 +7,7 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./types": "./src/types.ts",
+		"./delivery-source-capture-limits": "./src/delivery-signals/capture-limits.ts",
 		"./slack": "./src/slack/index.ts"
 	},
 	"scripts": {

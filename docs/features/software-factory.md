@@ -5,8 +5,8 @@ evidenced software delivery.
 
 - **Audience**: Product, design, engineering, platform operators, and pilot owners
 - **Owner**: Product and Platform engineering
-- **Status**: In progress; default agent authoring, portable definitions, bounded Workspace reads and report evidence contracts are implemented. Runtime and pilot qualification remain incremental.
-- **Date**: 2026-11-04
+- **Status**: In progress; existing context, agent, report and reviewed-artifact foundations are implemented incrementally. The signal-driven delivery sequence below remains subject to independent plan agreement and per-slice runtime qualification.
+- **Date**: 2026-11-06
 
 The active [Genie delivery experience and quality completion plan](genie-delivery-experience.md)
 sequences automatic workflow checks, connector certification, richer evaluations, consistent
@@ -1635,3 +1635,948 @@ or that they are available in every Harness edition/rollout.
 Repository evidence for the current baseline is in the linked canonical feature documents and
 source/tests. The current product boundary above describes implemented contracts; the remaining
 roadmap still requires its acceptance evidence. This document does not authorize deployment or commits.
+
+## Signal-driven delivery implementation
+
+This active implementation sequence extends the existing delivery contracts above. Its product goal
+is to turn selected enterprise signals into attributable, validated software outcomes with deliberate
+human control. It is implemented incrementally; passing one slice never certifies later slices or all
+provider actions. Workstreams remain inside Projects, and an organization remains the only tenant.
+
+### S0 — Inventory and review agreement
+
+Freeze the implementation contract and review it independently with Droid GPT 6.1 Sol high,
+Claude high through the canonical wrapper, and Grok 4.7 high. All three must return no unresolved
+substantive plan findings before implementation starts. Resolve concrete disagreements in the plan
+and seek agreement on the changed contract. A failed or unavailable reviewer is not agreement.
+Review findings remain advisory; this sequencing requirement comes from the explicit task request.
+
+The repository already supplies:
+
+- Slack event-driven monitoring, Teams channel/chat polling, and shared `PendingBacklogProposal`
+  review/application receipts (`packages/temporal/src/workflows/{slack-channel-monitor,teams-channel-monitor,teams-chat-monitor}.ts`,
+  `packages/database/prisma/queries/projects/pending-backlog-proposals.ts`). These are extracted
+  candidate changes, not a lossless raw event stream. Existing filters, queue limits and legacy
+  missing provenance must remain explicit.
+- Jira, Azure DevOps and Fizzy PM read/sync through the selected MCP/server/container bindings,
+  `pm-integration/pm-state-poll.ts`, `fetch-pm-ticket.ts` and `UserStory` external provenance.
+  Synced work items are accepted project records, not proof of a new-event capture or current
+  remote connectivity. `StorySource` already distinguishes those providers.
+- Existing incident and CI feedback paths: `packages/temporal/src/workflows/recurring-error-scan.ts`,
+  `activities/recurring-errors/{fingerprint,incident-clusters,scan-project}.ts`, `RecurringErrorSignature`,
+  `UserStory.bugFingerprint` and `originTestCaseId`. Extend their deduplication, proposal and test-case
+  attribution rather than creating a second incident-to-bug pipeline.
+- Project-scoped coding-run commands (`packages/api/modules/coding-runs/lib/implementation-commands.ts`),
+  Remote/Desktop sessions, current role checks, follow-up/cancellation receipts, QA ingestion,
+  existing Quality, Frames, reports, context references and audit records.
+- `packages/agent-runtime/src/harness/` pins `@fabric-harness/client` 6.3.0 and already models
+  qualified targets, exact release/schema pins, actor/project assertions, uncertain admissions,
+  status/events/cancel and read-only recovery. The sibling Harness checkout may use a different SDK
+  generation; inspect its manifest at qualification time. Neither source presence nor digest equality
+  certifies a published package or deployed target. Prove the
+  supported packed package/protocol combination before selecting dependencies or enabling a target.
+
+Keep unrelated current working-tree changes intact. New schema changes are additive reviewed
+migrations, never database push or edits to previously applied migration history. Release packaging
+of earlier unpublished migrations is separate from implementing this product increment.
+
+### Product model and UX
+
+A **Signal** is attributed evidence that software may need to change. A **Workstream** is a bounded,
+ongoing project goal with watched sources, owner, permitted execution targets and policy. A
+**Delivery change** correlates accepted work with its specification, context, attempts, PR/build,
+validation, approvals, deployment and observed outcome. Existing stories/tasks and CodingRun remain
+canonical; first add reference/projection seams, not a duplicate work-item or execution store.
+Use qualified `DeliverySignal*` names in code/types/modules to distinguish this domain from Temporal
+workflow signals. The project UI may use the shorter Signals label within Delivery.
+
+Both human and workstream intake converge on the same change contract:
+
+```mermaid
+flowchart LR
+    S[Selected signal sources] --> T[Triage and deduplicate]
+    H[Person starts work] --> C[Accepted delivery change]
+    T --> C
+    C --> P[Reviewed specification and context]
+    P --> B[Build on a permitted target]
+    B --> V[Validate exact revision]
+    V --> G{Human or qualified policy approval}
+    G -->|Approved| D[Deploy and verify]
+    G -->|Revise or defer| P
+    D --> O[Observe outcome]
+    O --> S
+    V -->|Needs improvement| B
+```
+
+Reuse Project navigation and Inbox; introduce one Delivery entry using the existing customizable
+project-tab registry. Inside it, use Signals, Changes and Workstreams, progressively enabled with
+working capabilities. Do not advertise an interactive empty workstream builder before its commands
+and runtime exist. Start with the real Signals view and clear source/readiness explanations.
+
+After S2 source-audience qualification, incoming signals use a compact paged list with source, short
+summary, timestamp and next action. Selecting one opens its source-authorized drawer with suggested
+change and isolated review links; raw source content requires its own permission. S1 implements only
+the project-record history drawer specified below and never reads proposal content. Changes show authoritative stage,
+owner/agent, next action and linked evidence. Needs you reuses existing Inbox decisions. Workstream
+setup asks goal, sources, owner, targets and permitted actions; budgets and advanced controls stay
+collapsed. Full-page editors are reserved for substantial specification/agent/workflow editing.
+
+### Source contract and provider sequence
+
+Use one typed provider adapter contract, with provider/installation/container identity, immutable
+external item/event revision, occurrence/observation times, stable deduplication key, authorized source
+reference, redacted summary, deletion/revocation state, schema version and adapter version. Distinguish
+raw observations, triage proposals and already accepted work. A semantic duplicate suggestion never
+deletes evidence or joins security audiences automatically. Several signals may support one change.
+
+| Provider | Reuse first | New qualification and lifecycle work |
+| --- | --- | --- |
+| Slack | Existing signed Events receiver, linked channels, thread batching, backfill and proposal receipts | Event retry/replay, selected workspace/channel binding, bounded history repair, late replies, edits/deletes, revoked scopes and own-bot suppression. Never assume all messages were captured. |
+| Microsoft Teams | Existing Graph-backed channel and chat monitors, continuation tokens and proposals | Keep chat/channel permission distinctions, bounded pagination and quiet-window semantics; qualify expiry, access changes and deleted content. Existing polling remains valid; Graph subscriptions are an optional later optimization with renewal/lifecycle handling. |
+| Jira | Existing selected PM MCP/server/project binding and issue/story sync | Incremental updated-issue search, stable issue ID plus revision/cursor overlap, issue-security access, pagination/rate limits and source deletion. Qualify supported Cloud/API versions; server variants need separate adapters. |
+| Azure DevOps | Existing PM connectors, selected project/area/board and work-item sync | WIQL/work-item revision changes, project/area access, pagination and event replay. Optional customer-installed service hooks accelerate reconciliation. Preserve ADR-011: Fabric never registers/updates/deletes GitHub, GitLab or Azure DevOps hooks, including Azure DevOps work-item service hooks. |
+| Fizzy | Existing account-slug, board/card and comment integrations and PM sync | Account/board identity, card and comment changes, pagination/cache validators, private-board access, reopen/delete events and token revocation. Qualify the deployed hosted/self-hosted API version; optional board webhooks require explicit provider-specific enrollment and secret handling. |
+| Other sources | Manual authenticated admission and explicit API/CLI/MCP ingress, then qualified existing connectors | Expand through versioned adapters, including GitHub/CI and incident sources. An arbitrary HTTP/MCP endpoint is never implicitly trusted as a validation producer. |
+
+Polling runs through existing Temporal activities/timers or schedules. Webhook notifications are hints
+unless the adapter proves a complete authenticated event contract; use bounded authoritative reads
+for repair. Persist capture before advancing its cursor. Duplicate deliveries reuse the same receipt;
+out-of-order revisions cannot silently replace newer observations. Bounded queues expose dropped or
+incomplete coverage. Avoid one model invocation per chat message: batch by authorized thread/window.
+
+A project's primary outbound PM destination remains its existing single PM configuration. S2 watched
+source bindings are a separate many-per-project relationship: watching a Jira project, an Azure
+DevOps area and a Fizzy board together never changes where existing outbound sync writes. Each watch
+pins provider, installation/account, container and credential-owner/audience; the same external ID on
+two instances is never the same source. Acceptance maps to an explicit existing work item/outbound
+target or a local-only change. It does not implicitly enable PM auto-sync or redirect its credential.
+
+Provider hook/subscription enrollment is not enabled in S1. S2 initially reuses existing Slack
+installation and Teams polling paths. Any future app-managed Teams subscription or Fizzy/Jira hook
+needs a separately reviewed enrollment command with explicit named-resource consent, least scopes,
+audit, secret reference, visible owner, renewal/expiry, drift, disconnect and deletion semantics. It
+cannot be added by a connection test. GitHub/GitLab/Azure DevOps registration, including work-item service hooks, remains forbidden by ADR-011;
+customer-managed optional acceleration gets exact setup instructions and authoritative pull repair.
+
+Operational capture states belong to S2: paused capture, connection refusal, capture failure and
+freshness/coverage must describe a particular operation and binding. A saved connection is not a
+live test. Record a successful check only from an actual dated receipt for that exact binding,
+actor, adapter/version and operation. S1 provides only the three saved-configuration labels defined
+in its explicit matrix below. It has no operational health/freshness states and does not infer
+certification from `pmStatusSyncLastRun` or proposal timestamps.
+
+### S1 — Source-backed project history, first implementation batch
+
+Begin with **Signals → Already in project**, a read-only history of existing Fabric work items with
+recorded upstream origins. This is deliberately not a new raw inbox: unaccepted Slack/Teams proposals
+and provider events enter the unified intake only in S2 after source grants/capture are qualified.
+The Portal explains this scope beside the list; no new-capture or autonomous-triage claim is made.
+S1 adds no product entities, ingestion scheduler, remote dispatch or product mutation. It proves the common product
+surface, authorization, source vocabulary and transport contract against data Fabric actually owns.
+
+Eligibility is positive and SQL-filtered: an existing `UserStory` in the requested project, with
+`draftingStage != DECLINED` and one of the exact source predicates below. All AI_RECOMMENDED records
+are outside this first source-backed history, protected or unprotected; do not infer human acceptance
+from aiBatchProtectedAt. Other drafting
+stages, including PLACEHOLDER, DRAFT, PUBLISHED and CLOSED, are shown literally. These are materialized
+project work items, not a claim of human acceptance, publication, delivery readiness or deployment.
+No stage transition, proposal application or governance decision is implied by appearing here.
+
+The following single disclosure matrix governs list, search, detail, links, pagination and counts:
+
+| Record / caller condition | S1 result |
+| --- | --- |
+| Eligible `UserStory`, current organization and project match, live project access plus `PROJECT_READ` and `STORY_READ` | Include only the minimized project-record DTO under its existing project audience. Member and invited guest receive the same result when their effective permissions match. |
+| Same eligible record, upstream credential paused/unlinked/revoked or original proposal pruned | Keep the materialized Fabric record under project ACL. Revoking upstream access does not retract a materialized project record. Do not fetch or expose original source content, external item ID, transcript, source URL or private connection details. |
+| Pending/unaccepted proposal of any source, even its creator | Exclude entirely in S1: no title, summary, suggested change, count, id, cursor anchor or review link. Existing project-only Inbox disclosure is not a sufficient source grant. S2 must introduce the explicit source-audience contract before this record class enters Signals. |
+| Legacy project record with unprovable origin | Exclude from source-filtered history; a fixed scope explanation says older/unattributed work may remain in Roadmap. Do not count omitted records or infer a provider from arbitrary URLs or untrusted sourceMetadata. |
+| Wrong organization/project, revoked project access, or disallowed project-bound credential | Same opaque not-found refusal before data reads. A guessed record ID never distinguishes an inaccessible record from an absent one. |
+| Project visible but missing effective `STORY_READ`, or external credential missing the required exact scope | Deny before querying records. Scope denial remains distinguishable from current actor permission denial. Wildcard keys still repeat all live permission checks. |
+| Service runtime or embedded Page credential | S1 exposes no new service/Page tools. External API/OAuth keys are permitted only through their existing project binding and current actor checks; new native service admission needs a separately reviewed grant contract. |
+
+A work-item source label is its **recorded origin**, not proof of source access or successful capture.
+These mutually exclusive predicates define both SQL eligibility and the displayed provider:
+
+- Direct `source` JIRA, AZURE_DEVOPS, FIZZY or SLACK maps to that provider, irrespective of
+  `reporterSource`. Direct source wins; a different reporter channel is not a conflicting origin.
+- Only when `source` is MANUAL, CUSTOM_AGENT, APPROVED_PROPOSAL or AI_UPDATE may `reporterSource`
+  SLACK or TEAMS map to that provider. A missing/manual reporter value is ineligible.
+- Every other source, including known GitHub/GitLab/Linear/security/incident origins and
+  AI_RECOMMENDED, is outside S1 coverage regardless of reporter value. No unknown provider inference.
+
+Define one classifier `recordedProvider(row)` and its equivalent ORM predicate `providerWhere(provider)`
+from the three bullets above. For JIRA/AZURE_DEVOPS/FIZZY, providerWhere is the direct source equality.
+For SLACK it is direct source SLACK OR (source in the four fallback sources AND reporterSource SLACK).
+For TEAMS it is (source in the four fallback sources AND reporterSource TEAMS), never reporterSource
+alone. The public DTO `source` uses a separate DeliverySignalProvider enum (SLACK, TEAMS, JIRA,
+AZURE_DEVOPS, FIZZY) and is ALWAYS recordedProvider(row), not the raw stored StorySource.
+When a provider filter is selected, SQL uses that exact providerWhere BEFORE take; without a filter
+it uses their union. Classification, filtering, schema/provider labels and tests share one contract.
+The canonical query ANDs this predicate with exact project/organization, drafting-stage and bounded
+search predicates. There is no post-take provider/eligibility filtering. Tests
+assert these ORM predicates, including unsupported-known sources and direct-source precedence. No
+rows are omitted after pagination for origin or audience reasons.
+
+List AND detail use the SAME explicit Prisma select and strict response schema: `id`, `identifier`,
+`title` (max 240 code points), `source`, record kind `PROJECT_WORK_ITEM`, `draftingStage` and
+`createdAt`, plus a server-built same-project internal work-item route. DB select may additionally
+read only `reporterSource` for the above classification. Detail adds NO other fields. Never select or
+return description, acceptanceCriteria, externalId, externalUrl, createdFromProposalId, sourceMetadata,
+transcript, credentials, names/IDs of other owners or host/session information. Metadata projection
+is not a source-content read. No external hrefs or raw provider errors.
+
+Use one bounded tenant-filtered Prisma `UserStory` query for S1, not a cross-table union. Explicitly
+bind `projectId` AND the owning Project's `organizationId`; current access checks precede the query.
+Filter eligibility, source and bounded title/identifier search before pagination. Native drafting stages are shown
+as-is, separate from signal disposition; S1 has no shared `open/pending/completed` status filter and
+never equates Closed, PR opened, merged or execution completed with deployed software.
+
+Sort by immutable `createdAt DESC, id DESC`. The opaque versioned keyset cursor binds organization,
+actor, project, normalized source/search filter, supported record kind, ordering and the timestamp/id
+anchor. Do not embed raw proposal/provider IDs. A cursor never grants authority; repeat current access
+on every page/detail, reject cross-query/cross-project/cross-actor reuse, and validate the anchor in its
+current authorized query. Use page size 20 by default, at most 50, fetch at most page-size plus one,
+no fetch-all/offset merge and no total count. Every malformed, foreign-actor/project/query, unsupported-version, removed or newly ineligible
+anchor receives the SAME generic `BAD_REQUEST` invalid-cursor response, with no echoed token/id or
+binding facts; there is no error-code distinction for a formerly valid foreign cursor. A deletion or
+filter change may therefore invalidate an anchor; the Portal offers Reset filters/reload rather than silently mixing
+pages. S2 cross-class pagination requires its own scoped design and tests, not reuse of a source-local
+cursor as a global cursor. Raw SQL is unnecessary in S1; any future raw read requires explicit tenant
+predicates on every arm/join and transaction-local `withRLSContext`, proved under non-owner DB roles.
+
+S1 configuration labels are a separate actor-visible saved-settings projection, never capture
+readiness. Source configuration is a NEW, deliberately narrow self-setup projection. It does not claim an
+existing shared-binding ACL: current monitor panels are project-wide and their policy is unchanged.
+Use one canonical requireDeliverySignalProjectAccess(actor, projectId) for BOTH history and setup.
+Reuse the existing projectNotFoundUnlessVisible policy through a small exported pure
+assertProjectVisible(projectId, userId) extracted from that middleware: both the current middleware
+and this canonical gate call the same hasProjectAccess predicate and shared
+PROJECT_NOT_FOUND_MESSAGE. Its existing behavior stays unchanged. The canonical gate additionally
+resolves resolveEffectiveProjectPermissions(projectId, actor.userId), refuses
+isProjectSoftDeleted(projectId) with the same opaque NOT_FOUND, takes the organization from
+that loaded project, and rejects an absent, null, empty or whitespace-only organization ID with
+opaque NOT_FOUND. Require typeof id === string AND id.trim().length > 0, then use the ORIGINAL
+exact stored ID (do not rewrite it by trimming) for credential comparison and data predicates. It also
+uses the shared visibility assertion described above. hasProjectAccess's optional third organization argument is ignored
+in current source and is NOT tenant verification. The real authorization boundary is current
+object access plus effective permissions and any issued credential binding. Exact project/parent-org
+predicates below are defense in depth, never a substitute for that gate; do not remove it as redundant.
+The two bounded authorization helpers are intentionally retained rather than changing shared access
+semantics in this feature. This conjunct is deliberate:
+an org role alone does NOT grant project visibility; even an org admin without the project access
+that the normal work-item UI requires is refused. Test this negative case as well as the positive
+invited guest. A missing guest session organization is not a refusal; no org membership is needed
+for history when accepted project access and effective PROJECT_READ/STORY_READ hold. A human
+session in another live organization may read this specifically authorized project (including an
+invited guest); it is not an organization-bound credential. All data still uses the target project's
+host organization. API/OAuth issued tenant/project bindings remain mandatory and cannot switch.
+
+Credential organization/project bindings are guards on that resolved project, never alternative
+sources of its tenant. Mismatch is opaque NOT_FOUND. Portal passes its authenticated user; it does
+not construct a second actor organization from the same project merely to compare it back. No
+client actor/tenant/owner fields are accepted. All downstream data predicates receive the nonempty
+organization resolved by this gate, never an undefined/null tenant arm.
+
+Portal uses tenantProtectedProcedure for authentication/context, then invokes this canonical gate
+before data reads instead of chaining the legacy requireProjectPermission/resolveOrganizationId
+pair for these new queries. This is a deliberate local composition choice: the legacy pair emits a
+bare permission refusal and a different null-project error before the query can apply this contract.
+No legacy middleware/global policy is changed. These canonical reads deliberately use the existing
+unextended @repo/database db client (prisma/client.ts). Existing project-delivery code is precedent
+for the CLIENT ONLY: its where:{projectId} is NOT the new predicate contract and must not be copied.
+The new queries add explicit projectId AND Project.organizationId AND Project.deletedAt:null on EVERY work-item
+read, including cursor anchors/detail; config uses the same resolved project predicate plus actor/org.
+They do NOT call getTenantDb or depend on allowedProjectIds/effectiveWriteOrgId. This avoids relying
+on a guest carve-out the omitted middleware would otherwise have seeded; no ambient tenant grants
+are written. The actual production client/predicates, including guest calls, must be tested under the
+restricted DB role. A tenant-extended compatibility test is separate: seed its carve-out through the
+existing permission middleware and compare its projection, never present it as the production path.
+Refusal ordering is explicit: authenticate/declared scopes and issued binding guards; then object
+visibility and the nonempty project tenant defined above; then project soft deletion; then inspect
+the already-loaded effectiveAccess.organizationDeleted for the TARGET project organization and
+emit the shared deletion refusal if true; then evaluate live permissions; only then data reads. The canonical gate directly checks pure
+hasPermission(access.permissions, PROJECT_READ) and STORY_READ on the CURRENT effective project
+result, plus object visibility as above. Do not substitute org roles or rely on RBAC_DRY_RUN skips.
+Once the narrower project visibility above is established, effectiveAccess.organizationDeleted is
+the target-host deletion signal (including a guest visiting from another live session organization).
+Check it BEFORE hasPermission and emit the existing deleted-organization restoration refusal: ORPCError FORBIDDEN with data.errorCode = DELETED_ORGANIZATION_ERROR_CODE (shared constant,
+wire value ORGANIZATION_DELETED). No project history or settings are read after this refusal. A caller lacking this feature's narrower
+project visibility still receives opaque NOT_FOUND using PROJECT_NOT_FOUND_MESSAGE, even with an
+org owner role, IF the request reaches this feature gate. The existing upstream
+tenantProtectedProcedure session-context guard is an explicit exception: if the caller's active
+session organization is deleted AND the caller retains its Member row, it already returns
+FORBIDDEN/ORGANIZATION_DELETED before any project lookup. If that membership is absent, the earlier
+stale-session-pointer check instead returns FORBIDDEN/MISSING_ORGANIZATION_CONTEXT; preserve this
+existing precedence too, rather than infer deletion from a pointer. Preserve that existing refusal; it reveals the caller's known session organization,
+not the guessed project. HTTP tests cover both that deleted-session-org path and a different live
+session org reaching the feature gate, plus the missing-Member stale-pointer case. Pin the
+surviving Member fixture for the ORGANIZATION_DELETED case. A currently visible project can yield the restoration code. This explicit policy does not widen source visibility.
+
+For sourceConfiguration ONLY, run a separate requireDeliverySignalIntegrationRead(actor, resolvedOrg)
+after the history gate. Load the actor's live Member row in resolvedOrg and directly evaluate
+hasPermission(resolveOrgPermissions(member.role), INTEGRATION_READ). This is org-level; never seek
+it in project-role permissions. A guest without this org grant still reads permitted project history,
+but config returns 403. Both helpers are unconditional even under RBAC_DRY_RUN; personal-owner
+arms and middleware skips cannot satisfy them.
+
+The NEW operations emit permission ORPCError FORBIDDEN with data.code INSUFFICIENT_PERMISSION and
+neutral current-actor text; missing declared external scopes use FORBIDDEN/data.code INSUFFICIENT_SCOPE.
+They do not rename any existing API or claim identical existing Portal/MCP vocabulary. The shared
+transport mapper uses data.code for these refusals, preserves the existing data.errorCode for the
+organization-deletion case, and otherwise falls back to the native error.code. REST returns
+error.code, MCP returns code, SDK/CLI preserve that semantic value; Portal reads the native data
+field: data.code for permission/scope, data.errorCode for organization restoration (do not rely on
+getOrpcErrorData alone, which reads only code). The Delivery error view needs a NEW small
+organization-deleted explanation linking the existing organization restoration surface when applicable;
+it does not claim such an in-tab consumer already exists. Test both code branches and the actual middleware/HTTP path, not only the handler. No denied
+permission becomes Not configured. Required scopes are checked before credential project-binding
+refusal; adapters must account for earlier global scope/binding guards to preserve this order.
+After these preconditions, setup eligibility uses only saved
+row facts. For chat, require binding.userId === actor.userId AND a matching active/enabled
+credential owned by that actor. No team/shared/other-member or null-owner chat binding is supported
+in S1. Creator equality alone never grants permission. An ineligible individual row is discarded;
+only the provider aggregate can return Not configured. The UI calls this panel Your saved sources
+and explains that shared and older ownerless setup is outside this view, without revealing whether
+such setup exists. Existing project-wide monitor panels are unchanged; broader sharing needs an
+explicit S2 grant.
+
+Resolve and recheck the target Project organization first. ALL Slack/Teams binding and credential
+queries explicitly AND projectId (where applicable), organizationId === resolvedProject.organizationId,
+userId === actor.userId and owning Project.organizationId. Never rely on a binding-table tenant
+extension; null/missing organizationId on any binding or credential is ineligible, never matched
+to a null tenant. Teams chat bindings also have no RLS backstop.
+
+PM pointers on Project have NO separate binding owner. Do not use Project.userId/creator as an
+ownership grant. Reuse the target/provider matching semantics of resolvePmTarget and
+resolveProjectPMConfigForUser, but apply this narrower read-side contract: the exact referenced
+MCP configuration must itself belong to the actor and resolved organization, be enabled, and match
+the saved provider/instance/container. A resolver's substitution of another configuration for a
+teammate's pinned configuration does not qualify that pointer for this S1 projection. No network
+probe, configuration write, credential decryption or GitLab fallback is needed. Unknown local
+matching metadata, null owners and wrong organizations fail closed. Project primary PM selection
+is read under the same Project predicate. Do not use a project-wide panel's query as authority.
+
+Evaluate bindings first, and aggregate only afterwards. Run the following algorithm SEPARATELY for
+each provider. selectedBindings contains ONLY that provider's rows: Slack channels for SLACK;
+Teams channels AND Teams chats together for TEAMS; the selected pinned PM pointer only for its
+JIRA/AZURE_DEVOPS/FIZZY provider. Never mix Slack survivors into the Teams result or vice versa.
+The row-kind branch defines eligibility, not provider aggregation scope. This is the complete
+per-provider algorithm:
+
+```text
+requireDeliverySignalProjectAccess(actor, projectId) // history AND setup; live object/project/story access
+requireDeliverySignalIntegrationRead(actor, resolvedOrg) // sourceConfiguration ONLY; never history
+survivors = selectedBindings.filter(row => {
+  if (row.kind is SLACK_CHANNEL or TEAMS_CHANNEL or TEAMS_CHAT) {
+    return row belongs to actor and exact nonnull project organization
+      AND row matches locally verified provider/instance/container
+      AND its matching credential is actor-owned, same nonnull organization and active/enabled
+  }
+  return row's exact pinned MCP config is actor-owned and same nonnull project organization
+    AND that config is enabled and matches the saved provider/instance/container
+})
+if survivors.length == 0: providerState = NOT_CONFIGURED
+else if survivors.some(binding => binding.deactivatedAt == null): providerState = CONFIGURED_NOT_CHECKED
+else: providerState = PAUSED
+```
+
+Only PM providers (Jira/AzureDevOps/Fizzy) have deactivatedAt treated as null, so they cannot be Paused in S1. Rule 1 below
+means discard that individual binding, NOT immediately return the provider summary. Rule 2 means
+mark that surviving binding deactivated, NOT immediately return the summary. Only the algorithm
+above returns a provider state after every selected binding was evaluated. Mixed active+deactivated
+and active+disabled/unknown bindings therefore return Configured, not checked. Return only provider
+and summary: no counts, channel/chat/container names, owner IDs or matching IDs.
+
+1. A selected row that fails its chat or exact-PM ownership branch above is discarded. A row that
+   has missing/disabled owned credentials or
+   lacks a locally verifiable provider/instance/container match is discarded. No network probe,
+   credential creation or remote diagnosis; do not disclose the reason or another member's config.
+2. A surviving linked Slack channel, Teams channel or Teams chat with non-null `deactivatedAt` is
+   marked deactivated. This persisted field is the ONLY S1 pause evidence.
+   Slack `monitorEnabled = false` or a project-level Teams monitor toggle alone never means paused:
+   they may mean never started. Jira/Azure DevOps/Fizzy have no S1 pause evidence and cannot be Paused.
+3. Every other survivor is marked not deactivated. These are saved configuration facts only;
+   token presence, last-sync blobs and monitor flags never establish reachability.
+
+The permitted stored facts are actor-authorized binding existence, exact provider/instance/container
+match, saved credential enabled/active state and the above linked-row deactivatedAt. Do not return
+these private matching IDs or credential material. If matching metadata cannot be verified locally,
+fall back to Not configured. No field named lastCheck/lastSuccess/freshness/health/error is emitted.
+S1 never renders Needs reconnect, Capture failed, Healthy, Connected, coverage rate or raw errors.
+`pmStatusSyncLastRun`, proposal counts/timestamps and newest work items are not inputs to these labels.
+The UI says these are saved settings, offers the existing setup surface only when permitted, and
+explains that live source capture is qualified in S2. Configuration is not required to read eligible
+project history. Capture pause never changes the project ACL of a materialized work item.
+
+Expose the same canonical queries as Portal/oRPC, REST/SDK, CLI and MCP: `list`, `get`, and
+`sourceConfiguration`. List/get require `projects:read` AND `features:read` on external credentials,
+plus the SAME live `PROJECT_READ` and `STORY_READ` checks as the matrix. Feature is the product name
+for the `UserStory` record; `features:read` is its existing external credential scope and `STORY_READ`
+is its existing live actor permission, not a separate feature permission. Configuration additionally requires
+`integrations:read` and live INTEGRATION_READ, plus the new self-setup predicate above. No shared
+configuration permission is inferred. Lacking that extra permission hides only this optional panel,
+not existing project history. Preserve exact scope
+errors versus actor-permission errors. Project-bound API/OAuth callers remain limited to their bound
+project; new MCP discovery/call policies must match and do not grant service/Page access implicitly.
+Uniform refusal order: authenticate and validate declared credential scopes first (401/403 independent
+of object existence); reject a disallowed project binding with opaque NOT_FOUND; resolve current
+project/organization and access (opaque NOT_FOUND); then check the visible project's effective
+PROJECT_READ/STORY_READ permissions (FORBIDDEN/data.code INSUFFICIENT_PERMISSION if missing). Detail returns NOT_FOUND when its record
+is absent, foreign or outside the current eligible project query. Cursor errors use the generic rule
+above after project authorization. Configuration uses the same PROJECT_READ/STORY_READ checks plus live org-level
+INTEGRATION_READ and integrations:read; both refusals use HTTP 403 but distinct stable codes
+INSUFFICIENT_SCOPE versus INSUFFICIENT_PERMISSION, identically across transports. Missing declared
+projects:read/features:read uses INSUFFICIENT_SCOPE; revoked visible-project read permission uses
+INSUFFICIENT_PERMISSION. An invisible/ineligible individual binding is discarded and can yield
+Not configured through the aggregate algorithm. No refused role check is converted into a state. No response echoes source/secret facts.
+No new security mutation or audit action is introduced by these read-side queries; this is an explicit
+read-only no-audit decision, consistent with the repository's mutation-auditing requirement.
+
+Portal implementation: one Delivery entry in the existing customizable project-tab registry,
+initially showing only Signals → Already in project, source/search filters, a compact paged list and
+an isolated minimized detail drawer. Its only work action opens the existing authorized work-item
+surface. Do not mount/link `PendingBacklogProposalsInbox`: opening it fetches project-wide proposals
+and arbitrary sourceMetadata. No accept/dismiss/retry/new-workstream buttons until their canonical
+commands and source contract exist. Explain fixed source-backed coverage and separate it from the
+existing Inbox; never reuse Inbox counts. Clear private cached detail on actor/project/scope changes,
+refusal and drawer close; reauthorize detail on reopen. Update Get Started registry/tour/anchors,
+translations and project-tab preference/readiness registries together.
+
+Acceptance tests cover every matrix row, all five provider tags, precedence, unknown legacy source,
+minimized output, bounded search/filter queries, equal timestamps, multi-page ordering, removed
+anchors, query/actor/project-bound cursor misuse, current permission revocation and invited guests.
+Assert no proposal/source-content/Inbox read occurs during list/detail/navigation. Exercise the actual
+unextended production query under a restricted database role with
+two organizations/projects. This proves application predicate isolation, NOT `user_story` RLS: that
+table currently has no RLS backstop. Include a negative fixture with a foreign story visible to the
+DB role so the test proves the combined authorized project isolation under the actual DB role.
+For UserStory, the parent-org conjunct derives from the same project and is defense in depth;
+removing it alone cannot be distinguished by a valid relational fixture. Verify its presence by
+structural/query assertions covering BOTH Project.organizationId and Project.deletedAt:null on
+page/detail/cursor-anchor queries, rather than claiming that fixture independently proves it load-bearing.
+For binding tables with their own organizationId, wrong-org fixtures directly test that predicate.
+Test API/SDK plus built CLI and HTTP MCP, including missing/wildcard scopes, project-bound refusal,
+no service/Page discovery and minimized errors. For setup aggregation CHAT means ALL linked conversation rows: ProjectLinkedSlackChannel,
+ProjectLinkedTeamsChannel and ProjectLinkedTeamsChat. All three use the chat ownership branch
+and their own deactivatedAt; PM means only the pinned Jira/AzureDevOps/Fizzy selection. No channel
+row takes the PM branch or the PM non-deactivated override. Configuration tests separately cover
+Slack channel, Teams channel and Teams chat, every precedence branch, per-binding deactivatedAt versus never-enabled
+monitor flags; mixed active+deactivated, active+disabled and all-deactivated cases; missing
+integrations:read versus missing INTEGRATION_READ with distinct error codes; another member's or
+null-owner binding, null/empty/whitespace target project or issued credential-bound organization
+(where a credential carries that binding), null binding/config organization, missing STORY_READ/PROJECT_READ
+and authorization refusal unaffected by RBAC_DRY_RUN at the canonical pure-permission seam. Set
+the env BEFORE resetModules/dynamic first import, so a future accidental legacy-helper dependency
+cannot evade the test through a previously captured false constant; also assert the gate has no
+downgrade-helper dependency. This future-proofs the check without claiming it executes today's
+omitted legacy middleware downgrade. Additional required cases are positive invited-guest history
+with unavailable organization configuration, authoritative
+project-member role overriding an org role, org-role-only caller without project visibility denied,
+trashed-project opaque refusal, and visible deleted-organization restoration refusal using the shared
+wire code (hidden org-owner caller remains NOT_FOUND); own binding with another owner's credential, wrong-organization binding/config,
+provider/instance/container mismatch, disabled/absent credentials, no forbidden health fields and no
+use of sync blobs/proposal timestamps. Repeat the restricted-role cross-organization test for
+Teams chat binding/configuration queries, with foreign rows visible to the DB role, proving their
+explicit predicates rather than claiming RLS. Missing optional configuration permission hides only the panel.
+Current role sets all include PROJECT_READ/STORY_READ, and all organization roles include
+INTEGRATION_READ. Permission-denial branches are defense in depth: exercise them with mocked
+resolver/predicate outputs at the canonical gate seam, not invented role records or claims of live
+role-based 403s. Real DB tests cover accepted guest reads, membership revocation/expiry, project
+visibility, deletion and tenant mismatches. The project-role precedence check at the mock seam
+proves the project permission array is used, without claiming current read rights differ by role.
+Profile the keyset query on a representative large project with a bounded statement timeout; inspect
+existing indexes and query plan. If a new index is required, review a focused additive index migration
+before rollout rather than silently changing schema or claiming arbitrary-scale performance.
+Component/a11y and real 1440/390 browser checks prove
+empty/loading/failure states, pagination, keyboard drawer close and project-work-item handoff.
+
+After S1, review its exact incremental implementation with Droid, Claude and Grok, fix confirmed
+issues and rerun relevant checks. S1 is not completion of signal intake or this overall plan. S2 must
+add source-authorized observations/proposals to the same UI, with the disclosure matrix extended and
+reviewed before enabling any unaccepted content or review/apply control.
+
+An authorized project whose organization lacks a usable workspace address cannot supply the required
+work-item link. List/detail return the explicit `ORGANIZATION_ROUTE_UNAVAILABLE` conflict (REST 409),
+not a false not-found result. Invisible projects remain opaque. This is a malformed organization
+routing condition, not missing project access; the workspace owner must repair its address.
+
+### S2 — Complete bounded source capture and triage commands
+
+The initial internal adapter boundary is
+[`capture-contract.ts`](../../packages/connectors/src/delivery-signals/capture-contract.ts).
+It validates selected, bounded metadata for the five named provider families and derives stable
+receipts separated by organization, project, watched source, source audience/revision, installation,
+container, external item and revision. Retries cannot create a new receipt merely by changing
+observation time, adapter version or display summary. Same-revision evidence conflicts remain
+explicit; opaque revisions require authoritative reconciliation, and deletion markers contain no
+source content. This helper neither authenticates a source nor performs provider reads, persistence,
+cursor advancement or scheduling. It is not connected to incoming Signals or any public operation
+until the remaining S2 source-grant and durable-storage contracts below are implemented and verified.
+
+Add only the missing durable observation/cursor/binding records after a schema/retention review;
+reuse existing source receipts when they can represent the required guarantees. Include tenant RLS,
+current source ACL, encrypted secret references, retention/deletion and immutable evidence revision.
+A content hash is evidence identity, never a permission grant or proof of provenance.
+
+Canonical source commands must have Portal, REST/SDK, CLI and MCP parity. In the initial private
+Slack slice, **test** maps to `inspect`, **run now** maps to `capture(RECENT)`, and **continue** maps
+to `capture(CONTINUE)` over the same pinned recent window; configure, pause, resume, disconnect,
+status, cancel, list and evidence reads complete that slice's command matrix. Continue is not
+historical backfill. Explicit bounded older-window backfill remains a separate S2 deliverable after
+that slice, and review/apply uses the existing proposal/Inbox path after source-qualified triage.
+Neither unsupported backfill nor unimplemented proposal review counts as completed S2 parity.
+Source selection is explicit by channel/chat/project/board; show inspected
+permissions and projected audience before enabling capture. Do not send chat messages, modify PM
+records or install provider hooks as a side effect of connection testing. Qualify one real source
+at a time across the five named providers and keep unavailable credentials/actions clearly marked.
+Apply prompt-injection defenses: external text is untrusted evidence and cannot redefine tools,
+owner, policy, target, budget or approval. Accepted changes use stable request identities and the
+existing proposal/story application receipts. Ambiguous external effects stay Outcome unknown.
+
+### S3 — Harness agents and qualified remote execution
+
+Create reusable finite agents using the published `@fabric-harness/sdk/strict` `defineAgent` contract:
+**signal triager**, **specification drafter**, **validation evidence analyst**, and **delivery reporter**.
+Use bounded typed inputs/outputs, explicit sandbox/runtime/limits, shared Fabric prompt/skill/context
+references, source citations and test fixtures. Agent proposals cannot grant themselves permissions.
+For durable addressable agents use Harness `createAgent` only when its persistent lifecycle is
+actually needed; Temporal remains owner of project workstream scheduling and outer coordination.
+
+Prove a supported packed SDK/Node/client combination using Harness's public exports and runnable
+local finite-job contract tests. Avoid importing sibling checkout internals or assuming a newer SDK
+is compatible with the current client 6.3.0 adapter. Inspect the actual SDK manifest and packed
+publication at qualification time. Upgrade through pnpm and protocol tests only.
+
+Packed qualification supports [`@fabric-harness/sdk/strict` 6.9.0](https://registry.npmjs.org/@fabric-harness/sdk/6.9.0),
+[`@fabric-harness/node` 6.7.0](https://registry.npmjs.org/@fabric-harness/node/6.7.0) and
+[`@fabric-harness/client` 6.3.1](https://registry.npmjs.org/@fabric-harness/client/6.3.1) on Node 24.22.1;
+the existing client 6.3.0 also passes the bounded protocol fixtures and remains unchanged.
+Sixteen controlled native-loop and client checks cover typed citations, identity mismatches,
+revocation, tool restrictions and cancellation; they do not qualify a live remote endpoint.
+SDK tenant labels and principal objects do not verify caller authority, and its ordinary cost
+ceilings apply after model spend. A verified host/broker registry, current source-grant checks,
+configured model bridge and durable pre-call budget reservation remain required before a product
+triager is registered or invoked; conversation-turn budget records are not finite-job authority.
+
+The reusable [finite signal-triage engine](../../packages/agent-runtime/README.md) now uses the pinned
+strict SDK with a required verified-host interface, stable per-call budget identities, current
+source checks, bounded native-loop execution and owner-only cited proposals. Its normal package
+suite exercises the actual SDK against controlled host ports. Its first private review workbench now includes an API-owned local host, native Temporal execution,
+separate finite-job and organization-budget accounting, encrypted proposal/cache storage and shared
+Portal/API/SDK/CLI/MCP operations, including an MCP App for cited results. The initial configured bridge
+supports saved direct OpenAI API configurations. Keep/dismiss decisions remain private; ticket
+application, scheduling, other provider bridges and qualified generic remote execution remain separate
+work. Dedicated-worker and migration rollout must precede enabling starts. Live source/model/remote qualification is the final rollout
+milestone, after those integrations have been built and tested locally.
+
+The deployment unit has an immutable artifact digest, entrypoint, input/output schemas, runtime
+versions and permitted tools. A trusted registry supplies the target URL and qualification; users
+select a target binding rather than supplying executable code or arbitrary endpoint URLs. A broker
+passes short-lived, audience-bound organization/actor/project/run assertions and scoped credentials.
+Remote target authorization rechecks those claims, permitted release and current access on each
+start/status/events/results/cancel operation. Bounded results retain source/audience checks.
+
+Prefer a qualified Fabric Remote Server for unattended execution. Desktop is eligible only while
+reachable and permitted; display offline/unavailable explicitly. BYO targets must pass the same
+versioned capability/identity contract. Reuse the existing Harness admission store/client and coding
+run Remote/Desktop protocol where applicable; do not invent a parallel remote session protocol.
+A generic server session is not proof that it can host a finite Harness release. Add a scoped broker
+adapter only if the server lacks that runtime, with its own independently tested admission contract.
+
+First offload read-only Harness jobs. Persist intent and exact payload hash before dispatch, attach
+to the same remote receipt after uncertainty, and test crash-after-remote-acceptance before local
+acknowledgement. Never map the Portal request UUID blindly to a whole-job replay-safe assertion.
+Temporal activity retries reattach/reconcile; they do not restart an uncertain effectful job. Budget,
+concurrency, cancellation and revocation must be durable and enforceable. Coding mutations continue
+through existing CodingRun controls until per-effect recovery is qualified. Closing the browser
+must not stop an admitted remote job; actual offline Desktop starts are not promised.
+
+Acceptance: author/package a real Harness agent, execute it on the selected qualified runtime,
+inspect its actual typed result/events, reconnect, cancel, revoke its source/actor and prove one
+logical admission after duplicate requests and a lost acknowledgement. In-process fake jobs or
+invented remote URLs are contract tests, never live remote certification.
+
+### S4 — Goal-driven project workstreams and change continuity
+
+After source and remote contracts are proven, persist the missing workstream goal/owner/source
+selection/target/policy/revision and change-reference edges. Reuse stories, CodingRun, native agent
+runs, existing Inbox approvals and work-item drafting governance (ADR-020). One workstream may
+propose many changes; one change may link several signals and implementation attempts.
+
+A Temporal parent uses bounded activities and native timers/signals/continue-as-new; workflow code
+contains no network/database/model I/O. Native schedules own recurrence. Every new admission uses
+organization/actor/object checks and the correlation memo. Workflow changes require compatible
+versioning and representative-history replay. Stopping intake is distinct from requesting running
+job cancellation; pending and confirmed cancellation remain distinct. No custom polling scheduler,
+lease/recovery engine or mirrored execution state machine.
+
+Start with Suggest and Prepare; both require human review of accepted scope and progression. Scope
+review includes the exact context audience, repository, target, limits and relevant artifact version.
+Allow people to edit a brief or ask a question without navigating agent/runtime settings. The Delivery
+change drawer projects existing authoritative state and links source → specification → session → PR
+→ validation; PR opened or merged is never presented as deployed. Expose stage, blocker, owner and
+next action rather than a wall of tool logs.
+
+### S5 — Validation, deployment evidence and production feedback
+
+Use one policy-selected validation path regardless of human/agent author. Pin repository/commit,
+artifact/build digest, producer/job/run attempt and policy/check versions. Reuse CI ingestion and
+QA evidence contracts; unknown/skipped/stale/mismatched results never satisfy required checks.
+Use independent review/security checks plus sandboxed preview QA where qualified. An optional
+risk assessment receives author metadata removed and records its prediction before outcomes;
+it is advisory until calibrated and authorized. Separate model opinion from deterministic evidence.
+
+Reuse current approvals, but bind promotion to the exact action/environment/artifact/evidence/policy
+revision and recheck immediately before action. Qualify one disposable deployment adapter, health
+observation and rollback path before production automation. A passing test or review does not itself
+authorize merge/deploy. No provider branch protection or deployment policy is bypassed.
+
+Extend the existing recurring-error scan, incident clustering/fingerprinting, pipeline-results RCA
+and case-to-bug deduplication with selected production release/commit correlation. Do not create a
+second incident pipeline or reset an existing dedup identity when adding delivery references. Distinguish
+suspected association from confirmed cause and preserve an unknown outcome where telemetry is
+missing. Link a regression to the original change and its check set; propose a regression case or
+instruction/context improvement for explicit review and rerun. Recurring reports use existing Reports,
+evidence windows and approved branded Frames; do not build another reporting scheduler.
+
+Lakebase retains Fabric product records. Existing Databricks/MLflow/Unity Catalog bindings may hold
+approved evaluation evidence and support governed context/metric analysis behind Fabric terminology.
+Qualify the actual Azure workspace, service identities, per-customer source/trace audiences and
+retention/egress/deletion before enabling exports. Databricks Genie analytical tools remain distinct
+from Fabric Genie and the Temporal delivery loop. No preview feature or new Databricks hosting is
+required to release signal intake or local workstreams.
+
+### S6 — Earned autonomy and team pilot
+
+Only after the complete reviewed path works, qualify narrow categories for policy-governed automatic
+progression. Explicit limits include repository/path/environment/action, spend, concurrency, current
+required checks, observation coverage and escalation. Default to a human decision; source text and
+an agent-generated risk score cannot raise autonomy. Pause or revoke policies without losing evidence.
+
+Measure time from signal to accepted outcome, review effort, cost with unknowns, escaped defects,
+rollbacks and reopened work. A regret-free outcome requires an explicit observation window and
+comparable risk cohort; immature/missing observations remain unknown and stay in denominators.
+Changes to the factory's own prompts, skills, policies and evaluators follow the same reviewed path.
+
+Pilot with a delivery lead, engineer and restricted project guest, including source revocation,
+duplicate/out-of-order events, webhook forgery, rate limiting, worker restart, lost remote acknowledgement,
+wrong artifact, failed validation, stale approval, target offline, cancelled work and suspected/confirmed
+production regression. A second project/team must reuse the method without inheriting client data,
+credentials or authority. Specialist templates follow those proven journeys.
+
+### Cross-cutting transport and validation contract
+
+For every new operation define its canonical command/query, actor and object checks, exact scopes,
+audit action (or explicit read-only no-audit decision), strict input/output schemas and bounded result before adding transports. REST/SDK, CLI,
+MCP and Portal must share it, including current status, results, cancellation and schedule controls
+when supported. Unsupported operations are omitted or explicitly labelled; visible nonfunctional
+buttons and advertised missing tools do not count as parity.
+
+Each implementation batch has focused unit/property tests, real PostgreSQL tenant/transaction tests
+where needed, negative authorization/source tests, API/SDK/CLI/MCP contracts, relevant component
+accessibility checks, desktop/mobile browser evidence, and live provider/runtime evidence for any
+certified capability. Record model/runtime/provider versions and evidence scope. Temporal control-flow
+changes require replay evidence. Run identifier/guidance/navigation-drift checks and an explicit
+public-safe changeset decision. No production deployment, external messaging, provider mutation or
+migration-history rewrite is implied by a successful local qualification.
+
+Before enabling `FABRIC_PRIVATE_SOURCE_CAPTURE_ENABLED`, deploy and verify the reviewed capture
+storage, configure the worker connection as the actual `fabric_worker` identity, and qualify its
+retention authority through either actual BYPASSRLS/superuser privileges or the explicit permissive
+`worker_bypass` policy on private observations. Worker startup registers the native daily
+`delivery-source-observation-retention` schedule only after storage and that connection qualify;
+verify the registered workflow, schedule and bounded deletion under the deployed worker identity
+before enabling ingestion. The ordinary application role is not sufficient, and a skipped
+registration is not proof of retention readiness. Cleanup remains active when ingestion is disabled;
+read access independently withholds expired text before physical deletion.
+
+### Live delivery awareness and suggested next steps
+
+This is an active extension of S2–S6, not a second factory implementation. Delivery awareness means
+Fabric can explain current work, relevant evidence, execution state, permissions and observed
+outcomes, including what it cannot yet establish. The Portal says **Suggested next steps**; it does
+not describe every fixed fallback as a personalized discovery. Fabric Genie consumes the same
+authorized state and recommendations as the dashboard rather than inventing a separate account of
+the project. Databricks capabilities remain invisible in delivery-team flows.
+
+#### Starting point and implementation order
+
+The current `buildCuratedCards` function selects an existing action, the first favorite/recent project,
+then fixed creation/context/automation fallbacks, deduplicated by URL and capped at three. It does not
+inspect context sufficiency, all accessible projects, workflow coverage or action capabilities.
+Its inputs arrive from existing authorized work, notification and shortcut queries; this is not a
+learned recommendation model or a live Databricks computation. Dashboard work and delivery insights
+currently refresh every five minutes. Do not promise event-driven updates from that implementation.
+
+S1 source-backed project history remains available. The first S2 Slack adapter has bounded protocol
+tests. Owner-only capture storage is implemented and locally verified on an isolated database;
+canonical command and Temporal drafts have isolated tests, including native restart/history replay
+with controlled fixtures. Full transport integration, worker retention qualification and live source
+qualification remain unfinished. Portal/API/CLI/MCP registrations and the SDK command facade remain
+detached until the schema and complete command path are ready in the selected test environment.
+Transport/component drafts and fixture-based runtime proof are not an enabled or live-qualified feature.
+
+| Batch | Work and existing implementation to reuse | Completion evidence |
+| --- | --- | --- |
+| A — Private capture foundation, first | Finish the proposed scoped watch (including cursor/checkpoint), grant, observation, command and page-receipt records after storage review; additive migration, owner/org RLS, current actor/project/integration checks, strict encrypted snapshots, immutable evidence variants and expiry. Reuse S1 project guards, audit helpers and the Slack adapter | Fresh disposable migration replay and drift check; restricted-role two-organization/two-owner tests; duplicate page/lost acknowledgement/CAS/expiry/revocation tests; no change to shared database history |
+| B — One real Slack journey | Complete configure/inspect/pause/resume/disconnect/capture/status/cancel/list/evidence through one command module and all transports. Connect finite native Temporal capture, then restore the private Portal section | Build and API/SDK/CLI/MCP tests before live registration; real selected test channel; current human and bot membership, root-only coverage, page continuation, retry, worker restart, cancellation, changed permission and disconnect tests; desktop/mobile inspection |
+| B2 — History repair and continuous selected intake | After on-demand Slack qualification, add explicitly selected bounded historical backfill, native Temporal schedules and then verified provider events where useful; qualify Teams, Jira, Azure DevOps and Fizzy against the same source/audience contract one at a time | Reviewed historical window and source coverage; current owner/source permissions at each scheduled run; bounded overlap/rate limits; pause/revoke stops admissions; verified signatures/subscriptions for events; duplicate/out-of-order/deletion tests; backfill/schedule/trigger controls through every transport |
+| C — Grounded suggestion foundation | Replace client-only curation with a bounded authorized candidate query, real capability checks, completeness-aware project/context facts and per-recipient feedback | Same candidates/reasons and current refusal behavior through Portal/SDK/CLI/MCP; no false first-project or missing-context claims; no inaccessible item/count leak; deterministic ordering, safe stale states and persisted dismiss/snooze behavior |
+| D — Harness triage, after source qualification | Package finite signal triager, specification drafter and reporter with public Harness exports. Reuse existing proposal/Inbox/work-item application and qualified execution target | Source-linked typed proposals; no effect from untrusted source instructions; one admission after retry/lost acknowledgement, cancellation/revocation/budget tests; actual remote run before advertising remote support |
+| E — Databricks enrichment, after approved projection | Qualify existing content-free delivery export; add only missing governed facts and semantic definitions, bounded analytical tools and evaluation datasets | Real selected workspace/identity/warehouse, projection watermark, current source/audience isolation, deletion propagation, analytical answer citations, outage fallback and measured recommendation improvements |
+| F — Outcome learning and team pilot | Use accepted/dismissed/completed suggestions, agent evaluations and observed delivery outcomes to propose ranking/prompt/skill improvements | Shadow comparison against the deterministic baseline, explicitly scoped observation windows, holdout quality/cost/latency evidence and reviewed version promotion; no automatic policy/autonomy elevation |
+
+Batches C and E can be developed against synthetic fixtures while B awaits a test connection, but
+source-derived recommendations remain disabled until B qualifies. Missing credentials are a live-test
+dependency, not a reason to mark protocol simulations as live certification. Harness packaging and
+target contract inspection can proceed early; dispatch of private source jobs depends on B.
+The first Databricks pilot can run alongside C using already approved operational delivery facts;
+it does not wait for Harness triage or permission to export private Slack content. Richer historical
+patterns require enough qualified observations and remain explicitly unavailable until then.
+The first Slack slice is on demand, not continuous monitoring. Until B2 is qualified, show the last
+completed capture window and explicitly request another capture; do not call a configured watch live.
+Each additional provider has its own permission and revision semantics, not a copied Slack ACL test.
+The five proposed records implement the earlier observation/cursor/binding requirements rather than
+replacing their reuse-first review: the watch holds the binding and checkpoint. Existing chat links,
+seen-message receipts and proposals do not provide an owner-only immutable encrypted snapshot plus an
+atomic page/checkpoint receipt. Reuse them for their existing monitor/proposal roles, not for raw private
+evidence disclosure. Complete S2 also includes bounded history repair and source-qualified proposal
+review; completing Batch B alone does not complete S2.
+
+#### Current implementation checkpoint
+
+Private on-demand Slack root-message capture is integrated across the Portal, API/SDK, CLI and
+MCP behind a default-off server readiness gate. The local qualification exercises the registered
+HTTP authorization middleware and packaged CLI, native Temporal execution and replay, encrypted
+PostgreSQL capture, fresh evidence checks, owner isolation, cancellation and retention. Unknown capture outcomes use bounded status checks with an explicit manual recheck. When native
+history is missing after the original admission window, the owner can record a stop fence and start
+a fresh capture only after a qualified native absence check. The old cancellation fence remains in
+force and existing observations are retained; this never fabricates a terminal execution result.
+The dedicated isolated PostgreSQL CI job requires real owner/RLS, recovery and worker cases with
+zero skipped tests. Provider responses in local qualification are controlled protocol fixtures;
+they do not certify live Slack permissions. The shared deployment must remain disabled until its actual source, schema, worker
+identity and retention execution have been qualified.
+
+The Databricks delivery assets now render only for an explicitly bound organization/project
+audience and dedicated query identity, with CDC deduplication, deletion handling and native metric
+semantics for Genie. Offline SQL fixtures and CLI resource-schema checks establish renderer
+correctness; native Unity Catalog access, caller identity, feed freshness and erasure, and Genie
+answers still need workspace qualification before Fabric may disclose analytical results.
+
+Published Fabric Harness packages have been exercised in an isolated consumer. Autonomous triage
+still requires a verified execution target and source-authority bridge plus a durable finite-job
+budget binding. A Harness tenant label does not grant project/source access. This checkpoint does
+not implement continuous monitoring, additional source providers, recommendation ranking or
+outcome learning; those remain the later batches above.
+
+#### One attributable state model
+
+Reuse existing stories, context, workspaces, runs, workflows, report schedules, approvals and
+deployment evidence. Add projections only for missing facts rather than cloning those lifecycle
+records. References form the useful delivery relationships: source → proposed change → accepted
+feature → specification → execution → PR → checks → deployment → observed outcome. An absent edge
+is unknown, not a fabricated deployment or inferred completion percentage.
+Every fact retains its organization/project/actor or source-audience/grant identity, audience revision,
+provenance and evidence revision throughout joins, ranking and exports. A common query contract is
+not a common visibility bucket. Never aggregate away audience restrictions before authorizing
+contributing facts; the projection builder must verify them again for the destination.
+
+An awareness response records `computedAt`, policy/schema revision, authorized subject references,
+evidence revisions, source-specific `observedAt`/watermark, coverage and expiry. Facets are independently
+available, delayed, partial or unavailable. A context facet distinguishes no approved context,
+processing context, available context and unknown visibility; document counts alone do not establish
+quality. Never infer “no projects” from an empty favorites/recents list or “all clear” from a failed
+work query. A capability facet uses actual current create/edit/execute rights rather than an admin
+boolean. These are proposals for the shared query contract, not claims of current implementation.
+Where private projects may be invisible, say “no accessible projects” rather than asserting that the
+organization is empty. A global absence claim requires authority over the complete relevant scope.
+
+Capability readiness also separates installed/configured, recently verified, degraded and unavailable.
+Reuse existing model, connection, worker/target and run diagnostics; an OAuth row is not proof that
+a read succeeds, and an online remote session is not proof that it accepts a particular Harness
+release. Preserve the checked time, capability/release version and safe failure code. Fabric Genie
+uses this registry to offer actions it can currently support, explain what is missing and link to
+the existing repair flow. Do not perform intrusive provider probes on each dashboard render or expose
+operator infrastructure controls to delivery-team users. Recovery suggestions are read-only proposals
+until the user invokes their separately authorized command.
+
+```mermaid
+flowchart LR
+    Sources[Selected enterprise sources] --> Capture[Authorized capture]
+    Capture --> Private[Private evidence in Lakebase]
+    Work[Projects, context, approvals and runs] --> Facts[Current Fabric facts with audience identity]
+    Private -->|Current source audience| Facts
+    Temporal[Temporal execution and schedules] --> Facts
+    Facts --> Candidates[Evidence-backed next steps]
+    Facts -->|Approved minimized projection only| UC[Governed analytical data]
+    UC --> Analytics[Databricks analytics and semantic tools]
+    Analytics -->|Timestamped enrichment| Candidates
+    Candidates --> Portal[Dashboard and Fabric Genie]
+    Candidates --> Transports[API, CLI and MCP]
+    Portal -->|Explicit action and current checks| Work
+    Work --> Outcomes[Observed outcomes and feedback]
+    Outcomes --> Evals[Versioned evaluations]
+    Evals -->|Reviewed improvements| Candidates
+```
+
+#### Recommendation rules and interaction
+
+Every candidate has a stable opaque ID, kind, subject/evidence revisions, machine-readable reason,
+plain-language explanation, urgency, freshness/coverage, expiry, policy version and a canonical action.
+Authorization gates candidate construction, counts and reasons before ranking. Ranking initially uses
+explicit rules: work blocked on the recipient, decisions/reviews due, recoverable failures, then
+confirmed project gaps and optional improvements. Recency breaks relevant ties; a favorite is a
+navigation preference, not evidence that its work is most urgent. Deduplicate by subject/action intent
+across Needs you, Continue and suggestions, not only by an identical URL. Return bounded continuation
+for additional candidates rather than scoring every tenant record on every page load.
+Use explicit project priorities and workstream goals where authorized and available; do not infer
+urgency from a favorite. A dismissal is not invalidated merely by translated wording, cosmetic copy
+or a ranking-policy revision when its underlying evidence and reason remain materially unchanged.
+
+| Existing limitation | Required behavior |
+| --- | --- |
+| Generic “Add context” | Recommend a particular gap only when an authorized readiness check establishes it; explain the needed requirement, decision or source and link the existing context flow. Processing/unavailable context gets an accurate status, not a deficiency claim |
+| “Create your first project” from no shortcuts | Use an authorized project-existence fact. Existing projects offer choose/continue; genuinely empty organizations offer creation only to users who can create |
+| Static role-based workflow suggestion | Check actual workflow-create access and existing qualifying automations. Suggest a recurring update only with a demonstrated need; show no ineffective action |
+| Duplicated or repetitive cards | One primary action per subject across dashboard panels; dismissal applies to the evidence/reason revision, snooze has an explicit expiry, and materially changed evidence can produce a new suggestion |
+| No explanation or feedback | Show a one-line “because” and a Why this? drawer with sources, checked time, coverage and expected action. Offer Dismiss, Snooze and Not relevant with undo; feedback does not mutate the work item |
+| Delayed or failed reads appear complete | Preserve timestamped readable results on transient failures, label them delayed and retry. An authoritative denial removes the item immediately; unknown data never produces an all-clear or manufactured gap |
+| No outcome learning | Resolve/retract candidates when evidence changes; measure successful actions and downstream outcomes, not click-through alone. Qualify learned reranking in shadow before enabling it |
+
+Keep three suggestions visible at most, with a quiet View all. Avoid a new settings-heavy dashboard.
+Details, evidence and feedback are progressively disclosed in drawers. Fabric Genie can answer
+“Why this?”, “What changed?” and “What is blocking this project?” from the same bounded facts;
+its explanation cites the recorded evidence and distinguishes model interpretation from verified state.
+Private source-derived reasons, evidence and counts are withheld when current source authorization
+cannot be established, including an unavailable permission check; a cached success is insufficient.
+This restriction does not hide independently authorized ordinary project work during a transient
+analytical outage. Old client state must not reintroduce a withheld private candidate.
+Opening a suggestion or asking a question does not execute its action. Execution uses the existing
+preview/review/approval and agent/workflow interfaces with a fresh server authorization check.
+
+First live refresh uses explicit Refresh and focus invalidation. Retain the existing five-minute
+heavy-query cadence until a measured query-count/latency/concurrency budget proves a replacement.
+A proposed 30-second active-page interval is limited to a cheap scoped digest/invalidation query,
+stopped when hidden; it must not refetch all dashboard queries unchanged. Audit all actual mounts and
+query keys before consolidating polling: the legacy MyWorkPanel has a separate one-minute poll,
+but it is not mounted in the current OrganizationDashboard. Add the existing authorized event mechanism
+only after invalidation, load and reconnection tests, with bounded polling as recovery. Events carry opaque scoped
+invalidation references, not private source text. Data is called current only against its recorded
+window/watermark; “live” never means an event or external system was observed when it was not.
+
+#### Databricks responsibilities and privacy
+
+| Capability | Fabric value and boundary |
+| --- | --- |
+| Lakebase PostgreSQL | Authoritative product state, encrypted private observations, command receipts and scoped recipient preferences. Current Fabric authorization and PostgreSQL RLS remain necessary |
+| Delta/Unity Catalog and existing delivery export | Approved historical facts, governed analytical views, semantic definitions and quality/cost/flow trends. Reuse the existing delivery-event projection and its idempotent export/reconciliation path where qualified; preserve event identity, tombstones, audience revision and observed watermark |
+| Genie analytical tools and curated semantics | Bounded questions such as where reviews accumulate, which checks regress and how delivery outcomes change. Query through qualified actor/audience bindings with citations; never treat a shared backend principal as the end user's permission grant |
+| AI Search | Optional retrieval over approved context and similar resolved cases, with trusted audience restrictions and live source reauthorization. Search/index lag and incomplete revocation prevent disclosure; retain the current qualified retrieval fallback |
+| MLflow evaluation and existing Fabric evals | Versioned datasets, trace/scorer evidence and regression comparison for triage, grounded answers and recommendation usefulness. Export only approved minimized/redacted material; tests and model judgments remain distinguishable |
+| Genie Ontology | Optional semantic enrichment when its supported contract and audience qualify. It is neither the operational context store nor a prerequisite for this delivery path |
+
+Lakebase hosting does not itself grant Unity Catalog protection to a direct PostgreSQL connection.
+Registering Lakebase creates a read-only UC surface and currently requires serverless compute; it is
+not a reason to expose the application database to a broad analytical principal. AI Search does not
+inherit row/column policy enforcement automatically. The current Ontology external-knowledge-source
+path makes its snippets account-wide, so private Slack, project/client evidence and confidential
+metric definitions must not enter that lane. Do not assume an undocumented generic Ontology CRUD API.
+See the [verified Databricks capability reference](../research/fabric-live-awareness-databricks.md)
+and the [canonical context-platform contract](databricks-context-platform.md).
+
+Start the analytical pilot with content-free delivery facts and explicitly approved metric semantics.
+No raw private Slack text, titles, summaries, embeddings or trace payloads enter shared exports,
+analytics, ontology or retrieval merely because the watch owner can read them. Aggregate metrics can
+also reveal private sources; authorize their contributing audience and suppress unsafe cohorts.
+Qualification includes delayed exports, missing events, wrong-tenant results, cross-client cache
+reuse, revocation, deletion, stale indexes and unavailable analytical compute. Databricks failure
+leaves current authorized operational recommendations usable and marks analytical enrichment
+unavailable; it cannot block basic project work or silently substitute stale model-generated facts.
+
+#### Shared transport, recovery and release contract
+
+Define one authorized recommendation query and command set before exposing UI: list/get/refresh,
+dismiss/snooze/undo/feedback and supported run/result/cancel controls. Preference writes belong to the
+current actor inside the organization, never a personal tenancy branch. Freeze the scope matrix in
+the first implementation: a proposed `dashboard:read`/`dashboard:write` pair covers this surface,
+while evidence from projects, features, agents, workflows, integrations or reports additionally
+requires the corresponding exact read scopes and live permissions. Dismissal grants no permission
+to execute the action. Direct calls repeat checks even if discovery hid the item. Do not expose
+pending scope names as supported credentials or tools before all transports enforce them.
+When a private candidate requires a fresh provider read to verify source access, it also requires
+`integrations:execute`, as the canonical source-evidence command does; dashboard read scope cannot
+silently bypass that ceiling. Omit ineligible private candidates without exposing their existence.
+Batch C must update `ORG_API_KEY_SCOPES`, the documented scope-to-permission table, picker, API/MCP
+discovery and route classification together. Make the viewer-clamp decision explicit: a viewer with
+current dashboard-read access may write only their own recommendation preferences, never another
+actor's preferences or underlying work. If `dashboard:write` names those preferences, admit that
+narrow scope to the read-only minting allowlist with its justification and unconditional live actor,
+organization and object checks, including after demotion and for already-issued wildcard keys.
+Executing the suggested action still requires its separate scopes and current mutation permission.
+
+Feedback mutations use stable request IDs, bounded expiry/reason codes and security-appropriate
+auditing without copying evidence text. Changing actor, organization, project access, credential
+binding, source grant, subject revision or policy invalidates relevant cached candidates and opaque
+continuations. Model output cannot add a source, permission, recipient, tool, budget or autonomy level.
+
+Temporal retains orchestration, schedules, retries, cancellation and history. Use a fixed request-bound
+workflow identity and native duplicate-start behavior for capture/triage, with a qualified admission
+horizon shorter than native history retention. Duplicate requests within that horizon reattach to
+the same native execution; after expiry, a missing history is outcome unknown and never authorizes
+a fresh replay. Atomic page/effect receipts are for external/DB effects, not a second workflow state
+machine. New finite workflows need activity tests, recorded-history replay and crash/retry evidence.
+Bind admission to the qualified Temporal namespace identity and connection binding as well as the
+request; an operator routing change cannot silently start the same intent on another backend.
+Persist a requested cancellation before its native RPC, fence later admission/page effects with that
+intent, and report outcome unknown until the native execution proves its actual terminal state.
+
+Acceptance includes synthetic complete/partial/missing facts; read-only members, invited guests,
+revoked users and wildcard/narrow API keys; no role-only capabilities; no source/count/embedding
+leaks; stable ranking/feedback; current permission changes at action time; projection lag/outage;
+live Slack and actual Harness qualification; and desktop/mobile/keyboard/empty/error UX. Measure
+freshness and time-to-useful-action alongside false gaps, repeated suggestions, accepted/completed
+actions, human correction, agent quality, cost and escaped regressions. Improvements to the factory's
+own prompts/ranking/evaluators remain reviewed, versioned changes with rollback.
+The Portal rename and drawer/list changes also update Get Started registry entries, tour steps,
+covered anchors and English/German translation keys together, including previously hardcoded card
+copy. Run the navigation/registry drift test and the sibling dashboard render tests.
+
+Keep incomplete modules and routes isolated. Each batch must type-check and pass its focused
+security/transport checks before live imports are restored; migration-compatible schema must be in
+place in the test environment first. Evidence distinguishes implemented, locally verified, live
+qualified and production enabled. A local feature test never certifies a production binding.
+
+Primary provider contracts: [Slack request verification](https://docs.slack.dev/authentication/verifying-requests-from-slack),
+[Slack Events](https://docs.slack.dev/apis/events-api/),
+[Microsoft Teams notifications](https://learn.microsoft.com/en-us/graph/teams-changenotifications-chatmessage),
+[Jira enhanced issue search](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/),
+[Azure DevOps service hook events](https://learn.microsoft.com/en-us/azure/devops/service-hooks/events?view=azure-devops),
+and [Fizzy API](https://github.com/basecamp/fizzy/blob/main/docs/api/README.md).
+Provider documentation describes available interfaces, not proof of qualification in Fabric.
+
+
+#### Bounded history implementation checkpoint
+
+Private Slack capture now accepts an explicitly selected `BACKFILL` window in addition to `RECENT`
+and `CONTINUE`. A new window spans at most seven days and starts within the preceding 90 days;
+its end cannot be in the future. The original dates and request digest are durably bound to the
+owner-scoped capture receipt and native execution. Continue resumes that same checkpoint/window,
+including a partially captured historical window; it never silently expands coverage. Capture
+retention starts when evidence is captured, and existing observations remain subject to current
+source access and erasure. No thread replies, files, source writes or continuous monitoring are claimed.
+
+The Portal progressively discloses local-time window selection and shows captured UTC-backed
+window coverage. API/SDK, CLI (`sources capture --mode BACKFILL --from ... --to ...`), hosted MCP
+and the SDK-backed MCP server expose the same canonical capture operation. The SDK-backed MCP
+server also exposes all eleven private-source operations when the supplied SDK implements them;
+unsupported partial SDKs do not advertise unusable tools. These controls remain behind the existing
+operator readiness gate. Native schedules, event-driven intake, additional providers, proposal
+application, remote finite-agent hosting and live qualification remain separate roadmap items.
+
+
+Capture readiness verifies the historical-intent columns and validated constraints before enabling
+commands. Base-table qualification remains separate so expiry cleanup continues while ingestion is
+disabled or a command rollout is incomplete. Worker startup now checks an existing native source
+retention schedule for its actual active UTC calendar, expected workflow/queue, empty arguments,
+unlimited actions and bounded overlap/catch-up policy; a conflicting schedule needs operator repair
+and is never silently unpaused or overwritten.

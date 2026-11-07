@@ -779,3 +779,30 @@ it("marks only a locked, proven unreserved stale revision as safe to abandon", a
 	expect(m.runUpsert).not.toHaveBeenCalled();
 	expect(m.execute).not.toHaveBeenCalled();
 });
+
+it("refuses score comparisons across legacy and deterministic scorer formats", async () => {
+	storedRuns.set(run.id, run);
+	storedRuns.set("example-candidate", {
+		...run,
+		id: "example-candidate",
+		agentVersion: 2,
+		reportJson: {
+			...report,
+			version: 2,
+			method: "deterministic",
+			scorerVersion: "fabric-deterministic-v1",
+			status: "PASSED",
+			unavailable: 0,
+			results: [
+				{ kind: "required", index: 0, passed: true, available: true },
+			],
+		},
+	});
+	await expect(
+		compareAgentTestRunsCommand(actor, {
+			baselineRunId: run.id,
+			candidateRunId: "example-candidate",
+		}),
+	).rejects.toMatchObject({ code: "CONFLICT" });
+	expect(m.execute).not.toHaveBeenCalled();
+});

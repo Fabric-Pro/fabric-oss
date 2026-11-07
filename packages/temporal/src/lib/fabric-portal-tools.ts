@@ -1,3 +1,5 @@
+import { DELIVERY_SOURCE_TOOL_NAMES } from "./fabric-delivery-source-tool-definitions";
+import { TRIAGE_TOOL_NAMES } from "./fabric-triage-tool-definitions";
 /**
  * The Fabric portal tools Parlume's Fabric Agent may use in a meeting, and when
  * a turn needs their schemas.
@@ -21,6 +23,7 @@
  * pins to the meeting's project (and fills in when the call leaves it out).
  */
 export const FABRIC_PORTAL_PROJECT_TOOL_NAMES = [
+	"fabric_get_project_delivery",
 	"fabric_list_projects",
 	"fabric_get_project",
 	"fabric_update_project",
@@ -93,6 +96,68 @@ export const FABRIC_PORTAL_TOOL_NAMES: readonly string[] = [
  * the gateway adds belongs in this list or in the two above.
  */
 export const FABRIC_PORTAL_EXCLUDED_TOOL_NAMES: readonly string[] = [
+	...DELIVERY_SOURCE_TOOL_NAMES,
+	...TRIAGE_TOOL_NAMES,
+	// Saved source history/settings need separately consented external/human project reads.
+	"fabric_list_delivery_signals",
+	"fabric_get_delivery_signal",
+	"fabric_get_delivery_signal_sources",
+	// Coding execution is not part of a meeting grant. External clients use explicit agent scopes.
+	"fabric_list_implementation_sessions",
+	"fabric_get_implementation_session",
+	"fabric_start_implementation_session",
+	"fabric_cancel_implementation_session",
+	"fabric_follow_up_implementation_session",
+	"fabric_get_implementation_messages",
+	"fabric_list_report_executions",
+	"fabric_list_report_artifacts",
+
+	// Report configuration, execution and delivery require an explicit member organization connection.
+	"fabric_list_reports",
+	"fabric_create_report",
+	"fabric_get_report",
+	"fabric_configure_report",
+	"fabric_execute_report",
+	"fabric_get_report_execution",
+	"fabric_cancel_report_execution",
+	"fabric_download_report_artifact",
+	"fabric_distribute_report_artifact",
+	"fabric_get_report_deliveries",
+
+	// Owner-scoped quality controls do not extend a runtime/project service grant.
+	"fabric_agent_quality_get_policy",
+	"fabric_agent_quality_configure_policy",
+	"fabric_agent_quality_list_assessments",
+	"fabric_agent_quality_get_assessment",
+	"fabric_agent_quality_cancel_assessment",
+	"fabric_agent_quality_compare_assessments",
+	"fabric_workflow_quality_get_policy",
+	"fabric_workflow_quality_configure_policy",
+	"fabric_workflow_quality_list_assessments",
+	"fabric_workflow_quality_get_assessment",
+	"fabric_workflow_quality_cancel_assessment",
+	"fabric_workflow_quality_compare_assessments",
+
+	// Prompt editing and workflow authoring/evaluation have their own reviewed
+	// product journey; a meeting grant does not confer those authoring powers.
+	"fabric_assist_prompt",
+	"fabric_preview_prompt",
+	"fabric_get_prompt_response",
+	"fabric_update_prompt_response",
+	"fabric_list_workflow_starters",
+	"fabric_create_workflow_from_starter",
+	"fabric_check_workflow_readiness",
+	"fabric_list_workflow_versions",
+	"fabric_rollback_workflow",
+	"fabric_get_workflow_schedule",
+	"fabric_configure_workflow_schedule",
+	"fabric_inspect_workflow_result",
+	"fabric_list_workflow_checks",
+	"fabric_preview_workflow_check",
+	"fabric_save_workflow_check",
+	"fabric_apply_workflow_check",
+	"fabric_remove_workflow_check",
+
 	"fabric_list_skills",
 	"fabric_get_skill",
 	"fabric_create_skill",

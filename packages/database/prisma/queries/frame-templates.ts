@@ -1,4 +1,10 @@
-import { db } from "../client";
+import {
+	frameAuthoringDocumentSchema,
+	frameTemplateVariableSchema,
+	renderFrameTemplate,
+} from "@repo/utils/frame-authoring";
+import { z } from "zod";
+import { db, type Prisma } from "../client";
 import type { FrameDocument } from "./frames";
 
 export interface FrameTemplateVariable {
@@ -23,6 +29,7 @@ export interface FrameTemplate {
 }
 
 export interface CreateFrameTemplateInput {
+	id?: string;
 	name: string;
 	description?: string;
 	category: string;
@@ -34,9 +41,11 @@ export interface CreateFrameTemplateInput {
 
 export async function createFrameTemplate(
 	input: CreateFrameTemplateInput,
+	client: Pick<Prisma.TransactionClient, "frameTemplate"> = db,
 ): Promise<FrameTemplate> {
-	const template = await db.frameTemplate.create({
+	const template = await client.frameTemplate.create({
 		data: {
+			...(input.id ? { id: input.id } : {}),
 			name: input.name,
 			description: input.description,
 			category: input.category,
@@ -223,13 +232,25 @@ export function substituteTemplateVariables(
 	variables: Record<string, FrameTemplateVariable>,
 	values: Record<string, string>,
 ): FrameDocument {
-	let contentStr = JSON.stringify(content);
-
-	for (const [key, variable] of Object.entries(variables)) {
-		const placeholder = `{{${key}}}`;
-		const value = values[key] ?? variable.default ?? "";
-		contentStr = contentStr.split(placeholder).join(String(value));
-	}
-
-	return JSON.parse(contentStr) as FrameDocument;
+	const authored = frameAuthoringDocumentSchema.parse({
+		title: content.title,
+		description: content.description,
+		kind: content.kind,
+		presentation: content.presentation,
+		blocks: content.blocks,
+		theme: content.theme
+			? {
+					mode: content.theme.mode,
+					accentColor: content.theme.accentColor,
+				}
+			: undefined,
+	});
+	return {
+		version: 1,
+		...renderFrameTemplate(
+			authored,
+			z.record(z.string(), frameTemplateVariableSchema).parse(variables),
+			values,
+		),
+	};
 }

@@ -1,0 +1,4 @@
+# Documentation placeholder only; deliberately excluded by the unbound bundle.
+# render.py generates a separate Genie bundle with INLINE serialized_space and
+# an exact query-principal ACL after the bounded views have been applied.
+resources: {}

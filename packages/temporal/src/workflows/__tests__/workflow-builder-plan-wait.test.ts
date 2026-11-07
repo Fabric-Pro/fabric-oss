@@ -47,6 +47,7 @@ async function run(nodeType: string, attempts: Array<() => NodeResult>) {
 		taskQueue,
 		workflowBundle: bundle,
 		activities: {
+			admitRecordedRunQuality: async () => null,
 			getWorkflowDefinition: providedWorkflowGraph,
 			executeWorkflowNode: async () => {
 				const attempt = attempts[calls++];

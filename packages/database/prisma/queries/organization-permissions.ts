@@ -20,7 +20,7 @@ import {
 	Permissions,
 	resolveOrgPermissions,
 } from "@repo/permissions";
-import { db } from "../client";
+import { db, type Prisma } from "../client";
 
 /**
  * Does `userId` hold `permission` in `organizationId`, by their org role?
@@ -34,8 +34,9 @@ async function organizationPermissionHolds(
 	userId: string,
 	organizationId: string,
 	permission: Permission,
+	client: Prisma.TransactionClient = db,
 ): Promise<boolean> {
-	const orgMember = await db.member.findFirst({
+	const orgMember = await client.member.findFirst({
 		where: { organizationId, userId },
 		select: { role: true },
 	});
@@ -108,11 +109,13 @@ export async function canCreateProjectInOrganization(
 export async function canReadOrganizationFrames(
 	userId: string,
 	organizationId: string,
+	client: Prisma.TransactionClient = db,
 ): Promise<boolean> {
 	return organizationPermissionHolds(
 		userId,
 		organizationId,
 		Permissions.WORKSPACE_READ,
+		client,
 	);
 }
 
@@ -135,11 +138,13 @@ export async function canCreateOrganizationFrames(
 export async function canUpdateOrganizationFrames(
 	userId: string,
 	organizationId: string,
+	client: Prisma.TransactionClient = db,
 ): Promise<boolean> {
 	return organizationPermissionHolds(
 		userId,
 		organizationId,
 		Permissions.WORKSPACE_UPDATE,
+		client,
 	);
 }
 
@@ -410,5 +415,29 @@ export async function canReadOrganizationAgents(
 		userId,
 		organizationId,
 		Permissions.AGENT_READ,
+	);
+}
+
+/** Current report read capability, independently checked by key-backed transports. */
+export async function canReadOrganizationReports(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.REPORT_READ,
+	);
+}
+
+/** Current authority to configure automatic checks on a saved agent. */
+export async function canConfigureOrganizationAgentQuality(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.AGENT_UPDATE,
 	);
 }

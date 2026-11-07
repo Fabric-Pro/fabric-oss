@@ -21,7 +21,9 @@ import { buildKeysCommand } from "../commands/auth/keys.js";
 import { buildLoginCommand } from "../commands/auth/login.js";
 import { buildLogoutCommand } from "../commands/auth/logout.js";
 import { buildWhoamiCommand } from "../commands/auth/whoami.js";
+import { buildBrandingCommand } from "../commands/branding/index.js";
 import { buildChatsCommand } from "../commands/chats/index.js";
+import { buildDashboardCommand } from "../commands/dashboard/index.js";
 import { buildCompletionCommand } from "../commands/completion/index.js";
 import { buildConnectCommand } from "../commands/connect/chatgpt.js";
 import { buildContextCommand } from "../commands/context/index.js";
@@ -35,6 +37,7 @@ import { buildOrgsCommand } from "../commands/orgs/index.js";
 import { buildProjectsCommand } from "../commands/projects/index.js";
 import { buildPromptsCommand } from "../commands/prompts/index.js";
 import { buildReportsCommand } from "../commands/reports/index.js";
+import { buildRunQualityCommand } from "../commands/run-quality/index.js";
 import { buildSkillsCommand } from "../commands/skills/index.js";
 import { buildWorkflowsCommand } from "../commands/workflows/index.js";
 import { buildWorkspacesCommand } from "../commands/workspaces/index.js";
@@ -134,6 +137,7 @@ program.addCommand(buildFeaturesCommand());
 // fabric workflows
 // ---------------------------------------------------------------------------
 program.addCommand(buildWorkflowsCommand());
+program.addCommand(buildRunQualityCommand());
 
 // ---------------------------------------------------------------------------
 // fabric prompts
@@ -174,6 +178,7 @@ program.addCommand(buildMcpCommand());
 // fabric frames
 // ---------------------------------------------------------------------------
 program.addCommand(buildFramesCommand());
+program.addCommand(buildBrandingCommand());
 
 // ---------------------------------------------------------------------------
 // fabric workspaces
@@ -184,6 +189,7 @@ program.addCommand(buildWorkspacesCommand());
 // fabric chats
 // ---------------------------------------------------------------------------
 program.addCommand(buildChatsCommand());
+program.addCommand(buildDashboardCommand());
 
 // ---------------------------------------------------------------------------
 // fabric reports

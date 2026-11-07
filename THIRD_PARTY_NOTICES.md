@@ -74,7 +74,7 @@ Font License, Version 1.1**; the full licence text is
 
 The Proposal export embeds Poppins 4.003 in the PDFs it prints, for headings
 (Fizzy #2946). The font file is bundled unmodified, with its licence, in
-`packages/temporal/src/lib/proposal-export/fonts/`: `Poppins-Bold.ttf`, from
+`packages/temporal/src/lib/proposal-export/fonts/`: `Poppins-Regular.ttf`, `Poppins-SemiBold.ttf`, `Poppins-Bold.ttf`, and `Poppins-ExtraBold.ttf`, from
 the `ofl/poppins/` folder of the google/fonts repository.
 
 Copyright 2020 The Poppins Project Authors. Licensed under the **SIL Open Font
@@ -87,12 +87,19 @@ The Proposal export embeds JetBrains Mono 2.200 in the PDFs it prints, for
 eyebrows, labels and captions (Fizzy #2946). The font files are bundled
 unmodified, with their licence, in
 `packages/temporal/src/lib/proposal-export/fonts/`:
-`JetBrainsMono-Regular.woff2` and `JetBrainsMono-Medium.woff2`, from the
+`JetBrainsMono-Regular.woff2`, `JetBrainsMono-Medium.woff2`, `JetBrainsMono-Bold.woff2`, and `JetBrainsMono-ExtraBold.woff2`, from the
 `fonts/webfonts/` folder of the JetBrains/JetBrainsMono repository.
 
 Copyright 2020 The JetBrains Mono Project Authors. Licensed under the **SIL
 Open Font License, Version 1.1**; the full licence text is
 `packages/temporal/src/lib/proposal-export/fonts/OFL-JetBrainsMono.txt`.
+
+The same committed faces are embedded in Fabric artifact previews and Frame
+exports through generated data in `packages/utils/lib/generated/`. Regenerate
+with `node scripts/generate-artifact-brand-fonts.mjs`. Additional Poppins faces
+are pinned to google/fonts commit `7dc16b7de42db624b902f2292b68ed9e489e5053`;
+additional JetBrains Mono faces are pinned to commit
+`4de996505280f74099699ede938c8b478f702068` (v2.200). No uploaded font bytes are used.
 
 ### Proposal export runtime dependencies
 

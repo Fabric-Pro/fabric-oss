@@ -24,6 +24,7 @@ import {
 	SelectValue,
 } from "@ui/components/select";
 import { useId } from "react";
+import { ReportBrandingSettings } from "./ReportBrandingSettings";
 
 type Props = {
 	value?: ReportEvidenceConfig;
@@ -34,6 +35,7 @@ type Props = {
 	requireProject?: boolean;
 	lockedProjectId?: string;
 	lockAudience?: boolean;
+	outputFormat?: string;
 };
 
 /** Shared by create and existing report settings. Cadence remains in its existing control. */
@@ -46,6 +48,7 @@ export function ReportEvidenceSettings({
 	sourceDefinition,
 	sourceConnections,
 	requireProject,
+	outputFormat,
 }: Props) {
 	const id = useId();
 	const { data, isError, isPending } = useQuery({
@@ -283,6 +286,7 @@ export function ReportEvidenceSettings({
 												projectId === "organization"
 													? undefined
 													: projectId,
+											branding: undefined,
 										})
 									}
 								>
@@ -347,6 +351,35 @@ export function ReportEvidenceSettings({
 						"Project knowledge is read using current project access. Results remain available only to the project report audience."}
 				</output>
 			)}
+			<label className="flex items-start gap-3 rounded-lg border p-3 text-sm">
+				<input
+					type="checkbox"
+					checked={outputFormat === "PDF" || !!value.generatePdf}
+					disabled={outputFormat === "PDF"}
+					onChange={(event) =>
+						update({ generatePdf: event.target.checked })
+					}
+					className="mt-1"
+				/>
+				<span>
+					<span className="font-medium">
+						Include a downloadable PDF
+					</span>
+					<span className="mt-1 block text-muted-foreground">
+						Generated automatically from this run’s saved report and
+						reviewed branding. Distribution remains a separate
+						action.
+					</span>
+				</span>
+			</label>
+			<ReportBrandingSettings
+				key={`${organizationId}:${value.projectId}`}
+				organizationId={organizationId}
+				projectId={value.projectId}
+				value={value.branding}
+				outputFormat={outputFormat}
+				onChange={(branding) => update({ branding })}
+			/>
 			<p className="text-sm text-muted-foreground">
 				Generated reports are drafts for review. Missing or unverified
 				historical evidence is identified in the result.

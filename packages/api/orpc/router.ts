@@ -31,6 +31,10 @@ export const router = publicProcedure
 			"agentMemoryRouter",
 			() => import("../modules/agent-memory/router"),
 		),
+		runQuality: lazyRouter(
+			"runQualityRouter",
+			() => import("../modules/run-quality/router"),
+		),
 		agents: lazyRouter(
 			"agentsRouter",
 			() => import("../modules/agents/router"),

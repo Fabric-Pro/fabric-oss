@@ -71,3 +71,39 @@ it("uses organization-aware check routes without automatic mutation retries", as
 	);
 	expect(request.mock.calls.at(-1)?.[1]).toContain("/checks/remove?org=");
 });
+
+it("preserves richer check versions and schema constraints in preview and save", async () => {
+	const request = vi.fn();
+	const resource = new WorkflowsResource({
+		request,
+	} as unknown as FabricHttpClient);
+	const input = {
+		executionId: "example-run",
+		nodeId: "draft",
+		expectedRevision: "a".repeat(64),
+		version: 2 as const,
+		jsonSchema: {
+			type: "object" as const,
+			properties: { ready: { type: "boolean" as const } },
+		},
+		jsonAssertions: [{ pointer: "/ready", equals: true }],
+	};
+	await resource.previewCheck("example-workflow", input);
+	expect(request).toHaveBeenLastCalledWith(
+		"POST",
+		"/workflows/example-workflow/checks/preview",
+		{ body: input, retry: { maxRetries: 0 } },
+	);
+	await resource.saveCheck("example-workflow", {
+		...input,
+		name: "Structured response",
+	});
+	expect(request).toHaveBeenLastCalledWith(
+		"POST",
+		"/workflows/example-workflow/checks/save",
+		{
+			body: { ...input, name: "Structured response" },
+			retry: { maxRetries: 0 },
+		},
+	);
+});

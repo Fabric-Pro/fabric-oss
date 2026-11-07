@@ -41,6 +41,15 @@ type VisibilityContext = {
 	tenantContext?: { userId: string | null };
 };
 
+/** Shared object-visibility boundary for session, REST and MCP queries. */
+export async function assertProjectVisible(projectId: string, userId: string) {
+	if (!(await hasProjectAccess(projectId, userId))) {
+		throw new ORPCError("NOT_FOUND", {
+			message: PROJECT_NOT_FOUND_MESSAGE,
+		});
+	}
+}
+
 export const projectNotFoundUnlessVisible = os
 	.$context<VisibilityContext>()
 	.middleware(async ({ context, next }, input: unknown) => {
@@ -60,10 +69,6 @@ export const projectNotFoundUnlessVisible = os
 
 		// A hard boundary, never downgraded by RBAC_DRY_RUN: it decides what
 		// the caller may learn exists, not what they may do.
-		if (!(await hasProjectAccess(projectId, userId))) {
-			throw new ORPCError("NOT_FOUND", {
-				message: PROJECT_NOT_FOUND_MESSAGE,
-			});
-		}
+		await assertProjectVisible(projectId, userId);
 		return next();
 	});

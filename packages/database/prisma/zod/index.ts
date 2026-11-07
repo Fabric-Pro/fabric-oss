@@ -348,7 +348,7 @@ export type ProjectDocumentFindingResponseScalarFieldEnum = z.infer<typeof Proje
 
 // File: ProjectDocumentStyleScalarFieldEnum.schema.ts
 
-export const ProjectDocumentStyleScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'projectId', 'documentId', 'styleDirection', 'primaryColor', 'accentColors', 'autoVisuals', 'updatedById', 'createdAt', 'updatedAt'])
+export const ProjectDocumentStyleScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'projectId', 'documentId', 'styleDirection', 'primaryColor', 'accentColors', 'autoVisuals', 'brandSource', 'coverStyle', 'updatedById', 'createdAt', 'updatedAt'])
 
 export type ProjectDocumentStyleScalarFieldEnum = z.infer<typeof ProjectDocumentStyleScalarFieldEnumSchema>;
 
@@ -486,7 +486,7 @@ export type GlossySegmentCacheScalarFieldEnum = z.infer<typeof GlossySegmentCach
 
 // File: ProjectRecipientBrandScalarFieldEnum.schema.ts
 
-export const ProjectRecipientBrandScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'name', 'website', 'logoKey', 'logoHash', 'colors', 'version', 'updatedById', 'createdAt', 'updatedAt'])
+export const ProjectRecipientBrandScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'name', 'website', 'logoKey', 'logoHash', 'colors', 'displayFontFamily', 'bodyFontFamily', 'coverStyle', 'version', 'updatedById', 'createdAt', 'updatedAt'])
 
 export type ProjectRecipientBrandScalarFieldEnum = z.infer<typeof ProjectRecipientBrandScalarFieldEnumSchema>;
 
@@ -903,6 +903,12 @@ export type RequestSpanScalarFieldEnum = z.infer<typeof RequestSpanScalarFieldEn
 export const ProjectUserPreferenceScalarFieldEnumSchema = z.enum(['id', 'projectId', 'userId', 'organizationId', 'kanbanLocalRepoPath', 'inviteWidgetDismissedAt', 'inviteWidgetDismissedInviteExpiry', 'roadmapView', 'roadmapStoryOrder', 'decisionsView', 'favoritedAt', 'lastVisitedAt', 'projectTabPrefs', 'capabilityWarningSuppressions', 'readinessSeenAt', 'readinessSeenLevel', 'readinessAutoExpandedAt', 'createdAt', 'updatedAt'])
 
 export type ProjectUserPreferenceScalarFieldEnum = z.infer<typeof ProjectUserPreferenceScalarFieldEnumSchema>;
+
+// File: DashboardCuratedPreferenceScalarFieldEnum.schema.ts
+
+export const DashboardCuratedPreferenceScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'cardKey', 'pinnedAt', 'dismissedAt', 'clickCount', 'lastClickedAt', 'createdAt', 'updatedAt'])
+
+export type DashboardCuratedPreferenceScalarFieldEnum = z.infer<typeof DashboardCuratedPreferenceScalarFieldEnumSchema>;
 
 // File: ProjectUserFunctionTagScalarFieldEnum.schema.ts
 
@@ -2368,6 +2374,78 @@ export const AgentTestRunScalarFieldEnumSchema = z.enum(['id', 'organizationId',
 
 export type AgentTestRunScalarFieldEnum = z.infer<typeof AgentTestRunScalarFieldEnumSchema>;
 
+// File: RunQualityPolicyScalarFieldEnum.schema.ts
+
+export const RunQualityPolicyScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'userId', 'workflowId', 'instanceId', 'enabled', 'revision', 'rulesJson', 'createdAt', 'updatedAt'])
+
+export type RunQualityPolicyScalarFieldEnum = z.infer<typeof RunQualityPolicyScalarFieldEnumSchema>;
+
+// File: RunQualityAssessmentScalarFieldEnum.schema.ts
+
+export const RunQualityAssessmentScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'userId', 'policyId', 'policyRevision', 'sourceVersion', 'workflowExecutionId', 'agentExecutionId', 'nativeWorkflowId', 'nativeRunId', 'assessmentWorkflowId', 'assessmentRunId', 'sourceScopeJson', 'rulesJson', 'rulesHash', 'status', 'verdict', 'reportJson', 'errorCode', 'deadlineAt', 'createdAt', 'updatedAt', 'completedAt'])
+
+export type RunQualityAssessmentScalarFieldEnum = z.infer<typeof RunQualityAssessmentScalarFieldEnumSchema>;
+
+// File: FrameChangeProposalScalarFieldEnum.schema.ts
+
+export const FrameChangeProposalScalarFieldEnumSchema = z.enum(['id', 'frameId', 'userId', 'organizationId', 'requestId', 'requestHash', 'baseUpdatedAt', 'baseContentHash', 'baseContent', 'proposedContent', 'proposedContentHash', 'status', 'appliedUpdatedAt', 'createdAt', 'updatedAt'])
+
+export type FrameChangeProposalScalarFieldEnum = z.infer<typeof FrameChangeProposalScalarFieldEnumSchema>;
+
+// File: FrameApprovedRevisionScalarFieldEnum.schema.ts
+
+export const FrameApprovedRevisionScalarFieldEnumSchema = z.enum(['id', 'frameId', 'userId', 'organizationId', 'contentHash', 'content', 'sourceUpdatedAt', 'origin', 'createdAt'])
+
+export type FrameApprovedRevisionScalarFieldEnum = z.infer<typeof FrameApprovedRevisionScalarFieldEnumSchema>;
+
+// File: DeliverySignalWatchScalarFieldEnum.schema.ts
+
+export const DeliverySignalWatchScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'projectId', 'userId', 'integrationId', 'provider', 'installationId', 'containerId', 'label', 'state', 'version', 'grantRevision', 'retentionDays', 'verifiedAt', 'captureWindowStart', 'captureWindowEnd', 'captureCursorCiphertext', 'captureCheckpointVersion', 'captureComplete', 'captureGrantRevision', 'lastWorkflowId', 'lastRequestId', 'createdAt', 'updatedAt'])
+
+export type DeliverySignalWatchScalarFieldEnum = z.infer<typeof DeliverySignalWatchScalarFieldEnumSchema>;
+
+// File: DeliverySignalSourceGrantScalarFieldEnum.schema.ts
+
+export const DeliverySignalSourceGrantScalarFieldEnumSchema = z.enum(['id', 'watchId', 'organizationId', 'projectId', 'userId', 'revision', 'audience', 'humanUserId', 'botId', 'botUserId', 'adapterVersion', 'verifiedAt', 'revokedAt', 'createdAt', 'updatedAt'])
+
+export type DeliverySignalSourceGrantScalarFieldEnum = z.infer<typeof DeliverySignalSourceGrantScalarFieldEnumSchema>;
+
+// File: DeliverySignalObservationScalarFieldEnum.schema.ts
+
+export const DeliverySignalObservationScalarFieldEnumSchema = z.enum(['id', 'watchId', 'grantId', 'organizationId', 'projectId', 'userId', 'externalItemId', 'revisionKind', 'revisionValue', 'receiptKey', 'variantKey', 'evidenceDigest', 'ciphertext', 'hasReplies', 'occurredAt', 'expiresAt', 'createdAt', 'updatedAt'])
+
+export type DeliverySignalObservationScalarFieldEnum = z.infer<typeof DeliverySignalObservationScalarFieldEnumSchema>;
+
+// File: DeliverySignalSourceCommandScalarFieldEnum.schema.ts
+
+export const DeliverySignalSourceCommandScalarFieldEnumSchema = z.enum(['id', 'watchId', 'organizationId', 'projectId', 'userId', 'requestId', 'operation', 'payloadHash', 'workflowId', 'expectedVersion', 'grantRevision', 'captureMode', 'captureWindowStart', 'captureWindowEnd', 'createdAt', 'updatedAt'])
+
+export type DeliverySignalSourceCommandScalarFieldEnum = z.infer<typeof DeliverySignalSourceCommandScalarFieldEnumSchema>;
+
+// File: DeliverySignalCapturePageScalarFieldEnum.schema.ts
+
+export const DeliverySignalCapturePageScalarFieldEnumSchema = z.enum(['id', 'watchId', 'organizationId', 'projectId', 'userId', 'workflowId', 'pageIndex', 'result', 'createdAt', 'updatedAt'])
+
+export type DeliverySignalCapturePageScalarFieldEnum = z.infer<typeof DeliverySignalCapturePageScalarFieldEnumSchema>;
+
+// File: HarnessTriageRunScalarFieldEnum.schema.ts
+
+export const HarnessTriageRunScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'projectId', 'userId', 'requestId', 'inputHash', 'goalCiphertext', 'evidence', 'credential', 'model', 'workflowId', 'nativeRunId', 'status', 'failureCode', 'cancelRequestedAt', 'resultCiphertext', 'reviews', 'maxTokens', 'maxMicroUsd', 'measuredTokens', 'measuredMicroUsd', 'outstandingTokens', 'outstandingMicroUsd', 'periodStart', 'expiresAt', 'createdAt', 'updatedAt'])
+
+export type HarnessTriageRunScalarFieldEnum = z.infer<typeof HarnessTriageRunScalarFieldEnumSchema>;
+
+// File: HarnessTriageCallScalarFieldEnum.schema.ts
+
+export const HarnessTriageCallScalarFieldEnumSchema = z.enum(['id', 'runId', 'organizationId', 'projectId', 'userId', 'ordinal', 'requestDigest', 'state', 'reservedTokens', 'reservedMicroUsd', 'measuredTokens', 'measuredMicroUsd', 'responseCiphertext', 'expiresAt', 'createdAt', 'updatedAt'])
+
+export type HarnessTriageCallScalarFieldEnum = z.infer<typeof HarnessTriageCallScalarFieldEnumSchema>;
+
+// File: HarnessTriageBudgetScalarFieldEnum.schema.ts
+
+export const HarnessTriageBudgetScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'periodStart', 'measuredTokens', 'measuredMicroUsd', 'outstandingTokens', 'outstandingMicroUsd', 'createdAt', 'updatedAt'])
+
+export type HarnessTriageBudgetScalarFieldEnum = z.infer<typeof HarnessTriageBudgetScalarFieldEnumSchema>;
+
 // File: SortOrder.schema.ts
 
 export const SortOrderSchema = z.enum(['asc', 'desc'])
@@ -2637,6 +2715,18 @@ export type ProjectDocumentFindingType = z.infer<typeof ProjectDocumentFindingTy
 export const ProjectDocumentFindingResponseKindSchema = z.enum(['CONFIRMED', 'RESPONDED', 'RESOLVED'])
 
 export type ProjectDocumentFindingResponseKind = z.infer<typeof ProjectDocumentFindingResponseKindSchema>;
+
+// File: ArtifactBrandSource.schema.ts
+
+export const ArtifactBrandSourceSchema = z.enum(['COMPANY', 'CLIENT'])
+
+export type ArtifactBrandSource = z.infer<typeof ArtifactBrandSourceSchema>;
+
+// File: ArtifactCoverStyle.schema.ts
+
+export const ArtifactCoverStyleSchema = z.enum(['DARK', 'LIGHT', 'MINIMAL'])
+
+export type ArtifactCoverStyle = z.infer<typeof ArtifactCoverStyleSchema>;
 
 // File: ProjectContextType.schema.ts
 
@@ -5481,6 +5571,8 @@ export const ProjectDocumentStyleSchema = z.object({
   primaryColor: z.string().nullish(),
   accentColors: z.array(z.string()),
   autoVisuals: z.boolean().default(true),
+  brandSource: ArtifactBrandSourceSchema.default("COMPANY"),
+  coverStyle: ArtifactCoverStyleSchema.nullish(),
   updatedById: z.string().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
@@ -6037,6 +6129,9 @@ export const ProjectRecipientBrandSchema = z.object({
   logoKey: z.string().nullish(),
   logoHash: z.string().nullish(),
   colors: z.array(z.string()),
+  displayFontFamily: z.string().nullish(),
+  bodyFontFamily: z.string().nullish(),
+  coverStyle: ArtifactCoverStyleSchema.default("DARK"),
   version: z.number().int().default(1),
   updatedById: z.string().nullish(),
   createdAt: z.date(),
@@ -7739,6 +7834,24 @@ export const ProjectUserPreferenceSchema = z.object({
 });
 
 export type ProjectUserPreferenceType = z.infer<typeof ProjectUserPreferenceSchema>;
+
+
+// File: DashboardCuratedPreference.schema.ts
+
+export const DashboardCuratedPreferenceSchema = z.object({
+  id: z.string(),
+  userId: z.string(),
+  organizationId: z.string(),
+  cardKey: z.string(),
+  pinnedAt: z.date().nullish(),
+  dismissedAt: z.date().nullish(),
+  clickCount: z.number().int(),
+  lastClickedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type DashboardCuratedPreferenceType = z.infer<typeof DashboardCuratedPreferenceSchema>;
 
 
 // File: ProjectUserFunctionTag.schema.ts
@@ -13416,4 +13529,292 @@ export const AgentTestRunSchema = z.object({
 });
 
 export type AgentTestRunType = z.infer<typeof AgentTestRunSchema>;
+
+
+// File: RunQualityPolicy.schema.ts
+
+export const RunQualityPolicySchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  workflowId: z.string().nullish(),
+  instanceId: z.string().nullish(),
+  enabled: z.boolean(),
+  revision: z.number().int().default(1),
+  rulesJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type RunQualityPolicyType = z.infer<typeof RunQualityPolicySchema>;
+
+
+// File: RunQualityAssessment.schema.ts
+
+export const RunQualityAssessmentSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  policyId: z.string(),
+  policyRevision: z.number().int(),
+  sourceVersion: z.number().int(),
+  workflowExecutionId: z.string().nullish(),
+  agentExecutionId: z.string().nullish(),
+  nativeWorkflowId: z.string(),
+  nativeRunId: z.string(),
+  assessmentWorkflowId: z.string(),
+  assessmentRunId: z.string().nullish(),
+  sourceScopeJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  rulesJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  rulesHash: z.string(),
+  status: z.string().default("PENDING"),
+  verdict: z.string().nullish(),
+  reportJson: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  errorCode: z.string().nullish(),
+  deadlineAt: z.date(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+  completedAt: z.date().nullish(),
+});
+
+export type RunQualityAssessmentType = z.infer<typeof RunQualityAssessmentSchema>;
+
+
+// File: FrameChangeProposal.schema.ts
+
+export const FrameChangeProposalSchema = z.object({
+  id: z.string(),
+  frameId: z.string(),
+  userId: z.string(),
+  organizationId: z.string(),
+  requestId: z.string(),
+  requestHash: z.string(),
+  baseUpdatedAt: z.date(),
+  baseContentHash: z.string(),
+  baseContent: z.string(),
+  proposedContent: z.string(),
+  proposedContentHash: z.string(),
+  status: z.string().default("PENDING"),
+  appliedUpdatedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type FrameChangeProposalType = z.infer<typeof FrameChangeProposalSchema>;
+
+
+// File: FrameApprovedRevision.schema.ts
+
+export const FrameApprovedRevisionSchema = z.object({
+  id: z.string(),
+  frameId: z.string(),
+  userId: z.string(),
+  organizationId: z.string(),
+  contentHash: z.string(),
+  content: z.string(),
+  sourceUpdatedAt: z.date(),
+  origin: z.string(),
+  createdAt: z.date(),
+});
+
+export type FrameApprovedRevisionType = z.infer<typeof FrameApprovedRevisionSchema>;
+
+
+// File: DeliverySignalWatch.schema.ts
+
+export const DeliverySignalWatchSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  userId: z.string(),
+  integrationId: z.string().nullish(),
+  provider: z.string().default("SLACK"),
+  installationId: z.string(),
+  containerId: z.string(),
+  label: z.string(),
+  state: z.string().default("ACTIVE"),
+  version: z.number().int().default(1),
+  grantRevision: z.number().int().default(1),
+  retentionDays: z.number().int().default(7),
+  verifiedAt: z.date(),
+  captureWindowStart: z.date().nullish(),
+  captureWindowEnd: z.date().nullish(),
+  captureCursorCiphertext: z.string().nullish(),
+  captureCheckpointVersion: z.number().int(),
+  captureComplete: z.boolean(),
+  captureGrantRevision: z.number().int().nullish(),
+  lastWorkflowId: z.string().nullish(),
+  lastRequestId: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type DeliverySignalWatchType = z.infer<typeof DeliverySignalWatchSchema>;
+
+
+// File: DeliverySignalSourceGrant.schema.ts
+
+export const DeliverySignalSourceGrantSchema = z.object({
+  id: z.string(),
+  watchId: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  userId: z.string(),
+  revision: z.number().int(),
+  audience: z.string().default("ONLY_ME"),
+  humanUserId: z.string(),
+  botId: z.string(),
+  botUserId: z.string(),
+  adapterVersion: z.string(),
+  verifiedAt: z.date(),
+  revokedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type DeliverySignalSourceGrantType = z.infer<typeof DeliverySignalSourceGrantSchema>;
+
+
+// File: DeliverySignalObservation.schema.ts
+
+export const DeliverySignalObservationSchema = z.object({
+  id: z.string(),
+  watchId: z.string(),
+  grantId: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  userId: z.string(),
+  externalItemId: z.string(),
+  revisionKind: z.string(),
+  revisionValue: z.string(),
+  receiptKey: z.string(),
+  variantKey: z.string(),
+  evidenceDigest: z.string(),
+  ciphertext: z.string().nullish(),
+  hasReplies: z.boolean(),
+  occurredAt: z.date(),
+  expiresAt: z.date(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type DeliverySignalObservationType = z.infer<typeof DeliverySignalObservationSchema>;
+
+
+// File: DeliverySignalSourceCommand.schema.ts
+
+export const DeliverySignalSourceCommandSchema = z.object({
+  id: z.string(),
+  watchId: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  userId: z.string(),
+  requestId: z.string(),
+  operation: z.string(),
+  payloadHash: z.string(),
+  workflowId: z.string().nullish(),
+  expectedVersion: z.number().int().nullish(),
+  grantRevision: z.number().int().nullish(),
+  captureMode: z.string().nullish(),
+  captureWindowStart: z.date().nullish(),
+  captureWindowEnd: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type DeliverySignalSourceCommandType = z.infer<typeof DeliverySignalSourceCommandSchema>;
+
+
+// File: DeliverySignalCapturePage.schema.ts
+
+export const DeliverySignalCapturePageSchema = z.object({
+  id: z.string(),
+  watchId: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  userId: z.string(),
+  workflowId: z.string(),
+  pageIndex: z.number().int(),
+  result: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type DeliverySignalCapturePageType = z.infer<typeof DeliverySignalCapturePageSchema>;
+
+
+// File: HarnessTriageRun.schema.ts
+
+export const HarnessTriageRunSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  userId: z.string(),
+  requestId: z.string(),
+  inputHash: z.string(),
+  goalCiphertext: z.string(),
+  evidence: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  credential: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  model: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  workflowId: z.string(),
+  nativeRunId: z.string().nullish(),
+  status: z.string().default("QUEUED"),
+  failureCode: z.string().nullish(),
+  cancelRequestedAt: z.date().nullish(),
+  resultCiphertext: z.string().nullish(),
+  reviews: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").default("{}"),
+  maxTokens: z.number().int(),
+  maxMicroUsd: z.bigint(),
+  measuredTokens: z.bigint().default(BigInt("0")),
+  measuredMicroUsd: z.bigint().default(BigInt("0")),
+  outstandingTokens: z.bigint().default(BigInt("0")),
+  outstandingMicroUsd: z.bigint().default(BigInt("0")),
+  periodStart: z.date(),
+  expiresAt: z.date(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type HarnessTriageRunType = z.infer<typeof HarnessTriageRunSchema>;
+
+
+// File: HarnessTriageCall.schema.ts
+
+export const HarnessTriageCallSchema = z.object({
+  id: z.string(),
+  runId: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  userId: z.string(),
+  ordinal: z.number().int(),
+  requestDigest: z.string(),
+  state: z.string().default("RESERVED"),
+  reservedTokens: z.bigint(),
+  reservedMicroUsd: z.bigint(),
+  measuredTokens: z.bigint().nullish(),
+  measuredMicroUsd: z.bigint().nullish(),
+  responseCiphertext: z.string().nullish(),
+  expiresAt: z.date(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type HarnessTriageCallType = z.infer<typeof HarnessTriageCallSchema>;
+
+
+// File: HarnessTriageBudget.schema.ts
+
+export const HarnessTriageBudgetSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  periodStart: z.date(),
+  measuredTokens: z.bigint().default(BigInt("0")),
+  measuredMicroUsd: z.bigint().default(BigInt("0")),
+  outstandingTokens: z.bigint().default(BigInt("0")),
+  outstandingMicroUsd: z.bigint().default(BigInt("0")),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type HarnessTriageBudgetType = z.infer<typeof HarnessTriageBudgetSchema>;
 

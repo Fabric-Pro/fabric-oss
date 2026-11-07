@@ -25,6 +25,7 @@ import {
 	agentTestScopeSchema,
 } from "@repo/temporal/agent-test-contracts";
 import { getTemporalClient } from "@repo/temporal/client";
+import { resultQualityComparisonCompatible } from "@repo/utils/result-quality";
 import type { RecordAuditFromRequestInput } from "../../../lib/audit";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import { cancelAgentRunCommand } from "../../agent-deployments/lib/run-commands";
@@ -873,6 +874,12 @@ export async function compareAgentTestRunsCommand(
 		throw new AgentTestError(
 			"CONFLICT",
 			"Wait for both test assessments to complete before comparing.",
+		);
+	}
+	if (!resultQualityComparisonCompatible(baseline.report, candidate.report)) {
+		throw new AgentTestError(
+			"CONFLICT",
+			"These assessments used different scorer versions. Run both tests with the same checks and scorer before comparing.",
 		);
 	}
 	return {

@@ -573,3 +573,44 @@ it("uses an independent preview budget after a large goal-loop limit is retained
 		),
 	);
 });
+
+describe("inherited template instruction editing", () => {
+	it.each([false, true])(
+		"keeps inherited instructions valid and persists only an edited override=%s",
+		async (edited) => {
+			const view = renderBuilder(
+				{
+					description: "Example description",
+					instructions: "Use project context.",
+					instructionsInherited: true,
+				},
+				false,
+				"edit",
+			);
+			expect(
+				view.getByRole("textbox", { name: "Instructions" }),
+			).toHaveValue("Use project context.");
+			expect(
+				view.queryByText(/Complete the required fields to save/),
+			).not.toBeInTheDocument();
+			fireEvent.change(view.getByRole("textbox", { name: /^Name/ }), {
+				target: { value: "Example renamed agent" },
+			});
+			if (edited) {
+				fireEvent.change(
+					view.getByRole("textbox", { name: "Instructions" }),
+					{
+						target: {
+							value: "Use only the reviewed project evidence.",
+						},
+					},
+				);
+			}
+			fireEvent.click(view.getByRole("button", { name: "Save Changes" }));
+			await waitFor(() => expect(h.update).toHaveBeenCalledOnce());
+			expect(h.update.mock.calls[0][0].customInstructions.role).toBe(
+				edited ? "Use only the reviewed project evidence." : undefined,
+			);
+		},
+	);
+});

@@ -1,3 +1,4 @@
+import { canReadReportDerivedFrame } from "./report-frame-access";
 /**
  * Agent Workspace Queries
  *
@@ -117,13 +118,14 @@ export async function getWorkspaceFileById(
 		return null;
 	}
 
-	return db.agentWorkspaceFile.findFirst({
+	const file = await db.agentWorkspaceFile.findFirst({
 		where: {
 			id,
 			userId: opts.userId,
 			organizationId: opts.organizationId ?? null,
 		},
 	});
+	return file && (await canReadReportDerivedFrame(file, opts)) ? file : null;
 }
 
 /**
@@ -134,7 +136,7 @@ export async function getWorkspaceFileByPath(
 	path: string,
 	organizationId?: string,
 ) {
-	return db.agentWorkspaceFile.findUnique({
+	const file = await db.agentWorkspaceFile.findUnique({
 		where: {
 			userId_organizationId_path: {
 				userId,
@@ -143,6 +145,10 @@ export async function getWorkspaceFileByPath(
 			},
 		},
 	});
+	return file &&
+		(await canReadReportDerivedFrame(file, { userId, organizationId }))
+		? file
+		: null;
 }
 
 /**
@@ -161,6 +167,10 @@ export async function listWorkspaceFiles(input: ListWorkspaceFilesInput) {
 	} = input;
 
 	const where: Prisma.AgentWorkspaceFileWhereInput = {
+		OR: [
+			{ sourceRunType: null },
+			{ sourceRunType: { not: "REPORT_EXECUTION" } },
+		],
 		userId,
 		organizationId: organizationId ?? null,
 		...(conversationId && { conversationId }),
@@ -206,6 +216,10 @@ export async function getWorkspaceFileTree(
 ) {
 	const files = await db.agentWorkspaceFile.findMany({
 		where: {
+			OR: [
+				{ sourceRunType: null },
+				{ sourceRunType: { not: "REPORT_EXECUTION" } },
+			],
 			userId,
 			organizationId: organizationId ?? null,
 			...(conversationId ? { conversationId } : {}),

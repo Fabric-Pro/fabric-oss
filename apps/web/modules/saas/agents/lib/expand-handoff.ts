@@ -1,9 +1,10 @@
 import type { FabricAgentLaunchContext } from "@saas/agents/components/FabricAgentLauncher";
+import { normalizeFrameHandoffRevision } from "@saas/frames/lib/frame-agent-handoff";
 import type { AttachedFile } from "@saas/shared/components/copilot/use-copilot-document-upload";
 
 export type FrameLaunchContext = Pick<
 	FabricAgentLaunchContext,
-	"launchFrameId" | "workspaceId" | "surface"
+	"launchFrameId" | "launchFrameUpdatedAt" | "workspaceId" | "surface"
 >;
 
 /**
@@ -60,10 +61,16 @@ export function buildExpandHandoff(input: {
 	const draft = input.draft.trim() ? input.draft : "";
 	const projectId = input.projectId ?? null;
 	const context = input.launchContext;
+	const frameRevision = normalizeFrameHandoffRevision(
+		context?.launchFrameUpdatedAt,
+	);
 	const frameLaunchContext =
 		context?.launchFrameId || context?.workspaceId || context?.surface
 			? {
 					launchFrameId: context.launchFrameId ?? null,
+					...(frameRevision
+						? { launchFrameUpdatedAt: frameRevision }
+						: {}),
 					workspaceId: context.workspaceId ?? null,
 					surface: context.surface ?? null,
 				}

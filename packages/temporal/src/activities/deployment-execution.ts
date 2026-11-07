@@ -26,9 +26,15 @@ import {
 } from "@repo/database";
 import { readAgentProjectBinding } from "@repo/database/prisma/queries/lib/agent-project-binding";
 import { logger } from "@repo/logs";
+import { Context } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
 import { getTemporalClient } from "../client";
 import { prismaErrorCode } from "../lib/database-error";
+import {
+	type NativeExecutionConfiguration,
+	nativeAgentConfigurationFingerprint,
+} from "../lib/native-agent-configuration";
+import type { NativeQualityConfiguration } from "../lib/run-quality-configuration";
 import {
 	readWorkspaceDocumentFilters,
 	type WorkspaceDocumentFilter,
@@ -59,6 +65,7 @@ import {
 // =============================================================================
 
 export interface DeploymentConfig {
+	qualityConfiguration?: NativeQualityConfiguration;
 	nativeTestBoundary?: NativeTestBoundary;
 	frozenMemoryFiles?: Array<{
 		id: string;
@@ -165,12 +172,22 @@ export async function loadDeploymentConfiguration(
 	return withNativeAgentTestBoundary(params, async (snapshot) => {
 		const config =
 			snapshot && params.nativeTestBoundary
-				? frozenTestDeploymentConfig(
+				? deploymentConfigFromScopeSnapshot(
 						params.deploymentId,
-						params.nativeTestBoundary,
 						snapshot,
+						params.nativeTestBoundary,
 					)
 				: await loadDeploymentConfigurationInScope(params);
+		if (config && snapshot) {
+			const provenance = await automaticQualityProvenance(
+				params,
+				config,
+				snapshot.configuration.instance,
+			);
+			if (provenance) {
+				config.qualityConfiguration = provenance;
+			}
+		}
 		if (config && params.nativeTestBoundary) {
 			assertFrozenAgentTestWorkspaceSelection(
 				params.nativeTestBoundary.authority,
@@ -181,12 +198,101 @@ export async function loadDeploymentConfiguration(
 		return config;
 	});
 }
-function frozenTestDeploymentConfig(
+/** Stamp an already loaded ordinary configuration; never select a different business
+ * configuration or freeze adaptive memory because optional checks exist.
+ */
+async function automaticQualityProvenance(
+	params: {
+		deploymentId: string;
+		userId: string;
+		organizationId?: string;
+		nativeTestBoundary?: NativeTestBoundary;
+	},
+	config: DeploymentConfig,
+	execution: NativeExecutionConfiguration,
+): Promise<NativeQualityConfiguration | undefined> {
+	try {
+		const info = Context.current().info;
+		const native = info.workflowExecution;
+		if (
+			!params.organizationId ||
+			!native ||
+			![
+				"nativeDeploymentExecutionWorkflow",
+				"nativeGoalOrientedAgentWorkflow",
+			].includes(info.workflowType ?? "")
+		) {
+			return;
+		}
+		const { db, readAgentExecutionAdmission } = await import(
+			"@repo/database"
+		);
+		const actor = {
+			userId: params.userId,
+			organizationId: params.organizationId,
+		};
+		const row = await db.runQualityAssessment.findFirst({
+			where: {
+				...actor,
+				nativeWorkflowId: native.workflowId,
+				nativeRunId: native.runId,
+				status: { in: ["PENDING", "CHECKING"] },
+				agentExecution: {
+					...actor,
+					deploymentId: params.deploymentId,
+					workflowId: native.workflowId,
+					runId: native.runId,
+				},
+				policy: { ...actor, instanceId: { not: null } },
+			},
+			select: {
+				id: true,
+				sourceScopeJson: true,
+				policy: { select: { instanceId: true } },
+				agentExecution: { select: { metadata: true } },
+			},
+		});
+		if (!row?.policy.instanceId || !row.agentExecution) {
+			return;
+		}
+		const admitted = readAgentExecutionAdmission(row.agentExecution);
+		if (
+			admitted?.dispatch.instanceId !== row.policy.instanceId ||
+			admitted.dispatch.workflowType !== info.workflowType
+		) {
+			return;
+		}
+		const retained = row.sourceScopeJson as {
+			kind?: unknown;
+			scope?: { instanceId?: unknown; configHash?: unknown };
+		} | null;
+		if (
+			retained?.kind !== "AGENT" ||
+			retained.scope?.instanceId !== row.policy.instanceId ||
+			typeof retained.scope.configHash !== "string" ||
+			!/^[a-f0-9]{64}$/.test(retained.scope.configHash)
+		) {
+			return;
+		}
+		if (config.instance.id !== row.policy.instanceId) {
+			return;
+		}
+		return {
+			version: 1,
+			assessmentId: row.id,
+			configHash: nativeAgentConfigurationFingerprint(config, execution),
+		};
+	} catch {
+		// No optional source lookup or observer failure may stop native business work.
+		return;
+	}
+}
+function deploymentConfigFromScopeSnapshot(
 	deploymentId: string,
-	boundary: NativeTestBoundary,
 	snapshot: Awaited<
 		ReturnType<typeof import("../lib/agent-test-access").loadAgentTestScope>
 	>,
+	boundary?: NativeTestBoundary,
 ): DeploymentConfig {
 	const { instance, template, bindings, integrations, memoryFiles } =
 		snapshot.configuration;
@@ -195,7 +301,7 @@ function frozenTestDeploymentConfig(
 	}
 	return {
 		deploymentId,
-		nativeTestBoundary: boundary,
+		...(boundary ? { nativeTestBoundary: boundary } : {}),
 		frozenMemoryFiles: memoryFiles.map((file) => ({
 			id: file.id,
 			version: file.version,
@@ -239,10 +345,15 @@ function frozenTestDeploymentConfig(
 				string,
 				Record<string, unknown>
 			>) ?? {},
-		workspaceIds: [...boundary.authority.execution.workspaceIds],
+		workspaceIds: [
+			...(boundary?.authority.execution.workspaceIds ??
+				snapshot.scope.workspaceIds),
+		],
 		workspaceDocumentFilters: readWorkspaceDocumentFilters(
-			boundary.authority.execution.workspaceDocumentFilters,
-			boundary.authority.execution.workspaceIds,
+			boundary?.authority.execution.workspaceDocumentFilters ??
+				snapshot.scope.workspaceDocumentFilters,
+			boundary?.authority.execution.workspaceIds ??
+				snapshot.scope.workspaceIds,
 		),
 	};
 }
@@ -332,7 +443,7 @@ async function loadDeploymentConfigurationInScope(params: {
 		);
 	}
 
-	return {
+	const config: DeploymentConfig = {
 		deploymentId: deployment.id,
 		template: {
 			id: template.id,
@@ -384,6 +495,15 @@ async function loadDeploymentConfigurationInScope(params: {
 			workspaceIds,
 		),
 	};
+	const provenance = await automaticQualityProvenance(
+		params,
+		config,
+		instance,
+	);
+	if (provenance) {
+		config.qualityConfiguration = provenance;
+	}
+	return config;
 }
 
 /**

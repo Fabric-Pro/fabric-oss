@@ -53,7 +53,9 @@ export default async function OrganizationFrameEmbedPage({
 			frame={frame.document as FrameDocumentView}
 			embedded
 			slideIndex={slideIndex}
-			allowScripts={!isUnattendedFrame(frame)}
+			allowScripts={
+				!frame.isPublishedSnapshot && !isUnattendedFrame(frame)
+			}
 		/>
 	);
 }

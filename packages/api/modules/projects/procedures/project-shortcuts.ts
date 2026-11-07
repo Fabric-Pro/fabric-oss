@@ -64,6 +64,7 @@ export const listProjectShortcutsProcedure = tenantProtectedProcedure
 					name: z.string(),
 					organizationSlug: z.string().nullable(),
 					isFavorite: z.boolean(),
+					lastVisitedAt: z.date().nullable(),
 				}),
 			),
 		}),

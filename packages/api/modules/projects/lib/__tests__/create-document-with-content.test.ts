@@ -37,6 +37,7 @@ const { mocks } = vi.hoisted(() => ({
 		documentUpdateMany: vi.fn(),
 		versionCreate: vi.fn(),
 		contextCreate: vi.fn(),
+		queryRaw: vi.fn(),
 	},
 }));
 
@@ -65,6 +66,7 @@ const CONTEXT_ID = "ctx-1";
 
 /** The transaction client every write must go through. */
 const tx = {
+	$queryRaw: mocks.queryRaw,
 	projectDocument: {
 		create: mocks.documentCreate,
 		updateMany: mocks.documentUpdateMany,
@@ -98,6 +100,9 @@ beforeEach(() => {
 	mocks.documentCreate.mockResolvedValue({ id: DOCUMENT_ID });
 	mocks.versionCreate.mockResolvedValue({ id: "ver-1" });
 	mocks.contextCreate.mockResolvedValue({ id: CONTEXT_ID });
+	mocks.queryRaw.mockResolvedValue([
+		{ organizationId: ORG_ID, version: 2, colors: ["#0f766e"] },
+	]);
 });
 
 describe("createDocumentWithContent — atomicity", () => {
@@ -379,4 +384,58 @@ describe("createDocumentWithContent — taking over as the active document", () 
 			expect(result.displacedCount).toBe(0);
 		},
 	);
+});
+
+describe("createDocumentWithContent — reviewed proposal palette", () => {
+	it("persists the client palette with the content and version through the same transaction", async () => {
+		await createDocumentWithContent(
+			baseInput({
+				type: "PROPOSAL",
+				proposalBranding: "CLIENT",
+				recipientBrandVersion: 2,
+			}),
+		);
+		expect(mocks.documentCreate).toHaveBeenCalledWith({
+			data: expect.objectContaining({
+				style: {
+					create: {
+						primaryColor: "#0f766e",
+						accentColors: ["#0f766e"],
+						projectId: PROJECT_ID,
+						organizationId: ORG_ID,
+						updatedById: USER_ID,
+					},
+				},
+			}),
+		});
+		expect(mocks.queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+			mocks.documentCreate.mock.invocationCallOrder[0],
+		);
+		expect(mocks.versionCreate).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects a stale palette before retaining source context or demoting an active document", async () => {
+		mocks.queryRaw.mockResolvedValueOnce([
+			{ organizationId: ORG_ID, version: 3, colors: ["#0f766e"] },
+		]);
+		await expect(
+			createDocumentWithContent(
+				baseInput({
+					type: "PROPOSAL",
+					proposalBranding: "CLIENT",
+					recipientBrandVersion: 2,
+					takesOverActive: true,
+					sourceContext: {
+						type: "TEXT",
+						content: "Source material",
+						link: true,
+					},
+				}),
+			),
+		).rejects.toMatchObject({ code: "RECIPIENT_BRAND_CHANGED" });
+		expect(mocks.contextCreate).not.toHaveBeenCalled();
+		expect(mocks.documentUpdateMany).not.toHaveBeenCalled();
+		expect(mocks.documentCreate).not.toHaveBeenCalled();
+		expect(mocks.versionCreate).not.toHaveBeenCalled();
+	});
 });

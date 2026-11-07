@@ -58,17 +58,41 @@ const TOKEN = "fat_example-access-token";
  *   - context-quality inspection and recorded-output scoring use that same
  *     `resolveContextProject`/`credentialMayReachProject` gate and then repeat
  *     current source permission/revision checks in the shared reader;
+ *   - saved context-quality runs pin inner run IDs to organization/project and
+ *     recheck retained source authority; only approved project destinations run;
+ *   - Workspace links pin link/document IDs to the path project and repeat
+ *     live Workspace permission checks; arbitrary Workspace assembly refuses
+ *     bound credentials even with wildcard scopes;
+ *   - delivery projects only permitted project facts, while implementation
+ *     sessions pin nested IDs/cursors and repeat execution/server authority;
+ *   - branding pins its project, and proposal styles additionally resolve the
+ *     document inside that project before reading or saving;
  *   - the project's document routes call `resolveV1Context` without a project
  *     and so refuse a bound credential.
  */
 const REACHABLE = [
 	"DELETE /projects/:projectId/contexts/synced-files",
+	"DELETE /projects/:projectId/contexts/workspace-documents/:linkId",
 	"GET /auth/whoami",
+	"GET /projects/:id/branding",
+	"GET /projects/:id/documents/:documentId/proposal-style",
+	"GET /projects/:projectId/context-quality/agent-results/:executionId",
+	"GET /projects/:projectId/context-quality/runs",
+	"GET /projects/:projectId/context-quality/runs/:runId",
+	"GET /projects/:projectId/context-quality/runs/capabilities",
+	"GET /projects/:projectId/context-quality/runs/compare",
 	"GET /projects/:projectId/context-quality/sources/:sourceId",
+	"GET /projects/:projectId/contexts/manifest",
+	"GET /projects/:projectId/contexts/workspace-documents",
+	"GET /projects/:projectId/contexts/workspace-documents/:linkId/content",
+	"GET /projects/:projectId/delivery",
 	"GET /projects/:projectId/documents",
 	"GET /projects/:projectId/features",
 	"GET /projects/:projectId/features/:id",
 	"GET /projects/:projectId/features/:id/tasks",
+	"GET /projects/:projectId/implementation-sessions",
+	"GET /projects/:projectId/implementation-sessions/:id",
+	"GET /projects/:projectId/implementation-sessions/:id/messages",
 	"GET /projects/:projectId/instructions/proposals/:snapshotId/pull-request",
 	"GET /projects/:projectId/instructions/proposals/open",
 	"GET /projects/:projectId/instructions/published",
@@ -82,9 +106,17 @@ const REACHABLE = [
 	"GET /projects/:projectId/memory/writes/:writeId",
 	"PATCH /projects/:projectId/features/:id",
 	"POST /instructions/checkouts/resolve",
+	"POST /projects/:projectId/context-quality/agent-results/:executionId/evaluate",
 	"POST /projects/:projectId/context-quality/evaluate",
+	"POST /projects/:projectId/context-quality/runs",
+	"POST /projects/:projectId/context-quality/runs/:runId/cancel",
+	"POST /projects/:projectId/contexts/assemble",
+	"POST /projects/:projectId/contexts/workspace-documents",
 	"POST /projects/:projectId/documents",
 	"POST /projects/:projectId/features",
+	"POST /projects/:projectId/implementation-sessions",
+	"POST /projects/:projectId/implementation-sessions/:id/cancel",
+	"POST /projects/:projectId/implementation-sessions/:id/follow-up",
 	"POST /projects/:projectId/instructions/changes",
 	"POST /projects/:projectId/instructions/published/download",
 	"POST /projects/:projectId/instructions/published/files",
@@ -93,6 +125,8 @@ const REACHABLE = [
 	"POST /projects/:projectId/instructions/versions",
 	"POST /projects/:projectId/memory/upload-urls",
 	"POST /projects/:projectId/memory/writes",
+	"PUT /projects/:id/branding/client",
+	"PUT /projects/:id/documents/:documentId/proposal-style",
 	"PUT /projects/:projectId/contexts/synced-files",
 ];
 
@@ -201,10 +235,22 @@ describe("the public v1 API, for an agent that signed in for one project", () =>
 
 	it("refuses every route under another project", async () => {
 		for (const route of registered.filter((entry) =>
-			entry.includes("/projects/:projectId/"),
+			/\/projects\/:(?:projectId|id)\//.test(entry),
 		)) {
 			const response = await ask(route, OTHER);
 
+			expect(response.status, route).toBe(403);
+			expect(await response.json(), route).toEqual(REFUSAL);
+		}
+	});
+
+	it("keeps organization-wide quality and report controls unavailable to bound credentials", async () => {
+		const globals = registered.filter((entry) =>
+			/ \/(?:run-quality|reports)(?:\/|$)/.test(entry),
+		);
+		expect(globals.length).toBeGreaterThan(10);
+		for (const route of globals) {
+			const response = await ask(route, BOUND);
 			expect(response.status, route).toBe(403);
 			expect(await response.json(), route).toEqual(REFUSAL);
 		}

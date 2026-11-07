@@ -176,7 +176,7 @@ export function ChatWelcome({
 	return (
 		<div
 			className={cn(
-				"flex-1 min-h-0 flex flex-col items-center justify-start overflow-y-auto overflow-x-hidden px-4 py-8 sm:px-6 sm:py-12",
+				"flex-1 min-h-0 flex flex-col items-center justify-start overflow-y-auto overflow-x-hidden px-4 py-4 sm:px-6 sm:py-6",
 				className,
 			)}
 		>
@@ -186,7 +186,7 @@ export function ChatWelcome({
 					flat ? "max-w-2xl" : "max-w-2xl space-y-6",
 				)}
 			>
-				{/* Databricks Genie style centered emblem + heading + subtitle */}
+				{/* Centered Genie emblem + heading + subtitle */}
 				<div className="w-full px-0 text-center">
 					<div className="mb-3 flex items-center justify-center">
 						<SparklesIcon className="size-9" aria-hidden="true" />
@@ -347,7 +347,7 @@ export function ChatWelcome({
 
 				{/* Tips */}
 				{tips && tips.length > 0 && (
-					<div className="mt-8 space-y-2 py-4 text-center">
+					<div className="mt-6 space-y-2 py-2 text-center">
 						{tips.map((tip, idx) => (
 							<p
 								key={`tip-${idx}`}

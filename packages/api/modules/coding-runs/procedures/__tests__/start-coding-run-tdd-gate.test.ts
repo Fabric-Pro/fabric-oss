@@ -1,3 +1,8 @@
+// Authorization is exercised by commands-access.test.ts; these tests isolate existing admission/provider behavior.
+vi.mock("../../lib/commands-access", () => ({
+	requireCodingRunProject: vi.fn(async () => "example-org"),
+}));
+
 /**
  * The test-first gate on starting an implementation session.
  *
@@ -40,6 +45,8 @@ vi.mock("../../../../orpc/procedures", () => {
 	chain.handler = (fn: unknown) => ({ handler: fn });
 	return {
 		tenantProtectedProcedure: chain,
+		resolveOrganizationId: (organizationId: string | null | undefined) =>
+			organizationId,
 		requireProjectPermission: () => () => chain,
 		Permissions: { AGENT_EXECUTE: "agent:execute" },
 	};

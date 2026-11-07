@@ -1,3 +1,8 @@
+import { registerDeliverySignalRoutes } from "./delivery-signals";
+import { registerDeliverySourceRoutes } from "./delivery-sources";
+import { registerHarnessTriageRoutes } from "./harness-triage";
+import { registerImplementationSessionRoutes } from "./implementation-sessions";
+import { registerProjectDeliveryRoutes } from "./project-delivery";
 /**
  * Public v1 API Routes
  *
@@ -37,10 +42,12 @@ import { externalApiRateLimit } from "../external-api/middleware/api-rate-limit"
 import type { ExternalApiVariables } from "../external-api/types";
 import { registerAgentInstanceRoutes } from "./agent-instances";
 import { registerAgentRoutes } from "./agents";
+import { registerBrandRoutes } from "./branding";
 import { registerChannelRoutes } from "./channels";
 import { registerChatRoutes } from "./chats";
 import { registerContextQualityRoutes } from "./context-quality";
 import { registerContextRoutes } from "./contexts";
+import { registerDashboardRoutes } from "./dashboard";
 import { registerDocumentRoutes } from "./documents";
 import { registerFeatureRoutes } from "./features";
 import { registerFrameRoutes } from "./frames";
@@ -54,6 +61,7 @@ import { registerMemoryWriteRoutes } from "./memory-writes";
 import { registerProjectRoutes } from "./projects";
 import { registerPromptRoutes } from "./prompts";
 import { registerReportRoutes } from "./reports";
+import { registerRunQualityRoutes } from "./run-quality";
 import { registerSkillRoutes } from "./skills";
 import { registerWorkflowRoutes } from "./workflows";
 import { registerWorkspaceRoutes } from "./workspaces";
@@ -65,6 +73,7 @@ const CLI_SCOPES = [
 	"keys:read",
 	"keys:write",
 	"orgs:read",
+	"orgs:write",
 	"projects:read",
 	"projects:write",
 	"features:read",
@@ -90,6 +99,8 @@ const CLI_SCOPES = [
 	"governance:write",
 	"chats:read",
 	"chats:write",
+	"dashboard:read",
+	"dashboard:write",
 	"workspaces:read",
 	"agents:read",
 	"agents:schedule", // Explicit permission to manage recurring agent execution
@@ -319,7 +330,10 @@ export function createPublicV1Routes() {
 			return c.json(err("expiresInDays must be between 1 and 365"), 400);
 		}
 
-		if (requiresSkillKeyConsent(requestedScopes)) {
+		if (
+			requiresSkillKeyConsent(requestedScopes) ||
+			requestedScopes.includes("orgs:write")
+		) {
 			const target = await resolveV1Context(ctx, c.req.query("org"));
 			if ("error" in target) {
 				return c.json(err(target.error), target.status);
@@ -334,6 +348,17 @@ export function createPublicV1Routes() {
 						select: { role: true },
 					})
 				: null;
+			if (
+				requestedScopes.includes("orgs:write") &&
+				(!membership || !["admin", "owner"].includes(membership.role))
+			) {
+				return c.json(
+					err(
+						"Only organization owners and administrators can grant orgs:write.",
+					),
+					403,
+				);
+			}
 			const refused = refusedSkillKeyScopes(
 				requestedScopes,
 				membership?.role,
@@ -470,17 +495,25 @@ export function createPublicV1Routes() {
 	// Resource sub-modules
 	// =========================================================================
 	registerProjectRoutes(app);
+	registerProjectDeliveryRoutes(app);
+	registerDeliverySignalRoutes(app);
+	registerDeliverySourceRoutes(app);
+	registerHarnessTriageRoutes(app);
+	registerImplementationSessionRoutes(app);
 	registerFeatureRoutes(app);
 	registerDocumentRoutes(app);
 	registerWorkflowRoutes(app);
 	registerPromptRoutes(app);
 	registerAgentRoutes(app);
 	registerAgentInstanceRoutes(app);
+	registerRunQualityRoutes(app);
 	registerSkillRoutes(app);
 	registerMcpRoutes(app);
 	registerFrameRoutes(app);
+	registerBrandRoutes(app);
 	registerWorkspaceRoutes(app);
 	registerChatRoutes(app);
+	registerDashboardRoutes(app);
 	registerReportRoutes(app);
 	registerIntegrationRoutes(app);
 	registerChannelRoutes(app);

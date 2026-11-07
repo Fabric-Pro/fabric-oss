@@ -1,6 +1,7 @@
 "use client";
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { RunQualityPanel } from "@saas/run-quality/components/RunQualityPanel";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -10,6 +11,7 @@ import { ArrowLeftIcon, PanelLeftOpenIcon } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { stepLabel } from "../lib/node-appearance";
 import { workflowExecutionsScopeKey } from "../lib/query-keys";
 import {
 	useViewedExecution,
@@ -392,14 +394,32 @@ export function WorkflowEditor({
 	}
 
 	const phoneFallback = (
-		<div className="flex-1 p-4 sm:p-6">
+		<section
+			aria-label="Workflow inspection"
+			// biome-ignore lint/a11y/noNoninteractiveTabindex: The phone inspection pane scrolls independently and must be keyboard reachable.
+			tabIndex={0}
+			className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 sm:p-6"
+		>
 			<Card className="mx-auto max-w-lg space-y-4 p-4 sm:p-6">
 				<h2 className="text-lg font-semibold">Workflow Editor</h2>
 				<p className="text-sm text-muted-foreground">
 					The drag-and-drop workflow canvas is currently optimized for
-					desktop and tablets. On phones, you can still view workflows
-					from the list and continue editing on a larger screen.
+					desktop and tablets. On phones, review recorded checks here.
+					Use a larger screen to edit the workflow canvas.
 				</p>
+				{organizationId && (
+					<RunQualityPanel
+						organizationId={organizationId}
+						targetType="WORKFLOW"
+						targetId={workflowId}
+						nodeOptions={nodes
+							.filter((node) => node.type !== "trigger")
+							.map((node) => ({
+								id: node.id,
+								name: stepLabel(node.data),
+							}))}
+					/>
+				)}
 				<div className="flex flex-col gap-2 sm:flex-row">
 					<Button
 						asChild
@@ -418,7 +438,7 @@ export function WorkflowEditor({
 					</Button>
 				</div>
 			</Card>
-		</div>
+		</section>
 	);
 	const canvasOverlay = (
 		<>
@@ -489,6 +509,10 @@ export function WorkflowEditor({
 					<WorkflowBuilder
 						key={`${organizationId}:${workflowId}`}
 						onDirtyChange={onDirtyChange}
+						onInspectExecution={(executionId) => {
+							setCurrentExecutionId(executionId);
+							setShowExecutionPanel(true);
+						}}
 						initialNodes={nodes}
 						initialEdges={edges}
 						onSave={handleSave}

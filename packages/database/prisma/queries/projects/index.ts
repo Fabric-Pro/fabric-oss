@@ -51,6 +51,7 @@ export * from "./function-tags";
 export * from "./generation-dependencies";
 export * from "./glossy-editions";
 export * from "./has-any-personal-project";
+export * from "./initial-proposal-brand";
 export * from "./kanban-templates";
 export * from "./list-guest-projects";
 export * from "./log-source";

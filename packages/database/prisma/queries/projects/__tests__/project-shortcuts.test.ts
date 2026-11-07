@@ -30,6 +30,7 @@ import {
 function row(id: string, name: string, slug: string | null = null) {
 	return {
 		favoritedAt: null,
+		lastVisitedAt: null,
 		project: {
 			id,
 			name,
@@ -125,6 +126,7 @@ describe("listProjectShortcuts — merge and ordering", () => {
 				name: "Only",
 				organizationSlug: null,
 				isFavorite: false,
+				lastVisitedAt: null,
 			},
 		]);
 	});

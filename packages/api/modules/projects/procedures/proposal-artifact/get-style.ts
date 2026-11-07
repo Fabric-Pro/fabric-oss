@@ -1,4 +1,8 @@
 import { type DocumentStyleView, getDocumentStyle } from "@repo/database";
+import {
+	ARTIFACT_BRAND_SOURCES,
+	ARTIFACT_COVER_STYLES,
+} from "@repo/utils/artifact-brand-theme";
 import { z } from "zod";
 import {
 	Permissions,
@@ -9,6 +13,8 @@ import { loadProposalArtifactDocument } from "../../lib/proposal-artifact-access
 import { requireProposalArtifactEnabled } from "../../lib/proposal-artifact-feature";
 
 export const proposalStyleSchema = z.object({
+	brandSource: z.enum(ARTIFACT_BRAND_SOURCES),
+	coverStyle: z.enum(ARTIFACT_COVER_STYLES).nullable(),
 	/** Free-text direction for the visuals; null when none is set. */
 	styleDirection: z.string().nullable(),
 	/** Lowercase `#rrggbb`; null when none is set. */
@@ -28,6 +34,8 @@ export function presentProposalStyle(
 	style: DocumentStyleView,
 ): z.infer<typeof proposalStyleSchema> {
 	return {
+		brandSource: style.brandSource ?? "COMPANY",
+		coverStyle: style.coverStyle ?? null,
 		styleDirection: style.styleDirection,
 		primaryColor: style.primaryColor,
 		accentColors: style.accentColors,

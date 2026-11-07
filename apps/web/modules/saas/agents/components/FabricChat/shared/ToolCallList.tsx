@@ -437,7 +437,21 @@ const ToolCallRow = memo(function ToolCallRow({
 					)}
 				</div>
 			)}
-			{frameResult ? (
+			{frameResult?.reviewUrl ? (
+				<div className="mt-2 space-y-2 rounded-md border border-border p-3 text-sm">
+					<p className="font-medium">Proposed artifact change</p>
+					<p className="text-muted-foreground">
+						The saved artifact has not changed. Compare the original
+						and proposed preview before applying.
+					</p>
+					<a
+						href={frameResult.reviewUrl}
+						className="inline-flex rounded-md px-2 py-1 font-medium text-primary underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					>
+						Review proposed change
+					</a>
+				</div>
+			) : frameResult ? (
 				<div className="mt-2 rounded-md border border-border/60 bg-background/80 px-3 py-2 text-xs text-muted-foreground">
 					<p className="font-medium text-foreground">
 						Interactive content ready

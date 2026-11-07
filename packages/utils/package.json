@@ -166,6 +166,7 @@
 			"import": "./lib/workflow-status.ts",
 			"default": "./lib/workflow-status.ts"
 		},
+		"./frame-presentation": "./lib/frame-presentation.ts",
 		"./frame-surfaces": {
 			"types": "./lib/frame-surfaces.ts",
 			"import": "./lib/frame-surfaces.ts",
@@ -680,7 +681,16 @@
 			"types": "./lib/pm-target.ts",
 			"import": "./lib/pm-target.ts",
 			"default": "./lib/pm-target.ts"
-		}
+		},
+		"./artifact-brand-theme": "./lib/artifact-brand-theme.ts",
+		"./artifact-brand-snapshot": "./lib/artifact-brand-snapshot.ts",
+		"./artifact-brand-fonts": "./lib/artifact-brand-fonts.ts",
+		"./sanitize-frame-html": "./lib/sanitize-frame-html.ts",
+		"./artifact-static-html": "./lib/artifact-static-html.ts",
+		"./result-quality": "./lib/result-quality.ts",
+		"./run-quality-contracts": "./lib/run-quality-contracts.ts",
+		"./frame-review-contracts": "./lib/frame-review-contracts.ts",
+		"./frame-authoring": "./lib/frame-authoring.ts"
 	},
 	"name": "@repo/utils",
 	"private": true,
@@ -700,6 +710,7 @@
 		"liquidjs": "^10.27.1",
 		"mustache": "^4.2.0",
 		"nunjucks": "^3.2.4",
+		"parse5": "8.0.0",
 		"remark-gfm": "^4.0.1",
 		"remark-parse": "^11.0.0",
 		"undici": "^8.5.0",

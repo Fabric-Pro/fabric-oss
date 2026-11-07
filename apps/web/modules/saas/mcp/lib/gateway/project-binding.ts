@@ -1,3 +1,5 @@
+import { DELIVERY_SOURCE_TOOL_NAMES } from "@repo/temporal/fabric-gateway-tools";
+import { TRIAGE_TOOL_NAMES } from "@repo/temporal/fabric-triage-tool-definitions";
 /**
  * A gateway session that is bound to ONE project.
  *
@@ -21,7 +23,10 @@
  * person's and the organization's, with no tie to a project and no scope check.
  */
 
-import { FABRIC_FRAME_TOOL_DEFINITIONS } from "@repo/temporal/fabric-frame-tool-definitions";
+import {
+	FABRIC_FRAME_TOOL_DEFINITIONS,
+	FRAME_ORGANIZATION_AUTHORING_TOOL_NAMES,
+} from "@repo/temporal/fabric-frame-tool-definitions";
 import { FABRIC_FRAME_VERSION_TOOL_DEFINITIONS } from "@repo/temporal/fabric-frame-version-tool-definitions";
 import { isFabricChatTool } from "@repo/temporal/fabric-gateway-tools";
 import { FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS } from "@repo/temporal/fabric-page-discovery-tool-definitions";
@@ -41,6 +46,23 @@ import type { GatewaySession, GatewayToolDefinition } from "./types";
  * project alone.
  */
 export const PROJECT_BOUND_TOOL_NAMES = [
+	...DELIVERY_SOURCE_TOOL_NAMES,
+	...TRIAGE_TOOL_NAMES,
+	"fabric_list_delivery_signals",
+	"fabric_get_delivery_signal",
+	"fabric_get_delivery_signal_sources",
+	"fabric_get_project_delivery",
+	"fabric_list_implementation_sessions",
+	"fabric_get_implementation_session",
+	"fabric_start_implementation_session",
+	"fabric_cancel_implementation_session",
+	"fabric_follow_up_implementation_session",
+	"fabric_get_implementation_messages",
+
+	"fabric_get_artifact_brand",
+	"fabric_update_client_brand",
+	"fabric_get_proposal_style",
+	"fabric_update_proposal_style",
 	"fabric_list_projects",
 	"fabric_get_project",
 	"fabric_get_project_pm_connection",
@@ -103,6 +125,54 @@ export const PROJECT_BOUND_TOOL_NAMES = [
  * servers or the session's own authority, and reaches past one project.
  */
 export const PROJECT_BOUND_HIDDEN_TOOL_NAMES: readonly string[] = [
+	"fabric_list_report_executions",
+	"fabric_list_report_artifacts",
+
+	// Report configuration, execution and delivery require an explicit member organization connection.
+	"fabric_list_reports",
+	"fabric_create_report",
+	"fabric_get_report",
+	"fabric_configure_report",
+	"fabric_execute_report",
+	"fabric_get_report_execution",
+	"fabric_cancel_report_execution",
+	"fabric_download_report_artifact",
+	"fabric_distribute_report_artifact",
+	"fabric_get_report_deliveries",
+
+	// Owner-scoped quality controls do not extend a runtime/project service grant.
+	"fabric_agent_quality_get_policy",
+	"fabric_agent_quality_configure_policy",
+	"fabric_agent_quality_list_assessments",
+	"fabric_agent_quality_get_assessment",
+	"fabric_agent_quality_cancel_assessment",
+	"fabric_agent_quality_compare_assessments",
+	"fabric_workflow_quality_get_policy",
+	"fabric_workflow_quality_configure_policy",
+	"fabric_workflow_quality_list_assessments",
+	"fabric_workflow_quality_get_assessment",
+	"fabric_workflow_quality_cancel_assessment",
+	"fabric_workflow_quality_compare_assessments",
+
+	// Organization authoring/evaluation is outside a one-project connection.
+	"fabric_assist_prompt",
+	"fabric_preview_prompt",
+	"fabric_get_prompt_response",
+	"fabric_update_prompt_response",
+	"fabric_list_workflow_starters",
+	"fabric_create_workflow_from_starter",
+	"fabric_check_workflow_readiness",
+	"fabric_list_workflow_versions",
+	"fabric_rollback_workflow",
+	"fabric_get_workflow_schedule",
+	"fabric_configure_workflow_schedule",
+	"fabric_inspect_workflow_result",
+	"fabric_list_workflow_checks",
+	"fabric_preview_workflow_check",
+	"fabric_save_workflow_check",
+	"fabric_apply_workflow_check",
+	"fabric_remove_workflow_check",
+
 	"fabric_list_skills",
 	"fabric_get_skill",
 	"fabric_create_skill",
@@ -119,6 +189,7 @@ export const PROJECT_BOUND_HIDDEN_TOOL_NAMES: readonly string[] = [
 	"fabric_read_skill_file",
 	"fabric_read_skill_import_file",
 
+	"fabric_update_company_brand",
 	"fabric_get_identity",
 	"fabric_list_agent_test_cases",
 	"fabric_create_agent_test_case",
@@ -215,6 +286,10 @@ export function sessionMayReachProject(
  * into a read of the inviter's connected servers.
  */
 const PINNED_RUNTIME_FAMILY_TOOLS: ReadonlySet<string> = new Set([
+	"fabric_get_artifact_brand",
+	"fabric_update_client_brand",
+	"fabric_get_proposal_style",
+	"fabric_update_proposal_style",
 	...FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS.map((tool) => tool.name),
 	...FABRIC_WORKFLOW_TOOL_DEFINITIONS.map((tool) => tool.name),
 	...FABRIC_FRAME_TOOL_DEFINITIONS.map((tool) => tool.name),
@@ -225,6 +300,9 @@ const PINNED_RUNTIME_FAMILY_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 export function pinnedSessionHasTool(toolName: string): boolean {
+	if (FRAME_ORGANIZATION_AUTHORING_TOOL_NAMES.has(toolName)) {
+		return false;
+	}
 	return (
 		isFabricPortalTool(toolName) ||
 		PINNED_RUNTIME_FAMILY_TOOLS.has(toolName)
@@ -236,6 +314,9 @@ export function serviceSessionHasTool(
 	session: Pick<GatewaySession, "pinnedProjectId">,
 	toolName: string,
 ): boolean {
+	if (toolName === "fabric_update_company_brand") {
+		return false;
+	}
 	return pinnedProjectId(session) !== null
 		? pinnedSessionHasTool(toolName)
 		: isFabricChatTool(toolName) || toolName === "fabric_page_ask";

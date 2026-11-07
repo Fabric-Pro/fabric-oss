@@ -3,6 +3,7 @@ import {
 	getTemplateInstanceArtifact,
 	listTemplateInstanceArtifactEmailDeliveries,
 } from "@repo/database";
+import { reportInboxDeliveryHistory } from "@repo/database/prisma/queries/report-distribution";
 import { z } from "zod";
 import {
 	Permissions,
@@ -10,9 +11,10 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import type { ReportCommandContext } from "../../lib/report-command-context";
 import { assertArtifactTenantAccess } from "./_tenant";
 
-const listDeliveriesInputSchema = z.object({
+export const listDeliveriesInputSchema = z.object({
 	artifactId: z.string(),
 	organizationId: z.string().nullable().optional(),
 	/**
@@ -35,39 +37,47 @@ const listDeliveriesInputSchema = z.object({
 export const listArtifactDeliveriesProcedure = tenantProtectedProcedure
 	.use(requireInputOrgPermission(Permissions.REPORT_READ))
 	.input(listDeliveriesInputSchema)
-	.handler(async ({ input, context }) => {
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
+	.handler(handleListReportDeliveries);
 
-		const artifact = await getTemplateInstanceArtifact(input.artifactId, {
-			userId: context.user.id,
-			organizationId,
-		});
+export async function handleListReportDeliveries({
+	input,
+	context,
+}: {
+	input: z.infer<typeof listDeliveriesInputSchema>;
+	context: ReportCommandContext;
+}) {
+	const organizationId = resolveOrganizationId(
+		input.organizationId,
+		context.session,
+	);
 
-		if (!artifact) {
-			throw new ORPCError("NOT_FOUND", {
-				message: "Report artifact not found",
-			});
-		}
-
-		assertArtifactTenantAccess(artifact, {
-			userId: context.user.id,
-			organizationId,
-		});
-
-		const { sends, total } =
-			await listTemplateInstanceArtifactEmailDeliveries({
-				artifactId: input.artifactId,
-				search: input.search,
-				limit: input.limit,
-				offset: input.offset,
-			});
-
-		return {
-			sends,
-			total,
-			hasMore: input.offset + sends.length < total,
-		};
+	const artifact = await getTemplateInstanceArtifact(input.artifactId, {
+		userId: context.user.id,
+		organizationId,
 	});
+
+	if (!artifact || artifact.execution.status === "CANCELLED") {
+		throw new ORPCError("NOT_FOUND", {
+			message: "Report artifact not found",
+		});
+	}
+
+	assertArtifactTenantAccess(artifact, {
+		userId: context.user.id,
+		organizationId,
+	});
+
+	const { sends, total } = await listTemplateInstanceArtifactEmailDeliveries({
+		artifactId: input.artifactId,
+		search: input.search,
+		limit: input.limit,
+		offset: input.offset,
+	});
+
+	return {
+		sends,
+		inboxDeliveries: reportInboxDeliveryHistory(artifact.metadata),
+		total,
+		hasMore: input.offset + sends.length < total,
+	};
+}

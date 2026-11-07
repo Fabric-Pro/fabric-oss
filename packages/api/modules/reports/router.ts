@@ -1,15 +1,23 @@
+import { distributeReportArtifactProcedure } from "./procedures/artifacts/distribute";
 import { downloadArtifactProcedure } from "./procedures/artifacts/download";
 import { getArtifactProcedure } from "./procedures/artifacts/get";
 import { listArtifactsProcedure } from "./procedures/artifacts/list";
 import { listArtifactDeliveriesProcedure } from "./procedures/artifacts/list-deliveries";
 import { sendArtifactEmailProcedure } from "./procedures/artifacts/send-email";
+import {
+	applyReportInstanceBrandingProcedure,
+	getReportBrandingProcedure,
+	getReportInstanceBrandingProcedure,
+} from "./procedures/branding";
 import { archiveInstanceProcedure } from "./procedures/instances/archive";
 import { cancelExecutionProcedure } from "./procedures/instances/cancel-execution";
 import { createInstanceProcedure } from "./procedures/instances/create";
 import { deleteInstanceProcedure } from "./procedures/instances/delete";
 import { executeInstanceProcedure } from "./procedures/instances/execute";
+import { getReportExecutionStatusProcedure } from "./procedures/instances/execution-status";
 import { getInstanceProcedure } from "./procedures/instances/get";
 import { listInstancesProcedure } from "./procedures/instances/list";
+import { listNativeReportExecutionsProcedure } from "./procedures/instances/list-executions";
 import { restoreInstanceProcedure } from "./procedures/instances/restore";
 import { testInstanceConnectionsProcedure } from "./procedures/instances/test-connections";
 import { updateInstanceProcedure } from "./procedures/instances/update";
@@ -25,6 +33,11 @@ import { listReportTemplateSkillsProcedure } from "./procedures/templates/skills
 import { updateTemplateProcedure } from "./procedures/templates/update";
 
 export const reportsRouter = {
+	branding: {
+		get: getReportBrandingProcedure,
+		getInstance: getReportInstanceBrandingProcedure,
+		apply: applyReportInstanceBrandingProcedure,
+	},
 	// Template CRUD (reusable definitions)
 	templates: {
 		list: listTemplatesProcedure,
@@ -54,11 +67,16 @@ export const reportsRouter = {
 		restore: restoreInstanceProcedure,
 	},
 
+	executions: {
+		get: getReportExecutionStatusProcedure,
+		list: listNativeReportExecutionsProcedure,
+	},
 	// Artifact access
 	artifacts: {
 		list: listArtifactsProcedure,
 		get: getArtifactProcedure,
 		download: downloadArtifactProcedure,
+		distribute: distributeReportArtifactProcedure,
 		sendEmail: sendArtifactEmailProcedure,
 		listDeliveries: listArtifactDeliveriesProcedure,
 	},

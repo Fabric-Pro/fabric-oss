@@ -121,6 +121,20 @@ describe("OAuth M2M provider — happy path", () => {
 		expect(params.get("grant_type")).toBe("client_credentials");
 		expect(params.get("scope")).toBe("all-apis");
 	});
+
+	it("passes a scoped secret's configured permissions to the token endpoint", async () => {
+		const fetchImpl = vi.fn().mockResolvedValueOnce(makeOAuthResponse());
+		const provider = createDatabricksTokenProvider({
+			env: { ...BASE_ENV, DATABRICKS_SCOPE: "sql jobs" },
+			fetchImpl,
+		});
+
+		await provider.getToken();
+
+		const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+		const params = new URLSearchParams(init.body as string);
+		expect(params.get("scope")).toBe("sql jobs");
+	});
 });
 
 describe("OAuth M2M provider — caching", () => {

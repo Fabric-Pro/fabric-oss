@@ -11,6 +11,7 @@
 import { PARLUME_GRANT_SCOPES } from "@repo/api/lib/agent-service-auth";
 import { FABRIC_FRAME_TOOL_DEFINITIONS } from "@repo/temporal/fabric-frame-tool-definitions";
 import { FABRIC_FRAME_VERSION_TOOL_DEFINITIONS } from "@repo/temporal/fabric-frame-version-tool-definitions";
+import { FABRIC_BRAND_TOOL_DEFINITIONS } from "@repo/temporal/fabric-gateway-tools";
 import { FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS } from "@repo/temporal/fabric-page-discovery-tool-definitions";
 import { FABRIC_PAGE_TOOL_DEFINITIONS } from "@repo/temporal/fabric-page-tool-definitions";
 import {
@@ -112,6 +113,8 @@ describe("the scopes a service session holds", () => {
 		"orgs:write",
 		"chats:write",
 		"workflows:admin",
+		"agents:read",
+		"agents:execute",
 	])("never adds %s, however the grant names it", (scope) => {
 		expect(
 			serviceSessionScopes({ projectId: PROJECT, scopes: [scope] }),
@@ -170,6 +173,7 @@ describe("the scopes a service session holds", () => {
 describe("which gateway tools Parlume gets", () => {
 	const runtimeFamilies = new Set(
 		[
+			...FABRIC_BRAND_TOOL_DEFINITIONS,
 			...FABRIC_WORKFLOW_TOOL_DEFINITIONS,
 			...FABRIC_FRAME_TOOL_DEFINITIONS,
 			...FABRIC_FRAME_VERSION_TOOL_DEFINITIONS,
@@ -193,7 +197,7 @@ describe("which gateway tools Parlume gets", () => {
 			"fabric_compare_context_quality_runs",
 		];
 		expect(FABRIC_PORTAL_TOOL_NAMES).toHaveLength(
-			41 + savedEvaluationTools.length + 2,
+			41 + savedEvaluationTools.length + 3,
 		);
 		expect(
 			FABRIC_PORTAL_TOOL_NAMES.filter((name) =>
@@ -210,57 +214,124 @@ describe("which gateway tools Parlume gets", () => {
 			"fabric_evaluate_context_quality",
 		);
 		expect([...FABRIC_PORTAL_EXCLUDED_TOOL_NAMES].sort()).toEqual([
+			"fabric_agent_quality_cancel_assessment",
+			"fabric_agent_quality_compare_assessments",
+			"fabric_agent_quality_configure_policy",
+			"fabric_agent_quality_get_assessment",
+			"fabric_agent_quality_get_policy",
+			"fabric_agent_quality_list_assessments",
+			"fabric_apply_workflow_check",
 			"fabric_archive_agent_test_case",
 			"fabric_archive_skill",
 			"fabric_assemble_project_context",
+			"fabric_assist_prompt",
 			"fabric_assist_skill",
 			"fabric_cancel_agent_preview",
 			"fabric_cancel_agent_run",
 			"fabric_cancel_agent_test_run",
+			"fabric_cancel_implementation_session",
+			"fabric_cancel_report_execution",
 			"fabric_check_agent_run_result",
 			"fabric_check_authority",
+			"fabric_check_workflow_readiness",
 			"fabric_compare_agent_test_runs",
+			"fabric_configure_report",
+			"fabric_configure_workflow_schedule",
 			"fabric_create_agent_test_case",
+			"fabric_create_report",
 			"fabric_create_skill",
 			"fabric_create_skill_import",
+			"fabric_create_workflow_from_starter",
 			"fabric_delete_skill",
+			"fabric_delivery_source_cancel",
+			"fabric_delivery_source_capture",
+			"fabric_delivery_source_configure",
+			"fabric_delivery_source_disconnect",
+			"fabric_delivery_source_evidence",
+			"fabric_delivery_source_inspect",
+			"fabric_delivery_source_list",
+			"fabric_delivery_source_observations",
+			"fabric_delivery_source_pause",
+			"fabric_delivery_source_resume",
+			"fabric_delivery_source_status",
+			"fabric_distribute_report_artifact",
+			"fabric_download_report_artifact",
+			"fabric_execute_report",
+			"fabric_follow_up_implementation_session",
 			"fabric_get_agent_preview",
 			"fabric_get_agent_run",
 			"fabric_get_agent_run_schedule",
 			"fabric_get_agent_test_run",
+			"fabric_get_delivery_signal",
+			"fabric_get_delivery_signal_sources",
+			"fabric_get_implementation_messages",
+			"fabric_get_implementation_session",
 			"fabric_get_project_pm_connection",
 			"fabric_get_project_pm_item_snapshots",
 			"fabric_get_project_work_item_counts",
+			"fabric_get_prompt_response",
+			"fabric_get_report",
+			"fabric_get_report_deliveries",
+			"fabric_get_report_execution",
 			"fabric_get_skill",
 			"fabric_get_skill_governance",
+			"fabric_get_workflow_schedule",
 			"fabric_inspect_agent_run_result",
+			"fabric_inspect_workflow_result",
 			"fabric_link_workspace_document",
 			"fabric_list_agent_runs",
 			"fabric_list_agent_test_cases",
 			"fabric_list_agent_test_runs",
+			"fabric_list_delivery_signals",
+			"fabric_list_implementation_sessions",
 			"fabric_list_project_pm_assigned_items",
 			"fabric_list_project_pm_members",
 			"fabric_list_project_pm_work_item_types",
+			"fabric_list_report_artifacts",
+			"fabric_list_report_executions",
+			"fabric_list_reports",
 			"fabric_list_skills",
+			"fabric_list_workflow_checks",
+			"fabric_list_workflow_starters",
+			"fabric_list_workflow_versions",
 			"fabric_memory_read",
 			"fabric_memory_targets",
 			"fabric_memory_write",
 			"fabric_memory_write_status",
+			"fabric_preview_prompt",
 			"fabric_preview_skill_import",
+			"fabric_preview_workflow_check",
 			"fabric_publish_skill",
 			"fabric_read_skill_file",
 			"fabric_read_skill_import_file",
+			"fabric_remove_workflow_check",
 			"fabric_request_authority",
 			"fabric_restore_skill",
 			"fabric_revoke_authority",
+			"fabric_rollback_workflow",
+			"fabric_save_workflow_check",
 			"fabric_search_agent_runs",
 			"fabric_set_agent_run_schedule",
 			"fabric_start_agent_preview",
 			"fabric_start_agent_test_run",
+			"fabric_start_implementation_session",
+			"fabric_triage_cancel",
+			"fabric_triage_list",
+			"fabric_triage_result",
+			"fabric_triage_review",
+			"fabric_triage_start",
+			"fabric_triage_status",
 			"fabric_unlink_workspace_document",
 			"fabric_update_agent_test_case",
+			"fabric_update_prompt_response",
 			"fabric_update_skill",
 			"fabric_update_skill_governance",
+			"fabric_workflow_quality_cancel_assessment",
+			"fabric_workflow_quality_compare_assessments",
+			"fabric_workflow_quality_configure_policy",
+			"fabric_workflow_quality_get_assessment",
+			"fabric_workflow_quality_get_policy",
+			"fabric_workflow_quality_list_assessments",
 		]);
 	});
 
@@ -326,6 +397,7 @@ describe("what the portal tools need", () => {
 		);
 		expect(allowed.sort()).toEqual([
 			"fabric_get_project",
+			"fabric_get_project_delivery",
 			"fabric_get_project_instruction",
 			"fabric_get_project_instruction_bundle",
 			"fabric_get_workspace",
@@ -541,7 +613,8 @@ describe("the tools a pinned session is offered", () => {
 
 		expect(offered).toHaveLength(FABRIC_PORTAL_TOOL_NAMES.length);
 		expect(characters).toBeGreaterThan(20_000);
-		// Two source-authorized linked-document reads intentionally extend this catalog.
-		expect(characters).toBeLessThan(34_000);
+		// The two linked-document reads and one bounded delivery query extend this catalog.
+		// Delivery adds about 600 schema/description characters; retain a bounded ceiling.
+		expect(characters).toBeLessThan(34_700);
 	});
 });

@@ -24,18 +24,25 @@
 		"./harness": {
 			"types": "./src/harness/index.ts",
 			"default": "./src/harness/index.ts"
+		},
+		"./harness/triage": {
+			"types": "./src/harness/signal-triager.ts",
+			"default": "./src/harness/signal-triager.ts"
 		}
 	},
 	"scripts": {
-		"type-check": "tsgo --noEmit"
+		"type-check": "tsgo --noEmit",
+		"test": "vitest run"
 	},
 	"dependencies": {
 		"@fabric-harness/client": "6.3.0",
+		"@fabric-harness/sdk": "6.9.0",
 		"hono": "^4.13.11",
 		"uuid": "^14.0.2"
 	},
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",
-		"typescript": "5.9.3"
+		"typescript": "5.9.3",
+		"vitest": "4.1.11"
 	}
 }

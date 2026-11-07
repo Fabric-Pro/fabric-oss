@@ -246,3 +246,59 @@ it("shows pending while the first native task has not registered the state query
 		).status,
 	).toBe("pending");
 });
+
+it("refuses multi-block Interface PDF before intent auditing or workflow admission", async () => {
+	const multi = {
+		id: request.frameId,
+		updatedAt: new Date(request.expectedUpdatedAt),
+		projectId: null,
+		document: {
+			presentation: "INTERFACE",
+			blocks: [
+				{
+					type: "html",
+					content:
+						'<body class="one"><style>h1{color:red}</style><h1>First</h1></body>',
+				},
+				{
+					type: "html",
+					content:
+						'<body class="two"><style>h1{color:blue}</style><h1>Second</h1></body>',
+				},
+			],
+		},
+	};
+	m.frame.mockResolvedValue(multi);
+	await expect(startFrameExport(actor, request)).rejects.toMatchObject({
+		status: 400,
+		code: "BAD_REQUEST",
+		message: expect.stringContaining("one self-contained block"),
+	});
+	expect(m.start).not.toHaveBeenCalled();
+	expect(m.audit).not.toHaveBeenCalled();
+	m.read.mockResolvedValue(false);
+	await expect(startFrameExport(actor, request)).rejects.toMatchObject({
+		status: 404,
+		code: "NOT_FOUND",
+	});
+	expect(m.start).not.toHaveBeenCalled();
+});
+it("retains multi-block document admission for trusted report origin", async () => {
+	m.frame.mockResolvedValue({
+		id: request.frameId,
+		updatedAt: new Date(request.expectedUpdatedAt),
+		sourceRunType: "REPORT_EXECUTION",
+		projectId: null,
+		document: {
+			presentation: "INTERFACE",
+			blocks: [
+				{ type: "html", content: "<p>First</p>" },
+				{ type: "html", content: "<p>Second</p>" },
+			],
+		},
+	});
+	await expect(startFrameExport(actor, request)).resolves.toMatchObject({
+		status: "pending",
+	});
+	expect(m.start).toHaveBeenCalledOnce();
+});

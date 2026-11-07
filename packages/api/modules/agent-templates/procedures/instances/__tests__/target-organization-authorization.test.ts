@@ -34,11 +34,19 @@ const mocks = vi.hoisted(() => ({
 	updateAgentConversation: vi.fn(),
 	addMessageToConversation: vi.fn(),
 	updateConversationTrajectory: vi.fn(),
+	memorySourceBoundary: vi.fn(
+		async (_actor: unknown, where: Record<string, unknown>) => ({
+			where,
+			revalidate: async () => {},
+		}),
+	),
+	findMemoryFiles: vi.fn(async () => []),
 }));
 vi.mock("@repo/database", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@repo/database")>()),
 	...mocks,
 	db: {
+		agentMemoryFile: { findMany: mocks.findMemoryFiles },
 		agentTemplateInstance: {
 			findFirst: mocks.findInstance,
 			findUnique: mocks.findUniqueInstance,

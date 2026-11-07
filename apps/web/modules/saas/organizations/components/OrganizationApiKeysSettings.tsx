@@ -45,6 +45,7 @@ import {
 	PlusIcon,
 	Trash2Icon,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -150,6 +151,12 @@ export const AVAILABLE_SCOPES = [
 		description: "List organizations and read your identity",
 	},
 	{
+		id: "orgs:write",
+		label: "Company Branding Write",
+		description:
+			"Save reviewed company branding; requires current administrator access",
+	},
+	{
 		id: "features:read",
 		label: "Features Read",
 		description: "Read features, bugs and their decision history",
@@ -179,6 +186,18 @@ export const AVAILABLE_SCOPES = [
 		id: "workflows:run",
 		label: "Workflows Run",
 		description: "Trigger workflow executions",
+	},
+	{
+		id: "reports:read",
+		label: "Reports Read",
+		description:
+			"Read accessible reports and review saved report branding.",
+	},
+	{
+		id: "reports:write",
+		label: "Reports Write",
+		description:
+			"Save reviewed branding for reports within current permissions.",
 	},
 	{
 		id: "frames:read",
@@ -274,6 +293,7 @@ const READ_ONLY_SCOPES: ReadonlySet<ApiKeyScope> = new Set<ApiKeyScope>([
 	"workspaces:read",
 	"workflows:read",
 	"frames:read",
+	"reports:read",
 	"instructions:read",
 	// A write scope a viewer may hold: it reaches only the proposal path, which
 	// the Coding Instructions tab already gives a viewer on `INSTRUCTION_READ`.
@@ -408,6 +428,7 @@ function ApiKeyExpiryCell({ expiresAt }: { expiresAt: Date | null }) {
 }
 
 export function OrganizationApiKeysSettings() {
+	const scopeCopy = useTranslations("organizationApiKeyScopes");
 	const queryClient = useQueryClient();
 	const { organizationId, isOrgContext, userRole } = useOrganizationContext();
 	const { user } = useSession();
@@ -433,7 +454,7 @@ export function OrganizationApiKeysSettings() {
 	const defaultScopes = defaultScopesForRole();
 	const canHoldScope = (scope: ApiKeyScope) =>
 		(!isReadOnlyRole || READ_ONLY_SCOPES.has(scope)) &&
-		(scope !== "governance:write" ||
+		((scope !== "governance:write" && scope !== "orgs:write") ||
 			userRole === "owner" ||
 			userRole === "admin");
 
@@ -724,10 +745,30 @@ export function OrganizationApiKeysSettings() {
 															htmlFor={scope.id}
 															className="cursor-pointer font-medium text-sm"
 														>
-															{scope.label}
+															{scope.id ===
+															"reports:read"
+																? scopeCopy(
+																		"reportsReadLabel",
+																	)
+																: scope.id ===
+																		"reports:write"
+																	? scopeCopy(
+																			"reportsWriteLabel",
+																		)
+																	: scope.label}
 														</label>
 														<p className="text-muted-foreground text-xs">
-															{scope.description}
+															{scope.id ===
+															"reports:read"
+																? scopeCopy(
+																		"reportsReadDescription",
+																	)
+																: scope.id ===
+																		"reports:write"
+																	? scopeCopy(
+																			"reportsWriteDescription",
+																		)
+																	: scope.description}
 														</p>
 													</div>
 												</div>

@@ -22,17 +22,12 @@ export {
 	validateAzureDevOpsPat,
 } from "./azure-devops/discovery";
 export type { AzureDevOpsCaptureIncompleteReason } from "./azure-devops/project-read";
-export { listAzureDevOpsWorkItemTypes } from "./azure-devops/work-item-types";
 export {
 	AzureDevOpsProjectReadError,
 	azureDevOpsOrganization,
 	getAzureDevOpsProjectWorkItemCounts,
 	listAzureDevOpsProjectMembers,
 } from "./azure-devops/project-work-items";
-export type {
-	AzureDevOpsStoryComment,
-	AzureDevOpsStoryCommentsCapture,
-} from "./azure-devops/story-comments";
 export {
 	type AzureDevOpsSprintAssignedObservation,
 	type AzureDevOpsSprintCapture,
@@ -47,11 +42,16 @@ export type {
 	AzureDevOpsSprintRelationKind,
 	AzureDevOpsSprintSelection,
 } from "./azure-devops/sprint-selection";
+export type {
+	AzureDevOpsStoryComment,
+	AzureDevOpsStoryCommentsCapture,
+} from "./azure-devops/story-comments";
 export {
 	type AzureDevOpsStorySnapshot,
 	type AzureDevOpsStorySnapshotsInput,
 	getAzureDevOpsStorySnapshots,
 } from "./azure-devops/story-snapshots";
+export { listAzureDevOpsWorkItemTypes } from "./azure-devops/work-item-types";
 // Base connector
 export {
 	BaseConnector,
@@ -82,6 +82,19 @@ export {
 	listRepositoryStructure,
 	searchRepositoryCode,
 } from "./code-search";
+export type {
+	DeliverySignalCapture,
+	DeliverySignalCaptureProvider,
+	DeliverySignalCaptureRevision,
+	DeliverySignalCaptureSource,
+	PreparedDeliverySignalCapture,
+} from "./delivery-signals/capture-contract";
+export {
+	compareDeliverySignalCapture,
+	DeliverySignalCaptureError,
+	normalizeDeliverySignalCaptureRevision,
+	prepareDeliverySignalCapture,
+} from "./delivery-signals/capture-contract";
 // Federated connector (real-time search)
 export {
 	FederatedConnector,
@@ -188,3 +201,18 @@ export { SlackConnector } from "./slack";
 export { SlackFederatedConnector } from "./slack/slack-federated";
 // Types
 export * from "./types";
+
+export {
+	qualifySlackDeliverySource,
+	readSlackDeliveryPage,
+	readExactSlackDeliveryMessage,
+	SlackDeliveryCaptureError,
+} from "./delivery-signals/slack-capture";
+export type {
+	SlackDeliverySourceInput,
+	SlackDeliverySourceProof,
+	SlackDeliveryPageInput,
+	SlackDeliveryExactMessageInput,
+	SlackDeliveryMessage,
+	SlackDeliveryPage,
+} from "./delivery-signals/slack-capture";

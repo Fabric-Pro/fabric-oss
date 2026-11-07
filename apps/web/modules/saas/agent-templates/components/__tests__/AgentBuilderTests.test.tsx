@@ -635,3 +635,53 @@ it("shows a paused-updates notice and lets Refresh resume a long-running test", 
 		vi.useRealTimers();
 	}
 }, 30000);
+
+it("labels structured and unavailable checks without substituting forbidden phrase text", async () => {
+	const structured: AgentTestRunSummary = {
+		...run,
+		verdict: null,
+		report: {
+			version: 2,
+			method: "deterministic",
+			scorerVersion: "fabric-deterministic-v1",
+			status: "NOT_ASSESSED",
+			outputHash: "a".repeat(64),
+			passed: 1,
+			total: 3,
+			unavailable: 1,
+			results: [
+				{ kind: "schema", index: 0, passed: true, available: true },
+				{ kind: "json", index: 0, passed: false, available: true },
+				{
+					kind: "grounding",
+					index: 0,
+					passed: false,
+					available: false,
+				},
+			],
+			durationMs: 1,
+			inputTokens: null,
+			outputTokens: null,
+			totalCost: null,
+		},
+	};
+	const { agentTestCheckDescription } = await import("../AgentBuilderTests");
+	expect(
+		agentTestCheckDescription(
+			structured.report!.results[0],
+			structured,
+			testCase,
+		),
+	).toBe("JSON schema");
+	expect(
+		agentTestCheckDescription(
+			structured.report!.results[1],
+			structured,
+			testCase,
+		),
+	).toBe("JSON value check 1");
+	const message = agentTestImprovementRequest(structured, testCase);
+	expect(message).toContain("JSON value check 1");
+	expect(message).toContain("Grounding evidence");
+	expect(message).not.toContain("Must not include Invented");
+});

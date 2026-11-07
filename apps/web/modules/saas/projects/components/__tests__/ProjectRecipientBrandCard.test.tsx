@@ -52,6 +52,14 @@ const api = vi.hoisted(() => ({
 	toastError: vi.fn(),
 }));
 
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({ user: { id: "example-user" } }),
+}));
+
+vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useOrganizationContext: () => ({ organizationId: "org-1" }),
+}));
+
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: {
@@ -129,6 +137,9 @@ function savedBrand(
 		website: string | null;
 		colors: string[];
 		logoUrl: string | null;
+		displayFontFamily: "Inter" | "Poppins" | "JetBrains Mono" | null;
+		bodyFontFamily: "Inter" | "Poppins" | "JetBrains Mono" | null;
+		coverStyle: "DARK" | "LIGHT" | "MINIMAL";
 	}> = {},
 	canEdit = true,
 ) {
@@ -174,6 +185,47 @@ afterEach(() => {
 });
 
 describe("ProjectRecipientBrandCard", () => {
+	it("reviews bundled typography and cover choices, then saves them with the same brand version", async () => {
+		api.get.mockResolvedValue(
+			savedBrand(2, {
+				displayFontFamily: "Poppins",
+				bodyFontFamily: "Inter",
+				coverStyle: "LIGHT",
+			}),
+		);
+		api.update.mockResolvedValue({ outcome: "applied", version: 3 });
+		const user = userEvent.setup();
+		renderCard();
+		await screen.findByLabelText("name");
+		await user.click(screen.getByRole("button", { name: "theme.title" }));
+		await user.click(
+			screen.getByRole("combobox", { name: "theme.displayFontFamily" }),
+		);
+		await user.click(
+			await screen.findByRole("option", { name: "JetBrains Mono" }),
+		);
+		await user.click(
+			screen.getByRole("combobox", { name: "theme.coverStyle" }),
+		);
+		await user.click(
+			await screen.findByRole("option", { name: "theme.cover.MINIMAL" }),
+		);
+		expect(api.update).not.toHaveBeenCalled();
+		await user.click(
+			screen.getByRole("button", { name: "save", exact: true }),
+		);
+		await waitFor(() =>
+			expect(api.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					expectedVersion: 2,
+					displayFontFamily: "JetBrains Mono",
+					bodyFontFamily: "Inter",
+					coverStyle: "MINIMAL",
+					logo: { action: "keep" },
+				}),
+			),
+		);
+	});
 	it("renders nothing and loads nothing while the Glossy gate is off", () => {
 		const { container } = renderCard({ gate: false });
 
@@ -289,6 +341,9 @@ describe("ProjectRecipientBrandCard", () => {
 			name: "Example Corp",
 			website: "https://example.com",
 			colors: ["#0d9488", "#1a73e8"],
+			displayFontFamily: null,
+			bodyFontFamily: null,
+			coverStyle: "DARK",
 			logo: { action: "replace", token: TOKEN },
 		});
 		await waitFor(() =>

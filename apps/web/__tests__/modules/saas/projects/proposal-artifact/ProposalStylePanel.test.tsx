@@ -85,6 +85,14 @@ const api = vi.hoisted(() => ({
 	confirmSuggestion: vi.fn(),
 }));
 
+vi.mock("@saas/auth/hooks/use-session", () => ({
+	useSession: () => ({ user: { id: organization.userId } }),
+}));
+
+vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useOrganizationContext: () => ({ organizationId: "org-1" }),
+}));
+
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: {
@@ -111,6 +119,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 // unless a test says so.
 const organization = vi.hoisted(() => ({
 	role: null as string | null,
+	userId: "example-user",
 }));
 vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 	useActiveOrganization: () => ({
@@ -139,6 +148,8 @@ function savedStyle(
 		primaryColor: string | null;
 		accentColors: string[];
 		autoVisuals: boolean;
+		brandSource: "COMPANY" | "CLIENT";
+		coverStyle: "DARK" | "LIGHT" | "MINIMAL" | null;
 		updatedAt: Date;
 	}> = {},
 ) {
@@ -147,6 +158,8 @@ function savedStyle(
 		primaryColor: "#1a73e8",
 		accentColors: ["#ff8800", "#00aa55"],
 		autoVisuals: true,
+		brandSource: "COMPANY" as const,
+		coverStyle: null as "DARK" | "LIGHT" | "MINIMAL" | null,
 		updatedAt: new Date("2026-10-07T10:00:00.000Z"),
 		...overrides,
 	};
@@ -355,6 +368,7 @@ beforeEach(() => {
 		fn.mockReset();
 	}
 	organization.role = null;
+	organization.userId = "example-user";
 	intl.locale = "en";
 	api.getStyle.mockResolvedValue(savedStyle());
 	api.getRecipient.mockResolvedValue(savedRecipient());
@@ -366,11 +380,15 @@ beforeEach(() => {
 			primaryColor: string | null;
 			accentColors: string[];
 			autoVisuals: boolean;
+			brandSource: "COMPANY" | "CLIENT";
+			coverStyle: "DARK" | "LIGHT" | "MINIMAL" | null;
 		}) => ({
 			styleDirection: input.styleDirection,
 			primaryColor: input.primaryColor,
 			accentColors: input.accentColors,
 			autoVisuals: input.autoVisuals,
+			brandSource: input.brandSource,
+			coverStyle: input.coverStyle,
 			updatedAt: new Date("2026-10-07T12:00:00.000Z"),
 		}),
 	);
@@ -381,6 +399,48 @@ afterEach(() => {
 });
 
 describe("ProposalStylePanel — loading", () => {
+	it("drops cached style, sources and private drafts when the current actor changes", async () => {
+		const user = userEvent.setup();
+		const view = renderPanel();
+		await loaded();
+		await user.type(
+			screen.getByLabelText(copy.styleDirection),
+			" Private instructions",
+		);
+		await user.type(
+			screen.getByLabelText(recipientCopy.name),
+			" Private client edit",
+		);
+		api.getStyle.mockRejectedValue(
+			orpcError("FORBIDDEN", "private detail"),
+		);
+		api.getRecipient.mockRejectedValue(
+			orpcError("FORBIDDEN", "private detail"),
+		);
+		api.getBrandSources.mockRejectedValue(
+			orpcError("FORBIDDEN", "private detail"),
+		);
+		organization.userId = "example-user-b";
+		view.rerender(
+			<QueryClientProvider client={client}>
+				<ProposalStylePanel
+					projectId={PROJECT_ID}
+					documentId={DOCUMENT_ID}
+					canEdit
+					isGenerating={false}
+				/>
+			</QueryClientProvider>,
+		);
+		expect(
+			screen.queryByDisplayValue(/Private instructions/),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByDisplayValue(/Private client edit/),
+		).not.toBeInTheDocument();
+		expect(await screen.findByText(copy.unavailable)).toBeInTheDocument();
+		expect(screen.queryByText("Example Corp")).not.toBeInTheDocument();
+	});
+
 	it("loads the saved style into the form", async () => {
 		renderPanel();
 
@@ -432,6 +492,110 @@ describe("ProposalStylePanel — loading", () => {
 });
 
 describe("ProposalStylePanel — saving", () => {
+	it("pins the reviewed style baseline and keeps a dirty draft through background changes and conflict", async () => {
+		const user = userEvent.setup();
+		renderPanel();
+		await user.type(await loaded(), " Mine");
+		api.getStyle.mockResolvedValue(
+			savedStyle({
+				styleDirection: "Their revision",
+				updatedAt: new Date("2026-10-07T11:00:00.000Z"),
+			}),
+		);
+		await act(() =>
+			client.invalidateQueries({
+				queryKey: [
+					"projects",
+					"proposalArtifact",
+					"style",
+					PROJECT_ID,
+					DOCUMENT_ID,
+				],
+			}),
+		);
+		expect(screen.getByLabelText(copy.styleDirection)).toHaveValue(
+			"Calm and factual Mine",
+		);
+		api.updateStyle.mockRejectedValueOnce(
+			orpcError("CONFLICT", "private detail"),
+		);
+		await user.click(screen.getByRole("button", { name: copy.save }));
+		expect(await screen.findByText(copy.styleConflict)).toBeInTheDocument();
+		expect(api.updateStyle).toHaveBeenCalledWith(
+			expect.objectContaining({
+				expectedUpdatedAt: new Date("2026-10-07T10:00:00.000Z"),
+			}),
+		);
+		expect(screen.getByLabelText(copy.styleDirection)).toHaveValue(
+			"Calm and factual Mine",
+		);
+		await user.click(
+			screen.getByRole("button", { name: copy.reloadStyle }),
+		);
+		await waitFor(() =>
+			expect(screen.getByLabelText(copy.styleDirection)).toHaveValue(
+				"Their revision",
+			),
+		);
+	});
+	it("stages the saved client theme for review, then saves inheritance without changing company or client identity", async () => {
+		const user = userEvent.setup();
+		renderPanel();
+		await loaded();
+		await user.click(
+			screen.getByRole("radio", { name: copy.theme.client }),
+		);
+		expect(api.updateStyle).not.toHaveBeenCalled();
+		expect(
+			screen.getByRole("radio", { name: copy.theme.client }),
+		).toBeChecked();
+		await user.click(screen.getByRole("button", { name: copy.save }));
+		await waitFor(() =>
+			expect(api.updateStyle).toHaveBeenCalledWith({
+				projectId: PROJECT_ID,
+				documentId: DOCUMENT_ID,
+				styleDirection: "Calm and factual",
+				primaryColor: null,
+				accentColors: [],
+				autoVisuals: true,
+				brandSource: "CLIENT",
+				coverStyle: null,
+				expectedUpdatedAt: new Date("2026-10-07T10:00:00.000Z"),
+			}),
+		);
+		expect(api.updateRecipient).not.toHaveBeenCalled();
+	});
+
+	it("requires saving client edits before applying the saved palette", async () => {
+		const user = userEvent.setup();
+		renderPanel();
+		await loaded();
+		await user.type(screen.getByLabelText(recipientCopy.name), " Ltd");
+		expect(
+			screen.getByRole("radio", { name: copy.theme.client }),
+		).toBeDisabled();
+		expect(
+			screen.getByText(copy.clientPalette.saveClientFirst),
+		).toBeInTheDocument();
+		expect(screen.getByLabelText(copy.primaryHex)).toHaveValue("#1a73e8");
+	});
+
+	it("does not substitute company defaults when no saved client colors exist", async () => {
+		api.getRecipient.mockResolvedValue({
+			...savedRecipient(),
+			recipientBrand: { ...savedRecipient().recipientBrand, colors: [] },
+		});
+		renderPanel();
+		await loaded();
+		expect(
+			screen.getByText(copy.clientPalette.missing),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("radio", { name: copy.theme.client }),
+		).toBeDisabled();
+		expect(api.updateStyle).not.toHaveBeenCalled();
+	});
+
 	it("sends validated values and only the style when only the style changed", async () => {
 		const user = userEvent.setup();
 		api.getStyle.mockResolvedValue(null);
@@ -470,6 +634,9 @@ describe("ProposalStylePanel — saving", () => {
 				primaryColor: "#aabbcc",
 				accentColors: ["#ff8800"],
 				autoVisuals: true,
+				brandSource: "COMPANY",
+				coverStyle: null,
+				expectedUpdatedAt: null,
 			}),
 		);
 		expect(api.updateRecipient).not.toHaveBeenCalled();
@@ -701,6 +868,9 @@ describe("ProposalStylePanel — automatic diagrams (Fizzy #2946)", () => {
 				primaryColor: "#1a73e8",
 				accentColors: ["#ff8800", "#00aa55"],
 				autoVisuals: false,
+				brandSource: "COMPANY",
+				coverStyle: null,
+				expectedUpdatedAt: new Date("2026-10-07T10:00:00.000Z"),
 			}),
 		);
 		expect(await screen.findByText(copy.saved)).toBeInTheDocument();
@@ -859,6 +1029,9 @@ describe("ProposalStylePanel — recipient brand", () => {
 				name: "Example Industries",
 				website: "https://example.com",
 				colors: ["#123456"],
+				displayFontFamily: null,
+				bodyFontFamily: null,
+				coverStyle: "DARK",
 				logo: { action: "keep" },
 			}),
 		);
@@ -1012,6 +1185,9 @@ describe("ProposalStylePanel — proposer sources (Fizzy #2946)", () => {
 				primaryColor: null,
 				accentColors: [],
 				autoVisuals: true,
+				brandSource: "COMPANY",
+				coverStyle: null,
+				expectedUpdatedAt: new Date("2026-10-07T10:00:00.000Z"),
 			}),
 		);
 	});

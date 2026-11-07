@@ -30,6 +30,8 @@
  * Access model: tenant-scoped via the parent Project. Reads require
  * hasProjectAccess; writes additionally require canEditProject.
  */
+
+import { ORPCError } from "@orpc/client";
 import {
 	canEditProject,
 	createDocument,
@@ -64,6 +66,10 @@ import {
 	checkWholeBodyAiWrite,
 	wholeBodyRefusalMessage,
 } from "../projects/lib/client-proposal-main-check";
+import {
+	prepareProposalBrandingInput,
+	proposalBrandingAdmissionError,
+} from "../projects/lib/proposal-branding-input";
 import {
 	badRequest,
 	forbidden,
@@ -315,6 +321,8 @@ export function registerDocumentRoutes(
 				title?: string;
 				content?: string;
 				status?: string;
+				proposalBranding?: unknown;
+				recipientBrandVersion?: unknown;
 			};
 			try {
 				body = await c.req.json();
@@ -370,17 +378,46 @@ export function registerDocumentRoutes(
 				return c.json(generationOwnedStatus(body.status), 400);
 			}
 
-			const doc = await createDocument({
-				projectId,
-				type: body.type,
-				title,
-				content: body.content,
-				status: (body.status as DocumentStatus | undefined) ?? "DRAFT",
-				lastEditedBy: ctx.userId,
-				userId: ctx.userId,
-			});
+			try {
+				const branding = await prepareProposalBrandingInput({
+					projectId,
+					type: body.type,
+					proposalBranding: body.proposalBranding,
+					recipientBrandVersion: body.recipientBrandVersion,
+				});
+				const doc = await createDocument({
+					projectId,
+					...branding,
+					type: body.type,
+					title,
+					content: body.content,
+					status:
+						(body.status as DocumentStatus | undefined) ?? "DRAFT",
+					lastEditedBy: ctx.userId,
+					userId: ctx.userId,
+				});
 
-			return c.json(ok(mapDetail(doc)), 201);
+				return c.json(ok(mapDetail(doc)), 201);
+			} catch (error) {
+				const refusal =
+					proposalBrandingAdmissionError(error) ??
+					(error instanceof ORPCError ? error : null);
+				if (!refusal) throw error;
+				return c.json(
+					{
+						error: {
+							code: refusal.code,
+							message: refusal.message,
+							data: refusal.data,
+						},
+					},
+					refusal.code === "CONFLICT"
+						? 409
+						: refusal.code === "NOT_FOUND"
+							? 404
+							: 400,
+				);
+			}
 		},
 	);
 

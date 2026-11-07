@@ -1419,6 +1419,7 @@ function buildGatewaySession(
 		email: authResult.email,
 		role: authResult.role,
 		credential: authResult.credential,
+		keyIdentity: authResult.keyIdentity,
 		scopes: authResult.scopes,
 		createdAt: now,
 		expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
@@ -2973,6 +2974,7 @@ async function handleGetRequest(
 	);
 	await session.server.connect(session.transport);
 	const response = await session.transport.handleRequest(request);
+	response.headers.set("Cache-Control", "private, no-store");
 	if (response.ok) {
 		await touchDurableSession(sessionId);
 	}
@@ -3027,6 +3029,7 @@ async function handleDeleteRequest(
 	);
 	await session.server.connect(session.transport);
 	const response = await session.transport.handleRequest(request);
+	response.headers.set("Cache-Control", "private, no-store");
 	if (response.ok) {
 		await deleteDurableSession(sessionId);
 	}

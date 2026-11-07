@@ -39,6 +39,8 @@ const streamOptions = vi.hoisted(() => ({
 	current: null as null | {
 		onConversationStarted?: (conversationId: string) => void;
 		conversationSettings?: Record<string, unknown>;
+		systemPrompt?: string;
+		launchFrameId?: string;
 	},
 }));
 
@@ -251,6 +253,40 @@ async function send(text: string) {
 }
 
 describe("FabricTemporalOrchestratorChat — over the agent runtime", () => {
+	it.each([undefined, "Keep the delivery reporter persona."])(
+		"sends Frame reference as variable context while preserving persona %s",
+		async (persona) => {
+			renderChat(
+				<FabricTemporalOrchestratorChat
+					organizationId="org_1"
+					reasoningMode="balanced"
+					systemPrompt={persona}
+					frameLaunchContext={{
+						launchFrameId: "frame-example",
+						launchFrameUpdatedAt: "2026-10-14T09:00:00.000Z",
+						surface: "artifact",
+					}}
+				/>,
+			);
+			expect(streamOptions.current?.launchFrameId).toBe("frame-example");
+			expect(streamOptions.current?.systemPrompt).toBe(persona);
+			await send("Match the supplied design.");
+			const sendMessage = (
+				streamState.current as { sendMessage: ReturnType<typeof vi.fn> }
+			).sendMessage;
+			expect(sendMessage.mock.calls[0]?.[0]).toBe(
+				"Match the supplied design.",
+			);
+			expect(sendMessage.mock.calls[0]?.[10].join("\n")).toContain(
+				'"frameId":"frame-example"',
+			);
+			expect(sendMessage.mock.calls[0]?.[10].join("\n")).toContain(
+				'"updatedAt":"2026-10-14T09:00:00.000Z"',
+			);
+			expect(streamOptions.current?.systemPrompt).toBe(persona);
+		},
+	);
+
 	it("creates no conversation up front, and adopts the one the run reports", async () => {
 		const onConversationCreated = vi.fn();
 		renderChat(

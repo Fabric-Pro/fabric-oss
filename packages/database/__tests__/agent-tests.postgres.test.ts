@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Client } from "pg";
 import {
 	afterAll,
@@ -170,6 +171,34 @@ describe.skipIf(!enabled)(
 			client = new Client({ connectionString: configured });
 			await client.connect();
 			await client.query("BEGIN");
+			// Qualify the forward CHECK change transactionally before deployment.
+			// The outer rollback restores schema, fixtures and roles without history edits.
+			if (
+				!(
+					await client.query(
+						"SELECT to_regprocedure('agent_test_report_is_minimized(jsonb)') AS validator",
+					)
+				).rows[0].validator
+			) {
+				await client.query(
+					readFileSync(
+						new URL(
+							"../prisma/migrations/20261106100830_quality_report_compatibility/migration.sql",
+							import.meta.url,
+						),
+						"utf8",
+					),
+				);
+			}
+			await client.query(
+				readFileSync(
+					new URL(
+						"../scripts/assert-handwritten-constraints.sql",
+						import.meta.url,
+					),
+					"utf8",
+				),
+			);
 			for (const id of [org, otherOrg]) {
 				await insert("organization", {
 					id,
@@ -580,6 +609,192 @@ describe.skipIf(!enabled)(
 					runData({ reportJson: JSON.stringify(invalid) }),
 				);
 			}
+		});
+		it("accepts minimized deterministic v2 reports including unavailable checks and rejects nested output or unknown shapes", async () => {
+			const v2 = {
+				...report,
+				version: 2,
+				method: "deterministic",
+				scorerVersion: "fabric-deterministic-v1",
+				status: "PASSED",
+				unavailable: 0,
+				results: report.results.map((r) => ({ ...r, available: true })),
+			};
+			for (const valid of [
+				v2,
+				{
+					...v2,
+					status: "FAILED",
+					passed: 0,
+					results: v2.results.map((r) => ({ ...r, passed: false })),
+				},
+				{
+					...v2,
+					status: "NOT_ASSESSED",
+					unavailable: 1,
+					passed: 1,
+					results: [
+						{
+							kind: "schema",
+							index: 0,
+							available: true,
+							passed: true,
+						},
+						{
+							kind: "grounding",
+							index: 0,
+							available: false,
+							passed: false,
+						},
+					],
+				},
+			]) {
+				await insert(
+					"agent_test_run",
+					runData({
+						reportJson: JSON.stringify(valid),
+						status: "COMPLETED",
+					}),
+				);
+			}
+			for (const invalid of [
+				{ ...v2, version: 3 },
+				{ ...v2, output: "private answer" },
+				{ ...v2, scorerVersion: "unknown" },
+				{ ...v2, status: "PASSED", passed: 0 },
+				{
+					...v2,
+					results: [
+						{
+							kind: "schema",
+							index: 0,
+							passed: true,
+							available: true,
+							output: "private answer",
+						},
+					],
+				},
+				{
+					...report,
+					results: [
+						{
+							kind: "required",
+							index: 0,
+							passed: true,
+							output: "private answer",
+						},
+					],
+				},
+				{
+					...v2,
+					results: [
+						{
+							kind: "output",
+							index: 0,
+							passed: true,
+							available: true,
+						},
+					],
+				},
+				{ ...v2, inputTokens: "private answer" },
+				{ ...v2, totalCost: "private answer" },
+				{ ...v2, unavailable: null },
+				{ ...v2, results: [null] },
+				null,
+			])
+				await deniedInsert(
+					"agent_test_run",
+					runData({ reportJson: JSON.stringify(invalid) }),
+				);
+		});
+		it("records separate native agent reset runs while preserving same-run assessment uniqueness", async () => {
+			const policyId = fixture("quality-policy");
+			const rulesJson = JSON.stringify([
+				{
+					id: "ready",
+					name: "Ready",
+					required: true,
+					checks: {
+						requiredPhrases: ["Ready"],
+						forbiddenPhrases: [],
+					},
+				},
+			]);
+			await insert("run_quality_policy", {
+				id: policyId,
+				organizationId: org,
+				userId: owner,
+				instanceId: instance,
+				rulesJson,
+				updatedAt: new Date(),
+			});
+			const assessment = (runId: string) => ({
+				id: fixture(randomUUID()),
+				policyId,
+				organizationId: org,
+				userId: owner,
+				policyRevision: 1,
+				sourceVersion: 1,
+				agentExecutionId: `${instance}-execution`,
+				nativeWorkflowId: `${instance}-workflow`,
+				nativeRunId: runId,
+				assessmentWorkflowId: fixture(randomUUID()),
+				sourceScopeJson: JSON.stringify({
+					kind: "AGENT",
+					scope: { instanceId: instance },
+				}),
+				rulesJson,
+				rulesHash: "a".repeat(64),
+				deadlineAt: new Date(Date.now() + 60000),
+				updatedAt: new Date(),
+			});
+			const originalAssessment = assessment(nativeRunId);
+			await insert("run_quality_assessment", originalAssessment);
+			await deniedInsert(
+				"run_quality_assessment",
+				assessment(nativeRunId),
+				"23505",
+			);
+			const resetRunId = randomUUID();
+			await client.query(
+				'UPDATE agent_deployment_execution SET "runId"=$1 WHERE id=$2',
+				[resetRunId, `${instance}-execution`],
+			);
+			await insert("run_quality_assessment", assessment(resetRunId));
+			// A repinned parent must not strand its previously admitted observer.
+			const oldSettled = await client.query(
+				'UPDATE run_quality_assessment SET status=$1,verdict=$2,"errorCode"=$3,"completedAt"=NOW() WHERE id=$4 RETURNING status',
+				[
+					"CANCELLED",
+					"UNAVAILABLE",
+					"ASSESSMENT_CANCELLED",
+					originalAssessment.id,
+				],
+			);
+			expect(oldSettled.rows[0].status).toBe("CANCELLED");
+			await denied(
+				'UPDATE run_quality_assessment SET "nativeRunId"=$1 WHERE id=$2',
+				[resetRunId, originalAssessment.id],
+				"23514",
+			);
+			await denied(
+				'UPDATE run_quality_assessment SET "errorCode"=$1 WHERE id=$2',
+				["NO_OUTPUT", originalAssessment.id],
+				"23514",
+			);
+			await deniedInsert(
+				"run_quality_assessment",
+				assessment(resetRunId),
+				"23505",
+			);
+			expect(
+				(
+					await client.query(
+						'SELECT count(*)::int AS count FROM run_quality_assessment WHERE "policyId"=$1',
+						[policyId],
+					)
+				).rows[0].count,
+			).toBe(2);
 		});
 		it("makes retry identity unique per owner and prevents attaching one native execution to two tests", async () => {
 			const requestKey = randomUUID();

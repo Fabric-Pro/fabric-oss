@@ -1148,3 +1148,40 @@ it("reports legacy public status without returning bearer links", async () => {
 	});
 	expect(JSON.stringify(result)).not.toContain("example-secret");
 });
+
+it("forwards appearance through shared agent/MCP writes without trusting runtime grants", async () => {
+	await createFirstClassFrame({
+		userId: USER,
+		organizationId: ORG,
+		args: {
+			title: "Example interface",
+			blocks,
+			presentation: "INTERFACE",
+			runtimeTools: ["fabric_delete_project"],
+		},
+	});
+	expect(mocks.createFrame).toHaveBeenCalledWith(
+		expect.objectContaining({
+			presentation: "INTERFACE",
+			runtimeTools: undefined,
+		}),
+	);
+	mocks.getFrameById.mockResolvedValue(frameRecord());
+	await updateFirstClassFrame({
+		userId: USER,
+		organizationId: ORG,
+		args: {
+			frameId: "frame-1",
+			presentation: "DOCUMENT",
+			expectedUpdatedAt: "2026-10-14T10:00:00Z",
+		},
+	});
+	expect(mocks.updateFrame).toHaveBeenCalledWith(
+		expect.objectContaining({
+			presentation: "DOCUMENT",
+			expectedUpdatedAt: new Date("2026-10-14T10:00:00Z"),
+			userId: USER,
+			organizationId: ORG,
+		}),
+	);
+});

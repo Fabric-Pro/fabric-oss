@@ -1,3 +1,9 @@
+import {
+	ARTIFACT_BRAND_SOURCES,
+	type ArtifactBrandSource,
+	type ArtifactCoverStyle,
+	isArtifactCoverStyle,
+} from "@repo/utils/artifact-brand-theme";
 /** Proposal artifact (Fizzy #2801) — the document's style settings. */
 
 import { HEX_COLOR_PATTERN } from "@repo/utils/brand-colors";
@@ -6,12 +12,15 @@ import {
 	assertDocumentOrganization,
 	PROPOSAL_STYLE_MAX_ACCENT_COLORS,
 	PROPOSAL_STYLE_MAX_DIRECTION_LENGTH,
+	ProposalArtifactTenantError,
 } from "./proposal-artifact-shared";
 
 export type DocumentStyleValidationCode =
 	| "directionTooLong"
 	| "tooManyAccentColors"
-	| "invalidColor";
+	| "invalidColor"
+	| "invalidBrandSource"
+	| "invalidCoverStyle";
 
 export class DocumentStyleValidationError extends Error {
 	constructor(readonly code: DocumentStyleValidationCode) {
@@ -20,7 +29,16 @@ export class DocumentStyleValidationError extends Error {
 	}
 }
 
+export class DocumentStyleConflictError extends Error {
+	constructor() {
+		super("The proposal style changed. Read it again before saving.");
+		this.name = "DocumentStyleConflictError";
+	}
+}
+
 export interface DocumentStyleFields {
+	brandSource?: ArtifactBrandSource;
+	coverStyle?: ArtifactCoverStyle | null;
 	styleDirection: string | null;
 	primaryColor: string | null;
 	accentColors: string[];
@@ -32,6 +50,8 @@ export interface DocumentStyleFields {
  * three lowercase `#rrggbb` accents.
  */
 export function normalizeDocumentStyleFields(input: {
+	brandSource?: ArtifactBrandSource;
+	coverStyle?: ArtifactCoverStyle | null;
 	styleDirection?: string | null;
 	primaryColor?: string | null;
 	accentColors?: string[];
@@ -57,7 +77,26 @@ export function normalizeDocumentStyleFields(input: {
 		throw new DocumentStyleValidationError("invalidColor");
 	}
 
+	if (
+		input.brandSource !== undefined &&
+		!ARTIFACT_BRAND_SOURCES.some((value) => value === input.brandSource)
+	) {
+		throw new DocumentStyleValidationError("invalidBrandSource");
+	}
+	if (
+		input.coverStyle !== undefined &&
+		input.coverStyle !== null &&
+		!isArtifactCoverStyle(input.coverStyle)
+	) {
+		throw new DocumentStyleValidationError("invalidCoverStyle");
+	}
 	return {
+		...(input.brandSource === undefined
+			? {}
+			: { brandSource: input.brandSource }),
+		...(input.coverStyle === undefined
+			? {}
+			: { coverStyle: input.coverStyle }),
 		styleDirection,
 		primaryColor: primaryColor?.toLowerCase() ?? null,
 		accentColors: accentColors.map((color) => color.toLowerCase()),
@@ -72,6 +111,8 @@ const STYLE_VIEW_SELECT = {
 	primaryColor: true,
 	accentColors: true,
 	autoVisuals: true,
+	brandSource: true,
+	coverStyle: true,
 	updatedById: true,
 	updatedAt: true,
 } as const satisfies Prisma.ProjectDocumentStyleSelect;
@@ -111,6 +152,9 @@ export async function upsertDocumentStyle(input: {
 	primaryColor: string | null;
 	accentColors: string[];
 	autoVisuals?: boolean;
+	brandSource?: ArtifactBrandSource;
+	coverStyle?: ArtifactCoverStyle | null;
+	expectedUpdatedAt?: Date | null;
 	updatedById: string | null;
 }): Promise<DocumentStyleView> {
 	const fields = normalizeDocumentStyleFields(input);
@@ -125,23 +169,54 @@ export async function upsertDocumentStyle(input: {
 	);
 	const organizationId = document.project.organizationId;
 
-	return db.projectDocumentStyle.upsert({
-		where: { documentId: input.documentId },
-		create: {
-			documentId: input.documentId,
-			projectId: input.projectId,
-			organizationId,
-			...fields,
-			autoVisuals: input.autoVisuals ?? true,
-			updatedById: input.updatedById,
-		},
-		update: {
-			...fields,
-			...(input.autoVisuals === undefined
-				? {}
-				: { autoVisuals: input.autoVisuals }),
-			updatedById: input.updatedById,
-		},
-		select: STYLE_VIEW_SELECT,
+	// Serialize all Style writers, including an initial save without a row. The
+	// timestamp advances monotonically so two writes in one millisecond cannot
+	// make a reviewed timestamp valid again. Existing callers may omit CAS.
+	return db.$transaction(async (tx) => {
+		await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`proposal-style:${input.documentId}`}, 0))`;
+		const current = await tx.projectDocumentStyle.findUnique({
+			where: { documentId: input.documentId },
+			select: { updatedAt: true, organizationId: true, projectId: true },
+		});
+		if (
+			current &&
+			(current.organizationId !== organizationId ||
+				current.projectId !== input.projectId)
+		) {
+			throw new ProposalArtifactTenantError(
+				"The saved Style belongs to another project or organization",
+			);
+		}
+		if (
+			input.expectedUpdatedAt !== undefined &&
+			(current?.updatedAt.getTime() ?? null) !==
+				(input.expectedUpdatedAt?.getTime() ?? null)
+		) {
+			throw new DocumentStyleConflictError();
+		}
+		const updatedAt = new Date(
+			Math.max(Date.now(), (current?.updatedAt.getTime() ?? 0) + 1),
+		);
+		return tx.projectDocumentStyle.upsert({
+			where: { documentId: input.documentId },
+			create: {
+				documentId: input.documentId,
+				projectId: input.projectId,
+				organizationId,
+				...fields,
+				autoVisuals: input.autoVisuals ?? true,
+				updatedById: input.updatedById,
+				updatedAt,
+			},
+			update: {
+				...fields,
+				...(input.autoVisuals === undefined
+					? {}
+					: { autoVisuals: input.autoVisuals }),
+				updatedById: input.updatedById,
+				updatedAt,
+			},
+			select: STYLE_VIEW_SELECT,
+		});
 	});
 }

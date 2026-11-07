@@ -42,6 +42,7 @@ import {
 	SparklesIcon,
 	TargetIcon,
 	Users2Icon,
+	WaypointsIcon,
 	WorkflowIcon,
 } from "lucide-react";
 import type { ComponentType } from "react";
@@ -196,7 +197,7 @@ const WORKSPACE_GROUP: GsGroup = {
 			id: "home",
 			label: "Home",
 			description:
-				"Your dashboard — recent activity, key metrics, and quick actions across every project and agent.",
+				"Your execution hub — prioritized actions, recent work, assigned features, and changes across the projects you can reach.",
 			icon: HomeIcon,
 			anchor: "nav-home",
 			href: ({ basePath }) => basePath,
@@ -345,7 +346,7 @@ const PROJECT_GROUP: GsGroup = {
 			id: "overview",
 			label: "Overview",
 			description:
-				"Mission control — a snapshot of the project's scope, goals, and how ready it is to ship.",
+				"Review recent work, implementation outcomes, source health and the next useful project action.",
 			icon: LayoutDashboardIcon,
 			projectTab: "overview",
 			anchor: anchorForProjectTab("overview"),
@@ -390,6 +391,16 @@ const PROJECT_GROUP: GsGroup = {
 			projectTab: "documents",
 			anchor: anchorForProjectTab("documents"),
 			href: projectHref("documents"),
+		},
+		{
+			id: "delivery",
+			label: "Delivery",
+			description:
+				"Browse saved source-backed project work and inspect your own saved source setup.",
+			icon: WaypointsIcon,
+			projectTab: "delivery",
+			anchor: anchorForProjectTab("delivery"),
+			href: projectHref("delivery"),
 		},
 		{
 			id: "decisions",
@@ -833,10 +844,43 @@ export type GsPage = {
 
 export const GET_STARTED_PAGES: readonly GsPage[] = [
 	{
+		tab: "delivery",
+		label: "Delivery",
+		icon: WaypointsIcon,
+		since: "2026-11-06T00:00:00.000Z",
+		components: [
+			{
+				id: "delivery-signal-filters",
+				anchor: "delivery-signal-filters",
+				title: "Find saved work by its source",
+				body: "Filter work already saved in this project by Slack, Teams, Jira, Azure DevOps or Fizzy, and search its title or identifier. The list shows recorded origins, not live capture status or unaccepted proposals.",
+			},
+			{
+				id: "delivery-signal-history",
+				anchor: "delivery-signal-history",
+				title: "Inspect a work item without leaving the list",
+				body: "Open a row to inspect its recorded source and current drafting stage in a side panel. Open the full work item when you need its discussion and files. Load more to continue through the same filtered history; there is no inferred delivery or deployment status.",
+			},
+			{
+				id: "delivery-private-sources",
+				anchor: "delivery-private-sources",
+				conditional: true,
+				title: "Capture and privately review selected Slack signals",
+				body: "Open Private source capture to check a channel through your own Slack connection and consent to owner-only capture. Only root messages are included; replies and files are excluded. Capture recent messages or explicitly choose a past window of up to seven days within the last 90 days. Continue resumes the same window. Capture is on demand, and opening captured text checks your source access again. When signal review is enabled, select captured messages for a private cited review; inspect its run history and keep or dismiss proposals without creating a ticket or sharing them. This optional panel requires integration access and enabled private capture. When unavailable, it shows no capture actions.",
+			},
+		],
+	},
+	{
 		tab: "overview",
 		label: "Overview",
 		icon: LayoutDashboardIcon,
 		components: [
+			{
+				id: "overview-delivery-evidence",
+				anchor: "overview-delivery-evidence",
+				title: "Delivery at a glance",
+				body: "Inspect recent work, permitted implementation sessions and source health. PR merges remain separate from deployment evidence; missing evidence stays unknown. Open the existing work item for its discussion and files.",
+			},
 			{
 				id: "overview-readiness",
 				anchor: "overview-readiness",
@@ -1748,13 +1792,19 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "pages-new",
 				anchor: "pages-new",
 				title: "Describe the page you want",
-				body: "A Page is an interactive experience Fabric Agent writes for your organization, shared with everyone in it unless you ask for it to stay private. Describe what you want to see and it writes the whole page, opens it here and explains it. Nothing is a template, so ask for a refresh button or a new section and it rewrites the page.",
+				body: "A Page is an interactive experience Fabric Agent writes for your organization, shared with everyone in it unless you ask for it to stay private. Describe what you want to see and it writes the whole page, opens it here and explains it. Use Artifacts & templates to create a private artifact from a reusable definition or from scratch. Ask Genie to propose changes, then compare the original and preview before applying.",
+			},
+			{
+				id: "pages-artifacts",
+				anchor: "pages-artifacts",
+				title: "Artifacts and reusable templates",
+				body: "Open the artifact library to start from a template or write a private draft. Check its structure, preview it, and choose explicitly when a reusable definition may be available across the organization. Reviews keep proposed changes separate from the saved artifact; approval never shares it.",
 			},
 			{
 				id: "pages-list",
 				anchor: "pages-list",
 				title: "Your organization's pages",
-				body: "Each card is one Page you can open, with who it is shared with: your own, and the ones shared with the organization. Open one to read it, ask Fabric Agent to change it, or change who can open it. Its owner can edit content and review Version history. Saving or restoring checks the reviewed revision; a conflict preserves the draft instead of overwriting a newer page. Saved pages can create a PDF export, follow progress, cancel, and download with current access. Sharing controls distinguish removing a public link from making the page private.",
+				body: "Each card is one Page you can open, with who it is shared with: your own, and the ones shared with the organization. Open one to read it, ask Fabric Agent to change it, or change who can open it. Its owner can open Reviews to compare a proposal, apply or dismiss it, and approve an exact revision without sharing it. Version history retains earlier saved content. Saving or restoring checks the reviewed revision; a conflict preserves the draft instead of overwriting a newer page. Saved pages can create a PDF export, follow progress, cancel, and download with current access. Sharing controls distinguish removing a public link from making the page private.",
 				conditional: true,
 			},
 		],
@@ -1863,9 +1913,15 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 	{
 		tab: "agent-templates",
 		app: true,
-		label: "Agent Templates",
+		label: "Templates",
 		icon: BotIcon,
 		components: [
+			{
+				id: "delivery-report-starters",
+				anchor: "delivery-report-starters",
+				title: "Start with the result you need",
+				body: "Choose a delivery update, sprint review, release readiness brief, architecture decision or incident review. Review the prefilled report instructions, then choose project evidence, period and audience when creating a report instance. Selecting a starter never creates, schedules or runs work.",
+			},
 			{
 				id: "agent-templates-category-filter",
 				anchor: "agent-templates-category-filter",

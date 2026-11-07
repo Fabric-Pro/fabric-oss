@@ -1,3 +1,18 @@
+import {
+	createDeliverySignalTools,
+	deliverySignalScopeRefusal,
+} from "./tools/delivery-signal-tools";
+import {
+	createDeliverySourceTools,
+	deliverySourceScopeRefusal,
+} from "./tools/delivery-source-tools";
+import {
+	createHarnessTriageTools,
+	triageScopeRefusal,
+} from "./tools/harness-triage-tools";
+import { createImplementationSessionTools } from "./tools/implementation-session-tools";
+import { createDashboardTools } from "./tools/dashboard-tools";
+import { createProjectDeliveryTools } from "./tools/project-delivery-tools";
 import { createPromptWorkbenchTools } from "./tools/prompt-workbench-tools";
 import { createWorkflowAuthoringTools } from "./tools/workflow-authoring-tools";
 import { createWorkflowLifecycleTools } from "./tools/workflow-lifecycle-tools";
@@ -146,12 +161,15 @@ import { createAgentPreviewTools } from "./tools/agent-preview-tools";
 import { createAgentResultQualityTools } from "./tools/agent-result-quality-tools";
 import { createAgentRunTools } from "./tools/agent-run-tools";
 import { createAgentTestTools } from "./tools/agent-test-tools";
+import { createBrandTools } from "./tools/brand-tools";
 import { createContextQualityTools } from "./tools/context-quality-tools";
 import { createContextSelectionTools } from "./tools/context-selection-tools";
 import { createFrameTools } from "./tools/frame-tools";
 import { createFrameVersionTools } from "./tools/frame-version-tools";
 import { createPageTools } from "./tools/page-tools";
 import { createProjectPmTools } from "./tools/project-pm-tools";
+import { createReportTools } from "./tools/report-tools";
+import { createRunQualityTools } from "./tools/run-quality-tools";
 import { createSkillTools } from "./tools/skill-tools";
 
 import { type PlatformToolHandler, toolFamily } from "./tools/tool-family";
@@ -170,9 +188,18 @@ import {
 // (shared with the Orchestrator's catalogue) paired with their handlers. A
 // page may declare a tool only if the table below has it, so the frame family
 // asks this module's names, which exist once the table is built.
+const IMPLEMENTATION_TOOLS = createImplementationSessionTools();
+const PROJECT_DELIVERY_TOOLS = createProjectDeliveryTools();
+const TRIAGE_TOOLS = createHarnessTriageTools();
+const DELIVERY_SOURCE_TOOLS = createDeliverySourceTools();
+const DELIVERY_SIGNAL_TOOLS = createDeliverySignalTools();
 const AGENT_RUN_TOOLS = createAgentRunTools();
 const AGENT_PREVIEW_TOOLS = createAgentPreviewTools();
 const AGENT_TEST_TOOLS = createAgentTestTools();
+const RUN_QUALITY_TOOLS = createRunQualityTools();
+const REPORT_TOOLS = createReportTools();
+const BRAND_TOOLS = createBrandTools();
+const DASHBOARD_TOOLS = createDashboardTools();
 const SKILL_TOOLS = createSkillTools();
 const WORKFLOW_LIFECYCLE_TOOLS = createWorkflowLifecycleTools();
 const WORKFLOW_RESULT_CHECK_TOOLS = createWorkflowResultCheckTools();
@@ -242,6 +269,11 @@ const MEMORY_WRITE_TOOLS = createMemoryWriteTools({
 
 export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	...PROJECT_READ_TOOLS.definitions,
+	...PROJECT_DELIVERY_TOOLS.definitions,
+	...DELIVERY_SIGNAL_TOOLS.definitions,
+	...DELIVERY_SOURCE_TOOLS.definitions,
+	...TRIAGE_TOOLS.definitions,
+	...IMPLEMENTATION_TOOLS.definitions,
 	...PROJECT_PM_TOOLS.definitions,
 	...CONTEXT_QUALITY_TOOLS.definitions,
 	...AGENT_RESULT_QUALITY_TOOLS.definitions,
@@ -750,7 +782,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_document",
 		description:
-			"Creates project markdown (PRD/spec/architecture/API spec/design/implementation notes). Default status DRAFT.",
+			"Creates project Markdown, not a PDF. For client proposals first read fabric_get_artifact_brand; collect and save missing client branding with approval. Use proposalBranding CLIENT + reviewed clientVersion as recipientBrandVersion for client colors; keep company Prepared by. COMPANY uses company colors. Open the saved Proposal to review/export. Default DRAFT.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -781,6 +813,18 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				status: {
 					type: "string",
 					enum: ["DRAFT", "IN_PROGRESS", "REVIEW", "COMPLETE"],
+				},
+				proposalBranding: {
+					type: "string",
+					enum: ["CLIENT", "COMPANY"],
+					description:
+						"Proposal visual palette. CLIENT requires reviewed recipientBrandVersion.",
+				},
+				recipientBrandVersion: {
+					type: "integer",
+					minimum: 1,
+					description:
+						"Confirmed clientVersion from fabric_get_artifact_brand; required for CLIENT.",
 				},
 			},
 			required: ["projectId", "type", "title", "content"],
@@ -1202,6 +1246,10 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	...AGENT_RUN_TOOLS.definitions,
 	...AGENT_PREVIEW_TOOLS.definitions,
 	...AGENT_TEST_TOOLS.definitions,
+	...RUN_QUALITY_TOOLS.definitions,
+	...REPORT_TOOLS.definitions,
+	...BRAND_TOOLS.definitions,
+	...DASHBOARD_TOOLS.definitions,
 	...SKILL_TOOLS.definitions,
 	...PROMPT_WORKBENCH_TOOLS.definitions,
 	...WORKFLOW_AUTHORING_TOOLS.definitions,
@@ -1400,6 +1448,11 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 
 	// Workflows and frames: each tool's scope is part of its definition
 	...PROJECT_READ_TOOLS.scopes,
+	...PROJECT_DELIVERY_TOOLS.scopes,
+	...DELIVERY_SIGNAL_TOOLS.scopes,
+	...DELIVERY_SOURCE_TOOLS.scopes,
+	...TRIAGE_TOOLS.scopes,
+	...IMPLEMENTATION_TOOLS.scopes,
 	...PROJECT_PM_TOOLS.scopes,
 	...CONTEXT_QUALITY_TOOLS.scopes,
 	...AGENT_RESULT_QUALITY_TOOLS.scopes,
@@ -1408,6 +1461,10 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 	...AGENT_RUN_TOOLS.scopes,
 	...AGENT_PREVIEW_TOOLS.scopes,
 	...AGENT_TEST_TOOLS.scopes,
+	...RUN_QUALITY_TOOLS.scopes,
+	...REPORT_TOOLS.scopes,
+	...BRAND_TOOLS.scopes,
+	...DASHBOARD_TOOLS.scopes,
 	...SKILL_TOOLS.scopes,
 	...PROMPT_WORKBENCH_TOOLS.scopes,
 	...WORKFLOW_AUTHORING_TOOLS.scopes,
@@ -1448,12 +1505,35 @@ const UNMAPPED_TOOL_SCOPE: ToolScope = { scope: "mcp:write", kind: "write" };
  * it and `./tool-eligibility` reads it to decide what discovery mode offers, so
  * the two answer from this one lookup.
  */
-export function platformToolScope(toolName: string): ToolScope {
+export function platformToolScope(
+	toolName: string,
+	args: Record<string, unknown> = {},
+	session?: Pick<
+		GatewaySession,
+		"projectId" | "pinnedProjectId" | "pageProjectId"
+	>,
+): ToolScope {
+	if (toolName === "fabric_get_artifact_brand") {
+		const projectId =
+			args.projectId ??
+			session?.projectId ??
+			session?.pinnedProjectId ??
+			session?.pageProjectId;
+		return {
+			scope: projectId ? "projects:read" : "orgs:read",
+			kind: "read",
+		};
+	}
 	return TOOL_SCOPES[toolName] ?? UNMAPPED_TOOL_SCOPE;
 }
 
 const FAMILY_HANDLERS: ReadonlyMap<string, PlatformToolHandler> = new Map([
 	...PROJECT_READ_TOOLS.handlers,
+	...PROJECT_DELIVERY_TOOLS.handlers,
+	...DELIVERY_SIGNAL_TOOLS.handlers,
+	...DELIVERY_SOURCE_TOOLS.handlers,
+	...TRIAGE_TOOLS.handlers,
+	...IMPLEMENTATION_TOOLS.handlers,
 	...PROJECT_PM_TOOLS.handlers,
 	...CONTEXT_QUALITY_TOOLS.handlers,
 	...AGENT_RESULT_QUALITY_TOOLS.handlers,
@@ -1462,6 +1542,10 @@ const FAMILY_HANDLERS: ReadonlyMap<string, PlatformToolHandler> = new Map([
 	...AGENT_RUN_TOOLS.handlers,
 	...AGENT_PREVIEW_TOOLS.handlers,
 	...AGENT_TEST_TOOLS.handlers,
+	...RUN_QUALITY_TOOLS.handlers,
+	...REPORT_TOOLS.handlers,
+	...BRAND_TOOLS.handlers,
+	...DASHBOARD_TOOLS.handlers,
 	...SKILL_TOOLS.handlers,
 	...PROMPT_WORKBENCH_TOOLS.handlers,
 	...WORKFLOW_AUTHORING_TOOLS.handlers,
@@ -1495,8 +1579,32 @@ export async function executePlatformTool(
 	}
 	// A session opened from a project's URL has the project's tools, on the
 	// project: see ./project-binding.
+	const triageTool = TRIAGE_TOOLS.handlers.has(toolName);
+	if (triageTool) {
+		const refusal = triageScopeRefusal(toolName, session);
+		if (refusal) {
+			return refusal;
+		}
+	}
+	const deliverySourceTool = DELIVERY_SOURCE_TOOLS.handlers.has(toolName);
+	if (deliverySourceTool) {
+		const refusal = deliverySourceScopeRefusal(toolName, session);
+		if (refusal) {
+			return refusal;
+		}
+	}
+	const deliverySignalTool = DELIVERY_SIGNAL_TOOLS.handlers.has(toolName);
+	if (deliverySignalTool) {
+		const refusal = deliverySignalScopeRefusal(toolName, session);
+		if (refusal) {
+			return refusal;
+		}
+	}
 	const bound = bindToolCall(toolName, requestedArgs, session);
 	if (!bound.ok) {
+		if (triageTool || deliverySignalTool || deliverySourceTool) {
+			return errorResult("Project not found", { code: "NOT_FOUND" });
+		}
 		return errorResult(bound.message);
 	}
 	const args = bound.args;
@@ -1507,13 +1615,15 @@ export async function executePlatformTool(
 		return errorResult(selectionRefusalMessage(toolName));
 	}
 
-	const required = platformToolScope(toolName);
+	const required = platformToolScope(toolName, args, session);
 	if (!scopeSatisfied(session.scopes, required, session.credential)) {
 		let humanApprovedWrite = false;
 		if (
 			session.credential === "oauth" &&
+			!required.exact &&
 			session.scopes.includes("mcp:read") &&
 			required.kind === "write" &&
+			required.scope !== "orgs:write" &&
 			!required.scope.startsWith("chats:")
 		) {
 			try {
@@ -4071,29 +4181,59 @@ async function handleCreateDocument(
 		return errorResult(RETIRED_TYPE_MESSAGE);
 	}
 
-	const doc = await createDocument({
-		projectId,
-		type: type as
-			| "GENERAL"
-			| "PRD"
-			| "PROPOSAL"
-			| "DESIGN_SYSTEM"
-			| "ARCHITECTURE"
-			| "TECHNICAL_SPEC"
-			| "API_SPEC",
-		title,
-		content,
-		status:
-			(args.status as
-				| "DRAFT"
-				| "IN_PROGRESS"
-				| "REVIEW"
-				| "COMPLETE"
-				| "FAILED"
-				| undefined) ?? "DRAFT",
-		lastEditedBy: session.userId,
-		userId: session.userId,
-	});
+	const { prepareProposalBrandingInput, proposalBrandingAdmissionError } =
+		await import("@repo/api/modules/projects/lib/proposal-branding-input");
+	let branding: Awaited<ReturnType<typeof prepareProposalBrandingInput>>;
+	try {
+		branding = await prepareProposalBrandingInput({
+			projectId,
+			type,
+			proposalBranding: args.proposalBranding,
+			recipientBrandVersion: args.recipientBrandVersion,
+		});
+	} catch (error) {
+		return errorResult(
+			error instanceof Error
+				? error.message
+				: "Invalid proposal branding",
+		);
+	}
+	let doc: Awaited<ReturnType<typeof createDocument>>;
+	try {
+		doc = await createDocument({
+			...branding,
+			projectId,
+			type: type as
+				| "GENERAL"
+				| "PRD"
+				| "PROPOSAL"
+				| "DESIGN_SYSTEM"
+				| "ARCHITECTURE"
+				| "TECHNICAL_SPEC"
+				| "API_SPEC",
+			title,
+			content,
+			status:
+				(args.status as
+					| "DRAFT"
+					| "IN_PROGRESS"
+					| "REVIEW"
+					| "COMPLETE"
+					| "FAILED"
+					| undefined) ?? "DRAFT",
+			lastEditedBy: session.userId,
+			userId: session.userId,
+		});
+	} catch (error) {
+		const refusal = proposalBrandingAdmissionError(error);
+		if (refusal) {
+			return errorResult(refusal.message, {
+				code: refusal.code,
+				data: refusal.data,
+			});
+		}
+		throw error;
+	}
 
 	return jsonResult({
 		success: true,

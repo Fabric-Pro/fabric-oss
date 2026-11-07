@@ -3,6 +3,10 @@ import {
 	type FrameBlock,
 	type FrameSurface,
 } from "@repo/database";
+import {
+	FRAME_PRESENTATIONS,
+	type FramePresentation,
+} from "@repo/utils/frame-presentation";
 
 /**
  * What a caller's arguments to the frame tools mean: the shape a create or an
@@ -162,6 +166,20 @@ export function parseFrameSourceWindow(
 			limit,
 		},
 	};
+}
+
+function parsePresentation(
+	args: Record<string, unknown> | undefined,
+): ParsedOption<FramePresentation> {
+	if (args?.presentation === undefined) {
+		return { ok: true };
+	}
+	const presentation = FRAME_PRESENTATIONS.find(
+		(value) => value === args?.presentation,
+	);
+	return presentation
+		? { ok: true, value: presentation }
+		: { ok: false, error: "`presentation` must be DOCUMENT or INTERFACE." };
 }
 
 function parseSurface(
@@ -340,6 +358,7 @@ export function validateCreateFrameArgs(
 				blocks?: FrameBlock[];
 				surface?: FrameSurface;
 				runtimeTools?: string[];
+				presentation?: FramePresentation;
 			};
 	  }
 	| { ok: false; error: string } {
@@ -363,6 +382,10 @@ export function validateCreateFrameArgs(
 			return blocks;
 		}
 	}
+	const presentation = parsePresentation(args);
+	if (!presentation.ok) {
+		return presentation;
+	}
 	const surface = parseSurface(args);
 	if (!surface.ok) {
 		return surface;
@@ -383,6 +406,7 @@ export function validateCreateFrameArgs(
 			shareOnCreate: Boolean(args?.shareOnCreate),
 			...(blocks.value ? { blocks: blocks.value } : {}),
 			...(surface.value ? { surface: surface.value } : {}),
+			...(presentation.value ? { presentation: presentation.value } : {}),
 			...(runtimeTools.value ? { runtimeTools: runtimeTools.value } : {}),
 		},
 	};
@@ -401,6 +425,7 @@ export function validateUpdateFrameArgs(
 				blocks?: FrameBlock[];
 				surface?: FrameSurface;
 				runtimeTools?: string[];
+				presentation?: FramePresentation;
 			};
 	  }
 	| { ok: false; error: string } {
@@ -441,6 +466,10 @@ export function validateUpdateFrameArgs(
 	if (!blocks.ok) {
 		return blocks;
 	}
+	const presentation = parsePresentation(args);
+	if (!presentation.ok) {
+		return presentation;
+	}
 	const surface = parseSurface(args);
 	if (!surface.ok) {
 		return surface;
@@ -455,11 +484,12 @@ export function validateUpdateFrameArgs(
 		description === undefined &&
 		!blocks.value &&
 		!surface.value &&
-		!runtimeTools.value
+		!runtimeTools.value &&
+		!presentation.value
 	) {
 		return {
 			ok: false,
-			error: "Provide at least one update field: `title`, `description`, `blocks`, `surface`, or `runtimeTools`.",
+			error: "Provide at least one update field: `title`, `description`, `blocks`, `presentation`, `surface`, or `runtimeTools`.",
 		};
 	}
 
@@ -474,6 +504,7 @@ export function validateUpdateFrameArgs(
 			description,
 			blocks: blocks.value,
 			...(surface.value ? { surface: surface.value } : {}),
+			...(presentation.value ? { presentation: presentation.value } : {}),
 			...(runtimeTools.value ? { runtimeTools: runtimeTools.value } : {}),
 		},
 	};

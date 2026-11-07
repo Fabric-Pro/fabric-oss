@@ -244,7 +244,14 @@ export function StartImplementationSessionButton({
 		},
 		onSuccess: async (result) => {
 			await invalidateStoryQueries();
-			toast.success("Implementation session started");
+			if (result.inspectionRequired) {
+				toast.warning(
+					result.message ??
+						"Dispatch is unconfirmed. Inspect this existing session before retrying.",
+				);
+			} else {
+				toast.success("Implementation session started");
+			}
 			setIsOpen(false);
 			onStarted?.(result.codingRunId);
 		},

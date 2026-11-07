@@ -41,6 +41,7 @@ import {
 	SettingsIcon,
 	ShieldCheckIcon,
 	TargetIcon,
+	WaypointsIcon,
 } from "lucide-react";
 
 export const tabs = [
@@ -53,6 +54,11 @@ export const tabs = [
 		id: "daily-brief",
 		label: "Daily Brief",
 		icon: NewspaperIcon,
+	},
+	{
+		id: "delivery",
+		label: "Delivery",
+		icon: WaypointsIcon,
 	},
 	{ id: "meeting-digest", label: "Meeting Digest", icon: CalendarDaysIcon },
 	{

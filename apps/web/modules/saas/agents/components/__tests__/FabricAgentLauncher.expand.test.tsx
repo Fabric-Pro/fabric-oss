@@ -267,6 +267,7 @@ function HandoffProbe() {
 				onClick={() =>
 					openLauncher({
 						launchFrameId: "frame-example",
+						launchFrameUpdatedAt: "2026-10-14T09:00:00.000Z",
 						surface: null,
 					})
 				}
@@ -330,6 +331,7 @@ describe("FabricAgentLauncher — Expand hands the composer to the page (#2040)"
 			projectId: null,
 			frameLaunchContext: {
 				launchFrameId: "frame-example",
+				launchFrameUpdatedAt: "2026-10-14T09:00:00.000Z",
 				workspaceId: null,
 				surface: null,
 			},

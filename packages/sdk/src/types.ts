@@ -381,6 +381,8 @@ export interface FabricTask {
 
 // ---- Frames ----
 export interface FabricFrame {
+	/** Appearance only. Omitted legacy pages use document presentation. */
+	presentation?: "DOCUMENT" | "INTERFACE";
 	id: string;
 	title: string;
 	description: string | null;

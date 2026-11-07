@@ -34,6 +34,7 @@ vi.mock("@temporalio/workflow", () => ({
 				: ordinaryNode,
 		updateWorkflowExecutionStatus: updateStatus,
 		createWorkflowExecutionLog: createLog,
+		admitRecordedRunQuality: async () => null,
 		getWorkflowDefinition: getDefinition,
 		validateWorkflowGraph: vi.fn(),
 		preflightValidation: vi.fn(),

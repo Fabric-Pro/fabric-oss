@@ -1,3 +1,4 @@
+import { hasUnconfirmedAgentEffect } from "../../../lib/agent-execution-native-protocol";
 /**
  * Agent Task Step
  *
@@ -330,12 +331,23 @@ export async function executeAgentTaskStep(
 			jobType: params.jobType,
 		});
 
+		const inspectionRequired =
+			hasUnconfirmedAgentEffect(result.toolCalls) ||
+			result.toolCalls.some((call) => call.status === "error");
 		const toolCallSummary = result.toolCalls
 			.slice(0, TOOL_SUMMARY_LIMIT)
 			.map((call) => ({
 				name: call.name,
 				serverName: call.serverName,
 				status: call.status,
+				inspectionRequired:
+					call.inspectionRequired === true ||
+					!!(
+						call.result &&
+						typeof call.result === "object" &&
+						"inspectionRequired" in call.result &&
+						call.result.inspectionRequired === true
+					),
 			}));
 
 		if (!result.success) {
@@ -356,6 +368,7 @@ export async function executeAgentTaskStep(
 			output: {
 				text: truncate(result.response, TEXT_EXCERPT_CHARS),
 				toolCallSummary,
+				inspectionRequired,
 				instructions: provenance,
 			},
 		});
@@ -379,6 +392,7 @@ export async function executeAgentTaskStep(
 				text: truncate(result.response, TEXT_EXCERPT_CHARS),
 				[config.outputFormat]: document,
 				toolCallSummary,
+				inspectionRequired,
 				instructions: provenance,
 			},
 		};

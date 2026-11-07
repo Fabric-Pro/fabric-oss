@@ -82,7 +82,8 @@ import "../create";
 import "../publish";
 import "../update";
 
-const PUBLIC_SETTERS = ["/frames", "/frames/{id}/publish"] as const;
+// Authored creation is private-only; publishing is an explicit subsequent command.
+const PUBLIC_SETTERS = ["/frames/{id}/publish"] as const;
 
 beforeEach(() => {
 	vi.clearAllMocks();

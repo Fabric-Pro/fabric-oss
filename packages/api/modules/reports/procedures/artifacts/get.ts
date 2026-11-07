@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/server";
-import { getReportArtifact } from "@repo/database";
+import { getTemplateInstanceArtifact } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -23,9 +23,12 @@ export const getArtifactProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
-		const artifact = await getReportArtifact(input.id);
+		const artifact = await getTemplateInstanceArtifact(input.id, {
+			userId: context.user.id,
+			organizationId,
+		});
 
-		if (!artifact) {
+		if (!artifact || artifact.execution.status === "CANCELLED") {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Report artifact not found",
 			});

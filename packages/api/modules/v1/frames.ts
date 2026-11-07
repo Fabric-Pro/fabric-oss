@@ -1,13 +1,17 @@
+import { ORPCError } from "@orpc/server";
 /**
  * v1 Frames routes
  * GET /frames          list frames (FRAME + SLIDESHOW)
  * GET /frames/:id      get frame details
  */
 import {
+	ArtifactBrandingError,
+	applyFrameBranding,
 	canDeleteOrganizationFrames,
 	canReadOrganizationFrames,
 	canUpdateOrganizationFrames,
 	FrameUpdateConflictError,
+	getFrameBranding,
 	getFrameById,
 	getFrameEditHistory,
 	listFrames,
@@ -19,8 +23,11 @@ import {
 } from "@repo/database";
 import type { Hono } from "hono";
 import { z } from "zod";
+import { readBrandBody } from "../branding/lib/brand-body";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
+import { registerFrameAuthoringRoutes } from "../frames/lib/frame-authoring-routes";
+import { frameBrandingApplySchema } from "../frames/lib/frame-branding-contract";
 import {
 	frameContentEditSchema,
 	frameRestoreSchema,
@@ -32,6 +39,7 @@ import {
 	frameSharingMutationDto,
 } from "../frames/lib/frame-operation-contracts";
 import { frameReadDto } from "../frames/lib/frame-read-dto";
+import { registerFrameReviewRoutes } from "../frames/lib/frame-review-routes";
 import { notFound, ok, resolveV1Context } from "./helpers";
 
 function mapFrame(f: {
@@ -39,6 +47,7 @@ function mapFrame(f: {
 	title: string;
 	description?: string | null;
 	kind?: string;
+	presentation?: "DOCUMENT" | "INTERFACE";
 	fileType: string;
 	status: string;
 	isPublic: boolean;
@@ -53,6 +62,7 @@ function mapFrame(f: {
 		title: f.title,
 		description: f.description ?? null,
 		kind: f.kind ?? null,
+		presentation: f.presentation,
 		fileType: f.fileType,
 		status: f.status,
 		isPublic: f.isPublic,
@@ -67,6 +77,109 @@ function mapFrame(f: {
 export function registerFrameRoutes(
 	app: Hono<{ Variables: ExternalApiVariables }>,
 ) {
+	registerFrameReviewRoutes(app);
+	registerFrameAuthoringRoutes(app);
+	for (const action of ["get", "apply"] as const) {
+		const handler = async (
+			c: import("hono").Context<{ Variables: ExternalApiVariables }>,
+		) => {
+			const ctx = await resolveV1Context(
+				c.get("externalApiContext"),
+				c.req.query("org"),
+			);
+			if ("error" in ctx) {
+				return c.json({ error: { message: ctx.error } }, ctx.status);
+			}
+			if (
+				!ctx.organizationId ||
+				!(await (action === "get"
+					? canReadOrganizationFrames
+					: canUpdateOrganizationFrames)(
+					ctx.userId,
+					ctx.organizationId,
+				))
+			) {
+				return c.json(
+					{ error: { message: "No permission for Frame branding." } },
+					403,
+				);
+			}
+			try {
+				const actor = {
+					id: c.req.param("id")!,
+					userId: ctx.userId,
+					organizationId: ctx.organizationId,
+				};
+				if (action === "get") {
+					const result = await getFrameBranding(actor);
+					return result
+						? c.json(ok(result))
+						: c.json(notFound("Frame"), 404);
+				}
+				const parsed = frameBrandingApplySchema.safeParse(
+					await readBrandBody(c.req.raw),
+				);
+				if (!parsed.success) {
+					return c.json(
+						{
+							error: {
+								message:
+									"Provide the reviewed Frame revision and brand version.",
+							},
+						},
+						400,
+					);
+				}
+				const result = await applyFrameBranding({
+					...actor,
+					...parsed.data,
+					expectedUpdatedAt: new Date(parsed.data.expectedUpdatedAt),
+				});
+				return result
+					? c.json(
+							ok({
+								...frameReadDto(result),
+								updatedAt: result.updatedAt.toISOString(),
+								createdAt: result.createdAt.toISOString(),
+							}),
+						)
+					: c.json(notFound("Frame"), 404);
+			} catch (error) {
+				if (error instanceof ORPCError) {
+					return c.json(
+						{ error: { code: error.code, message: error.message } },
+						error.code === "PAYLOAD_TOO_LARGE" ? 413 : 400,
+					);
+				}
+				if (
+					error instanceof ArtifactBrandingError ||
+					error instanceof FrameUpdateConflictError
+				) {
+					return c.json(
+						{ error: { message: error.message } },
+						error instanceof ArtifactBrandingError &&
+							error.code === "NOT_FOUND"
+							? 404
+							: 409,
+					);
+				}
+				throw error;
+			}
+		};
+		if (action === "get") {
+			app.get(
+				"/frames/:id/branding",
+				requireScope("frames:read"),
+				handler,
+			);
+		} else {
+			app.post(
+				"/frames/:id/branding",
+				requireScope("frames:write"),
+				handler,
+			);
+		}
+	}
 	app.get("/frames", requireScope("frames:read"), async (c) => {
 		const apiCtx = c.get("externalApiContext");
 		const ctx = await resolveV1Context(
@@ -556,7 +669,14 @@ export function registerFrameRoutes(
 			return c.json(notFound("Frame"), 404);
 		}
 
-		return c.json(ok(mapFrame(frame)));
+		return c.json(
+			ok({
+				...mapFrame(frame),
+				document: frame.document,
+				projectId: frame.projectId ?? null,
+				isPublishedSnapshot: frame.isPublishedSnapshot ?? false,
+			}),
+		);
 	});
 }
 

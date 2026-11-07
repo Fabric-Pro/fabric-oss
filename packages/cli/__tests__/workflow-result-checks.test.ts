@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
+	read: vi.fn(),
 	listChecks: vi.fn(),
 	inspectResult: vi.fn(),
 	previewCheck: vi.fn(),
@@ -12,6 +13,7 @@ const m = vi.hoisted(() => ({
 		throw Error(message);
 	}),
 }));
+vi.mock("node:fs/promises", () => ({ readFile: m.read }));
 vi.mock("../src/lib/client.js", () => ({
 	getClient: () => ({ workflows: m }),
 }));
@@ -118,4 +120,52 @@ it("compares and removes the specific saved revision", async () => {
 		{ checkId: "example-check", expectedCaseRevision: revision },
 		{ org: "example-org" },
 	);
+});
+
+it("passes structured checks files intact and rejects authority overrides", async () => {
+	const checks = {
+		version: 2,
+		jsonSchema: {
+			type: "object",
+			properties: { ready: { type: "boolean" } },
+		},
+		jsonAssertions: [{ pointer: "/ready", equals: true }],
+	};
+	m.read.mockResolvedValue(Buffer.from(JSON.stringify(checks)));
+	await run([
+		"preview",
+		"example-flow",
+		"example-run",
+		"draft",
+		"--revision",
+		revision,
+		"--checks-file",
+		"example.json",
+	]);
+	expect(m.previewCheck).toHaveBeenCalledWith(
+		"example-flow",
+		{
+			executionId: "example-run",
+			nodeId: "draft",
+			expectedRevision: revision,
+			...checks,
+		},
+		{ org: "example-org" },
+	);
+	m.read.mockResolvedValue(
+		Buffer.from(JSON.stringify({ ...checks, executionId: "other" })),
+	);
+	await expect(
+		run([
+			"preview",
+			"example-flow",
+			"example-run",
+			"draft",
+			"--revision",
+			revision,
+			"--checks-file",
+			"example.json",
+		]),
+	).rejects.toThrow(/check fields only/);
+	expect(m.previewCheck).toHaveBeenCalledTimes(1);
 });

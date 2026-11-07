@@ -2,9 +2,13 @@
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { ReportTemplateForm } from "@saas/reports/components/ReportTemplateForm";
+import { useSearchParams } from "next/navigation";
+import { getDeliveryReportStarter } from "@saas/reports/lib/delivery-report-starters";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 
 export default function OrganizationNewReportTemplatePage() {
+	const params = useSearchParams();
+	const starter = getDeliveryReportStarter(params.get("starter"));
 	const {
 		organizationId,
 		organizationName,
@@ -30,6 +34,8 @@ export default function OrganizationNewReportTemplatePage() {
 				]}
 			/>
 			<ReportTemplateForm
+				key={starter?.id ?? "custom"}
+				starterId={starter?.id}
 				basePath={basePath}
 				organizationId={organizationId ?? undefined}
 			/>

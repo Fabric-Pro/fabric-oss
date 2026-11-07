@@ -18,5 +18,8 @@ export const UNATTENDED_FRAME_SOURCE_RUN_TYPE = "workflow";
 export function isUnattendedFrame(frame: {
 	sourceRunType?: string | null;
 }): boolean {
-	return frame.sourceRunType === UNATTENDED_FRAME_SOURCE_RUN_TYPE;
+	return (
+		frame.sourceRunType === UNATTENDED_FRAME_SOURCE_RUN_TYPE ||
+		frame.sourceRunType === "REPORT_EXECUTION"
+	);
 }

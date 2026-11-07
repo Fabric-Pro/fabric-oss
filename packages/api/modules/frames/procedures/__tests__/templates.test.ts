@@ -7,12 +7,23 @@ vi.mock("@repo/database", async () => {
 		listFrameTemplates: vi.fn(),
 		getFrameTemplateCategories: vi.fn(),
 		getFrameTemplateById: vi.fn(),
+
+		canCreateOrganizationFrames: vi.fn().mockResolvedValue(true),
+		canReadOrganizationFrames: vi.fn().mockResolvedValue(true),
+		recordAuditTx: vi.fn(),
+		db: {
+			agentWorkspaceFile: { findFirst: vi.fn().mockResolvedValue(null) },
+			$transaction: vi.fn(async (fn) => fn({})),
+		},
+		createFrameTemplate: vi.fn(),
+		getFrameById: vi.fn(),
+		FrameReviewError: class extends Error {},
 		createFrame: vi.fn(),
 		substituteTemplateVariables: vi.fn(),
 	};
 });
 
-vi.mock("../../../orpc/procedures", async () => {
+vi.mock("../../../../orpc/procedures", async () => {
 	return {
 		tenantProtectedProcedure: {
 			use: vi.fn().mockReturnThis(),
@@ -160,4 +171,59 @@ describe("Frame Template API Procedures", () => {
 			expect(template).toBeNull();
 		});
 	});
+});
+
+it("keeps authored interface presentation when instantiating a template", async () => {
+	const { createFrameFromTemplateProcedure } = await import(
+		"../create-from-template"
+	);
+	vi.mocked(getFrameTemplateById).mockResolvedValue({
+		id: "example-template",
+		name: "Example interface",
+		isSystem: true,
+		content: {
+			version: 1,
+			kind: "frame",
+			title: "Example interface",
+			presentation: "INTERFACE",
+			blocks: [
+				{ id: "page", type: "html", content: "<main>Example</main>" },
+			],
+		},
+		createdAt: new Date(),
+		updatedAt: new Date(),
+	});
+	vi.mocked(createFrame).mockResolvedValue({
+		id: "example-frame",
+		title: "Example interface",
+		path: "example.frame.json",
+		createdAt: new Date(),
+		updatedAt: new Date(),
+	} as Awaited<ReturnType<typeof createFrame>>);
+	const handler = createFrameFromTemplateProcedure as unknown as (request: {
+		input: {
+			organizationId: string;
+			templateId: string;
+			requestId: string;
+			variables: Record<string, string>;
+		};
+		context: { user: { id: string }; session: Record<string, unknown> };
+	}) => Promise<unknown>;
+	await handler({
+		input: {
+			organizationId: "example-org",
+			templateId: "example-template",
+			requestId: "11111111-1111-4111-8111-111111111111",
+			variables: {},
+		},
+		context: { user: { id: "example-user" }, session: {} },
+	});
+	expect(createFrame).toHaveBeenCalledWith(
+		expect.objectContaining({
+			presentation: "INTERFACE",
+			organizationId: "example-org",
+			userId: "example-user",
+		}),
+		expect.anything(),
+	);
 });

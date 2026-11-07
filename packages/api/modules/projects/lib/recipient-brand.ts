@@ -18,6 +18,12 @@ import {
 import { logger } from "@repo/logs";
 import { getStorageProvider } from "@repo/storage";
 import {
+	ARTIFACT_COVER_STYLES,
+	ARTIFACT_FONT_FAMILIES,
+	type ArtifactCoverStyle,
+	isArtifactFontFamily,
+} from "@repo/utils/artifact-brand-theme";
+import {
 	LOGO_UPLOAD_CONTENT_TYPES,
 	type LogoUploadContentType,
 } from "@repo/utils/brand-assets";
@@ -325,6 +331,9 @@ export async function signRecipientLogoRead(
 
 /** The recipient brand as the procedures return it. */
 export const recipientBrandOutputSchema = z.object({
+	displayFontFamily: z.enum(ARTIFACT_FONT_FAMILIES).nullable(),
+	bodyFontFamily: z.enum(ARTIFACT_FONT_FAMILIES).nullable(),
+	coverStyle: z.enum(ARTIFACT_COVER_STYLES),
 	name: z.string().nullable(),
 	website: z.string().nullable(),
 	colors: z.array(z.string()),
@@ -348,6 +357,9 @@ export async function presentRecipientBrand(
 		website: string | null;
 		colors: string[];
 		logoKey: string | null;
+		displayFontFamily?: string | null;
+		bodyFontFamily?: string | null;
+		coverStyle?: ArtifactCoverStyle;
 		updatedAt: Date;
 	},
 	options: { expiresIn?: number } = {},
@@ -364,6 +376,13 @@ export async function presentRecipientBrand(
 		}
 	}
 	return {
+		displayFontFamily: isArtifactFontFamily(brand.displayFontFamily)
+			? brand.displayFontFamily
+			: null,
+		bodyFontFamily: isArtifactFontFamily(brand.bodyFontFamily)
+			? brand.bodyFontFamily
+			: null,
+		coverStyle: brand.coverStyle ?? "DARK",
 		name: brand.name,
 		website: brand.website,
 		colors: brand.colors,

@@ -1,5 +1,6 @@
 "use client";
 
+import type { ResultQualityGrade } from "@repo/utils/result-quality";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -37,7 +38,9 @@ const phrases = (value: string) => [
 ];
 function Results({
 	expectations,
+	quality,
 }: {
+	quality?: ResultQualityGrade;
 	expectations: {
 		kind: "required" | "forbidden";
 		phrase: string;
@@ -47,6 +50,50 @@ function Results({
 	const t = useTranslations("workflows.checks");
 	const copy = (key: string, fallback: string) =>
 		t.has(key) ? t(key) : fallback;
+	if (quality) {
+		return (
+			<section
+				aria-label={copy("checkResults", "Check results")}
+				className="space-y-2 rounded-lg border p-3 text-sm"
+			>
+				<p role="status" className="font-medium">
+					{quality.status === "PASSED"
+						? copy("passed", "All checks passed")
+						: quality.status === "NOT_ASSESSED"
+							? "Not assessed"
+							: copy("attention", "Needs attention")}{" "}
+					· {quality.passed}/{quality.total}
+					{quality.unavailable > 0
+						? ` · ${quality.unavailable} not assessed`
+						: ""}
+				</p>
+				<ul className="space-y-1">
+					{quality.results.map((check) => (
+						<li
+							key={`${check.kind}-${check.index}`}
+							className="break-words"
+						>
+							{!check.available
+								? "Not assessed"
+								: check.passed
+									? "Passed"
+									: "Failed"}{" "}
+							·{" "}
+							{check.kind === "schema"
+								? "JSON schema"
+								: check.kind === "json"
+									? `JSON value check ${check.index + 1}`
+									: check.kind === "grounding"
+										? "Grounding evidence (trusted retrieval receipts required)"
+										: check.kind === "required"
+											? `Required text check ${check.index + 1}`
+											: `Forbidden text check ${check.index + 1}`}
+						</li>
+					))}
+				</ul>
+			</section>
+		);
+	}
 	const passed = expectations.filter((check) => check.passed).length;
 	return (
 		<section
@@ -180,8 +227,9 @@ function CheckDialog({
 						item.id === removeTarget.id &&
 						item.revision === removeTarget.revision,
 				))
-		)
+		) {
 			setRemoveTarget(null);
+		}
 	}, [selected, list.data, removeTarget]);
 	const invalidPhrases =
 		input.requiredPhrases.length > 20 ||
@@ -334,6 +382,7 @@ function CheckDialog({
 								{preview.data && (
 									<Results
 										expectations={preview.data.expectations}
+										quality={preview.data.quality}
 									/>
 								)}
 								{preview.data?.report.status === "passed" &&
@@ -509,6 +558,11 @@ function CheckDialog({
 																		)}
 														</p>
 														<Results
+															quality={
+																compare.data
+																	.candidate
+																	.quality
+															}
 															expectations={
 																compare.data
 																	.candidate

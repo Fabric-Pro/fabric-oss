@@ -1,3 +1,8 @@
+// Authorization is exercised by commands-access.test.ts; these tests isolate existing admission/provider behavior.
+vi.mock("../lib/commands-access", () => ({
+	requireCodingRunProject: vi.fn(async () => "example-org"),
+}));
+
 import { beforeEach, expect, it, vi } from "vitest";
 
 const f = vi.hoisted(() => ({

@@ -144,6 +144,8 @@ export function trustedOrganizationLogoKey(
  * are not even selected here; the member variant reads them separately.
  */
 const GUEST_SAFE_STYLE_SELECT = {
+	brandSource: true,
+	coverStyle: true,
 	primaryColor: true,
 	accentColors: true,
 } as const;
@@ -167,6 +169,9 @@ const GUEST_SAFE_SITE_FETCH_SELECT = {
 } as const;
 
 const GUEST_SAFE_RECIPIENT_SELECT = {
+	displayFontFamily: true,
+	bodyFontFamily: true,
+	coverStyle: true,
 	organizationId: true,
 	name: true,
 	logoKey: true,
@@ -257,6 +262,8 @@ async function readGuestSafeBrandRows(args: ProposalThemeScope) {
 			: null,
 		style: style
 			? {
+					brandSource: style.brandSource,
+					coverStyle: style.coverStyle,
 					primaryColor: style.primaryColor,
 					accentColors: style.accentColors,
 				}
@@ -291,6 +298,10 @@ async function readGuestSafeBrandRows(args: ProposalThemeScope) {
 					name: sameOrganizationRecipient.name,
 					logoKey: recipientLogoKey,
 					colors: sameOrganizationRecipient.colors,
+					displayFontFamily:
+						sameOrganizationRecipient.displayFontFamily,
+					bodyFontFamily: sameOrganizationRecipient.bodyFontFamily,
+					coverStyle: sameOrganizationRecipient.coverStyle,
 				}
 			: null,
 	};
@@ -362,7 +373,12 @@ export async function resolveProposalBrandSources(
 				organizationId: args.organizationId,
 			}),
 		]);
-	const inherited = buildProposalThemeTokens({ ...sources, style: null });
+	const inherited = buildProposalThemeTokens({
+		...sources,
+		style: sources.style
+			? { ...sources.style, primaryColor: null, accentColors: [] }
+			: null,
+	});
 	return {
 		tokens: buildProposalThemeTokens(sources),
 		proposer: {

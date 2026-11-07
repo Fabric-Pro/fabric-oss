@@ -10,50 +10,55 @@ import { logger } from "@repo/logs";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
+	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 
 export const getDashboardMyWork = tenantProtectedProcedure
-	.use(requirePermission(Permissions.DASHBOARD_READ))
+	.use(requireInputOrgPermission(Permissions.DASHBOARD_READ))
 	.route({
 		method: "GET",
 		path: "/dashboard/my-work",
 		tags: ["Dashboard"],
 		summary: "Get dashboard My Work",
 		description:
-			"Get actionable work items for the current user (in progress, needs review, blocked, drafts).",
+			"Get actionable work and assigned features for the current user, with project-reach checks and optional delivery-stage filtering.",
 	})
 	.input(
 		z.object({
 			organizationId: z.string().nullable().optional(),
 			organizationSlug: z.string().nullable().optional(),
 			limit: z.number().min(1).max(10).default(6),
+			featureStage: z
+				.enum([
+					"all",
+					"drafting",
+					"sanityCheck",
+					"readyForDev",
+					"implementing",
+					"review",
+					"blocked",
+				])
+				.default("all"),
 		}),
 	)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
-		const { organizationId, organizationSlug, limit } = input;
+		const { organizationId, organizationSlug, limit, featureStage } = input;
 
 		try {
-			if (organizationId) {
-				const membership = await verifyOrganizationMembership(
-					organizationId,
-					user.id,
-				);
-				if (!membership) {
-					throw new ORPCError("FORBIDDEN", {
-						message: "You are not a member of this organization",
-					});
-				}
-			}
+			const resolvedOrganizationId = resolveOrganizationId(
+				organizationId,
+				context.session,
+			);
 
 			return await getMyWork({
 				userId: user.id,
-				organizationId: organizationId ?? null,
+				organizationId: resolvedOrganizationId ?? null,
 				organizationSlug: organizationSlug ?? null,
 				limit,
+				featureStage,
 			});
 		} catch (error) {
 			if (error instanceof ORPCError) {

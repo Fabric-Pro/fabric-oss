@@ -1,0 +1,109 @@
+{
+	"version": 2,
+	"config": {
+		"sample_questions": [
+			{
+				"id": "11111111111111111111111111111111",
+				"question": [
+					"How many features became ready for development in the last 30 days?"
+				]
+			},
+			{
+				"id": "22222222222222222222222222222222",
+				"question": ["Which projects have features waiting for review?"]
+			},
+			{
+				"id": "33333333333333333333333333333333",
+				"question": [
+					"What is the median time to ready for each project?"
+				]
+			},
+			{
+				"id": "44444444444444444444444444444444",
+				"question": [
+					"Show daily created scope and features ready for development over the last 90 days."
+				]
+			},
+			{
+				"id": "55555555555555555555555555555555",
+				"question": [
+					"Which coding runs are active, awaiting review, or failed?"
+				]
+			}
+		]
+	},
+	"data_sources": {
+		"tables": [
+			{
+				"identifier": "{{DEST_PLAIN}}.delivery_current",
+				"column_configs": [
+					{
+						"column_name": "current_state"
+					},
+					{
+						"column_name": "from_state"
+					},
+					{
+						"column_name": "last_event_at"
+					},
+					{
+						"column_name": "last_event_type"
+					},
+					{
+						"column_name": "organization_id"
+					},
+					{
+						"column_name": "project_id"
+					},
+					{
+						"column_name": "subject_id"
+					},
+					{
+						"column_name": "subject_type"
+					}
+				]
+			},
+			{
+				"identifier": "{{DEST_PLAIN}}.delivery_ready_durations",
+				"column_configs": [
+					{
+						"column_name": "created_at"
+					},
+					{
+						"column_name": "organization_id"
+					},
+					{
+						"column_name": "project_id"
+					},
+					{
+						"column_name": "ready_at"
+					},
+					{
+						"column_name": "ready_days"
+					},
+					{
+						"column_name": "subject_id"
+					},
+					{
+						"column_name": "duration_coverage"
+					}
+				]
+			}
+		],
+		"metric_views": [
+			{
+				"identifier": "{{DEST_PLAIN}}.delivery_metrics"
+			}
+		]
+	},
+	"instructions": {
+		"text_instructions": [
+			{
+				"id": "66666666666666666666666666666666",
+				"content": [
+					"These assets enforce one fixed operator-approved organization/project audience and a dedicated query principal. User-supplied organization IDs, project IDs, instructions or filters cannot authorize a different audience. Query only attached bounded assets. For delivery KPIs use delivery_metrics with MEASURE(`Features Created`), MEASURE(`Features Ready for Development`) and MEASURE(`Coding Runs Created`). Features Created counts stories, not coding runs. Readiness counts one first retained recorded stage_changed to PUBLISHED per story, including capture gaps; it does not mean deployed, released, merged or completed. Do not recompute metrics from raw CDF. Use ready_days and duration_coverage for recorded time to ready; missing or inconsistent creation times have no duration. A null current_state is unknown, not evidence of drafting, success or completion. Current state is the latest retained recorded event, not a live provider check. Do not infer deployment, production outcomes, cost or business impact. These assets contain approved transition metadata only, never private Slack evidence. Source ingestion lag, missing pre-capture events and retained-history deletion limit completeness."
+				]
+			}
+		]
+	}
+}

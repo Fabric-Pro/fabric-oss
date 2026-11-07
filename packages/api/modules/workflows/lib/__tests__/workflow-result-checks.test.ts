@@ -428,3 +428,72 @@ it("does not replace an unrelated legacy non-object settings value", async () =>
 	});
 	expect(m.update).not.toHaveBeenCalled();
 });
+
+it("saves versioned structured checks and applies them only to recorded node results", async () => {
+	m.execution.mockImplementation(async ({ where }: any) => ({
+		id: where.id,
+		status: "COMPLETED",
+		version: 1,
+		completedAt: new Date("2026-01-01"),
+		logs: [
+			{
+				status: "COMPLETED",
+				nodeType: "ai-generate-text",
+				output: {
+					text:
+						where.id === "example-baseline"
+							? '{"ready":true}'
+							: '{"ready":false}',
+				},
+			},
+		],
+	}));
+	const current = await inspectWorkflowResult(actor, identity);
+	const checks = {
+		version: 2,
+		jsonSchema: {
+			type: "object",
+			required: ["ready"],
+			properties: { ready: { type: "boolean" } },
+		},
+		jsonAssertions: [{ pointer: "/ready", equals: true }],
+	};
+	const preview = await previewWorkflowCheck(actor, {
+		...identity,
+		expectedRevision: current.revision,
+		...checks,
+	});
+	expect(preview.report.status).toBe("passed");
+	expect(preview.quality?.total).toBe(2);
+	const saved = await saveWorkflowCheck(actor, {
+		...identity,
+		expectedRevision: current.revision,
+		...checks,
+		name: "Ready response",
+	});
+	expect(saved.check).toMatchObject(checks);
+	const applied = await applyWorkflowCheck(actor, {
+		workflowId: identity.workflowId,
+		checkId: saved.check.id,
+		expectedCaseRevision: saved.check.revision,
+		executionId: "example-candidate",
+	});
+	expect(applied.candidate.report.status).toBe("failed");
+	expect(applied.targetInvoked).toBe(false);
+	expect(applied.change).toBe("regressed");
+});
+it("does not certify or save a grounding baseline without trusted retrieval receipts", async () => {
+	const current = await inspectWorkflowResult(actor, identity);
+	const checks = {
+		...identity,
+		expectedRevision: current.revision,
+		version: 2,
+		grounding: { requireCitations: true },
+	};
+	const preview = await previewWorkflowCheck(actor, checks);
+	expect(preview.report.status).toBe("not-assessed");
+	await expect(
+		saveWorkflowCheck(actor, { ...checks, name: "Grounded" }),
+	).rejects.toMatchObject({ code: "BAD_REQUEST" });
+	expect(m.update).not.toHaveBeenCalled();
+});

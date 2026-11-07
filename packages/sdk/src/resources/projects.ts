@@ -9,6 +9,11 @@ import type {
 	FabricTask,
 	ListOptions,
 } from "../types.js";
+import {
+	implementationSessionMethods,
+	type StartImplementationOptions,
+} from "./implementation-sessions.js";
+import { privateTriageMethods } from "./triage.js";
 
 export type { FabricDocumentStatus, FabricDocumentWriteStatus };
 
@@ -61,6 +66,9 @@ export interface ListDocumentsOptions extends ListOptions {
 }
 
 export interface CreateDocumentOptions {
+	/** Proposal visual palette; CLIENT requires the reviewed version from branding.get. */
+	proposalBranding?: "CLIENT" | "COMPANY";
+	recipientBrandVersion?: number;
 	type: FabricDocumentType;
 	title: string;
 	content: string;
@@ -147,8 +155,372 @@ export interface UpdateFeatureOptions {
 	personal?: boolean;
 }
 
+export interface ProjectDeliverySnapshot {
+	version: 1;
+	projectId: string;
+	observedAt: string;
+	work: {
+		available: boolean;
+		runsAvailable: boolean;
+		hasMore: boolean;
+		items: Array<{
+			id: string;
+			identifier: string;
+			title: string;
+			stage: string;
+			sourceRef: string | null;
+			dependsOnRefs: string[];
+			updatedAt: string;
+			tasks: Array<{
+				id: string;
+				identifier: string;
+				title: string;
+				isCompleted: boolean;
+				agentStatus: string | null;
+				artifactType: string | null;
+			}>;
+			runs: Array<{
+				id: string;
+				storyTaskId: string | null;
+				status: string;
+				kind: string;
+				createdAt: string;
+				startedAt: string | null;
+				mergedAt: string | null;
+				pullRequestNumber: number | null;
+				deliveryEvidence:
+					| "PR_MERGED"
+					| "PR_OPENED"
+					| "NO_MERGE_EVIDENCE";
+				deployment: "UNKNOWN";
+			}>;
+		}>;
+	};
+	context: {
+		available: boolean;
+		hasMore: boolean;
+		inspected: number;
+		indexed: number;
+		attention: number;
+		excluded: number;
+		sources: Array<{
+			id: string;
+			title: string;
+			type: string;
+			state:
+				| "EXCLUDED"
+				| "INDEXED"
+				| "STORED"
+				| "NEEDS_ATTENTION"
+				| "PROCESSING";
+			updatedAt: string;
+			lastSyncedAt: string | null;
+		}>;
+	};
+	decisions: {
+		available: boolean;
+		items: Array<{
+			id: string;
+			identifier: string;
+			title: string;
+			status: string;
+			currentVersion: number;
+			updatedAt: string;
+		}>;
+	};
+	documents: {
+		available: boolean;
+		items: Array<{
+			id: string;
+			title: string;
+			type: string;
+			status: string;
+			updatedAt: string;
+		}>;
+	};
+	nextAction: {
+		kind: "REVIEW_CONTEXT" | "ADD_CONTEXT" | "REVIEW_WORK";
+		label: string;
+	};
+	limitations: {
+		deploymentEvidence: "NOT_COLLECTED";
+		externalAgentCost: "NOT_REPORTED";
+		leadTime: "NOT_COMPUTED";
+		relationships: "EXPLICIT_REFERENCES_ONLY";
+	};
+}
+
+import {
+	deliverySignalMethods,
+	type ListDeliverySignalsOptions,
+} from "./delivery-signals.js";
+
+import { deliverySourceMethods } from "./delivery-sources.js";
 export class ProjectsResource {
 	constructor(private readonly http: FabricHttpClient) {}
+
+	listTriageRuns(
+		...args: Parameters<
+			ReturnType<typeof privateTriageMethods>["listTriageRuns"]
+		>
+	) {
+		return privateTriageMethods(this.http).listTriageRuns(...args);
+	}
+
+	startTriage(
+		...args: Parameters<
+			ReturnType<typeof privateTriageMethods>["startTriage"]
+		>
+	) {
+		return privateTriageMethods(this.http).startTriage(...args);
+	}
+
+	getTriageRun(
+		...args: Parameters<
+			ReturnType<typeof privateTriageMethods>["getTriageRun"]
+		>
+	) {
+		return privateTriageMethods(this.http).getTriageRun(...args);
+	}
+
+	getTriageResult(
+		...args: Parameters<
+			ReturnType<typeof privateTriageMethods>["getTriageResult"]
+		>
+	) {
+		return privateTriageMethods(this.http).getTriageResult(...args);
+	}
+
+	cancelTriageRun(
+		...args: Parameters<
+			ReturnType<typeof privateTriageMethods>["cancelTriageRun"]
+		>
+	) {
+		return privateTriageMethods(this.http).cancelTriageRun(...args);
+	}
+
+	reviewTriageProposal(
+		...args: Parameters<
+			ReturnType<typeof privateTriageMethods>["reviewTriageProposal"]
+		>
+	) {
+		return privateTriageMethods(this.http).reviewTriageProposal(...args);
+	}
+
+	listDeliverySources(
+		...args: Parameters<
+			ReturnType<typeof deliverySourceMethods>["listDeliverySources"]
+		>
+	) {
+		return deliverySourceMethods(this.http).listDeliverySources(...args);
+	}
+
+	testDeliverySource(
+		...args: Parameters<
+			ReturnType<typeof deliverySourceMethods>["testDeliverySource"]
+		>
+	) {
+		return deliverySourceMethods(this.http).testDeliverySource(...args);
+	}
+
+	configureDeliverySource(
+		...args: Parameters<
+			ReturnType<typeof deliverySourceMethods>["configureDeliverySource"]
+		>
+	) {
+		return deliverySourceMethods(this.http).configureDeliverySource(
+			...args,
+		);
+	}
+
+	pauseDeliverySource(
+		...args: Parameters<
+			ReturnType<typeof deliverySourceMethods>["pauseDeliverySource"]
+		>
+	) {
+		return deliverySourceMethods(this.http).pauseDeliverySource(...args);
+	}
+
+	resumeDeliverySource(
+		...args: Parameters<
+			ReturnType<typeof deliverySourceMethods>["resumeDeliverySource"]
+		>
+	) {
+		return deliverySourceMethods(this.http).resumeDeliverySource(...args);
+	}
+
+	disconnectDeliverySource(
+		...args: Parameters<
+			ReturnType<typeof deliverySourceMethods>["disconnectDeliverySource"]
+		>
+	) {
+		return deliverySourceMethods(this.http).disconnectDeliverySource(
+			...args,
+		);
+	}
+
+	startDeliverySourceCapture(
+		...args: Parameters<
+			ReturnType<
+				typeof deliverySourceMethods
+			>["startDeliverySourceCapture"]
+		>
+	) {
+		return deliverySourceMethods(this.http).startDeliverySourceCapture(
+			...args,
+		);
+	}
+
+	getDeliverySourceCapture(
+		...args: Parameters<
+			ReturnType<typeof deliverySourceMethods>["getDeliverySourceCapture"]
+		>
+	) {
+		return deliverySourceMethods(this.http).getDeliverySourceCapture(
+			...args,
+		);
+	}
+
+	cancelDeliverySourceCapture(
+		...args: Parameters<
+			ReturnType<
+				typeof deliverySourceMethods
+			>["cancelDeliverySourceCapture"]
+		>
+	) {
+		return deliverySourceMethods(this.http).cancelDeliverySourceCapture(
+			...args,
+		);
+	}
+
+	listDeliverySourceObservations(
+		...args: Parameters<
+			ReturnType<
+				typeof deliverySourceMethods
+			>["listDeliverySourceObservations"]
+		>
+	) {
+		return deliverySourceMethods(this.http).listDeliverySourceObservations(
+			...args,
+		);
+	}
+
+	getDeliverySourceEvidence(
+		...args: Parameters<
+			ReturnType<
+				typeof deliverySourceMethods
+			>["getDeliverySourceEvidence"]
+		>
+	) {
+		return deliverySourceMethods(this.http).getDeliverySourceEvidence(
+			...args,
+		);
+	}
+
+	listDeliverySignals(
+		projectId: string,
+		options: ListDeliverySignalsOptions = {},
+	) {
+		return deliverySignalMethods(this.http).listDeliverySignals(
+			projectId,
+			options,
+		);
+	}
+	getDeliverySignal(
+		projectId: string,
+		id: string,
+		options: { org?: string } = {},
+	) {
+		return deliverySignalMethods(this.http).getDeliverySignal(
+			projectId,
+			id,
+			options,
+		);
+	}
+	getDeliverySignalSourceConfiguration(
+		projectId: string,
+		options: { org?: string } = {},
+	) {
+		return deliverySignalMethods(
+			this.http,
+		).getDeliverySignalSourceConfiguration(projectId, options);
+	}
+	listImplementationSessions(
+		...args: Parameters<
+			ReturnType<
+				typeof implementationSessionMethods
+			>["listImplementationSessions"]
+		>
+	) {
+		return implementationSessionMethods(
+			this.http,
+		).listImplementationSessions(...args);
+	}
+	getImplementationSession(
+		...args: Parameters<
+			ReturnType<
+				typeof implementationSessionMethods
+			>["getImplementationSession"]
+		>
+	) {
+		return implementationSessionMethods(this.http).getImplementationSession(
+			...args,
+		);
+	}
+	startImplementationSession(
+		projectId: string,
+		options: StartImplementationOptions,
+	) {
+		return implementationSessionMethods(
+			this.http,
+		).startImplementationSession(projectId, options);
+	}
+	cancelImplementationSession(
+		...args: Parameters<
+			ReturnType<
+				typeof implementationSessionMethods
+			>["cancelImplementationSession"]
+		>
+	) {
+		return implementationSessionMethods(
+			this.http,
+		).cancelImplementationSession(...args);
+	}
+	followUpImplementationSession(
+		...args: Parameters<
+			ReturnType<
+				typeof implementationSessionMethods
+			>["followUpImplementationSession"]
+		>
+	) {
+		return implementationSessionMethods(
+			this.http,
+		).followUpImplementationSession(...args);
+	}
+	getImplementationMessages(
+		...args: Parameters<
+			ReturnType<
+				typeof implementationSessionMethods
+			>["getImplementationMessages"]
+		>
+	) {
+		return implementationSessionMethods(
+			this.http,
+		).getImplementationMessages(...args);
+	}
+
+	/** Current project evidence; merging a PR does not establish deployment. */
+	delivery(
+		projectId: string,
+		options: { org?: string } = {},
+	): Promise<ProjectDeliverySnapshot> {
+		const query = options.org
+			? `?org=${encodeURIComponent(options.org)}`
+			: "";
+		return this.http.get(
+			`/projects/${encodeURIComponent(projectId)}/delivery${query}`,
+		);
+	}
 
 	list(options: ListProjectsOptions = {}): Promise<FabricProject[]> {
 		const q = buildQuery(options);
@@ -359,6 +731,7 @@ export class ProjectsResource {
 		return this.http.post<FabricDocument>(
 			`/projects/${projectId}/documents${qs ? `?${qs}` : ""}`,
 			body,
+			{ retry: { maxRetries: 0 } },
 		);
 	}
 

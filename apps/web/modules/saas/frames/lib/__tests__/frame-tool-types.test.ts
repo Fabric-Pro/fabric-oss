@@ -1,3 +1,4 @@
+import { effectiveFramePresentation } from "@repo/utils/frame-presentation";
 import { describe, expect, it } from "vitest";
 import {
 	agentContextOfFrame,
@@ -159,6 +160,24 @@ describe("shareScopeLabel and shareScopeSentence", () => {
 });
 
 describe("agentContextOfFrame", () => {
+	it("carries the exact displayed revision alongside the target for a fresh-read handoff", () => {
+		expect(
+			agentContextOfFrame({
+				frameId: "frame-example",
+				updatedAt: new Date(SUMMARY.updatedAt),
+			}),
+		).toMatchObject({
+			launchFrameId: "frame-example",
+			launchFrameUpdatedAt: SUMMARY.updatedAt,
+		});
+		expect(
+			agentContextOfFrame({
+				frameId: "frame-example",
+				updatedAt: "invalid",
+			}),
+		).not.toHaveProperty("launchFrameUpdatedAt");
+	});
+
 	it("makes a Workspace its own workspace, with its project", () => {
 		expect(
 			agentContextOfFrame({
@@ -256,4 +275,37 @@ it("preserves public status separately from bearer links", () => {
 	});
 	expect(result.isPublic).toBe(true);
 	expect(result.shareUrl).toBeUndefined();
+});
+
+it("preserves interface presentation through list, detail and reconstructed document reads", () => {
+	const payload = { ...DETAIL, presentation: "INTERFACE" };
+	expect(
+		FrameListSchema.parse({ frames: [payload] }).frames[0].presentation,
+	).toBe("INTERFACE");
+	const detail = FrameDetailSchema.parse(payload);
+	expect(detail.presentation).toBe("INTERFACE");
+	const document = frameDocumentOf(detail);
+	expect(document.presentation).toBe("INTERFACE");
+	expect(effectiveFramePresentation(document)).toBe("INTERFACE");
+});
+it("retains report origin when reconstructing read documents so presentation cannot remove report rules", () => {
+	const document = frameDocumentOf(
+		FrameDetailSchema.parse({
+			...DETAIL,
+			presentation: "INTERFACE",
+			sourceRunType: "REPORT_EXECUTION",
+		}),
+	);
+	expect(document.metadata?.sourceRunType).toBe("REPORT_EXECUTION");
+	expect(effectiveFramePresentation(document)).toBe("DOCUMENT");
+});
+it("keeps legacy read omission and rejects an unknown presentation", () => {
+	const document = frameDocumentOf(FrameDetailSchema.parse(DETAIL));
+	expect(document).not.toHaveProperty("presentation");
+	expect(document).not.toHaveProperty("metadata");
+	expect(effectiveFramePresentation(document)).toBe("DOCUMENT");
+	expect(
+		FrameDetailSchema.safeParse({ ...DETAIL, presentation: "EXECUTABLE" })
+			.success,
+	).toBe(false);
 });

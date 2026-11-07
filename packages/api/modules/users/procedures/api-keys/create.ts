@@ -37,6 +37,7 @@ const API_KEY_SCOPES = [
 	"agents:stream", // Access real-time execution streams
 	// CLI / SDK scopes
 	"orgs:read", // List and read organizations
+	"orgs:write", // Save reviewed company branding (administrator only)
 	"projects:read", // Read projects and documents
 	"projects:write", // Create and update projects
 	"features:read", // Read features/stories
@@ -49,7 +50,7 @@ const API_KEY_SCOPES = [
 	"frames:read", // Read frames
 	"frames:write", // Create and update frames
 	"reports:read", // Read report templates and executions
-	"reports:write", // Create and run reports
+	"reports:write", // Save reviewed report branding with current report authority
 	"skills:read", // Read skill definitions
 	"skills:write",
 	"skills:publish",
@@ -57,6 +58,8 @@ const API_KEY_SCOPES = [
 	"governance:write",
 	"chats:read", // Read AI chat threads
 	"chats:write", // Create and send chat messages
+	"dashboard:read", // Read own dashboard recommendation feedback
+	"dashboard:write", // Record own dashboard recommendation feedback
 	"workspaces:read", // Read workspaces and documents
 	"keys:read", // List own API keys
 	"keys:write", // Create API keys via v1 API
@@ -131,11 +134,25 @@ export const createUserApiKeyProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ context: { user, session }, input }) => {
-		if (requiresSkillKeyConsent(input.scopes)) {
+		if (
+			requiresSkillKeyConsent(input.scopes) ||
+			input.scopes.includes("orgs:write")
+		) {
 			const org = resolveOrganizationId(undefined, session);
 			const membership = org
 				? await requireOrgMembership(user.id, org)
 				: null;
+			if (
+				input.scopes.includes("orgs:write") &&
+				(!membership ||
+					membership.organization.deletedAt ||
+					!["admin", "owner"].includes(membership.role))
+			) {
+				throw new ORPCError("FORBIDDEN", {
+					message:
+						"Only organization owners and administrators can grant orgs:write.",
+				});
+			}
 			const refused = refusedSkillKeyScopes(
 				input.scopes,
 				membership && !membership.organization.deletedAt

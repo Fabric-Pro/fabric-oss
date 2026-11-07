@@ -15,7 +15,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	FABRIC_CHAT_TOOL_DEFINITIONS,
 	FABRIC_GATEWAY_TOOL_DEFINITIONS,
+	FABRIC_IMPLEMENTATION_TOOL_DEFINITIONS,
 } from "../../../../lib/fabric-gateway-tools";
+import {
+	FABRIC_PORTAL_EXCLUDED_TOOL_NAMES,
+	FABRIC_PORTAL_TOOL_NAMES,
+} from "../../../../lib/fabric-portal-tools";
 import {
 	type FabricToolDefinition,
 	withoutDryRun,
@@ -105,6 +110,45 @@ describe("the catalogue's gateway tools", () => {
 	])("discovers %s as %s", async (query, name) => {
 		expect(await rank(query)).toContain(name);
 	});
+	it("discovers the current-project delivery read without granting coding execution", async () => {
+		expect(
+			await rank("project delivery blockers and context readiness"),
+		).toContain("fabric_get_project_delivery");
+	});
+	it.each(FABRIC_IMPLEMENTATION_TOOL_DEFINITIONS)(
+		"does not expose $name through native discovery or meeting grants",
+		async (definition) => {
+			const native = getFabricAiTools();
+			expect(native.map((tool) => tool.name)).not.toContain(
+				definition.name,
+			);
+			expect(
+				getAllFabricAiTools().map((tool) => tool.name),
+			).not.toContain(definition.name);
+			expect(
+				FABRIC_CHAT_TOOL_DEFINITIONS.some(
+					(tool) => String(tool.name) === definition.name,
+				),
+			).toBe(false);
+			expect(FABRIC_PORTAL_TOOL_NAMES).not.toContain(definition.name);
+			expect(FABRIC_PORTAL_EXCLUDED_TOOL_NAMES).toContain(
+				definition.name,
+			);
+			expect(selectFabricToolsByName(definition.name, native)).toEqual(
+				[],
+			);
+			expect(
+				await rank(definition.name, [definition.name]),
+			).not.toContain(definition.name);
+			// External MCP keeps its declared schema; only native exposure awaits consent.
+			expect(
+				FABRIC_GATEWAY_TOOL_DEFINITIONS.some(
+					(tool) => tool.name === definition.name,
+				),
+			).toBe(true);
+		},
+	);
+
 	it("lists every workflow, frame and page tool the chat offers, visibly", () => {
 		const visible = getFabricAiTools().map((tool) => tool.name);
 		for (const { name } of FABRIC_CHAT_TOOL_DEFINITIONS) {

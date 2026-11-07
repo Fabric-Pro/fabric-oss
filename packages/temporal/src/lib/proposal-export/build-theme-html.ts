@@ -72,7 +72,7 @@ import {
 	type UploadedImageTag,
 } from "./document-content";
 import { exportFailure } from "./failures";
-import { PRINT_FONTS, printFontFaceCss, printTokensOf } from "./fonts";
+import { printFontFaceCss, printTokensOf } from "./fonts";
 import {
 	eachNode,
 	exportDiagramCaption,
@@ -893,11 +893,17 @@ export function buildThemeHtml(
 		"<head>",
 		'<meta charset="utf-8">',
 		`<title>${escapeHtml(title)}</title>`,
-		styleElement(printFontFaceCss()),
+		styleElement(
+			printFontFaceCss({
+				displayFontFamily: input.tokens.proposer.fonts.display.value,
+				bodyFontFamily: input.tokens.proposer.fonts.body.value,
+			}),
+		),
 		styleElement(
 			proposalThemeCss("print", {
 				runningFooter,
-				fontFamily: PRINT_FONTS.body,
+				fontFamily: printTokensOf(input.tokens).proposer.fonts.body
+					.value,
 			}),
 		),
 		"</head>",

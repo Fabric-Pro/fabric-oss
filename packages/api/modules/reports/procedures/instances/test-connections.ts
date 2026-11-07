@@ -1,5 +1,10 @@
 import { ORPCError } from "@orpc/server";
 import { db, getTemplateInstance } from "@repo/database";
+import {
+	projectReportDiagnostics,
+	reportConnectionDiagnosticsSchema,
+} from "@repo/database/prisma/queries/lib/report-public-diagnostics";
+import { loadReportDiagnosticSources } from "@repo/database/prisma/queries/report-diagnostic-labels";
 import { getCachedMcpClientForConfig } from "@repo/mcp";
 import type { McpServerDiagnostic } from "@repo/temporal/report-diagnostics";
 import {
@@ -24,24 +29,8 @@ const testConnectionsInputSchema = z.object({
 
 // Output schema so the wire shape is validated and typed end-to-end (the UI
 // previously had to cast the response, hiding any drift).
-const diagnosticSchema = z.object({
-	configId: z.string(),
-	serverName: z.string(),
-	provider: z.string().optional(),
-	outcome: z.enum([
-		"connected",
-		"auth_failed",
-		"unreachable",
-		"zero_tools",
-		"no_read_only_tools",
-		"error",
-	]),
-	toolCount: z.number(),
-	readOnlyToolCount: z.number(),
-	errorMessage: z.string().optional(),
-});
 const testConnectionsOutputSchema = z.object({
-	diagnostics: z.array(diagnosticSchema),
+	diagnostics: reportConnectionDiagnosticsSchema.unwrap(),
 });
 
 /**
@@ -174,5 +163,13 @@ export const testInstanceConnectionsProcedure = tenantProtectedProcedure
 			}),
 		);
 
-		return { diagnostics };
+		const diagnosticSources = await loadReportDiagnosticSources(
+			{ userId: context.user.id, organizationId },
+			instance,
+			{ includeOwnedConnectionLabels: true },
+		);
+		return {
+			diagnostics:
+				projectReportDiagnostics(diagnostics, diagnosticSources) ?? [],
+		};
 	});
