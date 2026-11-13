@@ -70,7 +70,7 @@ export function PageTourButton({
 					}
 					className={cn(
 						"inline-flex size-8 shrink-0 items-center justify-center rounded-lg",
-						"text-muted-foreground/55 transition-colors",
+						"text-muted-foreground transition-colors",
 						"hover:bg-muted/60 hover:text-foreground",
 						"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40",
 						className,

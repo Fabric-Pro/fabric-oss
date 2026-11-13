@@ -302,6 +302,7 @@ export interface OrchestratorStreamState {
 		approvalId?: string;
 		stepId: string;
 		reason: string;
+		riskLevel?: "low" | "medium" | "high" | "critical";
 	} | null;
 	pendingClarification: {
 		clarificationId: string;

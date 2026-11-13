@@ -43,11 +43,11 @@ import {
 	getContextById,
 	hasProjectAccess,
 	seedSteps,
-	UPLOADED_TRANSCRIPT_PROVIDER,
 	updateContextExtractionStatus,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
+import { isTranscriptFileProvider } from "@repo/utils";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
@@ -197,9 +197,11 @@ export const retryStalledContextProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const isUploadedTranscript =
-			(existing.metadata as { provider?: string } | null)?.provider ===
-			UPLOADED_TRANSCRIPT_PROVIDER;
+		// An upload, or a file imported from a OneDrive folder (#3507): both
+		// are read by the upload's ingest, so both are retried there.
+		const isUploadedTranscript = isTranscriptFileProvider(
+			(existing.metadata as { provider?: string } | null)?.provider,
+		);
 		const dispatch: RetryDispatch | null = isNotion
 			? "embedding"
 			: existing.s3Path

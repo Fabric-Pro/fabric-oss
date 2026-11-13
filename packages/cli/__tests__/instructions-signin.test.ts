@@ -11,6 +11,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordAuthFailure } from "../src/lib/oauth/auth-failure.js";
 import {
+	hookContext,
+	hookSystemMessage,
 	makeTree,
 	resetInstructionsMocks,
 	runCli,
@@ -236,7 +238,7 @@ describe("a session hook with no usable sign-in", () => {
 		expect(mocks.signInWithBrowser).not.toHaveBeenCalled();
 	});
 
-	it("keeps an ordinary failure on stderr", async () => {
+	it("shows an ordinary failure to the developer only, never in the agent's context", async () => {
 		const dest = await makeTree();
 		mocks.getPublished.mockRejectedValue(new Error("fetch failed"));
 
@@ -250,8 +252,9 @@ describe("a session hook with no usable sign-in", () => {
 		]);
 
 		expect(result.code).toBe(0);
-		expect(result.stdout).toBe("");
-		expect(result.stderr).toContain("skipped");
+		expect(hookSystemMessage(result.stdout)).toContain("skipped");
+		expect(hookContext(result.stdout)).toBe("");
+		expect(result.stderr).toBe("");
 	});
 });
 

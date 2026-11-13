@@ -124,7 +124,7 @@ function StatCard({
 				{suffix ? (
 					<>
 						{" "}
-						<span className="font-normal normal-case tracking-normal text-muted-foreground/80">
+						<span className="font-normal normal-case tracking-normal text-muted-foreground">
 							{suffix}
 						</span>
 					</>
@@ -189,7 +189,8 @@ function Sparkline({
 		return null;
 	}
 	const safeMax = Math.max(1, max);
-	const barColor = tone === "secondary" ? "bg-secondary/60" : "bg-primary/60";
+	const barColor =
+		tone === "secondary" ? "bg-muted-foreground/60" : "bg-primary/60";
 	return (
 		<div
 			className={cn(

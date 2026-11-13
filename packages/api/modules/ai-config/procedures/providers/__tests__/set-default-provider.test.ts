@@ -12,7 +12,7 @@
  * contexts. In organization context the deletion predicate preserves DECISION: it is
  * pinned to the organization's Vercel AI Gateway rather than the default
  * provider, and its row can mean "switched off", which a clear would undo.
- * IMAGE is also pinned to Vercel AI Gateway and is preserved.
+ * IMAGE is also independent of the text default provider and is preserved.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -499,14 +499,14 @@ it.each([orgContext, personalContext])(
 		);
 	},
 );
-describe("gateway choices on an organization default switch", () => {
+describe("specialized choices on an organization default switch", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockRequireOrgMembership.mockResolvedValue({ role: "admin" });
 	});
 	// Removing IMAGE from preservedTaskTypes must delete the seeded IMAGE row.
 	it.each([null, "ANTHROPIC_DIRECT", "OPENAI_DIRECT"])(
-		"keeps gateway choices and conditionally embeddings with documents provider %s",
+		"keeps specialized choices and conditionally embeddings with documents provider %s",
 		async (documentsProvider) => {
 			const tasks = [
 				"SIMPLE",

@@ -6,6 +6,8 @@
  *   - one control per root `##` heading, named after its section, and none
  *     for the title or a `###`; none while revising is not possible or the
  *     editor is read-only;
+ *   - the control sits inside its heading's right edge and the box spans the
+ *     heading, not the editor's padding;
  *   - the control opens a labelled box under its heading, focused, bounded
  *     to the shared maximum; Escape closes it and returns focus to the
  *     control, without asking for anything;
@@ -163,6 +165,60 @@ describe("Revise this section (Fizzy #2946)", () => {
 				name: /Pilot scope|Example proposal/,
 			}),
 		).toBeNull();
+	});
+
+	it("places the control inside its heading's right edge and the box across the heading, not the editor's padding", async () => {
+		const user = userEvent.setup();
+		// The layer spans the editor's 48 px padding on either side; a
+		// heading's band does not.
+		const rect = (
+			left: number,
+			right: number,
+			top: number,
+			bottom: number,
+		) =>
+			({
+				left,
+				right,
+				top,
+				bottom,
+				x: left,
+				y: top,
+				width: right - left,
+				height: bottom - top,
+				toJSON: () => ({}),
+			}) as DOMRect;
+		const spy = vi
+			.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+			.mockImplementation(function (this: HTMLElement) {
+				if (this.hasAttribute("data-section-revision-controls")) {
+					return rect(0, 900, 0, 0);
+				}
+				if (this.tagName === "H2") {
+					return rect(48, 852, 100, 164);
+				}
+				return rect(0, 0, 0, 0);
+			});
+		try {
+			render(<Harness onRequest={vi.fn(() => true)} />);
+			const trigger = await screen.findByRole("button", {
+				name: "Revise this section: 2. Pricing",
+			});
+			await waitFor(() => {
+				expect(trigger.style.right).toBe("60px");
+			});
+			expect(trigger.style.top).toBe("118px");
+
+			await user.click(trigger);
+			const box = screen.getByRole("form", {
+				name: "Revise “2. Pricing”",
+			});
+			expect(box.style.left).toBe("48px");
+			expect(box.style.right).toBe("48px");
+			expect(box.style.top).toBe("168px");
+		} finally {
+			spy.mockRestore();
+		}
 	});
 
 	it("offers nothing while revising is not possible, or in a read-only editor", async () => {

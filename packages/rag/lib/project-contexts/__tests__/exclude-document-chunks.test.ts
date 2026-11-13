@@ -150,3 +150,40 @@ it("thresholds only the dense prefetch of hybrid search", async () => {
 	expect(query.prefetch[1]).not.toHaveProperty("score_threshold");
 	expect(query).not.toHaveProperty("score_threshold");
 });
+
+import { extractChunkIndex } from "../../utils/chunk-id";
+
+it.each([
+	["abc-chunk-12", 12],
+	["abc", undefined],
+	["abc-chunk-x", undefined],
+	["-chunk-1", undefined],
+	["abc-chunk-12-tail", undefined],
+	["\nabc-chunk-12", undefined],
+])("decodes position %s", (id, index) => {
+	expect(extractChunkIndex(id as string)).toBe(index);
+});
+it("decodes only actual chunk hits", async () => {
+	searchMock.mockResolvedValue(
+		["abc-chunk-5", "abc-chunk-1", "abc-chunk-3", "abc"].map(
+			(contextId) => ({
+				score: 1,
+				payload: { contextId, originalContextId: "abc" },
+			}),
+		),
+	);
+	const result = await searchSimilarProjectContexts(BASE);
+	expect(result.map((r) => r.chunkIndex)).toEqual([5, 1, 3, undefined]);
+	searchMock.mockResolvedValue([
+		{
+			score: 1,
+			payload: {
+				contextId: "abc-chunk-12",
+				originalContextId: "abc-chunk-12",
+			},
+		},
+	]);
+	expect(
+		(await searchSimilarProjectContexts(BASE))[0].chunkIndex,
+	).toBeUndefined();
+});

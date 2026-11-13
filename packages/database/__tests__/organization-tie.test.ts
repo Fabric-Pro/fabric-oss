@@ -80,3 +80,17 @@ describe("hasOrganizationTie", () => {
 		expect(mocks.memberFindFirst).not.toHaveBeenCalled();
 	});
 });
+
+it("uses an explicitly supplied transaction for membership without consulting the base client", async () => {
+	const findFirst = vi.fn().mockResolvedValue({ id: "example-member" });
+	expect(
+		await isOrganizationMember(USER, ORG, {
+			member: { findFirst },
+		} as never),
+	).toBe(true);
+	expect(findFirst).toHaveBeenCalledExactlyOnceWith({
+		where: { userId: USER, organizationId: ORG },
+		select: { id: true },
+	});
+	expect(mocks.memberFindFirst).not.toHaveBeenCalled();
+});

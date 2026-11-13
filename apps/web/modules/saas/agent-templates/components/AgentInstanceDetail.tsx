@@ -443,7 +443,7 @@ export function AgentInstanceDetail({
 									<div className="mt-2 flex flex-wrap gap-2">
 										{template && (
 											<div className="rounded-full border border-border/70 bg-background px-3 py-1.5 text-sm text-muted-foreground">
-												<span className="mr-1 text-muted-foreground/70">
+												<span className="mr-1 text-muted-foreground">
 													Based on
 												</span>
 												<strong className="text-foreground">
@@ -452,7 +452,7 @@ export function AgentInstanceDetail({
 											</div>
 										)}
 										<div className="rounded-full border border-border/70 bg-background px-3 py-1.5 text-sm text-muted-foreground">
-											<span className="mr-1 text-muted-foreground/70">
+											<span className="mr-1 text-muted-foreground">
 												Created
 											</span>
 											<span>

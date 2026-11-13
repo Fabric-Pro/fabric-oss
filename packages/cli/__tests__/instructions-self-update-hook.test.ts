@@ -2,7 +2,8 @@
  * Where the kept copy's self-update sits in a hook run (`run` in
  * `commands/instructions/index.ts`): after the hook has printed what it has to
  * say, never for a person's own command, only for the deployment the hook is
- * bound to, and with at most one line of its own, on stderr. The update's own
+ * bound to, and with at most one line of its own, the developer's hook
+ * message (a `systemMessage` on stdout). The update's own
  * rules are pinned in `self-update.test.ts`; here it is replaced by a spy.
  */
 import path from "node:path";
@@ -11,6 +12,7 @@ import { hookTiming } from "../src/lib/instructions/hook-timing.js";
 import type { SelfUpdateOutcome } from "../src/lib/instructions/self-update.js";
 import { recordUpgradeNotice } from "../src/lib/user-agent.js";
 import {
+	hookMessageStdout,
 	makeTree,
 	resetInstructionsMocks,
 	runCli,
@@ -67,15 +69,16 @@ vi.mock("../src/lib/instructions/self-update.js", async (importOriginal) => ({
 const ORIGIN = "https://fabric.example.com";
 const TARBALL = "/cli/fabric-0.5.0-0123456789.tgz";
 const UNPUBLISHED = { published: false, sourceOfTruth: "UPLOAD" } as const;
-const NOTHING_PUBLISHED =
-	"This project has no published coding instructions yet.\n";
+const NOTHING_PUBLISHED_LINE =
+	"This project has no published coding instructions yet.";
+const NOTHING_PUBLISHED = `${NOTHING_PUBLISHED_LINE}\n`;
 const UPDATED: SelfUpdateOutcome = {
 	kind: "updated",
 	version: "0.6.0",
 	tarball: "/cli/fabric-0.6.0-abcdef0123.tgz",
 };
 const UPDATED_LINE =
-	"fabric: this CLI copy was updated to 0.6.0; it runs from the next session\n";
+	"fabric: this CLI copy was updated to 0.6.0; it runs from the next session";
 
 let config: string;
 
@@ -114,7 +117,10 @@ function requestError(status: number) {
 }
 
 describe("a hook run bound to a deployment", () => {
-	it("asks the kept copy to update once, after its own output is written", async () => {
+	// The update's line, when there is one, is part of the one JSON object the
+	// run writes, so the output waits for the update, which is bounded by the
+	// same deadline as the rest of the run.
+	it("asks the kept copy to update once, before the run writes its output once", async () => {
 		let stdoutWhenAsked = "";
 		mocks.refreshKeptCopy.mockImplementation(async () => {
 			stdoutWhenAsked = vi
@@ -128,7 +134,7 @@ describe("a hook run bound to a deployment", () => {
 		const result = await hookRun("check", "--base-url", ORIGIN);
 
 		expect(mocks.refreshKeptCopy).toHaveBeenCalledTimes(1);
-		expect(stdoutWhenAsked).toBe(NOTHING_PUBLISHED);
+		expect(stdoutWhenAsked).toBe("");
 		expect(result).toEqual({
 			code: 0,
 			stdout: NOTHING_PUBLISHED,
@@ -164,19 +170,19 @@ describe("a hook run bound to a deployment", () => {
 		});
 	});
 
-	it("says one line on stderr when the copy was updated, and stdout is as it was", async () => {
+	it("shows the developer one line when the copy was updated, and the agent's context is as it was", async () => {
 		mocks.refreshKeptCopy.mockResolvedValue(UPDATED);
 
 		const result = await hookRun("check", "--base-url", ORIGIN);
 
 		expect(result).toEqual({
 			code: 0,
-			stdout: NOTHING_PUBLISHED,
-			stderr: UPDATED_LINE,
+			stdout: hookMessageStdout([UPDATED_LINE], [NOTHING_PUBLISHED_LINE]),
+			stderr: "",
 		});
 	});
 
-	it("says one line on stderr when the update failed, and still exits 0", async () => {
+	it("shows the developer one line when the update failed, and still exits 0", async () => {
 		mocks.refreshKeptCopy.mockResolvedValue({
 			kind: "failed",
 			reason: "the deployment could not be reached",
@@ -186,8 +192,13 @@ describe("a hook run bound to a deployment", () => {
 
 		expect(result).toEqual({
 			code: 0,
-			stdout: NOTHING_PUBLISHED,
-			stderr: "fabric: this CLI copy was not updated (the deployment could not be reached); the earlier copy was kept\n",
+			stdout: hookMessageStdout(
+				[
+					"fabric: this CLI copy was not updated (the deployment could not be reached); the earlier copy was kept",
+				],
+				[NOTHING_PUBLISHED_LINE],
+			),
+			stderr: "",
 		});
 	});
 
@@ -213,9 +224,15 @@ describe("a hook run bound to a deployment", () => {
 		const result = await hookRun("check", "--base-url", ORIGIN);
 
 		expect(result.stdout).toBe(
-			`${NOTHING_PUBLISHED}This CLI is older than the deployment expects.\n`,
+			hookMessageStdout(
+				[UPDATED_LINE],
+				[
+					NOTHING_PUBLISHED_LINE,
+					"This CLI is older than the deployment expects.",
+				],
+			),
 		);
-		expect(result.stderr).toBe(UPDATED_LINE);
+		expect(result.stderr).toBe("");
 	});
 });
 
@@ -234,8 +251,11 @@ describe("a hook that is refused because this CLI is too old", () => {
 		expect(mocks.refreshKeptCopy).toHaveBeenCalledTimes(1);
 		expect(result).toEqual({
 			code: 0,
-			stdout: "This CLI is older than the deployment expects.\n",
-			stderr: UPDATED_LINE,
+			stdout: hookMessageStdout(
+				[UPDATED_LINE],
+				["This CLI is older than the deployment expects."],
+			),
+			stderr: "",
 		});
 	});
 });

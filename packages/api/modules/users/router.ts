@@ -3,6 +3,7 @@ import {
 	deleteUserApiKeyProcedure,
 	listUserApiKeysProcedure,
 } from "./procedures/api-keys";
+import { updateAppearanceProcedure } from "./procedures/appearance";
 import {
 	getChatAgentSelectionProcedure,
 	setChatAgentSelectionProcedure,
@@ -47,6 +48,9 @@ import {
 import { updateLastActiveWorkspaceProcedure } from "./procedures/update-last-active-workspace";
 
 export const usersRouter = {
+	appearance: {
+		update: updateAppearanceProcedure,
+	},
 	avatarUploadUrl: createAvatarUploadUrl,
 	delegationSettings: {
 		get: getUserDelegationSettingProcedure,

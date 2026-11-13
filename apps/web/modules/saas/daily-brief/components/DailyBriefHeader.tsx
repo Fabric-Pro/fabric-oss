@@ -142,7 +142,7 @@ export function DailyBriefHeader({
 						>
 							Since my last review
 							{toggleDisabled ? (
-								<span className="ml-1 text-muted-foreground/70">
+								<span className="ml-1 text-muted-foreground">
 									(first visit)
 								</span>
 							) : null}

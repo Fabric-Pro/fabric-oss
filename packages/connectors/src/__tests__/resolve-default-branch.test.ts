@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	fetchProviderDefaultBranch,
 	type ResolveDefaultBranchInput,
 	resolveDefaultBranch,
 } from "../repository-branch";
@@ -219,5 +220,40 @@ describe("resolveDefaultBranch", () => {
 		});
 
 		expect(result).toBe("main");
+	});
+});
+
+describe("fetchProviderDefaultBranch", () => {
+	it("returns the provider's own default branch", async () => {
+		mockFetch.mockResolvedValue(
+			jsonResponse(200, { default_branch: "master" }),
+		);
+
+		await expect(
+			fetchProviderDefaultBranch({ ...baseInput, provider: "GITHUB" }),
+		).resolves.toBe("master");
+	});
+
+	it.each([
+		["a rejected credential", () => jsonResponse(401)],
+		["a missing repository", () => jsonResponse(404)],
+		[
+			"an empty default branch",
+			() => jsonResponse(200, { default_branch: "" }),
+		],
+	])("answers null, never 'main', for %s", async (_label, response) => {
+		mockFetch.mockResolvedValue(response());
+
+		await expect(
+			fetchProviderDefaultBranch({ ...baseInput, provider: "GITHUB" }),
+		).resolves.toBeNull();
+	});
+
+	it("answers null when the request throws", async () => {
+		mockFetch.mockRejectedValue(new Error("Network Error"));
+
+		await expect(
+			fetchProviderDefaultBranch({ ...baseInput, provider: "GITLAB" }),
+		).resolves.toBeNull();
 	});
 });

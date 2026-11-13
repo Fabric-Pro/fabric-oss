@@ -1,5 +1,5 @@
-import { detachSkillFromTemplate } from "@repo/database";
-import { db } from "@repo/database/prisma/client";
+import { ORPCError } from "@orpc/server";
+import { detachSkillFromTemplate, getAgentTemplate } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -18,12 +18,15 @@ export const detachTemplateSkillProcedure = tenantProtectedProcedure
 	.input(detachSkillInputSchema)
 	.handler(async ({ input, context }) => {
 		// Verify template exists
-		const template = await db.agentTemplate.findUnique({
-			where: { id: input.templateId },
+		const template = await getAgentTemplate(input.templateId, {
+			userId: context.user.id,
+			organizationId: context.session.activeOrganizationId,
 		});
 
 		if (!template) {
-			throw new Error("Template not found");
+			throw new ORPCError("NOT_FOUND", {
+				message: "Template not found",
+			});
 		}
 
 		// SYSTEM templates are immutable

@@ -17,7 +17,7 @@ export const WORKFLOW_STATUS_DISPLAY: Record<
 	},
 	PUBLISHED: {
 		label: "Published",
-		className: "bg-primary/10 text-primary",
+		className: "bg-primary/10 text-primary-active",
 		dot: "bg-primary",
 	},
 	ACTIVE: {

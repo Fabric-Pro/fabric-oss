@@ -793,7 +793,7 @@ function LastScanSummary({
 			)}
 			<span className="text-muted-foreground">
 				{total} {total === 1 ? "finding" : "findings"}
-				<span className="ml-1 text-muted-foreground/70">
+				<span className="ml-1 text-muted-foreground">
 					({scan.securityFindingCount} security,{" "}
 					{scan.accessibilityFindingCount} accessibility)
 				</span>

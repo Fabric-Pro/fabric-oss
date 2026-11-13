@@ -298,7 +298,7 @@ export function TwoFactorBlock() {
 					{dialogView === "password" ? (
 						<form onSubmit={handleSubmit}>
 							<div className="grid grid-cols-1 gap-4">
-								<p className="text-sm text-foreground/60">
+								<p className="text-sm text-muted-foreground">
 									{t(
 										"settings.account.security.twoFactor.dialog.password.description",
 									)}
@@ -356,7 +356,7 @@ export function TwoFactorBlock() {
 					) : dialogView === "totp-url" ? (
 						<form onSubmit={handleSubmit}>
 							<div className="grid grid-cols-1 gap-4">
-								<p className="text-sm text-foreground/60">
+								<p className="text-sm text-muted-foreground">
 									{t(
 										"settings.account.security.twoFactor.dialog.totpUrl.description",
 									)}
@@ -403,7 +403,7 @@ export function TwoFactorBlock() {
 						</form>
 					) : (
 						<div className="flex flex-col gap-4">
-							<p className="text-sm text-foreground/60">
+							<p className="text-sm text-muted-foreground">
 								{t(
 									"settings.account.security.twoFactor.backupCodes.saveDialog.description",
 								)}

@@ -719,3 +719,76 @@ describe("generateDocumentProcedure — skipDependencyWait is not a client input
 		expect(args.skipDependencyWait).toBeUndefined();
 	});
 });
+
+/**
+ * Web research is allowed per regeneration, by a person ticking it. Driven
+ * through the real dispatcher, so what is asserted is what the token and the
+ * run actually receive.
+ */
+describe("generateDocumentProcedure — web research permission", () => {
+	const parse = (allowWebResearch: unknown) =>
+		(
+			captured.inputSchema as {
+				safeParse: (v: unknown) => {
+					success: boolean;
+					data?: Record<string, unknown>;
+				};
+			}
+		).safeParse({ id: DOCUMENT_ID, prompt: "", allowWebResearch });
+
+	it.each([true, false])(
+		"accepts %s at the schema boundary and keeps it",
+		(value) => {
+			const parsed = parse(value);
+
+			expect(parsed.success).toBe(true);
+			expect(parsed.data?.allowWebResearch).toBe(value);
+		},
+	);
+
+	it.each([["true"], [1], [null]])(
+		"refuses %j at the schema boundary",
+		(value) => {
+			expect(parse(value).success).toBe(false);
+		},
+	);
+
+	it("grants research to the token and the run when the request allows it", async () => {
+		await handler({
+			input: input({ allowWebResearch: true }),
+			context: ctx,
+		});
+
+		expect(mocks.issueAIToken).toHaveBeenCalledWith(
+			expect.objectContaining({ webResearch: true }),
+		);
+		const args = mocks.workflowStart.mock.calls[0]?.[1].args[0];
+		expect(args.allowWebResearch).toBe(true);
+	});
+
+	it.each([
+		["omitted", {}],
+		[
+			'the string "true" from an in-process caller',
+			{ allowWebResearch: "true" },
+		],
+	])("keeps research off when the field is %s", async (_label, overrides) => {
+		await handler({ input: input(overrides), context: ctx });
+
+		expect(mocks.issueAIToken.mock.calls[0]?.[0].webResearch).toBeFalsy();
+		// No choice was offered: the run carries no key and writes no notice.
+		const args = mocks.workflowStart.mock.calls[0]?.[1].args[0];
+		expect(args).not.toHaveProperty("allowWebResearch");
+	});
+
+	it("starts the run with allowWebResearch: false when the request declined it", async () => {
+		await handler({
+			input: input({ allowWebResearch: false }),
+			context: ctx,
+		});
+
+		expect(mocks.issueAIToken.mock.calls[0]?.[0].webResearch).toBe(false);
+		const args = mocks.workflowStart.mock.calls[0]?.[1].args[0];
+		expect(args).toHaveProperty("allowWebResearch", false);
+	});
+});

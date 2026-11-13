@@ -39,9 +39,12 @@ jobs:
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
     needs: [promotion_policy]
     name: Detect Temporal replay changes (credential-free)
-    # arm64: dorny/paths-filter is a JS action reading the Pulls API — no
-    # checkout, no compiled binaries.
-    runs-on: ubuntu-24.04-arm
+    # Architecture-neutral steps; private PRs use Namespace amd64,
+    # while other events retain the GitHub arm64 label.
+    # Only private pull requests use Namespace, by event allowlist. Pushes and
+    # other events retain GitHub runners: their caches can be restored by other
+    # branches, including secret-holding jobs. See unit-tests.yml vitest.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
     permissions:
       pull-requests: read
     outputs:
@@ -83,8 +86,10 @@ jobs:
     needs: [changes, promotion_policy]
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (always())
-    # arm64: pure shell against env vars; no contributor code execution.
-    runs-on: ubuntu-24.04-arm
+    # Pure shell against env vars; no contributor code execution, and no
+    # compiled binaries. Private PRs use Namespace amd64; other events keep
+    # the GitHub arm64 label.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
     env:
       REPOSITORY: ${{ github.repository }}
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}

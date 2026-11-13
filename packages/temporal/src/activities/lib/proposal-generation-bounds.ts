@@ -10,8 +10,9 @@ import { activityLogger } from "./activity-logger";
 /**
  * How long a coordinated Proposal's agent stream may take to send its first
  * `updates` or `values` event: today's whole-stream limit, since the agent
- * reads its context before it writes anything.
- * `AGENT_STREAM_FIRST_CHUNK_TIMEOUT_MS` overrides it.
+ * reads its context before it writes anything. A run allowed to research may
+ * do that research first, and gets its allowance on top (the constructor's
+ * `extraFirstChunkMs`). `AGENT_STREAM_FIRST_CHUNK_TIMEOUT_MS` overrides both.
  */
 const PROPOSAL_STREAM_FIRST_CHUNK_MS = 300_000;
 
@@ -116,8 +117,8 @@ function unrefTimer(
  * stream is cut by silence, not by the clock.
  *
  * - Before the first `updates` or `values` event, the first-chunk allowance
- *   ({@link PROPOSAL_STREAM_FIRST_CHUNK_MS}); the agent's opening `metadata`
- *   event does not end it.
+ *   ({@link PROPOSAL_STREAM_FIRST_CHUNK_MS}, plus any `extraFirstChunkMs`);
+ *   the agent's opening `metadata` event does not end it.
  * - After it, the idle limit ({@link PROPOSAL_STREAM_IDLE_MS}), reset by
  *   every `updates` or `values` event. It cuts only when
  *   `AGENT_STREAM_IDLE_TIMEOUT_MS` is set; otherwise it logs that it would
@@ -151,15 +152,27 @@ export class ProposalStreamLimits {
 		budget: ProposalAttemptBudget,
 		private readonly onCut: () => void,
 		private readonly logIds: Record<string, unknown>,
+		/**
+		 * `extraFirstChunkMs` is added to the first-chunk allowance: the
+		 * research time of a run allowed to research before it writes. The
+		 * wall cap is unchanged and still bounds the whole stream.
+		 */
+		options: { extraFirstChunkMs?: number } = {},
 	) {
 		this.cut = new Promise((resolve) => {
 			this.resolveCut = resolve;
 		});
 		const now = Date.now();
 		const idleOverride = envMs("AGENT_STREAM_IDLE_TIMEOUT_MS");
+		const extraFirstChunkMs =
+			options.extraFirstChunkMs !== undefined &&
+			Number.isFinite(options.extraFirstChunkMs) &&
+			options.extraFirstChunkMs > 0
+				? options.extraFirstChunkMs
+				: 0;
 		this.firstChunkMs =
 			envMs("AGENT_STREAM_FIRST_CHUNK_TIMEOUT_MS") ??
-			PROPOSAL_STREAM_FIRST_CHUNK_MS;
+			PROPOSAL_STREAM_FIRST_CHUNK_MS + extraFirstChunkMs;
 		this.idleMs = idleOverride ?? PROPOSAL_STREAM_IDLE_MS;
 		this.idleEnforced = idleOverride !== undefined;
 		this.wallMs =

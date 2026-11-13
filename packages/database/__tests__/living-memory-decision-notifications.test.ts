@@ -200,6 +200,29 @@ describe("resolveDecisionCandidateRecipients", () => {
 		expect(mocks.canCreate).not.toHaveBeenCalledWith("proj", "writer");
 	});
 
+	it("excludes anyone the caller names, as well as the writer", async () => {
+		expect(
+			await resolveDecisionCandidateRecipients({
+				...input,
+				excludeUserIds: ["member"],
+			}),
+		).toEqual(["owner"]);
+		expect(mocks.canCreate).not.toHaveBeenCalledWith("proj", "member");
+		expect(mocks.canCreate).not.toHaveBeenCalledWith("proj", "writer");
+	});
+
+	it("still excludes a named person when the file has no recorded writer", async () => {
+		expect(
+			(
+				await resolveDecisionCandidateRecipients({
+					...input,
+					writerUserId: null,
+					excludeUserIds: ["owner"],
+				})
+			).sort(),
+		).toEqual(["member", "writer"]);
+	});
+
 	it("respects the project notification preference", async () => {
 		mocks.enabled.mockResolvedValue(new Set(["owner"]));
 
@@ -323,6 +346,42 @@ describe("createDecisionCandidatesReadyNotifications", () => {
 		const data = mocks.notificationCreate.mock.calls[0]?.[0].data;
 		expect(data.title).toBe("1 decision candidate to review");
 		expect(data.payload.candidateCount).toBe(1);
+	});
+
+	it("tells the project's other reviewers, not the member whose own scan found the decisions", async () => {
+		const rows = notificationTable();
+
+		expect(
+			await createDecisionCandidatesReadyNotifications({
+				extractionId: "ext-1",
+				excludeUserIds: ["owner"],
+			}),
+		).toBe(1);
+		expect(rows.map((row) => row.userId)).toEqual(["member"]);
+		expect(rows[0]?.dedupeKey).toBe("decisionCandidates:proj:member");
+	});
+
+	it("keeps one row per person when a requested scan's files finish one after another", async () => {
+		const rows = notificationTable();
+		const files = ["ext-a", "ext-b", "ext-c"].map((id, i) => ({
+			...extraction,
+			id,
+			contextId: `ctx-${i}`,
+		}));
+		recordExtractions(files);
+
+		for (const file of files) {
+			await createDecisionCandidatesReadyNotifications({
+				extractionId: file.id,
+				excludeUserIds: ["owner"],
+			});
+		}
+
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			userId: "member",
+			payload: { projectId: "proj", candidateCount: 6, fileCount: 3 },
+		});
 	});
 
 	it("announces an extraction once: a taken claim writes nothing", async () => {

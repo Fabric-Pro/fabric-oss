@@ -4,9 +4,11 @@ const listActiveNewsletterSubscribers = vi.fn();
 const enrollProjectMembersAsSubscribers = vi.fn();
 const syncOrganizationSubscribers = vi.fn();
 const recordOrganizationSyncFailure = vi.fn();
+const getNewsletterSettings = vi.fn();
 const logError = vi.fn();
 
 vi.mock("@repo/database", () => ({
+	getNewsletterSettings: (...a: unknown[]) => getNewsletterSettings(...a),
 	syncOrganizationSubscribers: (...a: unknown[]) =>
 		syncOrganizationSubscribers(...a),
 	recordOrganizationSyncFailure: (...a: unknown[]) =>
@@ -44,7 +46,19 @@ describe("loadActiveSubscribersActivity", () => {
 			.mockReset()
 			.mockResolvedValue({ added: 0, removed: 0 });
 		recordOrganizationSyncFailure.mockReset().mockResolvedValue({});
+		getNewsletterSettings.mockReset().mockResolvedValue({ enabled: true });
 		logError.mockReset();
+	});
+
+	it("does not enrol members while the newsletter is disabled, but still syncs the organization", async () => {
+		getNewsletterSettings.mockResolvedValue({ enabled: false });
+
+		const out = await loadActiveSubscribersActivity({ projectId: "p1" });
+
+		expect(getNewsletterSettings).toHaveBeenCalledWith("p1");
+		expect(enrollProjectMembersAsSubscribers).not.toHaveBeenCalled();
+		expect(syncOrganizationSubscribers).toHaveBeenCalledWith("p1");
+		expect(out.subscribers).toHaveLength(1);
 	});
 
 	it("syncs the organization before reading the list", async () => {

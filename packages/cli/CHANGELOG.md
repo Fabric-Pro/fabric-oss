@@ -1,5 +1,15 @@
 # @fabricorg/cli
 
+## 0.9.3
+
+### Patch Changes
+
+- c283fae: Projects can now split their Coding Instructions into named sets, each a folder (`instructions/<name>/`) of the one instructions source that applies to the code repositories chosen for it. Sets are managed from the Coding Instructions tab, the API, the SDK (`projects.listInstructionSets`, `createInstructionSet`, `updateInstructionSet`, `deleteInstructionSet`) and MCP. `fabric instructions init` picks the set for the current checkout, or the one named with `--set`, and installs a separate plugin per set. Projects without sets keep working as before.
+- c283fae: Coding instructions CLI: outside a git checkout with no usable lock, a command without `--project` says to pass one instead of asking you to sign in.
+- c283fae: Remove one Living Memory folder, see new lessons in the digest, and show session-start notes to developers as hook messages.
+- Updated dependencies [c283fae]
+  - @fabricorg/sdk-mcp@0.2.3
+
 ## 0.9.2
 
 ### Patch Changes

@@ -16,8 +16,11 @@ import type { WorkflowState } from "../../types";
 import { createRequestFingerprint } from "@repo/ai/lib/request-observation";
 import type { ModelRequestObservation } from "@repo/ai/lib/request-shape";
 import { ApplicationFailure } from "@temporalio/common";
+import { patched } from "@temporalio/workflow";
 import { vi } from "vitest";
 import { getFabricAiTools } from "../../../../activities/orchestrator/tools/fabric-ai-tools";
+import { advisorResultReadsEnabled } from "../../advisor-result-read";
+import { advisorResultReuseEnabled } from "../../advisor-result-reuse";
 import { normalizeAdvisorToolDefinition } from "../../advisor-tool-definition";
 import type { IterativeTurnOptions } from "../../turn-contract";
 import { createInitialState, type IterativeMessage } from "../../types";
@@ -446,6 +449,15 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 	) {
 		state.advisorCallToolMode = true;
 	}
+	state.advisorResultReadsEnabled = advisorResultReadsEnabled(
+		input as never,
+		patched,
+	);
+	state.advisorResultReuseEnabled = advisorResultReuseEnabled(
+		input as never,
+		state.advisorResultReadsEnabled,
+		patched,
+	);
 	state.advisorBudgetEnabled = options.advisorBudgetEnabled ?? false;
 	state.advisorBoundedHistoryEnabled = boundedHistoryEnabled(
 		input as never,

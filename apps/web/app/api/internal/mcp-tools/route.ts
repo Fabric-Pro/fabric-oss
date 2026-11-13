@@ -99,6 +99,11 @@ function clientFailure(code: string) {
 	} else if (code === "RATE_LIMIT") {
 		status = 429;
 		error = "MCP server rate limit reached; try again later";
+	} else if (code === "SERVER_UNAVAILABLE") {
+		// A retired server whose package does not exist (Fizzy #3531).
+		status = 410;
+		error =
+			"This MCP server can no longer run; the user must remove it in Fabric";
 	}
 	return NextResponse.json({ error, code }, { status });
 }

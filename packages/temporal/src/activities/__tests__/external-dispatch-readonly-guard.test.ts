@@ -52,6 +52,10 @@ const ALLOWLIST: ReadonlyMap<string, string> = new Map([
 		"MCP server health check only — lists tools to prove the connection, never calls one (its write paths left with the retired Pipeline)",
 	],
 	[
+		"packages/temporal/src/activities/transcript-folder-sync.ts",
+		"OneDrive READS only (list_drive_children / download_drive_item) — copies files into Fabric, never writes to OneDrive (#3507)",
+	],
+	[
 		"packages/temporal/src/activities/meeting-transcript-sync.ts",
 		"Teams transcript READS only (list meetings / get transcript content)",
 	],

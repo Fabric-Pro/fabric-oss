@@ -3,6 +3,7 @@ import {
 	getNewsletterSendProjectId,
 	holdNewsletterForApproval,
 	type NewsletterContent,
+	withoutCaptureHints,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
@@ -30,7 +31,8 @@ export async function holdNewsletterForApprovalActivity(
 	}
 	await holdNewsletterForApproval({
 		sendId: input.sendId,
-		content: input.content,
+		// The capture hints served the capture rows, which keep the brief.
+		content: withoutCaptureHints(input.content),
 		aiUsageTokens: input.aiUsageTokens,
 	});
 	try {

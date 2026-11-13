@@ -159,6 +159,14 @@ export async function executeInitializationPhase(
 		const workspaceId = input.workspaceIds?.[0] ?? null;
 
 		const preloadInput = {
+			...(state.advisorResultReuseEnabled
+				? {
+						advisorResultReuse: {
+							conversationId: input.conversationId ?? "",
+							turnId: input.turnId ?? "",
+						},
+					}
+				: {}),
 			userId: input.userId,
 			organizationId: input.organizationId,
 			instanceId: input.instanceId,
@@ -911,9 +919,14 @@ export async function executeInitializationPhase(
 		) {
 			updateProgress("routing", "Creating weave sandbox...");
 
-			// Resolve repo URL from project metadata
+			// Resolve repo URL and branch from project metadata. The branch is
+			// the repository's own (the activity resolves it); "main" is only
+			// the last resort when the metadata knows none, or comes from a
+			// history recorded before the activity returned one. Reading an
+			// optional field of a recorded activity result adds no command, so
+			// replay is unaffected.
 			let repoUrl = "";
-			const branch = "main";
+			let branch = "main";
 			if (input.projectId) {
 				try {
 					const projectMeta = await getProjectMetadataActivity(
@@ -925,6 +938,9 @@ export async function executeInitializationPhase(
 					);
 					if (projectMeta?.repositoryUrl) {
 						repoUrl = projectMeta.repositoryUrl;
+					}
+					if (projectMeta?.defaultBranch) {
+						branch = projectMeta.defaultBranch;
 					}
 				} catch {
 					log.warn("Failed to load project metadata for sandbox");

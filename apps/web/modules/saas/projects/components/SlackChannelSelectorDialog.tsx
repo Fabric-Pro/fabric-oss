@@ -390,7 +390,7 @@ export function SlackChannelSelectorDialog({
 						<p className="text-foreground/70">
 							Failed to load Slack data
 						</p>
-						<p className="text-foreground/50 text-sm">
+						<p className="text-muted-foreground text-sm">
 							{slackQuery.error instanceof Error
 								? slackQuery.error.message
 								: "An unexpected error occurred"}
@@ -408,7 +408,7 @@ export function SlackChannelSelectorDialog({
 							<p className="font-medium text-foreground/70">
 								Slack Workspace Not Connected
 							</p>
-							<p className="mt-1 text-foreground/50 text-sm">
+							<p className="mt-1 text-muted-foreground text-sm">
 								{fetchError ||
 									"Connect your Slack workspace to access channels."}
 							</p>
@@ -432,7 +432,7 @@ export function SlackChannelSelectorDialog({
 							<p className="text-foreground/70">
 								No channels found
 							</p>
-							<p className="text-foreground/50 text-sm">
+							<p className="text-muted-foreground text-sm">
 								No accessible channels were found in your Slack
 								workspace.
 							</p>
@@ -461,7 +461,7 @@ export function SlackChannelSelectorDialog({
 							{filteredChannels.length === 0 ? (
 								<div className="flex flex-col items-center gap-2 py-6 text-center">
 									<SearchIcon className="size-6 text-foreground/30" />
-									<p className="text-foreground/50 text-sm">
+									<p className="text-muted-foreground text-sm">
 										No channels match your search
 									</p>
 								</div>
@@ -516,7 +516,7 @@ export function SlackChannelSelectorDialog({
 														)}
 														{channel.memberCount >
 															0 && (
-															<span className="flex shrink-0 items-center gap-1 text-foreground/50 text-xs">
+															<span className="flex shrink-0 items-center gap-1 text-muted-foreground text-xs">
 																<UsersIcon className="size-3" />
 																{
 																	channel.memberCount
@@ -533,12 +533,12 @@ export function SlackChannelSelectorDialog({
 																channel.topic ||
 																""
 															}
-															className="mt-1 text-foreground/50 text-xs"
+															className="mt-1 text-muted-foreground text-xs"
 														/>
 													)}
 													{channel.isBotMember ===
 														false && (
-														<p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+														<p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
 															{`Bot not in this channel — type /invite @${botName || "your_app"} in Slack to enable message fetching`}
 														</p>
 													)}
@@ -560,11 +560,11 @@ export function SlackChannelSelectorDialog({
 						</div>
 
 						{/* Selection count */}
-						<div className="flex items-center justify-between text-foreground/50 text-sm">
+						<div className="flex items-center justify-between text-muted-foreground text-sm">
 							<span>
 								{selectedKeys.size} of {MAX_SELECTIONS} selected
 								{existingSlackKeys.size > 0 && (
-									<span className="text-foreground/40">
+									<span className="text-muted-foreground">
 										{" "}
 										({existingSlackKeys.size} already added)
 									</span>

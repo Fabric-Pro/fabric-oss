@@ -239,7 +239,7 @@ export function BacklogChangeDetailDialog({
 							className={cn(
 								"text-xs capitalize",
 								change.action === "create"
-									? "border-green-500 text-green-700 dark:text-green-400"
+									? "border-green-500 text-green-800 dark:text-green-400"
 									: "border-amber-500 text-amber-700 dark:text-amber-400",
 							)}
 						>
@@ -359,7 +359,7 @@ export function BacklogChangeDetailDialog({
 								{draftStatus === "COMPLETED" ? (
 									<>
 										<CheckIcon
-											className="size-3.5 shrink-0 text-secondary"
+											className="size-3.5 shrink-0 text-success"
 											aria-hidden="true"
 										/>
 										Drafted as{" "}
@@ -385,7 +385,7 @@ export function BacklogChangeDetailDialog({
 									<TooltipTrigger asChild>
 										<button
 											type="button"
-											className="text-muted-foreground/70 hover:text-foreground"
+											className="text-muted-foreground hover:text-foreground"
 											aria-label="What does Draft with AI do?"
 										>
 											<InfoIcon
@@ -831,7 +831,7 @@ function DetailDiffSection({
 				>
 					{label}
 					{isRejected && (
-						<span className="ml-2 normal-case tracking-normal text-[10px] text-muted-foreground/80">
+						<span className="ml-2 normal-case tracking-normal text-[10px] text-muted-foreground">
 							— field will be kept as-is
 						</span>
 					)}
@@ -846,7 +846,7 @@ function DetailDiffSection({
 			</div>
 			{showFrom && (
 				<div className="rounded-md border border-destructive/30 bg-destructive/5 p-3">
-					<p className="text-[10px] uppercase tracking-wide text-destructive/80 mb-1">
+					<p className="text-[10px] uppercase tracking-wide text-destructive mb-1">
 						Before
 					</p>
 					{/* Diff signal lives on the box chrome + Before/After
@@ -874,7 +874,7 @@ function DetailDiffSection({
 							"text-[10px] uppercase tracking-wide mb-1",
 							isRejected
 								? "text-muted-foreground"
-								: "text-success/80",
+								: "text-success",
 						)}
 					>
 						After
@@ -916,7 +916,7 @@ function MetadataField({
 				<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 					{label}
 					{isRejected && changed && (
-						<span className="ml-2 normal-case tracking-normal text-[10px] text-muted-foreground/80">
+						<span className="ml-2 normal-case tracking-normal text-[10px] text-muted-foreground">
 							— kept as-is
 						</span>
 					)}
@@ -931,7 +931,7 @@ function MetadataField({
 			</div>
 			{changed ? (
 				<p className="text-sm">
-					<span className="line-through text-destructive/70">
+					<span className="line-through text-destructive">
 						{from}
 					</span>
 					<span className="mx-2 text-muted-foreground">→</span>

@@ -228,7 +228,10 @@ export function AgentDetailsDrawer({
 										size="icon-sm"
 										aria-label="More agent actions"
 									>
-										<MoreHorizontalIcon className="size-4" />
+										<MoreHorizontalIcon
+											strokeWidth={2.5}
+											className="size-4"
+										/>
 									</Button>
 								</DropdownMenuTrigger>
 								<DropdownMenuContent align="end">

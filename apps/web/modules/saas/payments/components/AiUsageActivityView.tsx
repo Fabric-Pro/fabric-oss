@@ -406,7 +406,7 @@ function SummaryTile({
 							<TooltipTrigger asChild>
 								<button
 									type="button"
-									className="text-muted-foreground/60 hover:text-muted-foreground"
+									className="text-muted-foreground hover:text-muted-foreground"
 									aria-label={`${label} details`}
 									onClick={(e) => e.stopPropagation()}
 								>
@@ -991,7 +991,7 @@ export function AiUsageActivityView({
 				Tokens, time, and cost for completed AI activities. Use this to
 				monitor usage patterns and reason about cost and efficiency.
 			</p>
-			<p className="text-xs text-muted-foreground/80">{scopeCopy}</p>
+			<p className="text-xs text-muted-foreground">{scopeCopy}</p>
 		</header>
 	);
 
@@ -1013,7 +1013,7 @@ export function AiUsageActivityView({
 							Ask an admin to grant you the role to see this page.
 						</p>
 						{errorMessage ? (
-							<p className="text-[11px] text-muted-foreground/70">
+							<p className="text-[11px] text-muted-foreground">
 								Server: {errorMessage}
 							</p>
 						) : null}
@@ -1163,7 +1163,7 @@ export function AiUsageActivityView({
 							);
 						})}
 					</div>
-					<div className="text-[11px] uppercase tracking-wider text-muted-foreground/70">
+					<div className="text-[11px] uppercase tracking-wider text-muted-foreground">
 						{periodLabel}{" "}
 						<span className="font-medium text-primary">
 							{tzSuffix(tz, localTzName)}
@@ -1179,7 +1179,7 @@ export function AiUsageActivityView({
 				    row wraps cleanly without orphan rows. */}
 				<div className="space-y-1.5">
 					<div className="flex items-center justify-between">
-						<p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+						<p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 							Filters
 						</p>
 						{hasActiveFilters ? (
@@ -1712,7 +1712,7 @@ export function AiUsageActivityView({
 									) : null}
 								</span>
 								<span className="flex items-center gap-1.5">
-									<span className="text-muted-foreground/70">
+									<span className="text-muted-foreground">
 										Rows
 									</span>
 									<Select
@@ -2712,7 +2712,7 @@ function DayGrid({
 				{WEEKDAY_NAMES.map((w) => (
 					<div
 						key={w}
-						className="py-1 text-[10px] font-medium text-muted-foreground/70"
+						className="py-1 text-[10px] font-medium text-muted-foreground"
 					>
 						{w}
 					</div>
@@ -3690,7 +3690,7 @@ function UsageTrendChart({
 								<RotateCcwIcon className="size-3.5" />
 							</Button>
 						</div>
-						<span className="text-[11px] uppercase tracking-wider text-muted-foreground/70">
+						<span className="text-[11px] uppercase tracking-wider text-muted-foreground">
 							{periodLabel}
 						</span>
 					</div>
@@ -3860,7 +3860,7 @@ function UsageTrendChart({
 						</ResponsiveContainer>
 					)}
 					{!isLoading ? (
-						<p className="mt-1 px-2 text-[10px] text-muted-foreground/60">
+						<p className="mt-1 px-2 text-[10px] text-muted-foreground">
 							{hasAny
 								? "Drag horizontally on the chart to zoom into a range · use the pan / zoom buttons to navigate"
 								: "No activity in this range — chart shows zeros across the full window."}

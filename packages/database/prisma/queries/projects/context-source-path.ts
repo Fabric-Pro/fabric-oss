@@ -176,7 +176,8 @@ function prefixError(
  *
  * Pure: no Prisma, no I/O. Throws {@link ContextSourcePathError}, which the
  * API layer maps to a 400. The result is NOT escaped for SQL `LIKE`; a
- * caller building a `startsWith` filter has to do that itself.
+ * caller building a `startsWith` filter passes it through
+ * {@link escapeLikeLiteral}.
  */
 export function normalizeContextSourcePathPrefix(input: string): string {
 	const value = input.normalize("NFC");
@@ -217,4 +218,36 @@ export function normalizeContextSourcePathPrefix(input: string): string {
 		throw prefixError("too-long");
 	}
 	return prefix;
+}
+
+/**
+ * The folder a Living Memory reset is limited to, in its one spelling: the
+ * rules of {@link normalizeContextSourcePathPrefix}, without the trailing
+ * `/`, so `docs`, `docs/` and `./docs` are one folder. The tree's root is
+ * refused: a reset of every synced file leaves the folder out. Throws
+ * {@link ContextSourcePathError}, which the API layer maps to a 400.
+ */
+export function normalizeSyncedContextResetFolder(input: string): string {
+	const prefix = normalizeContextSourcePathPrefix(input);
+	if (prefix === "") {
+		throw new ContextSourcePathError(
+			"empty",
+			"folder names the root of the working tree; leave it out to reset every synced file",
+		);
+	}
+	return prefix.slice(0, -1);
+}
+
+/**
+ * Escape SQL `LIKE` metacharacters so a string matches only itself.
+ *
+ * Prisma passes a `startsWith` value into `LIKE $n` verbatim — checked
+ * with Prisma 6.18's query compiler, where
+ * `startsWith: "a_b%/"` becomes `"sourcePath"::text LIKE $2` with
+ * `$2 = 'a_b%/%'` — so an unescaped `_` or `%` in a folder name would act
+ * as a wildcard. Backslash is Postgres's default `LIKE` escape character,
+ * so it goes first.
+ */
+export function escapeLikeLiteral(value: string): string {
+	return value.replace(/[\\%_]/g, "\\$&");
 }

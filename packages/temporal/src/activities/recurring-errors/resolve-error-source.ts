@@ -26,17 +26,53 @@ import type {
 	LogSourceAdapter,
 } from "@repo/ai/lib/log-context";
 import { getProjectLogSourceBinding } from "@repo/database";
+import { namesSharedLogWorkspace } from "@repo/database/src/shared-log-workspace";
 import { createOperatorErrorScanAdapter } from "../backlog-context/azure-monitor-log-source";
 import {
+	knownProviderIds,
 	resolveConfiguredLogSource,
 	resolveProjectLogSource,
 } from "../backlog-context/log-source-registry";
 
 export type ErrorScanReach = "operator" | "dedicated" | "organization";
 
-/** Shown as the scan's last error; names no workspace or provider detail. */
-export const UNUSABLE_BINDING_REASON =
-	"The project's log source could not be used: it names this deployment's shared telemetry workspace, or its settings are incomplete.";
+/**
+ * Why a project's own log-source binding could not be used, shown as the
+ * scan's last error. One message per cause, so the admin knows what to fix;
+ * none names a workspace id or provider detail.
+ */
+export const UNUSABLE_BINDING_REASONS = {
+	sharedWorkspace:
+		"The project's log source names this deployment's shared telemetry workspace, which a project cannot use. Choose the project's own workspace or clear the log source.",
+	unknownProvider:
+		"The project's log source names a provider this deployment does not support. Choose the log source again in the project's settings.",
+	incompleteSettings:
+		"The project's log source settings are incomplete. Enter the workspace again in the project's settings.",
+	cannotAggregate:
+		"The project's log source cannot group errors, so the recurring-error scan cannot read it.",
+} as const;
+
+type UnusableBindingCause = keyof typeof UNUSABLE_BINDING_REASONS;
+
+function unusableBindingCause(
+	binding: { provider: string; config: Record<string, unknown> },
+	bound: LogSourceAdapter | null,
+): UnusableBindingCause {
+	const workspaceId = binding.config.workspaceId;
+	if (
+		bound?.sharedStore ||
+		(typeof workspaceId === "string" &&
+			namesSharedLogWorkspace(workspaceId))
+	) {
+		return "sharedWorkspace";
+	}
+	if (bound) {
+		return "cannotAggregate";
+	}
+	return knownProviderIds().includes(binding.provider)
+		? "incompleteSettings"
+		: "unknownProvider";
+}
 
 export interface ResolvedErrorScanSource {
 	label: string;
@@ -84,7 +120,9 @@ export async function resolveRecurringErrorSource(project: {
 				? withSummarize(bound, "dedicated", undefined)
 				: null;
 		if (!source) {
-			throw new Error(UNUSABLE_BINDING_REASON);
+			throw new Error(
+				UNUSABLE_BINDING_REASONS[unusableBindingCause(binding, bound)],
+			);
 		}
 		return source;
 	}

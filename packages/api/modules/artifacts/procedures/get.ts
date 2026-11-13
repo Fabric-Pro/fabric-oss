@@ -7,13 +7,17 @@ import { getChatArtifact } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
 export const getProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.REPORT_READ))
+	.use(
+		requireInputOrgPermission(Permissions.REPORT_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.input(
 		z.object({
 			id: z.string(),

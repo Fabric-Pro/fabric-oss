@@ -18,7 +18,10 @@
  *  - a reset that found nothing answers `{ deleted: 0 }` and drains,
  *    publishes and marks nothing (a repeat is harmless);
  *  - a configured repository sync answers CONFLICT with
- *    `data.code: "REPOSITORY_SYNC_ACTIVE"` naming the repository and branch.
+ *    `data.code: "REPOSITORY_SYNC_ACTIVE"` naming the repository and branch;
+ *  - a `folder` reaches the delete in its one spelling, under the same
+ *    gates, and names itself in the events; one the path rules refuse is
+ *    BAD_REQUEST with nothing deleted.
  *
  * `resetSyncedContextRows` itself is covered in
  * `packages/database/__tests__/reset-synced-context-rows.test.ts`.
@@ -121,7 +124,7 @@ const requestContext = {
 };
 
 type Handler = (args: {
-	input: { projectId: string };
+	input: { projectId: string; folder?: string };
 	context: typeof requestContext;
 }) => Promise<Record<string, unknown>>;
 
@@ -135,13 +138,16 @@ type Middleware = (
 	input: unknown,
 ) => Promise<{ output: unknown }>;
 
-async function call(projectId = "proj-1"): Promise<Record<string, unknown>> {
+async function call(
+	projectId = "proj-1",
+	options: { folder?: string } = {},
+): Promise<Record<string, unknown>> {
 	const mod = await import("../reset-living-memory");
 	const handler = (
 		mod.resetLivingMemoryProcedure as unknown as { handler: Handler }
 	).handler;
 	const chain = mocks.captured.middlewares as Middleware[];
-	const input = { projectId };
+	const input = { projectId, ...options };
 	const run = async (
 		index: number,
 		context: typeof requestContext,
@@ -336,5 +342,85 @@ describe("resetLivingMemory — outcomes", () => {
 		});
 		expect(mocks.drainPendingVectorCleanup).not.toHaveBeenCalled();
 		expect(mocks.emitContextChange).not.toHaveBeenCalled();
+	});
+});
+
+describe("resetLivingMemory — one folder", () => {
+	it("passes the folder in its one spelling, under the same gates", async () => {
+		const result = await call("proj-1", { folder: "./docs/guides/" });
+
+		expect(result).toEqual({ deleted: 2 });
+		expect(mocks.resetSyncedContextRows).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			organizationId: "org-host",
+			userId: "user-1",
+			operationId: expect.stringMatching(UUID),
+			audit: { via: "web", ...AUDIT_FIELDS },
+			folder: "docs/guides",
+		});
+	});
+
+	it("sends no folder when none was given", async () => {
+		await call();
+
+		expect(
+			mocks.resetSyncedContextRows.mock.calls[0]?.[0],
+		).not.toHaveProperty("folder");
+	});
+
+	it("names the folder in the one context change and activity event", async () => {
+		await call("proj-1", { folder: "docs" });
+
+		expect(mocks.emitContextChange).toHaveBeenCalledTimes(1);
+		expect(mocks.emitContextChange).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextName: "Living Memory folder docs (2 synced files)",
+			}),
+		);
+		expect(mocks.emitActivity).toHaveBeenCalledTimes(1);
+		expect(mocks.emitActivity).toHaveBeenCalledWith(
+			expect.objectContaining({
+				resourceName: "Living Memory folder docs (2 synced files)",
+			}),
+		);
+	});
+
+	it.each([
+		["the root", "."],
+		["an absolute path", "/etc"],
+		["a dot segment", "docs/../other"],
+	])(
+		"answers BAD_REQUEST for %s and deletes nothing",
+		async (_label, folder) => {
+			await expect(call("proj-1", { folder })).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+			});
+			expect(mocks.resetSyncedContextRows).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses a folder without CONTEXT_DELETE before reading it", async () => {
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: ["context:read", "context:create", "context:update"],
+			source: "project-member",
+			organizationId: "org-host",
+		});
+
+		await expect(call("proj-1", { folder: "docs" })).rejects.toMatchObject({
+			code: "FORBIDDEN",
+		});
+		expect(mocks.resetSyncedContextRows).not.toHaveBeenCalled();
+	});
+
+	it("refuses a folder while a repository sync is configured", async () => {
+		mocks.resetSyncedContextRows.mockResolvedValue({
+			status: "repository-sync-active",
+			sync: { repository: "example-org/notes", ref: "main" },
+		});
+
+		await expect(call("proj-1", { folder: "docs" })).rejects.toMatchObject({
+			code: "CONFLICT",
+			data: { code: "REPOSITORY_SYNC_ACTIVE" },
+		});
 	});
 });

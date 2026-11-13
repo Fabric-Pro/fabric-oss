@@ -2,6 +2,7 @@
 
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { RevokeApiKeyButton } from "@saas/settings/components/RevokeApiKeyButton";
 import { SettingsItem } from "@saas/shared/components/SettingsItem";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -43,7 +44,6 @@ import {
 	KeyIcon,
 	OctagonXIcon,
 	PlusIcon,
-	Trash2Icon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -531,14 +531,6 @@ export function OrganizationApiKeysSettings() {
 		}
 	};
 
-	const handleDelete = (id: string, name: string) => {
-		if (
-			window.confirm(`Delete API key "${name}"? This cannot be undone.`)
-		) {
-			deleteMutation.mutate(id);
-		}
-	};
-
 	const handleCloseCreate = () => {
 		setIsCreateOpen(false);
 		setNewKeyName("");
@@ -855,21 +847,20 @@ export function OrganizationApiKeysSettings() {
 										</TableCell>
 										{canRevokeKey(key.createdBy.id) && (
 											<TableCell>
-												<Button
-													variant="ghost"
-													size="icon"
-													onClick={() =>
-														handleDelete(
-															key.id,
-															key.name,
-														)
-													}
+												<RevokeApiKeyButton
+													keyName={key.name}
+													action="Delete"
+													title={`Delete API key "${key.name}"?`}
+													description="This cannot be undone."
 													disabled={
 														deleteMutation.isPending
 													}
-												>
-													<Trash2Icon className="size-4 text-destructive" />
-												</Button>
+													onConfirm={() =>
+														deleteMutation.mutate(
+															key.id,
+														)
+													}
+												/>
 											</TableCell>
 										)}
 									</TableRow>

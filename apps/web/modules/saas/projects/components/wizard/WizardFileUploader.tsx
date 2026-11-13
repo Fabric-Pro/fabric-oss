@@ -725,14 +725,14 @@ export function WizardFileUploader({
 													)}
 												{file.status ===
 													"uploading" && (
-													<span className="flex items-center gap-1 text-blue-600">
+													<span className="flex items-center gap-1 text-blue-600 dark:text-blue-400">
 														<Loader2Icon className="h-3 w-3 animate-spin" />
 														Uploading...
 													</span>
 												)}
 												{file.status ===
 													"processing" && (
-													<span className="flex items-center gap-1 text-blue-600">
+													<span className="flex items-center gap-1 text-blue-600 dark:text-blue-400">
 														<Loader2Icon className="h-3 w-3 animate-spin" />
 														Processing...
 													</span>

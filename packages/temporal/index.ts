@@ -60,6 +60,8 @@ export type {
 	GlossyOpportunityRef,
 	GlossyVisualDropReason,
 } from "./src/activities/glossy-edition/types";
+// One release-notes screenshot a reviewer asked for (started by @repo/api).
+export type { CaptureNewsletterScreenshotInput } from "./src/activities/newsletter/capture-newsletter-screenshot";
 export { executeMcpTool } from "./src/activities/orchestrator/execution/execute-mcp-tool";
 export type {
 	BulkStorySyncInput,

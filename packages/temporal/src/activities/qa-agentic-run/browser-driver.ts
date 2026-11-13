@@ -44,6 +44,8 @@ export interface OpenBrowserOptions {
 	browser: string;
 	/** "1920x1080" — the QA policy's own format. */
 	resolution: string;
+	/** Device pixels per CSS pixel. Defaults to 1. */
+	deviceScaleFactor?: number;
 	timeoutMs: number;
 	/** The only HTTP(S) origin this credentialed browser may reach. */
 	targetOrigin: string;
@@ -383,6 +385,7 @@ export async function openBrowser(
 	try {
 		const context = await browser.newContext({
 			viewport: parseResolution(options.resolution),
+			deviceScaleFactor: options.deviceScaleFactor ?? 1,
 			serviceWorkers: "block",
 		});
 		await installOutboundRequestGuard(context, undefined, {
@@ -480,7 +483,7 @@ export async function snapshotPage(
  * reported as an observation ("no button called X") rather than as a thrown
  * timeout with a Playwright stack in it.
  */
-function locate(page: Page, role: string, name: string) {
+export function locate(page: Page, role: string, name: string) {
 	// `getByRole` with an exact-ish name is the closest match to what the aria
 	// snapshot showed the model. Not exact:true — accessible names routinely
 	// carry surrounding whitespace or a trailing icon label, and failing a step

@@ -338,7 +338,7 @@ export function GitHubRepoPicker({
 							<p className="font-medium text-foreground/70">
 								GitHub Not Connected
 							</p>
-							<p className="mt-1 text-sm text-foreground/50">
+							<p className="mt-1 text-sm text-muted-foreground">
 								Connect GitHub in Integrations to browse and
 								select repositories for this project.
 							</p>
@@ -365,7 +365,7 @@ export function GitHubRepoPicker({
 								<p className="font-medium text-foreground/70">
 									Failed to load repositories
 								</p>
-								<p className="mt-1 text-sm text-foreground/50">
+								<p className="mt-1 text-sm text-muted-foreground">
 									{error}
 								</p>
 							</div>
@@ -517,13 +517,13 @@ export function GitHubRepoPicker({
 														<span className="ml-auto flex items-center gap-2">
 															{selectedCount >
 																0 && (
-																<span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-primary text-xs">
+																<span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-primary-active text-xs">
 																	{
 																		selectedCount
 																	}
 																</span>
 															)}
-															<span className="shrink-0 text-foreground/40 text-xs">
+															<span className="shrink-0 text-muted-foreground text-xs">
 																{
 																	group.repos
 																		.length

@@ -741,6 +741,7 @@ export async function refreshProjectRepoGitHubTokenWithOutcome(input: {
 						encryptedAccessToken: true,
 						encryptedRefreshToken: true,
 						tokenExpiresAt: true,
+						status: true,
 					},
 				});
 				// Row gone, or tokens deliberately wiped (disconnect) — never
@@ -896,8 +897,12 @@ export async function refreshProjectRepoGitHubTokenWithOutcome(input: {
 								? encryptApiKey(result.refreshToken)
 								: row.encryptedRefreshToken,
 							tokenExpiresAt: newExpiry,
-							status: "ACTIVE",
-							lastError: null,
+							// A refresh proves the grant, not access to this
+							// repository. Keep the health check's REPO_UNAVAILABLE
+							// verdict and its reason; only its repo probe clears them.
+							...(row.status === "REPO_UNAVAILABLE"
+								? {}
+								: { status: "ACTIVE", lastError: null }),
 							// The grant just proved itself alive — clear any
 							// earlier rejection so the row rejoins the sweep.
 							refreshTokenRejectedAt: null,

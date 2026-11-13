@@ -125,7 +125,10 @@ export function DashboardHero({
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild>
 						<Button variant="ghost" size="icon" className="h-8 w-8">
-							<MoreHorizontalIcon className="h-4 w-4" />
+							<MoreHorizontalIcon
+								strokeWidth={2.5}
+								className="h-4 w-4"
+							/>
 						</Button>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end" className="w-44">

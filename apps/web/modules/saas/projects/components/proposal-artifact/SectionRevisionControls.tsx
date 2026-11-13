@@ -48,7 +48,17 @@ interface HeadingSlot {
 	/** Offsets from the layer's top, in pixels. */
 	top: number;
 	bottom: number;
+	/**
+	 * Its edges, in pixels, from the layer's left and right edges. The layer
+	 * spans the editor's padding, which a heading's band does not, so the
+	 * control and the box are placed by the heading itself.
+	 */
+	left: number;
+	right: number;
 }
+
+/** How far the control sits inside its heading's right edge, in pixels. */
+const TRIGGER_INSET_PX = 12;
 
 interface SectionRevisionControlsProps {
 	editor: Editor | null;
@@ -140,15 +150,17 @@ export function SectionRevisionControls({
 		}
 		setEditable(editor.isEditable);
 		const root = editor.view.dom as HTMLElement;
-		const layerTop = layer.getBoundingClientRect().top;
+		const layerRect = layer.getBoundingClientRect();
 		const headings = rootHeadings(root);
 		const next = headings.map((element, index) => {
 			const rect = element.getBoundingClientRect();
 			return {
 				index,
 				text: collapse(element.textContent ?? ""),
-				top: rect.top - layerTop,
-				bottom: rect.bottom - layerTop,
+				top: rect.top - layerRect.top,
+				bottom: rect.bottom - layerRect.top,
+				left: Math.max(0, rect.left - layerRect.left),
+				right: Math.max(0, layerRect.right - rect.right),
 			};
 		});
 		setSlots((previous) =>
@@ -157,7 +169,9 @@ export function SectionRevisionControls({
 				(slot, i) =>
 					slot.text === next[i]?.text &&
 					slot.top === next[i]?.top &&
-					slot.bottom === next[i]?.bottom,
+					slot.bottom === next[i]?.bottom &&
+					slot.left === next[i]?.left &&
+					slot.right === next[i]?.right,
 			)
 				? previous
 				: next,
@@ -206,6 +220,10 @@ export function SectionRevisionControls({
 			typeof ResizeObserver === "undefined"
 				? null
 				: new ResizeObserver(schedule);
+		// The editor scrolls on its own when its content overflows, which
+		// moves the headings' edges under the layer.
+		const scroller = editor.isDestroyed ? null : editor.view.dom;
+		scroller?.addEventListener("scroll", schedule, { passive: true });
 		if (!editor.isDestroyed) {
 			observer?.observe(editor.view.dom);
 		}
@@ -218,6 +236,7 @@ export function SectionRevisionControls({
 			editor.off("focus", schedule);
 			editor.off("blur", schedule);
 			window.removeEventListener("resize", schedule);
+			scroller?.removeEventListener("scroll", schedule);
 			observer?.disconnect();
 		};
 	}, [editor, measure]);
@@ -393,9 +412,10 @@ export function SectionRevisionControls({
 								0,
 								slot.top + (slot.bottom - slot.top - 28) / 2,
 							),
+							right: slot.right + TRIGGER_INSET_PX,
 						}}
 						className={cn(
-							"absolute right-0 z-20 inline-flex h-7 items-center gap-1.5 rounded-md border bg-background/95 px-2 text-xs font-medium text-muted-foreground shadow-xs transition-opacity hover:bg-muted hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+							"absolute z-20 inline-flex h-7 items-center gap-1.5 rounded-md border bg-background/95 px-2 text-xs font-medium text-muted-foreground shadow-xs transition-opacity hover:bg-muted hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 							shown
 								? "pointer-events-auto opacity-100"
 								: "opacity-0",
@@ -413,8 +433,12 @@ export function SectionRevisionControls({
 				<form
 					id={boxId}
 					aria-label={t("boxLabel", { section: open.text })}
-					className="pointer-events-auto absolute inset-x-0 z-30 rounded-md border bg-popover p-3 text-popover-foreground shadow-md"
-					style={{ top: open.bottom + 4 }}
+					className="pointer-events-auto absolute z-30 rounded-md border bg-popover p-3 text-popover-foreground shadow-md"
+					style={{
+						top: open.bottom + 4,
+						left: open.left,
+						right: open.right,
+					}}
 					onSubmit={(event) => {
 						event.preventDefault();
 						submit();

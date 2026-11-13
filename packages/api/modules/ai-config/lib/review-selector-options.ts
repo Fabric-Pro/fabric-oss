@@ -88,11 +88,24 @@ export async function listReviewSelectorOptions(
 	const templates = instances.instances.length
 		? await db.agentTemplate.findMany({
 				where: {
-					id: {
-						in: instances.instances.map(
-							(instance) => instance.templateId,
-						),
-					},
+					AND: [
+						{
+							OR: [
+								{ scope: "SYSTEM" },
+								{
+									scope: "ORGANIZATION",
+									organizationId: context.organizationId,
+								},
+							],
+						},
+						{
+							id: {
+								in: instances.instances.map(
+									(instance) => instance.templateId,
+								),
+							},
+						},
+					],
 				},
 				select: { id: true, suggestedModel: true },
 			})

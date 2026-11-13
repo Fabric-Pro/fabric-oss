@@ -293,7 +293,7 @@ function OtherContextCard({
 					</div>
 
 					<div
-						className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-foreground/50 text-xs"
+						className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs"
 						data-testid="pending-row-status"
 					>
 						<StatusPill

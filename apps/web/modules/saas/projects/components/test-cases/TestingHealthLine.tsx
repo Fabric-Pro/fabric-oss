@@ -95,7 +95,7 @@ export function TestingHealthLine({
 								className="flex h-1.5 w-16 overflow-hidden rounded-full bg-muted"
 							>
 								<span
-									className="bg-secondary"
+									className="bg-success"
 									style={{ width: `${health.passShare}%` }}
 								/>
 								<span
@@ -137,7 +137,7 @@ export function TestingHealthLine({
 						</b>
 						{t("health.automated")}
 						{coverageTarget !== undefined && (
-							<span className="opacity-70">
+							<span>
 								{t("health.ofTarget", { pct: coverageTarget })}
 							</span>
 						)}

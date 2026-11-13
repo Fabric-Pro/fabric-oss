@@ -181,7 +181,7 @@ export function confidenceBand(value: number): {
 	className: string;
 } {
 	if (value >= 0.85) {
-		return { label: "High confidence", className: "text-secondary" };
+		return { label: "High confidence", className: "text-success" };
 	}
 	if (value >= 0.7) {
 		// `text-highlight` is #d97706 in light mode — ~2.95:1 on the stone

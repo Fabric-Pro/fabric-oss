@@ -36,7 +36,11 @@ export interface UnifiedSearchResult {
 	content: string;
 
 	/** Matched chunks with their retrieval scores; empty means body-start fallback. */
-	matchedPassages?: Array<{ content: string; score: number }>;
+	matchedPassages?: Array<{
+		content: string;
+		score: number;
+		chunkIndex?: number;
+	}>;
 
 	/** Source instructions reserved alongside the result header. */
 	contentHeader?: string;

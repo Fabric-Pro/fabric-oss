@@ -54,6 +54,7 @@ const {
 	noticeState,
 	isGuestInOrg,
 	gateOverride,
+	webResearchAvailability,
 } = vi.hoisted(() => ({
 	getAiConfigStatus: vi.fn(),
 	createDocument: vi.fn(),
@@ -83,6 +84,8 @@ const {
 			gates: unknown;
 		},
 	},
+	// The project organization's answer to "can it research the web?".
+	webResearchAvailability: vi.fn(),
 }));
 
 vi.mock("next-intl", () => ({
@@ -199,6 +202,15 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						input,
 					],
 				},
+				webResearchAvailability: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: [
+							"projects.documents.webResearchAvailability",
+							input,
+						],
+						queryFn: () => webResearchAvailability(input),
+					}),
+				},
 			},
 		},
 		// The shared prompt selector fetches the prompts bound to the agent
@@ -255,6 +267,7 @@ function renderDialog(props: DialogProps = makeProps()) {
 	);
 	return {
 		...utils,
+		client,
 		reopenWith: (next: DialogProps) =>
 			utils.rerender(
 				<QueryClientProvider client={client}>
@@ -266,11 +279,14 @@ function renderDialog(props: DialogProps = makeProps()) {
 
 const aiAvailable = () => ({ isConfigured: true });
 const aiUnavailable = () => ({ isConfigured: false });
+/** The server's answer when the organization can search and read the web. */
+const researchAvailable = () => ({ available: true, missing: [] });
 
 describe("CreateDocumentDialog", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		toastLoading.mockReturnValue("toast-id-1");
+		webResearchAvailability.mockResolvedValue(researchAvailable());
 		createDocument.mockResolvedValue({
 			document: { id: "doc-1" },
 			generation: null,
@@ -324,7 +340,9 @@ describe("CreateDocumentDialog", () => {
 		renderDialog();
 
 		// R5: on when the dialog opens — no click needed.
-		const toggle = await screen.findByRole("checkbox");
+		const toggle = await screen.findByRole("checkbox", {
+			name: "generateWithAiLabel",
+		});
 		expect(toggle).toBeChecked();
 		expect(screen.getByText("generateWithAiLabel")).toBeInTheDocument();
 		expect(screen.getByLabelText("instructionsLabel")).toBeInTheDocument();
@@ -427,7 +445,7 @@ describe("CreateDocumentDialog", () => {
 		);
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await user.clear(screen.getByLabelText("titleLabel"));
 		await user.type(screen.getByLabelText("titleLabel"), "Payments brief");
 		await user.type(
@@ -453,6 +471,8 @@ describe("CreateDocumentDialog", () => {
 			type: "GENERAL",
 			generateWithAi: true,
 			prompt: "Keep it short",
+			// Offered beside the run and left unticked.
+			allowWebResearch: false,
 			timeZone: expect.any(String),
 		});
 
@@ -494,7 +514,7 @@ describe("CreateDocumentDialog", () => {
 		const onOpenChange = vi.fn();
 		renderDialog(makeProps({ onOpenChange }));
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await user.clear(screen.getByLabelText("titleLabel"));
 		await user.type(screen.getByLabelText("titleLabel"), "Payments brief");
 		await user.click(screen.getByRole("button", { name: "submitWithAi" }));
@@ -729,7 +749,9 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		const toggle = await screen.findByRole("checkbox");
+		const toggle = await screen.findByRole("checkbox", {
+			name: "generateWithAiLabel",
+		});
 		// R12: nothing to apply a mode to yet, so no mode.
 		expect(screen.queryByTestId("source-usage-mode")).toBeNull();
 
@@ -765,7 +787,9 @@ describe("CreateDocumentDialog", () => {
 		await waitFor(() =>
 			expect(screen.queryByTestId("source-usage-mode")).toBeNull(),
 		);
-		expect(screen.getByRole("checkbox")).toBeChecked();
+		expect(
+			screen.getByRole("checkbox", { name: "generateWithAiLabel" }),
+		).toBeChecked();
 	});
 
 	it("keeps the Generate with AI toggle operable while Use As-Is holds it off", async () => {
@@ -773,7 +797,9 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		const toggle = await screen.findByRole("checkbox");
+		const toggle = await screen.findByRole("checkbox", {
+			name: "generateWithAiLabel",
+		});
 		await pasteSource(user, "Pasted architecture notes");
 		await waitForUsageMode();
 		await user.click(asIsOption());
@@ -805,7 +831,7 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		// Both exist at once — the single toggling textarea conflated them.
 		const source = sourceField();
@@ -834,7 +860,9 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		const toggle = await screen.findByRole("checkbox");
+		const toggle = await screen.findByRole("checkbox", {
+			name: "generateWithAiLabel",
+		});
 		await user.click(screen.getByLabelText("instructionsLabel"));
 		await user.paste("Keep it short");
 		await pasteSource(user, "Pasted architecture notes");
@@ -854,7 +882,7 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await pasteSource(user, "Pasted architecture notes");
 		await waitForUsageMode();
 
@@ -947,7 +975,7 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await pasteSource(user, "Pasted architecture notes");
 		await waitForUsageMode();
 
@@ -1008,7 +1036,7 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await pasteSource(user, "Pasted architecture notes");
 
 		// Bound directly to the textarea the control would already be mounted
@@ -1029,14 +1057,16 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await pasteSource(user, "    \n\t  ");
 
 		await waitFor(() => expect(sourceField()).toHaveValue("    \n\t  "));
 		await waitFor(() =>
 			expect(screen.queryByTestId("source-usage-mode")).toBeNull(),
 		);
-		expect(screen.getByRole("checkbox")).toBeChecked();
+		expect(
+			screen.getByRole("checkbox", { name: "generateWithAiLabel" }),
+		).toBeChecked();
 	});
 
 	it("reopens with no mode set and generation back on after a Use As-Is entry", async () => {
@@ -1045,11 +1075,13 @@ describe("CreateDocumentDialog", () => {
 		const onOpenChange = vi.fn();
 		const { reopenWith } = renderDialog(makeProps({ onOpenChange }));
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await pasteSource(user, "Pasted architecture notes");
 		await waitForUsageMode();
 		await user.click(asIsOption());
-		expect(screen.getByRole("checkbox")).not.toBeChecked();
+		expect(
+			screen.getByRole("checkbox", { name: "generateWithAiLabel" }),
+		).not.toBeChecked();
 
 		await user.click(screen.getByRole("button", { name: "cancel" }));
 		reopenWith(makeProps({ open: false, onOpenChange }));
@@ -1060,7 +1092,9 @@ describe("CreateDocumentDialog", () => {
 		await waitFor(() =>
 			expect(screen.queryByTestId("source-usage-mode")).toBeNull(),
 		);
-		expect(screen.getByRole("checkbox")).toBeChecked();
+		expect(
+			screen.getByRole("checkbox", { name: "generateWithAiLabel" }),
+		).toBeChecked();
 	});
 
 	// ── U4: prompt selection is scoped to the document type ──
@@ -1078,7 +1112,7 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		expect(screen.getByLabelText(/promptLabel/i)).toHaveAttribute(
 			"role",
@@ -1124,7 +1158,7 @@ describe("CreateDocumentDialog", () => {
 		);
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		// Queried by its accessible name, which the visible "Prompt" label now
 		// supplies. This used to be positional — "the second combobox" — because
 		// the trigger had no labelling hook to associate with.
@@ -1162,7 +1196,7 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await pickType(user, /Test Plan/);
 
 		await waitFor(() => {
@@ -1179,7 +1213,7 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await user.type(
 			screen.getByLabelText("instructionsLabel"),
 			"Focus on rollout risk",
@@ -1202,7 +1236,7 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await pasteSource(user, "Verbatim body text");
 		await screen.findByRole("radiogroup");
 		await user.click(
@@ -1224,7 +1258,7 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await pasteSource(user, "Background notes");
 		await screen.findByRole("radiogroup");
 
@@ -1244,7 +1278,7 @@ describe("CreateDocumentDialog", () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await user.click(screen.getByRole("button", { name: /submitWithAi/i }));
 
 		await waitFor(() => expect(createDocument).toHaveBeenCalled());
@@ -1268,7 +1302,7 @@ describe("CreateDocumentDialog", () => {
 		const onOpenChange = vi.fn();
 		renderDialog(makeProps({ onOpenChange }));
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await user.click(screen.getByRole("button", { name: /submitWithAi/i }));
 
 		await waitFor(() => expect(toastError).toHaveBeenCalled());
@@ -1288,7 +1322,7 @@ describe("CreateDocumentDialog", () => {
 		});
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await user.click(screen.getByRole("button", { name: /submitWithAi/i }));
 
 		await waitFor(() => expect(toastWarning).toHaveBeenCalled());
@@ -1306,7 +1340,7 @@ describe("CreateDocumentDialog", () => {
 		});
 		renderDialog();
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await pasteSource(user, "A very long source");
 		await screen.findByRole("radiogroup");
 		await user.click(screen.getByRole("button", { name: /submitWithAi/i }));
@@ -1327,7 +1361,7 @@ describe("CreateDocumentDialog", () => {
 		const onOpenChange = vi.fn();
 		renderDialog(makeProps({ onOpenChange }));
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await user.click(screen.getByRole("button", { name: /submitWithAi/i }));
 
 		await waitFor(() => expect(toastError).toHaveBeenCalled());
@@ -1341,7 +1375,11 @@ describe("CreateDocumentDialog", () => {
 	// ── U9: the states the flow must refuse, and why ──
 
 	const turnAiOff = async (user: ReturnType<typeof userEvent.setup>) => {
-		await user.click(await screen.findByRole("checkbox"));
+		await user.click(
+			await screen.findByRole("checkbox", {
+				name: "generateWithAiLabel",
+			}),
+		);
 	};
 
 	it("covers AE5 — AI available, generation off, no source: creation is blocked", async () => {
@@ -1434,7 +1472,7 @@ describe("CreateDocumentDialog", () => {
 		const onOpenChange = vi.fn();
 		renderDialog(makeProps({ onOpenChange }));
 
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await user.click(screen.getByRole("button", { name: /submitWithAi/i }));
 		await screen.findByRole("button", { name: "submitting" });
 
@@ -1483,6 +1521,7 @@ describe("CreateDocumentDialog — attaching a file", () => {
 		// call left over from another test.
 		vi.clearAllMocks();
 		toastLoading.mockReturnValue("toast-id-1");
+		webResearchAvailability.mockResolvedValue(researchAvailable());
 		availablePrompts.mockResolvedValue({ prompts: [] });
 		createDocument.mockResolvedValue({
 			document: { id: "doc-1" },
@@ -1512,7 +1551,7 @@ describe("CreateDocumentDialog — attaching a file", () => {
 	it("refuses a type the shared allowlist does not carry", async () => {
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		fireEvent.change(fileInput(), {
 			target: {
@@ -1534,7 +1573,7 @@ describe("CreateDocumentDialog — attaching a file", () => {
 		const user = userEvent.setup();
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		const huge = new File(["x"], "huge.md", { type: "text/markdown" });
 		Object.defineProperty(huge, "size", { value: 999 * 1024 * 1024 });
@@ -1554,7 +1593,7 @@ describe("CreateDocumentDialog — attaching a file", () => {
 		const user = userEvent.setup();
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await choose(user, new File([], "empty.md", { type: "text/markdown" }));
 
@@ -1567,7 +1606,7 @@ describe("CreateDocumentDialog — attaching a file", () => {
 		const user = userEvent.setup();
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await choose(user, okFile());
 
@@ -1590,7 +1629,7 @@ describe("CreateDocumentDialog — attaching a file", () => {
 		const user = userEvent.setup();
 		getAiConfigStatus.mockResolvedValue(aiAvailable());
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await choose(user, okFile());
 
@@ -1598,7 +1637,9 @@ describe("CreateDocumentDialog — attaching a file", () => {
 			await screen.findByTestId("file-used-as-is"),
 		).toBeInTheDocument();
 		expect(screen.queryByRole("radio")).toBeNull();
-		expect(screen.getByRole("checkbox")).not.toBeChecked();
+		expect(
+			screen.getByRole("checkbox", { name: "generateWithAiLabel" }),
+		).not.toBeChecked();
 	});
 
 	/**
@@ -1632,7 +1673,7 @@ describe("CreateDocumentDialog — attaching a file", () => {
 			generation: null,
 		});
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await user.type(
 			screen.getByLabelText(/sourceContentLabel/i),
@@ -1661,7 +1702,7 @@ describe("CreateDocumentDialog — attaching a file", () => {
 			generation: null,
 		});
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await choose(user, okFile());
 		await user.click(screen.getByRole("button", { name: /^submit$/i }));
@@ -1699,7 +1740,7 @@ describe("CreateDocumentDialog — attaching a file", () => {
 			vi.fn().mockResolvedValue({ ok: false } as Response),
 		);
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await choose(user, okFile());
 		await user.click(screen.getByRole("button", { name: /^submit$/i }));
@@ -1743,6 +1784,7 @@ describe("CreateDocumentDialog — company context notice", () => {
 		// Restated, as the sibling describes do, rather than inherited.
 		vi.clearAllMocks();
 		toastLoading.mockReturnValue("toast-id-1");
+		webResearchAvailability.mockResolvedValue(researchAvailable());
 		availablePrompts.mockResolvedValue({ prompts: [] });
 		createDocument.mockResolvedValue({
 			document: { id: "doc-1" },
@@ -1759,7 +1801,7 @@ describe("CreateDocumentDialog — company context notice", () => {
 	it("an empty company context shows the notice, generation proceeds, and reopening shows it again", async () => {
 		const user = userEvent.setup();
 		const { reopenWith } = renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await pickType(user, /Project Proposal/);
 
@@ -1785,7 +1827,7 @@ describe("CreateDocumentDialog — company context notice", () => {
 		// Nothing was remembered, so the next start says it again.
 		reopenWith(makeProps({ open: false }));
 		reopenWith(makeProps({ open: true }));
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await pickType(user, /Project Proposal/);
 		expect(
 			await screen.findByRole("note", { name: "empty.title" }),
@@ -1796,7 +1838,7 @@ describe("CreateDocumentDialog — company context notice", () => {
 		const user = userEvent.setup();
 		noticeState.mockResolvedValue({ state: "notReady" });
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await pickType(user, /Business Case/);
 
@@ -1811,7 +1853,7 @@ describe("CreateDocumentDialog — company context notice", () => {
 		const user = userEvent.setup();
 		noticeState.mockResolvedValue({ state: "hidden" });
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await pickType(user, /Project Proposal/);
 		await waitFor(() => expect(noticeState).toHaveBeenCalledTimes(1));
@@ -1830,7 +1872,7 @@ describe("CreateDocumentDialog — company context notice", () => {
 				}),
 		);
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await pickType(user, /Project Proposal/);
 		await waitFor(() => expect(noticeState).toHaveBeenCalledTimes(1));
@@ -1854,7 +1896,7 @@ describe("CreateDocumentDialog — company context notice", () => {
 		const user = userEvent.setup();
 		noticeState.mockRejectedValue(new Error("notice state unavailable"));
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await pickType(user, /Project Proposal/);
 		await waitFor(() => expect(noticeState).toHaveBeenCalledTimes(1));
@@ -1873,7 +1915,7 @@ describe("CreateDocumentDialog — company context notice", () => {
 		const user = userEvent.setup();
 		isGuestInOrg.mockReturnValue(true);
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await pickType(user, /Project Proposal/);
 		await settle();
@@ -1885,7 +1927,7 @@ describe("CreateDocumentDialog — company context notice", () => {
 	it("shows no notice for a PRD", async () => {
 		const user = userEvent.setup();
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await pickType(user, /Product Requirements Document/);
 		await settle();
@@ -1897,7 +1939,7 @@ describe("CreateDocumentDialog — company context notice", () => {
 	it("shows no notice once Generate with AI is turned off", async () => {
 		const user = userEvent.setup();
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await pickType(user, /Project Proposal/);
 		expect(
@@ -1905,7 +1947,9 @@ describe("CreateDocumentDialog — company context notice", () => {
 		).toBeInTheDocument();
 
 		// A document written by hand draws on no context at all.
-		await user.click(screen.getByRole("checkbox"));
+		await user.click(
+			screen.getByRole("checkbox", { name: "generateWithAiLabel" }),
+		);
 		expect(notice()).toBeNull();
 	});
 
@@ -1960,7 +2004,7 @@ describe("CreateDocumentDialog — company context notice", () => {
 			},
 		};
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await pickType(user, /Project Proposal/);
 
@@ -1990,5 +2034,312 @@ describe("CreateDocumentDialog — company context notice", () => {
 		expect(
 			screen.getByRole("button", { name: /submitWithAi/i }),
 		).not.toBeDisabled();
+	});
+});
+
+/**
+ * Allow web research.
+ *
+ * Research only runs when one action says so, so the box starts unticked on
+ * every opening and the request carries `allowWebResearch: true` only for a
+ * tick made while the organization can research. Wherever the option was
+ * offered for the run, the request says what was chosen: an untick, or a tick
+ * the organization can no longer act on, goes out as `false`. Where no run
+ * could research (a file source, or no generation), the key is left out.
+ */
+describe("CreateDocumentDialog — allow web research", () => {
+	type User = ReturnType<typeof userEvent.setup>;
+
+	const researchToggle = () =>
+		screen.getByRole("checkbox", { name: "label" });
+	const queryResearchToggle = () =>
+		screen.queryByRole("checkbox", { name: "label" });
+	const generateToggle = () =>
+		screen.getByRole("checkbox", { name: "generateWithAiLabel" });
+
+	/** The option is offered and its availability check has answered yes. */
+	const researchReady = async () => {
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
+		await waitFor(() =>
+			expect(researchToggle()).not.toHaveAttribute("aria-disabled"),
+		);
+		return researchToggle();
+	};
+
+	const submitAndReadPayload = async (user: User, name: string) => {
+		await user.click(screen.getByRole("button", { name }));
+		await waitFor(() => expect(createDocument).toHaveBeenCalledTimes(1));
+		return createDocument.mock.calls[0][0] as Record<string, unknown>;
+	};
+
+	const okFile = () =>
+		new File(["# spec"], "spec.md", { type: "text/markdown" });
+
+	beforeEach(() => {
+		// Restated, as the sibling describes do, rather than inherited.
+		vi.clearAllMocks();
+		toastLoading.mockReturnValue("toast-id-1");
+		availablePrompts.mockResolvedValue({ prompts: [] });
+		getAiConfigStatus.mockResolvedValue(aiAvailable());
+		webResearchAvailability.mockResolvedValue(researchAvailable());
+		createDocument.mockResolvedValue({
+			document: { id: "doc-1" },
+			generation: { outcome: "started" },
+			displacedActive: false,
+			suppliedTextOutcome: null,
+		});
+		createUploadUrl.mockResolvedValue({
+			signedUploadUrl: "https://signed.example/put",
+			contextId: "ctx-1",
+			contentType: "text/markdown",
+		});
+		processFile.mockResolvedValue({});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({ ok: true } as Response),
+		);
+		gateOverride.current = null;
+	});
+
+	it("opens unchecked, and a tick goes out with the generate request", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+
+		const toggle = await researchReady();
+		expect(toggle).not.toBeChecked();
+		// Asked about this project only; the server finds its organization.
+		expect(webResearchAvailability).toHaveBeenCalledWith({
+			projectId: "project-1",
+		});
+
+		await user.click(toggle);
+		expect(researchToggle()).toBeChecked();
+
+		const payload = await submitAndReadPayload(user, "submitWithAi");
+		expect(payload).toMatchObject({
+			generateWithAi: true,
+			allowWebResearch: true,
+		});
+	});
+
+	it("sends false when the option is offered and left unticked", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+
+		expect(await researchReady()).not.toBeChecked();
+
+		const payload = await submitAndReadPayload(user, "submitWithAi");
+		expect(payload).toMatchObject({
+			generateWithAi: true,
+			allowWebResearch: false,
+		});
+	});
+
+	it("sends false when the box ends up unticked", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+
+		const toggle = await researchReady();
+		expect(toggle).not.toBeChecked();
+		await user.click(toggle);
+		await user.click(researchToggle());
+		expect(researchToggle()).not.toBeChecked();
+
+		const payload = await submitAndReadPayload(user, "submitWithAi");
+		expect(payload).toMatchObject({
+			generateWithAi: true,
+			allowWebResearch: false,
+		});
+	});
+
+	it("is unticked again when the dialog is closed and reopened", async () => {
+		const user = userEvent.setup();
+		const onOpenChange = vi.fn();
+		const { reopenWith } = renderDialog(makeProps({ onOpenChange }));
+
+		await user.click(await researchReady());
+		expect(researchToggle()).toBeChecked();
+
+		await user.click(screen.getByRole("button", { name: "cancel" }));
+		expect(onOpenChange).toHaveBeenCalledWith(false);
+		reopenWith(makeProps({ open: false, onOpenChange }));
+		reopenWith(makeProps({ open: true, onOpenChange }));
+
+		expect(await researchReady()).not.toBeChecked();
+		const payload = await submitAndReadPayload(user, "submitWithAi");
+		expect(payload).toMatchObject({ allowWebResearch: false });
+	});
+
+	it("says what is missing and sends false when the organization cannot read web pages", async () => {
+		const user = userEvent.setup();
+		webResearchAvailability.mockResolvedValue({
+			available: false,
+			missing: ["read"],
+		});
+		renderDialog();
+
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
+		const reason = await screen.findByTestId("web-research-reason");
+		await waitFor(() => expect(reason).toHaveTextContent("missingRead"));
+
+		const toggle = researchToggle();
+		// Blocked but still reachable, so the reason can be read.
+		expect(toggle).toHaveAttribute("aria-disabled", "true");
+		expect(toggle).not.toBeDisabled();
+		expect(toggle).toHaveAccessibleDescription(/missingRead/);
+		expect(
+			screen.getByRole("link", { name: "settingsLink" }),
+		).toHaveAttribute("href", "/app/example-org/settings/search-providers");
+
+		await user.click(toggle);
+		expect(researchToggle()).not.toBeChecked();
+
+		const payload = await submitAndReadPayload(user, "submitWithAi");
+		expect(payload).toMatchObject({ allowWebResearch: false });
+	});
+
+	/** The settings link, kept from navigating: jsdom cannot. */
+	const settingsLink = async () => {
+		const link = await screen.findByRole("link", { name: "settingsLink" });
+		link.addEventListener("click", (event) => event.preventDefault());
+		return link;
+	};
+
+	it("closes the dialog when the person follows the settings link", async () => {
+		const user = userEvent.setup();
+		webResearchAvailability.mockResolvedValue({
+			available: false,
+			missing: ["search"],
+		});
+		const onOpenChange = vi.fn();
+		renderDialog(makeProps({ onOpenChange }));
+
+		await user.click(await settingsLink());
+
+		expect(onOpenChange).toHaveBeenCalledWith(false);
+	});
+
+	it("does not close the dialog from the settings link mid-submit", async () => {
+		const user = userEvent.setup();
+		webResearchAvailability.mockResolvedValue({
+			available: false,
+			missing: ["search"],
+		});
+		// Never settles, so the submit chain stays in flight.
+		createDocument.mockImplementation(() => new Promise(() => {}));
+		const onOpenChange = vi.fn();
+		renderDialog(makeProps({ onOpenChange }));
+
+		const link = await settingsLink();
+		await user.click(screen.getByRole("button", { name: "submitWithAi" }));
+		await screen.findByRole("button", { name: "submitting" });
+		await user.click(link);
+
+		expect(onOpenChange).not.toHaveBeenCalled();
+	});
+
+	it("sends false for a tick that availability has since withdrawn", async () => {
+		const user = userEvent.setup();
+		const { client } = renderDialog();
+
+		await user.click(await researchReady());
+		expect(researchToggle()).toBeChecked();
+
+		// The organization lost its page-reading provider after the tick.
+		act(() => {
+			client.setQueryData(
+				[
+					"projects.documents.webResearchAvailability",
+					{ projectId: "project-1" },
+				],
+				{ available: false, missing: ["read"] },
+			);
+		});
+		await waitFor(() =>
+			expect(researchToggle()).toHaveAttribute("aria-disabled", "true"),
+		);
+		expect(researchToggle()).not.toBeChecked();
+
+		const payload = await submitAndReadPayload(user, "submitWithAi");
+		expect(payload).toMatchObject({ allowWebResearch: false });
+	});
+
+	it("is blocked with the file reason while a file is the source, and sends no flag with it", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+
+		await user.click(await researchReady());
+		expect(researchToggle()).toBeChecked();
+
+		await user.upload(
+			screen.getByTestId("source-file-input") as HTMLInputElement,
+			okFile(),
+		);
+		await screen.findByTestId("source-file-chosen");
+		// Attaching a file turns generation off, and the option goes with it.
+		expect(queryResearchToggle()).toBeNull();
+
+		// Turning generation back on shows why research cannot be ticked.
+		await user.click(generateToggle());
+		const toggle = researchToggle();
+		expect(toggle).toHaveAttribute("aria-disabled", "true");
+		expect(toggle).not.toBeChecked();
+		expect(toggle).toHaveAccessibleDescription(/fileSource/);
+		expect(screen.getByTestId("web-research-reason")).toHaveTextContent(
+			"fileSource",
+		);
+
+		const payload = await submitAndReadPayload(user, "submitWithAi");
+		expect(payload).toMatchObject({
+			generateWithAi: true,
+			awaitingSourceFile: true,
+		});
+		expect(payload).not.toHaveProperty("allowWebResearch");
+	});
+
+	it("clears a tick when a file is attached, and does not bring it back when the file is removed", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+
+		await user.click(await researchReady());
+		expect(researchToggle()).toBeChecked();
+
+		await user.upload(
+			screen.getByTestId("source-file-input") as HTMLInputElement,
+			okFile(),
+		);
+		await screen.findByTestId("source-file-chosen");
+		await user.click(screen.getByRole("button", { name: "removeFile" }));
+		expect(screen.queryByTestId("source-file-chosen")).toBeNull();
+		await user.click(generateToggle());
+
+		expect(await researchReady()).not.toBeChecked();
+		const payload = await submitAndReadPayload(user, "submitWithAi");
+		expect(payload).toMatchObject({
+			generateWithAi: true,
+			allowWebResearch: false,
+		});
+	});
+
+	it("is not offered, and nothing is sent, once Generate with AI is off", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+
+		await user.click(await researchReady());
+		expect(researchToggle()).toBeChecked();
+
+		// A source, so a create without generation is allowed.
+		await user.type(
+			screen.getByLabelText(/sourceContentLabel/i),
+			"Pasted architecture notes",
+		);
+		await screen.findByTestId("source-usage-mode");
+		await user.click(generateToggle());
+		expect(generateToggle()).not.toBeChecked();
+		expect(queryResearchToggle()).toBeNull();
+
+		const payload = await submitAndReadPayload(user, "submit");
+		expect(payload).toMatchObject({ generateWithAi: false });
+		expect(payload).not.toHaveProperty("allowWebResearch");
 	});
 });

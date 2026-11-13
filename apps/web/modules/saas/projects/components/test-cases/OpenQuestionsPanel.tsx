@@ -40,7 +40,7 @@ const STATUS_LABEL: Record<Status, string> = {
 
 const STATUS_TONE: Record<Status, string> = {
 	OPEN: "border-highlight/30 bg-highlight/10 text-highlight",
-	ANSWERED: "border-secondary/30 bg-secondary/10 text-secondary",
+	ANSWERED: "border-success/30 bg-success/10 text-success",
 	DEFERRED: "border-border bg-muted text-muted-foreground",
 };
 

@@ -21,6 +21,7 @@ import {
 } from "../../hooks/useRoadmapView";
 import { formatLastEditSource } from "../../lib/last-edit-source-copy";
 import { buildStoryDetailsRoute } from "../../lib/stories/routes";
+import { stageInkStyle } from "../../lib/stories/stage-ink";
 import {
 	getMaturationStatus,
 	getSizeDescription,
@@ -150,7 +151,7 @@ function StoryTileImpl({
 							<button
 								type="button"
 								aria-label="Drag to reorder"
-								className="mt-0.5 shrink-0 cursor-grab rounded text-muted-foreground/40 transition-colors hover:text-foreground active:cursor-grabbing"
+								className="mt-0.5 shrink-0 cursor-grab rounded text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
 								{...attributes}
 								{...listeners}
 								onClick={(e) => e.stopPropagation()}
@@ -175,7 +176,7 @@ function StoryTileImpl({
 							onClick={() => onOpenDetails?.(story.id)}
 							className="min-w-0 flex-1 text-left"
 						>
-							<span className="flex items-center gap-1 font-mono text-[10px] text-muted-foreground/60">
+							<span className="flex items-center gap-1 font-mono text-[10px] text-muted-foreground">
 								<StoryKindIcon
 									kind={story.kind}
 									priority={story.priority}
@@ -235,8 +236,8 @@ function StoryTileImpl({
 								chips.stage = (
 									<span
 										key="stage"
-										className="inline-flex items-center gap-1.5 text-xs font-medium"
-										style={{ color: meta.color }}
+										className="stage-ink inline-flex items-center gap-1.5 text-xs font-medium"
+										style={stageInkStyle(meta.color)}
 									>
 										<span
 											className="size-2 rounded-full shrink-0"
@@ -320,11 +321,11 @@ function StoryTileImpl({
 					})()}
 					{/* Last activity — one combined date at the bottom-left (matches the
 			    table/plain views), with author + created/updated in the tooltip. */}
-					<div className="mt-2 flex items-center gap-1 pl-[22px] text-[9px] text-muted-foreground/70">
+					<div className="mt-2 flex items-center gap-1 pl-[22px] text-[9px] text-muted-foreground">
 						<Tooltip>
 							<TooltipTrigger asChild>
 								<span className="flex items-center gap-1">
-									<span className="flex size-3.5 items-center justify-center rounded-full bg-muted text-[7px] font-medium text-muted-foreground/80">
+									<span className="flex size-3.5 items-center justify-center rounded-full bg-muted text-[7px] font-medium text-muted-foreground">
 										{getAvatarInitials(
 											story.lastEditedAt
 												? story.lastEditedByName
@@ -361,7 +362,7 @@ function StoryTileImpl({
 											)}`}
 										</p>
 									) : (
-										<p className="text-muted-foreground/80">
+										<p className="text-muted-foreground">
 											No edit recorded yet
 										</p>
 									)}

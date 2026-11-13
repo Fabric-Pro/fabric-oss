@@ -20,8 +20,9 @@ name: Unit Tests
 # SHARDING. A 4-core runner must give each package four cores (see the tuning
 # history below), which means one Turbo task at a time — a serial sweep of the
 # whole monorepo. So the sweep is split across several runners instead (free
-# standard runners in the public repository, `ubuntu-8core-arm` in the private
-# one; see the note above the vitest job's runs-on). The `plan` job resolves
+# standard runners in the public repository; in the private one, Namespace's
+# 8-vCPU amd64 runner for pull requests and `ubuntu-8core-arm` for everything
+# else; see the note above the vitest job's runs-on). The `plan` job resolves
 # the affected package set and buckets it, and `vitest` fans out over that
 # bucketing. Buckets, deterministic so a re-run reproduces them exactly:
 #
@@ -32,7 +33,22 @@ name: Unit Tests
 #   @repo/api       1 shard
 #   @repo/temporal  2 shards, the same way (its single shard was the
 #                   critical path at ~620s, against ~340s for @repo/api)
-#   everything else 1 "rest" shard, 2 when more than 15 packages land in it
+#   everything else 1 "rest" shard, 2 when more than 15 packages land in it,
+#                   balanced by measured package test time (REST_SECONDS in
+#                   the planner); an alphabetical halving ran 169s / 86s
+#
+# A 16-vCPU runner was tried and dropped (PR #1939, November 2026, Namespace
+# amd64; "Run unit tests" times). Vitest runs one file's tests in sequence on
+# one worker, so a single slow file sets its package's wall clock however it
+# is sharded: the 246-test DocumentEditor.room-convergence suite (~261s) did,
+# and web ran ~114s / ~115s / 266s as 3 shards on 8 vCPU, 107s / 269s as 2 on
+# 16 vCPU, 312s as 1 on 16 vCPU. Splitting that suite into several files
+# (Fizzy #3560, PR #1940) brought web's 3 shards on 8 vCPU to 122s / 132s /
+# 137s, below the rest and temporal shards, so a bigger web runner no longer
+# shortens the run. Temporal as 1 shard on 16 vCPU ran 146s (against 135s /
+# 139s as 2 on 8 vCPU) and once timed out orchestrator-turn-cancellation-
+# workflow R1-6 at 120s. Before adding cores to a slow shard, check the
+# reporter for one long file.
 #
 # Those three are the heavy packages (~1758 test files between them, each
 # `vitest run`); the other ~33 are small. A bucket only exists when the plan
@@ -115,9 +131,10 @@ jobs:
     # Pushes only warm caches; reduced promotion runs reuse prior validation.
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (github.event_name != 'push')
-    # arm64: architecture-neutral (JS actions, paths-filter, pnpm/node; turbo
-    # ships @turbo/linux-arm64). The plan matrix is package names only.
-    runs-on: ubuntu-24.04-arm
+    # Architecture-neutral steps; private PRs use Namespace amd64,
+    # while other events retain the GitHub arm64 label.
+    # Private PRs alone use Namespace; see the vitest job in unit-tests.yml.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
     timeout-minutes: 10
     outputs:
       code: ${{ steps.filter.outputs.code }}
@@ -203,7 +220,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || steps.filter.outputs.code == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '24'
           check-latest: true
           # No `cache: 'pnpm'` on purpose: this job never installs, so it has
           # no store to save, and a save here would race the shards' own.
@@ -267,6 +284,48 @@ jobs:
           ];
           // Above this many small packages the rest bucket is split in two.
           const REST_SPLIT_ABOVE = 15;
+          // Measured test-task seconds for the rest packages that are not
+          // small (8-vCPU Namespace runner, run 42441525961, November 2026);
+          // any other package counts as REST_DEFAULT_SECONDS. The two rest
+          // shards are filled heaviest first, each package going to the
+          // lighter shard, so they finish close together. These weights
+          // only steer the balance: a stale or missing entry can make one
+          // shard slower, never skip a package. @fabricorg/cli is heavy
+          // because its vitest.config.ts runs one worker on purpose.
+          const REST_SECONDS = {
+            "@fabricorg/cli": 71,
+            "@repo/database": 37,
+            "@repo/utils": 15,
+            "@repo/rag": 13,
+            "@repo/ai": 13,
+            "@repo/integrations": 8,
+            "@repo/auth": 7,
+            "weave-readers": 7,
+            "weave-planners": 6,
+            "@repo/mail": 6,
+            "@repo/atlas": 6,
+            "@repo/mcp": 5,
+            "@fabricorg/sdk": 5,
+            "project-document-generator-agent": 5,
+          };
+          const REST_DEFAULT_SECONDS = 2;
+          const restSeconds = (p) => REST_SECONDS[p] ?? REST_DEFAULT_SECONDS;
+          const balanceInTwo = (pkgs) => {
+            const bins = [
+              { seconds: 0, pkgs: [] },
+              { seconds: 0, pkgs: [] },
+            ];
+            const order = [...pkgs].sort(
+              (a, b) =>
+                restSeconds(b) - restSeconds(a) || (a < b ? -1 : a > b ? 1 : 0),
+            );
+            for (const p of order) {
+              const bin = bins[0].seconds <= bins[1].seconds ? bins[0] : bins[1];
+              bin.seconds += restSeconds(p);
+              bin.pkgs.push(p);
+            }
+            return bins.map((b) => b.pkgs.sort());
+          };
 
           const shards = [];
           for (const [pkg, count] of HEAVY) {
@@ -290,10 +349,7 @@ jobs:
             rest.length === 0
               ? []
               : rest.length > REST_SPLIT_ABOVE
-                ? [
-                    rest.slice(0, Math.ceil(rest.length / 2)),
-                    rest.slice(Math.ceil(rest.length / 2)),
-                  ]
+                ? balanceInTwo(rest)
                 : [rest];
           chunks.forEach((chunk, i) => {
             shards.push({
@@ -439,9 +495,27 @@ jobs:
     # a label that does not exist leaves a job queued for 24 hours rather than
     # failing, so the public repository stays on `ubuntu-latest` — free and
     # unlimited there at 4 CPU / 16 GB. The private repository runs every
-    # shard on its provisioned `ubuntu-8core-arm` label: its standard runner
-    # has 2 CPU / 8 GB, below the four cores per package described above.
-    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 'ubuntu-8core-arm' || 'ubuntu-latest' }}
+    # shard on an 8-vCPU runner: its standard runner has 2 CPU / 8 GB, below
+    # the four cores per package described above.
+    #
+    # Pull requests run on the Namespace profile `namespace-profile-vitest-amd8`
+    # (amd64, 8 vCPU / 16 GB; November 2026): it ran the shards in about 75% of
+    # `ubuntu-8core-arm`'s job time at a lower per-minute price. Only the
+    # private repository has the Namespace GitHub App installed, which is what
+    # makes the label resolve; keep it behind the repository check.
+    #
+    # Every other event (pushes to `staging`, manual dispatches) stays on
+    # GitHub's `ubuntu-8core-arm`. A job's Actions cache writes are scoped to
+    # its ref: a pull request's entries are visible only to that pull request,
+    # but a `staging` run's entries are restored by every branch, including
+    # jobs that hold secrets. Keeping those runs on GitHub-hosted runners keeps
+    # the third-party runner out of the `staging` cache scope. On a pull
+    # request it can still write that pull request's entries, which other
+    # workflows on the same pull request restore (jev-pr-review.yml, which
+    # holds an API key, among them); the pull request's own code can already
+    # do that, so what this adds is trust in Namespace's infrastructure.
+    # The check allows the one event by name, so a new trigger lands on GitHub.
+    runs-on: ${{ github.repository != 'Fabric-Pro/fabric-dev' && 'ubuntu-latest' || (github.event_name == 'pull_request' && 'namespace-profile-vitest-amd8' || 'ubuntu-8core-arm') }}
     timeout-minutes: 30
     env:
       # Placeholder so @repo/database's prisma singleton, which throws at
@@ -475,7 +549,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '24'
           check-latest: true
 
       # Persist Turbo's local cache (.turbo/cache) across runs — the
@@ -645,7 +719,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '24'
           check-latest: true
 
       - name: Install dependencies
@@ -735,11 +809,11 @@ jobs:
     needs: [plan, promotion_policy]
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.plan.outputs.filter_result == 'success' && (github.event_name != 'push' && (github.event_name != 'pull_request' || needs.plan.outputs.migrations == 'true'))
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-latest' }}
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:16
+        image: public.ecr.aws/docker/library/postgres:16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -772,7 +846,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '24'
           check-latest: true
 
       - name: Install dependencies
@@ -844,7 +918,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '24'
           check-latest: true
 
       - name: Restore Turbo cache
@@ -934,7 +1008,7 @@ jobs:
         if: startsWith(steps.playwright.outputs.image, 'ubuntu24-') && steps.playwright-apt.outputs.cache-hit != 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Download Chromium system packages
         id: playwright-apt-download
@@ -976,9 +1050,9 @@ jobs:
     # other PRs use the fail-closed aggregate below.
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (always() && github.event_name != 'push')
-    # arm64: this aggregate only runs bash and `gh api` — no checkout, no
-    # compiled binaries.
-    runs-on: ubuntu-24.04-arm
+    # Architecture-neutral steps; private PRs use Namespace amd64,
+    # while other events retain the GitHub arm64 label.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
     env:
       EVENT_NAME: ${{ github.event_name }}
       CHANGES_RESULT: ${{ needs.plan.outputs.filter_result }}

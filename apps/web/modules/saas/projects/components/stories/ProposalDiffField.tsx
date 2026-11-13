@@ -133,7 +133,7 @@ export function ProposalDiffField({
 			<span className="font-medium text-muted-foreground">{label}:</span>
 			<div className="ml-2">
 				{removed ? (
-					<span className="line-through text-destructive/70">
+					<span className="line-through text-destructive">
 						{removed}
 					</span>
 				) : null}

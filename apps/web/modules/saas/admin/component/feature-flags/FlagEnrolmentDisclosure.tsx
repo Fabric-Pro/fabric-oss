@@ -93,7 +93,7 @@ export function FlagEnrolmentDisclosure({ flagKey }: { flagKey: string }) {
 							aria-hidden="true"
 							className={
 								organization.enabled
-									? "size-1.5 shrink-0 rounded-full bg-secondary"
+									? "size-1.5 shrink-0 rounded-full bg-success"
 									: "size-1.5 shrink-0 rounded-full bg-destructive"
 							}
 						/>

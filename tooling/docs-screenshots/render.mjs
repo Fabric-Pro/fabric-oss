@@ -14,7 +14,7 @@
  * publishing anybody's data.
  *
  * Fonts are fetched once into `.fonts/` (gitignored) so the type metrics match
- * the app's `next/font` Inter and JetBrains Mono rather than a host fallback.
+ * the app's `next/font` Inter and IBM Plex Mono rather than a host fallback.
  * The render FAILS if Inter did not load; a silent fallback would ship a
  * screenshot that looks subtly unlike the product.
  */
@@ -49,6 +49,8 @@ const imagesDir = path.join(repoRoot, "apps/web/public/images/docs");
 /** The folder under `images/docs/` a mock's images go to, when it is not `qa`. */
 const OUTPUT_FOLDERS = {
 	parlume: "parlume",
+	"newsletter-images": "newsletter",
+	"time-tracking": "time-tracking",
 };
 
 /**
@@ -63,18 +65,23 @@ const SHOTS = {
 		["#shot-connect", "coding-instructions-connect.png"],
 		["#shot-memory", "coding-instructions-memory.png"],
 		["#shot-edit", "coding-instructions-edit.png"],
+		["#shot-git-file-restore", "coding-instructions-git-file-restore.png"],
 	],
 	"pr-review": [
 		["#shot-panel", "pr-review-panel.png"],
 		["#shot-sheet", "pr-review-diff.png"],
 	],
 	"qa-strategy-depth": [["#shot-depth", "qa-strategy-depth.png"]],
+	"qa-cases-segment": [["#shot-cases", "qa-cases-segment.png"]],
+	"qa-feature-testing-tab": [
+		["#shot-feature-testing", "qa-feature-testing-tab.png"],
+	],
 	"sprint-story-review": [["#shot-report", "sprint-story-review-report.png"]],
 	"workflow-approval-card": [
 		["#shot-approval", "workflow-approval-card.png"],
 	],
 	"qa-surfaces": [
-		["#shot-cases", "qa-cases-segment.png"],
+		["#shot-filters", "qa-cases-filters.png"],
 		["#shot-findings", "qa-ci-findings.png"],
 	],
 	"qa-gates": [
@@ -91,17 +98,33 @@ const SHOTS = {
 		["#shot-live", "parlume-live-session.png"],
 		["#shot-chat", "parlume-meeting-chat.png"],
 	],
+	"time-tracking": [
+		["#shot-my-time", "my-time.png"],
+		["#shot-duplicate", "duplicate-question.png"],
+		["#shot-timer", "timer-panel.png"],
+		["#shot-stop-question", "timer-stop-question.png"],
+		["#shot-to-confirm", "to-confirm.png"],
+		["#shot-project-settings", "project-settings.png"],
+		["#shot-org-report", "organization-report.png"],
+		["#shot-report-filters", "report-filters.png"],
+	],
 	"fabric-agents-delegation": [
 		["#shot-server-picker", "fabric-agents-server-picker.png"],
 		["#shot-start-run", "fabric-agents-start-run-dialog.png"],
 		["#shot-live-webui", "fabric-agents-live-portal-webui.png"],
 		["#shot-ai-providers", "fabric-agents-ai-providers.png"],
 	],
+	"newsletter-images": [
+		["#shot-settings", "newsletter-images-setting.png"],
+		["#shot-review", "newsletter-review-images.png"],
+		["#shot-image", "newsletter-image-dialog.png"],
+	],
 };
 
 const GOOGLE_FONTS_CSS =
 	"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600" +
-	"&family=JetBrains+Mono:wght@400&display=swap";
+	// The app's --font-mono (Document.tsx loads IBM Plex Mono 400 and 500).
+	"&family=IBM+Plex+Mono:wght@400;500&display=swap";
 // Google serves woff2 only to a browser-like UA; anything else gets ttf.
 const BROWSER_UA =
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +

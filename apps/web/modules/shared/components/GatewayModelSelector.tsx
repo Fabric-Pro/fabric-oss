@@ -118,7 +118,7 @@ export function GatewayModelSelector({
 					No AI gateway configured.{" "}
 					<a
 						href={aiProvidersPath}
-						className="underline text-primary hover:text-primary/80"
+						className="underline text-primary hover:text-primary-hover"
 					>
 						Configure
 					</a>
@@ -146,7 +146,7 @@ export function GatewayModelSelector({
 					No models available. Check your{" "}
 					<a
 						href={aiProvidersPath}
-						className="underline text-primary hover:text-primary/80"
+						className="underline text-primary hover:text-primary-hover"
 					>
 						enabled providers
 					</a>

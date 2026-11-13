@@ -505,5 +505,72 @@ describe("fitting the analysis prompt to the chosen model", () => {
 			).toBe(prompt);
 			expect(rebuild).not.toHaveBeenCalled();
 		});
+
+		it("keeps the pull request facts whole while the pull requests are cut", () => {
+			const pullRequestFacts = {
+				since: "2026-08-06T00:00:00.000Z",
+				until: "2026-11-06T00:00:00.000Z",
+				read: 500,
+				merged: 500,
+				withoutMergeDate: 0,
+				firstMergedAt: "2026-08-06T10:00:00.000Z",
+				lastMergedAt: "2026-11-05T10:00:00.000Z",
+				openToMergeMinutes: { median: 42, p90: 600 },
+			};
+			const prompt = fit(5_000, {
+				search_pull_requests: cards,
+				_pull_request_facts: pullRequestFacts,
+			});
+
+			expect(prompt.length).toBeLessThanOrEqual(5_000);
+			expect(
+				listedIn(prompt, "agentic_search_pull_requests").length,
+			).toBeLessThan(500);
+			expect(prompt).toContain(JSON.stringify(pullRequestFacts));
+		});
+	});
+});
+
+describe("buildDirectContextPrompt pull request facts", () => {
+	const facts = {
+		since: "2026-08-06T00:00:00.000Z",
+		until: "2026-11-06T00:00:00.000Z",
+		read: 718,
+		merged: 718,
+		withoutMergeDate: 0,
+		firstMergedAt: "2026-08-06T10:00:00.000Z",
+		lastMergedAt: "2026-11-05T10:00:00.000Z",
+		openToMergeMinutes: { median: 42, p90: 600 },
+	};
+
+	it("states the facts ahead of the task and not among the data sources", () => {
+		const prompt = buildDirectContextPrompt(
+			"Task",
+			resultsFrom({
+				search_pull_requests: [{ number: 1, title: "Example change" }],
+				_pull_request_facts: facts,
+			}),
+			{},
+		);
+
+		expect(prompt.startsWith("## Pull Request Facts (authoritative)")).toBe(
+			true,
+		);
+		expect(prompt).toContain(
+			"`merged` counts the pull requests merged from 2026-08-06T00:00:00.000Z to 2026-11-06T00:00:00.000Z",
+		);
+		expect(prompt).toContain(JSON.stringify(facts));
+		expect(prompt).not.toContain("Data from agentic__pull_request_facts");
+		expect(prompt).toContain("Data from agentic_search_pull_requests");
+	});
+
+	it("adds nothing when the run read no pull requests", () => {
+		const prompt = buildDirectContextPrompt(
+			"Task",
+			resultsFrom({ list_releases: [{ id: 1 }] }),
+			{},
+		);
+
+		expect(prompt).not.toContain("Pull Request Facts");
 	});
 });

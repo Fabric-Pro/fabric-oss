@@ -2595,21 +2595,112 @@ export const MODELS: ModelSeedData[] = [
 		],
 	},
 	{
+		canonicalName: "gpt-image-2.6-sunburst",
+		displayName: "GPT Image 2.6 Sunburst",
+		description: "Image generation and editing for detailed visual work",
+		family: "gpt-image",
+		vendor: "OpenAI",
+		capabilities: ["IMAGE"],
+		contextWindow: 4000,
+		speedTier: "BALANCED",
+		qualityTier: "PREMIUM",
+		inputCostPer1M: 5,
+		outputCostPer1M: 30,
+		suitableForTasks: ["IMAGE"],
+		providerMappings: [
+			{
+				provider: "OPENAI_DIRECT",
+				providerModelId: "gpt-image-2.6-sunburst",
+			},
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/gpt-image-2.6-sunburst",
+				inputCostPer1M: 5,
+				outputCostPer1M: 30,
+			},
+		],
+	},
+	{
+		canonicalName: "gpt-image-2.6-flare",
+		displayName: "GPT Image 2.6 Flare",
+		description: "Image generation and editing for fast iteration",
+		family: "gpt-image",
+		vendor: "OpenAI",
+		capabilities: ["IMAGE"],
+		contextWindow: 4000,
+		speedTier: "FAST",
+		qualityTier: "STANDARD",
+		inputCostPer1M: 5,
+		outputCostPer1M: 30,
+		suitableForTasks: ["IMAGE"],
+		providerMappings: [
+			{
+				provider: "OPENAI_DIRECT",
+				providerModelId: "gpt-image-2.6-flare",
+			},
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/gpt-image-2.6-flare",
+				inputCostPer1M: 5,
+				outputCostPer1M: 30,
+			},
+		],
+	},
+	{
+		// Preserve the seeded row identity used by defaults and preferences.
 		canonicalName: "gemini-3.1-flash-image-preview",
-		displayName: "Nano Banana Fast (Gemini 3.1 Flash Image)",
+		displayName: "Nano Banana 2 (Gemini 3.1 Flash Image)",
 		description:
 			"Google's fast image generation model via Vercel AI Gateway. Supports text-to-image and image editing.",
 		family: "gemini",
 		vendor: "Google",
 		capabilities: ["IMAGE"],
-		contextWindow: 8192,
+		contextWindow: 131072,
 		speedTier: "FAST",
 		qualityTier: "STANDARD",
 		suitableForTasks: ["IMAGE"],
 		providerMappings: [
 			{
 				provider: "VERCEL_GATEWAY",
-				providerModelId: "google/gemini-3.1-flash-image-preview",
+				providerModelId: "google/gemini-3.1-flash-image",
+			},
+		],
+	},
+	{
+		canonicalName: "gemini-nano-banana-2.1",
+		displayName: "Nano Banana 2.1",
+		description:
+			"Google image generation recommended for new projects, with editing using up to 14 reference images.",
+		family: "gemini",
+		vendor: "Google",
+		capabilities: ["IMAGE"],
+		contextWindow: 131072,
+		speedTier: "FAST",
+		qualityTier: "PREMIUM",
+		suitableForTasks: ["IMAGE"],
+		providerMappings: [
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "google/gemini-nano-banana-2.1",
+			},
+		],
+	},
+	{
+		canonicalName: "gemini-3.1-flash-lite-image",
+		displayName: "Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image)",
+		description:
+			"Google's fastest, cheapest image model for simple generation; not optimized for multiple reference images or multi-turn editing.",
+		family: "gemini",
+		vendor: "Google",
+		capabilities: ["IMAGE"],
+		contextWindow: 65536,
+		speedTier: "FAST",
+		qualityTier: "STANDARD",
+		suitableForTasks: ["IMAGE"],
+		providerMappings: [
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "google/gemini-3.1-flash-lite-image",
 			},
 		],
 	},
@@ -2809,7 +2900,7 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	// IMAGE Tasks
 	// ============================================================================
 	...createTaskDefaults("IMAGE", "MEDIUM", {
-		VERCEL_GATEWAY: "gemini-3.1-flash-image-preview",
+		VERCEL_GATEWAY: "gemini-nano-banana-2.1",
 		OPENAI_DIRECT: "dall-e-3",
 	}),
 

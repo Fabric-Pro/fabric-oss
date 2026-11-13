@@ -3192,9 +3192,14 @@ export function createUnifiedServer(
 							const streamReplies =
 								c.req.header("X-Fabric-Reply-Transport") ===
 								"in-request-v1";
+							// Written after the request body is merged in, so a
+							// body cannot remove or replace either key; graphs
+							// read `fabric_transport` to refuse what an AG-UI
+							// (CopilotKit chat) run may not do.
 							runtimeConfig.configurable = {
 								...runtimeConfig.configurable,
 								reply_streaming: streamReplies,
+								fabric_transport: "ag-ui",
 							};
 
 							const generator = platformStreamAgent(
@@ -4472,6 +4477,7 @@ export function createUnifiedServer(
 				serviceName: config.name,
 				serviceVersion: "1.0.0",
 				environment: process.env.NODE_ENV,
+				registerShutdownHooks: false,
 			});
 		} catch (error) {
 			console.warn(
@@ -4495,11 +4501,28 @@ export function createUnifiedServer(
 			"[UnifiedServer] A2A endpoints: /.well-known/agent.json, /a2a/send, /health",
 		);
 
-		serve({
+		let registerShutdown:
+			| typeof import("@repo/observability/http-server").registerHttpServerShutdown
+			| undefined;
+		try {
+			({ registerHttpServerShutdown: registerShutdown } = await import(
+				"@repo/observability/http-server"
+			));
+		} catch (error) {
+			console.warn(
+				"[UnifiedServer] Could not load graceful shutdown:",
+				error instanceof Error ? error.message : error,
+			);
+		}
+
+		const server = serve({
 			fetch: app.fetch,
 			hostname: host,
 			port: config.port,
 		});
+
+		// Drain in-flight requests and flush telemetry before Azure's 30s grace period ends.
+		registerShutdown?.(server, undefined, { deadlineMs: 25_000 });
 	};
 
 	return { app, start };

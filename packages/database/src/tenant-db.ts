@@ -67,6 +67,7 @@ const PER_USER_ORG_TABLES = new Set([
 	"BrowserTask", // A user's browser-automation jobs
 	"AgentConversation", // A user's conversation with an agent
 	"ConversationTurn", // One Advisor chat turn of a user's conversation
+	"AdvisorToolResult", // Owner snapshot within a conversation
 	"ConversationTurnEvent", // Replay output belongs to the same member and turn
 	"EpisodicMemory", // A user's Advisor conversation summaries
 	"OrchestratorMemoryPreferences", // Includes the user's learned patterns
@@ -77,6 +78,7 @@ const PER_USER_ORG_TABLES = new Set([
 	"ProjectUserPreference", // Per-user-per-project settings
 	"CliConnectionPromptDismissal", // One person's dismissal of the CLI connection prompt
 	"ChatGptPlanOrgUse", // One person's choice to use their ChatGPT plan in an org
+	"TimeTrackingPreference", // One person's timer widget and reminder choices in an org
 ]);
 
 /**
@@ -121,6 +123,19 @@ const SCOPE_ORG_VALUE: Record<string, string> = {
  */
 const USER_OWNED_TABLES = new Set([
 	"TodoItem", // #2340 consolidated To Do list
+	// Logged time. Organization-wide here so reports can read every member's
+	// rows; the time-tracking queries narrow to the author by userId.
+	"TimeEntry",
+	// Time suggestions, their evidence and their generation runs: personal to
+	// their owner, who the time-tracking queries narrow every read to.
+	"TimeSuggestion",
+	"TimeSuggestionEvidence",
+	"TimeSuggestionRun",
+	// A member's running timer, its segments and the outcome of a stopped
+	// one: personal, narrowed to the owner by userId in the queries.
+	"TimeTimer",
+	"TimeTimerSegment",
+	"TimeTimerStop",
 	"Agent",
 	"AgentTask",
 	"RegisteredAgentSuggestion", // Agent curation suggestions for USER/ORG agents
@@ -145,6 +160,8 @@ const USER_OWNED_TABLES = new Set([
 	"ProjectInstructionProposalBranch", // Member proposal branches (Fizzy #2738)
 	"ProjectInstructionsAccessGrant", // Members' read access to the instructions repository
 	"ProjectInstructionProposalApproval", // Per-reviewer approvals of upload-mode proposals
+	"ProjectInstructionSet", // Named Coding Instructions sets (spec 2026-11-11)
+	"ProjectInstructionSetRepository", // Code repositories assigned to a set
 	"ProjectDocument", // Project documents
 	"ProjectContext", // Project context files / RAG contexts
 	"DeletedMeetingArchive", // 7-day recovery window for unlinked meetings (#2355)
@@ -213,6 +230,7 @@ const USER_OWNED_TABLES = new Set([
 	"PublishingTopicWorkingDraft", // Publishing Suite user-owned working drafts - tenant XOR + projectId
 	"PublishingTopicAnalysisRevision", // Publishing Suite user-owned analysis prose - tenant XOR + projectId
 	"PublishingTopicDraftRevision", // Publishing Suite user-owned draft prose history - tenant XOR + projectId
+	"NewsletterSendImage", // Review images of a held release-notes send - tenant XOR + projectId
 	// Note: TestResultEvent (run-result history) is a columnless child of TestCase and
 	// is intentionally NOT registered in any category here — injecting an
 	// organizationId/userId filter would make Prisma throw "Unknown argument". Tenant
@@ -223,6 +241,8 @@ const USER_OWNED_TABLES = new Set([
 	"ProjectLinkedMeeting", // Linked meetings for transcript sync
 	"ProjectMeetingTranscript", // Synced meeting transcript tracking
 	"ProjectMeetingAgenda", // Pre-meeting agendas (#1901); RLS-registered user_owned like its siblings
+	"ProjectTranscriptFolder", // OneDrive transcript folders (#3507); user_owned like linked meetings
+	"ProjectTranscriptFolderFile", // Files seen in those folders (#3507)
 	"ParlumeMeetingSession", // Project-scoped Teams bot lifecycle
 	"ParlumeChannelPost",
 	"ParlumeSuggestion", // Unprompted suggestions and recaps, listed on the Parlume page
@@ -384,6 +404,10 @@ const ORG_ONLY_TABLES = new Set([
 const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectRemoteAgentServer: "projectId",
 	TodoItem: "projectId",
+	TimeEntry: "projectId",
+	TimeSuggestion: "projectId",
+	TimeSuggestionEvidence: "projectId",
+	TimeTimer: "projectId",
 	Project: "__id__",
 	ProjectDocument: "projectId",
 	ProjectContext: "projectId",
@@ -415,6 +439,8 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	DeletedMeetingArchive: "projectId",
 	ProjectMeetingTranscript: "projectId",
 	ProjectMeetingAgenda: "projectId",
+	ProjectTranscriptFolder: "projectId",
+	ProjectTranscriptFolderFile: "projectId",
 	ParlumeMeetingSession: "projectId",
 	ParlumeChannelPost: "projectId",
 	ParlumeSuggestion: "projectId",
@@ -442,6 +468,8 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectInstructionProposalBranch: "projectId",
 	ProjectInstructionsAccessGrant: "projectId",
 	ProjectInstructionProposalApproval: "projectId",
+	ProjectInstructionSet: "projectId",
+	ProjectInstructionSetRepository: "projectId",
 	UserStory: "projectId",
 	TestCase: "projectId",
 	TestPlan: "projectId",
@@ -475,6 +503,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	PublishingTopicWorkingDraft: "projectId",
 	PublishingTopicAnalysisRevision: "projectId",
 	PublishingTopicDraftRevision: "projectId",
+	NewsletterSendImage: "projectId",
 	Epic: "projectId",
 	Feature: "projectId",
 	DiscoveryRun: "projectId",

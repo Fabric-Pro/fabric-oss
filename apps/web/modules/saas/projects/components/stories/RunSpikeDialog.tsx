@@ -187,7 +187,7 @@ export function RunSpikeDialog({
 						<div className="min-w-0 flex-1 space-y-2 pr-8">
 							<Badge
 								variant="outline"
-								className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary"
+								className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary-active"
 							>
 								{t("kindBadge")}
 							</Badge>
@@ -326,7 +326,7 @@ export function RunSpikeDialog({
 								{t("runSpike.featureLabel")}
 							</p>
 							<p className="mt-2 truncate text-sm font-medium text-foreground">
-								<span className="mr-2 rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] text-primary">
+								<span className="mr-2 rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] text-primary-active">
 									{story.identifier}
 								</span>
 								{story.title}

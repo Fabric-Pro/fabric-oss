@@ -386,7 +386,7 @@ export function ProjectEnvironmentsSettings({
 																c.environmentId ===
 																env.id,
 														)?.hasSecret
-															? "size-4 text-secondary"
+															? "size-4 text-success"
 															: "size-4"
 													}
 													aria-hidden="true"

@@ -19,10 +19,11 @@
  * included), EXCEPT:
  *  - the first argument of a resolver or verifier that refuses a wrong
  *    organization: `resolveOrganizationId`, `resolveOrganizationIdForCaller`,
- *    `resolveSourceCredentialOrganizationId`, `resolveProjectOrganizationId`,
- *    `assertInputOrgMatchesProject`, `requireOrganizationMembership`,
- *    `requireOrganizationAdmin`, `getOrganizationMembership` — and the second
- *    of `authorizeInputOrganization`;
+ *    `resolveNotificationOrganization`, `resolveSourceCredentialOrganizationId`,
+ *    `resolveProjectOrganizationId`, `assertInputOrgMatchesProject`,
+ *    `requireOrganizationMembership`, `requireOrganizationAdmin`,
+ *    `getOrganizationMembership` — and the second of
+ *    `authorizeInputOrganization`;
  *  - `clientOrganizationId: <it>` — the publishing suite's guard convention,
  *    where the query layer compares it with the project row and throws;
  *  - a comparison (`===`, `!==`, `==`, `!=`), a negation, a bare `if` test or
@@ -85,6 +86,7 @@ const SANCTIONED_FIRST_ARG = new Set([
 	"resolveBoundOrganization",
 	"resolveOrganizationId",
 	"resolveOrganizationIdForCaller",
+	"resolveNotificationOrganization",
 	"resolveSourceCredentialOrganizationId",
 	"resolveProjectOrganizationId",
 	"assertInputOrgMatchesProject",
@@ -826,6 +828,10 @@ describe("input-org raw-consumer ratchet (Fizzy #2904)", () => {
 			[
 				"the project-organization resolver on a destructured binding",
 				"const { projectId, organizationId: requested } = input;\nconst organizationId = await resolveProjectOrganizationId(requested, projectId);",
+			],
+			[
+				"the notification organization resolver",
+				"const organizationId = await resolveNotificationOrganization(input.organizationId, context);\nawait write(organizationId);",
 			],
 			[
 				"a guard comparison",

@@ -154,6 +154,7 @@ export interface TranscriptListingRequest {
  */
 export async function listProjectMeetingTranscripts(
 	request: TranscriptListingRequest,
+	onReadSucceeded?: () => void,
 ): Promise<TranscriptListing> {
 	const { projectId, userId, organizationId, filters } = request;
 	const { hasProjectAccess, listMeetingTranscriptsByDate } = await import(
@@ -178,6 +179,7 @@ export async function listProjectMeetingTranscripts(
 		...(filters.limit ? { limit: filters.limit } : {}),
 	});
 
+	onReadSucceeded?.();
 	if (result.items.length === 0) {
 		return {
 			response:

@@ -160,7 +160,7 @@ export function ContextSummaryPageView({ summary, backHref }: Props) {
 								</>
 							)}
 						</div>
-						<p className="text-muted-foreground/80 text-xs">
+						<p className="text-muted-foreground text-xs">
 							A read-only, AI-generated compression of this
 							project's older context. The raw sources remain
 							available on the Context tab.

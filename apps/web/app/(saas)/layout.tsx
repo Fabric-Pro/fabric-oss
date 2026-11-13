@@ -10,8 +10,11 @@ import { ActiveOrganizationProvider } from "@saas/organizations/components/Activ
 import { organizationListQueryKey } from "@saas/organizations/lib/api";
 import { AiUsageLimitQueryErrorListener } from "@saas/payments/lib/ai-usage-limit-query-error-listener";
 import { ConfirmationAlertProvider } from "@saas/shared/components/ConfirmationAlertProvider";
+import { ContrastPreferenceProvider } from "@saas/shared/components/ContrastPreferenceProvider";
+import { ContrastPreferenceScript } from "@saas/shared/components/ContrastPreferenceScript";
 import { CopilotFetchErrorInterceptor } from "@saas/shared/components/copilot/CopilotFetchErrorInterceptor";
 import { measureCatalogRequestPhase } from "@saas/shared/lib/catalog-request-timing";
+import { sessionContrastPreference } from "@saas/shared/lib/session-contrast-preference";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { getServerQueryClient } from "@shared/lib/server";
 import { dehydrate, HydrationBoundary } from "@tanstack/react-query";
@@ -34,6 +37,10 @@ export default async function SaaSLayout({ children }: PropsWithChildren) {
 	if (!session) {
 		redirect(loginPathReturningTo((await headers()).get(RETURN_TO_HEADER)));
 	}
+
+	// High-contrast theme (Fizzy #1444): the account's choice, resolved and
+	// painted before any app content (see sessionContrastPreference).
+	const contrastPreference = sessionContrastPreference(session.user);
 
 	const queryClient = getServerQueryClient();
 
@@ -82,32 +89,42 @@ export default async function SaaSLayout({ children }: PropsWithChildren) {
 
 	return (
 		<NextIntlClientProvider locale={locale} messages={messages}>
+			{/* First, so the class is on <html> before any app content parses. */}
+			<ContrastPreferenceScript
+				preference={contrastPreference}
+				userId={session.user.id}
+			/>
 			<HydrationBoundary state={dehydrate(queryClient)}>
-				<SessionProvider>
-					<ActiveOrganizationProvider>
-						<ConfirmationAlertProvider>
-							<CopilotFetchErrorInterceptor />
-							{/*
-							 * Global AI-usage-limit toast listener — must
-							 * sit inside NextIntlClientProvider because it
-							 * calls useTranslations. Subscribes to
-							 * QueryCache + MutationCache `error` events
-							 * across every oRPC-mediated AI surface
-							 */}
-							<AiUsageLimitQueryErrorListener />
-							{/*
-							 * The persistent AI-usage-limit warning banner
-							 * is mounted INSIDE `AppWrapper` (modules/saas/
-							 * shared/components/AppWrapper.tsx) so it sits
-							 * in the sidebar-offset content area instead of
-							 * overlapping the fixed NavBar — keep the toast
-							 * listener at the layout level (no offset
-							 * needed) but the banner lives one layer in.
-							 */}
-							{children}
-						</ConfirmationAlertProvider>
-					</ActiveOrganizationProvider>
-				</SessionProvider>
+				<ContrastPreferenceProvider
+					initialPreference={contrastPreference}
+					userId={session.user.id}
+				>
+					<SessionProvider>
+						<ActiveOrganizationProvider>
+							<ConfirmationAlertProvider>
+								<CopilotFetchErrorInterceptor />
+								{/*
+								 * Global AI-usage-limit toast listener — must
+								 * sit inside NextIntlClientProvider because it
+								 * calls useTranslations. Subscribes to
+								 * QueryCache + MutationCache `error` events
+								 * across every oRPC-mediated AI surface
+								 */}
+								<AiUsageLimitQueryErrorListener />
+								{/*
+								 * The persistent AI-usage-limit warning banner
+								 * is mounted INSIDE `AppWrapper` (modules/saas/
+								 * shared/components/AppWrapper.tsx) so it sits
+								 * in the sidebar-offset content area instead of
+								 * overlapping the fixed NavBar — keep the toast
+								 * listener at the layout level (no offset
+								 * needed) but the banner lives one layer in.
+								 */}
+								{children}
+							</ConfirmationAlertProvider>
+						</ActiveOrganizationProvider>
+					</SessionProvider>
+				</ContrastPreferenceProvider>
 			</HydrationBoundary>
 		</NextIntlClientProvider>
 	);

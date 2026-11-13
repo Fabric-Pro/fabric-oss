@@ -958,18 +958,18 @@ describe("PmSyncCloudToggle — showLabel pill (workspace + sheet)", () => {
 		expect(screen.getByRole("button").textContent).toContain("Not synced");
 	});
 
-	it("uses the emerald 'text-secondary' token in the synced state for theme-safe visibility", () => {
+	it("uses the green 'text-success' token in the synced state for theme-safe visibility", () => {
 		renderToggle({
 			pmAutoSyncEnabled: true,
 			externalId: "EXT-1",
 			hasPmIntegration: true,
 			// icon-only — bumped visibility applies on every surface.
 		});
-		// Token-based assertion: the class name carries `text-secondary`,
-		// which resolves to the emerald `--secondary` CSS variable in both
+		// Token-based assertion: the class name carries `text-success`,
+		// which resolves to the green `--success` CSS variable in both
 		// light + dark themes. Replaces the old `text-muted-foreground/40`
 		// fade that the user flagged as too dim.
-		expect(screen.getByRole("button").className).toMatch(/text-secondary/);
+		expect(screen.getByRole("button").className).toMatch(/text-success/);
 	});
 });
 

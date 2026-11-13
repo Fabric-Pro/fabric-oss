@@ -133,7 +133,7 @@ const CROSS_EDGE_KINDS: SystemCrossEdgeKind[] = [
 const CROSS_EDGE_COLOR: Record<SystemCrossEdgeKind, string> = {
 	CALLS_API: "var(--primary)",
 	DEPENDS_ON: "var(--highlight)",
-	SHARES_LIBRARY: "var(--secondary)",
+	SHARES_LIBRARY: "var(--success)",
 	RELATES_TO: "var(--muted-foreground)",
 };
 

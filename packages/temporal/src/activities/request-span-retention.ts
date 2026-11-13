@@ -28,6 +28,7 @@ import {
 	purgeExpiredConversationTurnEvents,
 	purgeExpiredMcpDurableToolCalls,
 } from "@repo/database";
+import { advisorToolResultStorage } from "@repo/database/prisma/queries/advisor-tool-results";
 import { logger } from "@repo/logs";
 
 /** Batch size per DELETE statement. */
@@ -101,6 +102,24 @@ export async function purgeExpiredRequestSpansActivity(): Promise<PurgeExpiredRe
 	} catch {
 		logger.warn(
 			"[ChatReplayRetention] Expired-output purge failed; continuing request-span retention",
+		);
+	}
+
+	// Owner snapshots have a fixed two-day TTL, independent of span retention.
+	try {
+		for (let batch = 0; batch < MAX_BATCHES; batch++) {
+			if ((await advisorToolResultStorage.deleteExpired()) === 0) {
+				break;
+			}
+			if (batch === MAX_BATCHES - 1) {
+				logger.warn(
+					"[AdvisorResultRetention] Expired-result purge reached its batch limit",
+				);
+			}
+		}
+	} catch {
+		logger.warn(
+			"[AdvisorResultRetention] Expired-result purge failed; continuing request-span retention",
 		);
 	}
 	const retentionDays = readRetentionDays();

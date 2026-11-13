@@ -22,7 +22,10 @@ import {
 	contextContentHashOrNull,
 	hashContextContent,
 } from "./context-content-hash";
-import { normalizeContextSourcePathPrefix } from "./context-source-path";
+import {
+	escapeLikeLiteral,
+	normalizeContextSourcePathPrefix,
+} from "./context-source-path";
 import { LINKED_MEETING_SOURCE } from "./meeting-transcripts";
 import { createPendingVectorCleanup } from "./pending-vector-cleanup";
 import { getProjectRagSettings } from "./rag-settings";
@@ -706,20 +709,6 @@ export async function getProjectForDownload(
 			name: true,
 		},
 	});
-}
-
-/**
- * Escape SQL `LIKE` metacharacters so a string matches only itself.
- *
- * Prisma passes a `startsWith` value into `LIKE $n` verbatim — checked
- * with Prisma 6.18's query compiler, where
- * `startsWith: "a_b%/"` becomes `"sourcePath"::text LIKE $2` with
- * `$2 = 'a_b%/%'` — so an unescaped `_` or `%` in a folder name would act
- * as a wildcard. Backslash is Postgres's default `LIKE` escape character,
- * so it goes first.
- */
-function escapeLikeLiteral(value: string): string {
-	return value.replace(/[\\%_]/g, "\\$&");
 }
 
 /** How many leading characters of a context's text a list row carries. */

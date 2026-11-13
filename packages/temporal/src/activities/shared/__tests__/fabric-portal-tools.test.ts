@@ -146,9 +146,19 @@ describe("which portal tools the model is given", () => {
 			"fabric_cancel_context_quality_run",
 			"fabric_compare_context_quality_runs",
 		];
+		// Plus the four Coding Instructions set-management tools.
+		const instructionSetTools = [
+			"fabric_list_instruction_sets",
+			"fabric_create_instruction_set",
+			"fabric_update_instruction_set",
+			"fabric_delete_instruction_set",
+		];
 		expect(FABRIC_PORTAL_TOOL_NAMES).toHaveLength(
-			41 + savedEvaluationTools.length + 2,
+			41 + savedEvaluationTools.length + 2 + instructionSetTools.length,
 		);
+		for (const name of instructionSetTools) {
+			expect(FABRIC_PORTAL_TOOL_NAMES).toContain(name);
+		}
 		expect(
 			FABRIC_PORTAL_TOOL_NAMES.filter((name) =>
 				savedEvaluationTools.includes(name),
@@ -342,6 +352,7 @@ describe("needsFabricPortalTools", () => {
 		"how many open bugs are there",
 		"file a bug for the login crash",
 		"create a feature for dark mode",
+		"set up the sprint board",
 	])("does not ask for the portal tools: %s", (message) => {
 		expect(needsFabricPortalTools(message)).toBe(false);
 	});
@@ -364,6 +375,9 @@ describe("needsFabricPortalTools", () => {
 		"which organizations am I in",
 		"show me my recent chats",
 		"which connected servers are there",
+		"create a set for the web and api repos",
+		"add the ios repository to the mobile set",
+		"rename the rule set",
 	])("asks for the portal tools: %s", (message) => {
 		expect(needsFabricPortalTools(message)).toBe(true);
 	});

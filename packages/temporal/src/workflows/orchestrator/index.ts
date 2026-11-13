@@ -1,4 +1,9 @@
 import { CALL_TOOL_PATCH } from "./advisor-call-tool";
+import {
+	advisorResultReadsEnabled,
+	recordedResultForPresentation,
+} from "./advisor-result-read";
+import { advisorResultReuseEnabled } from "./advisor-result-reuse";
 /**
  * Orchestrator Workflow - Modular Implementation
  *
@@ -610,6 +615,14 @@ async function runOrchestratorExecution(
 	if (input.toolLoadingMode === "call_tool" && patched(CALL_TOOL_PATCH)) {
 		state.advisorCallToolMode = true;
 	}
+	state.advisorResultReadsEnabled =
+		usesIterativeExecution(input.executionMode) &&
+		advisorResultReadsEnabled(input, patched);
+	state.advisorResultReuseEnabled = advisorResultReuseEnabled(
+		input,
+		state.advisorResultReadsEnabled,
+		patched,
+	);
 	const boundedHistoryMarker = patched(BOUNDED_HISTORY_PATCH);
 	state.advisorBoundedHistoryEnabled =
 		usesIterativeExecution(input.executionMode) &&
@@ -1472,7 +1485,14 @@ async function runOrchestratorExecution(
 				response: execData.finalResponse,
 				taskPlan: state.taskPlan ?? undefined,
 				routingDecision: state.routingDecision ?? undefined,
-				toolCalls: state.toolCalls,
+				toolCalls: state.toolCalls.map((call) => ({
+					...call,
+					result: recordedResultForPresentation(
+						call.name,
+						call.result,
+						state.advisorResultReadsEnabled,
+					),
+				})),
 				variables: state.variables,
 				totalDurationMs: Date.now() - state.startTime,
 				stepResults: state.stepResults,

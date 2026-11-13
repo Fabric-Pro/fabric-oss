@@ -125,7 +125,7 @@ function StepIcon({ status }: { status: JobStepStatus }) {
 	if (status === "completed") {
 		return (
 			<CheckCircle2Icon
-				className="size-3.5 shrink-0 text-secondary"
+				className="size-3.5 shrink-0 text-success"
 				aria-hidden="true"
 			/>
 		);
@@ -167,7 +167,7 @@ function JobSteps({ steps }: { steps: JobStep[] }) {
 							"flex-1",
 							step.status === "pending" ||
 								step.status === "skipped"
-								? "text-muted-foreground/70"
+								? "text-muted-foreground"
 								: "text-foreground",
 						)}
 					>

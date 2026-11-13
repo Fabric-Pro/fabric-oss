@@ -833,3 +833,177 @@ it("drops the regenerated turn from both graph trace maps", async () => {
 		"2",
 	);
 });
+
+function tokenWith(payload: Record<string, unknown>): string {
+	const encode = (value: unknown) =>
+		Buffer.from(JSON.stringify(value)).toString("base64url");
+	return `${encode({ alg: "HS256" })}.${encode(payload)}.signature`;
+}
+
+const RESEARCH_TOKEN = tokenWith({
+	sub: "user-1",
+	org: "example-org",
+	wr: true,
+});
+const PLAIN_TOKEN = tokenWith({ sub: "user-1", org: "example-org" });
+
+describe("the web research flag reaching the graph", () => {
+	function streamedInput(): Record<string, unknown> {
+		return graph.stream.mock.calls[0][0] as Record<string, unknown>;
+	}
+	function invokedInput(): Record<string, unknown> {
+		return graph.invoke.mock.calls[0][0] as Record<string, unknown>;
+	}
+	function temporalInput(extra: Record<string, unknown> = {}) {
+		return runInput({
+			documentType: "prd",
+			projectId: "project-1",
+			allowWebResearch: true,
+			...extra,
+		});
+	}
+
+	it("authorizes a generation run that carries the flag and a research token", async () => {
+		await drain(
+			platformStream()(temporalInput(), {
+				configurable: { ai_token: RESEARCH_TOKEN },
+			}),
+		);
+
+		const input = streamedInput();
+		expect(input.allowWebResearch).toBe(true);
+		expect(input.webResearchOutcome).toMatchObject({ authorized: true });
+		expect(input.webResearchSearchedUrls).toEqual([]);
+	});
+
+	it.each([
+		["with the option on", true],
+		["with the option off", false],
+	])(
+		"marks a generation run that offered the research choice, %s",
+		async (_label, flag) => {
+			await drain(
+				platformStream()(temporalInput({ allowWebResearch: flag }), {
+					configurable: { ai_token: PLAIN_TOKEN },
+				}),
+			);
+
+			expect(streamedInput().webResearchChoiceOffered).toBe(true);
+		},
+	);
+
+	it("marks no choice for a run without the flag, a chat run or an invoke run", async () => {
+		await drain(
+			platformStream()(runInput({ documentType: "prd" }), {
+				configurable: { ai_token: PLAIN_TOKEN },
+			}),
+		);
+		expect(streamedInput().webResearchChoiceOffered).toBe(false);
+
+		graph.stream.mockClear();
+		await drain(
+			platformStream()(runInput({ allowWebResearch: false }), {
+				configurable: { reply_streaming: false, ai_token: PLAIN_TOKEN },
+			}),
+		);
+		expect(streamedInput().webResearchChoiceOffered).toBe(false);
+
+		await invoke()(
+			{ messages: [], allowWebResearch: false },
+			{ configurable: { ai_token: PLAIN_TOKEN } },
+		);
+		expect(invokedInput().webResearchChoiceOffered).toBe(false);
+	});
+
+	it("ignores every flag a chat run's browser can set", async () => {
+		await drain(
+			platformStream()(
+				runInput({
+					allowWebResearch: true,
+					state: { allowWebResearch: true },
+					context: [
+						{
+							description: "project context",
+							value: JSON.stringify({ allowWebResearch: true }),
+						},
+					],
+					forwardedProps: { allowWebResearch: true },
+				}),
+				{
+					configurable: {
+						reply_streaming: true,
+						ai_token: RESEARCH_TOKEN,
+					},
+				},
+			),
+		);
+
+		const input = streamedInput();
+		expect(input.allowWebResearch).toBe(false);
+		expect(input.webResearchOutcome).toMatchObject({ authorized: false });
+	});
+
+	it("stays off when the token carries no research claim", async () => {
+		await drain(
+			platformStream()(temporalInput(), {
+				configurable: { ai_token: PLAIN_TOKEN },
+			}),
+		);
+
+		expect(streamedInput().allowWebResearch).toBe(false);
+	});
+
+	it.each(["member", "guest"] as const)(
+		"stays off in an artifact Proposal run for a %s",
+		async (viewer) => {
+			await drain(
+				platformStream()(
+					temporalInput(),
+					artifactConfig(viewer, { ai_token: RESEARCH_TOKEN }),
+				),
+			);
+
+			const input = streamedInput();
+			expect(input.allowWebResearch).toBe(false);
+			expect(input.webResearchOutcome).toMatchObject({
+				authorized: false,
+			});
+		},
+	);
+
+	it("stays off on the synchronous path even for an A2A-shaped input", async () => {
+		await invoke()(temporalInput({ metadata: { source: "a2a" } }), {
+			configurable: { ai_token: RESEARCH_TOKEN },
+		});
+
+		const input = invokedInput();
+		expect(input.allowWebResearch).toBe(false);
+		expect(input.webResearchOutcome).toEqual({
+			authorized: false,
+			searches: 0,
+			searchFailures: 0,
+			reads: 0,
+			readFailures: 0,
+			limitReached: false,
+			grantLimitReached: false,
+			sources: [],
+			withheldSources: 0,
+		});
+		expect(input.webResearchSearchedUrls).toEqual([]);
+	});
+
+	it("is off by default on both executors", async () => {
+		await drain(platformStream()(runInput(), { configurable: {} }));
+		await invoke()(runInput(), { configurable: {} });
+
+		for (const input of [streamedInput(), invokedInput()]) {
+			expect(input.allowWebResearch).toBe(false);
+			expect(input.webResearchOutcome).toMatchObject({
+				authorized: false,
+				searches: 0,
+				sources: [],
+			});
+			expect(input.webResearchSearchedUrls).toEqual([]);
+		}
+	});
+});

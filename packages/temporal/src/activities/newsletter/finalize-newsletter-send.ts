@@ -4,8 +4,13 @@ import {
 	type NewsletterContent,
 	type NewsletterSendStatus,
 	type NewsletterSkipReason,
+	withoutCaptureHints,
 } from "@repo/database";
 import { heartbeat } from "@temporalio/activity";
+import {
+	clearNewsletterSendFolder,
+	discardExpiredReviewImages,
+} from "./discard-expired-review-images";
 
 export interface FinalizeNewsletterSendInput {
 	sendId: string;
@@ -37,7 +42,9 @@ export async function finalizeNewsletterSendActivity(
 		recipientCount: input.recipientCount,
 		sentCount: input.sentCount,
 		failedCount: input.failedCount,
-		content: input.content ?? undefined,
+		// The capture hints served the review; the archive and the embed read
+		// this row, so they never carry them.
+		content: input.content ? withoutCaptureHints(input.content) : undefined,
 		aiUsageTokens: input.aiUsageTokens,
 		errorMessage: input.errorMessage,
 		expectStatus: input.expectStatus,
@@ -51,5 +58,18 @@ export async function finalizeNewsletterSendActivity(
 			input.projectId,
 			new Date(input.lastSentAtIso),
 		);
+	}
+	// A send that failed or was skipped never goes out, so neither do the
+	// screenshots captured for it. Best-effort; never fails the finalize.
+	if (
+		finalized &&
+		(input.status === "FAILED" || input.status === "SKIPPED_EMPTY")
+	) {
+		await discardExpiredReviewImages(input.projectId, input.sendId);
+	}
+	// A delivered send's review folder is read by nothing: the email points at
+	// the public copies, and the rows keep their public keys for a takedown.
+	if (finalized && (input.status === "SENT" || input.status === "PARTIAL")) {
+		await clearNewsletterSendFolder(input.projectId, input.sendId);
 	}
 }

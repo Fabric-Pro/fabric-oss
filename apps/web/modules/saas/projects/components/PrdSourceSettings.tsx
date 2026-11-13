@@ -295,7 +295,7 @@ export function PrdSourceSettings({ project }: Props) {
 							<div className="flex items-start gap-3">
 								<CheckCircle2Icon className="mt-0.5 w-5 h-5 text-success" />
 								<div>
-									<p className="font-medium text-green-700 dark:text-green-300">
+									<p className="font-medium text-green-800 dark:text-green-300">
 										Project PRD source connected
 									</p>
 									<p className="mt-1 text-sm text-success dark:text-green-400">
@@ -327,7 +327,7 @@ export function PrdSourceSettings({ project }: Props) {
 															(v) => !v,
 														)
 													}
-													className="text-xs text-green-700 hover:underline dark:text-green-300"
+													className="text-xs text-green-800 hover:underline dark:text-green-300"
 												>
 													{showChangeSource
 														? "Cancel change"
@@ -350,7 +350,7 @@ export function PrdSourceSettings({ project }: Props) {
 										setShowChangeSource(false);
 									}}
 									disabled={clearMutation.isPending}
-									className="text-destructive hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30"
+									className="text-destructive hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:text-red-300 dark:hover:bg-red-950/30"
 								>
 									{clearMutation.isPending ? (
 										<Loader2Icon className="w-4 h-4 animate-spin" />
@@ -375,7 +375,7 @@ export function PrdSourceSettings({ project }: Props) {
 						<p className="text-sm font-medium text-amber-700 dark:text-amber-300">
 							No synced Notion connection is available yet
 						</p>
-						<p className="mt-1 text-sm text-amber-600 dark:text-amber-400">
+						<p className="mt-1 text-sm text-amber-700 dark:text-amber-400">
 							Connect Notion in Integrations, run a sync, then
 							come back here to choose the page that should act as
 							this project&apos;s PRD.

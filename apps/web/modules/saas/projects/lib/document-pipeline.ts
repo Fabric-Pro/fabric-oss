@@ -97,8 +97,8 @@ const DOCUMENT_TYPE_META: Record<string, DocumentTypeMeta> = {
 	TECHNICAL_SPEC: {
 		label: "Technical Specification",
 		icon: WrenchIcon,
-		tileColor: "bg-secondary/10 border-secondary/20",
-		iconColor: "text-secondary",
+		tileColor: "bg-success/10 border-success/20",
+		iconColor: "text-success",
 	},
 	API_SPEC: {
 		label: "API Specification",
@@ -117,26 +117,26 @@ const DOCUMENT_TYPE_META: Record<string, DocumentTypeMeta> = {
 	QA_STRATEGY: {
 		label: "Testing Strategy",
 		icon: ShieldCheckIcon,
-		tileColor: "bg-secondary/10 border-secondary/20",
-		iconColor: "text-secondary",
+		tileColor: "bg-success/10 border-success/20",
+		iconColor: "text-success",
 	},
 	TEST_PLAN: {
 		label: "Test Plan",
 		icon: ShieldCheckIcon,
-		tileColor: "bg-secondary/10 border-secondary/20",
-		iconColor: "text-secondary",
+		tileColor: "bg-success/10 border-success/20",
+		iconColor: "text-success",
 	},
 	TEST_REPORT: {
 		label: "Test Report",
 		icon: ShieldCheckIcon,
-		tileColor: "bg-secondary/10 border-secondary/20",
-		iconColor: "text-secondary",
+		tileColor: "bg-success/10 border-success/20",
+		iconColor: "text-success",
 	},
 	TRACEABILITY_MATRIX: {
 		label: "Traceability Matrix",
 		icon: ShieldCheckIcon,
-		tileColor: "bg-secondary/10 border-secondary/20",
-		iconColor: "text-secondary",
+		tileColor: "bg-success/10 border-success/20",
+		iconColor: "text-success",
 	},
 	GENERAL: {
 		label: "General Document",

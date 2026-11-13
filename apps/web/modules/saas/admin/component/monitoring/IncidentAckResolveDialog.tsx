@@ -226,7 +226,7 @@ export function IncidentAckResolveDialog({
 										? "bg-destructive motion-safe:animate-pulse"
 										: target.status === "ACKNOWLEDGED"
 											? "bg-highlight"
-											: "bg-secondary"
+											: "bg-success"
 								}`}
 								aria-hidden
 								data-testid={`dialog-status-dot-${target.status.toLowerCase()}`}

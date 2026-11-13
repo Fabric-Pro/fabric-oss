@@ -4,7 +4,6 @@ import { SettingsItem } from "@saas/shared/components/SettingsItem";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
-import { Button } from "@ui/components/button";
 import {
 	Table,
 	TableBody,
@@ -13,8 +12,9 @@ import {
 	TableHeader,
 	TableRow,
 } from "@ui/components/table";
-import { KeyIcon, Trash2Icon } from "lucide-react";
+import { KeyIcon } from "lucide-react";
 import { toast } from "sonner";
+import { RevokeApiKeyButton } from "./RevokeApiKeyButton";
 
 /**
  * Personal (`fab_`) keys — list and revoke only.
@@ -53,16 +53,6 @@ export function PersonalApiKeysSettings() {
 			toast.error("Failed to revoke API key");
 		},
 	});
-
-	const handleRevoke = (id: string, name: string) => {
-		if (
-			window.confirm(
-				`Revoke "${name}"? Anything still using it will stop working immediately.`,
-			)
-		) {
-			deleteMutation.mutate(id);
-		}
-	};
 
 	const formatDate = (date: Date | null) =>
 		date ? new Date(date).toLocaleDateString() : "Never";
@@ -119,17 +109,16 @@ export function PersonalApiKeysSettings() {
 									{formatDate(key.lastUsedAt)}
 								</TableCell>
 								<TableCell>
-									<Button
-										variant="ghost"
-										size="icon"
-										aria-label={`Revoke ${key.name}`}
-										onClick={() =>
-											handleRevoke(key.id, key.name)
-										}
+									<RevokeApiKeyButton
+										keyName={key.name}
+										action="Revoke"
+										title={`Revoke "${key.name}"?`}
+										description="Anything still using it will stop working immediately."
 										disabled={deleteMutation.isPending}
-									>
-										<Trash2Icon className="size-4 text-destructive" />
-									</Button>
+										onConfirm={() =>
+											deleteMutation.mutate(key.id)
+										}
+									/>
 								</TableCell>
 							</TableRow>
 						))}

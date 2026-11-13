@@ -18,6 +18,7 @@ import {
 } from "../collection-manager";
 import { generateSparseVector } from "../embedding/sparse";
 import { generatePointId } from "../utils";
+import { extractChunkIndex } from "../utils/chunk-id";
 import { qdrantClient } from "./client";
 import type {
 	ProjectContextSearchOptions,
@@ -416,6 +417,13 @@ export async function searchSimilarProjectContexts(
 				contextId:
 					(result.payload?.originalContextId as string) ||
 					(result.payload?.contextId as string),
+				chunkIndex:
+					result.payload?.originalContextId !==
+					result.payload?.contextId
+						? extractChunkIndex(
+								(result.payload?.contextId as string) ?? "",
+							)
+						: undefined,
 				projectId: result.payload?.projectId as string,
 				score: result.score,
 				type: result.payload?.type as string,
@@ -1103,7 +1111,9 @@ export async function scrollProjectChunks(params: {
 				chunkIndex:
 					typeof payload.chunkIndex === "number"
 						? payload.chunkIndex
-						: 0,
+						: (extractChunkIndex(
+								(payload.contextId as string) ?? "",
+							) ?? 0),
 				type: (payload.type as string | undefined) ?? null,
 				profile: (payload.profile as string | undefined) ?? null,
 				section:

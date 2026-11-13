@@ -448,7 +448,7 @@ export function WorkspaceDetail({
 											{failedDocs.length > 1 ? "s" : ""}{" "}
 											failed to process
 										</p>
-										<p className="text-sm text-highlight/80">
+										<p className="text-sm text-highlight">
 											Click Retry to reprocess failed
 											documents
 										</p>
@@ -620,7 +620,12 @@ export function WorkspaceDetail({
 																variant="ghost"
 																size="icon-sm"
 															>
-																<MoreVerticalIcon className="h-4 w-4" />
+																<MoreVerticalIcon
+																	strokeWidth={
+																		2.5
+																	}
+																	className="h-4 w-4"
+																/>
 															</Button>
 														</DropdownMenuTrigger>
 														<DropdownMenuContent align="end">

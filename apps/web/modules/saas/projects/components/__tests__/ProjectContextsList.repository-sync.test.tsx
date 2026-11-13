@@ -186,6 +186,9 @@ vi.mock("../ContextUploaderDialog", () => ({
 vi.mock("../ResetLivingMemory", () => ({
 	ResetLivingMemory: () => null,
 }));
+vi.mock("../RemoveLivingMemoryFolder", () => ({
+	RemoveLivingMemoryFolder: () => null,
+}));
 vi.mock("../DownloadAllContextsButton", () => ({
 	DownloadAllContextsButton: () => null,
 }));

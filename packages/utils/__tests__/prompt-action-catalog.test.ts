@@ -42,6 +42,7 @@ import { PUBLISHING_SHORT_POST_AGENT_KEY } from "../lib/publishing-short-post-pr
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "../lib/publishing-stakeholder-email-prompt";
 import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "../lib/publishing-suggestion-prompt";
 import { PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY } from "../lib/publishing-webinar-script-prompt";
+import { TIME_SUGGESTION_PROMPT_AGENT_KEY } from "../lib/time-suggestion-prompt";
 
 const actions = listPromptActions();
 const byId = (id: string) => actions.find((a) => a.id === id);
@@ -666,5 +667,17 @@ describe("actions the Proposal artifact supersedes (Fizzy #2946)", () => {
 			PROMPT_AGENT_TARGETS.find((a) => a.key === "document_generator")
 				?.actions,
 		).toContainEqual({ documentType: "PROPOSAL", storyKind: null });
+	});
+});
+
+describe("time suggestion prompt", () => {
+	it("is bound for GENERAL with no story kind, by the shared key", () => {
+		// The activity resolves the binding at exactly this slot; any other
+		// slot leaves it on the default body forever.
+		const target = findPromptAgentTarget(TIME_SUGGESTION_PROMPT_AGENT_KEY);
+		expect(target?.featureType).toBe("REPORTS");
+		expect(target?.actions).toEqual([
+			{ documentType: "GENERAL", storyKind: null },
+		]);
 	});
 });

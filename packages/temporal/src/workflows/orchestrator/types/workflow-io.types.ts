@@ -488,6 +488,7 @@ export interface OrchestratorWorkflowOutput {
 		approvalId: string;
 		stepId: string;
 		reason: string;
+		riskLevel?: "low" | "medium" | "high" | "critical";
 	};
 	/** Approval history - all approval requests and decisions made during execution */
 	approvalHistory?: ApprovalHistoryEntry[];

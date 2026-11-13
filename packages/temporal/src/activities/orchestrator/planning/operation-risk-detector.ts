@@ -776,6 +776,16 @@ export function assessToolCallRisk(
 ): ToolCallRiskAssessment {
 	const { name: toolName, args } = toolCall;
 
+	// Image prompts are free text for creating a new asset.
+	if (toolName === "fabric_generate_image") {
+		return {
+			riskLevel: "low",
+			requiresApproval: false,
+			operationType: "create",
+			matchedPatterns: [],
+		};
+	}
+
 	// Convert args to string for pattern matching
 	const argsString = JSON.stringify(args).toLowerCase();
 

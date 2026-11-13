@@ -308,6 +308,14 @@
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
 }
 
+/*
+ * NOTE (Fizzy #1444): nothing renders `data-copilotkit-sidebar` any more — the
+ * installed CopilotKit packages do not emit it and the app never sets it — so
+ * the rules down to the scrollbar block match nothing. Their `hsl(var(--…))`
+ * values have also been invalid since the tokens became hex. Left as they are
+ * rather than revived: made valid, they would paint every button in a matching
+ * sidebar solid primary.
+ */
 /* CopilotKit Sidebar styling to match app theme */
 [data-copilotkit-sidebar] {
   background-color: hsl(var(--card)) !important;
@@ -439,7 +447,8 @@
 }
 
 .copilot-sidebar-textarea::placeholder {
-  color: color-mix(in srgb, var(--muted-foreground) 50%, transparent);
+  /* Opaque: the 50% fade this had measured about 2.1:1 (WCAG AA, Fizzy #1444). */
+  color: var(--muted-foreground);
 }
 
 .copilot-sidebar-textarea:disabled {
@@ -587,7 +596,7 @@
   background: linear-gradient(
     90deg,
     transparent 0%,
-    hsl(var(--foreground) / 0.5) 50%,
+    color-mix(in srgb, var(--foreground) 50%, transparent) 50%,
     transparent 100%
   );
   animation: shimmer-slide 1.2s ease-in-out infinite;
@@ -861,12 +870,12 @@
   table-layout: fixed;
   width: 100%;
   border-radius: 0.5rem;
-  border: 1px solid hsl(var(--border));
+  border: 1px solid var(--border);
 }
 
 .tiptap td,
 .tiptap th {
-  border: 1px solid hsl(var(--border));
+  border: 1px solid var(--border);
   box-sizing: border-box;
   min-width: 1em;
   padding: 0.75rem 1rem;
@@ -875,7 +884,7 @@
 }
 
 .tiptap th {
-  background-color: hsl(var(--muted));
+  background-color: var(--muted);
   font-weight: 600;
   text-align: left;
 }
@@ -887,11 +896,11 @@
 
 /* Selected cell styling */
 .tiptap .selectedCell {
-  background-color: hsl(var(--primary) / 0.1);
+  background-color: color-mix(in srgb, var(--primary) 10%, transparent);
 }
 
 .tiptap .selectedCell::after {
-  background-color: hsl(var(--primary) / 0.1);
+  background-color: color-mix(in srgb, var(--primary) 10%, transparent);
   content: "";
   left: 0;
   right: 0;
@@ -903,7 +912,7 @@
 
 /* Column resize handle */
 .tiptap .column-resize-handle {
-  background-color: hsl(var(--primary));
+  background-color: var(--primary);
   bottom: -2px;
   pointer-events: none;
   position: absolute;
@@ -944,7 +953,7 @@
   cursor: pointer;
   width: 1rem;
   height: 1rem;
-  accent-color: hsl(var(--primary));
+  accent-color: var(--primary);
 }
 
 .tiptap .task-item > div {
@@ -961,14 +970,18 @@
    ============================================ */
 
 .tiptap .tiptap-link {
-  color: hsl(var(--primary));
+  /* --primary-ink, the brand-aware TEXT ink (design.md), clears AA on every
+     surface; the hover thickens the underline instead of fading the colour,
+     which took it under 4.5:1. These were hsl(var(--primary)) — invalid since
+     the tokens became hex, so links rendered in the body colour. */
+  color: var(--primary-ink);
   text-decoration: underline;
   text-underline-offset: 3px;
   cursor: pointer;
 }
 
 .tiptap .tiptap-link:hover {
-  color: hsl(var(--primary) / 0.8);
+  text-decoration-thickness: 2px;
 }
 
 /* ============================================
@@ -1000,7 +1013,7 @@
 }
 
 .tiptap .tiptap-image.ProseMirror-selectednode {
-  outline: 2px solid hsl(var(--primary));
+  outline: 2px solid var(--primary);
   outline-offset: 2px;
 }
 
@@ -1124,9 +1137,9 @@
   padding: 0 6px;
   border-radius: 9999px;
   font-weight: 500;
-  color: hsl(var(--primary));
-  background: hsl(var(--primary) / 0.08);
-  border: 1px solid hsl(var(--primary) / 0.18);
+  color: var(--primary-ink);
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, transparent);
   font-size: 0.94em;
   line-height: 1.4;
 }
@@ -1135,25 +1148,25 @@
 }
 @keyframes mention-flash {
   0% {
-    background: hsl(var(--primary) / 0.32);
+    background: color-mix(in srgb, var(--primary) 32%, transparent);
   }
   100% {
-    background: hsl(var(--primary) / 0.08);
+    background: color-mix(in srgb, var(--primary) 8%, transparent);
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .ProseMirror .mention.mention-flash {
     animation: none;
-    background: hsl(var(--primary) / 0.2);
+    background: color-mix(in srgb, var(--primary) 20%, transparent);
   }
 }
 
 .ProseMirror .mention--inactive {
-  color: hsl(var(--muted-foreground));
+  color: var(--muted-foreground);
   background: transparent;
-  border: 1px solid hsl(var(--border));
+  border: 1px solid var(--border);
   cursor: default;
   text-decoration: line-through;
   text-decoration-thickness: 1px;
-  text-decoration-color: hsl(var(--muted-foreground) / 0.4);
+  text-decoration-color: color-mix(in srgb, var(--muted-foreground) 40%, transparent);
 }

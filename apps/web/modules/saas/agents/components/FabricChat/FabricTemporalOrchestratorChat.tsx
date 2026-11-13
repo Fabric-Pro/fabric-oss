@@ -4551,7 +4551,7 @@ export function FabricTemporalOrchestratorChat({
 																			className={cn(
 																				"px-1.5 py-0.5 rounded text-[10px] font-medium",
 																				delegationError
-																					? "bg-red-100 dark:bg-red-900/30 text-destructive/80"
+																					? "bg-red-100 dark:bg-red-900/30 text-destructive"
 																					: "bg-primary/10 text-primary-ink",
 																			)}
 																		>

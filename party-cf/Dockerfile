@@ -14,13 +14,13 @@
 # build; tracked as a follow-up. This mirrors the existing docker-compose
 # `party/` service which runs `partykit dev` in a container.
 
-FROM node:22-slim AS deps
+FROM node:24-slim AS deps
 WORKDIR /app
 COPY package.json ./
 # Full install (wrangler lives in devDependencies and is needed at runtime).
 RUN npm install --no-audit --no-fund
 
-FROM node:22-slim
+FROM node:24-slim
 WORKDIR /app
 ENV PARTYKIT_ENV=production
 ENV NODE_ENV=production

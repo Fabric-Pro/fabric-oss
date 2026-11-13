@@ -17,6 +17,11 @@
  * The plugin carries the project's MCP gateway, so no tool's own MCP
  * registration is added; an earlier Claude Code one is taken out so an agent
  * does not see two sets of tools.
+ *
+ * A project with Coding Instructions sets gets the set this folder's
+ * repository belongs to (`--set`, or `resolveInstructionSet`). A non-default
+ * set is a plugin of its own, and its render command carries `--set`, so the
+ * session-start render stays on the same set.
  */
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -41,7 +46,10 @@ import {
 } from "../../lib/instructions/hook.js";
 import { resolveHookLauncher } from "../../lib/instructions/hook-launcher.js";
 import { machine } from "../../lib/instructions/machine.js";
-import { canPrompt } from "../../lib/instructions/prompt.js";
+import {
+	canPrompt,
+	chooseInstructionSet,
+} from "../../lib/instructions/prompt.js";
 import { resolveDestinationRoot } from "../../lib/instructions/safe-write.js";
 import { detectTools } from "../../lib/instructions/tools.js";
 import {
@@ -59,6 +67,11 @@ import {
 	type GatewayRemoval,
 	removeLocalClaudeGateway,
 } from "../../lib/plugin/gateway.js";
+import {
+	isSetSlug,
+	pluginSetSlug,
+	resolveInstructionSet,
+} from "../../lib/plugin/instruction-sets.js";
 import { idPluginName, pluginNameFor } from "../../lib/plugin/layout.js";
 import {
 	assignedPluginName,
@@ -89,6 +102,8 @@ export interface PluginInitOptions {
 	mcp?: boolean;
 	/** `--rename`: move an existing install to the project's readable name. */
 	rename?: boolean;
+	/** `--set`: the Coding Instructions set to set up (default: the one this checkout's repository belongs to). */
+	set?: string;
 	format: "text" | "json";
 	/** Where the text output's steps are collected; the caller renders it. */
 	summary: Summary;
@@ -131,6 +146,7 @@ function wordForPaste(value: string): string {
 async function approveClaudePlugin(input: {
 	run: AgentRunner;
 	projectId: string;
+	set: string | null;
 	marketplaceDirectory: string;
 	root: string;
 	interactive: boolean;
@@ -138,6 +154,7 @@ async function approveClaudePlugin(input: {
 	const commands = claudeApprovalCommands({
 		projectId: input.projectId,
 		marketplaceDirectory: wordForPaste(input.marketplaceDirectory),
+		set: input.set,
 	});
 	const asArgument =
 		process.platform === "win32"
@@ -156,7 +173,13 @@ async function approveClaudePlugin(input: {
 	}
 	const installed = await input.run(
 		"claude",
-		["plugin", "install", pluginIdFor(input.projectId), "--scope", "local"],
+		[
+			"plugin",
+			"install",
+			pluginIdFor(input.projectId, input.set),
+			"--scope",
+			"local",
+		],
 		{ cwd: input.root, timeoutMs: 180_000, interactive: true },
 	);
 	return installed.kind === "exited" && installed.code === 0
@@ -172,11 +195,13 @@ async function approveClaudePlugin(input: {
 async function deliverRules(
 	options: PluginInitOptions,
 	root: string,
+	set: string | null,
 ): Promise<void> {
 	const label = "Project rules";
-	const folder = `${rulesFolderFor(options.project)}/`;
+	const folder = `${rulesFolderFor(options.project, set)}/`;
 	try {
 		const result = await syncRulesForProject({
+			set: set ?? undefined,
 			project: options.project,
 			baseUrl: options.origin,
 			org: options.org,
@@ -293,13 +318,14 @@ async function renameInstalledPlugin(
 	options: PluginInitOptions,
 	root: string,
 	configPath: string,
+	set: string | null,
 ): Promise<{ from: string; to: string } | null> {
-	const previous = pluginNameFor(options.project);
+	const previous = pluginNameFor(options.project, set);
 	const projectName = await fabricPluginName(options);
 	const renamed = renamePluginName({
 		projectId: options.project,
 		projectName,
-		previous,
+		previous: pluginNameFor(options.project),
 	});
 	if (renamed === null) {
 		return null;
@@ -337,7 +363,82 @@ async function renameInstalledPlugin(
 	if (existsSync(path.join(rules, ".fabric-managed.json"))) {
 		await rm(rules, { recursive: true, force: true });
 	}
-	return renamed;
+	return {
+		from: previous,
+		to: pluginNameFor(options.project, set),
+	};
+}
+
+/**
+ * The Coding Instructions set this folder gets: `--set`, else the one its
+ * repository belongs to; `null` for a project without sets. Asks when several
+ * sets apply and a person is there to answer.
+ */
+async function chooseSet(
+	options: PluginInitOptions,
+	root: string,
+	interactive: boolean,
+): Promise<{ slug: string; name: string } | null> {
+	if (options.set !== undefined && !isSetSlug(options.set)) {
+		throw new CliFailure(
+			"--set is a set slug: lowercase letters, digits and dashes",
+			2,
+		);
+	}
+	const org = options.org ? { org: options.org } : {};
+	const client = getClient();
+	const chosen = await resolveInstructionSet(options.set, {
+		listSets: async () => {
+			try {
+				return (
+					await client.projects.listInstructionSets(
+						options.project,
+						org,
+					)
+				).sets;
+			} catch (error) {
+				// A deployment that does not know sets has none.
+				if (
+					options.set === undefined &&
+					(error as { status?: number }).status === 404
+				) {
+					return [];
+				}
+				throw error;
+			}
+		},
+		listCodeRepositories: async () =>
+			(await client.projects.listCodeRepositories(options.project, org))
+				.repositories,
+		remoteUrls: () => checkoutRemoteUrls(root),
+		choose: interactive ? (sets) => chooseInstructionSet(sets) : undefined,
+	});
+	return chosen === null ? null : { slug: chosen.slug, name: chosen.name };
+}
+
+/** The fetch URLs of the checkout's remotes; `[]` when the folder is no git checkout. */
+async function checkoutRemoteUrls(root: string): Promise<string[]> {
+	const deadline = Date.now() + 8_000;
+	const tree = await git.findWorkTree(root, deadline);
+	if (tree.kind !== "ok") {
+		return [];
+	}
+	const names = await git.remotes(tree.value.toplevel, deadline);
+	if (names.kind !== "ok") {
+		return [];
+	}
+	const urls: string[] = [];
+	for (const name of names.value) {
+		const url = await git.effectiveFetchUrl(
+			tree.value.toplevel,
+			name,
+			deadline,
+		);
+		if (url.kind === "ok" && url.value !== null) {
+			urls.push(url.value);
+		}
+	}
+	return urls;
 }
 
 async function choosePluginName(
@@ -368,6 +469,8 @@ export interface PluginInitResult {
 	 * plugin was set up.
 	 */
 	claudeMcpHeadersHelper: boolean | null;
+	/** The non-default Coding Instructions set set up (its own plugin), else `null`. */
+	set: string | null;
 }
 
 export async function runPluginInit(
@@ -386,11 +489,28 @@ export async function runPluginInit(
 		);
 	}
 
+	const interactive =
+		options.format !== "json" &&
+		canPrompt() &&
+		process.stdout.isTTY === true &&
+		!runningInCi();
+	const chosenSet = await chooseSet(options, root, interactive);
+	const set = pluginSetSlug(chosenSet?.slug);
 	const renamed = options.rename
-		? await renameInstalledPlugin(options, root, getConfigPath())
+		? await renameInstalledPlugin(options, root, getConfigPath(), set)
 		: null;
 	await choosePluginName(options, getConfigPath());
 	const summary = options.summary;
+	if (chosenSet !== null) {
+		summary.add(
+			"ok",
+			"Coding Instructions set",
+			`${chosenSet.slug}${set === null ? " (the project's plugin)" : ` (plugin ${pluginNameFor(options.project, set)})`}`,
+			[
+				`This folder gets the Coding Instructions set ${chosenSet.slug}: its instructions only. Pass --set to choose another.`,
+			],
+		);
+	}
 	if (renamed !== null) {
 		summary.add(
 			"ok",
@@ -419,11 +539,6 @@ export async function runPluginInit(
 	const run = createAgentRunner({
 		lookup: { env: machine.env(), platform: machine.platform() },
 	});
-	const interactive =
-		options.format !== "json" &&
-		canPrompt() &&
-		process.stdout.isTTY === true &&
-		!runningInCi();
 	const results: ToolResult[] = [];
 	const excludes: string[] = [".fabric"];
 	let marketplaceDirectory: string | null = null;
@@ -435,6 +550,7 @@ export async function runPluginInit(
 			baseUrl: options.origin,
 			org: options.org,
 			tool,
+			set: chosenSet?.slug,
 		});
 		if (tool === "claude-code") {
 			claudeMcpHeadersHelper = rendered.mcpHeadersHelper;
@@ -444,6 +560,7 @@ export async function runPluginInit(
 				projectId: options.project,
 				baseUrl: options.origin,
 				org: options.org,
+				set,
 			});
 			marketplaceDirectory = await writeClaudeMarketplace({
 				cacheDirectory: path.join(
@@ -453,50 +570,54 @@ export async function runPluginInit(
 				projectId: options.project,
 				origin: options.origin,
 				command,
+				set,
 			});
 			const registered = await registerClaudePlugin({
 				root,
 				projectId: options.project,
 				marketplaceDirectory,
+				set,
 			});
 			excludes.push(CLAUDE_SETTINGS_RELATIVE_PATH);
 			// Settled by the approval below; added first, so it leads the list.
 			claudePlugin = summary.add(
 				"ok",
 				"Plugin registered",
-				`${pluginIdFor(options.project)} (local)`,
+				`${pluginIdFor(options.project, set)} (local)`,
 				[
-					`Registered the ${pluginNameFor(options.project)} plugin in ${path.relative(root, registered.settingsPath) || registered.settingsPath} (marketplace folder ${marketplaceDirectory}); Claude Code builds it from Fabric at the start of each session.`,
+					`Registered the ${pluginNameFor(options.project, set)} plugin in ${path.relative(root, registered.settingsPath) || registered.settingsPath} (marketplace folder ${marketplaceDirectory}); Claude Code builds it from Fabric at the start of each session.`,
 				],
 			);
-			await deliverRules(options, root);
+			await deliverRules(options, root, set);
 		} else {
 			const registration = await registerCodexPlugin({
 				home: machine.home() ?? root,
 				projectId: options.project,
 				pluginDirectory: rendered.directory,
+				set,
 			});
-			const listed = `Rendered the ${pluginNameFor(options.project)} plugin to ${rendered.directory} and listed it in ${registration.marketplaceFile} (marketplace "${registration.marketplaceName}").`;
+			const listed = `Rendered the ${pluginNameFor(options.project, set)} plugin to ${rendered.directory} and listed it in ${registration.marketplaceFile} (marketplace "${registration.marketplaceName}").`;
 			const installed = await installCodexPlugin({
 				run,
 				projectId: options.project,
 				marketplaceName: registration.marketplaceName,
 				cwd: root,
+				set,
 			});
 			if (installed.kind === "installed") {
 				summary.add(
 					"ok",
 					"Codex plugin",
-					`${pluginNameFor(options.project)}@${registration.marketplaceName} installed`,
+					`${pluginNameFor(options.project, set)}@${registration.marketplaceName} installed`,
 					[
 						listed,
-						`Installed the ${pluginNameFor(options.project)} plugin in Codex.`,
+						`Installed the ${pluginNameFor(options.project, set)} plugin in Codex.`,
 					],
 				);
 			} else {
 				const install =
 					installed.line ??
-					`codex plugin add ${pluginNameFor(options.project)}@${registration.marketplaceName}`;
+					`codex plugin add ${pluginNameFor(options.project, set)}@${registration.marketplaceName}`;
 				summary.add(
 					"action",
 					"Codex plugin",
@@ -529,6 +650,7 @@ export async function runPluginInit(
 			launcher: launcher.prefix,
 			baseUrl: options.origin,
 			org: options.org,
+			set,
 		});
 		excludes.push(
 			tool === "codex"
@@ -571,8 +693,8 @@ export async function runPluginInit(
 			pluginDirectory: rendered.directory,
 			pluginId:
 				tool === "claude-code"
-					? pluginIdFor(options.project)
-					: pluginNameFor(options.project),
+					? pluginIdFor(options.project, set)
+					: pluginNameFor(options.project, set),
 		});
 	}
 
@@ -611,6 +733,7 @@ export async function runPluginInit(
 			: await approveClaudePlugin({
 					run,
 					projectId: options.project,
+					set,
 					marketplaceDirectory,
 					root,
 					interactive,
@@ -621,6 +744,7 @@ export async function runPluginInit(
 		printOutput(
 			{
 				projectId: options.project,
+				instructionSet: chosenSet?.slug ?? null,
 				mode: "plugin",
 				destination: root,
 				tools: results.map((result) => ({
@@ -640,6 +764,7 @@ export async function runPluginInit(
 		return {
 			tools: results.map((result) => result.tool),
 			claudeMcpHeadersHelper,
+			set,
 		};
 	}
 
@@ -709,7 +834,7 @@ export async function runPluginInit(
 			);
 		} else if (approval.kind === "manual") {
 			claudePlugin.status = "action";
-			claudePlugin.detail = `${pluginIdFor(options.project)}: approve its command once (see below)`;
+			claudePlugin.detail = `${pluginIdFor(options.project, set)}: approve its command once (see below)`;
 			claudePlugin.details.push(
 				"Claude Code asks you to approve the plugin's command once, in your own terminal; it shows the exact command and will not accept it from inside a coding session.",
 			);
@@ -766,6 +891,7 @@ export async function runPluginInit(
 	return {
 		tools: results.map((result) => result.tool),
 		claudeMcpHeadersHelper,
+		set,
 	};
 }
 

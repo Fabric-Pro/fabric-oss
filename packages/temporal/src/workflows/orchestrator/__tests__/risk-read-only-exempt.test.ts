@@ -281,7 +281,7 @@ describe("replay safety", () => {
 
 	it("takes the routing from the loop's dispatch, not from the name alone", () => {
 		expect(source).toMatch(
-			/fabricRouted:\s*isLoopBuiltInReadTool\(\s*toolCall\.name,\s*callToolMode,?\s*\) \|\|\s*effectiveConfigId ===\s*FABRIC_AI_SERVER_CONFIG_ID,/,
+			/fabricRouted:\s*isLoopBuiltInReadTool\(\s*toolCall\.name,\s*callToolMode,\s*resultReadsEnabled,?\s*\) \|\|\s*effectiveConfigId ===\s*FABRIC_AI_SERVER_CONFIG_ID,/,
 		);
 		expect(source).toMatch(
 			/const effectiveConfigId =\s*binding\?\.kind === "config" \|\| binding\?\.kind === "oauth"\s*\? binding.configId\s*:\s*discoveredToolConfigIds\[toolCall\.name\];/,
@@ -294,4 +294,51 @@ describe("replay safety", () => {
 			assessToolCallRisk(ragSearch, "BALANCED", { rules: "legacy" }),
 		);
 	});
+});
+
+describe("image content exemption", () => {
+	const call = {
+		name: "fabric_generate_image",
+		args: {
+			prompt: "Simple, clean sample network architecture diagram ... clear readable labels, no clutter.",
+			aspectRatio: "4:3",
+		},
+	};
+	it("exempts image prompts with the new option", () => {
+		expect(
+			assessToolCallRisk(call, "CONSERVATIVE", {
+				rules: "fabric-gated-v2",
+				imageContentExempt: true,
+			}),
+		).toMatchObject({ riskLevel: "low", requiresApproval: false });
+	});
+	it("preserves the previous decision without the option", () => {
+		expect(
+			assessToolCallRisk(call, "BALANCED", { rules: "fabric-gated-v2" }),
+		).toMatchObject({ riskLevel: "high", requiresApproval: true });
+	});
+	it("still rejects another tool with clear arguments", () => {
+		expect(
+			assessToolCallRisk({ ...call, name: "example_tool" }, "BALANCED", {
+				rules: "fabric-gated-v2",
+				imageContentExempt: true,
+			}),
+		).toMatchObject({ riskLevel: "high", requiresApproval: true });
+	});
+});
+
+it("selects the image exemption behind its marker and exposes risk only as approval metadata", () => {
+	const source = readFileSync(
+		join(
+			process.cwd(),
+			"src/workflows/orchestrator/phases/iterative-execution.ts",
+		),
+		"utf-8",
+	);
+	expect(source).toMatch(
+		/imageContentExempt: patched\(\s*"orch-risk-image-content-exempt-v1",?\s*\)/,
+	);
+	expect(source).toMatch(
+		/state\.pendingApproval = \{\s*approvalId: approval\.approvalId,[\s\S]*?riskLevel: riskAssessment\.riskLevel,/,
+	);
 });

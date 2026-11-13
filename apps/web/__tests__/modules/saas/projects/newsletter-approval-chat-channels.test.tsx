@@ -81,6 +81,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						...o,
 					}),
 				},
+				recipientPreview: {
+					queryOptions: (o: { input: unknown }) => ({
+						__q: "recipientPreview",
+						...o,
+					}),
+				},
 				chatDeliveries: {
 					queryOptions: (o: { input: unknown }) => ({
 						__q: "chatDeliveries",

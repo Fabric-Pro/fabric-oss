@@ -448,6 +448,61 @@ describe("fabric context push — conflicts", () => {
 			sha256("# A mine\n"),
 		);
 		expect(result.stdout).toContain("Example Editor");
+		expect(result.stdout).toContain(
+			"--force replaced 1 server version; the replaced version is not kept.",
+		);
+	});
+
+	it("with --force, counts every server version it replaced in one summary line", async () => {
+		const dir = await makeFolder({
+			"a.md": "# A mine\n",
+			"b.md": "# B mine\n",
+		});
+		await seedLock(dir, { "a.md": "# A v1\n", "b.md": "# B v1\n" });
+		mocks.upsertSyncedFile
+			.mockRejectedValueOnce(
+				conflictError("a.md", "# A mine\n", "1".repeat(64)),
+			)
+			.mockResolvedValueOnce(stored("updated", "a.md", "# A mine\n"))
+			.mockRejectedValueOnce(
+				conflictError("b.md", "# B mine\n", "2".repeat(64)),
+			)
+			.mockResolvedValueOnce(stored("updated", "b.md", "# B mine\n"));
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--force",
+		]);
+
+		expect(result.code).toBe(0);
+		const summaries = result.stdout
+			.split("\n")
+			.filter((line) => line.startsWith("--force replaced"));
+		expect(summaries).toEqual([
+			"--force replaced 2 server versions; the replaced versions are not kept.",
+		]);
+	});
+
+	it("says nothing about replaced versions when --force replaced none", async () => {
+		const dir = await makeFolder({ "a.md": "# A mine\n" });
+		await seedLock(dir, { "a.md": "# A v1\n" });
+		mocks.upsertSyncedFile
+			.mockRejectedValueOnce(deletedConflictError("a.md", "# A mine\n"))
+			.mockResolvedValueOnce(stored("created", "a.md", "# A mine\n"));
+
+		const result = await runCli([
+			"push",
+			dir,
+			"--project",
+			"project-1",
+			"--force",
+		]);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).not.toContain("--force replaced");
 	});
 
 	it("with --force, reports a second conflict as a conflict and does not try a third time", async () => {

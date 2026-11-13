@@ -4,9 +4,14 @@ import { createPurchasesHelper } from "@repo/payments/lib/helper";
 import { getOrganizationList, getSession } from "@saas/auth/lib/server";
 import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
 import { RoleTagSnapshotProvider } from "@saas/shared/components/RoleTagSnapshotProvider";
-import { measureCatalogRequestPhase } from "@saas/shared/lib/catalog-request-timing";
+import {
+	logAppRequestTiming,
+	measureCatalogRequestPhase,
+} from "@saas/shared/lib/catalog-request-timing";
 import { orpcClient } from "@shared/lib/orpc-client";
+import { PROXY_TIMING_HEADER } from "@shared/lib/proxy-timing";
 import { attemptAsync } from "es-toolkit";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import type { PropsWithChildren } from "react";
 
@@ -14,6 +19,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export default async function Layout({ children }: PropsWithChildren) {
+	logAppRequestTiming((await headers()).get(PROXY_TIMING_HEADER));
 	const session = await measureCatalogRequestPhase("app_session", getSession);
 
 	if (!session) {

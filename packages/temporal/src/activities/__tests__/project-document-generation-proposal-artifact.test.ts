@@ -503,7 +503,11 @@ const ARTIFACT = {
 const PINNED_PROMPT = "Write the client-only proposal (version 3).";
 
 function generateArtifact(
-	overrides: { prompt?: string; promptId?: string } = {},
+	overrides: {
+		prompt?: string;
+		promptId?: string;
+		allowWebResearch?: boolean;
+	} = {},
 ) {
 	return generateDocumentWithAgent({
 		projectId: "project-1",
@@ -517,6 +521,9 @@ function generateArtifact(
 		promptId: overrides.promptId,
 		hasRagContexts: true,
 		artifact: ARTIFACT,
+		...(overrides.allowWebResearch !== undefined && {
+			allowWebResearch: overrides.allowWebResearch,
+		}),
 	});
 }
 
@@ -2939,6 +2946,55 @@ describe("artifact mode — the stream's limits", () => {
 		expect(fallbackLogFields()).toMatchObject({
 			cutReason: "first-chunk",
 			error: `Agent stream timeout after ${5 * MINUTE}ms (first-chunk)`,
+		});
+	});
+
+	it("gives a run allowed to research its research time on top of the first-chunk allowance", async () => {
+		// A twenty-minute attempt leaves a fifteen-minute wall cap, so the
+		// first-chunk limit is the one that cuts: 300 s + 325 s.
+		attemptRunsFor(20 * MINUTE);
+		agentStreamsOnClock([[0, metadata()]], "hang");
+
+		const pending = generateArtifact({ allowWebResearch: true });
+		await vi.advanceTimersByTimeAsync(625_000 - 1);
+		expect(mocks.streamText).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(1);
+		const result = await pending;
+
+		expect(result.content).toBe(FALLBACK_DOCUMENT);
+		expect(fallbackLogFields()).toMatchObject({
+			cutReason: "first-chunk",
+			error: "Agent stream timeout after 625000ms (first-chunk)",
+		});
+	});
+
+	it("keeps the plain first-chunk allowance for a run that offered research and was not allowed it", async () => {
+		attemptRunsFor(20 * MINUTE);
+		agentStreamsOnClock([[0, metadata()]], "hang");
+
+		const pending = generateArtifact({ allowWebResearch: false });
+		await vi.advanceTimersByTimeAsync(5 * MINUTE);
+		const result = await pending;
+
+		expect(result.content).toBe(FALLBACK_DOCUMENT);
+		expect(fallbackLogFields()).toMatchObject({
+			cutReason: "first-chunk",
+			error: `Agent stream timeout after ${5 * MINUTE}ms (first-chunk)`,
+		});
+	});
+
+	it("still cuts a research run's silent stream at the wall cap the attempt's deadline leaves", async () => {
+		agentStreamsOnClock([[0, metadata()]], "hang");
+
+		const pending = generateArtifact({ allowWebResearch: true });
+		// Fifteen minutes less the five-minute reserve: before 625 s.
+		await vi.advanceTimersByTimeAsync(10 * MINUTE);
+		const result = await pending;
+
+		expect(result.content).toBe(FALLBACK_DOCUMENT);
+		expect(fallbackLogFields()).toMatchObject({
+			cutReason: "wall",
+			error: `Agent stream timeout after ${10 * MINUTE}ms (wall)`,
 		});
 	});
 

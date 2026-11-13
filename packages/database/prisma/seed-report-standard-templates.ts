@@ -107,6 +107,19 @@ const BUSINESS_CONTEXT_PARAMETER = {
 };
 
 /**
+ * Where a repository records its deployments, which differs per repository and
+ * which no tool can discover reliably. Left empty, the report looks for itself.
+ */
+const DEPLOYMENT_RECORDS_PARAMETER = {
+	deploymentRecords: {
+		type: "string",
+		description:
+			"Where your deployments are recorded, if your pipeline records them, such as commits to deploy/ledger.json",
+		aiDefault: false,
+	},
+};
+
+/**
  * A business review runs from what a person gives it alone, and reports made
  * before it read any tool still have to generate, so it requires nothing.
  */
@@ -411,7 +424,7 @@ Two or three suggestions, each tied to a number above.`,
 		key: "engineering-metrics",
 		name: "Engineering Metrics Report (DORA-style)",
 		description:
-			"Deployment frequency, lead time, change failure rate and time to restore, from what your repository records. A metric your tools cannot supply is reported as not available.",
+			"Deployment frequency, lead time, change failure rate and time to restore, from your repository's releases, deployment records, merged pull requests and incidents. A metric your tools cannot supply is reported as not available.",
 		heroEmojis: ["🛠️", "📏", "🔁"],
 		templateType: "INTEGRATION_ACTIVITY" as const,
 		category: CATEGORY_DEVELOPMENT,
@@ -433,9 +446,9 @@ ${READING_THE_DATA}
 
 Report each with its value, what it was worked out from, and how many records it rests on:
 
-1. **Deployment frequency**: from deployment records in the period. Without them, count the releases published in the period, labelled as a proxy. Without releases, count merges to the default branch, labelled as a proxy. Deployment records can come from many sources, such as commits a deployment pipeline writes; when the records you could read cover only part of the period and the releases you read reach back to its start, report the release count for the whole period as the value, labelled as a proxy, and give the deployment-record count with the dates it covers beside it.
+1. **Deployment frequency**: when the \`deploymentRecords\` parameter names where deployments are recorded, the value is the number of successful deployments in those records within the period, with the dates they cover, labelled partial when they start after the period does. A release count may appear beside it as context, never as the value. When no \`deploymentRecords\` is named, use deployment records in the period. Without them, count the releases published in the period, labelled as a proxy. Without releases, count merges to the default branch, labelled as a proxy. Deployment records can come from many sources, such as commits a deployment pipeline writes; when no \`deploymentRecords\` is named, the records you could read cover only part of the period and the releases you read reach back to its start, report the release count for the whole period as the value, labelled as a proxy, and give the deployment-record count with the dates it covers beside it.
 2. **Lead time for changes**: from commit to deployment when both are recorded. Otherwise the median time from opened to merged for the pull requests merged in the period, labelled as a proxy.
-3. **Change failure rate**: failed deployments divided by deployments. Without failure records, count the pull requests merged in the period whose titles mark a revert or a hotfix and divide by the deployment count above, labelled as a proxy.
+3. **Change failure rate**: failed deployments divided by deployments. Without failure records, take the pull requests merged in the period whose titles mark a revert or a hotfix, \`revertOrHotfix\` in the Pull Request Facts, and divide by the deployment count above, labelled as a proxy.
 4. **Time to restore service**: from incident or outage records with start and end times.
 
 Listings are read back to the start of the period for you where the tool allows it. When a listing still covers only part of the period, work out the value over the dates it covers, give those dates and the count, and label it partial. A partial value is a result, not "Not available".
@@ -464,7 +477,7 @@ Two or three suggestions, each tied to a number above, including the records wor
 				outputVariable: "engineering_metrics",
 			}),
 		},
-		parameters: parameters("Last 3 months"),
+		parameters: parameters("Last 3 months", DEPLOYMENT_RECORDS_PARAMETER),
 	},
 	{
 		key: "monthly-review",

@@ -38,8 +38,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		getAIModelWithMetadata: vi.fn(),
 		generateObject: vi.fn(),
 		logModelUsageAsync: vi.fn(),
-		retrieveProjectContexts: vi.fn(),
-		formatContextsForPrompt: vi.fn(),
+		retrieveRankedPassages: vi.fn(),
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		renderTemplate: vi.fn(),
@@ -97,8 +96,7 @@ vi.mock("@repo/ai/lib/function-tag-context", () => ({
 }));
 
 vi.mock("@repo/rag", () => ({
-	retrieveProjectContexts: mocks.retrieveProjectContexts,
-	formatContextsForPrompt: mocks.formatContextsForPrompt,
+	retrieveRankedPassages: mocks.retrieveRankedPassages,
 }));
 
 vi.mock("@repo/rag/lib/project-contexts/live-integration-context", () => ({
@@ -139,6 +137,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 		tenantProtectedProcedure: chainable,
 		Permissions,
 		requireProjectPermission: () => (c: unknown) => c,
+		requireOrganizationMembership: vi.fn(),
 		resolveOrganizationId: (organizationId: string | null | undefined) =>
 			organizationId ?? null,
 	};
@@ -214,8 +213,7 @@ beforeEach(() => {
 
 	// Context-fetch defaults: no RAG / live context so the test stays
 	// focused on the guard behavior.
-	mocks.retrieveProjectContexts.mockResolvedValue([]);
-	mocks.formatContextsForPrompt.mockReturnValue("");
+	mocks.retrieveRankedPassages.mockResolvedValue("");
 	mocks.fetchLiveIntegrationContext.mockResolvedValue({});
 	mocks.formatLiveContextForPrompt.mockReturnValue(null);
 
@@ -254,6 +252,9 @@ describe("reevaluateBugProcedure retrieval query", () => {
 		mocks.getStoryById.mockResolvedValue(
 			bugStory({ description: "Bug summary." }),
 		);
+		mocks.retrieveRankedPassages.mockResolvedValue(
+			"RANKED_PASSAGES_SENTINEL",
+		);
 		mocks.generateObject.mockResolvedValue({
 			object: { needsMoreInfo: false, markdown: "Bug summary." },
 			usage: {},
@@ -262,13 +263,23 @@ describe("reevaluateBugProcedure retrieval query", () => {
 			input: {
 				projectId: PROJECT_ID,
 				storyId: STORY_ID,
-				organizationId: null,
+				organizationId: "example-org",
 				newInfo,
 			},
 			context: ctx,
 		});
-		expect(mocks.retrieveProjectContexts).toHaveBeenCalledWith(
-			expect.objectContaining({ query, topK: 5 }),
+		expect(mocks.retrieveRankedPassages).toHaveBeenCalledWith({
+			projectId: PROJECT_ID,
+			query,
+			userId: ctx.user.id,
+			organizationId: "example-org",
+		});
+		expect(mocks.renderTemplate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				variables: expect.objectContaining({
+					connected_context_items: "RANKED_PASSAGES_SENTINEL",
+				}),
+			}),
 		);
 	});
 });

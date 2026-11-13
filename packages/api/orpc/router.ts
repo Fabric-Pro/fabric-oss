@@ -89,6 +89,10 @@ export const router = publicProcedure
 			"todosRouter",
 			() => import("../modules/todos/router"),
 		),
+		timeTracking: lazyRouter(
+			"timeTrackingRouter",
+			() => import("../modules/time-tracking/router"),
+		),
 		github: lazyRouter(
 			"githubRouter",
 			() => import("../modules/github/router"),

@@ -128,7 +128,7 @@ export function NotificationRow({
 						{notification.snippet}
 					</span>
 				) : null}
-				<span className="mt-1 block text-[10px] uppercase tracking-wide text-muted-foreground/70">
+				<span className="mt-1 block text-[10px] uppercase tracking-wide text-muted-foreground">
 					{formatDistanceToNow(created, { addSuffix: true })}
 				</span>
 			</span>

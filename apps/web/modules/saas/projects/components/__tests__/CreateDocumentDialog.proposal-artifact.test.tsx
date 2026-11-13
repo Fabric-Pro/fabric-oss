@@ -110,6 +110,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						input,
 					],
 				},
+				// Mounted with the dialog; nothing here is about web research.
+				webResearchAvailability: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: [
+							"projects.documents.webResearchAvailability",
+							input,
+						],
+						queryFn: () => ({ available: true, missing: [] }),
+					}),
+				},
 			},
 		},
 		prompts: {
@@ -201,7 +211,7 @@ describe("CreateDocumentDialog — Proposal prompt behind the Proposal artifact 
 		flags.proposalArtifact = true;
 		const user = userEvent.setup();
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await pickType(user, /Project Proposal/);
 
@@ -221,7 +231,7 @@ describe("CreateDocumentDialog — Proposal prompt behind the Proposal artifact 
 		offerTwoPrompts();
 		const user = userEvent.setup();
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		// A deliberate pick for the starting type, then a switch to Proposal.
 		await user.click(
@@ -246,7 +256,7 @@ describe("CreateDocumentDialog — Proposal prompt behind the Proposal artifact 
 		flags.proposalArtifact = true;
 		const user = userEvent.setup();
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await pickType(user, /Project Proposal/);
 
 		await user.type(
@@ -265,7 +275,7 @@ describe("CreateDocumentDialog — Proposal prompt behind the Proposal artifact 
 	it("keeps the selector for a Proposal with the gate off", async () => {
 		const user = userEvent.setup();
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await pickType(user, /Project Proposal/);
 
@@ -282,7 +292,7 @@ describe("CreateDocumentDialog — Proposal prompt behind the Proposal artifact 
 		flags.proposalArtifact = true;
 		const user = userEvent.setup();
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await pickType(user, /Business Case/);
 
@@ -294,7 +304,7 @@ describe("CreateDocumentDialog — Proposal prompt behind the Proposal artifact 
 		flags.proposalArtifact = true;
 		const user = userEvent.setup();
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 
 		await pickType(user, /Project Proposal/);
 		expect(promptSelector()).not.toBeInTheDocument();
@@ -320,7 +330,7 @@ describe("CreateDocumentDialog — Proposal prompt behind the Proposal artifact 
 		);
 		const user = userEvent.setup();
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await pickType(user, /Project Proposal/);
 
 		await user.click(screen.getByRole("button", { name: /submitWithAi/i }));
@@ -365,7 +375,7 @@ describe("CreateDocumentDialog — Proposal prompt behind the Proposal artifact 
 		);
 		const user = userEvent.setup();
 		renderDialog();
-		await screen.findByRole("checkbox");
+		await screen.findByRole("checkbox", { name: "generateWithAiLabel" });
 		await pickType(user, /Project Proposal/);
 
 		await user.click(screen.getByRole("button", { name: /submitWithAi/i }));

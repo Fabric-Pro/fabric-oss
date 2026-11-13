@@ -1694,19 +1694,21 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 						type: "string",
 						enum: ["gateway", "fal", "gemini"],
 						description:
-							"Image generation provider. 'gateway' for Nano Banana via Vercel AI Gateway (default, supports image editing), 'fal' for FLUX models, 'gemini' for direct Google Gemini.",
+							"Image generation provider. 'gateway' uses the configured image model (default). Nano Banana and GPT Image models accept an input image for editing. 'fal' uses FLUX models and 'gemini' uses direct Google Gemini; these two providers cannot edit images.",
 						default: "gateway",
 					},
 					gatewayModel: {
 						type: "string",
 						enum: [
-							"google/gemini-3.1-flash-image-preview",
+							"google/gemini-3.1-flash-image",
 							"google/gemini-3-pro-image",
+							"google/gemini-nano-banana-2.1",
+							"google/gemini-3.1-flash-lite-image",
 						],
 						description:
 							"Gateway model override. Omit to use the user's configured default. " +
 							"Only set explicitly if the user requests specific quality: " +
-							"'google/gemini-3.1-flash-image-preview' (fast) or 'google/gemini-3-pro-image' (higher quality).",
+							"'google/gemini-nano-banana-2.1' (new projects and reference editing), 'google/gemini-3.1-flash-image' (stable), 'google/gemini-3.1-flash-lite-image' (fast, simple images), or 'google/gemini-3-pro-image' (higher quality).",
 					},
 					aspectRatio: {
 						type: "string",
@@ -1734,7 +1736,7 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 					model: {
 						type: "string",
 						description:
-							"Model ID override. FAL default: fal-ai/flux-pro/v1.1, Gemini default: gemini-2.0-flash-preview-image-generation",
+							"Model ID override. FAL default: fal-ai/flux-pro/v1.1, Gemini default: gemini-nano-banana-2.1",
 					},
 				},
 				required: ["prompt"],

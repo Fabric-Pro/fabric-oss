@@ -60,6 +60,10 @@ vi.mock("../../lib/project-tab-preferences", () => ({
 
 vi.mock("../ProjectSettingsNav", () => ({ ProjectSettingsNav: () => null }));
 
+vi.mock("@saas/time-tracking/components/ProjectTimeTrackingSettings", () => ({
+	ProjectTimeTrackingSettings: () => null,
+}));
+
 // The three cards the banner sits above, named so the test can find them.
 function stub(name: string) {
 	return () => <div data-testid={name} />;

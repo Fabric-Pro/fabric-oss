@@ -1,5 +1,7 @@
 "use client";
 
+import { approvalRiskLevelSchema } from "../lib/orchestrator-stream-protocol";
+
 /**
  * useMultiAgentStream
  * Fires N parallel SSE connections simultaneously — one per selected agent.
@@ -853,10 +855,17 @@ export function useMultiAgentStream({
 								break;
 							}
 
-							case "approval_required":
+							case "approval_required": {
+								const riskLevel =
+									approvalRiskLevelSchema.safeParse(
+										data.riskLevel,
+									);
 								updateResponse((prev) => ({
 									...prev,
 									pendingApproval: {
+										...(riskLevel.success
+											? { riskLevel: riskLevel.data }
+											: {}),
 										approvalId:
 											typeof data.approvalId === "string"
 												? data.approvalId
@@ -872,6 +881,7 @@ export function useMultiAgentStream({
 									},
 								}));
 								break;
+							}
 							case "approval_resolved":
 								updateResponse((prev) => ({
 									...prev,

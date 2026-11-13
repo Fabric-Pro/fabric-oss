@@ -34,7 +34,7 @@ const DEEP_RESEARCH_SUGGESTIONS = [
 		description:
 			"Multi-agent orchestration, tool use & memory architectures",
 		icon: RobotIcon,
-		iconTone: "border-primary/20 bg-primary/10 text-primary",
+		iconTone: "border-primary/20 bg-primary/10 text-primary-active",
 		prompt: "What are the latest developments in AI agents and autonomous systems?",
 	},
 	{
@@ -42,7 +42,7 @@ const DEEP_RESEARCH_SUGGESTIONS = [
 		description: "Hybrid retrieval, reranking & agentic context pipelines",
 		icon: ScanSearch,
 		iconTone:
-			"border-blue-500/20 bg-blue-500/10 text-blue-600 dark:text-blue-400",
+			"border-blue-500/20 bg-blue-500/10 text-blue-700 dark:text-blue-400",
 		prompt: "Compare different approaches to building RAG applications",
 	},
 	{
@@ -51,7 +51,7 @@ const DEEP_RESEARCH_SUGGESTIONS = [
 			"Cost, latency, reasoning benchmarks & governance trade-offs",
 		icon: Scale,
 		iconTone:
-			"border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+			"border-amber-500/20 bg-amber-500/10 text-amber-800 dark:text-amber-400",
 		prompt: "Analyze the current state of open source LLMs vs proprietary models",
 	},
 	{
@@ -59,7 +59,7 @@ const DEEP_RESEARCH_SUGGESTIONS = [
 		description: "Structured outputs, evaluation harnesses & guardrails",
 		icon: Sparkles,
 		iconTone:
-			"border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+			"border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
 		prompt: "Research best practices for prompt engineering in production systems",
 	},
 ];

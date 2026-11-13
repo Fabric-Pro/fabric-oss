@@ -22,6 +22,11 @@ export const authClient = createAuthClient({
 				onboardingComplete: { type: "boolean", required: false },
 				locale: { type: "string", required: false },
 				mustChangePassword: { type: "boolean", required: false },
+				contrastPreference: {
+					type: "string",
+					required: false,
+					input: false,
+				},
 			},
 		}),
 		magicLinkClient(),

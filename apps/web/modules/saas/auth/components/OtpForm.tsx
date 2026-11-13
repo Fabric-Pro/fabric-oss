@@ -96,7 +96,7 @@ export function OtpForm() {
 			<h1 className="font-bold text-xl md:text-2xl">
 				{t("auth.verify.title")}
 			</h1>
-			<p className="mt-1 mb-4 text-foreground/60">
+			<p className="mt-1 mb-4 text-muted-foreground">
 				{t("auth.verify.message")}
 			</p>
 

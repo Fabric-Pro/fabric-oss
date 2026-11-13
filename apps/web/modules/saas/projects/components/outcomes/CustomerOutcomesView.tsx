@@ -145,7 +145,7 @@ export function CustomerOutcomesView({
 												className={cn(
 													"font-mono text-[10px] uppercase tracking-wider",
 													trend.tone === "good" &&
-														"text-secondary",
+														"text-success",
 													trend.tone === "bad" &&
 														"text-destructive",
 													trend.tone === "flat" &&

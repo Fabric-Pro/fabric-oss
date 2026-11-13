@@ -1246,7 +1246,7 @@ export const authOptions = {
 					(ctx.body?.newPassword as string | undefined);
 				if (password) {
 					try {
-						assertPasswordStrength(password, {
+						await assertPasswordStrength(password, {
 							email: ctx.body?.email as string | undefined,
 							name: ctx.body?.name as string | undefined,
 						});
@@ -1458,6 +1458,16 @@ export const authOptions = {
 			mustChangePassword: {
 				type: "boolean",
 				required: false,
+			},
+			// High-contrast theme choice (Fizzy #1444). Read with the session so
+			// the server layout can paint the right palette before any script
+			// runs; `input: false` keeps it out of `updateUser` and sign-up,
+			// because a client could otherwise store any string at all. It is
+			// written only by `users.appearance.update`, which validates it.
+			contrastPreference: {
+				type: "string",
+				required: false,
+				input: false,
 			},
 		},
 		deleteUser: {
@@ -2011,7 +2021,8 @@ export * from "./lib/organization";
 // - organization(): activeOrganizationId (session)
 // - username():     username (user)
 // - twoFactor():    twoFactorEnabled (user)
-// - additionalFields (this file): onboardingComplete, locale, mustChangePassword
+// - additionalFields (this file): onboardingComplete, locale, mustChangePassword,
+//   contrastPreference
 export type Session = {
 	session: {
 		id: string;
@@ -2046,6 +2057,10 @@ export type Session = {
 		onboardingComplete?: boolean | null;
 		locale?: string | null;
 		mustChangePassword?: boolean | null;
+		// Free text on purpose: a value this build does not know reads as
+		// "unrecognised" rather than failing the session (see
+		// `resolveContrastPreference` in @repo/utils/contrast-preference).
+		contrastPreference?: string | null;
 	};
 };
 

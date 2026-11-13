@@ -29,10 +29,11 @@ import {
 	shellContentOffsetClass,
 	shellDockOffsetClass,
 } from "@saas/shared/lib/shell-layout";
+import { TimerWidget } from "@saas/time-tracking/components/TimerWidget";
 import { BuildVersionWatcher } from "@shared/components/BuildVersionWatcher";
 import { cn } from "@ui/lib";
 import { usePathname } from "next/navigation";
-import type { PropsWithChildren } from "react";
+import { type PropsWithChildren, useState } from "react";
 import {
 	FullscreenProvider,
 	useFullscreen,
@@ -44,6 +45,7 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 	const pathname = usePathname();
 	const isFullHeightRoute = isFullHeightPath(pathname ?? "");
 	const isAgentBuilder = isAgentBuilderPath(pathname ?? "");
+	const [timerDock, setTimerDock] = useState<HTMLDivElement | null>(null);
 
 	// All routes use full-width layout — no card wrapper or outer padding
 	const mainPaddingClasses = isFullHeightRoute
@@ -109,9 +111,15 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 			>
 				<main
 					id="main-content"
-					className={cn(mainSurfaceClasses, mainPaddingClasses, [
-						config.ui.saas.useSidebarLayout ? "" : "",
-					])}
+					// Focusable only from script: the skip link and controls
+					// that remove themselves hand focus here.
+					tabIndex={-1}
+					className={cn(
+						mainSurfaceClasses,
+						mainPaddingClasses,
+						"outline-hidden",
+						[config.ui.saas.useSidebarLayout ? "" : ""],
+					)}
 				>
 					<div
 						className={cn(
@@ -175,6 +183,14 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 							<PersonalKeyNotice />
 							<AnthropicCapabilityBanner />
 							<AiUsageLimitBanner />
+							{/* The running timer's chip, portalled here by
+							 * `TimerWidget` (mounted below) so it never sits
+							 * on a page's own controls. Last, so it docks in
+							 * the corner under any notice. */}
+							<div
+								ref={setTimerDock}
+								className="pointer-events-auto empty:hidden"
+							/>
 						</div>
 						{/* Detects a stale build; its backstop countdown
 						 * banner renders here in flow, never as a fixed
@@ -186,6 +202,11 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 						 * in flow and reserves its own height, so page content
 						 * moves down instead of being covered. */}
 						<ShellNoticeRegion />
+						{/* The running timer's widget, once for the whole
+						 * shell so its open panel and its "Saved" state
+						 * survive navigation. Its chip renders into the dock
+						 * above. Organization context only. */}
+						<TimerWidget dockSlot={timerDock} />
 						{children}
 					</div>
 				</main>

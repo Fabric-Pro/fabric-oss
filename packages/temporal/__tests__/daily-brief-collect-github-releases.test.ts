@@ -277,14 +277,71 @@ describe("collectGitHubReleasesActivity", () => {
 				published_at: "2026-06-05T00:00:00Z",
 			}),
 		);
-		// MAX_RELEASE_PAGES (5) pages; the 5th still advertises rel="next" →
-		// cap hit while more remain → truncation.
-		mockFetchPages([fullPage, fullPage, fullPage, fullPage, fullPage], {
+		// Every page is still inside the window, so paging only stops at
+		// MAX_RELEASE_PAGES (20); the 20th still advertises rel="next" → truncation.
+		const fetchMock = mockFetchPages(Array(20).fill(fullPage), {
 			lastHasNext: true,
 		});
 		const out = await collectGitHubReleasesActivity(WINDOW);
-		expect(out.items.length).toBe(50); // was 500 — now bounded by MAX_DEPLOYMENT_ITEMS
-		expect(out.failures.some((f) => /truncat/i.test(f.reason))).toBe(true); // still true (both notes match)
+		const listCalls = fetchMock.mock.calls.filter(
+			([url]) => !String(url).includes("/releases/latest"),
+		);
+		expect(listCalls).toHaveLength(20);
+		expect(out.items.length).toBe(50); // bounded by MAX_DEPLOYMENT_ITEMS
+		expect(
+			out.failures.some((f) =>
+				/Release list truncated before it reached the window start/.test(
+					f.reason,
+				),
+			),
+		).toBe(true);
+	});
+
+	it("stops paging once a page reaches past the window start — a long release history is not truncation", async () => {
+		vi.mocked(getProjectReposForCodeSearch).mockResolvedValue([
+			repo(),
+		] as never);
+		const page = [
+			release({ tag_name: "v2.0.0" }), // in window
+			release({
+				tag_name: "v1.0.0",
+				created_at: "2026-03-01T00:00:00Z", // older than window start − 30 days
+				published_at: "2026-03-01T00:00:00Z",
+			}),
+		];
+		// Six more pages exist, but the first one already reaches past the window.
+		const fetchMock = mockFetchPages(Array(7).fill(page), {
+			lastHasNext: true,
+		});
+		const out = await collectGitHubReleasesActivity(WINDOW);
+		const listCalls = fetchMock.mock.calls.filter(
+			([url]) => !String(url).includes("/releases/latest"),
+		);
+		expect(listCalls).toHaveLength(1);
+		expect(out.items.map((i) => i.tagName)).toEqual(["v2.0.0"]);
+		expect(out.failures).toEqual([]);
+	});
+
+	it("keeps paging through the draft grace period to find a release drafted before the window", async () => {
+		vi.mocked(getProjectReposForCodeSearch).mockResolvedValue([
+			repo(),
+		] as never);
+		mockFetchPages([
+			[release({ tag_name: "v2.0.0" })],
+			[
+				release({
+					tag_name: "v1.9.0",
+					created_at: "2026-05-20T00:00:00Z", // before the window, inside the grace
+					published_at: "2026-06-04T00:00:00Z", // published inside the window
+				}),
+			],
+		]);
+		const out = await collectGitHubReleasesActivity(WINDOW);
+		expect(out.items.map((i) => i.tagName).sort()).toEqual([
+			"v1.9.0",
+			"v2.0.0",
+		]);
+		expect(out.failures).toEqual([]);
 	});
 
 	it("does NOT flag truncation when the final page has no next link (exhausted)", async () => {
@@ -306,9 +363,7 @@ describe("collectGitHubReleasesActivity", () => {
 			out.failures.some((f) => /truncated to 50/i.test(f.reason)),
 		).toBe(true); // item-cap note
 		expect(
-			out.failures.some((f) =>
-				/Release list truncated at/i.test(f.reason),
-			),
+			out.failures.some((f) => /Release list truncated/i.test(f.reason)),
 		).toBe(false); // NO pagination false-positive
 	});
 
@@ -530,6 +585,46 @@ describe("section size guards", () => {
 		expect(
 			out.failures.some((f) => /truncated to 50/i.test(f.reason)),
 		).toBe(true);
+	});
+
+	it("productionTagsOnly drops package tags before the cap, so production releases are not crowded out", async () => {
+		const at = (s: number) =>
+			new Date(Date.UTC(2026, 5, 7, 0, 0, s)).toISOString();
+		const packages = Array.from({ length: 60 }, (_, i) =>
+			release({
+				tag_name: `@example/pkg@0.1.${i}`,
+				published_at: at(59 - i),
+				created_at: at(59 - i),
+			}),
+		);
+		const production = Array.from({ length: 3 }, (_, i) =>
+			release({
+				tag_name: `v1.0.${i}`,
+				published_at: new Date(
+					Date.UTC(2026, 5, 3, 0, 0, i),
+				).toISOString(),
+			}),
+		);
+		vi.mocked(getProjectReposForCodeSearch).mockResolvedValue([
+			repo(),
+		] as never);
+
+		mockFetchPages([[...packages, ...production]]);
+		const all = await collectGitHubReleasesActivity(WINDOW);
+		expect(all.items).toHaveLength(50);
+		expect(all.items.some((i) => i.tagName.startsWith("v"))).toBe(false);
+
+		mockFetchPages([[...packages, ...production]]);
+		const out = await collectGitHubReleasesActivity({
+			...WINDOW,
+			productionTagsOnly: true,
+		});
+		expect(out.items.map((i) => i.tagName)).toEqual([
+			"v1.0.2",
+			"v1.0.1",
+			"v1.0.0",
+		]);
+		expect(out.failures).toEqual([]);
 	});
 
 	it("replaces overflow bodies with the omitted-notice and records a budget note", async () => {

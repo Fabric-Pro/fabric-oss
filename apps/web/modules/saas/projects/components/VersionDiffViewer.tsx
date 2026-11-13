@@ -63,7 +63,8 @@ interface SelectedVersion {
 	 * `resolveDocumentVersionAuthor` whenever that gets picked up.
 	 */
 	author?: DocumentVersionAuthor | null;
-	createdAt: string;
+	/** When the version was made; null when nothing recorded it. */
+	createdAt: string | null;
 }
 
 interface VersionDiffViewerProps {
@@ -397,8 +398,14 @@ export function VersionDiffViewer({
 					<div className="flex items-center gap-4 text-sm text-muted-foreground">
 						<span className="flex items-center gap-1.5">
 							<ClockIcon className="h-3.5 w-3.5" />v
-							{selectedVersion.version} &middot;{" "}
-							{formatDate(selectedVersion.createdAt)}
+							{selectedVersion.version}
+							{selectedVersion.createdAt !== null && (
+								<>
+									{" "}
+									&middot;{" "}
+									{formatDate(selectedVersion.createdAt)}
+								</>
+							)}
 						</span>
 						<VersionAuthorBadge
 							author={selectedVersion.author}

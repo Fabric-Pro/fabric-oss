@@ -10,6 +10,28 @@ import type { AwaitingMeeting, DigestMeeting, PersonalMeeting } from "./types";
 
 const DAY_KEY = "yyyy-MM-dd";
 
+/**
+ * The calendar day a meeting was held, as a local date to group and show.
+ *
+ * A date with no time of day, one read from a file or typed in by a person
+ * (#3507), is stored at exactly 12:00:00.000 UTC and means that calendar day
+ * for every viewer, so it is read in UTC; read as an instant it falls on the
+ * next day east of UTC+12. A real timestamp, which never lands on that exact
+ * millisecond in practice, is read in the viewer's zone as before.
+ */
+export function meetingCalendarDay(date: Date | string): Date {
+	const d = new Date(date);
+	if (
+		d.getUTCHours() === 12 &&
+		d.getUTCMinutes() === 0 &&
+		d.getUTCSeconds() === 0 &&
+		d.getUTCMilliseconds() === 0
+	) {
+		return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+	}
+	return d;
+}
+
 /** Bucket meetings by calendar day; meetings without a date are dropped. */
 export function groupMeetingsByDay(
 	meetings: DigestMeeting[],
@@ -19,7 +41,7 @@ export function groupMeetingsByDay(
 		if (!meeting.meetingDate) {
 			continue;
 		}
-		const key = format(meeting.meetingDate, DAY_KEY);
+		const key = format(meetingCalendarDay(meeting.meetingDate), DAY_KEY);
 		const bucket = out.get(key);
 		if (bucket) {
 			bucket.push(meeting);

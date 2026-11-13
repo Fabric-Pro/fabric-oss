@@ -158,7 +158,7 @@ export function MfaSetupBanner({ className }: MfaSetupBannerProps) {
 			)}
 		>
 			<div className="flex min-w-0 items-start gap-3">
-				<div className="mt-0.5 rounded-md border border-primary/25 bg-primary/10 p-2 text-primary">
+				<div className="mt-0.5 rounded-md border border-primary/25 bg-primary/10 p-2 text-primary-active">
 					<ShieldCheckIcon className="size-4" />
 				</div>
 				<div className="min-w-0">

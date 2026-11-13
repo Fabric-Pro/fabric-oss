@@ -483,6 +483,23 @@ describe("ContextsResource.resetSyncedFiles", () => {
 		);
 	});
 
+	it("sends an empty body without a folder, and the folder in the body with one", async () => {
+		const { client, captured } = buildClient({
+			rawBody: { data: { deleted: 2 } },
+		});
+
+		await client.contexts.resetSyncedFiles("proj-1");
+		await client.contexts.resetSyncedFiles("proj-1", {
+			folder: "docs/guides",
+		});
+
+		expect(captured[0]?.body).toEqual({});
+		expect(captured[1]?.body).toEqual({ folder: "docs/guides" });
+		expect(captured[1]?.url).toBe(
+			"https://test.fabric/api/v1/projects/proj-1/contexts/reset",
+		);
+	});
+
 	it("rejects a connected repository sync with its code, once, never retried", async () => {
 		const { client, captured } = buildClient({
 			status: 409,

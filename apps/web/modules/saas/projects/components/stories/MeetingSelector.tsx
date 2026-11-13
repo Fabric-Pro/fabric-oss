@@ -189,7 +189,7 @@ export function MeetingSelector({
 								<CalendarIcon className="size-3 shrink-0" />
 								{m.subject}
 								{m.startTime && (
-									<span className="text-muted-foreground/70">
+									<span className="text-muted-foreground">
 										({formatDate(m.startTime)})
 									</span>
 								)}

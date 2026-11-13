@@ -20,9 +20,12 @@ const mockResolveToken = vi.fn();
 const mockRecordRead = vi.fn();
 const mockRecordAudit = vi.fn();
 const mockFetch = vi.fn();
+const mockHeadBeenRead = vi.fn();
+const mockStartTimeSuggestions = vi.fn();
 const capturedPermissions: unknown[] = [];
 
 vi.mock("@repo/database", () => ({
+	hasPullRequestHeadBeenRead: (...a: unknown[]) => mockHeadBeenRead(...a),
 	recordPullRequestRead: (...a: unknown[]) => mockRecordRead(...a),
 	listPullRequestReviews: vi.fn(),
 	getPullRequestReview: vi.fn(),
@@ -42,6 +45,11 @@ vi.mock("@repo/integrations", () => ({
 
 vi.mock("../../../../../lib/audit", () => ({
 	recordAuditFromRequest: (...a: unknown[]) => mockRecordAudit(...a),
+}));
+
+vi.mock("../../../../time-tracking/lib/automatic-suggestions", () => ({
+	startTimeSuggestionsAfterPullRequest: (...a: unknown[]) =>
+		mockStartTimeSuggestions(...a),
 }));
 
 vi.mock("../../../lib/pr-review-feature", () => ({
@@ -70,6 +78,8 @@ const { PR_REVIEW_MAX_DIFF_BYTES, readPullRequestProcedure } = await import(
 );
 
 const context = { user: { id: "user-1" }, session: {} };
+
+const READ_AT = new Date("2026-11-10T15:00:00.000Z");
 
 const githubIntegration = {
 	id: "int-1",
@@ -146,8 +156,10 @@ beforeEach(() => {
 	// The write echoes back what it was asked to store, so assertions can read
 	// the persisted shape without a database.
 	mockRecordRead.mockImplementation((input: Record<string, unknown>) =>
-		Promise.resolve({ id: "rev-1", ...input }),
+		Promise.resolve({ id: "rev-1", ...input, createdAt: READ_AT }),
 	);
+	mockHeadBeenRead.mockResolvedValue(false);
+	mockStartTimeSuggestions.mockResolvedValue(undefined);
 	stubGithub();
 });
 
@@ -302,5 +314,36 @@ describe("readPullRequestProcedure", () => {
 
 		await expect(callRead()).rejects.toThrow(/no commit range/i);
 		expect(mockRecordRead).not.toHaveBeenCalled();
+	});
+
+	it("suggests time for the author after reading a new head commit", async () => {
+		await callRead();
+
+		expect(mockHeadBeenRead).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			provider: "GITHUB",
+			repoOwner: "acme",
+			repoName: "store",
+			prNumber: 42,
+			headSha: "a".repeat(40),
+		});
+		expect(mockStartTimeSuggestions).toHaveBeenCalledWith({
+			reviewId: "rev-1",
+			organizationId: "org-1",
+			projectId: "proj-1",
+			provider: "GITHUB",
+			prUrl: "https://github.com/acme/store/pull/42",
+			authorLabel: "dana",
+			createdAt: READ_AT,
+		});
+	});
+
+	it("suggests nothing when the same head commit is read again", async () => {
+		mockHeadBeenRead.mockResolvedValue(true);
+
+		await callRead();
+
+		expect(mockRecordRead).toHaveBeenCalledOnce();
+		expect(mockStartTimeSuggestions).not.toHaveBeenCalled();
 	});
 });

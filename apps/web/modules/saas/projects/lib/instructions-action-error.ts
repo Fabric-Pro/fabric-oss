@@ -23,7 +23,9 @@ type InstructionConflictReasonKey =
 	| "repositoryMode"
 	| "snapshotActive"
 	| "pullRequestUnresolved"
-	| "proposalPending";
+	| "proposalPending"
+	| "templateChanged"
+	| "templateUnavailable";
 
 /**
  * `data.reason` values with their own line. Each names a state the person can
@@ -37,6 +39,8 @@ const KEY_BY_CONFLICT_REASON: ReadonlyMap<
 	["SNAPSHOT_ACTIVE", "snapshotActive"],
 	["PULL_REQUEST_UNRESOLVED", "pullRequestUnresolved"],
 	["PROPOSAL_PENDING", "proposalPending"],
+	["TEMPLATE_CHANGED", "templateChanged"],
+	["TEMPLATE_UNAVAILABLE", "templateUnavailable"],
 ]);
 
 function conflictReasonKeyOf(

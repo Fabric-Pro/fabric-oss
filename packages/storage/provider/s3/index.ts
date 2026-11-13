@@ -15,7 +15,7 @@ import {
 import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl as getS3SignedUrl } from "@aws-sdk/s3-request-presigner";
 import { logger } from "@repo/logs";
-import { withProviderBreaker } from "@repo/observability";
+import { withProviderBreaker } from "@repo/observability/breakers";
 import {
 	rethrowIfDispatchStopped,
 	throwIfDispatchStopped,

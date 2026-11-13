@@ -93,6 +93,10 @@ import {
 	REPORT_SAMPLE_FALLBACK_BODY,
 	REPORT_SAMPLE_PROMPT_AGENT_KEY,
 } from "@repo/utils/report-sample-prompt";
+import {
+	TIME_SUGGESTION_FALLBACK_BODY,
+	TIME_SUGGESTION_PROMPT_AGENT_KEY,
+} from "@repo/utils/time-suggestion-prompt";
 import { db } from "../prisma/client";
 import { isDirectRun } from "./lib/is-direct-run";
 // The retirement guard every SYSTEM-scope insert goes through, and the batched
@@ -278,6 +282,18 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: "qa_agentic_runner",
+	},
+	// newsletter_screenshot_capture: the prompt behind automatic release-notes
+	// screenshots. Asked one step at a time which single operation brings the
+	// screen a highlight changed into view, and when to take the picture.
+	//
+	// Editable per org because what makes a good picture of a change is a
+	// house convention: a whole page, or only the changed component. GENERAL +
+	// null — a capture has no story kind.
+	newsletter_screenshot_capture: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: "newsletter_screenshot_capture",
 	},
 	// F-171 bug pipeline: single-stage bug workflow. The classifier decides
 	// kind at ingest; the bug creation prompt drafts the card; the
@@ -512,6 +528,15 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: REPORT_PARAMETER_DEFAULTS_PROMPT_AGENT_KEY,
+	},
+	// time_suggestion_drafter: the descriptions and activities of the time
+	// entries Fabric suggests a member log. Dedicated agent key, GENERAL +
+	// null: one prompt per tenant covers every project. The evidence is fenced
+	// as untrusted data code-side, and the duration never comes from the model.
+	[TIME_SUGGESTION_PROMPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: TIME_SUGGESTION_PROMPT_AGENT_KEY,
 	},
 	// orchestrator_memory_context / direct_chat_memory_context: how each
 	// assistant engine reads what it recalls from earlier conversations and
@@ -5739,6 +5764,43 @@ Rules for question 2:
 		bindingTargetKey: null,
 	},
 	{
+		// newsletter_screenshot_capture — resolved by
+		// `activities/newsletter/capture-newsletter-screenshot.ts` via
+		// getBoundPromptForAgent. Plain text, not handlebars: the highlight, the
+		// brief and the page snapshot are appended as labelled blocks below the
+		// instructions, so an org editing this cannot drop a variable and drive
+		// a browser with no context.
+		key: "newsletter_screenshot_capture",
+		name: "Newsletter — Screenshot Capture",
+		description:
+			"Drives a browser through one of the project's environments to the screen a release-notes highlight changed, then picks what to capture. Asked one step at a time. Edit it to change whether pictures show a whole page or only the changed part, or to add rules about your app.",
+		category: "newsletter",
+		tags: ["newsletter", "screenshot", "browser"],
+		format: "PLAIN_TEXT" as const,
+		isPublic: true,
+		content: `You are taking a screenshot for a release-notes newsletter. The picture must show readers the change described in one highlight. You are driving a real browser that is already signed in to the product, one operation at a time.
+
+You are given the highlight, a brief that names the screen and state that shows the change, the steps taken so far, and an ARIA snapshot of the current page. Choose exactly ONE operation:
+- click — needs "role" and "name", copied verbatim from the snapshot (e.g. role "button", name "Filters")
+- fill — needs "role", "name" and "text"
+- press — needs "key" (e.g. "Escape")
+- goto — needs "path", relative to the site (e.g. "/projects"). Never a full URL to another site.
+- wait — needs "ms", at most 10000
+- capture — take the picture now. Optionally give "role" and "name" of one element from the snapshot to capture only that element; leave them out to capture the whole visible page.
+- give_up — stop without a picture. Say in "reasoning" what you found instead.
+
+Rules:
+- Use ONLY role/name pairs that appear in the snapshot. Never invent an element, and never guess a CSS selector.
+- Prefer the shortest path to the screen. Open the menu, tab or dialog the brief names, then capture.
+- The email shows the picture about 450 px wide, so a whole page shrinks until its text is hard to read. Capture the panel, dialog, table or section that shows the change by giving its role and name. Capture the whole visible page only when the change spans it.
+- Capture as soon as the change is visible. Do not wait for a perfect state.
+- Never submit a form, save, delete, send, invite or pay. Opening a dialog is fine; confirming it is not.
+- Never open administration, settings, billing, member or user-management screens, and never click anything that deletes, saves, submits, invites, sends or changes data. If the brief needs one of those, give_up.
+- If the screen the brief names cannot be reached, or the page shows a sign-in form, an error or an empty state instead, give_up. A wrong picture is worse than none.
+- Put one short sentence in "reasoning" saying why this operation. When you capture, "text" may hold a one-sentence description of the picture for readers whose mail app blocks images.`,
+		bindingTargetKey: null,
+	},
+	{
 		// test_failure_analyst — resolved by
 		// `analyse-test-failure.ts` via getBoundPromptForAgent. Plain text, not
 		// handlebars: the failure evidence is appended as a labelled block below
@@ -6925,6 +6987,31 @@ Rules:
 		format: "HANDLEBARS" as const,
 		isPublic: true,
 		content: REPORT_PARAMETER_DEFAULTS_FALLBACK_BODY,
+	},
+	{
+		// time_suggestion_drafter: describes each block of time Fabric
+		// suggests a member log, and picks its activity, from the member's own
+		// activity in Fabric.
+		//
+		// The body lives in @repo/utils (TIME_SUGGESTION_FALLBACK_BODY) so this
+		// seed and the activity that resolves the binding share ONE
+		// definition. The evidence is fenced as untrusted data code-side, and
+		// the structured output contract is the activity's.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: TIME_SUGGESTION_PROMPT_AGENT_KEY,
+		name: "Time Suggestion Drafter",
+		description:
+			"Describes each block of time Fabric suggests a member log, from their own meetings, test runs and edits, and picks its activity. The member reviews every suggestion; the duration never comes from the model.",
+		category: "time-tracking",
+		tags: ["time-tracking", "suggestions", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: TIME_SUGGESTION_FALLBACK_BODY,
 	},
 	{
 		// orchestrator_memory_context: how the Orchestrator assistant reads what

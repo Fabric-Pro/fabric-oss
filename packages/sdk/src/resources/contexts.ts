@@ -191,6 +191,16 @@ export interface UpsertSyncedContextFileOptions {
 	org?: string;
 }
 
+export interface ResetSyncedContextFilesOptions
+	extends UpsertSyncedContextFileOptions {
+	/**
+	 * Only the synced files under this folder, a path relative to the folder
+	 * they were pushed from, such as `docs/guides`. Omit it to reset every
+	 * synced file.
+	 */
+	folder?: string;
+}
+
 /**
  * A push refused because the path holds a different version than the one
  * named — or, with no `expectedContentHash`, any different version at all.
@@ -609,7 +619,8 @@ export class ContextsResource {
 
 	/**
 	 * Reset the project's Living Memory: delete EVERY file synced into its
-	 * Context at once, with their search-index entries queued for removal.
+	 * Context at once, or with `folder` only those under that folder, with
+	 * their search-index entries queued for removal.
 	 *
 	 * Requires a key with `projects:write`, and the key's creator must still
 	 * hold permission to delete context sources on that project.
@@ -617,21 +628,22 @@ export class ContextsResource {
 	 * Resolves with `{ deleted }`, 0 when there was nothing to delete. While a
 	 * repository sync is connected nothing is deleted and the call rejects
 	 * with a `FabricError` (status 409, code `REPOSITORY_SYNC_ACTIVE`):
-	 * disconnect the sync first.
+	 * disconnect the sync first. A `folder` that is absolute, names the root
+	 * or holds a `.` or `..` segment rejects with status 400.
 	 *
 	 * **Safe to retry**: a repeat deletes nothing more. Not retried by the
 	 * client, so a reset is never sent twice unasked.
 	 */
 	resetSyncedFiles(
 		projectId: string,
-		options: UpsertSyncedContextFileOptions = {},
+		options: ResetSyncedContextFilesOptions = {},
 	): Promise<ResetSyncedContextFilesResult> {
 		const query = options.org
 			? `?org=${encodeURIComponent(options.org)}`
 			: "";
 		return this.http.post<ResetSyncedContextFilesResult>(
 			`/projects/${encodeURIComponent(projectId)}/contexts/reset${query}`,
-			{},
+			options.folder === undefined ? {} : { folder: options.folder },
 			{ retry: { maxRetries: 0 } },
 		);
 	}

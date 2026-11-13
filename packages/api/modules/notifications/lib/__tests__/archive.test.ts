@@ -2,8 +2,9 @@
  * Archive and restore procedures.
  *
  * The handlers must:
- *  - Filter `updateMany` by the caller's `userId` AND `organizationId` so a
- *    user cannot archive someone else's notification by guessing an id.
+ *  - Filter `updateMany` by the caller's bell-visible set so a user cannot
+ *    archive someone else's or another organization's notification by
+ *    guessing an id, while their global weekly digest remains actionable.
  *  - For archive: target only currently-unarchived rows (`archivedAt: null`).
  *  - For restore: target only currently-archived rows (`archivedAt: { not: null }`).
  *  - Invalidate the Redis unread-count cache for the affected scope, so the
@@ -48,7 +49,11 @@ vi.mock("../../../../orpc/procedures", () => {
 	return {
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => () => undefined,
-		resolveOrganizationId: (id: string | null | undefined) => id ?? null,
+		resolveOrganizationIdForCaller: async (
+			id: string | null | undefined,
+			session: { activeOrganizationId?: string },
+		) =>
+			(id === undefined ? session.activeOrganizationId : id) ?? undefined,
 		get tenantProtectedProcedure() {
 			return makeChain();
 		},
@@ -65,8 +70,11 @@ describe("archive/restore procedures", () => {
 		updateMany.mockResolvedValue({ count: 2 });
 
 		const result = await (archiveNotificationsProcedure as any)({
-			input: { ids: ["n1", "n2"], organizationId: null },
-			context: { user: { id: "u1" }, session: {} },
+			input: { ids: ["n1", "n2"], organizationId: "example-org" },
+			context: {
+				user: { id: "u1" },
+				session: { activeOrganizationId: "example-org" },
+			},
 		});
 
 		const where = updateMany.mock.calls[0][0].where;
@@ -77,22 +85,30 @@ describe("archive/restore procedures", () => {
 			Date,
 		);
 		expect(result).toEqual({ archived: 2 });
-		expect(invalidateUnreadCount).toHaveBeenCalledWith("u1", null);
+		expect(invalidateUnreadCount).toHaveBeenCalledWith("u1", "example-org");
 	});
 
-	it("archive scopes to the caller's organization", async () => {
+	it("archive uses the caller's organization in each organization-visible arm", async () => {
 		updateMany.mockReset();
 		invalidateUnreadCount.mockReset();
 		updateMany.mockResolvedValue({ count: 1 });
 
 		await (archiveNotificationsProcedure as any)({
 			input: { ids: ["n1"], organizationId: "org-a" },
-			context: { user: { id: "u1" }, session: {} },
+			context: {
+				user: { id: "u1" },
+				session: { activeOrganizationId: "example-org" },
+			},
 		});
 
 		const where = updateMany.mock.calls[0][0].where;
 		expect(where.userId).toBe("u1");
-		expect(where.organizationId).toBe("org-a");
+		expect(where.OR).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ organizationId: "org-a" }),
+				expect.objectContaining({ organizationId: null }),
+			]),
+		);
 		expect(invalidateUnreadCount).toHaveBeenCalledWith("u1", "org-a");
 	});
 
@@ -102,8 +118,11 @@ describe("archive/restore procedures", () => {
 		updateMany.mockResolvedValue({ count: 1 });
 
 		const result = await (restoreNotificationsProcedure as any)({
-			input: { ids: ["n3"], organizationId: null },
-			context: { user: { id: "u1" }, session: {} },
+			input: { ids: ["n3"], organizationId: "example-org" },
+			context: {
+				user: { id: "u1" },
+				session: { activeOrganizationId: "example-org" },
+			},
 		});
 
 		const args = updateMany.mock.calls.at(-1)[0];
@@ -112,7 +131,7 @@ describe("archive/restore procedures", () => {
 		expect(args.where.archivedAt).toEqual({ not: null });
 		expect(args.data.archivedAt).toBeNull();
 		expect(result).toEqual({ restored: 1 });
-		expect(invalidateUnreadCount).toHaveBeenCalledWith("u1", null);
+		expect(invalidateUnreadCount).toHaveBeenCalledWith("u1", "example-org");
 	});
 
 	it("rejects empty id arrays at the schema layer", async () => {

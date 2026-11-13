@@ -195,7 +195,7 @@ function SortableStepRow({
 					type="button"
 					aria-label={t("steps.reorderAria", { number: index + 1 })}
 					disabled={disabled}
-					className="cursor-grab touch-none rounded text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing disabled:cursor-default disabled:opacity-50"
+					className="cursor-grab touch-none rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing disabled:cursor-default disabled:opacity-50"
 					{...attributes}
 					{...listeners}
 				>

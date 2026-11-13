@@ -13,6 +13,8 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
+	storeWrite: vi.fn(),
+	storeWarn: vi.fn(),
 	getCachedMcpClientForConfig: vi.fn(async () => {
 		throw new Error("MCP configuration not found");
 	}),
@@ -33,6 +35,11 @@ const h = vi.hoisted(() => ({
 	searchCompanyContext: vi.fn(),
 }));
 
+vi.mock("@repo/database/prisma/queries/advisor-tool-results", () => ({
+	ADVISOR_RESULT_MAX_BYTES: 1024 * 1024,
+	advisorToolResultStorage: { write: h.storeWrite },
+}));
+vi.mock("@repo/logs", () => ({ logger: { info: vi.fn(), warn: h.storeWarn } }));
 vi.mock("@repo/mcp", () => ({
 	getCachedMcpClientForConfig: h.getCachedMcpClientForConfig,
 	invalidateMcpClientCache: vi.fn(),
@@ -40,7 +47,10 @@ vi.mock("@repo/mcp", () => ({
 	McpGitLabOriginMismatchError: class extends Error {},
 	OAuthAuthorizationRequiredError: class extends Error {},
 }));
-vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
+vi.mock("@temporalio/activity", () => ({
+	heartbeat: vi.fn(),
+	Context: { current: () => ({ info: { attempt: 2 } }) },
+}));
 vi.mock("@repo/utils", async () => {
 	const actual = (await vi.importActual(
 		"../../../../../../utils/lib/read-only-mode",
@@ -602,5 +612,102 @@ describe("the company context search, hidden from the catalog", () => {
 		});
 		expect(h.resolveCompanyContextChatAccess).not.toHaveBeenCalled();
 		expect(h.searchCompanyContext).not.toHaveBeenCalled();
+	});
+});
+
+describe("Advisor storage at the MCP activity boundary", () => {
+	const scope = {
+		conversationId: "example-conversation",
+		turnId: "example-turn",
+		sourceKey: "example-execution:0",
+		toolName: "code_tree",
+	};
+	const input = {
+		toolName: "code_tree",
+		args: {
+			userId: "example-forged-user",
+			organizationId: "example-forged-org",
+			advisorResultStore: { turnId: "example-forged-turn" },
+		},
+		userId: "example-user",
+		organizationId: "example-org",
+		mcpConfigId: "fabric-ai-server",
+		advisorResultStore: scope,
+	};
+	beforeEach(() => {
+		h.storeWrite.mockReset().mockResolvedValue("stored");
+		h.storeWarn.mockClear();
+	});
+	it("uses server input ownership and stores the returned output without arguments", async () => {
+		const output = JSON.stringify({
+			userId: "example-model-user",
+			organizationId: "example-model-org",
+		});
+		h.runFabricCatalogTool.mockResolvedValueOnce({ success: true, output });
+		const result = await executeMcpTool(input);
+		expect(result).toMatchObject({ success: true, output });
+		expect(h.storeWrite).toHaveBeenCalledExactlyOnceWith({
+			userId: "example-user",
+			organizationId: "example-org",
+			conversationId: scope.conversationId,
+			turnId: scope.turnId,
+			sourceKey: scope.sourceKey,
+			toolName: "code_tree",
+			text: output,
+			attempt: 2,
+		});
+	});
+	it.each(["row_limit", "conversation_limit"])(
+		"returns the tool output unchanged when storage skips %s",
+		async (outcome) => {
+			h.storeWrite.mockResolvedValue(outcome);
+			h.runFabricCatalogTool.mockResolvedValueOnce({
+				success: true,
+				output: "example unchanged",
+			});
+			expect(await executeMcpTool(input)).toMatchObject({
+				success: true,
+				output: "example unchanged",
+			});
+		},
+	);
+	it("returns the tool output unchanged after one failed write attempt", async () => {
+		h.storeWrite.mockRejectedValue(new Error("example private content"));
+		h.runFabricCatalogTool.mockResolvedValueOnce({
+			success: true,
+			output: "example unchanged",
+		});
+		expect(await executeMcpTool(input)).toMatchObject({
+			success: true,
+			output: "example unchanged",
+		});
+		expect(h.storeWrite).toHaveBeenCalledOnce();
+		expect(JSON.stringify(h.storeWarn.mock.calls)).not.toContain(
+			"example private content",
+		);
+	});
+	it("does not store on a new worker receiving an old input", async () => {
+		await executeMcpTool({ ...input, advisorResultStore: undefined });
+		expect(h.storeWrite).not.toHaveBeenCalled();
+	});
+	it("does not store a failed read", async () => {
+		h.runFabricCatalogTool.mockResolvedValueOnce({
+			success: false,
+			output: "example failure",
+		});
+		await executeMcpTool(input);
+		expect(h.storeWrite).not.toHaveBeenCalled();
+	});
+	it("accepts new optional metadata without changing the old output contract", async () => {
+		h.runFabricCatalogTool.mockResolvedValueOnce({
+			success: true,
+			output: "example unchanged",
+		});
+		const result = await executeMcpTool(input);
+		expect(result).toMatchObject({
+			success: true,
+			output: "example unchanged",
+		});
+		expect(result).not.toHaveProperty("advisorResultStore");
 	});
 });

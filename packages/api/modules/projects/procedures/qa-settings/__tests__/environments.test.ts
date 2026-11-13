@@ -15,7 +15,13 @@ const { handlers, mocks } = vi.hoisted(() => ({
 		list: vi.fn(),
 		audit: vi.fn(),
 		assertSafeUrl: vi.fn(),
+		releaseScreenshotEnvironment: vi.fn(),
 	},
+}));
+
+vi.mock("../../../../newsletter/lib/screenshot-environment", () => ({
+	releaseScreenshotEnvironment: (...args: unknown[]) =>
+		mocks.releaseScreenshotEnvironment(...args),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -75,6 +81,7 @@ beforeEach(() => {
 	mocks.update.mockResolvedValue(currentEnvironment);
 	mocks.remove.mockResolvedValue(currentEnvironment);
 	mocks.assertSafeUrl.mockResolvedValue(undefined);
+	mocks.releaseScreenshotEnvironment.mockResolvedValue(true);
 });
 
 describe("project environment URL policy", () => {
@@ -192,6 +199,49 @@ describe("project environment audit trail", () => {
 				}),
 			}),
 		);
+	});
+
+	it("drops the release-notes screenshot binding when the address or type changes", async () => {
+		mocks.update.mockResolvedValue({
+			...currentEnvironment,
+			type: "STAGING",
+			baseUrl: "https://app.example.com/v2",
+		});
+
+		await updateEnvironment({
+			input: {
+				projectId: "project-1",
+				environmentId: "env-1",
+				type: "STAGING",
+				baseUrl: "https://app.example.com/v2",
+			},
+			context,
+		});
+
+		expect(mocks.releaseScreenshotEnvironment).toHaveBeenCalledWith({
+			projectId: "project-1",
+			environmentId: "env-1",
+			user: context.user,
+			changed: ["baseUrl", "type"],
+		});
+	});
+
+	it("keeps the screenshot binding when only the name changes", async () => {
+		mocks.update.mockResolvedValue({
+			...currentEnvironment,
+			name: "Primary production",
+		});
+
+		await updateEnvironment({
+			input: {
+				projectId: "project-1",
+				environmentId: "env-1",
+				name: "Primary production",
+			},
+			context,
+		});
+
+		expect(mocks.releaseScreenshotEnvironment).not.toHaveBeenCalled();
 	});
 
 	it("uses the deleted row as the audit snapshot", async () => {

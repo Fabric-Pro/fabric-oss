@@ -9,6 +9,7 @@ import type {
 	AwaitingMeeting,
 	DigestMeeting,
 	DigestSeriesEntry,
+	UndatedMeeting,
 } from "../lib/types";
 import { LINKED_MEETINGS_QUERY_KEY } from "./use-linked-meeting-join-urls";
 
@@ -397,6 +398,8 @@ export function useMeetingDigest({
 		// calendar grid rather than only in the advisory band.
 		awaitingOccurrences: (data?.awaitingOccurrences ??
 			[]) as AwaitingMeeting[],
+		// #3507 — meetings with no known date, listed apart from the calendar.
+		undatedMeetings: (data?.undatedMeetings ?? []) as UndatedMeeting[],
 		configMeetings: (configurableData?.meetings ?? []) as ConfigMeeting[],
 		isLoading,
 		isError,

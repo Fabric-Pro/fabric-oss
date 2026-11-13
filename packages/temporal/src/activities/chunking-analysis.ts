@@ -124,9 +124,26 @@ export async function buildChunkingQuestionsActivity(
 		},
 	);
 	const questions: EvalQuestion[] = [];
+	// Progress for RAG Settings: one step per sampled source.
+	const total = Object.values(plan.sample).reduce(
+		(sum, ids) => sum + ids.length,
+		0,
+	);
+	let done = 0;
+	await writeAnalysisProgress(scope.runId, {
+		stage: "questions",
+		done,
+		total,
+	});
 	for (const contentType of Object.keys(plan.sample)) {
 		for (const source of await sampleOf(scope, plan, contentType)) {
 			heartbeat(source.id);
+			done += 1;
+			await writeAnalysisProgress(scope.runId, {
+				stage: "questions",
+				done,
+				total,
+			});
 			const text = source.text.slice(0, QUESTION_SOURCE_CHARS);
 			let generated: z.infer<typeof QuestionsSchema>["questions"];
 			try {
@@ -276,6 +293,7 @@ export async function evaluateChunkingTypeActivity(
 			),
 		});
 	}
+	await markTypeEvaluated(scope, scope.contentType);
 	return { contentType: scope.contentType, scored };
 }
 
@@ -331,5 +349,53 @@ export async function listMeasurableChunkingTypesActivity(
 	scope: ChunkingAnalysisScope,
 ): Promise<{ types: string[] }> {
 	const plan = await loadPlan(scope);
-	return { types: Object.keys(plan.sample) };
+	const types = Object.keys(plan.sample);
+	await writeAnalysisProgress(scope.runId, {
+		stage: "evaluating",
+		done: 0,
+		total: types.length,
+		doneTypes: [],
+	});
+	return { types };
+}
+
+/** Where an analysis stands, as RAG Settings shows it. */
+export interface ChunkingAnalysisProgress {
+	stage: "questions" | "evaluating";
+	done: number;
+	total: number;
+	/** Evaluated types: a retried evaluation is counted once. */
+	doneTypes?: string[];
+}
+
+async function writeAnalysisProgress(
+	runId: string,
+	progress: ChunkingAnalysisProgress,
+): Promise<void> {
+	await updateProjectChunkingRun(runId, {
+		progress: progress as unknown as Prisma.InputJsonValue,
+	});
+}
+
+/** Count one more evaluated type; idempotent across activity retries. */
+async function markTypeEvaluated(
+	scope: ChunkingAnalysisScope,
+	contentType: string,
+): Promise<void> {
+	const run = await db.projectChunkingRun.findFirst({
+		where: {
+			id: scope.runId,
+			projectId: scope.projectId,
+			organizationId: scope.organizationId,
+		},
+		select: { progress: true },
+	});
+	const current = (run?.progress ?? {}) as Partial<ChunkingAnalysisProgress>;
+	const doneTypes = [...new Set([...(current.doneTypes ?? []), contentType])];
+	await writeAnalysisProgress(scope.runId, {
+		stage: "evaluating",
+		done: doneTypes.length,
+		total: Math.max(current.total ?? 0, doneTypes.length),
+		doneTypes,
+	});
 }

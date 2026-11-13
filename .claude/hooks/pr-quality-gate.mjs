@@ -9,6 +9,7 @@ import {
 	writeAskDecision,
 	writeDenyDecision,
 } from "./lib/permission-decision.mjs";
+import { prCommandCwd } from "./lib/pr-command-cwd.mjs";
 
 /**
  * Quality-gate commands run sequentially with fail-fast. Order is
@@ -467,9 +468,11 @@ function runCheck(argv, cwd, timeoutMs) {
  * session opened in the main checkout that `cd`s into a worktree would
  * otherwise gate against the wrong tree. Resolution order, each normalized to
  * its git top-level:
- *   1. a leading `cd <dir> &&` in the command (the effective cwd of the gh call),
- *   2. the session cwd from the hook payload,
- *   3. CLAUDE_PROJECT_DIR (legacy behavior / main-worktree fallback).
+ *   1. a `cd <dir> &&` immediately before the sole PR invocation, when the
+ *      narrow scan in lib/pr-command-cwd.mjs accepts it (null otherwise),
+ *   2. a leading `cd <dir> &&` (the previous command-based candidate),
+ *   3. the session cwd from the hook payload,
+ *   4. CLAUDE_PROJECT_DIR (legacy behavior / main-worktree fallback).
  * A candidate that isn't a git worktree is skipped; if none resolve we return
  * CLAUDE_PROJECT_DIR verbatim, so running from the main checkout (no `cd`, cwd
  * == project dir) behaves exactly as before.
@@ -481,6 +484,14 @@ function runCheck(argv, cwd, timeoutMs) {
 function resolveRepoRoot(command, payloadCwd) {
 	const projectDir = process.env.CLAUDE_PROJECT_DIR;
 	const candidates = [
+		prCommandCwd(
+			command,
+			payloadCwd,
+			(segment) =>
+				isGatedGhPrCreate(stripQuotedSpans(segment)) ||
+				isGatedGhApi(segment) ||
+				isOpenPrHelper(segment),
+		),
 		leadingCdTarget(command),
 		payloadCwd,
 		projectDir,

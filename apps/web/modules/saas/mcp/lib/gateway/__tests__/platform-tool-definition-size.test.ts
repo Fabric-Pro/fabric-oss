@@ -72,6 +72,14 @@ import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 // A report made from a prompt, with no template, adds 189: the optional prompt
 // property, its default template, and tool wording that says what the
 // instructions and the effective AI tasks are.
+// The four Coding Instructions set tools (specs/2026-11-11-coding-instruction-
+// sets: list 240, create 468, update 495, delete 289) add 1,492: one line each
+// and the schemas needed to call them; the Fabric Agent manages sets with them.
+// Where ids come from and what a refusal means is said in the result.
+// fabric_list_project_instructions' optional `set` (a set's slug: only its
+// folder's files) adds 81 net, after shortening the set list tool by 5: a
+// coding tool in one set's repository must know before the call that it can
+// narrow the list to that set.
 const CONTEXT_QUALITY_BUDGETS: Readonly<Record<string, number>> = {
 	fabric_inspect_context_quality_source: 501,
 	fabric_evaluate_context_quality: 1_969,
@@ -93,7 +101,9 @@ const TOTAL_BUDGET =
 	697 +
 	681 +
 	794 +
-	189;
+	189 +
+	1_492 +
+	81;
 // The complete bounded sprint config makes configure-story-review the largest
 // pre-call schema at 2,334 characters. Other tools retain the original cap below.
 const PER_TOOL_BUDGET = 2_190;

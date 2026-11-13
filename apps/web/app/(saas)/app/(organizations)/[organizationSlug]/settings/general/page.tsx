@@ -1,6 +1,7 @@
 import { config } from "@repo/config";
 import { AttachmentRetentionForm } from "@saas/organizations/components/AttachmentRetentionForm";
 import { ChangeOrganizationNameForm } from "@saas/organizations/components/ChangeOrganizationNameForm";
+import { InstructionTemplateForm } from "@saas/organizations/components/InstructionTemplateForm";
 import { OrganizationBrandColorForm } from "@saas/organizations/components/OrganizationBrandColorForm";
 import { OrganizationBrandKitForm } from "@saas/organizations/components/OrganizationBrandKitForm";
 import { OrganizationLogoForm } from "@saas/organizations/components/OrganizationLogoForm";
@@ -31,6 +32,7 @@ export default function OrganizationSettingsPage() {
 				<OrganizationBrandColorForm />
 				<OrganizationBrandKitForm />
 				<AttachmentRetentionForm />
+				<InstructionTemplateForm />
 				{config.auth.enableTwoFactor && <RequireTwoFactorForm />}
 			</SettingsList>
 		</>

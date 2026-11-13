@@ -187,7 +187,7 @@ export function DocumentGenerationProgress({
 			{/* Header with Title, Preserved Reassurance Message, Badge & Optional Dismiss */}
 			<div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
 				<div className="flex items-start gap-3 min-w-0">
-					<div className="p-2.5 rounded-lg bg-primary/10 text-primary shrink-0 mt-0.5">
+					<div className="p-2.5 rounded-lg bg-primary/10 text-primary-active shrink-0 mt-0.5">
 						{isWaitingForContext ? (
 							<Clock className="h-5 w-5" />
 						) : isRegenerating ? (
@@ -229,7 +229,7 @@ export function DocumentGenerationProgress({
 					) : isComplete ? (
 						<Badge
 							variant="secondary"
-							className="gap-1.5 px-2.5 py-1 text-xs bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
+							className="gap-1.5 px-2.5 py-1 text-xs bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20"
 						>
 							<CheckCircle2 className="h-3.5 w-3.5" />
 							Complete
@@ -237,7 +237,7 @@ export function DocumentGenerationProgress({
 					) : stage.isQueued ? (
 						<Badge
 							variant="secondary"
-							className="gap-1.5 px-2.5 py-1 text-xs bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20"
+							className="gap-1.5 px-2.5 py-1 text-xs bg-amber-500/10 text-amber-800 dark:text-amber-400 border border-amber-500/20"
 						>
 							{/* motion-safe: the dependency wait this can mark
 								runs for as long as the project's own work does. */}
@@ -247,7 +247,7 @@ export function DocumentGenerationProgress({
 					) : (
 						<Badge
 							variant="secondary"
-							className="gap-1.5 px-2.5 py-1 text-xs bg-primary/10 text-primary border border-primary/20"
+							className="gap-1.5 px-2.5 py-1 text-xs bg-primary/10 text-primary-active border border-primary/20"
 						>
 							<Loader2 className="h-3.5 w-3.5 animate-spin" />
 							In Progress ({clampedProgress}%)
@@ -271,7 +271,7 @@ export function DocumentGenerationProgress({
 			{/* Staleness escape hatch if taking longer than expected */}
 			{isStale && (
 				<div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 mb-6 text-center space-y-2">
-					<p className="text-xs text-amber-600 dark:text-amber-400 font-medium">
+					<p className="text-xs text-amber-700 dark:text-amber-400 font-medium">
 						Generation is taking longer than expected.
 					</p>
 					<div className="flex items-center justify-center gap-2">
@@ -374,7 +374,7 @@ export function DocumentGenerationProgress({
 											isPassed &&
 												"bg-primary text-primary-foreground border-primary",
 											isCurrent &&
-												"border-primary text-primary bg-primary/10 ring-2 ring-primary/20",
+												"border-primary text-primary-active bg-primary/10 ring-2 ring-primary/20",
 											!isPassed &&
 												!isCurrent &&
 												"border-border text-muted-foreground bg-muted/40",

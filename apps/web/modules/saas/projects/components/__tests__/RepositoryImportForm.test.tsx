@@ -544,6 +544,24 @@ describe("RepositoryImportForm", () => {
 		);
 	});
 
+	it("says an empty branch field means the repository's default, never a branch name", async () => {
+		const user = userEvent.setup();
+		renderForm();
+		await readProduct(user);
+
+		await user.click(
+			screen.getByRole("checkbox", {
+				name: "My coding instructions live in a separate repository",
+			}),
+		);
+		const branch = screen.getByLabelText("Branch");
+		expect(branch).toHaveValue("");
+		expect(branch).toHaveAttribute(
+			"placeholder",
+			"The repository's default branch",
+		);
+	});
+
 	it("refuses the product repository as its own instructions repository", async () => {
 		const user = userEvent.setup();
 		renderForm();

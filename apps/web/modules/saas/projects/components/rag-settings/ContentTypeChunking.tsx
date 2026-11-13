@@ -55,7 +55,7 @@ export function RechunkConfirmDialog({
 								current chunks until each source is done.
 							</p>
 							{isLoading || !preview ? (
-								<p className="text-foreground/50">
+								<p className="text-muted-foreground">
 									Counting sources…
 								</p>
 							) : (
@@ -77,7 +77,7 @@ export function RechunkConfirmDialog({
 									</li>
 								</ul>
 							)}
-							<p className="text-foreground/50 text-xs">
+							<p className="text-muted-foreground text-xs">
 								Code indexed from repositories is not affected.
 							</p>
 						</div>
@@ -127,7 +127,7 @@ export function RechunkStatus({ projectId }: { projectId: string }) {
 		(progress.done ?? 0) + (progress.failed ?? 0) + (progress.skipped ?? 0);
 
 	return (
-		<output className="block text-foreground/60 text-xs">
+		<output className="block text-muted-foreground text-xs">
 			{STATUS_LABEL[run.status] ?? run.status}
 			{total > 0
 				? ` · ${formatNumber(finished)} / ${formatNumber(total)} sources`

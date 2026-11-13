@@ -286,12 +286,12 @@ export function DiffReviewBar({
 					{ranges.length} {ranges.length === 1 ? "change" : "changes"}
 				</span>
 				{additions > 0 && (
-					<span className="text-emerald-600 dark:text-emerald-400">
+					<span className="text-emerald-700 dark:text-emerald-400">
 						+{additions} added
 					</span>
 				)}
 				{deletions > 0 && (
-					<span className="text-red-500 dark:text-red-400">
+					<span className="text-red-700 dark:text-red-400">
 						-{deletions} removed
 					</span>
 				)}
@@ -343,7 +343,7 @@ export function DiffReviewBar({
 							<Button
 								variant="ghost"
 								size="sm"
-								className="h-7 gap-1 text-xs text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
+								className="h-7 gap-1 text-xs text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
 								onClick={handleAcceptCurrent}
 								aria-label={t("approve")}
 							>
@@ -358,7 +358,7 @@ export function DiffReviewBar({
 							<Button
 								variant="ghost"
 								size="sm"
-								className="h-7 gap-1 text-xs text-red-500 hover:text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+								className="h-7 gap-1 text-xs text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
 								onClick={handleRejectCurrent}
 								aria-label={t("reject")}
 							>

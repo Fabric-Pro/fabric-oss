@@ -3351,7 +3351,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 										<button
 											type="button"
 											onClick={toggleShowClosed}
-											className="underline underline-offset-2 text-primary hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-sm"
+											className="underline underline-offset-2 text-primary hover:text-primary-hover focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-sm"
 										>
 											Show hidden work items
 										</button>
@@ -3664,7 +3664,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 																				: undefined
 																		}
 																	/>
-																	<span className="text-[11px] tabular-nums text-muted-foreground/60">
+																	<span className="text-[11px] tabular-nums text-muted-foreground">
 																		{
 																			items.length
 																		}
@@ -3759,7 +3759,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 																			section.label
 																		}
 																	</span>
-																	<span className="ml-auto text-[11px] tabular-nums text-muted-foreground/50">
+																	<span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
 																		{
 																			items.length
 																		}
@@ -3791,7 +3791,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 																)}
 															</SortableContext>
 														) : (
-															<p className="px-1 py-4 text-center text-[11px] text-muted-foreground/50">
+															<p className="px-1 py-4 text-center text-[11px] text-muted-foreground">
 																No items
 															</p>
 														)}
@@ -3939,7 +3939,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 															<span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 																{section.label}
 															</span>
-															<span className="text-[11px] tabular-nums text-muted-foreground/50">
+															<span className="text-[11px] tabular-nums text-muted-foreground">
 																{items.length}
 															</span>
 														</button>
@@ -3961,7 +3961,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 																	)}
 																</SortableContext>
 															) : (
-																<p className="px-3 py-3 pl-9 text-[11px] text-muted-foreground/50">
+																<p className="px-3 py-3 pl-9 text-[11px] text-muted-foreground">
 																	No items in
 																	this lane.
 																</p>
@@ -3991,7 +3991,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 											priority={activeStory.priority}
 											className="size-4 shrink-0"
 										/>
-										<span className="shrink-0 font-mono text-[11px] text-muted-foreground/60 tabular-nums">
+										<span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
 											{activeStory.identifier}
 										</span>
 										<span className="truncate text-sm font-medium text-foreground">

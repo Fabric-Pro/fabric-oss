@@ -2,6 +2,47 @@ import { z } from "zod";
 
 export const NEWSLETTER_SCHEMA_VERSION = 1;
 
+/** A reviewer can attach at most this many images to one highlight. */
+export const NEWSLETTER_IMAGES_PER_HIGHLIGHT_MAX = 2;
+
+/** Longest description (alt text) a reviewer can give an image. */
+export const NEWSLETTER_IMAGE_ALT_TEXT_MAX = 300;
+
+/** Longest capture brief curation may write, and longest reviewer prompt. */
+export const NEWSLETTER_CAPTURE_BRIEF_MAX = 500;
+
+/** At most this many highlights get an automatic screenshot per send. */
+export const NEWSLETTER_AUTO_CAPTURES_MAX = 8;
+
+/**
+ * Where a review image sits relative to its highlight's description. Plain
+ * string union (matches the `NewsletterSendImage.placement` String column).
+ * Below unless a reviewer moves it above.
+ */
+export const NEWSLETTER_IMAGE_PLACEMENTS = ["BELOW", "ABOVE"] as const;
+export type NewsletterImagePlacement =
+	(typeof NEWSLETTER_IMAGE_PLACEMENTS)[number];
+export const newsletterImagePlacementSchema = z.enum(
+	NEWSLETTER_IMAGE_PLACEMENTS,
+);
+
+/**
+ * A published image under its highlight, written at approval. `url` is the
+ * stable public image-proxy URL; the review-stage object is never referenced.
+ * `placement` is written only for an image shown above the description; an
+ * absent one (every send before placements) means below.
+ */
+export const newsletterHighlightImageSchema = z.object({
+	url: z.string(),
+	alt: z.string(),
+	width: z.number().int().positive().optional(),
+	height: z.number().int().positive().optional(),
+	placement: newsletterImagePlacementSchema.optional(),
+});
+export type NewsletterHighlightImage = z.infer<
+	typeof newsletterHighlightImageSchema
+>;
+
 /** One curated "major feature" line item in a newsletter. */
 export const newsletterHighlightSchema = z.object({
 	title: z.string().min(1).max(160),
@@ -13,8 +54,35 @@ export const newsletterHighlightSchema = z.object({
 	// content lacks these and the email helper falls back to parsing prUrl.
 	releaseTag: z.string().optional(),
 	repoFullName: z.string().optional(),
+	// Images a reviewer attached and approved. Optional ⇒ rollback-safe like the
+	// release metadata above; absent on every send without reviewed images.
+	images: z
+		.array(newsletterHighlightImageSchema)
+		.max(NEWSLETTER_IMAGES_PER_HIGHLIGHT_MAX)
+		.optional(),
+	// Set by curation when screenshots are captured automatically: whether the
+	// highlight changes something a reader can see, and one sentence naming the
+	// screen and state that shows it. The workflow copies the brief onto each
+	// capture row; the hints are removed before the send is held or finalized,
+	// so the review, the archive and the email never carry them. Optional ⇒
+	// rollback-safe like the keys above.
+	visualChange: z.boolean().optional(),
+	captureBrief: z.string().optional(),
 });
 export type NewsletterHighlight = z.infer<typeof newsletterHighlightSchema>;
+
+/** The curation hints a send loses when it is finalized. */
+export function withoutCaptureHints(
+	content: NewsletterContent,
+): NewsletterContent {
+	return {
+		...content,
+		highlights: content.highlights.map(
+			({ visualChange: _visual, captureBrief: _brief, ...highlight }) =>
+				highlight,
+		),
+	};
+}
 
 /**
  * Persisted curated newsletter content. Additive/rollback-safe: only optional
@@ -29,6 +97,30 @@ export const newsletterContentSchema = z.object({
 	hasMajorFeatures: z.boolean(),
 });
 export type NewsletterContent = z.infer<typeof newsletterContentSchema>;
+
+/**
+ * The content without the images published under `publicKeys`, for a sent
+ * send whose public images were taken down. A highlight left with no image
+ * loses the key, as before it had any.
+ */
+export function withoutPublishedImages(
+	content: NewsletterContent,
+	publicKeys: readonly string[],
+): NewsletterContent {
+	const takenDown = (url: string) =>
+		publicKeys.some((key) => url.endsWith(`/${key}`));
+	return {
+		...content,
+		highlights: content.highlights.map((highlight) => {
+			const { images, ...rest } = highlight;
+			const kept = images?.filter((image) => !takenDown(image.url));
+			if (!images || kept?.length === images.length) {
+				return highlight;
+			}
+			return kept && kept.length > 0 ? { ...rest, images: kept } : rest;
+		}),
+	};
+}
 
 /**
  * Why a newsletter send produced no email. Persisted on NewsletterSend.skipReason
@@ -199,3 +291,26 @@ export function coerceRemovedHighlightIndexes(value: unknown): number[] {
 	const parsed = removedHighlightIndexesSchema.safeParse(value);
 	return parsed.success ? Array.from(new Set(parsed.data)) : [];
 }
+
+/**
+ * Where a review image is in its lifecycle. Plain string union (matches the
+ * `NewsletterSendImage.captureState` String column). Uploads are READY at once;
+ * a capture is CAPTURING until it succeeds (READY) or fails (FAILED, with a
+ * reason). Capturing again over an existing image keeps it until the new one
+ * succeeds, and returns to READY with the reason when it fails.
+ */
+export const NEWSLETTER_IMAGE_CAPTURE_STATES = [
+	"READY",
+	"CAPTURING",
+	"FAILED",
+] as const;
+export type NewsletterImageCaptureState =
+	(typeof NEWSLETTER_IMAGE_CAPTURE_STATES)[number];
+export const newsletterImageCaptureStateSchema = z.enum(
+	NEWSLETTER_IMAGE_CAPTURE_STATES,
+);
+
+/** How a review image was produced: uploaded, captured automatically, or captured from a reviewer's prompt. */
+export const NEWSLETTER_IMAGE_SOURCES = ["UPLOAD", "AI", "PROMPT"] as const;
+export type NewsletterImageSource = (typeof NEWSLETTER_IMAGE_SOURCES)[number];
+export const newsletterImageSourceSchema = z.enum(NEWSLETTER_IMAGE_SOURCES);

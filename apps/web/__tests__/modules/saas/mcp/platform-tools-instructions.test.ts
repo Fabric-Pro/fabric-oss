@@ -36,6 +36,8 @@ const m = vi.hoisted(() => ({
 	downloadFile: vi.fn(),
 	getSignedUrl: vi.fn(),
 	buildInstructionSnapshotZip: vi.fn(),
+	findInstructionSet: vi.fn(),
+	listInstructionSets: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -53,6 +55,16 @@ vi.mock("@repo/database", () => ({
 	getProjectSummaryById: m.getProjectSummaryById,
 	resolveInstructionSnapshotSource: m.resolveInstructionSnapshotSource,
 	resolveCurrentInstructionRepository: m.resolveCurrentInstructionRepository,
+	findInstructionSet: m.findInstructionSet,
+	listInstructionSets: m.listInstructionSets,
+	pathInInstructionSet: (
+		path: string,
+		set: { folder: string; excludedFolders: string[] },
+	) =>
+		path.startsWith(set.folder) &&
+		!set.excludedFolders.some((f) => path.startsWith(f))
+			? path.slice(set.folder.length)
+			: null,
 }));
 
 vi.mock("@repo/api/lib/effective-project-permissions", () => ({
@@ -318,6 +330,122 @@ describe("fabric_list_project_instructions", () => {
 			sha256: "h",
 		});
 		expect(JSON.stringify(body)).not.toContain("SECRET");
+	});
+
+	describe("narrowed to a Coding Instructions set", () => {
+		function publishedWith(paths: string[]) {
+			m.getProjectAccessContext.mockResolvedValue({
+				organizationId: "org_1",
+			});
+			m.getPublishedInstructionSnapshot.mockResolvedValue({
+				id: "s",
+				version: 7,
+				status: "READY",
+				digest: "d",
+				fileCount: paths.length,
+				projectId: "proj_1",
+				organizationId: "org_1",
+			});
+			m.listInstructionFiles.mockResolvedValue(
+				paths.map((path) => ({
+					id: path,
+					path,
+					kind: "OTHER",
+					name: path,
+					description: null,
+					size: 1,
+					mimeType: "text/markdown",
+					isText: true,
+					sha256: "h",
+					storageKey: "k",
+					mode: null,
+				})),
+			);
+		}
+
+		it("lists only the set's folder, under the full paths a read takes", async () => {
+			publishedWith([
+				"CLAUDE.md",
+				"instructions/mobile/CLAUDE.md",
+				"instructions/web/CLAUDE.md",
+			]);
+			m.findInstructionSet.mockResolvedValue({
+				slug: "mobile",
+				folder: "instructions/mobile/",
+				excludedFolders: [],
+			});
+
+			const r = await executePlatformTool(
+				"fabric_list_project_instructions",
+				{ projectId: "proj_1", set: "mobile" },
+				session,
+			);
+			const body = JSON.parse(r.content[0]!.text);
+
+			expect(m.findInstructionSet).toHaveBeenCalledWith("proj_1", {
+				slug: "mobile",
+			});
+			expect(body.set).toEqual({
+				slug: "mobile",
+				folder: "instructions/mobile/",
+			});
+			expect(body.files.map((f: { path: string }) => f.path)).toEqual([
+				"instructions/mobile/CLAUDE.md",
+			]);
+		});
+
+		it("gives the default set the root without other sets' folders", async () => {
+			publishedWith(["CLAUDE.md", "instructions/web/CLAUDE.md"]);
+			m.findInstructionSet.mockResolvedValue({
+				slug: "default",
+				folder: "",
+				excludedFolders: ["instructions/web/"],
+			});
+
+			const r = await executePlatformTool(
+				"fabric_list_project_instructions",
+				{ projectId: "proj_1", set: "default" },
+				session,
+			);
+
+			expect(
+				JSON.parse(r.content[0]!.text).files.map(
+					(f: { path: string }) => f.path,
+				),
+			).toEqual(["CLAUDE.md"]);
+		});
+
+		it("names the sets for an unknown slug", async () => {
+			publishedWith([]);
+			m.findInstructionSet.mockResolvedValue(null);
+			m.listInstructionSets.mockResolvedValue([
+				{ slug: "default" },
+				{ slug: "mobile" },
+			]);
+
+			const r = await executePlatformTool(
+				"fabric_list_project_instructions",
+				{ projectId: "proj_1", set: "desktop" },
+				session,
+			);
+
+			expect(r.isError).toBe(true);
+			expect(r.content[0]!.text).toContain("default, mobile");
+		});
+
+		it("says nothing about sets to a caller who cannot read the project", async () => {
+			m.getProjectAccessContext.mockResolvedValue(null);
+
+			const r = await executePlatformTool(
+				"fabric_list_project_instructions",
+				{ projectId: "proj_other", set: "mobile" },
+				session,
+			);
+
+			expect(r.isError).toBe(true);
+			expect(m.findInstructionSet).not.toHaveBeenCalled();
+			expect(m.listInstructionSets).not.toHaveBeenCalled();
+		});
 	});
 
 	// M10: the gateway does not enforce a tool definition's `inputSchema`

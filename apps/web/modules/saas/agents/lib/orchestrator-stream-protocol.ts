@@ -7,7 +7,12 @@ import {
 } from "./chat-stream-protocol";
 import { limitSchema, toolFields } from "./direct-stream-protocol";
 
-const risk = z.enum(["low", "medium", "high", "critical"]);
+export const approvalRiskLevelSchema = z.enum([
+	"low",
+	"medium",
+	"high",
+	"critical",
+]);
 const taskType = z.enum([
 	"api",
 	"browser",
@@ -34,7 +39,7 @@ const planStep = z
 				"awaiting_approval",
 			])
 			.optional(),
-		riskLevel: risk.optional(),
+		riskLevel: approvalRiskLevelSchema.optional(),
 		requiresApproval: z.boolean().optional(),
 	})
 	.passthrough();
@@ -42,7 +47,7 @@ const plan = z
 	.object({
 		id: z.string(),
 		description: z.string(),
-		riskLevel: risk,
+		riskLevel: approvalRiskLevelSchema,
 		strategy: taskType.optional(),
 		createdAt: z.string().optional(),
 		steps: z.array(planStep),
@@ -128,7 +133,7 @@ export const orchestratorStreamEventSchema = z.discriminatedUnion("type", [
 		primaryAgent: z.string(),
 		agentName: z.string(),
 		confidence: z.number(),
-		riskLevel: risk.optional(),
+		riskLevel: approvalRiskLevelSchema.optional(),
 		requiredConnections: z.array(requiredConnection).optional(),
 		missingIntegrations: z.array(missingIntegration).optional(),
 		blockedOnConnections: z.boolean().optional(),
@@ -172,6 +177,7 @@ export const orchestratorStreamEventSchema = z.discriminatedUnion("type", [
 	}),
 	z.object({
 		type: z.literal("approval_required"),
+		riskLevel: approvalRiskLevelSchema.optional(),
 		approvalId: z.string().optional(),
 		stepId: z.string(),
 		reason: z.string(),

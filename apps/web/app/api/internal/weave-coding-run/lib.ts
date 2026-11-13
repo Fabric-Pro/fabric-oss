@@ -4,7 +4,7 @@ import {
 	assertProjectPermission,
 	Permissions,
 } from "@repo/api/orpc/procedures";
-import { db } from "@repo/database";
+import { db, getProjectRepositoryBranch } from "@repo/database";
 import type {
 	CodingRunExecutionChannel,
 	CodingRunProvider,
@@ -440,6 +440,17 @@ export async function executeWeaveCodingRun(
 		select: { name: true },
 	});
 
+	// The project's stored branch, else the connected repository's own
+	// (its provider default unless someone chose another). "main" only when
+	// neither is known.
+	const targetBranch =
+		plan.project.defaultBranch ||
+		(await getProjectRepositoryBranch(plan.project.id, {
+			owner: plan.project.repositoryOwner,
+			name: plan.project.repositoryName,
+		})) ||
+		"main";
+
 	const executionPolicy = resolveExecutionPolicy(
 		plan.project,
 		input.executionProvider,
@@ -482,7 +493,7 @@ export async function executeWeaveCodingRun(
 			promptText,
 			repositoryOwner: plan.project.repositoryOwner,
 			repositoryName: plan.project.repositoryName,
-			targetBranch: plan.project.defaultBranch ?? "main",
+			targetBranch,
 			projectName: plan.project.name,
 			organizationName: organization?.name ?? undefined,
 			workingDirectory: executionPolicy.workingDirectory,
@@ -570,7 +581,7 @@ export async function executeWeaveCodingRun(
 			repositoryUrl: plan.project.repositoryUrl,
 			repositoryOwner: plan.project.repositoryOwner,
 			repositoryName: plan.project.repositoryName,
-			targetBranch: plan.project.defaultBranch ?? "main",
+			targetBranch,
 			workingDirectory: executionPolicy.workingDirectory,
 			externalStatus: buildInitialExternalStatus(
 				executionPolicy.provider,
@@ -609,7 +620,7 @@ export async function executeWeaveCodingRun(
 				organizationName: organization?.name ?? undefined,
 				repositoryOwner: plan.project.repositoryOwner,
 				repositoryName: plan.project.repositoryName,
-				targetBranch: plan.project.defaultBranch ?? "main",
+				targetBranch,
 				workingDirectory: executionPolicy.workingDirectory,
 				storyTitle: `${plan.userStory.identifier} - ${plan.userStory.title}`,
 			},

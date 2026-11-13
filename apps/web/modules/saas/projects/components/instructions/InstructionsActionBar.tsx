@@ -19,6 +19,7 @@ import {
 	FilePlusIcon,
 	GitBranchIcon,
 	HistoryIcon,
+	LayoutTemplateIcon,
 	Loader2Icon,
 	MoreHorizontalIcon,
 	RefreshCwIcon,
@@ -78,6 +79,15 @@ export interface InstructionsActions {
 		onOpen: () => void;
 		pausedReason?: string | null;
 	};
+	/**
+	 * Add the organization template's files this project does not have yet,
+	 * as a new version. `pausedReason` keeps it disabled as it does `upload`.
+	 */
+	applyTemplate?: {
+		pending: boolean;
+		onApply: () => void;
+		pausedReason?: string | null;
+	};
 	settings: { onOpen: () => void };
 }
 
@@ -118,6 +128,7 @@ export function InstructionsActionBar({
 		syncNow,
 		syncFromRepository,
 		addFile,
+		applyTemplate,
 		settings,
 	} = actions;
 	const awaitingReview = proposals?.awaitingReview ?? 0;
@@ -187,6 +198,7 @@ export function InstructionsActionBar({
 						aria-label={t("moreButton")}
 					>
 						<MoreHorizontalIcon
+							strokeWidth={2.5}
 							className="size-4"
 							aria-hidden="true"
 						/>
@@ -265,10 +277,45 @@ export function InstructionsActionBar({
 							{t(ADD_FILE_LABEL[addFile.mode])}
 						</DropdownMenuItem>
 					) : null}
+					{applyTemplate ? (
+						<DropdownMenuItem
+							className={
+								applyTemplate.pausedReason
+									? `${MENU_ITEM} opacity-50`
+									: MENU_ITEM
+							}
+							disabled={applyTemplate.pending}
+							aria-disabled={
+								applyTemplate.pausedReason ? true : undefined
+							}
+							onSelect={
+								applyTemplate.pausedReason
+									? () =>
+											toast.info(
+												applyTemplate.pausedReason,
+											)
+									: applyTemplate.onApply
+							}
+						>
+							{applyTemplate.pending ? (
+								<Loader2Icon
+									className="size-4 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : (
+								<LayoutTemplateIcon
+									className="size-4"
+									aria-hidden="true"
+								/>
+							)}
+							{t("applyTemplateButton")}
+						</DropdownMenuItem>
+					) : null}
 					{syncNow ||
 					syncFromRepository ||
 					(proposals && !reviewInHeader) ||
-					addFile ? (
+					addFile ||
+					applyTemplate ? (
 						<DropdownMenuSeparator />
 					) : null}
 					<DropdownMenuItem

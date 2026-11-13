@@ -1105,7 +1105,7 @@ function InboxViewToggle({
 					className={cn(
 						"px-2.5 py-1.5 text-xs transition-colors",
 						value === option.v
-							? "bg-primary/10 text-primary"
+							? "bg-primary/10 text-primary-active"
 							: "text-muted-foreground hover:text-foreground",
 					)}
 				>
@@ -1166,13 +1166,13 @@ function StatusFilterChips({
 						className={cn(
 							"rounded-full border px-3 py-1 text-xs font-medium transition-colors",
 							active
-								? "border-primary bg-primary/10 text-primary"
+								? "border-primary bg-primary/10 text-primary-active"
 								: "border-border bg-muted text-muted-foreground hover:text-foreground",
 						)}
 					>
 						{chip.label}
 						{chip.count !== undefined && chip.count > 0 ? (
-							<span className="ml-1.5 tabular-nums opacity-70">
+							<span className="ml-1.5 tabular-nums">
 								{chip.count}
 							</span>
 						) : null}

@@ -7,6 +7,8 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+	DEAD_TOKEN_SLACK_ERRORS,
+	isDeadSlackTokenError,
 	isPermanentSlackError,
 	PERMANENT_SLACK_ERRORS,
 	SlackConfigurationError,
@@ -62,6 +64,50 @@ describe("SlackConfigurationError", () => {
 		for (const code of PERMANENT_SLACK_ERRORS) {
 			expect(typeof code).toBe("string");
 			expect(code.length).toBeGreaterThan(0);
+		}
+	});
+});
+
+describe("isDeadSlackTokenError", () => {
+	it("recognises a refused token, whichever channel was asked for", () => {
+		for (const code of [
+			"invalid_auth",
+			"token_revoked",
+			"account_inactive",
+		]) {
+			expect(
+				isDeadSlackTokenError(new SlackConfigurationError(code, code)),
+			).toBe(true);
+		}
+	});
+
+	it("leaves channel-level problems to the channel", () => {
+		// The token works; the bot just cannot see this one channel.
+		for (const code of [
+			"not_in_channel",
+			"channel_not_found",
+			"is_archived",
+		]) {
+			expect(
+				isDeadSlackTokenError(new SlackConfigurationError(code, code)),
+			).toBe(false);
+		}
+	});
+
+	it("is false for anything that is not a classified Slack error", () => {
+		expect(
+			isDeadSlackTokenError(
+				new Error(
+					"Slack API conversations.history error: invalid_auth",
+				),
+			),
+		).toBe(false);
+		expect(isDeadSlackTokenError(undefined)).toBe(false);
+	});
+
+	it("only names codes that are already permanent", () => {
+		for (const code of DEAD_TOKEN_SLACK_ERRORS) {
+			expect(PERMANENT_SLACK_ERRORS.has(code)).toBe(true);
 		}
 	});
 });

@@ -139,6 +139,23 @@ describe("authorized review selectors", () => {
 				limit: 1,
 			}),
 		);
+		expect(mocks.templates).toHaveBeenCalledWith({
+			where: {
+				AND: [
+					{
+						OR: [
+							{ scope: "SYSTEM" },
+							{
+								scope: "ORGANIZATION",
+								organizationId: "org-1",
+							},
+						],
+					},
+					{ id: { in: ["template-1"] } },
+				],
+			},
+			select: { id: true, suggestedModel: true },
+		});
 		expect(result.instructionInstances.items).toEqual([
 			{
 				id: "instance-1",

@@ -166,7 +166,7 @@ function SortableFieldRow({
 				type="button"
 				aria-label={`Drag to reorder ${field.displayName}`}
 				disabled={disabled}
-				className="cursor-grab touch-none rounded p-0.5 text-muted-foreground/60 motion-safe:transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing disabled:cursor-default disabled:opacity-50"
+				className="cursor-grab touch-none rounded p-0.5 text-muted-foreground motion-safe:transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing disabled:cursor-default disabled:opacity-50"
 				{...attributes}
 				{...listeners}
 			>
@@ -228,7 +228,7 @@ function SortableFieldRow({
 								setIsEditing(true);
 							}}
 							aria-label={`Edit display label for ${field.displayName}`}
-							className="text-muted-foreground/60 hover:text-foreground"
+							className="text-muted-foreground hover:text-foreground"
 						>
 							<PencilIcon
 								className="size-3.5"

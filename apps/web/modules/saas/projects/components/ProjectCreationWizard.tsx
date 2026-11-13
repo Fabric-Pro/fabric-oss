@@ -330,7 +330,7 @@ function CodeBasedReviewStep({ formData }: { formData: ProjectFormData }) {
 								{primaryRepo.fullName}
 							</p>
 							{allRepos.length > 1 && (
-								<span className="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-primary text-xs">
+								<span className="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-primary-active text-xs">
 									Primary
 								</span>
 							)}
@@ -344,7 +344,9 @@ function CodeBasedReviewStep({ formData }: { formData: ProjectFormData }) {
 							{primaryRepo.language && (
 								<span>{primaryRepo.language}</span>
 							)}
-							<span>Branch: {primaryRepo.defaultBranch}</span>
+							{primaryRepo.defaultBranch ? (
+								<span>Branch: {primaryRepo.defaultBranch}</span>
+							) : null}
 							{primaryRepo.isPrivate ? (
 								<span>Private</span>
 							) : (
@@ -521,7 +523,7 @@ function ProjectReviewSummary({
 									</span>
 								))
 							) : (
-								<p className="text-sm italic text-foreground/40">
+								<p className="text-sm italic text-muted-foreground">
 									No project shape selected.
 								</p>
 							)}
@@ -548,7 +550,7 @@ function ProjectReviewSummary({
 									</span>
 								))
 							) : (
-								<p className="text-sm italic text-foreground/40">
+								<p className="text-sm italic text-muted-foreground">
 									No stack items selected yet.
 								</p>
 							)}
@@ -575,7 +577,7 @@ function ProjectReviewSummary({
 									</div>
 								))
 							) : (
-								<p className="text-sm italic text-foreground/40">
+								<p className="text-sm italic text-muted-foreground">
 									No features listed yet.
 								</p>
 							)}
@@ -963,7 +965,9 @@ export function ProjectCreationWizard({
 					isPrivate: false,
 					htmlUrl: project.repositoryUrl,
 					language: null,
-					defaultBranch: project.defaultBranch || "main",
+					// Empty when the project stores no branch: the connect path then
+					// resolves the provider's default instead of an invented "main".
+					defaultBranch: project.defaultBranch ?? "",
 					updatedAt: new Date().toISOString(),
 					stars: 0,
 					isFork: false,
@@ -1595,7 +1599,7 @@ export function ProjectCreationWizard({
 					repositoryUrl: repo.htmlUrl,
 					repositoryOwner: creds.azureOrganization,
 					repositoryName: repo.name,
-					defaultBranch: repo.defaultBranch,
+					defaultBranch: repo.defaultBranch || undefined,
 					pat: creds.pat,
 					azureOrganization: creds.azureOrganization,
 					roleTag: repo.roleTag
@@ -1823,7 +1827,7 @@ export function ProjectCreationWizard({
 				repositoryUrl: primaryRepo?.htmlUrl,
 				repositoryOwner: primaryRepo?.owner,
 				repositoryName: primaryRepo?.name,
-				defaultBranch: primaryRepo?.defaultBranch,
+				defaultBranch: primaryRepo?.defaultBranch || undefined,
 				// Backlog (PM) block — typed columns, meaningful post-activation
 				// so a resumed DRAFT keeps the connected backlog.
 				projectManagementMcpServerId:
@@ -2054,14 +2058,16 @@ export function ProjectCreationWizard({
 						repositoryUrl: primaryGitHubRepo.htmlUrl,
 						repositoryOwner: primaryGitHubRepo.owner,
 						repositoryName: primaryGitHubRepo.name,
-						defaultBranch: primaryGitHubRepo.defaultBranch,
+						defaultBranch:
+							primaryGitHubRepo.defaultBranch || undefined,
 					}
 				: primaryGitLabRepo
 					? {
 							repositoryUrl: primaryGitLabRepo.htmlUrl,
 							repositoryOwner: primaryGitLabRepo.owner,
 							repositoryName: primaryGitLabRepo.name,
-							defaultBranch: primaryGitLabRepo.defaultBranch,
+							defaultBranch:
+								primaryGitLabRepo.defaultBranch || undefined,
 						}
 					: {};
 
@@ -2107,14 +2113,16 @@ export function ProjectCreationWizard({
 						repositoryUrl: primaryGitHubRepo.htmlUrl,
 						repositoryOwner: primaryGitHubRepo.owner,
 						repositoryName: primaryGitHubRepo.name,
-						defaultBranch: primaryGitHubRepo.defaultBranch,
+						defaultBranch:
+							primaryGitHubRepo.defaultBranch || undefined,
 					}
 				: primaryGitLabRepo
 					? {
 							repositoryUrl: primaryGitLabRepo.htmlUrl,
 							repositoryOwner: primaryGitLabRepo.owner,
 							repositoryName: primaryGitLabRepo.name,
-							defaultBranch: primaryGitLabRepo.defaultBranch,
+							defaultBranch:
+								primaryGitLabRepo.defaultBranch || undefined,
 						}
 					: {};
 
@@ -2568,7 +2576,7 @@ export function ProjectCreationWizard({
 									{!formData.name.trim() &&
 										!createMutation.isPending &&
 										!updateMutation.isPending && (
-											<p className="text-sm text-amber-600 dark:text-highlight">
+											<p className="text-sm text-amber-700 dark:text-highlight">
 												Enter a project name in Basic
 												Info to create your project.{" "}
 												<button

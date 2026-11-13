@@ -51,6 +51,24 @@ export interface AITokenClaims {
 	 * for every other token.
 	 */
 	af?: true;
+	/**
+	 * Present (true) only when the user explicitly allowed external web
+	 * research for this one generation action. Absent means not allowed.
+	 */
+	wr?: true;
+	/**
+	 * The project the web-research permission was given for. Present only
+	 * together with `wr`; when present, research for any other project is
+	 * refused.
+	 */
+	wrp?: string;
+	/**
+	 * The research grant: one id per generation action that allowed web
+	 * research. A token re-minted for a retry of the same action carries the
+	 * same id, so the endpoint's per-action call budget spans every token of
+	 * that action. Present only together with `wr`.
+	 */
+	wrg?: string;
 }
 
 /**
@@ -82,6 +100,12 @@ export interface IssueTokenOptions {
 	jobType?: string;
 	/** The run may bill the organization's provider, written as `af`. */
 	apiFallbackApproved?: boolean;
+	/** The user allowed external web research for this action, written as `wr`. */
+	webResearch?: boolean;
+	/** The project `webResearch` was allowed for, written as `wrp`. */
+	webResearchProjectId?: string;
+	/** The research grant `webResearch` belongs to, written as `wrg`. */
+	webResearchGrantId?: string;
 }
 
 /**

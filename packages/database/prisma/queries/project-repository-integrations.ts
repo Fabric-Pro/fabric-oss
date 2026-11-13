@@ -201,6 +201,41 @@ export async function listProjectRepoIntegrations(projectId: string) {
 }
 
 /**
+ * The stored branch of one of a project's connected repositories: the
+ * integration for `repository` (owner and name compared case-insensitively),
+ * or, with no repository named, the project's first-connected one. The stored
+ * branch is the provider's default at connect time unless someone chose
+ * another (`repositoryIntegrations.updateBranch`), so it is the repository's
+ * own answer. `null` when the project has no matching integration: the caller
+ * owns its last resort. Reads no credential column.
+ */
+export async function getProjectRepositoryBranch(
+	projectId: string,
+	repository?: { owner: string; name: string } | null,
+): Promise<string | null> {
+	const integration = await db.projectRepositoryIntegration.findFirst({
+		where: {
+			projectId,
+			...(repository
+				? {
+						repositoryOwner: {
+							equals: repository.owner,
+							mode: "insensitive" as const,
+						},
+						repositoryName: {
+							equals: repository.name,
+							mode: "insensitive" as const,
+						},
+					}
+				: {}),
+		},
+		select: { defaultBranch: true },
+		orderBy: { createdAt: "asc" },
+	});
+	return integration?.defaultBranch || null;
+}
+
+/**
  * Get a single integration by ID, scoped to project.
  * Returns full record including encrypted fields (for server-side use).
  */

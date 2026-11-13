@@ -63,7 +63,7 @@ export function InstructionsCheckingStatus({
 				aria-live="polite"
 				className={
 					busy
-						? "inline-flex w-fit items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 font-medium text-primary text-sm"
+						? "inline-flex w-fit items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 font-medium text-primary-active text-sm"
 						: "text-sm"
 				}
 			>

@@ -326,12 +326,6 @@ export function ChunkingTypesTable({
 		(runs.tune.result as { stage?: string } | null)?.stage === "proposal"
 			? runs.tune.id
 			: null;
-	const runningAnalysis =
-		runs?.measure?.status === "RUNNING"
-			? "Measuring…"
-			: runs?.tune?.status === "RUNNING"
-				? "Working out suggestions…"
-				: null;
 	const failedRun = [runs?.measure, runs?.tune].find(
 		(run) => run?.status === "FAILED",
 	);
@@ -395,7 +389,7 @@ export function ChunkingTypesTable({
 							? "Chunking by content type"
 							: "Chunks by content type"}
 					</h4>
-					<p className="text-foreground/50 text-xs">
+					<p className="text-muted-foreground text-xs">
 						{editable
 							? ""
 							: "What is in the index for each content type. "}
@@ -424,20 +418,15 @@ export function ChunkingTypesTable({
 				</div>
 			</div>
 
-			{runningAnalysis && (
-				<output className="block text-foreground/60 text-xs">
-					{runningAnalysis}
-				</output>
-			)}
 			{failedRun && (
-				<p className="text-foreground/60 text-xs">
+				<p className="text-muted-foreground text-xs">
 					The last analysis failed:{" "}
 					{failedRun.error ?? "unknown error"}
 				</p>
 			)}
 
 			{types.length === 0 && !codeRow ? (
-				<p className="text-foreground/50 text-xs">
+				<p className="text-muted-foreground text-xs">
 					No content in this project yet. Types appear here once
 					sources are added.
 				</p>
@@ -445,7 +434,7 @@ export function ChunkingTypesTable({
 				<div className="overflow-x-auto">
 					<table className="w-full text-sm">
 						<thead>
-							<tr className="text-left text-foreground/50 text-xs">
+							<tr className="text-left text-muted-foreground text-xs">
 								<th className="whitespace-nowrap pr-3 pb-2 font-normal">
 									Type
 								</th>
@@ -502,7 +491,7 @@ export function ChunkingTypesTable({
 									>
 										<td className="py-2 pr-3">
 											<div>{type}</div>
-											<div className="text-foreground/50 text-xs">
+											<div className="text-muted-foreground text-xs">
 												{TYPE_HINTS[type]}
 											</div>
 										</td>
@@ -591,7 +580,7 @@ export function ChunkingTypesTable({
 												{suggestion ? (
 													<span>
 														{suggestion.proposed}{" "}
-														<span className="font-mono text-foreground/60">
+														<span className="font-mono text-muted-foreground">
 															{pct(
 																suggestion.recallBefore,
 															)}{" "}
@@ -602,7 +591,7 @@ export function ChunkingTypesTable({
 														</span>
 													</span>
 												) : (
-													<span className="text-foreground/40">
+													<span className="text-muted-foreground">
 														–
 													</span>
 												)}
@@ -649,7 +638,7 @@ export function ChunkingTypesTable({
 																}
 															/>
 														) : (
-															<span className="text-foreground/40 text-xs">
+															<span className="text-muted-foreground text-xs">
 																–
 															</span>
 														)}
@@ -686,7 +675,7 @@ export function ChunkingTypesTable({
 								<tr className="border-t align-top">
 									<td className="py-2 pr-3">
 										<div>code</div>
-										<div className="text-foreground/50 text-xs">
+										<div className="text-muted-foreground text-xs">
 											Repository code for AI code search,
 											indexed on its own (see Code search
 											above)
@@ -726,7 +715,7 @@ export function ChunkingTypesTable({
 			)}
 
 			{quality && (
-				<p className="text-foreground/50 text-xs">
+				<p className="text-muted-foreground text-xs">
 					Problems found:{" "}
 					{(
 						Object.keys(PROBLEM_LABELS) as Array<
@@ -851,7 +840,7 @@ function CustomChunkFields({
 					onChange("chunkOverlap", number(event.target.value))
 				}
 			/>
-			<span className="text-foreground/50">
+			<span className="text-muted-foreground">
 				chars · empty uses the project's value
 			</span>
 		</div>
@@ -908,14 +897,14 @@ function SourcesDialog({
 					<div className="h-24 animate-pulse rounded-lg bg-foreground/5" />
 				)}
 				{isError && (
-					<p className="text-foreground/60 text-sm">
+					<p className="text-muted-foreground text-sm">
 						The sources could not be read right now.
 					</p>
 				)}
 				{data && (
 					<div className="max-h-[60vh] overflow-auto">
 						<table className="w-full text-left text-sm">
-							<thead className="text-foreground/50 text-xs">
+							<thead className="text-muted-foreground text-xs">
 								<tr>
 									<th className="py-1 pr-3 font-normal">
 										Source
@@ -950,7 +939,7 @@ function SourcesDialog({
 											{row.location &&
 												row.location !== row.title && (
 													<div
-														className="truncate text-foreground/50 text-xs"
+														className="truncate text-muted-foreground text-xs"
 														title={row.location}
 													>
 														{row.location}
@@ -987,7 +976,7 @@ function SourcesDialog({
 				)}
 				{total > SOURCES_PAGE && (
 					<div className="flex items-center justify-between text-xs">
-						<span className="text-foreground/60">
+						<span className="text-muted-foreground">
 							{n(offset + 1)}–{n(last)} of {n(total)}
 						</span>
 						<div className="flex gap-2">

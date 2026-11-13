@@ -71,6 +71,8 @@ vi.mock("../../embedding", () => ({
 vi.mock("../../project-contexts/store", () => ({
 	storeProjectContext: mocks.storeProjectContext,
 	deleteProjectContext: mocks.deleteProjectContext,
+	listProjectContextPointIds: vi.fn().mockResolvedValue([]),
+	deleteProjectContextPoints: vi.fn(),
 }));
 
 import {
@@ -254,7 +256,7 @@ describe("reembedProjectDocument compares the slot-free hash", () => {
 		);
 
 		expect(result.success).toBe(true);
-		expect(mocks.clearDocumentEmbedding).toHaveBeenCalledWith("doc-1");
+		expect(mocks.clearDocumentEmbedding).not.toHaveBeenCalled();
 		for (const text of embeddedTexts()) {
 			expect(text).not.toContain("visual-slot");
 		}

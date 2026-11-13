@@ -13,7 +13,12 @@ const db = vi.hoisted(() => ({
 	recordOrganizationSyncFailure: vi.fn(),
 }));
 
-vi.mock("@repo/database", () => db);
+vi.mock("@repo/database", async () => {
+	const schema = await vi.importActual<
+		typeof import("@repo/database/src/newsletter-schema")
+	>("@repo/database/src/newsletter-schema");
+	return { ...db, withoutCaptureHints: schema.withoutCaptureHints };
+});
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -23,7 +28,20 @@ import { holdNewsletterForApprovalActivity } from "./hold-newsletter-for-approva
 
 const INPUT = {
 	sendId: "send_1",
-	content: {} as never,
+	content: {
+		schemaVersion: 1 as const,
+		headline: "Release notes",
+		intro: "",
+		hasMajorFeatures: true,
+		highlights: [
+			{
+				title: "Saved filters",
+				description: "Filters can be saved.",
+				visualChange: true,
+				captureBrief: "The filters panel with one saved filter.",
+			},
+		],
+	},
 	aiUsageTokens: null,
 };
 
@@ -58,6 +76,15 @@ describe("holdNewsletterForApprovalActivity", () => {
 			"proj_1",
 			"db down",
 		);
+	});
+
+	it("parks the content without the screenshot capture hints", async () => {
+		await holdNewsletterForApprovalActivity(INPUT);
+
+		const held = db.holdNewsletterForApproval.mock.calls[0]?.[0];
+		expect(held.content.highlights).toEqual([
+			{ title: "Saved filters", description: "Filters can be saved." },
+		]);
 	});
 
 	it("skips the sync when the send has no project", async () => {

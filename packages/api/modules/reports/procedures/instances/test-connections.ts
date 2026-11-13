@@ -59,6 +59,9 @@ export const testConnectionsOutputSchema = z.object({
  */
 export const testInstanceConnectionsProcedure = tenantProtectedProcedure
 	.use(requireInputOrgPermission(Permissions.REPORT_READ))
+	// A probe the report page runs on its own when it opens; it writes nothing,
+	// so without this every visit lands in the activity log.
+	.meta({ auditActivity: "never" })
 	.input(testConnectionsInputSchema)
 	.output(testConnectionsOutputSchema)
 	.handler(async ({ input, context }) => {

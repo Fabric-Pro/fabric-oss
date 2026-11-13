@@ -5,6 +5,7 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
+import { stageInkStyle } from "../../lib/stories/stage-ink";
 import type { FeatureDraftingStage } from "../../lib/stories/types";
 import { DRAFTING_STAGE_META } from "../../lib/stories/types";
 
@@ -35,12 +36,12 @@ export function DraftingStageIndicator({ stage, compact = false }: Props) {
 	if (compact || isTerminal) {
 		const chipClass = useTokens
 			? "inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-			: "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium";
+			: "stage-ink inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium";
 		const chipStyle = useTokens
 			? undefined
 			: {
+					...stageInkStyle(meta.color),
 					backgroundColor: `${meta.color}20`,
-					color: meta.color,
 				};
 		return (
 			<Tooltip>
@@ -87,8 +88,8 @@ export function DraftingStageIndicator({ stage, compact = false }: Props) {
 						</div>
 						{/* Label */}
 						<span
-							className="text-xs font-medium"
-							style={{ color: meta.color }}
+							className="stage-ink text-xs font-medium"
+							style={stageInkStyle(meta.color)}
 						>
 							{meta.label}
 						</span>

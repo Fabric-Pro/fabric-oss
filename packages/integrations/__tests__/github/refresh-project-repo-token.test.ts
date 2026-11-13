@@ -360,6 +360,55 @@ describe("refreshProjectRepoGitHubToken — serialized refresh", () => {
 		);
 	});
 
+	it("marks the row ACTIVE when a refresh succeeds", async () => {
+		mockTxFindUnique.mockResolvedValue({
+			encryptedAccessToken: "enc:stale-access",
+			encryptedRefreshToken: "enc:current-refresh",
+			tokenExpiresAt: new Date(Date.now() - HOUR_MS),
+			status: "TOKEN_EXPIRED",
+		});
+		mockRefreshOAuthToken.mockResolvedValue({
+			ok: true,
+			accessToken: "fresh-token",
+			refreshToken: "rotated-refresh",
+			expiresIn: 28800,
+		});
+
+		await refreshProjectRepoGitHubToken(baseInput);
+
+		expect(mockTxUpdateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					status: "ACTIVE",
+					lastError: null,
+				}),
+			}),
+		);
+	});
+
+	it("keeps REPO_UNAVAILABLE and its reason when a refresh succeeds", async () => {
+		mockTxFindUnique.mockResolvedValue({
+			encryptedAccessToken: "enc:stale-access",
+			encryptedRefreshToken: "enc:current-refresh",
+			tokenExpiresAt: new Date(Date.now() - HOUR_MS),
+			status: "REPO_UNAVAILABLE",
+		});
+		mockRefreshOAuthToken.mockResolvedValue({
+			ok: true,
+			accessToken: "fresh-token",
+			refreshToken: "rotated-refresh",
+			expiresIn: 28800,
+		});
+
+		const token = await refreshProjectRepoGitHubToken(baseInput);
+
+		expect(token).toBe("fresh-token");
+		const { data } = mockTxUpdateMany.mock.calls[0][0];
+		expect(data).not.toHaveProperty("status");
+		expect(data).not.toHaveProperty("lastError");
+		expect(data).toMatchObject({ refreshTokenRejectedAt: null });
+	});
+
 	it("preserves the stored refresh-token ciphertext when GitHub did not rotate it", async () => {
 		mockTxFindUnique.mockResolvedValue({
 			encryptedAccessToken: "enc:stale-access",

@@ -12,7 +12,12 @@ import { ApprovalDialog } from "./ApprovalDialog";
 
 interface ApprovalPanelProps {
 	executionId?: string | null;
-	pending: { approvalId?: string; stepId: string; reason: string };
+	pending: {
+		approvalId?: string;
+		stepId: string;
+		reason: string;
+		riskLevel?: "low" | "medium" | "high" | "critical";
+	};
 	plan: TaskPlan | null;
 	currentStepId?: string;
 	sendApproval?: (
@@ -105,7 +110,11 @@ export function ApprovalPanel({
 							? pending.reason.slice(match[0].length)
 							: pending.reason
 					}
-					riskLevel={match?.[1].toUpperCase() ?? "MEDIUM"}
+					riskLevel={
+						pending.riskLevel?.toUpperCase() ??
+						match?.[1].toUpperCase() ??
+						"MEDIUM"
+					}
 					onApprove={() => void respond(true, undefined, "approve")}
 					onReject={() =>
 						void respond(false, "Rejected by user", "reject")

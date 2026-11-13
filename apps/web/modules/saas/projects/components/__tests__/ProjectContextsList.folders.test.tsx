@@ -177,6 +177,20 @@ vi.mock("../ContextUploaderDialog", () => ({
 vi.mock("../ResetLivingMemory", () => ({
 	ResetLivingMemory: () => null,
 }));
+// Records what each folder's "Remove folder" is given; its own behaviour is
+// covered in `RemoveLivingMemoryFolder.test.tsx`.
+vi.mock("../RemoveLivingMemoryFolder", () => ({
+	RemoveLivingMemoryFolder: (props: {
+		folderPath: string;
+		fileCount: number;
+	}) => (
+		<span
+			data-testid="remove-folder-stub"
+			data-folder={props.folderPath}
+			data-count={props.fileCount}
+		/>
+	),
+}));
 vi.mock("../DownloadAllContextsButton", () => ({
 	DownloadAllContextsButton: () => null,
 }));
@@ -509,5 +523,31 @@ describe("ProjectContextsList — Living Memory folders (Fizzy #2620)", () => {
 		expect(
 			screen.queryByTestId(/^context-folder-/),
 		).not.toBeInTheDocument();
+	});
+
+	it("gives each folder a Remove folder action counting its subfolders' files too", async () => {
+		contextsListMock.mockResolvedValue(mixed);
+
+		wrap(<ProjectContextsList projectId="proj_1" />);
+
+		const section = await findLivingMemory();
+		const removals = Object.fromEntries(
+			folderSections(section).map((folder) => {
+				const stub = within(folder).getByTestId("remove-folder-stub");
+				return [
+					folder.getAttribute("data-folder-path"),
+					{
+						folder: stub.getAttribute("data-folder"),
+						count: stub.getAttribute("data-count"),
+					},
+				];
+			}),
+		);
+		expect(removals).toEqual({
+			"": { folder: "", count: "1" },
+			docs: { folder: "docs", count: "3" },
+			"docs/guides": { folder: "docs/guides", count: "1" },
+			"notes/2026": { folder: "notes/2026", count: "2" },
+		});
 	});
 });

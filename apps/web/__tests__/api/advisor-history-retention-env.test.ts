@@ -26,3 +26,11 @@ it("routes root environment entries into Aspire's web resource", () => {
 	expect(forwarding).toContain("web = web.WithEnvironment(key, value);");
 	expect(forwarding).not.toContain("ADVISOR_HISTORY_RETENTION");
 });
+
+it("omits the retired result-read setting from server configuration", () => {
+	for (const file of ["turbo.json", ".env.example"]) {
+		expect(readFileSync(resolve(root, file), "utf8")).not.toContain(
+			"ADVISOR_RESULT_READS",
+		);
+	}
+});

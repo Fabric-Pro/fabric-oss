@@ -60,6 +60,7 @@ import {
 	userHasProjectPermissionStrict,
 } from "../lib/governance";
 import {
+	assertLogSourceIsUsable,
 	projectLogSourceInputSchema,
 	toProjectLogSourceBinding,
 } from "../lib/log-source-input";
@@ -460,6 +461,12 @@ export const updateProjectProcedure = tenantProtectedProcedure
 					message: adminOnlyMessages[0],
 				});
 			}
+		}
+
+		// After the permission check, so an unauthorized caller still gets
+		// FORBIDDEN, and before any write.
+		if (input.logSource !== undefined) {
+			assertLogSourceIsUsable(input.logSource);
 		}
 
 		// The reconcile engine now reads `Project.syncAttachments` (the GitLab

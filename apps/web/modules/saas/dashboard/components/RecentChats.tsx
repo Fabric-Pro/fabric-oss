@@ -81,7 +81,7 @@ export function RecentChats({
 							<p className="text-sm font-medium text-muted-foreground">
 								No conversations yet
 							</p>
-							<p className="mt-0.5 text-xs text-muted-foreground/60">
+							<p className="mt-0.5 text-xs text-muted-foreground">
 								Start a chat to get AI assistance
 							</p>
 						</div>
@@ -113,7 +113,7 @@ export function RecentChats({
 									<p className="truncate text-sm font-medium leading-tight group-hover:text-primary transition-colors">
 										{chat.title || "Untitled Chat"}
 									</p>
-									<p className="mt-0.5 text-[11px] text-muted-foreground/60">
+									<p className="mt-0.5 text-[11px] text-muted-foreground">
 										{formatDistanceToNow(chat.timestamp, {
 											addSuffix: true,
 										})}

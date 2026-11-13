@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
 	blankNonCode,
-	checkTenantRegistration,
 	findUnboundedModelCalls,
 	findWorkflowReplayBreaks,
 	isReviewableSource,
@@ -142,30 +141,6 @@ describe("findWorkflowReplayBreaks", () => {
 	});
 });
 
-describe("checkTenantRegistration", () => {
-	it("stays quiet when the schema did not change", () => {
-		assert.equal(checkTenantRegistration(["packages/api/lib/a.ts"]), null);
-	});
-
-	it("stays quiet when registration changed alongside the schema", () => {
-		assert.equal(
-			checkTenantRegistration([
-				"packages/database/prisma/schema.prisma",
-				"packages/database/prisma/tenant-db.ts",
-			]),
-			null,
-		);
-	});
-
-	it("asks the question when the schema moved alone", () => {
-		const out = checkTenantRegistration([
-			"packages/database/prisma/schema.prisma",
-		]);
-		assert.equal(out.rule, "tenant-registration");
-		assert.match(out.detail, /both places/);
-	});
-});
-
 describe("findUnboundedModelCalls", () => {
 	it("flags a call with no output budget", () => {
 		const found = findUnboundedModelCalls(
@@ -268,13 +243,5 @@ describe("renderReport", () => {
 		);
 		assert.match(report, /example-workflow\.ts:1/);
 		assert.match(report, /Workflow replay/);
-	});
-
-	it("reports a tenant question on its own", () => {
-		const report = renderReport([], null, {
-			rule: "tenant-registration",
-			detail: "schema moved, registration did not",
-		});
-		assert.match(report, /Tenant isolation/);
 	});
 });

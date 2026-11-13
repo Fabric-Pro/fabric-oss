@@ -87,6 +87,70 @@ describe("ReleaseNotesNewsletter", () => {
 		expect(html).toContain("Terms");
 	});
 
+	it("renders a highlight's images full width with their alt text", async () => {
+		const html = await render(
+			ReleaseNotesNewsletter({
+				...base,
+				highlights: [
+					{
+						...base.highlights[0],
+						images: [
+							{
+								url: "https://app/image-proxy/b/newsletter-public/one.png",
+								alt: "The new export menu",
+							},
+						],
+					},
+					base.highlights[1],
+				],
+			} as any),
+		);
+		expect(html).toMatch(
+			/<img[^>]*alt="The new export menu"[^>]*src="https:\/\/app\/image-proxy\/b\/newsletter-public\/one\.png"/,
+		);
+		expect(html).toMatch(
+			/<img[^>]*src="https:\/\/app\/image-proxy[^"]*"[^>]*width="456"/,
+		);
+	});
+
+	it("renders an image placed above before the description and the rest after", async () => {
+		const html = await render(
+			ReleaseNotesNewsletter({
+				...base,
+				highlights: [
+					{
+						...base.highlights[0],
+						description: "Exports now include filters.",
+						images: [
+							{ url: "https://app/below.png", alt: "Below" },
+							{
+								url: "https://app/above.png",
+								alt: "Above",
+								placement: "ABOVE",
+							},
+						],
+					},
+				],
+			} as any),
+		);
+		// React also writes each image URL into an early preload hint, so the
+		// rendered image is the URL's last occurrence.
+		const description = html.indexOf("Exports now include filters.");
+		const above = html.lastIndexOf("https://app/above.png");
+		const below = html.lastIndexOf("https://app/below.png");
+		expect(description).toBeGreaterThan(-1);
+		expect(above).toBeGreaterThan(-1);
+		expect(above).toBeLessThan(description);
+		expect(below).toBeGreaterThan(description);
+	});
+
+	it("renders no image for a highlight without images", async () => {
+		const html = await render(ReleaseNotesNewsletter(base as any));
+		expect(html).not.toContain("image-proxy");
+		// The logo is the only image in a text-only issue.
+		expect(html.match(/<img/g)).toHaveLength(1);
+	});
+
 	it("omits legal links when appUrl is absent", async () => {
 		const html = await render(
 			ReleaseNotesNewsletter({ ...base, appUrl: undefined } as any),

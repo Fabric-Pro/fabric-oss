@@ -3,8 +3,10 @@
  *
  * Only each file's CURRENT version is offered (the extraction whose hash
  * equals the context's); entries already turned into decisions or dismissed
- * are not offered again; and a candidate that reads like an existing decision
- * names it, so the tab can offer "Create as update".
+ * are not offered again; a candidate that reads like an existing decision
+ * names it, so the tab can offer "Create as update"; a candidate links the
+ * work item it came from only while the project still has it; and the files a
+ * scan reads, and the files only partly read, are the ones the tab names.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -13,15 +15,19 @@ const mocks = vi.hoisted(() => ({
 	extractionFindFirst: vi.fn(),
 	extractionUpdate: vi.fn(),
 	decisionFindMany: vi.fn(),
+	storyFindMany: vi.fn(),
 	transaction: vi.fn(),
 	txExecuteRaw: vi.fn(),
 	txDecisionFindMany: vi.fn(),
 	txDecisionFindFirst: vi.fn(),
 	txDecisionCreate: vi.fn(),
 	txVersionCreate: vi.fn(),
-	contextFindMany: vi.fn(),
 	contextUpdateMany: vi.fn(),
+	queryRaw: vi.fn(),
 }));
+
+/** A `Prisma.sql` fragment as the mock below builds it. */
+type SqlFragment = { strings: readonly string[]; values: unknown[] };
 
 vi.mock("../prisma/client", () => ({
 	db: {
@@ -31,23 +37,68 @@ vi.mock("../prisma/client", () => ({
 			update: mocks.extractionUpdate,
 		},
 		architectureDecision: { findMany: mocks.decisionFindMany },
-		projectContext: {
-			findMany: mocks.contextFindMany,
-			updateMany: mocks.contextUpdateMany,
-		},
+		userStory: { findMany: mocks.storyFindMany },
+		projectContext: { updateMany: mocks.contextUpdateMany },
 		$transaction: mocks.transaction,
+		$queryRaw: (strings: readonly string[], ...values: unknown[]) =>
+			mocks.queryRaw({ strings, values }),
+	},
+	Prisma: {
+		sql: (strings: readonly string[], ...values: unknown[]) => ({
+			strings,
+			values,
+		}),
+		empty: { strings: [""], values: [] },
 	},
 }));
 
+function isSqlFragment(value: unknown): value is SqlFragment {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"strings" in value &&
+		"values" in value
+	);
+}
+
+/** A raw query's SQL, nested fragments inlined and parameters as `?`. */
+function render(fragment: SqlFragment): { sql: string; params: unknown[] } {
+	let sql = fragment.strings[0] ?? "";
+	const params: unknown[] = [];
+	fragment.values.forEach((value, index) => {
+		if (isSqlFragment(value)) {
+			const inner = render(value);
+			sql += inner.sql;
+			params.push(...inner.params);
+		} else {
+			sql += "?";
+			params.push(value);
+		}
+		sql += fragment.strings[index + 1] ?? "";
+	});
+	return { sql: sql.replace(/\s+/g, " ").trim(), params };
+}
+
+/** The last raw query the code under test ran. */
+function lastRawQuery(): { sql: string; params: unknown[] } {
+	const call = mocks.queryRaw.mock.calls.at(-1)?.[0];
+	if (!isSqlFragment(call)) {
+		throw new Error("expected a raw query");
+	}
+	return render(call);
+}
+
 import {
 	clearLivingMemoryDecisionScanSkip,
-	countLivingMemoryFilesSkippedAtFirstSync,
+	countLivingMemoryFilesAwaitingDecisionScan,
 	createDecisionFromLivingMemoryCandidate,
 	dismissLivingMemoryDecision,
 	getLivingMemoryDecisionCandidate,
 	listLivingMemoryDecisionCandidates,
-	listLivingMemoryFilesSkippedAtFirstSync,
+	listLivingMemoryFilesAwaitingDecisionScan,
+	listLivingMemoryLimitedFiles,
 	livingMemoryUpdateTargetId,
+	parseLivingMemoryDecisions,
 	summarizeOpenLivingMemoryDecisions,
 } from "../prisma/queries/projects/living-memory-decisions";
 
@@ -315,6 +366,57 @@ describe("listLivingMemoryDecisionCandidates", () => {
 		]);
 	});
 
+	it("links the work item a candidate came from while the project still has it", async () => {
+		mocks.extractionFindMany.mockResolvedValue([
+			{
+				...currentExtraction,
+				decisions: [
+					{
+						text: "We use Postgres for all persistence.",
+						workItem: { id: "story-1", identifier: "F-001" },
+					},
+					{
+						text: "We deploy every Wednesday.",
+						workItem: { id: "story-gone", identifier: "F-002" },
+					},
+				],
+				dismissedIndexes: [],
+			},
+		]);
+		decisionsMock([], []);
+		mocks.storyFindMany.mockResolvedValue([
+			{ id: "story-1", identifier: "F-001" },
+		]);
+
+		const candidates = await listLivingMemoryDecisionCandidates({
+			projectId: "proj",
+			organizationId: "org",
+		});
+
+		expect(candidates[0]?.workItem).toEqual({
+			id: "story-1",
+			identifier: "F-001",
+		});
+		// Deleted since the file was read: offered without a link.
+		expect(candidates[1]).not.toHaveProperty("workItem");
+		expect(mocks.storyFindMany).toHaveBeenCalledWith({
+			where: {
+				projectId: "proj",
+				id: { in: ["story-1", "story-gone"] },
+			},
+			select: { id: true, identifier: true },
+		});
+	});
+
+	it("reads no work items when no candidate names one", async () => {
+		await listLivingMemoryDecisionCandidates({
+			projectId: "proj",
+			organizationId: "org",
+		});
+
+		expect(mocks.storyFindMany).not.toHaveBeenCalled();
+	});
+
 	it("is empty, not an error, for a project with no synced files", async () => {
 		mocks.extractionFindMany.mockResolvedValue([]);
 
@@ -379,6 +481,130 @@ describe("getLivingMemoryDecisionCandidate", () => {
 		await expect(
 			getLivingMemoryDecisionCandidate({ ...lookup, decisionIndex: 9 }),
 		).resolves.toEqual({ status: "not_found" });
+	});
+
+	describe("the work item it came from", () => {
+		const linked = {
+			...currentExtraction,
+			decisions: [
+				{ text: "We use Postgres for all persistence." },
+				{
+					text: "We deploy every Wednesday.",
+					workItem: { id: "story-7", identifier: "F-007" },
+				},
+			],
+		};
+
+		it("carries it, re-read, with the project's current identifier", async () => {
+			mocks.extractionFindFirst.mockResolvedValue(linked);
+			mocks.storyFindMany.mockResolvedValue([
+				{ id: "story-7", identifier: "B-007" },
+			]);
+
+			await expect(
+				getLivingMemoryDecisionCandidate(lookup),
+			).resolves.toMatchObject({
+				status: "found",
+				candidate: {
+					workItem: { id: "story-7", identifier: "B-007" },
+				},
+			});
+			expect(mocks.storyFindMany).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: { projectId: "proj", id: { in: ["story-7"] } },
+				}),
+			);
+		});
+
+		it("drops it when the project no longer has it", async () => {
+			mocks.extractionFindFirst.mockResolvedValue(linked);
+			mocks.storyFindMany.mockResolvedValue([]);
+
+			const lookedUp = await getLivingMemoryDecisionCandidate(lookup);
+
+			expect(lookedUp.status).toBe("found");
+			expect(
+				lookedUp.status === "found" ? lookedUp.candidate : null,
+			).not.toHaveProperty("workItem");
+		});
+	});
+});
+
+describe("parseLivingMemoryDecisions", () => {
+	it("keeps a well-formed work item and drops a malformed one", () => {
+		expect(
+			parseLivingMemoryDecisions([
+				{ text: "A", workItem: { id: "story-1", identifier: "F-001" } },
+				{ text: "B", workItem: { id: 7, identifier: "F-002" } },
+				{ text: "C", workItem: ["story-3"] },
+				{ text: "D", workItem: { id: "", identifier: "F-004" } },
+			]),
+		).toEqual([
+			{ text: "A", workItem: { id: "story-1", identifier: "F-001" } },
+			{ text: "B" },
+			{ text: "C" },
+			{ text: "D" },
+		]);
+	});
+});
+
+describe("listLivingMemoryLimitedFiles", () => {
+	it("names the current versions that met a limit, in the caller's tenant", async () => {
+		mocks.extractionFindMany.mockResolvedValue([
+			{
+				contentHash: CURRENT,
+				sourcePath: "docs/huge.md",
+				contentTruncated: true,
+				decisionsCapped: false,
+				context: { contentHash: CURRENT },
+			},
+			{
+				contentHash: CURRENT,
+				sourcePath: "docs/log.md",
+				contentTruncated: true,
+				decisionsCapped: true,
+				context: { contentHash: CURRENT },
+			},
+			{
+				contentHash: OLDER,
+				sourcePath: "docs/edited-since.md",
+				contentTruncated: true,
+				decisionsCapped: false,
+				context: { contentHash: CURRENT },
+			},
+		]);
+
+		await expect(
+			listLivingMemoryLimitedFiles({
+				projectId: "proj",
+				organizationId: "org",
+			}),
+		).resolves.toEqual([
+			{ sourcePath: "docs/huge.md", truncated: true, capped: false },
+			{ sourcePath: "docs/log.md", truncated: true, capped: true },
+		]);
+		expect(mocks.extractionFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					projectId: "proj",
+					organizationId: "org",
+					OR: [{ contentTruncated: true }, { decisionsCapped: true }],
+				},
+			}),
+		);
+	});
+
+	it("reads a personal project's files with no organization", async () => {
+		mocks.extractionFindMany.mockResolvedValue([]);
+
+		await expect(
+			listLivingMemoryLimitedFiles({ projectId: "proj" }),
+		).resolves.toEqual([]);
+		expect(mocks.extractionFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({ organizationId: null }),
+			}),
+		);
 	});
 });
 
@@ -529,48 +755,83 @@ describe("livingMemoryUpdateTargetId", () => {
 	});
 });
 
-describe("files a repository's first sync did not read", () => {
-	it("counts only versions still unread, in the caller's tenant", async () => {
-		mocks.contextFindMany.mockResolvedValue([
-			{ contentHash: CURRENT, decisionScanSkippedHash: CURRENT },
-			{ contentHash: CURRENT, decisionScanSkippedHash: OLDER },
-		]);
+describe("files not read for decisions yet", () => {
+	/** What both reads share: the tenant, store-only files, never-read files. */
+	function expectAwaitingScanWhere(sql: string) {
+		expect(sql).toContain('FROM project_context c WHERE c."projectId" = ?');
+		expect(sql).toContain('AND c."organizationId" IS NOT DISTINCT FROM ?');
+		expect(sql).toContain('AND c."indexingExcluded" = false');
+		// A synced, embedded file whose current version has no extraction.
+		expect(sql).toContain(
+			'OR ( c."sourcePath" IS NOT NULL AND c."contentHash" IS NOT NULL AND c."embeddedAt" IS NOT NULL AND NOT EXISTS ( SELECT 1 FROM project_context_decision_extraction e WHERE e."contextId" = c.id AND e."contentHash" = c."contentHash" ) )',
+		);
+	}
+
+	it("counts first-sync files still unread and never-read files, in the caller's tenant", async () => {
+		mocks.queryRaw.mockResolvedValue([{ count: 4 }]);
 
 		await expect(
-			countLivingMemoryFilesSkippedAtFirstSync({
+			countLivingMemoryFilesAwaitingDecisionScan({
 				projectId: "p-1",
 				organizationId: "org-1",
 			}),
-		).resolves.toBe(1);
-		expect(mocks.contextFindMany).toHaveBeenCalledWith(
-			expect.objectContaining({
-				where: {
-					projectId: "p-1",
-					organizationId: "org-1",
-					decisionScanSkippedHash: { not: null },
-					indexingExcluded: false,
-				},
-			}),
+		).resolves.toBe(4);
+		const { sql, params } = lastRawQuery();
+		expect(sql).toContain("SELECT count(*)::integer AS count");
+		expectAwaitingScanWhere(sql);
+		// A first-sync mark counts only while it names the current version.
+		expect(sql).toContain(
+			'( c."decisionScanSkippedHash" = c."contentHash" OR',
 		);
+		expect(params).toEqual(["p-1", "org-1"]);
 	});
 
-	it("pages by id after the cursor", async () => {
-		mocks.contextFindMany.mockResolvedValue([]);
+	it("counts a personal project's files with no organization", async () => {
+		mocks.queryRaw.mockResolvedValue([{ count: 0 }]);
 
-		await listLivingMemoryFilesSkippedAtFirstSync({
+		await expect(
+			countLivingMemoryFilesAwaitingDecisionScan({ projectId: "p-1" }),
+		).resolves.toBe(0);
+		expect(lastRawQuery().params).toEqual(["p-1", null]);
+	});
+
+	it("pages by id after the cursor, through every first-sync mark it can clear", async () => {
+		mocks.queryRaw.mockResolvedValue([
+			{ id: "c-6", projectId: "p-1", organizationId: "org-1" },
+		]);
+
+		await expect(
+			listLivingMemoryFilesAwaitingDecisionScan({
+				projectId: "p-1",
+				organizationId: "org-1",
+				afterId: "c-5",
+				limit: 20,
+			}),
+		).resolves.toEqual([
+			{ id: "c-6", projectId: "p-1", organizationId: "org-1" },
+		]);
+		const { sql, params } = lastRawQuery();
+		expect(sql).toContain('SELECT c.id, c."projectId", c."organizationId"');
+		expectAwaitingScanWhere(sql);
+		expect(sql).toContain('( c."decisionScanSkippedHash" IS NOT NULL OR');
+		expect(sql).toContain(
+			"AND c.id > ? ORDER BY c.id ASC LIMIT ?::integer",
+		);
+		expect(params).toEqual(["p-1", "org-1", "c-5", 20]);
+	});
+
+	it("starts the first page with no cursor", async () => {
+		mocks.queryRaw.mockResolvedValue([]);
+
+		await listLivingMemoryFilesAwaitingDecisionScan({
 			projectId: "p-1",
-			organizationId: "org-1",
-			afterId: "c-5",
+			organizationId: null,
 			limit: 20,
 		});
 
-		expect(mocks.contextFindMany).toHaveBeenCalledWith(
-			expect.objectContaining({
-				where: expect.objectContaining({ id: { gt: "c-5" } }),
-				orderBy: { id: "asc" },
-				take: 20,
-			}),
-		);
+		const { sql, params } = lastRawQuery();
+		expect(sql).not.toContain("c.id >");
+		expect(params).toEqual(["p-1", null, 20]);
 	});
 
 	it("clears one file by its id, project and tenant", async () => {

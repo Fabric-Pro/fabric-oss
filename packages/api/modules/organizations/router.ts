@@ -64,6 +64,10 @@ import { generateOrganizationSlug } from "./procedures/generate-organization-slu
 import { getFrameSharingPolicyProcedure } from "./procedures/get-frame-sharing-policy";
 import { getGuestOrganizationProcedure } from "./procedures/get-guest-organization";
 import {
+	getOrganizationInstructionTemplateProcedure,
+	updateOrganizationInstructionTemplateProcedure,
+} from "./procedures/instruction-template";
+import {
 	bulkInviteOrgMembersProcedure,
 	cancelOrgInvitationProcedure,
 	listOrgInvitationsProcedure,
@@ -144,6 +148,12 @@ export const organizationsRouter = {
 	attachmentRetention: {
 		get: getOrganizationAttachmentRetentionProcedure,
 		update: updateOrganizationAttachmentRetentionProcedure,
+	},
+	// The project whose coding instructions the organization's other
+	// projects can start from.
+	instructionTemplate: {
+		get: getOrganizationInstructionTemplateProcedure,
+		update: updateOrganizationInstructionTemplateProcedure,
 	},
 	documentAssistantHistory: {
 		// spec 2026-05-19 §3.11 FR-27 — read-only feature flag exposure;

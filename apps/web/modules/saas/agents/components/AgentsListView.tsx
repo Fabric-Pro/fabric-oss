@@ -92,7 +92,7 @@ function AgentListItem({
 		switch (agent.status) {
 			case "ACTIVE":
 				return (
-					<Badge className="bg-green-500/10 text-green-700 dark:bg-green-500/20 dark:text-green-400 border-0">
+					<Badge className="bg-green-500/10 text-green-800 dark:bg-green-500/20 dark:text-green-400 border-0">
 						<CheckCircleIcon className="mr-1 size-3" />
 						Active
 					</Badge>
@@ -105,21 +105,21 @@ function AgentListItem({
 				);
 			case "DEPLOYING":
 				return (
-					<Badge className="bg-blue-500/10 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400 border-0">
+					<Badge className="bg-blue-500/10 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300 border-0">
 						<LoaderIcon className="mr-1 size-3 animate-spin" />
 						Deploying
 					</Badge>
 				);
 			case "ERROR":
 				return (
-					<Badge className="bg-red-500/10 text-red-700 dark:bg-red-500/20 dark:text-red-400 border-0">
+					<Badge className="bg-red-500/10 text-red-700 dark:bg-red-500/20 dark:text-red-300 border-0">
 						<XCircleIcon className="mr-1 size-3" />
 						Error
 					</Badge>
 				);
 			case "MAINTENANCE":
 				return (
-					<Badge className="bg-yellow-500/10 text-yellow-700 dark:bg-yellow-500/20 dark:text-yellow-400 border-0">
+					<Badge className="bg-yellow-500/10 text-yellow-800 dark:bg-yellow-500/20 dark:text-yellow-400 border-0">
 						Maintenance
 					</Badge>
 				);
@@ -216,7 +216,10 @@ function AgentListItem({
 									size="sm"
 									className="md:opacity-0 md:group-hover:opacity-100 transition-opacity focus:opacity-100"
 								>
-									<MoreVerticalIcon className="h-4 w-4" />
+									<MoreVerticalIcon
+										strokeWidth={2.5}
+										className="h-4 w-4"
+									/>
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end">

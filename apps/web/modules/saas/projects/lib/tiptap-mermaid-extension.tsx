@@ -2270,6 +2270,7 @@ Rules:
 											className="mermaid-visual-trigger ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 										>
 											<EllipsisVertical
+												strokeWidth={2.5}
 												className="h-4 w-4"
 												aria-hidden="true"
 											/>

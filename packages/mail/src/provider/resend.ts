@@ -1,5 +1,5 @@
 import { config } from "@repo/config";
-import { withProviderBreaker } from "@repo/observability";
+import { withProviderBreaker } from "@repo/observability/breakers";
 import { Resend } from "resend";
 import type { SendEmailHandler } from "../../types";
 

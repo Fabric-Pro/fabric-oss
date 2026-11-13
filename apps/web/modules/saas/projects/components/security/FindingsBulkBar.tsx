@@ -180,7 +180,7 @@ export function FindingsBulkBar({
 						) : (
 							<CheckCircle2Icon
 								aria-hidden="true"
-								className="size-4 text-secondary"
+								className="size-4 text-success"
 							/>
 						)}
 						Mark resolved

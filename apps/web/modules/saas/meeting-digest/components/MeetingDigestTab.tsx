@@ -4,6 +4,13 @@ import { ORPCError } from "@orpc/client";
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { LinkedMeetingSelector } from "@saas/meetings/components";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import {
+	AddMeetingMenu,
+	type MeetingSourcesProject,
+	useMeetingSourceDialogs,
+} from "@saas/projects/components/meeting-sources/AddMeetingMenu";
+import { TranscriptFolderProgress } from "@saas/projects/components/meeting-sources/TranscriptFolderProgress";
+import { UploadedTranscriptProgress } from "@saas/projects/components/meeting-sources/UploadedTranscriptProgress";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { useQueryClient } from "@tanstack/react-query";
@@ -30,12 +37,17 @@ import { AgendaView } from "./AgendaView";
 import { CalendarCanvas } from "./CalendarCanvas";
 import { DigestConfigPanel } from "./DigestConfigPanel";
 import { MeetingDetailSheet } from "./MeetingDetailSheet";
+import {
+	MeetingDetailsDialog,
+	type MeetingDetailsTarget,
+} from "./MeetingDetailsDialog";
 import { PersonalMeetingSheet } from "./PersonalMeetingSheet";
 import {
 	PersonalMeetingsConsent,
 	usePersonalInsightsCacheConsent,
 	usePersonalMeetingsConsent,
 } from "./PersonalMeetingsConsent";
+import { UndatedMeetingsSection } from "./UndatedMeetingsSection";
 import { UpcomingMeetingsSection } from "./UpcomingMeetingsSection";
 
 export function MeetingDigestTab({
@@ -44,10 +56,17 @@ export function MeetingDigestTab({
 	canEdit,
 	userId = "",
 	projectName = "this project",
+	meetingSources,
 }: {
 	projectId: string;
 	organizationId: string | null;
 	canEdit: boolean;
+	/**
+	 * Fizzy #3507: present when the viewer may change the project's meeting
+	 * sources, which turns "Add meeting" into the calendar, upload and series
+	 * actions. Absent, it stays the calendar picker alone.
+	 */
+	meetingSources?: MeetingSourcesProject;
 	/**
 	 * Shown in the #2170 import confirmation. Defaulted rather than required so
 	 * the existing tests of this component keep working; the default is a
@@ -108,6 +127,8 @@ export function MeetingDigestTab({
 		configMeetings,
 		seriesWithoutTranscripts,
 		awaitingOccurrences,
+		// Defaulted: tests that mock the hook predate it.
+		undatedMeetings = [],
 		isLoading,
 		isError,
 		setIncluded,
@@ -126,7 +147,50 @@ export function MeetingDigestTab({
 	const includedMeetings = meetings.filter((m) => m.includedInDigest);
 
 	const [showPicker, setShowPicker] = useState(false);
+	const [detailsTarget, setDetailsTarget] =
+		useState<MeetingDetailsTarget | null>(null);
 	const { confirm } = useConfirmationAlert();
+
+	// Mounted once for the page: the empty-state button that opens a dialog
+	// is replaced by the calendar as soon as the first upload lands.
+	const sourceDialogs = useMeetingSourceDialogs({
+		projectId,
+		organizationId,
+		project: meetingSources,
+		onSourcesChanged: refreshAfterLink,
+	});
+
+	// The one "Add meeting" control, wherever the page shows it. With source
+	// access it offers every way in; without, it is the calendar picker it
+	// always was.
+	const addMeetingControl = (variant: "outline" | "link") =>
+		meetingSources ? (
+			<AddMeetingMenu
+				onAddFromCalendar={() => setShowPicker(true)}
+				onUpload={sourceDialogs.openUpload}
+				onConfigureSeries={sourceDialogs.openSeries}
+				onConnectFolder={sourceDialogs.openFolder}
+				variant={variant}
+			/>
+		) : variant === "link" ? (
+			<button
+				type="button"
+				className="text-sm underline"
+				onClick={() => setShowPicker(true)}
+			>
+				Add meeting
+			</button>
+		) : (
+			<Button
+				type="button"
+				variant="outline"
+				size="sm"
+				onClick={() => setShowPicker(true)}
+			>
+				<PlusIcon className="size-4 mr-1.5" />
+				Add meeting
+			</Button>
+		);
 
 	// Fetched unconditionally (once canEdit) rather than gated on
 	// showPicker/showConfig: the picker and the digest's own listMeetings
@@ -406,6 +470,8 @@ export function MeetingDigestTab({
 	const hasDigestContent =
 		includedMeetings.length > 0 ||
 		awaitingOccurrences.length > 0 ||
+		// #3507: undated meetings are content too, listed under the calendar.
+		undatedMeetings.length > 0 ||
 		(personalActive && visiblePersonalMeetings.length > 0);
 
 	// The generic empty state and DigestConfigPanel each already ship their own
@@ -578,19 +644,23 @@ export function MeetingDigestTab({
 					<p className="text-sm text-muted-foreground">
 						No meetings in the digest yet.
 					</p>
-					{canEdit && (
-						<Button
-							type="button"
-							variant="outline"
-							size="sm"
-							onClick={() => setShowPicker(true)}
-						>
-							<PlusIcon className="size-4 mr-1.5" />
-							Add meeting
-						</Button>
-					)}
+					{canEdit && addMeetingControl("outline")}
 				</div>
 			)}
+			<UndatedMeetingsSection
+				meetings={undatedMeetings}
+				onSelect={setSelected}
+				onSetDate={
+					canEdit
+						? (meeting) =>
+								setDetailsTarget({
+									transcriptId: meeting.transcriptId,
+									subject: meeting.meetingSubject,
+									meetingDate: null,
+								})
+						: undefined
+				}
+			/>
 		</>
 	);
 
@@ -618,13 +688,9 @@ export function MeetingDigestTab({
 				{canEdit && (
 					<div className="flex flex-wrap items-center gap-3">
 						{!configPanelVisible && !genericEmptyStateOnScreen && (
-							<button
-								type="button"
-								className="text-sm underline"
-								onClick={() => setShowPicker(true)}
-							>
-								Add meeting
-							</button>
+							<span data-onboarding-target="meeting-digest-add">
+								{addMeetingControl("link")}
+							</span>
 						)}
 						<button
 							type="button"
@@ -637,6 +703,26 @@ export function MeetingDigestTab({
 					</div>
 				)}
 			</div>
+
+			{/* For the people who add meetings, since they are the ones who can
+			    act on a file in progress or one that failed. */}
+			{meetingSources && (
+				<>
+					<UploadedTranscriptProgress
+						projectId={projectId}
+						organizationId={organizationId}
+						onFinished={refreshAfterLink}
+						onReview={sourceDialogs.openUpload}
+					/>
+					<TranscriptFolderProgress
+						projectId={projectId}
+						organizationId={organizationId}
+						onFinished={refreshAfterLink}
+						onImported={refreshAfterLink}
+						onReview={sourceDialogs.openSeries}
+					/>
+				</>
+			)}
 
 			{isError && (
 				<p className="text-sm text-destructive">
@@ -653,6 +739,11 @@ export function MeetingDigestTab({
 					onSetIncluded={handleSetIncluded}
 					pendingIncludeIds={pendingIncludeIds}
 					onAddMeeting={() => setShowPicker(true)}
+					addMeetingAction={
+						meetingSources
+							? addMeetingControl("outline")
+							: undefined
+					}
 					onUnlink={handleUnlink}
 					autoJoin={
 						parlumeEnabled && meetingAgendaEnabled && organizationId
@@ -713,6 +804,8 @@ export function MeetingDigestTab({
 				/>
 			)}
 
+			{sourceDialogs.dialogs}
+
 			<MeetingDetailSheet
 				projectId={projectId}
 				organizationId={organizationId}
@@ -725,6 +818,25 @@ export function MeetingDigestTab({
 				highlightItemKey={highlightItemKey}
 				panelExpanded={panelExpanded}
 				onPanelExpandedChange={setPanelExpanded}
+				onEditDetails={canEdit ? setDetailsTarget : undefined}
+			/>
+
+			<MeetingDetailsDialog
+				projectId={projectId}
+				organizationId={organizationId}
+				target={detailsTarget}
+				onClose={() => setDetailsTarget(null)}
+				onSaved={() =>
+					Promise.all([
+						refreshAfterLink(),
+						queryClient.invalidateQueries({
+							queryKey: [
+								"projects.meetingDigest.getMeeting",
+								projectId,
+							],
+						}),
+					]).then(() => undefined)
+				}
 			/>
 
 			<PersonalMeetingSheet

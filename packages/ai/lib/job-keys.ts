@@ -29,6 +29,12 @@ export const AI_JOB_TYPES = [
 	"workflow-builder",
 	/** Newsletter stakeholder release-note curation (hourly cron). */
 	"newsletter-curation",
+	/**
+	 * Release-notes screenshot capture: the browser steps a model decides to
+	 * reach the screen a highlight changed. Its own key so the capture's cost
+	 * per issue reads separately from curation's.
+	 */
+	"newsletter-screenshot",
 	/** Publishing-suggestion topic summarization (daily cron). */
 	"publishing-suggestion",
 	/**
@@ -188,6 +194,12 @@ export const AI_JOB_TYPES = [
 	"project-setup",
 	/** Atlas repository analysis a person starts. */
 	"atlas-analysis",
+	/**
+	 * Time suggestions a member generates for their own timesheet: one short
+	 * description per suggested block. Their own click over their own
+	 * activity, so it is not bulk work for anyone else.
+	 */
+	"time-suggestions",
 ] as const;
 
 export type AiJobKey = (typeof AI_JOB_TYPES)[number];

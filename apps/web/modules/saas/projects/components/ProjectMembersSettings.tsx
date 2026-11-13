@@ -764,12 +764,16 @@ export function ProjectMembersSettings({ projectId, organizationId }: Props) {
 				) : (
 					<div className="space-y-2">
 						{members.map((member: ProjectMember) => {
-							// A member can be managed if the current user is an owner,
-							// it's not themselves, and it's not the original project creator
+							// Changing a role and removing a member are
+							// PROJECT_MEMBERS_MANAGE on the server, like inviting.
+							// Never yourself or the project creator, and only an
+							// owner may touch another owner (the server refuses
+							// anyone else).
 							const canManage =
-								currentUserIsOwner &&
+								canInviteMembers &&
 								member.userId !== currentUser?.id &&
-								!member.isCreator;
+								!member.isCreator &&
+								(currentUserIsOwner || !member.isOwner);
 
 							return (
 								<div
@@ -865,7 +869,12 @@ export function ProjectMembersSettings({ projectId, organizationId }: Props) {
 															size="sm"
 															aria-label="Member actions"
 														>
-															<MoreVerticalIcon className="size-4" />
+															<MoreVerticalIcon
+																strokeWidth={
+																	2.5
+																}
+																className="size-4"
+															/>
 														</Button>
 													</DropdownMenuTrigger>
 												</TooltipTrigger>
@@ -949,9 +958,12 @@ export function ProjectMembersSettings({ projectId, organizationId }: Props) {
 					</div>
 				)}
 
-				{!currentUserIsOwner && !isLoading && (
+				{/* Wait for the project too: until it arrives a project admin
+				    reads as a member who cannot invite. */}
+				{!canInviteMembers && !isLoading && projectData && (
 					<p className="text-xs text-muted-foreground mt-3 text-center">
-						Only project owners can invite members and manage roles.
+						Only project owners and project admins can invite
+						members and manage roles.
 					</p>
 				)}
 			</div>
@@ -1044,7 +1056,12 @@ export function ProjectMembersSettings({ projectId, organizationId }: Props) {
 															size="sm"
 															aria-label="Invitation actions"
 														>
-															<MoreVerticalIcon className="size-4" />
+															<MoreVerticalIcon
+																strokeWidth={
+																	2.5
+																}
+																className="size-4"
+															/>
 														</Button>
 													</DropdownMenuTrigger>
 												</TooltipTrigger>
@@ -1119,7 +1136,8 @@ export function ProjectMembersSettings({ projectId, organizationId }: Props) {
 							Update the role for{" "}
 							{changeRoleMember?.user.name ||
 								changeRoleMember?.user.email}
-							. Owners can invite members and manage the project.
+							. Owners and project admins can invite members and
+							manage roles.
 						</DialogDescription>
 					</DialogHeader>
 					<div className="space-y-4">

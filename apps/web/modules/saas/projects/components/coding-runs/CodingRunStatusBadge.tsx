@@ -82,7 +82,7 @@ export function CodingRunStatusBadge({
 			className="gap-1 text-[10px] font-medium"
 		>
 			{kind === "SPIKE" && (
-				<span className="inline-flex items-center gap-0.5 rounded-sm bg-primary/10 px-1 text-primary">
+				<span className="inline-flex items-center gap-0.5 rounded-sm bg-primary/10 px-1 text-primary-active">
 					<FlaskConicalIcon className="size-2.5" />
 					Spike
 				</span>

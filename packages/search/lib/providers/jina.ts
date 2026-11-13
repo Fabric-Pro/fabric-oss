@@ -65,7 +65,8 @@ export class JinaSearchProvider extends BaseSearchProvider {
 
 		const { maxResults = 10 } = options;
 
-		logger.info(`[JinaSearchProvider] Searching for: "${query}"`, {
+		logger.info("[JinaSearchProvider] Searching", {
+			queryLength: query.length,
 			maxResults,
 		});
 
@@ -118,9 +119,9 @@ export class JinaSearchProvider extends BaseSearchProvider {
 				hasMore: false,
 			};
 		} catch (error) {
-			const errorMessage =
-				error instanceof Error ? error.message : String(error);
-			logger.error(`[JinaSearchProvider] Search failed: ${errorMessage}`);
+			logger.error("[JinaSearchProvider] Search failed", {
+				errorKind: error instanceof Error ? error.name : typeof error,
+			});
 			throw error;
 		}
 	}

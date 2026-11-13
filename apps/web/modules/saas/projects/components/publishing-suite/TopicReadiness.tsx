@@ -127,7 +127,7 @@ export function TopicReadiness({
 								className={cn(
 									"h-1.5 w-3 rounded-full",
 									i < filled
-										? "bg-secondary"
+										? "bg-success"
 										: "bg-muted-foreground/25",
 								)}
 							/>

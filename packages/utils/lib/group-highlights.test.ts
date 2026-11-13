@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { groupHighlightsByRelease } from "./group-highlights";
+import {
+	groupHighlightsByRelease,
+	highlightImagesAt,
+} from "./group-highlights";
 
 const h = (title: string, extra: Record<string, unknown> = {}) => ({
 	title,
@@ -56,5 +59,26 @@ describe("groupHighlightsByRelease", () => {
 		expect(groupHighlightsByRelease(undefined as never)).toEqual([]);
 		expect(() => groupHighlightsByRelease({} as never)).not.toThrow();
 		expect(groupHighlightsByRelease({} as never)).toEqual([]);
+	});
+});
+
+describe("highlightImagesAt", () => {
+	const image = (name: string) => ({
+		url: `https://example.com/${name}.png`,
+		alt: name,
+	});
+	const above = { ...image("a"), placement: "ABOVE" as const };
+	const below = { ...image("b"), placement: "BELOW" as const };
+	const unplaced = image("c");
+
+	it("splits images above the description from the rest, keeping order", () => {
+		const images = [unplaced, above, below];
+
+		expect(highlightImagesAt(images, "ABOVE")).toEqual([above]);
+		expect(highlightImagesAt(images, "BELOW")).toEqual([unplaced, below]);
+	});
+
+	it("returns no images for a highlight without any", () => {
+		expect(highlightImagesAt(undefined, "BELOW")).toEqual([]);
 	});
 });

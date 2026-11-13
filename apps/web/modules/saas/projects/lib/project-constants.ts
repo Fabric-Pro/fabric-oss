@@ -29,7 +29,7 @@ export const PROJECT_TYPES = [
 		label: "API/Backend",
 		description: "RESTful or GraphQL API",
 		icon: ZapIcon,
-		color: "text-yellow-600 dark:text-yellow-400",
+		color: "text-yellow-800 dark:text-yellow-400",
 		bgColor: "bg-yellow-100 dark:bg-yellow-900/20",
 	},
 	{
@@ -37,7 +37,7 @@ export const PROJECT_TYPES = [
 		label: "SaaS Platform",
 		description: "Software as a Service",
 		icon: CloudIcon,
-		color: "text-cyan-600 dark:text-cyan-400",
+		color: "text-cyan-700 dark:text-cyan-400",
 		bgColor: "bg-cyan-100 dark:bg-cyan-900/20",
 	},
 	{
@@ -45,7 +45,7 @@ export const PROJECT_TYPES = [
 		label: "E-commerce",
 		description: "Online store or marketplace",
 		icon: ShoppingCartIcon,
-		color: "text-green-600 dark:text-green-400",
+		color: "text-green-800 dark:text-green-400",
 		bgColor: "bg-green-100 dark:bg-green-900/20",
 	},
 	{

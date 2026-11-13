@@ -1,5 +1,8 @@
 import { ORPCError } from "@orpc/server";
-import { createAgentTemplate, getAgentTemplateBySlug } from "@repo/database";
+import {
+	createAgentTemplate,
+	getAgentTemplateBySlugGlobally,
+} from "@repo/database";
 import type { Prisma } from "@repo/database/prisma/generated/client";
 import { z } from "zod";
 import {
@@ -52,7 +55,7 @@ export const createTemplateProcedure = adminProcedure
 	.input(createInputSchema)
 	.handler(async ({ input, context }) => {
 		// Check if slug already exists
-		const existing = await getAgentTemplateBySlug(input.slug);
+		const existing = await getAgentTemplateBySlugGlobally(input.slug);
 		if (existing) {
 			// A plain Error surfaces as "Internal server error" in the form;
 			// a typed conflict carries the message to the person who typed it.

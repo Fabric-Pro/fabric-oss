@@ -487,15 +487,15 @@ export const DELIVERY_TRACK_TONE_CLASSES: Record<
 > = {
 	rose: {
 		dot: "bg-primary",
-		chip: "border-primary/30 bg-primary/10 text-primary",
+		chip: "border-primary/30 bg-primary/10 text-primary-active",
 	},
 	amber: {
 		dot: "bg-highlight",
 		chip: "border-highlight/30 bg-highlight/10 text-highlight",
 	},
 	emerald: {
-		dot: "bg-secondary",
-		chip: "border-secondary/30 bg-secondary/10 text-secondary",
+		dot: "bg-success",
+		chip: "border-success/30 bg-success/10 text-success",
 	},
 	neutral: {
 		dot: "bg-muted-foreground/40",
@@ -503,7 +503,7 @@ export const DELIVERY_TRACK_TONE_CLASSES: Record<
 	},
 	muted: {
 		dot: "bg-muted-foreground/25",
-		chip: "border-border/60 bg-muted/60 text-muted-foreground/70 line-through decoration-muted-foreground/40",
+		chip: "border-border/60 bg-muted/60 text-muted-foreground line-through decoration-muted-foreground/40",
 	},
 };
 

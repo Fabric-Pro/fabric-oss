@@ -479,10 +479,10 @@ export function RegisterExternalAgent() {
 									discoveryResult?.valid && (
 										<Alert className="border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950/30">
 											<CheckCircle2 className="h-4 w-4 text-green-600" />
-											<AlertTitle className="text-green-700 dark:text-green-400">
+											<AlertTitle className="text-green-800 dark:text-green-400">
 												Agent Discovered Successfully
 											</AlertTitle>
-											<AlertDescription className="text-green-600 dark:text-green-500">
+											<AlertDescription className="text-green-800 dark:text-green-500">
 												Found "
 												{
 													discoveryResult.agentCard
@@ -564,7 +564,7 @@ export function RegisterExternalAgent() {
 											{discoveryResult.healthy && (
 												<Badge
 													variant="secondary"
-													className="text-xs bg-green-100 text-green-700"
+													className="text-xs bg-green-100 text-green-800"
 												>
 													<CheckCircle2 className="h-3 w-3 mr-1" />
 													Healthy

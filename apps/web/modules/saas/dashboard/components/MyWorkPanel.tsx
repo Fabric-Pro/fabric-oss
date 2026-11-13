@@ -106,11 +106,11 @@ function kindTone(kind: MyWorkItemKind, isBlocked: boolean): string {
 	}
 	switch (kind) {
 		case "feature":
-			return "text-primary bg-primary/10";
+			return "text-primary-active bg-primary/10";
 		case "document":
 			return "text-highlight bg-highlight/10";
 		case "project":
-			return "text-secondary bg-secondary/10";
+			return "text-success bg-success/10";
 		case "task":
 		case "pipeline":
 			return "text-muted-foreground bg-muted";
@@ -158,7 +158,7 @@ function MyWorkList({
 				<p className="text-sm font-medium text-muted-foreground">
 					{state.title}
 				</p>
-				<p className="text-xs text-muted-foreground/60">{state.hint}</p>
+				<p className="text-xs text-muted-foreground">{state.hint}</p>
 			</div>
 		);
 	}
@@ -193,7 +193,7 @@ function MyWorkList({
 						<div className="min-w-0 flex-1">
 							<div className="flex items-center gap-2">
 								{item.identifier ? (
-									<span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground/70 shrink-0">
+									<span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground shrink-0">
 										{item.identifier}
 									</span>
 								) : null}
@@ -201,7 +201,7 @@ function MyWorkList({
 									{item.title}
 								</p>
 							</div>
-							<div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground/70">
+							<div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
 								{item.projectName ? (
 									<span className="truncate">
 										{item.projectName}

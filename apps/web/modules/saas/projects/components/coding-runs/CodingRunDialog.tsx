@@ -64,7 +64,7 @@ export function CodingRunDialog({
 							<div className="flex flex-wrap items-center gap-2">
 								<Badge
 									variant="outline"
-									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary"
+									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary-active"
 								>
 									<SparklesIcon className="mr-1 size-3" />
 									Fabric Agents Session

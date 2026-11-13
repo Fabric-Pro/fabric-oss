@@ -64,6 +64,11 @@ import {
 	normaliseOperation,
 	operationKindForLog,
 } from "./operation-decision";
+import {
+	type RunnerAuth,
+	runnerAuthFromEnvironment,
+	scopedHeadersForAuth,
+} from "./runner-auth";
 
 export { normaliseOperation } from "./operation-decision";
 
@@ -142,45 +147,7 @@ export interface RunAgenticCaseInput {
 	runId?: string | null;
 	/** Free-text house rules the policy carries, appended to the prompt. */
 	houseRules: string | null;
-	auth?:
-		| { kind: "NONE" }
-		| { kind: "FORM"; username: string; secret: string }
-		| { kind: "TOKEN"; secret: string }
-		| { kind: "HEADER"; headerName: string; secret: string };
-}
-
-type RunnerAuth = NonNullable<RunAgenticCaseInput["auth"]>;
-
-function runnerAuthFromEnvironment(
-	environment: Awaited<ReturnType<typeof resolveEnvironmentAuth>>,
-): RunnerAuth {
-	if (
-		!environment ||
-		environment.authKind === "NONE" ||
-		!environment.secret
-	) {
-		return { kind: "NONE" };
-	}
-	if (environment.authKind === "FORM") {
-		return environment.username
-			? {
-					kind: "FORM",
-					username: environment.username,
-					secret: environment.secret,
-				}
-			: { kind: "NONE" };
-	}
-	if (environment.authKind === "TOKEN") {
-		return { kind: "TOKEN", secret: environment.secret };
-	}
-	if (environment.authKind === "HEADER" && environment.headerName) {
-		return {
-			kind: "HEADER",
-			headerName: environment.headerName,
-			secret: environment.secret,
-		};
-	}
-	return { kind: "NONE" };
+	auth?: RunnerAuth;
 }
 
 async function resolveCaseEnvironment(input: RunAgenticCaseInput): Promise<{
@@ -579,18 +546,10 @@ export async function runAgenticCase(
 			timeoutMs: 30_000,
 			signal: activityCancellationSignal(),
 			targetOrigin: new URL(targetBaseUrl).origin,
-			scopedHTTPHeaders:
-				auth.kind === "TOKEN"
-					? {
-							origin: new URL(targetBaseUrl).origin,
-							headers: { Authorization: `Bearer ${auth.secret}` },
-						}
-					: auth.kind === "HEADER"
-						? {
-								origin: new URL(targetBaseUrl).origin,
-								headers: { [auth.headerName]: auth.secret },
-							}
-						: undefined,
+			scopedHTTPHeaders: scopedHeadersForAuth(
+				auth,
+				new URL(targetBaseUrl).origin,
+			),
 		});
 
 		// --- Sign in ---------------------------------------------------------

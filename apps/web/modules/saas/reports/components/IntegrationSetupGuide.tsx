@@ -69,7 +69,7 @@ const INTEGRATION_GUIDES: Record<IntegrationType, IntegrationGuide> = {
 							href="https://api.slack.com/apps"
 							target="_blank"
 							rel="noopener noreferrer"
-							className="text-blue-600 hover:underline inline-flex items-center gap-1"
+							className="text-blue-600 hover:underline inline-flex items-center gap-1 dark:text-blue-400"
 						>
 							api.slack.com/apps{" "}
 							<ExternalLinkIcon className="h-3 w-3" />
@@ -131,7 +131,7 @@ const INTEGRATION_GUIDES: Record<IntegrationType, IntegrationGuide> = {
 				content: (
 					<p className="text-muted-foreground">
 						Go to{" "}
-						<IntegrationsSettingsLink className="text-blue-600 hover:underline inline-flex items-center gap-1">
+						<IntegrationsSettingsLink className="text-blue-600 hover:underline inline-flex items-center gap-1 dark:text-blue-400">
 							Settings → Integrations
 						</IntegrationsSettingsLink>{" "}
 						and add your Slack integration with the bot token.
@@ -180,7 +180,7 @@ const INTEGRATION_GUIDES: Record<IntegrationType, IntegrationGuide> = {
 							href="https://github.com/settings/tokens"
 							target="_blank"
 							rel="noopener noreferrer"
-							className="text-blue-600 hover:underline inline-flex items-center gap-1"
+							className="text-blue-600 hover:underline inline-flex items-center gap-1 dark:text-blue-400"
 						>
 							GitHub Settings → Developer settings → Personal
 							access tokens{" "}
@@ -240,7 +240,7 @@ const INTEGRATION_GUIDES: Record<IntegrationType, IntegrationGuide> = {
 				content: (
 					<p className="text-muted-foreground">
 						Go to{" "}
-						<IntegrationsSettingsLink className="text-blue-600 hover:underline inline-flex items-center gap-1">
+						<IntegrationsSettingsLink className="text-blue-600 hover:underline inline-flex items-center gap-1 dark:text-blue-400">
 							Settings → Integrations
 						</IntegrationsSettingsLink>{" "}
 						and add your GitHub integration with the personal access
@@ -280,7 +280,7 @@ const INTEGRATION_GUIDES: Record<IntegrationType, IntegrationGuide> = {
 							href="https://linear.app/settings/api"
 							target="_blank"
 							rel="noopener noreferrer"
-							className="text-blue-600 hover:underline inline-flex items-center gap-1"
+							className="text-blue-600 hover:underline inline-flex items-center gap-1 dark:text-blue-400"
 						>
 							Linear Settings → API{" "}
 							<ExternalLinkIcon className="h-3 w-3" />
@@ -316,7 +316,7 @@ const INTEGRATION_GUIDES: Record<IntegrationType, IntegrationGuide> = {
 				content: (
 					<p className="text-muted-foreground">
 						Go to{" "}
-						<IntegrationsSettingsLink className="text-blue-600 hover:underline inline-flex items-center gap-1">
+						<IntegrationsSettingsLink className="text-blue-600 hover:underline inline-flex items-center gap-1 dark:text-blue-400">
 							Settings → Integrations
 						</IntegrationsSettingsLink>{" "}
 						and add your Linear integration with the API key.
@@ -355,7 +355,7 @@ const INTEGRATION_GUIDES: Record<IntegrationType, IntegrationGuide> = {
 							href="https://id.atlassian.com/manage-profile/security/api-tokens"
 							target="_blank"
 							rel="noopener noreferrer"
-							className="text-blue-600 hover:underline inline-flex items-center gap-1"
+							className="text-blue-600 hover:underline inline-flex items-center gap-1 dark:text-blue-400"
 						>
 							Atlassian Account → Security → API tokens{" "}
 							<ExternalLinkIcon className="h-3 w-3" />
@@ -396,7 +396,7 @@ const INTEGRATION_GUIDES: Record<IntegrationType, IntegrationGuide> = {
 					<>
 						<p className="text-muted-foreground mb-2">
 							Go to{" "}
-							<IntegrationsSettingsLink className="text-blue-600 hover:underline inline-flex items-center gap-1">
+							<IntegrationsSettingsLink className="text-blue-600 hover:underline inline-flex items-center gap-1 dark:text-blue-400">
 								Settings → Integrations
 							</IntegrationsSettingsLink>{" "}
 							and add your Atlassian integration with:
@@ -505,7 +505,7 @@ export function IntegrationSetupGuide({
 					<div className="pt-2 border-t">
 						<p className="text-muted-foreground">
 							Ready to configure?{" "}
-							<IntegrationsSettingsLink className="text-blue-600 hover:underline inline-flex items-center gap-1">
+							<IntegrationsSettingsLink className="text-blue-600 hover:underline inline-flex items-center gap-1 dark:text-blue-400">
 								Go to Integrations Settings
 							</IntegrationsSettingsLink>
 						</p>

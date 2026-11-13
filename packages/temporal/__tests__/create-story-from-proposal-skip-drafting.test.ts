@@ -18,8 +18,7 @@ const { mocks } = vi.hoisted(() => ({
 		getPromptById: vi.fn(),
 		createStory: vi.fn(),
 		createFeatureVersion: vi.fn(),
-		retrieveProjectContexts: vi.fn(),
-		formatContextsForPrompt: vi.fn(),
+		retrieveRankedPassages: vi.fn(),
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		renderTemplate: vi.fn(),
@@ -60,8 +59,7 @@ vi.mock("@repo/logs", () => ({
 }));
 
 vi.mock("@repo/rag", () => ({
-	formatContextsForPrompt: mocks.formatContextsForPrompt,
-	retrieveProjectContexts: mocks.retrieveProjectContexts,
+	retrieveRankedPassages: mocks.retrieveRankedPassages,
 }));
 
 vi.mock("@repo/rag/lib/project-contexts/live-integration-context", () => ({
@@ -125,7 +123,7 @@ describe("createStoryFromProposal — skipDrafting", () => {
 		expect(mocks.getBoundPromptForAgent).not.toHaveBeenCalled();
 		expect(mocks.getPromptById).not.toHaveBeenCalled();
 		expect(mocks.generateText).not.toHaveBeenCalled();
-		expect(mocks.retrieveProjectContexts).not.toHaveBeenCalled();
+		expect(mocks.retrieveRankedPassages).not.toHaveBeenCalled();
 		expect(mocks.fetchLiveIntegrationContext).not.toHaveBeenCalled();
 		expect(mocks.createFeatureVersion).not.toHaveBeenCalled();
 
@@ -165,8 +163,7 @@ describe("createStoryFromProposal — skipDrafting", () => {
 			name: "Test Project",
 			description: null,
 		});
-		mocks.retrieveProjectContexts.mockResolvedValue([]);
-		mocks.formatContextsForPrompt.mockReturnValue("");
+		mocks.retrieveRankedPassages.mockResolvedValue("");
 		mocks.fetchLiveIntegrationContext.mockResolvedValue({});
 		mocks.formatLiveContextForPrompt.mockReturnValue(null);
 		mocks.getAIModelWithMetadata.mockResolvedValue({
@@ -265,8 +262,7 @@ describe("createStoryFromProposal — skipDrafting", () => {
 			name: "Test Project",
 			description: null,
 		});
-		mocks.retrieveProjectContexts.mockResolvedValue([]);
-		mocks.formatContextsForPrompt.mockReturnValue("");
+		mocks.retrieveRankedPassages.mockResolvedValue("");
 		mocks.fetchLiveIntegrationContext.mockResolvedValue({});
 		mocks.formatLiveContextForPrompt.mockReturnValue(null);
 		mocks.getAIModelWithMetadata.mockResolvedValue({
@@ -316,8 +312,7 @@ describe("createStoryFromProposal — skipDrafting", () => {
 			name: "Test Project",
 			description: null,
 		});
-		mocks.retrieveProjectContexts.mockResolvedValue([]);
-		mocks.formatContextsForPrompt.mockReturnValue("");
+		mocks.retrieveRankedPassages.mockResolvedValue("");
 		mocks.fetchLiveIntegrationContext.mockResolvedValue({});
 		mocks.formatLiveContextForPrompt.mockReturnValue(null);
 		mocks.getAIModelWithMetadata.mockResolvedValue({

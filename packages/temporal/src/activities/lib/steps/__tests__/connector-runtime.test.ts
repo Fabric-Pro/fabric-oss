@@ -747,3 +747,47 @@ describe.each([
 		).toEqual({ [key]: "example-ui-key" });
 	});
 });
+
+it.each([
+	[
+		401,
+		"FAL rejected the organization's credentials. Check Settings → AI Providers.",
+	],
+	[429, "FAL rate limit or quota reached. Try again later."],
+	[400, "FAL refused this request. Rephrase the prompt."],
+	[500, "FAL image generation failed. Try again."],
+] as const)("sanitizes FAL image step HTTP %s", async (status, error) => {
+	const row = CONNECTOR_ACTIONS.find(
+		(row) => row.step === "fal-generate-image",
+	);
+	if (!row) {
+		throw new Error("Missing FAL image fixture");
+	}
+	mocks.fetch.mockResolvedValue(
+		new Response(
+			JSON.stringify({
+				detail: "sk-example-not-a-real-key",
+				message: "private prompt",
+			}),
+			{ status },
+		),
+	);
+	await expect(execute(row)).resolves.toMatchObject({
+		success: false,
+		error,
+	});
+});
+
+it("sanitizes FAL image step network failures", async () => {
+	const row = CONNECTOR_ACTIONS.find(
+		(row) => row.step === "fal-generate-image",
+	);
+	if (!row) {
+		throw new Error("Missing FAL image fixture");
+	}
+	mocks.fetch.mockRejectedValue(new Error("sk-example-not-a-real-key"));
+	await expect(execute(row)).resolves.toMatchObject({
+		success: false,
+		error: "FAL image generation failed. Try again.",
+	});
+});

@@ -327,7 +327,7 @@ const SlashCommandsList = forwardRef<
 								type="button"
 								className={`w-full flex items-center gap-3 px-3 py-2 rounded text-left transition-colors ${
 									index === selectedIndex
-										? "bg-primary/10 text-primary"
+										? "bg-primary/10 text-primary-active"
 										: "text-foreground hover:bg-muted"
 								}`}
 								onClick={() => selectItem(index)}

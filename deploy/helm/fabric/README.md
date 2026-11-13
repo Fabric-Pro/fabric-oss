@@ -75,6 +75,16 @@ environment gate. Configure either model using the
 
 ## Environment wiring
 
+The dev and prod profiles enable `temporalWorker.bypassRlsRole`, using the
+Terraform-provisioned worker database secret for the Temporal worker. The base
+values leave this setting disabled.
+
+With the setting enabled, the secret store must hold a
+`fabric/<environment>/database-worker` entry with `WORKER_DATABASE_URL` and
+`WORKER_DB_PASSWORD`. The Terraform environments create it; if you provision the
+database another way, create that entry before installing, or the worker
+ExternalSecret never syncs and the migrate hook fails.
+
 `values-dev.yaml` and `values-prod.yaml` carry **sizing and profile only**. The
 account-bound values live outside the chart so one chart serves every cluster,
 and are supplied at deploy time:

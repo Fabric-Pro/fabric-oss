@@ -213,7 +213,7 @@ function ActivityIcon({ type, isAi }: { type: ActivityType; isAi: boolean }) {
 	if (type === "CREATED") {
 		return isAi ? (
 			<SparklesIcon
-				className="size-3.5 shrink-0 text-secondary"
+				className="size-3.5 shrink-0 text-success"
 				aria-hidden="true"
 			/>
 		) : (

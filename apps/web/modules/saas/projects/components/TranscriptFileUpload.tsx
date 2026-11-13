@@ -29,14 +29,21 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Loader2Icon, Trash2Icon, UploadIcon } from "lucide-react";
-import { type ChangeEvent, useId, useRef, useState } from "react";
+import {
+	type ChangeEvent,
+	useCallback,
+	useEffect,
+	useId,
+	useRef,
+	useState,
+} from "react";
 import { toast } from "sonner";
 
 const POLL_WHILE_PROCESSING_MS = 3_000;
 
 const GUIDANCE = `${TRANSCRIPT_UPLOAD_FORMAT_LIST} — ${formatSizeLimit(TRANSCRIPT_UPLOAD_MAX_BYTES)}`;
 
-interface UploadedTranscriptRow {
+export interface UploadedTranscriptRow {
 	id: string;
 	type: string;
 	extractionStatus: string;
@@ -55,10 +62,17 @@ function metadataOf(row: UploadedTranscriptRow): UploadedTranscriptMetadata {
 	return (row.metadata ?? {}) as UploadedTranscriptMetadata;
 }
 
-function isProcessing(row: UploadedTranscriptRow): boolean {
+export function isProcessing(row: UploadedTranscriptRow): boolean {
 	return (
 		row.extractionStatus === "PENDING" ||
 		row.extractionStatus === "EXTRACTING"
+	);
+}
+
+/** What a row is called wherever it is listed. */
+export function uploadedTranscriptTitle(row: UploadedTranscriptRow): string {
+	return (
+		metadataOf(row).meetingSubject ?? row.originalFilename ?? "Transcript"
 	);
 }
 
@@ -76,6 +90,102 @@ export function transcriptListPollInterval(
 		: false;
 }
 
+const NO_REMOVED_IDS: ReadonlySet<string> = new Set();
+
+/**
+ * Removals the server has accepted and a worker has not yet carried out.
+ *
+ * Held in the query cache rather than in the uploader, because the uploader
+ * now also lives in a dialog (Fizzy #3507): closed mid-removal, it would take
+ * the record with it, and the digest's progress line, which reads the same
+ * rows, would stop polling and show the removed file again.
+ */
+function removalsKey(projectId: string) {
+	return ["uploaded-transcript-removals", projectId] as const;
+}
+
+function usePendingRemovals(projectId: string): ReadonlySet<string> {
+	const { data } = useQuery({
+		queryKey: removalsKey(projectId),
+		queryFn: () => NO_REMOVED_IDS,
+		initialData: NO_REMOVED_IDS,
+		staleTime: Number.POSITIVE_INFINITY,
+		enabled: false,
+	});
+	return data;
+}
+
+/**
+ * The project's uploaded transcripts, read again while any is in progress or
+ * being removed.
+ *
+ * One query for every place that lists them (the uploader, the Meeting Digest
+ * progress line), so they share a cache and cannot disagree about a file.
+ * `uploads` leaves out rows being removed; `storedIds` is every upload the
+ * server still has, for a caller that has to know when one is really gone.
+ */
+export function useUploadedTranscripts({
+	projectId,
+	organizationId,
+}: {
+	projectId: string;
+	organizationId: string | null;
+}) {
+	const queryClient = useQueryClient();
+	const removedIds = usePendingRemovals(projectId);
+	const { data, isLoading } = useQuery({
+		...orpc.projects.contexts.list.queryOptions({
+			input: {
+				projectId,
+				organizationId,
+				type: "MEETING_TRANSCRIPT",
+			},
+		}),
+		refetchInterval: (query) =>
+			transcriptListPollInterval(
+				(query.state.data?.contexts ?? []) as UploadedTranscriptRow[],
+				removedIds,
+			),
+	});
+
+	const stored = ((data?.contexts ?? []) as UploadedTranscriptRow[]).filter(
+		(row) => metadataOf(row).provider === UPLOADED_TRANSCRIPT_PROVIDER,
+	);
+	const storedIds = stored.map((row) => row.id).join(",");
+
+	// A removal is done once the server stops returning the row, so it can be
+	// forgotten and the polling it holds open can stop.
+	useEffect(() => {
+		if (!data || removedIds.size === 0) {
+			return;
+		}
+		const remaining = new Set(storedIds.split(","));
+		if ([...removedIds].every((id) => remaining.has(id))) {
+			return;
+		}
+		queryClient.setQueryData<ReadonlySet<string>>(
+			removalsKey(projectId),
+			new Set([...removedIds].filter((id) => remaining.has(id))),
+		);
+	}, [data, removedIds, storedIds, projectId, queryClient]);
+
+	const markRemoved = useCallback(
+		(id: string) =>
+			queryClient.setQueryData<ReadonlySet<string>>(
+				removalsKey(projectId),
+				(previous) => new Set(previous ?? NO_REMOVED_IDS).add(id),
+			),
+		[queryClient, projectId],
+	);
+
+	return {
+		uploads: stored.filter((row) => !removedIds.has(row.id)),
+		storedIds,
+		isLoading,
+		markRemoved,
+	};
+}
+
 function UploadRow({
 	row,
 	onRemove,
@@ -84,8 +194,7 @@ function UploadRow({
 	onRemove?: (row: UploadedTranscriptRow, title: string) => void;
 }) {
 	const metadata = metadataOf(row);
-	const title =
-		metadata.meetingSubject ?? row.originalFilename ?? "Transcript";
+	const title = uploadedTranscriptTitle(row);
 	const failed = row.extractionStatus === "FAILED";
 
 	return (
@@ -129,40 +238,24 @@ export function TranscriptFileUpload({
 	projectId,
 	organizationId,
 	canEdit = true,
+	className = "space-y-3 border-t p-6",
 }: {
 	projectId: string;
 	organizationId: string | null;
 	canEdit?: boolean;
+	/** The settings card draws a divider and padding; a dialog has its own. */
+	className?: string;
 }) {
 	const queryClient = useQueryClient();
 	const { confirm } = useConfirmationAlert();
 	const inputRef = useRef<HTMLInputElement>(null);
 	const inputId = useId();
 	const [isUploading, setIsUploading] = useState(false);
-	const [removedIds, setRemovedIds] = useState<ReadonlySet<string>>(
-		() => new Set(),
-	);
 
-	const { data, isLoading } = useQuery({
-		...orpc.projects.contexts.list.queryOptions({
-			input: {
-				projectId,
-				organizationId,
-				type: "MEETING_TRANSCRIPT",
-			},
-		}),
-		refetchInterval: (query) =>
-			transcriptListPollInterval(
-				(query.state.data?.contexts ?? []) as UploadedTranscriptRow[],
-				removedIds,
-			),
+	const { uploads, isLoading, markRemoved } = useUploadedTranscripts({
+		projectId,
+		organizationId,
 	});
-
-	const uploads = ((data?.contexts ?? []) as UploadedTranscriptRow[]).filter(
-		(row) =>
-			metadataOf(row).provider === UPLOADED_TRANSCRIPT_PROVIDER &&
-			!removedIds.has(row.id),
-	);
 
 	const refreshContexts = () =>
 		queryClient.invalidateQueries({
@@ -259,14 +352,14 @@ export function TranscriptFileUpload({
 					toast.error(`${title} could not be removed.`);
 					return;
 				}
-				setRemovedIds((ids) => new Set(ids).add(row.id));
+				markRemoved(row.id);
 				await refreshContexts();
 			},
 		});
 	};
 
 	return (
-		<div className="space-y-3 border-t p-6">
+		<div className={className}>
 			<div className="flex flex-wrap items-start justify-between gap-3">
 				<div className="min-w-0">
 					<p className="font-medium text-foreground">

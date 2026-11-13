@@ -31,7 +31,9 @@ import {
 	agenticSourceId,
 	BOARD_FACTS_KEY,
 	COVERAGE_KEY,
+	PULL_REQUEST_FACTS_KEY,
 } from "./report-data-gate";
+import { buildPullRequestFactsHeader } from "./report-pull-request-facts";
 import type {
 	AiTaskDefinition,
 	DataProcessingConfig,
@@ -733,20 +735,32 @@ export function buildDirectContextPrompt(
 	dataNotice = "",
 ): string {
 	const factsSourceId = agenticSourceId(BOARD_FACTS_KEY);
-	const factsHeader = buildBoardFactsHeader(
-		dataResults.find((d) => d.sourceId === factsSourceId)?.data,
-		dataResults.reduce(
-			(listed, d) =>
-				isCardListTool(d.sourceId) && Array.isArray(d.data)
-					? listed + d.data.length
-					: listed,
-			0,
-		),
-	);
+	const pullRequestFactsSourceId = agenticSourceId(PULL_REQUEST_FACTS_KEY);
+	const factsHeader =
+		buildBoardFactsHeader(
+			dataResults.find((d) => d.sourceId === factsSourceId)?.data,
+			dataResults.reduce(
+				(listed, d) =>
+					isCardListTool(d.sourceId) && Array.isArray(d.data)
+						? listed + d.data.length
+						: listed,
+				0,
+			),
+		) +
+		buildPullRequestFactsHeader(
+			dataResults.find((d) => d.sourceId === pullRequestFactsSourceId)
+				?.data,
+		);
 	// Gathered cards can run to a megabyte, where indentation adds tokens and
 	// no information.
 	const successfulSources = dataResults
-		.filter((d) => d.data && !d.error && d.sourceId !== factsSourceId)
+		.filter(
+			(d) =>
+				d.data &&
+				!d.error &&
+				d.sourceId !== factsSourceId &&
+				d.sourceId !== pullRequestFactsSourceId,
+		)
 		.map(
 			(d) =>
 				`## Data from ${d.sourceId} (${d.provider}):\n${
@@ -808,10 +822,10 @@ const FIT_NOTICE_MAX_CHARS = 300;
 /**
  * Shorten a direct context prompt that is over `maxChars`. Gathered card lists
  * go first and other gathered records only once the card list cannot give more.
- * `_board_facts` and `_coverage` are never passed to the budget, so they stay
- * whole. The data was read, so this changes neither `isPartial` nor the facts'
- * `complete`; the notice in the prompt says what the model was given. Exported
- * for tests.
+ * `_board_facts`, `_coverage` and `_pull_request_facts` are never passed to the
+ * budget, so they stay whole. The data was read, so this changes neither
+ * `isPartial` nor the facts' `complete`; the notice in the prompt says what the
+ * model was given. Exported for tests.
  */
 export function fitDirectContextPrompt(params: {
 	prompt: string;
@@ -824,13 +838,16 @@ export function fitDirectContextPrompt(params: {
 		return prompt;
 	}
 
-	const factsSourceId = agenticSourceId(BOARD_FACTS_KEY);
+	const reservedSourceIds = new Set(
+		[BOARD_FACTS_KEY, COVERAGE_KEY, PULL_REQUEST_FACTS_KEY].map(
+			agenticSourceId,
+		),
+	);
 	const isReducible = (result: DataSourceResult) =>
 		result.sourceType === "agentic" &&
 		!!result.data &&
 		!result.error &&
-		result.sourceId !== factsSourceId &&
-		result.sourceId !== agenticSourceId(COVERAGE_KEY);
+		!reservedSourceIds.has(result.sourceId);
 	const reducible = Object.fromEntries(
 		dataResults
 			.filter(isReducible)
@@ -871,7 +888,7 @@ export function fitDirectContextPrompt(params: {
 	const countCards = (data: Record<string, unknown>) =>
 		cardLists(data).reduce((sum, list) => sum + list.length, 0);
 	const facts = dataResults.find(
-		(result) => result.sourceId === factsSourceId,
+		(result) => result.sourceId === agenticSourceId(BOARD_FACTS_KEY),
 	)?.data;
 	const factsTotal = isPlainObject(facts) ? facts.total : undefined;
 	// A template may name a source anything, so a list under a custom id is not

@@ -131,6 +131,13 @@ const inPageSource = [
 	"apps/web/modules/saas/workspaces/components/WorkspacesList.tsx",
 	"apps/web/modules/saas/workspaces/components/WorkspaceCard.tsx",
 	"apps/web/modules/saas/pages/components/PagesList.tsx",
+	// My time: the header controls on the page, the week table, the day
+	// view's strip and entry line, and the "To confirm" list in their own
+	// components.
+	"apps/web/modules/saas/time-tracking/components/MyTimePage.tsx",
+	"apps/web/modules/saas/time-tracking/components/TimeSuggestions.tsx",
+	"apps/web/modules/saas/time-tracking/components/WeekTable.tsx",
+	"apps/web/modules/saas/time-tracking/components/DayView.tsx",
 	"apps/web/modules/saas/mcp/components/McpServersView.tsx",
 	"apps/web/modules/saas/reports/components/ReportTemplatesPageTabs.tsx",
 	"apps/web/modules/saas/reports/components/ReportTemplatesList.tsx",
@@ -200,6 +207,8 @@ const launcherSource = [
 	// One override, not two: the personal settings tree is gone, so the
 	// organization page is the only place the launcher lives.
 	"apps/web/modules/saas/settings/components/SettingsHero.tsx",
+	// My time has no shared hero; its header renders the button inline.
+	"apps/web/modules/saas/time-tracking/components/MyTimePage.tsx",
 	// Connections is its own page now; the launcher sits on its header in
 	// the shared tabs component, and the old settings index just redirects.
 	"apps/web/modules/saas/data-connections/components/ConnectionsTabs.tsx",

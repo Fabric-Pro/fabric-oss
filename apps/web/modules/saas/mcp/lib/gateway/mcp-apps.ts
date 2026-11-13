@@ -249,6 +249,37 @@ function buildFabricMcpViewScript(options: {
       return Promise.resolve(null);
     }
 
+    // The kit's openLink opens only web links, so "Open in Fabric Desktop" (a fabricagents:// link) did nothing in any
+    // host. A desktop link goes to the host as ui/open-link (the host decides what it opens), else a plain link.
+    function openDesktop(url) {
+      var href = String(url || "");
+      if (!/^fabricagents:\/\//.test(href)) { K.openLink(href); return; }
+      var fallback = function () {
+        try { var a = document.createElement("a"); a.setAttribute("data-k-direct", ""); a.href = href; a.style.display = "none"; document.body.appendChild(a); a.click(); a.remove(); } catch (x) {}
+      };
+      if (K.can("openLinks")) K.request("ui/open-link", { url: href }).then(function (r) { if (r && r.isError) fallback(); }).catch(fallback);
+      else fallback();
+    }
+
+    // A button's tool call shows what came back, or why it failed, in this card (before, the result was dropped and
+    // a failed call looked like a button that did nothing).
+    function runTool(name, args) {
+      return callServerTool(name, args).then(function (r) { if (r) onResult(r); return r; }, function (e) {
+        onResult({ isError: true, content: [{ type: "text", text: (e && e.message) ? String(e.message) : "That request couldn't complete." }] });
+        return null;
+      });
+    }
+
+    // The work a delegation card hands on: the result's own prompt, else what the card shows.
+    function delegationTask(v, items) {
+      var first = items && items[0] && typeof items[0] === "object" ? items[0] : null;
+      var named = first && (first.identifier || first.key) ? String(first.identifier || first.key) + ": " : "";
+      if (v && typeof v.prompt === "string" && v.prompt.trim()) return v.prompt.trim();
+      if (first && (first.title || first.name)) return "Work on " + named + String(first.title || first.name);
+      if (v && (v.projectName || v.title)) return "Work on " + String(v.projectName || v.title);
+      return "Continue this Fabric work";
+    }
+
     function onResult(r) {
       S.r = r;
       S.v = K.payload(r);
@@ -414,8 +445,8 @@ function buildFabricMcpViewScript(options: {
           artActions.push(K.button("Open Artifact in Portal", function () { K.openLink(String(firstUrl)); }, { variant: "primary", arrow: "↗" }));
         }
         artActions.push(
-          K.button("Open in Fabric Desktop", function () { K.openLink("fabricagents://action/new-chat"); }, { variant: firstUrl ? "outline" : "primary", arrow: "↗" }),
-          K.button("List All Artifacts", function () { callServerTool("fabric_list_frames", {}); }, { variant: "quiet", arrow: "→" })
+          K.button("Open in Fabric Desktop", function () { openDesktop("fabricagents://action/new-chat"); }, { variant: firstUrl ? "outline" : "primary", arrow: "↗" }),
+          K.button("List All Artifacts", function () { runTool("fabric_list_frames", {}); }, { variant: "quiet", arrow: "→" })
         );
         add(artCard.body, K.actions(artActions));
         return artCard;
@@ -468,16 +499,16 @@ function buildFabricMcpViewScript(options: {
 
       var deepLink = "fabricagents://action/new-chat?workspace=" + encodeURIComponent(String(projSlug));
       var actButtons = [
-        K.button("Open in Fabric Desktop", function () { K.openLink(deepLink); }, { variant: "primary", arrow: "↗" }),
+        K.button("Open in Fabric Desktop", function () { openDesktop(deepLink); }, { variant: "primary", arrow: "↗" }),
         K.button("My Assigned Tickets", function () {
           if (projId) {
-            callServerTool("fabric_list_features", { projectId: String(projId), assignedToMe: true });
+            runTool("fabric_list_features", { projectId: String(projId), assignedToMe: true });
           } else {
             ask("Show me the tickets, features, and bugs assigned to me across my Fabric projects.");
           }
         }, { variant: "outline", arrow: "→" }),
         K.button("View Artifacts", function () {
-          callServerTool("fabric_list_frames", projId ? { surface: "artifact", projectId: String(projId) } : {});
+          runTool("fabric_list_frames", projId ? { surface: "artifact", projectId: String(projId) } : {});
         }, { variant: "quiet", arrow: "→" })
       ];
       add(card.body, K.actions(actButtons));
@@ -557,14 +588,14 @@ function buildFabricMcpViewScript(options: {
             S.mode === 1 ? "Start Ticket in Fabric Desktop" : "Delegate Ticket to Remote Server",
             function () {
               if (S.mode === 1) {
-                K.openLink(ticketDeepLink);
+                openDesktop(ticketDeepLink);
               } else {
                 ask("Delegate \"" + ticketPrompt + "\" to the Remote Fabric Agents Server using " + S.harness + ".");
               }
             },
             { variant: "primary", arrow: S.mode === 1 ? "↗" : "→" }
           ),
-          K.button("Open in Fabric Desktop", function () { K.openLink(ticketDeepLink); }, { variant: "outline", arrow: "↗" })
+          K.button("Open in Fabric Desktop", function () { openDesktop(ticketDeepLink); }, { variant: "outline", arrow: "↗" })
         ]));
         return ticketCard;
       }
@@ -607,8 +638,6 @@ function buildFabricMcpViewScript(options: {
           }
         });
         add(card.body, tiles);
-      } else {
-        add(card.body, K.callout({ tone: "info", title: "Harness status unavailable", text: "This result did not include a subscription harness listing." }));
       }
 
       if (items.length && !(v && Array.isArray(v.harnesses))) {
@@ -622,20 +651,23 @@ function buildFabricMcpViewScript(options: {
         add(card.body, K.table(["Item / Integration", "Status", "Detail"], rows));
       }
 
-      var deepLink = (v && v.desktopDeepLink) || ("fabricagents://action/new-chat?harness=" + encodeURIComponent(S.harness) + "&send=true");
+      var task = delegationTask(v, items);
+      var deepLink = (v && v.desktopDeepLink) || ("fabricagents://action/new-chat?harness=" + encodeURIComponent(S.harness) + "&input=" + encodeURIComponent(task));
       var actButtons = [
         K.button(
           S.mode === 1 ? "Launch Fabric Desktop" : "Delegate to Remote Server",
           function () {
             if (S.mode === 1) {
-              K.openLink(deepLink);
+              openDesktop(deepLink);
             } else {
-              callServerTool(CFG.defaultToolName, { target: "remote", harness: S.harness, fallback: "subscription_harnesses" });
+              // No server dispatches to a Remote Fabric Agents Server (the local fabric_delegate_agent only builds links,
+              // and the hosted gateway has no such tool), so the person's assistant does it, as for a ticket.
+              ask("Delegate \"" + task + "\" to the Remote Fabric Agents Server using " + S.harness + ".");
             }
           },
           { variant: "primary", arrow: S.mode === 1 ? "↗" : "→" }
         ),
-        K.button("Open in Fabric Desktop", function () { K.openLink(deepLink); }, { variant: "outline", arrow: "↗" })
+        K.button("Open in Fabric Desktop", function () { openDesktop(deepLink); }, { variant: "outline", arrow: "↗" })
       ];
       add(card.body, K.actions(actButtons));
       return card;
@@ -693,8 +725,8 @@ function buildFabricMcpViewScript(options: {
           title: "Pipeline Summary",
           bullets: steps.slice(0, 3).map(function (s) { return s.title; }),
           actions: [
-            { label: "Run via MCP", primary: true, arrow: "→", fn: function () { callServerTool(CFG.defaultToolName, {}); } },
-            { label: "Open in Fabric Desktop", arrow: "↗", fn: function () { K.openLink("fabricagents://action/new-chat"); } }
+            { label: "Run via MCP", primary: true, arrow: "→", fn: function () { runTool(CFG.defaultToolName, {}); } },
+            { label: "Open in Fabric Desktop", arrow: "↗", fn: function () { openDesktop("fabricagents://action/new-chat"); } }
           ]
         },
         onStep: function (i, s) {
@@ -747,7 +779,7 @@ function buildFabricMcpViewScript(options: {
           ask("Using Fabric Genie, dig deeper into \"" + queryText + "\" and compare the top findings.");
         }, { variant: "primary", arrow: "→" }),
         K.button("Open in Fabric Desktop", function () {
-          K.openLink("fabricagents://action/new-chat");
+          openDesktop("fabricagents://action/new-chat");
         }, { variant: "outline", arrow: "↗" })
       ];
       add(card.body, K.actions(acts));
@@ -768,8 +800,8 @@ function buildFabricMcpViewScript(options: {
         add(card.body, K.code({ code: JSON.stringify(v, null, 2).slice(0, 2000), language: "json", title: "Structured Payload" }));
       }
       add(card.body, K.actions([
-        K.button("Open in Fabric Desktop", function () { K.openLink("fabricagents://action/new-chat"); }, { variant: "primary", arrow: "↗" }),
-        K.button("Refresh via MCP", function () { callServerTool(CFG.defaultToolName, {}); }, { variant: "outline", arrow: "→" })
+        K.button("Open in Fabric Desktop", function () { openDesktop("fabricagents://action/new-chat"); }, { variant: "primary", arrow: "↗" }),
+        K.button("Refresh via MCP", function () { runTool(CFG.defaultToolName, {}); }, { variant: "outline", arrow: "→" })
       ]));
       return card;
     }

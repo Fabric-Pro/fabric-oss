@@ -1,5 +1,9 @@
 "use client";
 
+import {
+	LIVING_MEMORY_DECISION_FILE_CHAR_CAP,
+	LIVING_MEMORY_DECISION_MAX_PER_FILE,
+} from "@repo/utils/living-memory-decision-limits";
 import { Pagination } from "@saas/shared/components/Pagination";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -18,6 +22,7 @@ import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 import { formatDecisionDate } from "./constants";
+import { LivingMemoryWorkItemLink } from "./LivingMemoryBadge";
 
 type LivingMemoryCandidate = {
 	extractionId: string;
@@ -27,9 +32,19 @@ type LivingMemoryCandidate = {
 	text: string;
 	rationale?: string;
 	matchedDecision?: { id: string; identifier: string; title: string };
+	workItem?: { id: string; identifier: string };
+};
+
+type LivingMemoryLimitedFile = {
+	sourcePath: string;
+	truncated: boolean;
+	capped: boolean;
 };
 
 const CANDIDATE_PAGE_SIZE = 10;
+
+/** Files named in the "only partly read" notice before it says how many more. */
+const LIMITED_FILES_SHOWN = 3;
 
 const candidateKey = (c: LivingMemoryCandidate) =>
 	`${c.extractionId}:${c.decisionIndex}`;
@@ -45,8 +60,14 @@ const candidateKey = (c: LivingMemoryCandidate) =>
  * decision to the existing one; accepting it later supersedes the existing one.
  *
  * A repository's first sync does not read its files for decisions, since that
- * is one AI request per file. The strip says how many it left and lets a member
- * scan them; the files' candidates then arrive here as the scan reads them.
+ * is one AI request per file, and files synced before decisions were read from
+ * Living Memory were never read. The strip says how many files are unread and
+ * lets a member scan them; the files' candidates then arrive here as the scan
+ * reads them.
+ *
+ * A candidate that names the feature or bug it came from links to it. A file
+ * that met an extraction limit (too long to read whole, or listing more
+ * decisions than are kept) is named, so a reviewer knows it was partly read.
  */
 export function LivingMemoryCandidatesStrip({
 	projectId,
@@ -71,7 +92,9 @@ export function LivingMemoryCandidatesStrip({
 	);
 	const candidates: LivingMemoryCandidate[] =
 		candidatesQuery.data?.candidates ?? [];
-	const skippedFileCount = candidatesQuery.data?.filesSkippedAtFirstSync ?? 0;
+	const unscannedFileCount = candidatesQuery.data?.filesNotScanned ?? 0;
+	const limitedFiles: LivingMemoryLimitedFile[] =
+		candidatesQuery.data?.limitedFiles ?? [];
 
 	const scanMutation = useMutation(
 		orpc.projects.architectureDecisions.livingMemoryDecisions.scanFirstSync.mutationOptions(
@@ -119,18 +142,18 @@ export function LivingMemoryCandidatesStrip({
 		),
 	);
 
-	if (candidates.length === 0 && skippedFileCount === 0) {
+	if (candidates.length === 0 && unscannedFileCount === 0) {
 		return null;
 	}
 
 	const scanNotice =
-		skippedFileCount > 0 ? (
+		unscannedFileCount > 0 ? (
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
 				<span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
 					<BookOpenTextIcon className="size-4" aria-hidden />
 				</span>
 				<p className="min-w-0 flex-1 text-muted-foreground">
-					{t("strip.firstSyncSkipped", { count: skippedFileCount })}
+					{t("strip.filesNotScanned", { count: unscannedFileCount })}
 				</p>
 				{canEdit && (
 					<Button
@@ -248,6 +271,14 @@ export function LivingMemoryCandidatesStrip({
 										{c.sourcePath}
 									</span>
 									{` · ${formatDecisionDate(c.extractedAt)}`}
+									{c.workItem && (
+										<>
+											{" · "}
+											<LivingMemoryWorkItemLink
+												workItem={c.workItem}
+											/>
+										</>
+									)}
 									{c.matchedDecision && (
 										<>
 											{" · "}
@@ -299,10 +330,51 @@ export function LivingMemoryCandidatesStrip({
 					nextLabel={t("strip.nextPage")}
 				/>
 			)}
+			{open && <LimitedFilesNotice files={limitedFiles} />}
 			{scanNotice && (
 				<div className="border-primary/10 border-t">{scanNotice}</div>
 			)}
 		</div>
+	);
+}
+
+/**
+ * The files whose current version met an extraction limit, each with the limit
+ * it met, so a reviewer knows the candidates above may not be all the file
+ * holds. Names the first few and counts the rest.
+ */
+function LimitedFilesNotice({ files }: { files: LivingMemoryLimitedFile[] }) {
+	const t = useTranslations("projects.livingMemoryDecisions");
+	if (files.length === 0) {
+		return null;
+	}
+	const shown = files.slice(0, LIMITED_FILES_SHOWN);
+	return (
+		<ul
+			className="space-y-1 border-primary/10 border-t px-4 py-3 text-muted-foreground text-xs"
+			aria-label={t("limits.label")}
+		>
+			{shown.map((file) => (
+				<li key={file.sourcePath} className="break-words">
+					<span className="font-mono">{file.sourcePath}</span>
+					{": "}
+					{file.truncated &&
+						t("limits.truncated", {
+							limit: LIVING_MEMORY_DECISION_FILE_CHAR_CAP,
+						})}
+					{file.truncated && file.capped && " "}
+					{file.capped &&
+						t("limits.capped", {
+							limit: LIVING_MEMORY_DECISION_MAX_PER_FILE,
+						})}
+				</li>
+			))}
+			{files.length > shown.length && (
+				<li>
+					{t("limits.more", { count: files.length - shown.length })}
+				</li>
+			)}
+		</ul>
 	);
 }
 
@@ -352,7 +424,7 @@ function LivingMemoryCandidateDialog({
 								"inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-medium text-[11px]",
 								matched
 									? "border-highlight/40 bg-highlight/10 text-highlight"
-									: "border-primary/30 bg-primary/5 text-primary",
+									: "border-primary/30 bg-primary/5 text-primary-active",
 							)}
 						>
 							<BookOpenTextIcon className="size-3" aria-hidden />

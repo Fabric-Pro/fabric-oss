@@ -330,6 +330,39 @@ export async function getLatestProjectChunkingRuns(projectId: string) {
 	};
 }
 
+/**
+ * A run older than this is no longer taken as running: a workflow that was
+ * terminated never writes its end, and must not block every later analysis.
+ */
+const ANALYSIS_RUNNING_FOR_AT_MOST_MS = 2 * 60 * 60 * 1000;
+
+/** The project's measure or tune still running, if any. */
+export async function findRunningChunkingAnalysis(projectId: string) {
+	return db.projectChunkingRun.findFirst({
+		where: {
+			projectId,
+			kind: { in: ["MEASURE", "TUNE"] },
+			status: "RUNNING",
+			startedAt: {
+				gte: new Date(Date.now() - ANALYSIS_RUNNING_FOR_AT_MOST_MS),
+			},
+		},
+		orderBy: { startedAt: "desc" },
+		select: { id: true, kind: true },
+	});
+}
+
+/** Whether the project has a finished measure: Suggest settings starts from one. */
+export async function hasCompletedChunkingMeasure(
+	projectId: string,
+): Promise<boolean> {
+	const run = await db.projectChunkingRun.findFirst({
+		where: { projectId, kind: "MEASURE", status: "COMPLETED" },
+		select: { id: true },
+	});
+	return run !== null;
+}
+
 /** Sources of a project whose points are behind its chunking version. */
 export async function listProjectSourcesBehindChunkingVersion(params: {
 	projectId: string;

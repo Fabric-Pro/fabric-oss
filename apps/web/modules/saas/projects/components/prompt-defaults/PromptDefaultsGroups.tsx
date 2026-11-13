@@ -66,7 +66,7 @@ export function PromptDefaultsGroups({
 										? `${group.items.length} of ${group.total}`
 										: group.total}
 								</span>
-								<span className="hidden min-w-0 flex-1 truncate text-muted-foreground/80 text-xs md:block">
+								<span className="hidden min-w-0 flex-1 truncate text-muted-foreground text-xs md:block">
 									{group.description}
 								</span>
 								<span className="ml-auto flex shrink-0 gap-1.5">

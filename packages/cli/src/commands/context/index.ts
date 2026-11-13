@@ -5,7 +5,8 @@
  *                                                 into the project's Context,
  *                                                 one after another.
  *   fabric context reset --project <id> [dir]     Delete every synced file of
- *                                                 the project (`reset.ts`).
+ *                                                 the project, or one folder's
+ *                                                 with --folder (`reset.ts`).
  *
  * Several folders are pushed in order, each with its own lock and report; a
  * folder that fails does not stop the next, and the run exits with the first
@@ -150,7 +151,7 @@ export function buildContextCommand(): Command {
 		.option("--org <slug>", "Organization context")
 		.option(
 			"--force",
-			"On a conflict, replace the server's version once with this folder's; never retries a path a repository sync owns",
+			"On a conflict, replace the server's version once with this folder's; the replaced server version is not kept; never retries a path a repository sync owns",
 		)
 		.option(
 			"--prune",

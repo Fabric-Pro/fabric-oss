@@ -92,6 +92,15 @@ export async function issueAIToken(
 			: planEligible === true && { pe: true }),
 		...(jobType && { jt: jobType }),
 		...(options.apiFallbackApproved === true && { af: true }),
+		...(options.webResearch === true && { wr: true }),
+		...(options.webResearch === true &&
+			options.webResearchProjectId && {
+				wrp: options.webResearchProjectId,
+			}),
+		...(options.webResearch === true &&
+			options.webResearchGrantId && {
+				wrg: options.webResearchGrantId,
+			}),
 	} as Partial<AITokenClaims>)
 		.setProtectedHeader({ alg: "HS256" })
 		.setIssuer("fabric-portal")

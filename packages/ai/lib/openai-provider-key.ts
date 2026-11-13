@@ -1,8 +1,8 @@
 /**
  * Plaintext OpenAI API key resolution for call sites that hit OpenAI's REST
- * API directly, bypassing the AI SDK's provider routing entirely — currently
- * just the `fabric_text_to_speech` tool, which calls
- * `api.openai.com/v1/audio/speech` with a raw `fetch`.
+ * API directly or build an OpenAI image client with a tenant key, bypassing
+ * the general provider resolver — including text-to-speech and direct image
+ * generation.
  *
  * Two things distinguish this from a plain `resolveModelWithCredentials`
  * call:
@@ -45,9 +45,8 @@ export const AUDIO_PROVIDER_REQUIRED = {
  * Resolve the plaintext OpenAI API key to use for a direct OpenAI REST call.
  *
  * Only the tenant's own OPENAI_DIRECT provider config counts: there is no
- * fallback to Fabric's platform `OPENAI_API_KEY`, because a tenant's audio
- * never runs on Fabric's own key. Returns `""` when the tenant has no usable
- * OpenAI credential; callers refuse with {@link AUDIO_PROVIDER_REQUIRED}.
+ * fallback to Fabric's platform `OPENAI_API_KEY`. Returns `""` when the
+ * tenant has no usable OpenAI credential; each caller provides its own refusal.
  */
 export async function resolveOpenAiApiKey({
 	userId,

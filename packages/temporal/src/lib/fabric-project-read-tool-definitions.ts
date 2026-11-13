@@ -81,6 +81,11 @@ export const FABRIC_PROJECT_READ_TOOL_DEFINITIONS = defineFabricTools([
 						"Repository folder prefix, e.g. .claude/skills",
 					maxLength: 512,
 				},
+				set: {
+					type: "string",
+					description: "Set slug; only that set's files",
+					maxLength: 40,
+				},
 				limit: {
 					type: "integer",
 					description: "Repository page size; default 200",

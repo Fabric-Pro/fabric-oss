@@ -259,7 +259,7 @@ export function WorkflowTemplateChat({
 					{state.error && (
 						<Card className="border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950">
 							<CardContent className="p-4">
-								<div className="text-sm text-destructive/80">
+								<div className="text-sm text-destructive">
 									{state.error}
 								</div>
 							</CardContent>

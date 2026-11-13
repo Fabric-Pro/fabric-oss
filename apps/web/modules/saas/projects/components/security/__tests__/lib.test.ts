@@ -248,11 +248,11 @@ describe("findingGroupKey", () => {
 });
 
 describe("branchStatusIndicator", () => {
-	it("maps SCANNED to a Check icon in the secondary token", () => {
+	it("maps SCANNED to a Check icon in the success token", () => {
 		expect(branchStatusIndicator("SCANNED")).toMatchObject({
 			icon: CheckIcon,
 			label: "Scanned",
-			className: "text-secondary",
+			className: "text-success",
 		});
 	});
 

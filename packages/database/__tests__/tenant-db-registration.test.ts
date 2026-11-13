@@ -160,6 +160,110 @@ describe("To Do list tables are registered on the tenant path", () => {
 });
 
 /**
+ * Logged time is organization-scoped so organization reports can read every
+ * member's rows, and project-scoped so an invited project guest who logs time
+ * reaches their own rows. Authorship is narrowed by userId in the queries.
+ */
+describe("Time tracking tables are registered on the tenant path", () => {
+	it("TimeEntry is user-owned and project-scoped", () => {
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).toContain("TimeEntry");
+		expect(
+			setMembers(tenantDb, "const ORG_ONLY_TABLES = new Set(["),
+		).not.toContain("TimeEntry");
+		expect(tenantDb).toMatch(/TimeEntry: "projectId",/);
+		expect(rls).toContain('{ name: "time_entry", policy: "user_owned" }');
+	});
+
+	it("TimeEntry requires an organization", () => {
+		expect(schema).toMatch(
+			/model TimeEntry \{[^}]*\n\s+organizationId\s+String\s*\n[^}]*@@map\("time_entry"\)/,
+		);
+	});
+
+	it.each([
+		["TimeSuggestion", "time_suggestion"],
+		["TimeSuggestionEvidence", "time_suggestion_evidence"],
+	])("%s is user-owned and project-scoped", (model, table) => {
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).toContain(model);
+		expect(
+			setMembers(tenantDb, "const ORG_ONLY_TABLES = new Set(["),
+		).not.toContain(model);
+		expect(tenantDb).toMatch(new RegExp(`\\b${model}: "projectId",`));
+		expect(rls).toContain(`{ name: "${table}", policy: "user_owned" }`);
+	});
+
+	it("TimeSuggestionRun is user-owned and, having no project, not project-scoped", () => {
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).toContain("TimeSuggestionRun");
+		expect(tenantDb).not.toMatch(/\bTimeSuggestionRun: "projectId",/);
+		expect(rls).toContain(
+			'{ name: "time_suggestion_run", policy: "user_owned" }',
+		);
+	});
+
+	it("TimeTimer is user-owned and project-scoped", () => {
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).toContain("TimeTimer");
+		expect(
+			setMembers(tenantDb, "const ORG_ONLY_TABLES = new Set(["),
+		).not.toContain("TimeTimer");
+		expect(tenantDb).toMatch(/\bTimeTimer: "projectId",/);
+		expect(rls).toContain('{ name: "time_timer", policy: "user_owned" }');
+	});
+
+	it.each([
+		["TimeTimerSegment", "time_timer_segment"],
+		["TimeTimerStop", "time_timer_stop"],
+	])(
+		"%s is user-owned and, having no project, not project-scoped",
+		(model, table) => {
+			expect(
+				setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+			).toContain(model);
+			expect(tenantDb).not.toMatch(
+				new RegExp(`\\b${model}: "projectId",`),
+			);
+			expect(rls).toContain(`{ name: "${table}", policy: "user_owned" }`);
+		},
+	);
+
+	it("TimeTrackingPreference is per user within the organization", () => {
+		expect(
+			setMembers(tenantDb, "const PER_USER_ORG_TABLES = new Set(["),
+		).toContain("TimeTrackingPreference");
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).not.toContain("TimeTrackingPreference");
+		expect(rls).toContain(
+			'{ name: "time_tracking_preference", policy: "per_user_within_org" }',
+		);
+	});
+
+	it.each([
+		["TimeSuggestion", "time_suggestion"],
+		["TimeSuggestionEvidence", "time_suggestion_evidence"],
+		["TimeSuggestionRun", "time_suggestion_run"],
+		["TimeTimer", "time_timer"],
+		["TimeTimerSegment", "time_timer_segment"],
+		["TimeTimerStop", "time_timer_stop"],
+		["TimeTrackingPreference", "time_tracking_preference"],
+	])("%s requires an organization and an owner", (model, table) => {
+		const block = schema.match(
+			new RegExp(`model ${model} \\{([^}]*)\\}`),
+		)?.[1];
+		expect(block).toContain(`@@map("${table}")`);
+		expect(block).toMatch(/^\s+organizationId\s+String[ \t]*$/m);
+		expect(block).toMatch(/^\s+userId\s+String[ \t]*$/m);
+	});
+});
+
+/**
  * Member proposal branches (Fizzy #2738 spec §4.6). The branch row carries
  * `organizationId`, `userId` and `projectId`; the reservation and the journal
  * carry `organizationId` alone, so a user-owned policy would compare a column

@@ -18,8 +18,10 @@ import {
 	describeGenerationRefusal,
 	type GenerationRefusalFeedback,
 	type GenerationRefusalKind,
+	isRegenerateToastWarning,
 	proposalMainCatalogHref,
 	type RegenerateToastKey,
+	readSameRequest,
 	resolveRegenerateToastKey,
 } from "@saas/projects/components/proposal-artifact/generation-feedback";
 import { createTranslator, type useTranslations } from "next-intl";
@@ -241,6 +243,71 @@ describe("resolveRegenerateToastKey", () => {
 		}
 	});
 
+	it("says ticked web research was not added when the joined run was started with other settings", () => {
+		expect(
+			resolveRegenerateToastKey({
+				outcome: "alreadyInProgress",
+				documentStatus: "QUEUED",
+				requestedWebResearch: true,
+				sameRequest: false,
+			}),
+		).toBe("alreadyQueuedResearchNotApplied");
+		expect(
+			resolveRegenerateToastKey({
+				outcome: "alreadyInProgress",
+				documentStatus: "GENERATING",
+				requestedWebResearch: true,
+				sameRequest: false,
+			}),
+		).toBe("alreadyRunningResearchNotApplied");
+	});
+
+	it("keeps the plain joined-run copy when nothing ticked was lost or the server does not say", () => {
+		const cases = [
+			// The identical request: the joined run researches too.
+			{ requestedWebResearch: true, sameRequest: true },
+			// Research was not asked for.
+			{ requestedWebResearch: false, sameRequest: false },
+			{ requestedWebResearch: undefined, sameRequest: false },
+			// A server that predates the flag: unknown, not "not applied".
+			{ requestedWebResearch: true, sameRequest: undefined },
+		];
+		for (const flags of cases) {
+			expect(
+				resolveRegenerateToastKey({
+					outcome: "alreadyInProgress",
+					documentStatus: "QUEUED",
+					...flags,
+				}),
+			).toBe("alreadyQueued");
+			expect(
+				resolveRegenerateToastKey({
+					outcome: "alreadyInProgress",
+					documentStatus: "GENERATING",
+					...flags,
+				}),
+			).toBe("alreadyRunning");
+		}
+	});
+
+	it("ignores the research flags for every outcome but a joined run", () => {
+		const flags = { requestedWebResearch: true, sameRequest: false };
+		expect(
+			resolveRegenerateToastKey({
+				outcome: "started",
+				documentStatus: "QUEUED",
+				...flags,
+			}),
+		).toBe("started");
+		expect(
+			resolveRegenerateToastKey({
+				outcome: "liveRunUnknown",
+				documentStatus: "GENERATING",
+				...flags,
+			}),
+		).toBe("liveRunUnknown");
+	});
+
 	it("resolves an unrecognised or absent outcome to the start copy", () => {
 		for (const outcome of ["somethingNewer", null, undefined]) {
 			expect(
@@ -249,6 +316,51 @@ describe("resolveRegenerateToastKey", () => {
 					documentStatus: "GENERATING",
 				}),
 			).toBe("started");
+		}
+	});
+});
+
+describe("readSameRequest", () => {
+	it("reads a boolean flag and treats anything else as unknown", () => {
+		expect(
+			readSameRequest({
+				outcome: "alreadyInProgress",
+				sameRequest: true,
+			}),
+		).toBe(true);
+		expect(
+			readSameRequest({
+				outcome: "alreadyInProgress",
+				sameRequest: false,
+			}),
+		).toBe(false);
+		for (const result of [
+			{ outcome: "alreadyInProgress" },
+			{ outcome: "alreadyInProgress", sameRequest: "false" },
+			{ outcome: "alreadyInProgress", sameRequest: null },
+			null,
+			undefined,
+		]) {
+			expect(readSameRequest(result)).toBeUndefined();
+		}
+	});
+});
+
+describe("isRegenerateToastWarning", () => {
+	it("warns when what was asked for did not happen, and only then", () => {
+		expect(isRegenerateToastWarning("liveRunUnknown")).toBe(true);
+		expect(
+			isRegenerateToastWarning("alreadyQueuedResearchNotApplied"),
+		).toBe(true);
+		expect(
+			isRegenerateToastWarning("alreadyRunningResearchNotApplied"),
+		).toBe(true);
+		for (const key of [
+			"started",
+			"alreadyQueued",
+			"alreadyRunning",
+		] as const) {
+			expect(isRegenerateToastWarning(key)).toBe(false);
 		}
 	});
 });
@@ -273,6 +385,8 @@ describe("shipped copy", () => {
 		started: true,
 		alreadyQueued: true,
 		alreadyRunning: true,
+		alreadyQueuedResearchNotApplied: true,
+		alreadyRunningResearchNotApplied: true,
 		liveRunUnknown: true,
 	};
 
@@ -298,5 +412,24 @@ describe("shipped copy", () => {
 		expect(
 			deMessages.projects.documents.regenerateToast.alreadyRunning,
 		).toContain("neue Anweisungen wurden nicht übernommen");
+	});
+
+	it("says a joined run kept its own settings, not this request's instructions and research choice", () => {
+		const [enMessages, deMessages] = [en, de] as unknown as Messages[];
+		for (const key of [
+			"alreadyQueuedResearchNotApplied",
+			"alreadyRunningResearchNotApplied",
+		]) {
+			expect(
+				enMessages.projects.documents.regenerateToast[key],
+			).toContain(
+				"your instructions and web research choice were not applied",
+			);
+			expect(
+				deMessages.projects.documents.regenerateToast[key],
+			).toContain(
+				"Ihre Anweisungen und Ihre Auswahl zur Webrecherche nicht übernommen",
+			);
+		}
 	});
 });

@@ -9,7 +9,7 @@
  */
 
 import { ORPCError } from "@orpc/client";
-import { db } from "@repo/database";
+import { db, getProjectRepositoryBranch } from "@repo/database";
 import { logger, logWorkflowEvent } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
 import { isFabricAgentsBridgeEnabled } from "@repo/temporal/coding-execution-rollout";
@@ -334,14 +334,28 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 			selectedTask?.repositoryOwner || story.project.repositoryOwner;
 		const repoName =
 			selectedTask?.repositoryName || story.project.repositoryName;
-		const targetBranch =
-			selectedTask?.targetBranch || story.project.defaultBranch || "main";
 		if (!repoOwner || !repoName) {
 			throw new ORPCError("BAD_REQUEST", {
 				message:
 					"Configure a repository on the project or selected task before starting an implementation session.",
 			});
 		}
+		// A task's own target branch wins. Otherwise the branch belongs to
+		// the repository the run works in: the project's stored branch only
+		// for the project's repository, else that repository's connected
+		// integration (its provider default unless someone chose another).
+		// "main" only when nothing is known.
+		const usesTaskRepository = Boolean(
+			selectedTask?.repositoryOwner && selectedTask?.repositoryName,
+		);
+		const targetBranch =
+			selectedTask?.targetBranch ||
+			(usesTaskRepository ? null : story.project.defaultBranch) ||
+			(await getProjectRepositoryBranch(projectId, {
+				owner: repoOwner,
+				name: repoName,
+			})) ||
+			"main";
 
 		// Project is the source of truth for tenant scope — don't fall back
 		// to session org, as that would mis-scope a personal project run.

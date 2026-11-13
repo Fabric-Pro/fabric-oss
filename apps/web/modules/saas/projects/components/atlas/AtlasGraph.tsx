@@ -1480,7 +1480,7 @@ function GraphCanvas({
 																	side="right"
 																	className="max-w-xs"
 																>
-																	<p className="mb-1 text-[10px] font-semibold uppercase tracking-wide opacity-70">
+																	<p className="mb-1 text-[10px] font-semibold uppercase tracking-wide">
 																		{t(
 																			"referencesTitle",
 																		)}
@@ -1505,7 +1505,7 @@ function GraphCanvas({
 																						)
 																							?.label ??
 																							edge.target}
-																						<span className="ml-1 opacity-60">
+																						<span className="ml-1">
 																							·{" "}
 																							{tNode(
 																								`edgeKind.${EDGE_KIND_KEY[edge.kind]}`,
@@ -1516,7 +1516,7 @@ function GraphCanvas({
 																			)}
 																		{refs.length >
 																			12 && (
-																			<li className="text-xs opacity-60">
+																			<li className="text-xs">
 																				+
 																				{refs.length -
 																					12}

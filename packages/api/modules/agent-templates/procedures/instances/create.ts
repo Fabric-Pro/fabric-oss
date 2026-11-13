@@ -127,7 +127,10 @@ export const createInstanceProcedure = tenantProtectedProcedure
 		}
 
 		// Verify template exists and check scope permissions
-		const template = await getAgentTemplate(input.templateId);
+		const template = await getAgentTemplate(input.templateId, {
+			userId: context.user.id,
+			organizationId,
+		});
 		if (!template) {
 			throw new ORPCError("NOT_FOUND", { message: "Template not found" });
 		}

@@ -24,6 +24,7 @@ import { fetchFileContent, getGitHubToken } from "@repo/integrations/github";
 import { ApplicationFailure } from "@temporalio/activity";
 import { dispatchLifecycleEvent } from "../../lib/lifecycle-dispatcher";
 import type { BuildImplementationPromptInput } from "./index";
+import { resolveRunTargetBranch } from "./target-branch";
 
 // -- Constants --------------------------------------------------------------
 
@@ -154,8 +155,13 @@ export async function buildSpikePrompt(
 	}
 
 	const branch = spikeBranchName(input.codingRunId);
-	const targetBranch =
-		input.targetBranch ?? story.project.defaultBranch ?? "main";
+	const targetBranch = await resolveRunTargetBranch({
+		projectId: input.projectId,
+		targetBranch: input.targetBranch,
+		repositoryOwner: input.repositoryOwner,
+		repositoryName: input.repositoryName,
+		projectDefaultBranch: story.project.defaultBranch,
+	});
 	const repository =
 		input.repositoryOwner && input.repositoryName
 			? `${input.repositoryOwner}/${input.repositoryName}`

@@ -10,8 +10,11 @@
  * access-gate machinery around them.
  */
 
-/** The folder every lesson file lands under. */
-const LESSONS_DIR = "Lessons";
+/**
+ * The folder every lesson file lands under, as a path prefix. Shared with the
+ * Coding Instructions digest, which lists new lessons on their own.
+ */
+export const LESSON_PATH_PREFIX = "Lessons/";
 
 /** `renderLesson`'s `description` frontmatter field is capped to this length. */
 const MAX_DESCRIPTION_LENGTH = 160;
@@ -86,12 +89,12 @@ export function lessonPath(
 	const takenLower = new Set([...taken].map((path) => path.toLowerCase()));
 	const isTaken = (path: string) => takenLower.has(path.toLowerCase());
 
-	const base = `${LESSONS_DIR}/${iso}-${slug}.md`;
+	const base = `${LESSON_PATH_PREFIX}${iso}-${slug}.md`;
 	if (!isTaken(base)) {
 		return base;
 	}
 	for (let n = 2; n <= MAX_COLLISION_ATTEMPTS; n++) {
-		const candidate = `${LESSONS_DIR}/${iso}-${slug}-${n}.md`;
+		const candidate = `${LESSON_PATH_PREFIX}${iso}-${slug}-${n}.md`;
 		if (!isTaken(candidate)) {
 			return candidate;
 		}

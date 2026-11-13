@@ -1,45 +1,63 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const estimatorLoads = vi.hoisted(() => ({ count: 0 }));
+
+vi.mock("@zxcvbn-ts/core", async (importOriginal) => {
+	estimatorLoads.count += 1;
+	return importOriginal();
+});
+
 import {
 	assertPasswordStrength,
 	PasswordTooWeakError,
 } from "../password-strength";
 
 describe("assertPasswordStrength", () => {
-	it("rejects short passwords", () => {
-		expect(() => assertPasswordStrength("short", {})).toThrow(
+	it("loads the estimator on the first check, once", async () => {
+		// Arrange
+		expect(estimatorLoads.count).toBe(0);
+
+		// Act
+		await assertPasswordStrength("correct horse battery staple ✓", {});
+		await assertPasswordStrength("another strong passphrase here ✓", {});
+
+		// Assert
+		expect(estimatorLoads.count).toBe(1);
+	});
+
+	it("rejects short passwords", async () => {
+		await expect(assertPasswordStrength("short", {})).rejects.toThrow(
 			PasswordTooWeakError,
 		);
 	});
 
-	it("rejects common passwords", () => {
-		expect(() => assertPasswordStrength("password1234", {})).toThrow(
-			PasswordTooWeakError,
-		);
+	it("rejects common passwords", async () => {
+		await expect(
+			assertPasswordStrength("password1234", {}),
+		).rejects.toThrow(PasswordTooWeakError);
 	});
 
-	it("rejects passwords containing the user's email local part", () => {
-		expect(() =>
+	it("rejects passwords containing the user's email local part", async () => {
+		await expect(
 			assertPasswordStrength("johnsmith2026!", {
 				email: "johnsmith@example.com",
 			}),
-		).toThrow(PasswordTooWeakError);
+		).rejects.toThrow(PasswordTooWeakError);
 	});
 
-	it("accepts a strong passphrase", () => {
-		expect(() =>
+	it("accepts a strong passphrase", async () => {
+		await expect(
 			assertPasswordStrength("correct horse battery staple ✓", {}),
-		).not.toThrow();
+		).resolves.toBeUndefined();
 	});
 
-	it("error includes feedback suggestions", () => {
-		try {
-			assertPasswordStrength("password1234", {});
-			throw new Error("should have thrown");
-		} catch (e) {
-			expect(e).toBeInstanceOf(PasswordTooWeakError);
-			expect(
-				(e as PasswordTooWeakError).suggestions.length,
-			).toBeGreaterThan(0);
-		}
+	it("error includes feedback suggestions", async () => {
+		const error = await assertPasswordStrength("password1234", {}).catch(
+			(e: unknown) => e,
+		);
+		expect(error).toBeInstanceOf(PasswordTooWeakError);
+		expect(
+			(error as PasswordTooWeakError).suggestions.length,
+		).toBeGreaterThan(0);
 	});
 });

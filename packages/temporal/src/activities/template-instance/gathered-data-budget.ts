@@ -31,7 +31,11 @@ import {
 	projectCardForContext,
 	slimCardForBudget,
 } from "./report-card-pages";
-import { BOARD_FACTS_KEY, COVERAGE_KEY } from "./report-data-gate";
+import {
+	BOARD_FACTS_KEY,
+	COVERAGE_KEY,
+	PULL_REQUEST_FACTS_KEY,
+} from "./report-data-gate";
 
 /**
  * Default cap for the serialized `gatheredData` payload. Temporal Cloud's
@@ -48,6 +52,7 @@ export const DEFAULT_GATHERED_DATA_MAX_BYTES = 1_500_000;
 const RESERVED_KEYS: ReadonlySet<string> = new Set([
 	BOARD_FACTS_KEY,
 	COVERAGE_KEY,
+	PULL_REQUEST_FACTS_KEY,
 ]);
 
 /**
@@ -234,8 +239,8 @@ function selectFetchedCardsToKeep(
  *      the budget (never empties the payload — a data-bearing run stays
  *      non-empty).
  *
- * `_board_facts` and `_coverage` are reserved: stages A to C leave them alone,
- * and they go only if they alone exceed the budget.
+ * `_board_facts`, `_coverage` and `_pull_request_facts` are reserved: stages A
+ * to C leave them alone, and they go only if they alone exceed the budget.
  *
  * The effective budget is `max(maxBytes, MIN_GATHERED_DATA_BUDGET_BYTES)`, so
  * `finalBytes ≤ maxBytes` holds for every realistic input (the minimal marker

@@ -28,7 +28,7 @@ export function SummaryTile({
 							<TooltipTrigger asChild>
 								<button
 									type="button"
-									className="text-muted-foreground/60 hover:text-muted-foreground"
+									className="text-muted-foreground hover:text-muted-foreground"
 									aria-label={`${label} details`}
 								>
 									<HelpCircleIcon className="h-3.5 w-3.5" />

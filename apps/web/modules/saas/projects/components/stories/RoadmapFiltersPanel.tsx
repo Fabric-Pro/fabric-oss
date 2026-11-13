@@ -126,7 +126,7 @@ function FacetTrigger({
 			className={cn(
 				"inline-flex h-9 w-40 shrink-0 items-center justify-between gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 				active
-					? "border-primary/50 bg-primary/10 text-primary"
+					? "border-primary/50 bg-primary/10 text-primary-active"
 					: "border-input bg-card text-muted-foreground hover:border-muted-foreground hover:text-foreground disabled:border-input",
 				className,
 			)}

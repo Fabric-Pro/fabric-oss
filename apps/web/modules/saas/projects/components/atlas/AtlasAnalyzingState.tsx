@@ -96,7 +96,7 @@ export function AtlasAnalyzingState({
 				</EmptyStateDescription>
 				{elapsedMs !== null && (
 					<p
-						className="mt-1 text-muted-foreground/80 text-xs tabular-nums"
+						className="mt-1 text-muted-foreground text-xs tabular-nums"
 						aria-live="polite"
 					>
 						{t("analyzing.elapsed", {

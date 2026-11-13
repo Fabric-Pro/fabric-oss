@@ -350,7 +350,30 @@ describe("audit.taxonomy handler", () => {
 		// + 1 project.instructions.removed (every coding-instructions version
 		// of a project removed at once; the count and the version that was
 		// published, never a path or content) = 260.
-		expect(result.actions).toHaveLength(260);
+		// + 1 newsletter.screenshots.changed (review images for release
+		// notes turned on or off) = 261.
+		// + 1 time.report_exported (a time report exported as CSV hands out
+		// every member's logged time) = 262.
+		// + 1 newsletter.screenshots.environment_changed (the environment
+		// release-notes screenshots are captured from, confirmed as sample
+		// data) = 263.
+		// + 2 newsletter.screenshots.{capture_started, unpublished} (a
+		// reviewer started a screenshot capture; a sent newsletter's public
+		// images were taken down; ids and counts only) = 265.
+		// + 3 project.instructions.{set_created, set_updated, set_deleted}
+		// (a Coding Instructions set created, changed or deleted; slugs and
+		// repository counts only) = 268.
+		expect(result.actions).toHaveLength(268);
+		expect(result.actions).toContain("project.instructions.set_created");
+		expect(result.actions).toContain("newsletter.screenshots.changed");
+		expect(result.actions).toContain(
+			"newsletter.screenshots.environment_changed",
+		);
+		expect(result.actions).toContain(
+			"newsletter.screenshots.capture_started",
+		);
+		expect(result.actions).toContain("newsletter.screenshots.unpublished");
+		expect(result.actions).toContain("time.report_exported");
 		expect(result.actions).toContain("project.instructions.removed");
 		expect(result.actions).toContain(
 			"project.instructions.consolidation_cleanup_merged",

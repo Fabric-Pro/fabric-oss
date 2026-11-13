@@ -8,6 +8,8 @@
 export const BOARD_FACTS_KEY = "_board_facts";
 /** Reserved `gatheredData` key: per-listing pagination coverage. */
 export const COVERAGE_KEY = "_coverage";
+/** Reserved `gatheredData` key: merge counts and times over every pull request read. */
+export const PULL_REQUEST_FACTS_KEY = "_pull_request_facts";
 
 /** The source id `mapAgenticGatheredData` gives a gathered key with no template source. */
 export function agenticSourceId(key: string): string {

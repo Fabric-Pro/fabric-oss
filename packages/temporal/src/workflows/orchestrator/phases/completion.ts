@@ -23,6 +23,7 @@ import type * as postOperationResultModule from "../../../activities/post-operat
 import type * as weaveActivities from "../../../activities/weave";
 import { answerModelInfo } from "../../../answer-model-info";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
+import { recordedResultForPresentation } from "../advisor-result-read";
 import { advisorChargedUsage } from "../turn-budget";
 import { orchestratorErrorMessage } from "../usage-limit";
 
@@ -1018,7 +1019,11 @@ export function buildWorkflowOutput(
 		const cap = resultCapForToolCall(tc, mcpAppBudget);
 		return {
 			...tc,
-			result: truncateResult(tc.result, cap),
+			result: recordedResultForPresentation(
+				tc.name,
+				truncateResult(tc.result, cap),
+				state.advisorResultReadsEnabled,
+			),
 			args: truncateResult(tc.args, cap),
 		};
 	});
@@ -1037,7 +1042,11 @@ export function buildWorkflowOutput(
 				const cap = resultCapForToolCall(tc, mcpAppBudget);
 				return {
 					...tc,
-					result: truncateResult(tc.result, cap),
+					result: recordedResultForPresentation(
+						tc.name,
+						truncateResult(tc.result, cap),
+						state.advisorResultReadsEnabled,
+					),
 					args: truncateResult(tc.args, cap),
 				};
 			}),

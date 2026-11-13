@@ -384,7 +384,7 @@ function BranchMeta({ branch }: { branch: BranchScanStatus }) {
 				</time>
 			) : null}
 			{files != null && commits != null ? (
-				<span className="text-muted-foreground/80 text-xs">
+				<span className="text-muted-foreground text-xs">
 					{pluralCount(files, "changed file")} ·{" "}
 					{pluralCount(commits, "commit")}
 				</span>

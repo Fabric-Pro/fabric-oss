@@ -408,9 +408,10 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 				}
 			}
 
-			// The gateway image path reads this preference on Vercel AI Gateway;
-			// other image paths do not. Decision defaults stay on the gateway;
-			// Databricks decisions require an explicit organization choice.
+			// An organization with no saved IMAGE choice keeps the Vercel task
+			// default. A saved provider-specific choice is returned separately by
+			// getOrg and resolved at runtime. Decision defaults also stay on the
+			// gateway; Databricks decisions require an explicit organization choice.
 			// Do not present another provider's defaults for these tasks.
 			if (organizationId) {
 				allDefaults = allDefaults.filter(

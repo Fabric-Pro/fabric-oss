@@ -48,6 +48,11 @@ import { toast } from "sonner";
 import { CompanyContextNotice } from "./CompanyContextNotice";
 import { describeGenerationRefusal } from "./proposal-artifact/generation-feedback";
 import { ProposalPromptField } from "./proposal-artifact/ProposalPromptField";
+import {
+	useWebResearchAvailability,
+	webResearchToSend,
+} from "./web-research/use-web-research-availability";
+import { WebResearchOption } from "./web-research/WebResearchOption";
 
 type DocumentType = (typeof DOCUMENT_TYPE_OPTIONS)[number]["value"];
 
@@ -351,6 +356,7 @@ export function CreateDocumentDialog({
 	const tFeedback = useTranslations(
 		"projects.proposalArtifact.generationFeedback",
 	);
+	const tWebResearch = useTranslations("projects.documents.webResearch");
 	const router = useRouter();
 	const queryClient = useQueryClient();
 	const { organizationId, organizationSlug, basePath } =
@@ -416,6 +422,20 @@ export function CreateDocumentDialog({
 	 * until the chain settles in `finally`.
 	 */
 	const [isOrchestrating, setIsOrchestrating] = useState(false);
+	/**
+	 * Whether this one action may research the web. Off on every opening and
+	 * never derived from anything else, so a tick cannot carry over from an
+	 * earlier document. What is sent also depends on availability right now;
+	 * see `webResearchToSend`.
+	 */
+	const [allowWebResearch, setAllowWebResearch] = useState(false);
+
+	// Asked only while the dialog is open, like the AI status below: the
+	// documents list mounts this dialog without opening it.
+	const webResearchAvailability = useWebResearchAvailability({
+		projectId,
+		enabled: open,
+	});
 
 	// Same tenant AI-availability status the onboarding generation step reads.
 	const { data: aiConfigStatus, isError: aiConfigCheckFailed } = useQuery({
@@ -539,6 +559,7 @@ export function CreateDocumentDialog({
 		setValidationError(null);
 		setGenerateWithAiOverride(null);
 		setHasSourceContent(false);
+		setAllowWebResearch(false);
 	}, [open, initialType]);
 
 	/**
@@ -693,6 +714,19 @@ export function CreateDocumentDialog({
 				...(generateWithAI && promptId ? { promptId } : {}),
 				...(generateWithAI && promptVersionId
 					? { promptVersionId }
+					: {}),
+				// Sent whenever the option was offered for this run, as what
+				// was chosen: `true` only for a tick while research is
+				// available, `false` otherwise, so the run can tell an offer
+				// declined from no offer at all. Never with a file: no run
+				// carries it there, and the option says so.
+				...(generateWithAI && !sourceFile
+					? {
+							allowWebResearch: webResearchToSend(
+								allowWebResearch,
+								webResearchAvailability,
+							),
+						}
 					: {}),
 				timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
 			});
@@ -872,7 +906,8 @@ export function CreateDocumentDialog({
 				{/*
 				 * Control order is load-bearing and reads as three decisions:
 				 *   1. what the document is        — type, title
-				 *   2. how it gets written         — AI toggle, prompt, instructions
+				 *   2. how it gets written         — AI toggle, prompt, instructions,
+				 *                                    web research
 				 *   3. what it is written from     — source content, usage mode
 				 * Later units add controls inside these groups; they do not
 				 * reorder the groups.
@@ -1036,6 +1071,31 @@ export function CreateDocumentDialog({
 					)}
 
 					{/*
+					 * Only beside a run, since research happens inside one. An
+					 * attached file blocks it rather than hiding it, so the
+					 * person sees why it cannot be ticked.
+					 */}
+					{generateWithAI && (
+						<WebResearchOption
+							checked={allowWebResearch}
+							onCheckedChange={setAllowWebResearch}
+							availability={webResearchAvailability}
+							blockedReason={
+								sourceFile
+									? tWebResearch("fileSource")
+									: undefined
+							}
+							onNavigate={() => {
+								// Same rule as the dialog's own dismissal
+								// paths: never close mid-submit.
+								if (!isSubmitting) {
+									onOpenChange(false);
+								}
+							}}
+						/>
+					)}
+
+					{/*
 					 * 3. What it is written from — the source content and,
 					 * once there is any, how it should be used.
 					 */}
@@ -1119,6 +1179,10 @@ export function CreateDocumentDialog({
 									// showing one the submit cannot honour.
 									setSourceUsage("AS_IS");
 									setGenerateWithAiOverride(false);
+									// Research cannot run on a file, and a
+									// tick left behind must not come back if
+									// the file is removed again.
+									setAllowWebResearch(false);
 								}}
 							/>
 							<Button

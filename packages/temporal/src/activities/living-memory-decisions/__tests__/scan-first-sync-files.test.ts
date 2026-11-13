@@ -1,7 +1,8 @@
 /**
  * One page of a requested scan: a handed-over file stops waiting, a file whose
- * start failed keeps waiting without holding the scan in a loop, and a full page
- * says where the next one starts.
+ * start failed keeps waiting without holding the scan in a loop, a full page
+ * says where the next one starts, and each start names the member who asked,
+ * so the reviewers' notification leaves them out.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,7 +13,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
-	listLivingMemoryFilesSkippedAtFirstSync: mocks.list,
+	listLivingMemoryFilesAwaitingDecisionScan: mocks.list,
 	clearLivingMemoryDecisionScanSkip: mocks.clear,
 }));
 
@@ -44,6 +45,24 @@ describe("scanLivingMemoryFirstSyncFilesActivity", () => {
 		});
 		expect(mocks.clear).toHaveBeenCalledWith(fileRow("c-1"));
 		expect(mocks.clear).toHaveBeenCalledWith(fileRow("c-2"));
+	});
+
+	it("names the member who asked on every start", async () => {
+		mocks.list.mockResolvedValue([fileRow("c-1"), fileRow("c-2")]);
+
+		await scanLivingMemoryFirstSyncFilesActivity({
+			...scope,
+			requestedByUserId: "member-9",
+		});
+
+		expect(mocks.start).toHaveBeenCalledTimes(2);
+		for (const contextId of ["c-1", "c-2"]) {
+			expect(mocks.start).toHaveBeenCalledWith({
+				contextId,
+				scanRequested: true,
+				requestedByUserId: "member-9",
+			});
+		}
 	});
 
 	it("keeps a file waiting when its start failed", async () => {

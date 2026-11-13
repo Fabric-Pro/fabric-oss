@@ -269,7 +269,7 @@ export function ReportReadinessRail({
 							<>
 								<span
 									aria-hidden
-									className="text-muted-foreground/50"
+									className="text-muted-foreground"
 								>
 									·
 								</span>

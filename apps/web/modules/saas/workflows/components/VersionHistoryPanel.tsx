@@ -205,7 +205,7 @@ export function VersionHistoryPanel({
 														{isPublishedVersion && (
 															<Badge
 																variant="outline"
-																className="text-xs bg-green-100 text-green-700 border-green-300 dark:bg-green-900 dark:text-green-300 dark:border-green-700"
+																className="text-xs bg-green-100 text-green-800 border-green-300 dark:bg-green-900 dark:text-green-300 dark:border-green-700"
 															>
 																<CheckCircle2Icon className="h-3 w-3 mr-1" />
 																Published

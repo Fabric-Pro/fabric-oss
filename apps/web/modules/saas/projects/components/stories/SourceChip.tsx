@@ -53,7 +53,7 @@ export function SourceChip({
 					className={cn(
 						variant === "list"
 							? "inline-flex max-w-full items-center gap-1 text-xs text-muted-foreground"
-							: "inline-flex max-w-full items-center gap-1 rounded-full border border-border/60 bg-muted/30 px-1.5 py-0.5 font-medium text-muted-foreground/80",
+							: "inline-flex max-w-full items-center gap-1 rounded-full border border-border/60 bg-muted/30 px-1.5 py-0.5 font-medium text-muted-foreground",
 						className,
 					)}
 				>

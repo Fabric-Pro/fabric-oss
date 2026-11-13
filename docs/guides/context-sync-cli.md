@@ -43,7 +43,7 @@ fabric context push <dir...> --project <id> [--org <slug>] [--force] [--prune] \
 | `--timeout <seconds>` | Bounds each folder's push as a whole. The bound is checked before each request; when it is passed, the run stops, records what the server already confirmed, and exits 1 with how many requests were sent. A single request never waits longer than the bound or 60 seconds, whichever is shorter. There is no overall bound by default: a large folder can legitimately take a long time, every request already has its own 60-second timeout, and progress shows that the run is moving. |
 | `--project <id>` | The project whose Context receives the files. |
 | `--org <slug>` | Binds the request to an organization explicitly. The project already decides which organization it is in; a slug that is not the project's own is a 404. |
-| `--force` | On a conflict, replace the server's version with this folder's, once. With `--prune`, also deletes a file that changed on the server, once. See below. |
+| `--force` | On a conflict, replace the server's version with this folder's, once. The replaced server version is not kept. With `--prune`, also deletes a file that changed on the server, once. See below. |
 | `--prune` | Deletes the server entry of every file removed locally, but only in the version this folder last pushed. Off by default. See [Deleting with `--prune`](#deleting-with---prune). |
 | `--dry-run` | Prints what would be sent, moved and (with `--prune`) deleted. Sends nothing and writes no lock. |
 | `--exclude <pattern>` | Leaves out paths matching a gitignore pattern. Repeatable. |
@@ -207,6 +207,14 @@ anyway, run again with `--force`: the file is sent once more, naming the
 version the conflict reported. If it changed yet again in between, that is
 reported as a conflict too, and there is no third attempt. A stored version
 without a content hash cannot be named, so `--force` cannot replace it.
+
+The server's version that `--force` replaces is not kept: there is no history
+to restore it from, so copy it out of the Context tab first if it matters.
+After a run that replaced any, the report ends with one line that counts them:
+
+```text
+--force replaced 2 server versions; the replaced versions are not kept.
+```
 
 If the file was deleted on the server since your last push, the push is
 also a conflict (`deleted on the server since your last push`) and nothing
@@ -400,24 +408,47 @@ When a project's synced files are in a state that pushing cannot untangle,
 delete all of them and push again:
 
 ```bash
-fabric context reset docs/knowledge --project <id> [--org <slug>] [--yes] [--format json]
+fabric context reset docs/knowledge --project <id> [--org <slug>] [--folder <path>] [--yes] [--format json]
 fabric context push --init docs/knowledge --project <id>
 ```
 
 `fabric context reset` deletes **every** file synced into the project's
 Living Memory, for everyone, and queues their search-index entries for
-removal in the same step. The whole project is reset; there is no reset of
-one folder. Afterwards the files are gone from the Context tab, from
-`fabric context manifest` and from the MCP file listing. A reset of a project
-with nothing synced deletes nothing, so running it twice is harmless.
+removal in the same step. Afterwards the files are gone from the Context tab,
+from `fabric context manifest` and from the MCP file listing. A reset of a
+project with nothing synced deletes nothing, so running it twice is harmless.
 
 - It asks you to type the project's name to confirm (its id, when the name
   cannot be read). Without a terminal, for example in CI, it refuses unless
   `--yes` is given.
-- With a folder, it also replaces that folder's `.fabric/context.lock` with an
-  empty one, so the next push sends every file as new. A lock that belongs to
-  another project is refused before anything is sent. Without a folder, push
-  with `--init` instead.
+- With a local folder argument, it also replaces that folder's
+  `.fabric/context.lock` with an empty one, so the next push sends every file
+  as new. A lock that belongs to another project is refused before anything is
+  sent. Without one, push with `--init` instead.
+
+### Removing one folder
+
+`--folder <path>` deletes only the synced files under one folder of the pushed
+tree, everything else stays:
+
+```bash
+fabric context reset --folder docs/guides --project <id>
+```
+
+- The folder is a path as the push stores it, relative to the pushed tree:
+  `docs/guides` deletes `docs/guides/setup.md` and
+  `docs/guides/old/notes.md`, never `docs/guides-archive/a.md`. A trailing `/`
+  is dropped, and a Windows `docs\guides` is `docs/guides`. A path the server
+  would refuse for a file (absolute, with `.` or `..`, or the root itself) is
+  refused with exit 2 and nothing is sent; leave `--folder` out to reset the
+  whole project.
+- The confirmation names the folder, and the result says how many files under
+  it were deleted.
+- With a local folder argument, only that lock's entries under the folder are
+  removed, so the next push sends those files as new and leaves the rest
+  alone.
+- The same refusal while a repository sync is connected, the same permission
+  and the same audit record apply; the audit record also names the folder.
 - Any other folder's lock, on any machine, still records the files as pushed,
   so a plain push from it sends nothing for them. The push lists them under
   `missing on the server`, says to use `--init`, and exits 0. They are not sent
@@ -433,11 +464,15 @@ with nothing synced deletes nothing, so running it twice is harmless.
   back on its next run. Disconnect the sync in the project's Context tab
   first.
 - Every reset that deleted something is recorded in the audit log as
-  `project.context_source.synced_files_reset`, with who, when, the scope and
-  the number of files.
+  `project.context_source.synced_files_reset`, with who, when, the scope (the
+  project, or one folder and its path) and the number of files.
 
-The Context tab has the same action: **Reset Living Memory**, in the Living
-Memory section.
+The Context tab has the same actions: **Reset Living Memory**, in the Living
+Memory section, and **Remove folder** on each folder of synced files, which
+names the folder and its file count and asks you to type the folder's path to
+confirm. Both need permission to delete context sources. While a repository
+sync is connected, the reset is disabled and says why, and no folder offers
+**Remove folder**.
 
 ## Running it from a hook
 

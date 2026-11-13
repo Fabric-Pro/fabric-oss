@@ -155,7 +155,7 @@ export function DirectCommitWatcher({
 		return null;
 	}
 	return (
-		<output className="inline-flex w-fit items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 font-medium text-primary text-sm">
+		<output className="inline-flex w-fit items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 font-medium text-primary-active text-sm">
 			<Loader2Icon
 				className="size-3.5 motion-safe:animate-spin"
 				aria-hidden="true"

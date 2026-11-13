@@ -18,6 +18,8 @@ export * from "./prisma/queries/lib/report-schedule";
 export * from "./prisma/queries/platform-admin";
 export * from "./prisma/queries/projects/knowledge-search";
 export * from "./prisma/queries/projects/remote-agent-servers";
+// Code index cancel marker (pure: shared by the cancel writer and the list)
+export * from "./src/code-index-cancel";
 // Daily brief shared schemas
 export * from "./src/daily-brief-schema";
 // Delivery tracks: readiness policy + stage-transition enforcement
@@ -36,6 +38,8 @@ export * from "./src/newsletter-cadence";
 export * from "./src/newsletter-schema";
 // Project-tab customization shared contract (visibility config + user prefs)
 export * from "./src/project-tabs";
+// Deployment shared log workspace (pure: env read + binding comparison)
+export * from "./src/shared-log-workspace";
 // Publishing suite cadence (pure: interval + due predicate maths)
 export * from "./src/publishing-cadence";
 // Publishing suite chat broadcast targets (pure: the persisted target triple)

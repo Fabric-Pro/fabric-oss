@@ -9,7 +9,7 @@ const badgeVariants = cva(
 		variants: {
 			variant: {
 				default:
-					"border-transparent bg-primary/[0.08] text-primary dark:bg-primary/15 [a&]:hover:bg-primary/15 dark:[a&]:hover:bg-primary/20",
+					"border-transparent bg-primary/[0.08] text-primary-active dark:bg-primary/15 [a&]:hover:bg-primary/15 dark:[a&]:hover:bg-primary/20",
 				// `secondary` is a surface token (light grey / charcoal), so text in
 				// that colour on a tint of itself was invisible in both themes.
 				// Solid surface with its paired foreground instead.

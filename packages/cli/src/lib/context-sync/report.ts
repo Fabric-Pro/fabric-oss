@@ -391,6 +391,16 @@ export function formatPushReport(input: {
 	if (unchanged > 0) {
 		lines.push(`unchanged (${unchanged})`);
 	}
+	// Moves the server did not apply included: each `updated` with the
+	// version it replaced is one the server no longer holds.
+	const replaced = results.filter(
+		(r) => r.status === "updated" && r.overwrote !== undefined,
+	).length;
+	if (replaced > 0) {
+		lines.push(
+			`--force replaced ${replaced} server ${replaced === 1 ? "version" : "versions"}; the replaced ${replaced === 1 ? "version is" : "versions are"} not kept.`,
+		);
+	}
 	return lines;
 }
 

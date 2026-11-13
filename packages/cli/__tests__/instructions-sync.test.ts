@@ -25,6 +25,9 @@ import { computeSnapshotDigest } from "../src/lib/instructions/manifest.js";
 import { nothingPublishedSyncLine } from "../src/lib/instructions/nothing-published.js";
 import { commandPath } from "./helpers/command-path.js";
 import {
+	hookContext,
+	hookMessageStdout,
+	hookSystemMessage,
 	makeTree,
 	manifestEntry,
 	resetInstructionsMocks,
@@ -695,9 +698,12 @@ describe("a lock from another project", () => {
 		]);
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toBe(
-			"fabric: coding instructions check skipped: This folder was synced from a different project, so nothing was changed. Use another --dest, or delete .fabric/instructions.lock to start over.\n",
+		expect(result.stdout).toBe(
+			hookMessageStdout([
+				"fabric: coding instructions check skipped: This folder was synced from a different project, so nothing was changed. Use another --dest, or delete .fabric/instructions.lock to start over.",
+			]),
 		);
+		expect(result.stderr).toBe("");
 	});
 
 	it("accepts a lock that names the same project", async () => {
@@ -1198,7 +1204,7 @@ describe("an unchanged digest over a drifted tree", () => {
 	});
 
 	/** Spec §6.4 (Fizzy #2540): a session start keeps the edit and says so in one line. */
-	it("keeps an edit under --hook and says so in one stderr line", async () => {
+	it("keeps an edit under --hook and shows the developer one line about it", async () => {
 		const manifest = [manifestEntry("AGENTS.md", "published\n")];
 		const dest = await seedSyncedTree(manifest, {
 			"AGENTS.md": "edited\n",
@@ -1218,9 +1224,10 @@ describe("an unchanged digest over a drifted tree", () => {
 		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
 			"edited\n",
 		);
-		expect(result.stderr).toBe(
-			`fabric: 1 local edit(s) kept; run \`fabric instructions sync --project project-1 --dest ${commandPath(dest)} --repair\` to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.\n`,
+		expect(hookSystemMessage(result.stdout)).toBe(
+			`fabric: 1 local edit(s) kept; run \`fabric instructions sync --project project-1 --dest ${commandPath(dest)} --repair\` to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.`,
 		);
+		expect(result.stderr).toBe("");
 		expect(mocks.getPublished).toHaveBeenCalledTimes(1);
 	});
 
@@ -1510,7 +1517,8 @@ describe("an unchanged digest over a drifted tree", () => {
 	/**
 	 * Decision 42. A newline in a path cannot be quoted into something a
 	 * person can safely paste, so no command is printed at all; the report
-	 * says what to run instead, in stdout and in the hook's stderr line.
+	 * says what to run instead, in the agent's context and in the hook's
+	 * message for the developer.
 	 *
 	 * Windows cannot create a folder with a newline in its name, so there a
 	 * `$` stands in: no spelling of it reads the same in bash, PowerShell and
@@ -1541,11 +1549,12 @@ describe("an unchanged digest over a drifted tree", () => {
 		const instead =
 			"`fabric instructions sync --repair` with this run's --project and --dest";
 		expect(result.code).toBe(0);
-		expect(result.stdout).toContain(instead);
-		expect(result.stderr).toBe(
-			`fabric: 1 local edit(s) kept; run ${instead} to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.\n`,
+		expect(hookContext(result.stdout)).toContain(instead);
+		expect(hookSystemMessage(result.stdout)).toBe(
+			`fabric: 1 local edit(s) kept; run ${instead} to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.`,
 		);
-		expect(`${result.stdout}${result.stderr}`).not.toContain(leaked);
+		expect(result.stderr).toBe("");
+		expect(result.stdout).not.toContain(leaked);
 	});
 });
 
@@ -1630,7 +1639,7 @@ describe("a project with nothing published", () => {
 		});
 	});
 
-	it("stays one quiet line on stderr under --hook", async () => {
+	it("stays one quiet line for the developer under --hook", async () => {
 		const dest = await previouslySynced();
 		mocks.getPublished.mockResolvedValue(UNPUBLISHED);
 
@@ -1645,8 +1654,10 @@ describe("a project with nothing published", () => {
 
 		expect(result).toEqual({
 			code: 0,
-			stdout: "",
-			stderr: "fabric: coding instructions sync skipped: This project has no published coding instructions yet.\n",
+			stdout: hookMessageStdout([
+				"fabric: coding instructions sync skipped: This project has no published coding instructions yet.",
+			]),
+			stderr: "",
 		});
 		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
 			"published\n",

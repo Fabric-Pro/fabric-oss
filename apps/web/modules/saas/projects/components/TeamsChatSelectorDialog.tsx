@@ -454,7 +454,7 @@ export function TeamsChatSelectorDialog({
 						<p className="text-foreground/70">
 							Failed to load Teams data
 						</p>
-						<p className="text-foreground/50 text-sm">
+						<p className="text-muted-foreground text-sm">
 							{teamsQuery.error instanceof Error
 								? teamsQuery.error.message
 								: "An unexpected error occurred"}
@@ -472,7 +472,7 @@ export function TeamsChatSelectorDialog({
 							<p className="font-medium text-foreground/70">
 								Microsoft Account Not Connected
 							</p>
-							<p className="mt-1 text-foreground/50 text-sm">
+							<p className="mt-1 text-muted-foreground text-sm">
 								{fetchError ||
 									"Connect your Microsoft account to access Teams chats."}
 							</p>
@@ -493,7 +493,7 @@ export function TeamsChatSelectorDialog({
 						<p className="text-foreground/70">
 							No group chats or channels found
 						</p>
-						<p className="text-foreground/50 text-sm">
+						<p className="text-muted-foreground text-sm">
 							You need to be a member of group chats or teams in
 							Microsoft Teams.
 						</p>
@@ -512,7 +512,7 @@ export function TeamsChatSelectorDialog({
 									"flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
 									activeTab === "chats"
 										? "bg-background text-foreground shadow-sm"
-										: "text-foreground/60 hover:text-foreground/80",
+										: "text-muted-foreground hover:text-foreground/80",
 								)}
 							>
 								<MessageSquareIcon className="size-3.5" />
@@ -523,7 +523,7 @@ export function TeamsChatSelectorDialog({
 									</span>
 								)}
 								{chatSelectionCount > 0 && (
-									<span className="rounded-full bg-violet-500/20 px-1.5 py-0.5 text-violet-600 text-xs dark:text-violet-400">
+									<span className="rounded-full bg-violet-500/20 px-1.5 py-0.5 text-violet-700 text-xs dark:text-violet-300">
 										{chatSelectionCount}
 									</span>
 								)}
@@ -535,7 +535,7 @@ export function TeamsChatSelectorDialog({
 									"flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
 									activeTab === "channels"
 										? "bg-background text-foreground shadow-sm"
-										: "text-foreground/60 hover:text-foreground/80",
+										: "text-muted-foreground hover:text-foreground/80",
 								)}
 							>
 								<HashIcon className="size-3.5" />
@@ -546,7 +546,7 @@ export function TeamsChatSelectorDialog({
 									</span>
 								)}
 								{channelSelectionCount > 0 && (
-									<span className="rounded-full bg-violet-500/20 px-1.5 py-0.5 text-violet-600 text-xs dark:text-violet-400">
+									<span className="rounded-full bg-violet-500/20 px-1.5 py-0.5 text-violet-700 text-xs dark:text-violet-300">
 										{channelSelectionCount}
 									</span>
 								)}
@@ -577,7 +577,7 @@ export function TeamsChatSelectorDialog({
 								{chats.length === 0 ? (
 									<div className="flex flex-col items-center gap-2 py-6 text-center">
 										<MicrosoftTeamsIcon className="size-6 text-foreground/30" />
-										<p className="text-foreground/50 text-sm">
+										<p className="text-muted-foreground text-sm">
 											No chats found
 										</p>
 									</div>
@@ -620,7 +620,7 @@ export function TeamsChatSelectorDialog({
 															className="font-medium text-sm"
 														/>
 														{isDirectChat && (
-															<span className="shrink-0 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-amber-600 text-xs dark:text-amber-400">
+															<span className="shrink-0 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-amber-800 text-xs dark:text-amber-400">
 																1:1 Direct
 															</span>
 														)}
@@ -631,7 +631,7 @@ export function TeamsChatSelectorDialog({
 														)}
 														{chat.memberCount >
 															0 && (
-															<span className="flex shrink-0 items-center gap-1 text-foreground/50 text-xs">
+															<span className="flex shrink-0 items-center gap-1 text-muted-foreground text-xs">
 																<UsersIcon className="size-3" />
 																{
 																	chat.memberCount
@@ -643,7 +643,7 @@ export function TeamsChatSelectorDialog({
 														<TruncatedText
 															as="p"
 															text={`${chat.lastMessage.from}: ${chat.lastMessage.preview}`}
-															className="mt-1 text-foreground/50 text-xs"
+															className="mt-1 text-muted-foreground text-xs"
 														>
 															<span className="font-medium">
 																{
@@ -682,7 +682,7 @@ export function TeamsChatSelectorDialog({
 								{channelsByTeam.size === 0 ? (
 									<div className="flex flex-col items-center gap-2 py-6 text-center">
 										<HashIcon className="size-6 text-foreground/30" />
-										<p className="text-foreground/50 text-sm">
+										<p className="text-muted-foreground text-sm">
 											No team channels found
 										</p>
 									</div>
@@ -717,7 +717,7 @@ export function TeamsChatSelectorDialog({
 															text={team.teamName}
 															className="font-medium text-sm"
 														/>
-														<span className="ml-auto shrink-0 text-foreground/40 text-xs">
+														<span className="ml-auto shrink-0 text-muted-foreground text-xs">
 															{
 																team.channels
 																	.length
@@ -791,7 +791,7 @@ export function TeamsChatSelectorDialog({
 																						text={
 																							ch.description
 																						}
-																						className="ml-auto text-foreground/40 text-xs"
+																						className="ml-auto text-muted-foreground text-xs"
 																					/>
 																				)}
 																		</label>
@@ -809,11 +809,11 @@ export function TeamsChatSelectorDialog({
 						)}
 
 						{/* Selection count */}
-						<div className="flex items-center justify-between text-foreground/50 text-sm">
+						<div className="flex items-center justify-between text-muted-foreground text-sm">
 							<span>
 								{selectedKeys.size} of {MAX_SELECTIONS} selected
 								{existingTeamsKeys.size > 0 && (
-									<span className="text-foreground/40">
+									<span className="text-muted-foreground">
 										{" "}
 										({existingTeamsKeys.size} already added)
 									</span>

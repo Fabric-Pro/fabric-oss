@@ -5,7 +5,7 @@ import { TestCaseStatusChip } from "../TestCaseStatusChip";
 describe("TestCaseStatusChip", () => {
 	it("renders the label text and a tone dot for each test-case state", () => {
 		const cases = [
-			{ status: "READY", label: "Ready", dot: "bg-secondary" },
+			{ status: "READY", label: "Ready", dot: "bg-success" },
 			{ status: "DRAFT", label: "Draft", dot: "bg-highlight" },
 			{ status: "CLOSED", label: "Closed", dot: "bg-muted-foreground" },
 		] as const;

@@ -65,6 +65,11 @@ export function errorResponse(
 		) {
 			status = 409;
 			message = "Please reconnect the server in MCP Settings.";
+		} else if (error.code === "SERVER_UNAVAILABLE") {
+			// A retired server whose package does not exist (Fizzy #3531).
+			status = 410;
+			message =
+				"This MCP server can no longer run. Remove it in MCP Settings.";
 		}
 		return NextResponse.json(
 			{

@@ -38,6 +38,7 @@ import { STANDARD_REPORT_TEMPLATES } from "../prisma/seed-report-standard-templa
 import {
 	SYSTEM_TEMPLATES,
 	seededReportTemplateDefinition,
+	seededSystemTemplateWhere,
 } from "../prisma/seed-report-templates";
 
 describe("isConnectorFreeReportDefinition", () => {
@@ -104,6 +105,16 @@ describe("runGatheredRecords", () => {
 		expect(runGatheredRecords([])).toBe(false);
 		expect(runGatheredRecords(null)).toBe(false);
 		expect(runGatheredRecords([{ recordCount: "4" }, null])).toBe(false);
+	});
+});
+
+describe("seededSystemTemplateWhere", () => {
+	it("matches only an unauthored system template, so a person's published template of the same name is left alone", () => {
+		expect(seededSystemTemplateWhere("Velocity Report")).toEqual({
+			name: "Velocity Report",
+			scope: "SYSTEM",
+			userId: null,
+		});
 	});
 });
 
@@ -430,13 +441,46 @@ describe("engineering metrics wording", () => {
 		)?.definition,
 	);
 
-	it("counts releases when the deployment records cover only part of the period", () => {
+	it("names the records it needs in the description the gathering step reads", () => {
+		const template = STANDARD_REPORT_TEMPLATES.find(
+			(entry) => entry.key === "engineering-metrics",
+		);
+
+		expect(template?.description).toContain("merged pull requests");
+		expect(template?.description).toContain("releases");
+	});
+
+	it("counts releases when unnamed deployment records cover only part of the period", () => {
 		expect(prompt).toContain(
-			"when the records you could read cover only part of the period and the releases you read reach back to its start, report the release count for the whole period as the value",
+			"when no `deploymentRecords` is named, the records you could read cover only part of the period and the releases you read reach back to its start, report the release count for the whole period as the value",
 		);
 		expect(prompt).toContain(
 			"give the deployment-record count with the dates it covers beside it",
 		);
+	});
+
+	it("asks where deployments are recorded, in a parameter no default fills", () => {
+		const template = STANDARD_REPORT_TEMPLATES.find(
+			(entry) => entry.key === "engineering-metrics",
+		);
+
+		expect(template?.parameters.properties).toHaveProperty(
+			"deploymentRecords.aiDefault",
+			false,
+		);
+		expect(template?.parameters.required).not.toContain(
+			"deploymentRecords",
+		);
+		expect(prompt).toContain(
+			"when the `deploymentRecords` parameter names where deployments are recorded, the value is the number of successful deployments in those records within the period",
+		);
+		expect(prompt).toContain(
+			"A release count may appear beside it as context, never as the value.",
+		);
+	});
+
+	it("takes the revert and hotfix count from the pull request facts", () => {
+		expect(prompt).toContain("`revertOrHotfix` in the Pull Request Facts");
 	});
 });
 

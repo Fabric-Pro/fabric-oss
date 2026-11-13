@@ -194,12 +194,3 @@ export async function deleteChatArtifact(
 		},
 	});
 }
-
-export async function deleteProjectArtifacts(
-	projectId: string,
-	userId: string,
-) {
-	return (db as any).chatArtifact.deleteMany({
-		where: { projectId, userId },
-	});
-}

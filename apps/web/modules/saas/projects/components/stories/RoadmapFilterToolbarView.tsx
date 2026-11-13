@@ -133,7 +133,7 @@ function ResultCount({
 							onClick={onToggleBodyMatches}
 							aria-expanded={bodyMatchesShown}
 							data-testid="roadmap-body-match-toggle"
-							className="inline-flex items-center gap-1 rounded font-normal normal-case tracking-normal text-muted-foreground/70 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+							className="inline-flex items-center gap-1 rounded font-normal normal-case tracking-normal text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							{bodyMatchesShown ? (
 								<>
@@ -284,7 +284,7 @@ export function RoadmapFilterToolbarView({
 									className={cn(
 										"size-8 shrink-0",
 										aiMode &&
-											"border border-secondary/40 bg-secondary/10 text-secondary hover:bg-secondary/20",
+											"border border-success/40 bg-success/10 text-success hover:bg-success/20",
 									)}
 									aria-pressed={aiMode}
 									aria-label="AI semantic search"

@@ -4,7 +4,7 @@
 # 3-stage build: base (deps) → builder (compile) → production (run)
 # Port: 8140
 
-FROM node:22-slim AS base
+FROM node:24-slim AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
@@ -85,7 +85,7 @@ COPY --from=prisma /app/packages/database/prisma/zod ./packages/database/prisma/
 # Bundle the agent with tsup
 RUN pnpm --filter weave-readers build
 
-FROM node:22-slim AS production
+FROM node:24-slim AS production
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \

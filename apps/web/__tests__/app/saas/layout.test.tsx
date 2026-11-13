@@ -66,6 +66,20 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	},
 }));
 
+// The request timing log reads the request headers and schedules work after
+// the response, and neither exists outside a request.
+vi.mock("next/headers", () => ({
+	headers: async () => new Headers(),
+}));
+
+vi.mock("@saas/shared/lib/catalog-request-timing", () => ({
+	logAppRequestTiming: vi.fn(),
+	measureCatalogRequestPhase: (
+		_phase: string,
+		operation: () => Promise<unknown>,
+	) => operation(),
+}));
+
 const USER_ID = "user-1";
 
 function baseSession() {

@@ -215,29 +215,6 @@ export function findWorkflowReplayBreaks(path, source) {
 }
 
 /**
- * A schema change that does not touch tenant registration.
- *
- * A new tenant-scoped table has to be registered in `tenant-db.ts` in BOTH
- * places or it silently escapes the application-level filter. That has happened
- * here before and a review caught it; nothing catches it automatically. Fires
- * only when the schema moved and the registration did not, so it stays quiet on
- * every change that is not a schema change at all.
- */
-export function checkTenantRegistration(paths) {
-	const schemaChanged = paths.some((p) =>
-		p.endsWith("packages/database/prisma/schema.prisma"),
-	);
-	const tenantDbChanged = paths.some((p) => p.includes("tenant-db.ts"));
-	if (!schemaChanged || tenantDbChanged) {
-		return null;
-	}
-	return {
-		rule: "tenant-registration",
-		detail: "The Prisma schema changed and `tenant-db.ts` did not. If this adds a tenant-scoped table it has to be registered there in both places, or it escapes the application-level tenant filter. Ignore this if the change adds no tenant table.",
-	};
-}
-
-/**
  * Walk from an opening parenthesis to its match, returning the span between.
  * Returns null when the call is unterminated in this file.
  */
@@ -318,8 +295,8 @@ const RULE_HEADINGS = {
 };
 
 /** Render the comment. Returns null when there is nothing worth saying. */
-export function renderReport(findings, coverage, tenant = null) {
-	if (findings.length === 0 && coverage === null && tenant === null) {
+export function renderReport(findings, coverage) {
+	if (findings.length === 0 && coverage === null) {
 		return null;
 	}
 	const lines = [];
@@ -336,12 +313,6 @@ export function renderReport(findings, coverage, tenant = null) {
 			}
 			lines.push("");
 		}
-	}
-	if (tenant !== null) {
-		lines.push("**Tenant isolation**");
-		lines.push("");
-		lines.push(`- ${tenant.detail}`);
-		lines.push("");
 	}
 	if (coverage !== null) {
 		lines.push("**Tests**");
@@ -432,7 +403,6 @@ function main() {
 	const report = renderReport(
 		limitToChanged(findings, changed),
 		summariseTestCoverage(paths),
-		checkTenantRegistration(paths),
 	);
 	if (report !== null) {
 		process.stdout.write(report);

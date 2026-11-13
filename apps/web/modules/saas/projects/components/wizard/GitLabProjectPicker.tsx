@@ -437,7 +437,7 @@ export function GitLabProjectPicker({
 							<p className="font-medium text-foreground/70">
 								GitLab Needs Reconnecting
 							</p>
-							<p className="mt-1 text-sm text-foreground/50">
+							<p className="mt-1 text-sm text-muted-foreground">
 								Your GitLab connection has expired. Reconnect
 								GitLab to browse and select projects for this
 								project.
@@ -468,7 +468,7 @@ export function GitLabProjectPicker({
 							<p className="font-medium text-foreground/70">
 								GitLab Not Connected
 							</p>
-							<p className="mt-1 text-sm text-foreground/50">
+							<p className="mt-1 text-sm text-muted-foreground">
 								Connect GitLab in MCP Servers to browse and
 								select projects for this project.
 							</p>
@@ -495,7 +495,7 @@ export function GitLabProjectPicker({
 								<p className="font-medium text-foreground/70">
 									Failed to load projects
 								</p>
-								<p className="mt-1 text-sm text-foreground/50">
+								<p className="mt-1 text-sm text-muted-foreground">
 									{error}
 								</p>
 							</div>
@@ -649,13 +649,13 @@ export function GitLabProjectPicker({
 														<span className="ml-auto flex items-center gap-2">
 															{selectedCount >
 																0 && (
-																<span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-primary text-xs">
+																<span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-primary-active text-xs">
 																	{
 																		selectedCount
 																	}
 																</span>
 															)}
-															<span className="shrink-0 text-foreground/40 text-xs">
+															<span className="shrink-0 text-muted-foreground text-xs">
 																{
 																	group.repos
 																		.length

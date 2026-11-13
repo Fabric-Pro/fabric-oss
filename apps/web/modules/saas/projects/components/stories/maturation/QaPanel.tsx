@@ -152,7 +152,7 @@ function SectionInfo({ aria, body }: { aria: string; body: string }) {
 					<button
 						type="button"
 						aria-label={aria}
-						className="inline-flex text-muted-foreground/70 motion-safe:transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+						className="inline-flex text-muted-foreground motion-safe:transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 					>
 						<InfoIcon className="size-3.5" aria-hidden="true" />
 					</button>

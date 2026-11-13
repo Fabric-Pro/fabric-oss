@@ -512,6 +512,7 @@ export function createOrchestratorExecutionObserver({
 					approvalId: pendingApproval.approvalId,
 					stepId: pendingApproval.stepId,
 					reason: pendingApproval.reason,
+					riskLevel: pendingApproval.riskLevel,
 				});
 			}
 		} else if (lastPendingApproval) {

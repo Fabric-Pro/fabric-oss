@@ -4,9 +4,10 @@ import { invalidateUnreadCount } from "../../../lib/notification-cache";
 import {
 	Permissions,
 	requirePermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { bellVisibleWhere } from "../lib/bell-visible-where";
+import { resolveNotificationOrganization } from "../lib/resolve-notification-organization";
 
 const inputSchema = z.object({
 	organizationId: z.string().nullable().optional(),
@@ -15,8 +16,9 @@ const inputSchema = z.object({
 
 /**
  * Restore archived notifications by id. Mirrors `archive` symmetrically:
- *  - Scopes the update to `(userId, organizationId)` so cross-user / cross-
- *    tenant ids cannot be flipped back to active.
+ *  - Scopes the update to bell-visible rows so cross-user / cross-tenant ids
+ *    cannot be flipped back to active while global weekly digests remain
+ *    restorable.
  *  - Targets only currently-archived rows (`archivedAt: { not: null }`) so
  *    the operation is idempotent.
  *  - Invalidates the unread-count cache because a restored notification can
@@ -32,15 +34,18 @@ export const restoreNotificationsProcedure = tenantProtectedProcedure
 	})
 	.input(inputSchema)
 	.handler(async ({ input, context }) => {
-		const organizationId =
-			resolveOrganizationId(input.organizationId, context.session) ??
-			null;
+		const organizationId = await resolveNotificationOrganization(
+			input.organizationId,
+			context,
+		);
 
 		const result = await db.notification.updateMany({
 			where: {
+				...bellVisibleWhere({
+					userId: context.user.id,
+					organizationId,
+				}),
 				id: { in: input.ids },
-				userId: context.user.id,
-				organizationId,
 				archivedAt: { not: null },
 			},
 			data: { archivedAt: null },

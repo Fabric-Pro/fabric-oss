@@ -223,7 +223,10 @@ export function FramesList({
 											size="icon"
 											className="h-8 w-8 opacity-0 group-hover:opacity-100"
 										>
-											<MoreHorizontal className="h-4 w-4" />
+											<MoreHorizontal
+												strokeWidth={2.5}
+												className="h-4 w-4"
+											/>
 										</Button>
 									</DropdownMenuTrigger>
 									<DropdownMenuContent align="end">

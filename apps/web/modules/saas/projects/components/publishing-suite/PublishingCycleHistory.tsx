@@ -795,7 +795,7 @@ export function PublishingCycleHistory({
 							className={cn(
 								"rounded-full border px-3 py-1 text-xs font-medium transition-colors",
 								active
-									? "border-primary bg-primary/10 text-primary"
+									? "border-primary bg-primary/10 text-primary-active"
 									: "border-border bg-muted text-muted-foreground hover:text-foreground",
 							)}
 						>

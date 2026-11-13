@@ -188,7 +188,7 @@ export function ProjectInvitationModal({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("auth.projectInvitation.expiredTitle")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t.rich("auth.projectInvitation.expiredMessage", {
 						projectName: () => <strong>{projectName}</strong>,
 					})}
@@ -208,7 +208,7 @@ export function ProjectInvitationModal({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("auth.projectInvitation.acceptedTitle")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t.rich("auth.projectInvitation.acceptedMessage", {
 						projectName: () => <strong>{projectName}</strong>,
 					})}
@@ -231,7 +231,7 @@ export function ProjectInvitationModal({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("auth.projectInvitation.declinedTitle")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t.rich("auth.projectInvitation.declinedMessage", {
 						projectName: () => <strong>{projectName}</strong>,
 					})}
@@ -271,7 +271,7 @@ export function ProjectInvitationModal({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("auth.projectInvitation.emailMismatchTitle")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t.rich("auth.projectInvitation.emailMismatchMessage", {
 						invitationEmail: () => (
 							<strong>{state.invitationEmail}</strong>
@@ -296,7 +296,7 @@ export function ProjectInvitationModal({
 								email: state.invitationEmail,
 							})}
 				</Button>
-				<p className="mt-4 text-foreground/60 text-sm">
+				<p className="mt-4 text-muted-foreground text-sm">
 					{t("auth.projectInvitation.providerHint", {
 						currentEmail: state.currentEmail,
 					})}
@@ -311,7 +311,7 @@ export function ProjectInvitationModal({
 			<h1 className="font-bold text-xl md:text-2xl">
 				{t("auth.projectInvitation.pendingTitle")}
 			</h1>
-			<p className="mt-1 mb-6 text-foreground/60">
+			<p className="mt-1 mb-6 text-muted-foreground">
 				{t.rich("auth.projectInvitation.pendingMessage", {
 					role: () => <strong>{formatRole(role)}</strong>,
 					projectName: () => <strong>{projectName}</strong>,
@@ -516,7 +516,7 @@ function NeedsSignupForm({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("auth.projectInvitation.verifyEmailSentTitle")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t.rich("auth.projectInvitation.verifyEmailSentMessage", {
 						email: () => <strong>{verificationSentTo}</strong>,
 						projectName: () => <strong>{projectName}</strong>,
@@ -548,7 +548,7 @@ function NeedsSignupForm({
 			<h1 className="font-bold text-xl md:text-2xl">
 				{t("auth.projectInvitation.signupTitle")}
 			</h1>
-			<p className="mt-1 mb-6 text-foreground/60">
+			<p className="mt-1 mb-6 text-muted-foreground">
 				{t.rich("auth.projectInvitation.signupMessage", {
 					projectName: () => <strong>{projectName}</strong>,
 				})}
@@ -709,7 +709,7 @@ function NeedsSignupForm({
 				<>
 					<div className="relative my-6 h-4">
 						<hr className="relative top-2" />
-						<p className="-translate-x-1/2 absolute top-0 left-1/2 mx-auto inline-block h-4 bg-card px-2 text-center font-medium text-foreground/60 text-sm leading-tight">
+						<p className="-translate-x-1/2 absolute top-0 left-1/2 mx-auto inline-block h-4 bg-card px-2 text-center font-medium text-muted-foreground text-sm leading-tight">
 							{t("auth.login.continueWith")}
 						</p>
 					</div>
@@ -728,7 +728,7 @@ function NeedsSignupForm({
 			)}
 
 			<div className="mt-6 text-center text-sm">
-				<span className="text-foreground/60">
+				<span className="text-muted-foreground">
 					{t("auth.signup.alreadyHaveAccount")}{" "}
 				</span>
 				<button
@@ -934,7 +934,7 @@ function NeedsLoginForm({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("auth.projectInvitation.loginTitle")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t.rich("auth.projectInvitation.loginMessage", {
 						projectName: () => <strong>{projectName}</strong>,
 					})}
@@ -958,7 +958,7 @@ function NeedsLoginForm({
 			<h1 className="font-bold text-xl md:text-2xl">
 				{t("auth.projectInvitation.loginTitle")}
 			</h1>
-			<p className="mt-1 mb-6 text-foreground/60">
+			<p className="mt-1 mb-6 text-muted-foreground">
 				{t.rich("auth.projectInvitation.loginMessage", {
 					projectName: () => <strong>{projectName}</strong>,
 				})}
@@ -1042,7 +1042,7 @@ function NeedsLoginForm({
 											<Link
 												href="/auth/forgot-password"
 												prefetch={false}
-												className="text-foreground/60 text-xs"
+												className="text-muted-foreground text-xs"
 											>
 												{t("auth.login.forgotPassword")}
 											</Link>
@@ -1117,7 +1117,7 @@ function NeedsLoginForm({
 				<>
 					<div className="relative my-6 h-4">
 						<hr className="relative top-2" />
-						<p className="-translate-x-1/2 absolute top-0 left-1/2 mx-auto inline-block h-4 bg-card px-2 text-center font-medium text-foreground/60 text-sm leading-tight">
+						<p className="-translate-x-1/2 absolute top-0 left-1/2 mx-auto inline-block h-4 bg-card px-2 text-center font-medium text-muted-foreground text-sm leading-tight">
 							{t("auth.login.continueWith")}
 						</p>
 					</div>
@@ -1150,7 +1150,7 @@ function NeedsLoginForm({
 
 			{config.auth.enableSignup && (
 				<div className="mt-6 text-center text-sm">
-					<span className="text-foreground/60">
+					<span className="text-muted-foreground">
 						{t("auth.login.dontHaveAnAccount")}{" "}
 					</span>
 					<button

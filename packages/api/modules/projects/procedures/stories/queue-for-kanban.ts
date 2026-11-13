@@ -8,7 +8,7 @@
  */
 
 import { ORPCError } from "@orpc/client";
-import { db } from "@repo/database";
+import { db, getProjectRepositoryBranch } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -92,6 +92,22 @@ export const queueForKanbanProcedure = tenantProtectedProcedure
 			data: { status: "CANCELLED" },
 		});
 
+		// The project's stored branch, else its connected repository's own
+		// (the provider default unless someone chose another); "main" only
+		// when neither is known.
+		const defaultBranch =
+			story.project.defaultBranch ||
+			(await getProjectRepositoryBranch(
+				input.projectId,
+				story.project.repositoryOwner && story.project.repositoryName
+					? {
+							owner: story.project.repositoryOwner,
+							name: story.project.repositoryName,
+						}
+					: null,
+			)) ||
+			"main";
+
 		// Build the context snapshot
 		const context_snapshot = {
 			story: {
@@ -110,7 +126,7 @@ export const queueForKanbanProcedure = tenantProtectedProcedure
 				repositoryUrl: story.project.repositoryUrl ?? null,
 				repositoryOwner: story.project.repositoryOwner ?? null,
 				repositoryName: story.project.repositoryName ?? null,
-				defaultBranch: story.project.defaultBranch ?? "main",
+				defaultBranch,
 			},
 		};
 

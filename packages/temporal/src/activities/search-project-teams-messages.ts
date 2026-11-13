@@ -26,6 +26,10 @@ import {
 } from "@repo/integrations/microsoft";
 import { subDays } from "date-fns";
 import {
+	type AdvisorResultStoreContext,
+	storeAdvisorResult,
+} from "./advisor-result-store";
+import {
 	rethrowIfTurnStopped,
 	settleAll,
 	startTurnHeartbeat,
@@ -112,6 +116,7 @@ export function filterMessagesByDaysBack<T extends { createdAt?: string }>(
  * Input for the search activity
  */
 export interface SearchProjectTeamsMessagesInput {
+	advisorResultStore?: AdvisorResultStoreContext;
 	/** The project to search Teams messages for */
 	projectId: string;
 	/** Search query - keywords, phrases, or topics */
@@ -213,7 +218,21 @@ export async function searchProjectTeamsMessages(
 ): Promise<SearchProjectTeamsMessagesResult> {
 	const stopHeartbeat = startTurnHeartbeat(input.turnScope);
 	try {
-		return await runTeamsMessageSearch(input);
+		let readSucceeded = true;
+		const result = await runTeamsMessageSearch(input, () => {
+			readSucceeded = false;
+		});
+		if (readSucceeded && result.errors.length === 0) {
+			await storeAdvisorResult({
+				userId: input.userId,
+				organizationId: input.organizationId,
+				advisorResultStore: input.advisorResultStore,
+				toolName: "search_teams_messages",
+				route: "built-in",
+				result,
+			});
+		}
+		return result;
 	} finally {
 		stopHeartbeat();
 	}
@@ -221,6 +240,7 @@ export async function searchProjectTeamsMessages(
 
 async function runTeamsMessageSearch(
 	input: SearchProjectTeamsMessagesInput,
+	onReadFailed: () => void,
 ): Promise<SearchProjectTeamsMessagesResult> {
 	const {
 		projectId,
@@ -334,7 +354,12 @@ async function runTeamsMessageSearch(
 			}>;
 			count: number;
 			totalHits?: number;
+			error?: string;
 		};
+
+		if (searchResult.error) {
+			onReadFailed();
+		}
 
 		const filtered: TeamsSearchMessage[] = [];
 		for (const msg of searchResult.messages || []) {
@@ -441,6 +466,10 @@ async function runTeamsMessageSearch(
 					})
 				: Promise.resolve(null),
 		]);
+
+		if (extractorPasses.some((result) => result?.fallback === true)) {
+			onReadFailed();
+		}
 
 		const dedupedExcerpts = new Map<string, RelevantExcerpt>();
 		for (const result of extractorPasses) {

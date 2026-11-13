@@ -209,7 +209,7 @@ function IncidentTimelineRow({ incident }: { incident: IncidentRow }) {
 						href={incident.statusPageUrl}
 						target="_blank"
 						rel="noopener noreferrer"
-						className="mt-2 inline-flex items-center gap-1 text-[11px] underline underline-offset-2 text-primary hover:text-primary/80"
+						className="mt-2 inline-flex items-center gap-1 text-[11px] underline underline-offset-2 text-primary hover:text-primary-hover"
 					>
 						Open upstream report
 						<ExternalLink className="h-3 w-3" />
@@ -353,7 +353,7 @@ export function IntegrationIncidentDrawer({
 							href={statusPageUrl}
 							target="_blank"
 							rel="noopener noreferrer"
-							className="inline-flex w-fit items-center gap-1 text-[11px] underline underline-offset-2 text-primary hover:text-primary/80"
+							className="inline-flex w-fit items-center gap-1 text-[11px] underline underline-offset-2 text-primary hover:text-primary-hover"
 						>
 							Provider status page
 							<ExternalLink

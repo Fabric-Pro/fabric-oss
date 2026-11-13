@@ -52,6 +52,11 @@ directly. An agent with no CLI can only propose: the MCP tools
 have no publish mode and no scope that would reach one. All of it lands in the
 same place and runs the same checks as a folder upload from the browser.
 
+Adding the organization template's files to a project is available only in the
+Coding Instructions tab; the CLI, the MCP tools and the v1 API do not offer it.
+A version it creates is an ordinary uploaded version, so `sync` delivers it
+like any other.
+
 ## Install and authenticate
 
 Nothing has to be installed first. The deployment serves the build it supports,
@@ -361,8 +366,8 @@ a symlinked `.fabric`, names no project, so the command asks for `--project`;
 **A session hook never resolves.** It runs unattended at every session start,
 and what it would answer could change between two sessions, so a hook names
 its project, or runs in a folder whose own lock does. `--hook` without either
-skips with `this hook names no project. Run: fabric instructions init` on
-stderr and exits 0.
+skips with `this hook names no project. Run: fabric instructions init` as the
+hook message shown to the developer, and exits 0.
 
 ### `fabric instructions check [--project <id>] [--dest <dir>] [--verify] [--hook]`
 
@@ -439,7 +444,8 @@ file unless `--repair` is given, in hook mode and by hand alike. New files and
 the sync's own files still move forward in the same run. The report lists the
 kept files under **kept local edits** and prints the `--repair` command with
 the `--org` and `--dest` the run had. In hook mode the same news is also one
-line on stderr, which also names the local-notes files:
+line shown to the developer as the hook message, which also names the
+local-notes files:
 ``fabric: 3 local edit(s) kept; run `fabric instructions sync --project <id> --repair` to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.``
 
 - A file that was already in the checkout before the first sync, and differs
@@ -478,9 +484,9 @@ asking for a `sync` first, because `sync` writes no lock while nothing is
 published. It names the same upload, or for a repository-sourced project says
 the first version comes from a commit to the repository. With `--format json` the object is
 `{ projectId, destination, published: false, code: "NOTHING_PUBLISHED",
-message }`. Under `--hook` it stays one line on stderr, `fabric: coding
-instructions sync skipped: This project has no published coding instructions
-yet.`, and exits 0. Once a new version is published, the next `sync` applies
+message }`. Under `--hook` it stays one line, the hook message shown to the
+developer, `fabric: coding instructions sync skipped: This project has no
+published coding instructions yet.`, and exits 0. Once a new version is published, the next `sync` applies
 it against the lock as usual.
 
 For a repository-sourced project (source of truth `REPOSITORY`), what `sync`
@@ -511,8 +517,8 @@ Every response a command acts on is held to the first one: when a later
 response names a different source of truth or a different repository
 configuration (provider, host, path, branch, root path or generation), as when
 a project switched while a sync was in flight, the command stops before it
-plans, downloads or writes anything, exit 7 by hand and one skip line on
-stderr under `--hook`.
+plans, downloads or writes anything, exit 7 by hand and one skip line as the
+hook message under `--hook`.
 
 `--format json` prints one JSON object instead of prose. Any other value
 (`table`, `yaml`, `csv`, the defaults the rest of the CLI uses) prints text,
@@ -874,7 +880,8 @@ node <config folder>/cli/<deployment>/fabric.mjs instructions check --project <i
   (`fabric instructions self-update`, hidden), with every stream ignored so it
   holds none of the hook's pipes and cannot delay it, it has a budget of four seconds of its own
   (`selfUpdateBudgetMs` in `hook-timing.ts`), and its output is at most one line
-  on stderr, never stdout: `fabric: this CLI copy was updated to <version>; it
+  in the hook message shown to the developer, never the agent's context (on
+  stderr in the detached child): `fabric: this CLI copy was updated to <version>; it
   runs from the next session`, or `fabric: this CLI copy was not updated (<why>);
   the earlier copy was kept`. A failure of any kind (no network, a non-2xx
   answer, an integrity mismatch, a package without the bundle, a copy another
@@ -1277,8 +1284,8 @@ not held to the network's budget: the merge starts as long as half a second is
 left, however much of the reserve the look spent, so a fetch that used its whole
 budget still ends in a fast-forward on the first run, and a slow remote can
 never leave the hook mid-merge. When the budget does run out, the trace records
-which stage (`read`, `fetch` or `merge`) as its `reason`, stderr says `gave up
-after <n> s` (the time the process had actually run), and stdout still says where the checkout stands. It never pulls, rebases, stashes, resets, switches branches,
+which stage (`read`, `fetch` or `merge`) as its `reason`, the hook message says `gave up
+after <n> s` (the time the process had actually run), and the agent's context still says where the checkout stands. It never pulls, rebases, stashes, resets, switches branches,
 commits or pushes; the one other write it makes is putting back line-ending-only
 files from the index (step 3), and a checkout it cannot fast-forward is left
 exactly as it was. The hook needs git 2.31 or later for the gateway transport
@@ -1303,7 +1310,7 @@ shim before that is outside them.
 | diverged (a rewritten upstream, or local commits) | `…: main and origin/main have diverged, so nothing was updated. Run: git pull --rebase origin main, or merge origin/main yourself.` Once per version |
 | git has no credentials | `…: could not fetch <host>/<path>: git has no credentials for <host>. Run: gh auth login` (`glab auth login`; for Azure DevOps the checkout's `git fetch <remote> <ref>`, which Git Credential Manager signs in), every time |
 | another fabric process holds the checkout | `…: another fabric process is updating this checkout; nothing was changed.` |
-| network, slow remote, no such branch, other fetch or merge failure, budget spent | stderr only, behind `fabric: coding instructions sync skipped:`; stdout says where the checkout stands |
+| network, slow remote, no such branch, other fetch or merge failure, budget spent | the hook message only, behind `fabric: coding instructions sync skipped:`; the agent's context says where the checkout stands |
 
 "Once" is kept in `<git common dir>/fabric/ff-notice.json` (one record: project,
 published version, reason; readable by its owner only), so an agent is not
@@ -1342,7 +1349,10 @@ sparse checkout and a submodule add `(shallow clone)`, `(sparse checkout)` and
 
 **The output contract.** Every one of these lines goes to stdout, with nothing
 on stderr and exit 0, because Claude Code discards a successful hook's stderr
-and gives its stdout to the session as context. Every interpolated name (branch,
+and gives its stdout to the session as context. When the same run also has a
+line for the developer (a skip, kept local edits), the context lines travel
+in the one JSON object described under [What each command says](#what-each-command-says),
+as `hookSpecificOutput.additionalContext`. Every interpolated name (branch,
 remote, path, commit prefix) has control characters removed and a length
 limit applied, and the suggested `git pull` is shell-quoted. A remote URL,
 and any credential in one, is never printed. A manual `check` prints the same
@@ -1395,7 +1405,7 @@ change which repository a remote fetches from. Names are compared
 case-insensitively. Under a hook every git command must be done 750 ms before
 the hook's 10-second deadline (shared with the server call); one that runs out
 makes the checkout `unknown`, and that line still reaches stdout rather than
-losing a race with the deadline's generic stderr line. By hand the git
+losing a race with the deadline's generic hook message. By hand the git
 commands get 10 seconds together. Output is capped, and git's stderr is never
 printed. The branch name must pass both a conservative
 literal check and `git check-ref-format --branch`, so `@{-1}` and friends are
@@ -2029,10 +2039,22 @@ where there is one, the single thing to do next (`outcome.ts`). The rules:
   name in parentheses. What the CLI writes itself has the folder the person did
   not type, the home folder and any digest taken out before it is printed.
   `--format json` is for programs and keeps its fields.
-- Under `--hook`, **stdout** carries what the agent has to act on: the
-  checkout's state, a sign-in that cannot be used, a deployment's upgrade
-  line. **stderr** carries everything that only stopped the check, behind
-  `fabric: coding instructions <verb> skipped:`. The exit code is always 0.
+- Under `--hook`, the **agent's context** carries what the agent has to act
+  on: the checkout's state, a sign-in that cannot be used, a deployment's
+  upgrade line. The **hook message** carries what only the developer needs to
+  know: everything that only stopped the check, behind `fabric: coding
+  instructions <verb> skipped:`, kept local edits, what a new version changed,
+  and the kept copy's update line. The coding tool shows the hook message to
+  the developer as a hook message and never adds it to the agent's context.
+  Both go to stdout, written once when the run ends: with no hook message,
+  the context lines as plain text, as before; with one, a single JSON object
+  on one line, `{"systemMessage":"<message>"}`, plus
+  `"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"<context>"}`
+  when there is context too, and nothing else on stdout. Claude Code and Codex
+  both show `systemMessage` to the user; Claude Code drops a successful hook's
+  stderr, so stderr carries nothing under `--hook` except a `debug:` line under
+  `FABRIC_DEBUG=1`. The exit code is always 0. `lesson-prompt --hook` and the
+  plugin's hooks keep their own output contracts.
 
 Exit codes are the CLI's documented ones (`src/bin/fabric.ts`): `0` success,
 `1` general failure, `2` invalid usage, `3` auth failure, `4` not found, `5`
@@ -2042,23 +2064,23 @@ forbidden, `6` rate limited, `7` refused or inconsistent.
 |---|---|---|
 | set up | `Set up for <host>/<path> (<ref>). <tool> checks for updates at every session start.` (0); `… In Codex, run /hooks once to trust the project hook.` when Codex is set up. The npm build adds a line of its own, first, when `fabric` is not on `PATH` for the hook to run; `--clone <folder>` adds `Cloned into <folder>. Open your coding tool in that folder.` | (none) |
 | behind, current, or any other checkout state | the lines in [Repository-sourced projects](#repository-sourced-projects) | the same line, on stdout; nothing when current |
-| deployment address not a URL | `The deployment address is not a URL. Use --base-url https://example.com` (2) | stderr, skipped |
+| deployment address not a URL | `The deployment address is not a URL. Use --base-url https://example.com` (2) | hook message, skipped |
 | deployment address a shell would read (`init` only) | `The deployment address has characters a shell reads, so init will not write a session hook that carries it. Use an address of letters, digits, '.', '-' and a port.` (2) | (none) |
-| a project id or organization slug that is not an identifier | `--project must be a project id: …` or `--org must be an organization slug: …` (2) | stderr, skipped |
+| a project id or organization slug that is not an identifier | `--project must be a project id: …` or `--org must be an organization slug: …` (2) | hook message, skipped |
 | not signed in | `Not signed in to <origin>. Run: fabric auth login --base-url <origin> --project <id>` (3), with `--project <id>` whenever the command names a project; `init` signs in on the spot through the browser, with no terminal needed (not under `CI`) | stdout: `fabric: coding instructions: not signed in to <origin> — run: fabric auth login --base-url <origin> --project <id>` |
 | sign-in expired or refused (401) | `Your sign-in to <origin> has expired. Run: fabric auth login --base-url <origin>` (3), with `--project <id>` whenever the command names a project | the same stdout line as not signed in |
 | an agent's MCP server | One registration result and any required sign-in action per selected tool. Exit 7 when requested registration is incomplete; exit 0 when registration succeeds, including an explicitly reported pending sign-in. `--no-mcp` intentionally omits registration. | nothing (a hook never registers anything) |
-| missing permission (403) | `This credential is missing the <scope> permission. Create a key that carries it, or run: fabric auth login --base-url <origin>`; for a scope a browser sign-in cannot carry, such as `instructions:publish`, `This credential is missing the <scope> permission, which a browser sign-in does not carry. Create a key that carries it and sign in with it: fabric auth login --base-url <origin> --key <api-key>`; or `You do not have access to this project's coding instructions. Ask a project maintainer for access.` (5) | stderr, skipped |
-| project not found (404) | `Project not found, or you cannot see it.` (4) | stderr: `… skipped: no project for this checkout` |
-| nothing published (`sync`) | `This project has no published coding instructions. Nothing was written or removed here; your local copy, if this folder has one, was left as it is.`, plus `A first version is uploaded from the project's Coding Instructions tab.` unless the project is repository-sourced (0); `code: "NOTHING_PUBLISHED"` with `--format json` | stderr: `fabric: coding instructions sync skipped: This project has no published coding instructions yet.` |
-| project unresolved | `This checkout's remote (<host>/<path>) is not connected to any project you can see. Connect the repository in Fabric first.` (4), or the list of `--project` choices (2) | stderr: `… skipped: this hook names no project. Run: fabric instructions init` |
-| rate limited (429) | `Too many requests. Wait a minute and try again.` (6) | stderr, skipped |
-| deployment unreachable | `Could not reach <origin>. Check your network and try again.` (1) | stderr, skipped |
-| deployment error (5xx) | `<origin> had a problem answering. Try again in a moment.` (1) | stderr, skipped |
+| missing permission (403) | `This credential is missing the <scope> permission. Create a key that carries it, or run: fabric auth login --base-url <origin>`; for a scope a browser sign-in cannot carry, such as `instructions:publish`, `This credential is missing the <scope> permission, which a browser sign-in does not carry. Create a key that carries it and sign in with it: fabric auth login --base-url <origin> --key <api-key>`; or `You do not have access to this project's coding instructions. Ask a project maintainer for access.` (5) | hook message, skipped |
+| project not found (404) | `Project not found, or you cannot see it.` (4) | hook message: `… skipped: no project for this checkout` |
+| nothing published (`sync`) | `This project has no published coding instructions. Nothing was written or removed here; your local copy, if this folder has one, was left as it is.`, plus `A first version is uploaded from the project's Coding Instructions tab.` unless the project is repository-sourced (0); `code: "NOTHING_PUBLISHED"` with `--format json` | hook message: `fabric: coding instructions sync skipped: This project has no published coding instructions yet.` |
+| project unresolved | `This checkout's remote (<host>/<path>) is not connected to any project you can see. Connect the repository in Fabric first.` (4), or the list of `--project` choices (2) | hook message: `… skipped: this hook names no project. Run: fabric instructions init` |
+| rate limited (429) | `Too many requests. Wait a minute and try again.` (6) | hook message, skipped |
+| deployment unreachable | `Could not reach <origin>. Check your network and try again.` (1) | hook message, skipped |
+| deployment error (5xx) | `<origin> had a problem answering. Try again in a moment.` (1) | hook message, skipped |
 | CLI too old (426) | the deployment's own line, or `This CLI is older than the deployment expects. Run: npm install -g @fabricorg/cli` (2); the served build says `… Run the project's setup line from its Connect dialog again to get the current one.` instead | stdout, that one line |
-| deadline | (none) | stderr: `… skipped: gave up after 10 s` |
+| deadline | (none) | hook message: `… skipped: gave up after 10 s` |
 | folder not a clone, wrong folder, several remotes | the single action line in the class table (7) | the class line on stdout |
-| a lock from another project | `This folder was synced from a different project, so nothing was changed. Use another --dest, or delete .fabric/instructions.lock to start over.` (7) | stderr, skipped |
+| a lock from another project | `This folder was synced from a different project, so nothing was changed. Use another --dest, or delete .fabric/instructions.lock to start over.` (7) | hook message, skipped |
 
 A deployment that asks for an upgrade also sends the line with ordinary
 responses (the `X-Fabric-Cli-Upgrade` header). It is shown **once**: on stdout
@@ -2077,8 +2099,9 @@ keep them:
 
 - **`--hook` never fails, and never runs long.** Network, auth, timeout, HTTP
   error, a damaged lock, a retired context default: every failure becomes one
-  line and exit 0: on stderr when it only stopped the check, on stdout when the
-  agent has to act on it (a sign-in that cannot be used, an upgrade). Hook mode
+  line and exit 0: the hook message shown to the developer when it only
+  stopped the check, the agent's context when the agent has to act on it (a
+  sign-in that cannot be used, an upgrade). Hook mode
   also has one absolute deadline (10 seconds) covering the manifest call and the
   bundle download together, with SDK retries disabled, so it cannot outlive the
   hook timeout Claude Code applies to it. That bounds the sign-in too: the

@@ -240,6 +240,7 @@ async function applyRLS() {
 			// per-member scope as the conversation it belongs to.
 			{ name: "conversation_turn", policy: "per_user_within_org" },
 			{ name: "conversation_turn_event", policy: "per_user_within_org" },
+			{ name: "advisor_tool_result", policy: "per_user_within_org" },
 			// Media stays owner-only at the RLS layer. The query helper separately
 			// grants live read access through a shared AgentConversation.
 			{ name: "chat_media_object", policy: "per_user_within_org" },
@@ -332,6 +333,14 @@ async function applyRLS() {
 			// in the organization context.
 			{
 				name: "project_instruction_proposal_approval",
+				policy: "user_owned",
+			},
+			// Named Coding Instructions sets and their code repositories (spec
+			// 2026-11-11). `userId` is the creator / assigner; organization
+			// projects only, so the org-context arm of user_owned applies.
+			{ name: "project_instruction_set", policy: "user_owned" },
+			{
+				name: "project_instruction_set_repository",
 				policy: "user_owned",
 			},
 			{ name: "project_document", policy: "user_owned" }, // Project documents
@@ -432,8 +441,17 @@ async function applyRLS() {
 			}, // Edge override edit history
 			{ name: "project_linked_meeting", policy: "user_owned" }, // Linked meetings for transcript sync
 			{ name: "project_meeting_transcript", policy: "user_owned" }, // Synced meeting transcripts
+			{ name: "project_transcript_folder", policy: "user_owned" }, // OneDrive transcript folders (#3507)
+			{ name: "project_transcript_folder_file", policy: "user_owned" }, // Files seen in those folders (#3507)
 			{ name: "project_meeting_action_item", policy: "user_owned" }, // Action items extracted from meeting transcripts
 			{ name: "todo_item", policy: "user_owned" }, // #2340 consolidated To Do list rows
+			{ name: "time_entry", policy: "user_owned" }, // Members' logged time; authorship is narrowed by userId in queries
+			{ name: "time_suggestion", policy: "user_owned" }, // A member's own unconfirmed time suggestions; narrowed to the owner by userId in queries
+			{ name: "time_suggestion_evidence", policy: "user_owned" }, // Ids and times a suggestion was built from
+			{ name: "time_suggestion_run", policy: "user_owned" }, // A member's on-demand suggestion generations
+			{ name: "time_timer", policy: "user_owned" }, // A member's own running timer; narrowed to the owner by userId in queries
+			{ name: "time_timer_segment", policy: "user_owned" }, // The stretches a timer ran
+			{ name: "time_timer_stop", policy: "user_owned" }, // What a stopped timer saved, for a repeated stop
 			// #2340. `org_only`, not `user_owned`: a contact has no owning user, and
 			// the user_owned body compares "userId", which this table does not have.
 			// Its organizationId is NOT NULL, so there is no personal arm to allow.
@@ -590,6 +608,9 @@ async function applyRLS() {
 			// must neither read nor set it. The credential table itself has no
 			// organizationId and so no policy; its readers key on userId.
 			{ name: "chat_gpt_plan_org_use", policy: "per_user_within_org" },
+			// One person's timer widget and reminder choices. Per-user within
+			// the org: a colleague neither reads nor sets them.
+			{ name: "time_tracking_preference", policy: "per_user_within_org" },
 			{ name: "project_user_function_tag", policy: "user_owned" }, // Shared per-project function tags (admin-managed)
 			{ name: "daily_brief", policy: "user_owned" }, // Shared per-project daily brief
 			{
@@ -603,6 +624,7 @@ async function applyRLS() {
 			{ name: "newsletter_send", policy: "user_owned" }, // Send history/audit
 			{ name: "newsletter_delivery", policy: "user_owned" }, // Per-recipient delivery rows
 			{ name: "newsletter_chat_delivery", policy: "user_owned" }, // Per-channel chat delivery rows
+			{ name: "newsletter_send_image", policy: "user_owned" }, // Review images of a held send
 			{ name: "publishing_suggestion_cycle", policy: "user_owned" }, // Publishing Suite run ledger
 			{ name: "publishing_topic", policy: "user_owned" }, // Publishing Suite topics
 			{ name: "publishing_topic_read", policy: "per_user_within_org" }, // Per-user topic read markers
@@ -907,14 +929,15 @@ async function applyRLS() {
 
 			// Monitoring / incidents — admin-only global tables.
 			// No per-tenant column exists; access from per-tenant connections is
-			// denied by RLS (false). Admin code paths use the direct/superuser
-			// connection that bypasses RLS, or go through adminProcedure.
+			// denied by RLS (false). Incident queries use the shared db client;
+			// access requires a bypass role or an explicit permissive policy.
 			{ name: "error_rate_incident", policy: "admin_only" },
 			{ name: "integration_incident", policy: "admin_only" },
 			{ name: "incident_event", policy: "admin_only" },
 			{ name: "integration_provider_registry", policy: "admin_only" },
 		];
 
+		const failures: string[] = [];
 		for (const table of tables) {
 			const schema = "schema" in table ? table.schema : "public";
 			const ownerManagedExport = table.policy === "export_org_only";
@@ -1531,11 +1554,9 @@ async function applyRLS() {
 
 					case "admin_only":
 						// Admin-only global tables (no per-tenant column).
-						// Deny all access from per-tenant connections. Admin code
-						// paths use the direct/superuser connection that bypasses
-						// RLS (FORCE ROW LEVEL SECURITY is still enforced, but
-						// table owners bypass FORCE RLS), or operate via
-						// `adminProcedure` which uses the direct connection.
+						// Incident queries use the shared db client. Access requires
+						// a bypass role or an explicit permissive policy; adminProcedure
+						// checks authorization but does not select another connection.
 						policySQL = `
 							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (false)
@@ -1670,8 +1691,15 @@ async function applyRLS() {
 						`RLS target ${tableSql} does not exist — the allowlist entry must use the physical (snake_case @@map) table name. Original error: ${error.message}`,
 					);
 				}
-				console.log(`   ✗ ${table.name}: ${error.message}`);
+				const failure = `${schema}.${table.name}: ${error instanceof Error ? error.message : String(error)}`;
+				console.log(`   ✗ ${failure}`);
+				failures.push(failure);
 			}
+		}
+		if (failures.length > 0) {
+			throw new Error(
+				`RLS policy application failed:\n${failures.join("\n")}`,
+			);
 		}
 
 		// Step 3: Clean up legacy indexes that cause schema drift

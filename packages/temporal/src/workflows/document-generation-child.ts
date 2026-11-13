@@ -238,6 +238,14 @@ export interface DocumentGenerationChildInput {
 	 */
 	planEligible?: boolean;
 	/**
+	 * The person's web research answer for this one action (create or
+	 * regenerate): `true` allowed; `false` offered and not allowed; absent
+	 * when no choice was offered (background, bulk and API runs). Only `true`
+	 * turns research on. Reaches only the generation activity, never the
+	 * Proposal's analysis or visuals.
+	 */
+	allowWebResearch?: boolean;
+	/**
 	 * The generation attempt's identity (an ISO-8601
 	 * `ProjectDocument.generationStartedAt`), as the parent received it from
 	 * the dispatch or from its own GENERATING write (batch generation,
@@ -508,6 +516,7 @@ export async function documentGenerationChildWorkflow(
 		suppliedContext,
 		excludeContextId,
 		planEligible,
+		allowWebResearch,
 		generationStartedAt,
 		waitForPlanReset,
 	} = input;
@@ -999,6 +1008,13 @@ export async function documentGenerationChildWorkflow(
 					organizationId,
 					expirySeconds: POST_WAIT_TOKEN_EXPIRY_SECONDS,
 					planEligible,
+					// Kept for the same action's retry, bound to this run's
+					// project. Only bulk runs wait here and they never carry it;
+					// unset, the payload is today's.
+					...(allowWebResearch === true && {
+						webResearch: true,
+						webResearchProjectId: projectId,
+					}),
 				}));
 			}
 			return generateDocumentWithAgent({
@@ -1021,6 +1037,16 @@ export async function documentGenerationChildWorkflow(
 				hasTeamsIntegration,
 				hasSlackIntegration,
 				planEligible,
+				// Only a boolean reaches the activity (`false`: offered and
+				// declined); a run that offered no choice carries no key.
+				...(typeof allowWebResearch === "boolean" && {
+					allowWebResearch,
+				}),
+				// A research run's attempt identity, so its long stream can
+				// keep the row's last write recent; every other run's input
+				// stays exactly what it was.
+				...(allowWebResearch === true &&
+					generationStartedAt && { generationStartedAt }),
 				// Tells the activity to surface a spent shared plan as the
 				// plan's own error, whatever shape the agent's failure took.
 				...(waitForPlanReset && { waitForPlanReset: true }),

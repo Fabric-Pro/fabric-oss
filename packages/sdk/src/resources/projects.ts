@@ -147,6 +147,28 @@ export interface UpdateFeatureOptions {
 	personal?: boolean;
 }
 
+/**
+ * A named Coding Instructions set: its own instructions, applying to the code
+ * repositories chosen for it. Every project has one default set.
+ */
+export interface InstructionSet {
+	id: string;
+	name: string;
+	/** Stable; names the set's folders and plugin. */
+	slug: string;
+	isDefault: boolean;
+	/** The code repositories it applies to (ids of `listCodeRepositories`). */
+	repositoryIntegrationIds: string[];
+	/**
+	 * The set's folder in the project's instructions: `instructions/<slug>/`,
+	 * or `""` for the default set (the root). A set's files are the ones
+	 * under it, relative to it.
+	 */
+	folder: string;
+	/** Folders under `folder` that are other sets' (the default set's only). */
+	excludedFolders: string[];
+}
+
 /** A repository connected to a project that holds the software being built. */
 export interface ProjectCodeRepository {
 	id: string;
@@ -163,6 +185,72 @@ export interface ProjectCodeRepository {
 
 export class ProjectsResource {
 	constructor(private readonly http: FabricHttpClient) {}
+
+	/** The project's Coding Instructions sets, the default set first. */
+	listInstructionSets(
+		projectId: string,
+		options: { org?: string } = {},
+	): Promise<{ sets: InstructionSet[] }> {
+		const q = options.org ? `?org=${encodeURIComponent(options.org)}` : "";
+		return this.http.get<{ sets: InstructionSet[] }>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/sets${q}`,
+		);
+	}
+
+	/**
+	 * Create a Coding Instructions set for chosen code repositories. Needs a
+	 * key with `projects:write` whose owner may edit the project's Coding
+	 * Instructions. The slug comes from the name unless given, and never
+	 * changes. A refusal carries `code` (`SLUG_TAKEN`, `REPOSITORY_NOT_FOUND`,
+	 * `REPOSITORY_IS_INSTRUCTIONS_SOURCE`, `INVALID_SET_NAME`).
+	 */
+	createInstructionSet(
+		projectId: string,
+		input: {
+			name: string;
+			slug?: string;
+			repositoryIntegrationIds?: string[];
+		},
+		options: { org?: string } = {},
+	): Promise<{ set: InstructionSet }> {
+		const q = options.org ? `?org=${encodeURIComponent(options.org)}` : "";
+		return this.http.post<{ set: InstructionSet }>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/sets${q}`,
+			input,
+		);
+	}
+
+	/**
+	 * Rename a set and/or replace its code repositories (the full list).
+	 * Absent fields stay as they are; the slug never changes.
+	 */
+	updateInstructionSet(
+		projectId: string,
+		setId: string,
+		input: { name?: string; repositoryIntegrationIds?: string[] },
+		options: { org?: string } = {},
+	): Promise<{ set: InstructionSet }> {
+		const q = options.org ? `?org=${encodeURIComponent(options.org)}` : "";
+		return this.http.patch<{ set: InstructionSet }>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/sets/${encodeURIComponent(setId)}${q}`,
+			input,
+		);
+	}
+
+	/**
+	 * Delete a set from Fabric. Its files stay in the instructions
+	 * repository; the default set cannot be deleted (`DEFAULT_SET_UNDELETABLE`).
+	 */
+	deleteInstructionSet(
+		projectId: string,
+		setId: string,
+		options: { org?: string } = {},
+	): Promise<{ id: string; deleted: true }> {
+		const q = options.org ? `?org=${encodeURIComponent(options.org)}` : "";
+		return this.http.delete<{ id: string; deleted: true }>(
+			`/projects/${encodeURIComponent(projectId)}/instructions/sets/${encodeURIComponent(setId)}${q}`,
+		);
+	}
 
 	/** The Coding Instructions plugin's name in coding tools (`/<name>:<skill>`). */
 	getPluginName(

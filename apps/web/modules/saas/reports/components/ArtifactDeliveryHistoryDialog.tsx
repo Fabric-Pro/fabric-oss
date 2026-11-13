@@ -79,14 +79,21 @@ export function ArtifactDeliveryHistoryDialog({
 	const [page, setPage] = useState(0);
 	const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE);
 
-	// Debounce search input so we don't fire a query per keystroke.
+	// Debounce search input so we don't fire a query per keystroke. Only a
+	// search that differs from the applied one schedules the update and its
+	// return to the first page; otherwise opening the dialog would undo a page
+	// jump made before the debounce elapsed.
 	useEffect(() => {
+		const next = searchInput.trim();
+		if (next === debouncedSearch) {
+			return;
+		}
 		const handle = setTimeout(() => {
-			setDebouncedSearch(searchInput.trim());
+			setDebouncedSearch(next);
 			setPage(0);
 		}, SEARCH_DEBOUNCE_MS);
 		return () => clearTimeout(handle);
-	}, [searchInput]);
+	}, [searchInput, debouncedSearch]);
 
 	// Reset state when the dialog closes so re-opening starts fresh.
 	useEffect(() => {
@@ -297,7 +304,7 @@ export function ArtifactDeliveryHistoryDialog({
 						<div className="flex items-center gap-3">
 							<div>
 								{isFetching && !isLoading && (
-									<span className="mr-2 opacity-70">
+									<span className="mr-2 text-muted-foreground">
 										Loading…
 									</span>
 								)}

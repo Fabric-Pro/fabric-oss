@@ -46,6 +46,7 @@ const { mocks } = vi.hoisted(() => ({
 		readRepositoryFiles: vi.fn(),
 		getTargets: vi.fn(),
 		listCodeRepositories: vi.fn(),
+		listInstructionSets: vi.fn(),
 		run: vi.fn(),
 	},
 }));
@@ -77,7 +78,10 @@ vi.mock("../src/lib/client.js", () => {
 			readRepositoryFiles: mocks.readRepositoryFiles,
 		},
 		memory: { getTargets: mocks.getTargets },
-		projects: { listCodeRepositories: mocks.listCodeRepositories },
+		projects: {
+			listCodeRepositories: mocks.listCodeRepositories,
+			listInstructionSets: mocks.listInstructionSets,
+		},
 		knowledge: {
 			getProjectTypes: vi.fn(async () => ({ types: [] })),
 		},
@@ -163,6 +167,9 @@ beforeEach(async () => {
 	mocks.getTargets.mockReset();
 	mocks.run.mockReset();
 	mocks.run.mockResolvedValue({ kind: "missing" });
+	// A project without Coding Instructions sets, unless a test says otherwise.
+	mocks.listInstructionSets.mockReset();
+	mocks.listInstructionSets.mockResolvedValue({ sets: [] });
 	mocks.getTargets.mockResolvedValue({
 		sync: {
 			ref: "main",
@@ -528,6 +535,96 @@ async function settings(dest: string): Promise<Record<string, any>> {
 		),
 	);
 }
+
+describe("fabric instructions init --plugin --set", () => {
+	const SETS = [
+		{
+			id: "set-default",
+			name: "Default",
+			slug: "default",
+			isDefault: true,
+			repositoryIntegrationIds: [],
+			folder: "",
+			excludedFolders: ["instructions/mobile/"],
+		},
+		{
+			id: "set-mobile",
+			name: "Mobile",
+			slug: "mobile",
+			isDefault: false,
+			repositoryIntegrationIds: ["repo-app"],
+			folder: "instructions/mobile/",
+			excludedFolders: [],
+		},
+	];
+
+	it("sets a non-default set up as a plugin of its own whose render command and hooks keep --set", async () => {
+		mocks.listInstructionSets.mockResolvedValue({ sets: SETS });
+		mocks.listCodeRepositories.mockResolvedValue({ repositories: [] });
+		serveRepository({
+			...FILES,
+			"instructions/mobile/CLAUDE.md": "# Mobile\n",
+		});
+		const dest = await makeTree();
+
+		const result = await runCli([
+			"init",
+			"--plugin",
+			"--project",
+			PROJECT,
+			"--tool",
+			"claude-code",
+			"--dest",
+			dest,
+			"--set",
+			"mobile",
+		]);
+
+		expect(result.code).toBe(0);
+		const written = await settings(dest);
+		expect(written.enabledPlugins).toEqual({
+			"fabric-0project-mobile@fabric-0project-mobile": true,
+		});
+		const marketplace = JSON.parse(
+			await readFile(
+				path.join(
+					config,
+					"cache",
+					"marketplaces",
+					"fabric-0project-mobile",
+					".claude-plugin",
+					"marketplace.json",
+				),
+				"utf8",
+			),
+		);
+		expect(marketplace.plugins[0].source.command).toMatch(/ --set mobile$/);
+		expect(JSON.stringify(written.hooks)).toContain(
+			`instructions rules --project ${PROJECT} --set mobile`,
+		);
+	});
+
+	it("refuses an unknown set, listing the project's sets", async () => {
+		mocks.listInstructionSets.mockResolvedValue({ sets: SETS });
+		const dest = await makeTree();
+
+		const result = await runCli([
+			"init",
+			"--plugin",
+			"--project",
+			PROJECT,
+			"--tool",
+			"claude-code",
+			"--dest",
+			dest,
+			"--set",
+			"desktop",
+		]);
+
+		expect(result.code).toBe(2);
+		expect(result.stderr).toContain("default, mobile");
+	});
+});
 
 describe("fabric instructions init --plugin", () => {
 	it("registers a marketplace folder with a command source that renders the project, as a directory source in the settings", async () => {

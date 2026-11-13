@@ -25,9 +25,33 @@ class StagingWorkflowContracts(unittest.TestCase):
                      and step.get('with', {}).get('path') == 'packages/database/prisma/generated']
         self.assertEqual(len(producers), 1, 'push warmer must publish the compiled client')
         producer = producers[0]
-        consumers = [step for job in workflow('db-integration.yml')['jobs'].values()
-                     for step in job.get('steps', []) if step.get('id') == 'prisma-client-cache']
+        # Every other step in any workflow that can restore the compiled
+        # client is a consumer, whatever its id or action, so a new one cannot
+        # escape the architecture check below. actions/cache reads `path` as
+        # newline-separated entries, trimmed, blanks dropped, and an entry is
+        # only restorable with the same path list, so compare that list.
+        # It reads literal YAML values only: a path built from an expression is
+        # not evaluated. This guards against drift, not against a pull request
+        # that sets out to evade it (such a pull request could edit this test).
+        def touches_client(step):
+            with_ = step.get('with')
+            if not isinstance(with_, dict) or not isinstance(with_.get('path'), str):
+                return False
+            entries = [line.strip() for line in with_['path'].split('\n') if line.strip()]
+            return entries == ['packages/database/prisma/generated']
+        saves, consumers, consumer_jobs = [], [], []
+        for path in sorted((ROOT / '.github/workflows').glob('*.y*ml')):
+            for job_id, job in (workflow(path.name).get('jobs') or {}).items():
+                steps = [step for step in job.get('steps', []) if touches_client(step)]
+                saving = [s for s in steps if s.get('uses', '').startswith('actions/cache/save@')]
+                saves += [(path.name, job_id) for _ in saving]
+                restoring = [s for s in steps if s not in saving]
+                consumers += restoring
+                if restoring:
+                    consumer_jobs.append(job)
+        self.assertEqual(saves, [('unit-tests.yml', 'warm-caches')])
         self.assertEqual(len(consumers), 2)
+        self.assertTrue(all(step.get('id') == 'prisma-client-cache' for step in consumers))
         expected_inputs = {
             'packages/database/prisma.config.ts',
             'packages/database/prisma/schema.prisma',
@@ -48,12 +72,22 @@ class StagingWorkflowContracts(unittest.TestCase):
                 self.assertTrue(step['uses'].endswith('@55cc8345863c7cc4c66a329aec7e433d2d1c52a9'))
                 hashed = step['with']['key'].split('hashFiles(', 1)[1].split(')', 1)[0]
                 self.assertEqual(set(re.findall(r"'([^']+)'", hashed)), expected_inputs)
-        # These jobs currently share the hosted Ubuntu x64 / Node 22 environment.
-        for job in [warmer, *[job for job in workflow('db-integration.yml')['jobs'].values()
-                             if any(step.get('id') == 'prisma-client-cache' for step in job.get('steps', []))]]:
-            self.assertEqual(job['runs-on'], 'ubuntu-latest')
+        # The cache key carries runner.os but not the architecture, so the
+        # producer and every consumer must run on Linux x64 with Node 24. The
+        # consumers may also use a Namespace amd64 profile on private pull
+        # requests; every label those expressions can yield is Linux x64.
+        x64_labels = {
+            'ubuntu-latest',
+            "${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' "
+            "&& 'namespace-profile-amd2' || 'ubuntu-latest' }}",
+            "${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' "
+            "&& 'namespace-profile-amd4' || 'ubuntu-latest' }}",
+        }
+        self.assertEqual(warmer['runs-on'], 'ubuntu-latest')
+        for job in [warmer, *consumer_jobs]:
+            self.assertIn(job['runs-on'], x64_labels)
             node = next(step for step in job['steps'] if step.get('uses', '').startswith('actions/setup-node@'))
-            self.assertEqual(node['with']['node-version'], '22')
+            self.assertEqual(node['with']['node-version'], '24')
         self.assertEqual(unit['on']['push']['branches'], ['master', 'staging'])
         condition = warmer['if'].replace('&&', ' and ').replace('||', ' or ')
         condition = re.sub(r'!(?!=)', ' not ', condition)
@@ -317,7 +351,7 @@ class StagingWorkflowContracts(unittest.TestCase):
             'docker': f'''#!/bin/bash
 echo "$4" >>"$FAKE/inspected.log"
 case "$4" in
-  node:22-slim) echo '{{"digest":"{base_digest}"}}' ;;
+  node:24-slim) echo '{{"digest":"{base_digest}"}}' ;;
   {namespace}/c1:{previous_sha}) cat "$FAKE/c1.json" ;;
   {namespace}/c3:{previous_sha}) cat "$FAKE/c3.json" ;;
   *) echo "not found: $4" >&2; exit 1 ;;
@@ -327,7 +361,7 @@ esac
             'node': '''#!/bin/bash
 case "$2" in
   components) printf 'c1\\nc2\\nc3\\n' ;;
-  images) echo node:22-slim ;;
+  images) echo node:24-slim ;;
   plan)
     previous=$(sed -n 's/.*--previous \\([^ ]*\\).*/\\1/p' <<<"$*")
     jq -c '. as $snapshot | {
@@ -368,7 +402,7 @@ esac
                 }, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 inspected = (temp / 'inspected.log').read_text().split()
-                self.assertEqual(inspected[0], 'node:22-slim')
+                self.assertEqual(inspected[0], 'node:24-slim')
                 # The newest other successful staging run, every component once.
                 self.assertEqual(sorted(inspected[1:]), expected_inspections)
                 self.assertEqual(json.loads((temp / 'previous.json').read_text()), expected_previous)

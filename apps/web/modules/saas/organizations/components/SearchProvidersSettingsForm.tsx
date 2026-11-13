@@ -305,7 +305,7 @@ export function SearchProvidersSettingsForm({
 									<p className="font-medium text-foreground">
 										View Only
 									</p>
-									<p className="text-highlight/80">
+									<p className="text-highlight">
 										Only organization administrators can
 										modify search provider settings.
 									</p>

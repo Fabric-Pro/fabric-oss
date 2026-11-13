@@ -60,5 +60,8 @@ export function useNotifications(input: NotificationsListInput = {}) {
 			}),
 		getNextPageParam: (last) => last.nextCursor ?? undefined,
 		refetchOnWindowFocus: true,
+		// The server refuses a request with no organization, and the active
+		// organization can still be unresolved on the first client render.
+		enabled: organizationId !== null,
 	});
 }

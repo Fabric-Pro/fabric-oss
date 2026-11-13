@@ -936,7 +936,12 @@ export function AuditLogApiKeysDrawer({
 																		aria-label={`Actions for ${k.name}`}
 																		data-testid={`audit-key-actions-${k.id}`}
 																	>
-																		<MoreHorizontalIcon className="size-4" />
+																		<MoreHorizontalIcon
+																			strokeWidth={
+																				2.5
+																			}
+																			className="size-4"
+																		/>
 																	</Button>
 																</DropdownMenuTrigger>
 																<DropdownMenuContent align="end">

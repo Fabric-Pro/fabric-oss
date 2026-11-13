@@ -34,3 +34,9 @@ export function extractBaseContextId(chunkId: string): string {
 export function extractUniqueBaseContextIds(chunkIds: string[]): string[] {
 	return [...new Set(chunkIds.map(extractBaseContextId))];
 }
+
+/** Return the source position encoded in a chunk suffix, when present. */
+export function extractChunkIndex(chunkId: string): number | undefined {
+	const match = chunkId.match(/^(.+)-chunk-(\d+)$/);
+	return match ? Number(match[2]) : undefined;
+}

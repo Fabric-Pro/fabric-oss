@@ -20,6 +20,10 @@ import {
 import { db, Prisma } from "../../client";
 import { recordAuditTx } from "../audit-log";
 import { getProjectMembers } from "./members";
+import {
+	type PublishedNewsletterImage,
+	writeApprovedNewsletterImages,
+} from "./newsletter-image-embed";
 
 export function generateUnsubscribeToken(): string {
 	return randomBytes(32).toString("base64url");
@@ -41,6 +45,9 @@ export function newsletterSettingsDefaults(projectId: string) {
 		chatChannels: [] as NewsletterChatChannel[],
 		approvalChatChannels: [] as NewsletterApprovalChatChannel[],
 		requireApproval: false,
+		screenshotsEnabled: false,
+		screenshotEnvironmentId: null as string | null,
+		screenshotSampleDataConfirmedAt: null as Date | null,
 		sendToOrganization: false,
 		orgSyncedAt: null as Date | null,
 		orgSyncError: null as string | null,
@@ -71,7 +78,7 @@ export async function getNewsletterSettings(projectId: string) {
 type Tx = Parameters<Parameters<typeof db.$transaction>[0]>[0];
 
 /** A subscriber no longer on the list who keeps their row and unsubscribe token. */
-const ORG_REMOVED_STATUS = "ORG_REMOVED";
+export const ORG_REMOVED_STATUS = "ORG_REMOVED";
 
 /**
  * Resolve a project + its widget config from an opaque embed token. Returns null
@@ -222,6 +229,11 @@ export async function upsertNewsletterSettings(
 		 *  which is the audience for the published notes. */
 		approvalChatChannels?: NewsletterApprovalChatChannel[];
 		requireApproval?: boolean;
+		screenshotsEnabled?: boolean;
+		// The capture environment and the sample-data confirmation travel
+		// together; the caller validates the pair. `null` clears.
+		screenshotEnvironmentId?: string | null;
+		screenshotSampleDataConfirmedAt?: Date | null;
 		sendToOrganization?: boolean;
 		// Per-project embeddable-widget presentation. `null` clears a stored
 		// value back to the default; `undefined` (omitted) leaves it untouched
@@ -279,6 +291,10 @@ export async function upsertNewsletterSettings(
 			approvalChatChannels: (rest.approvalChatChannels ??
 				[]) as unknown as Prisma.InputJsonValue,
 			requireApproval: rest.requireApproval ?? false,
+			screenshotsEnabled: rest.screenshotsEnabled ?? false,
+			screenshotEnvironmentId: rest.screenshotEnvironmentId ?? null,
+			screenshotSampleDataConfirmedAt:
+				rest.screenshotSampleDataConfirmedAt ?? null,
 			sendToOrganization: rest.sendToOrganization ?? false,
 			publicWidgetTheme: rest.publicWidgetTheme ?? null,
 			publicWidgetAccent: rest.publicWidgetAccent ?? null,
@@ -318,6 +334,16 @@ export async function upsertNewsletterSettings(
 			}),
 			...(rest.requireApproval !== undefined && {
 				requireApproval: rest.requireApproval,
+			}),
+			...(rest.screenshotsEnabled !== undefined && {
+				screenshotsEnabled: rest.screenshotsEnabled,
+			}),
+			...(rest.screenshotEnvironmentId !== undefined && {
+				screenshotEnvironmentId: rest.screenshotEnvironmentId,
+			}),
+			...(rest.screenshotSampleDataConfirmedAt !== undefined && {
+				screenshotSampleDataConfirmedAt:
+					rest.screenshotSampleDataConfirmedAt,
 			}),
 			...(rest.publicWidgetTheme !== undefined && {
 				publicWidgetTheme: rest.publicWidgetTheme,
@@ -614,7 +640,7 @@ export async function enrollProjectMemberIfNewsletterEnabled(input: {
 	});
 }
 
-const ORG_SYNC_SOURCE = "ORG_SYNC";
+export const ORG_SYNC_SOURCE = "ORG_SYNC";
 const MAX_ORG_SYNC_ERROR_CHARS = 500;
 const ORG_SYNC_TRANSACTION_TIMEOUT_MS = 60_000;
 /** Advisory-lock class for one project's org-synced subscribers. In the
@@ -1157,6 +1183,49 @@ export async function listNewsletterSends(
 	return db.newsletterSend.findMany(buildSendsListArgs(projectId, opts));
 }
 
+/**
+ * Exported for unit testing the args shape without a DB. Reads `errorMessage`
+ * for incomplete-scan sends ONLY: there it holds the newsletter workflow's
+ * per-repository failure summary, written for the history table. On a FAILED
+ * send it holds raw exception text, which is why `buildSendsListArgs` never
+ * selects it.
+ */
+export function buildIncompleteScanReasonsArgs(
+	projectId: string,
+	sendIds: string[],
+) {
+	return {
+		where: {
+			projectId,
+			id: { in: sendIds },
+			status: "SKIPPED_EMPTY",
+			skipReason: "INCOMPLETE_SCAN",
+			errorMessage: { not: null },
+		},
+		select: { id: true, errorMessage: true },
+	};
+}
+
+/** The recorded reason of each incomplete-scan send among `sendIds`, by id. */
+export async function getNewsletterIncompleteScanReasons(
+	projectId: string,
+	sendIds: string[],
+): Promise<Map<string, string>> {
+	const reasons = new Map<string, string>();
+	if (sendIds.length === 0) {
+		return reasons;
+	}
+	const rows = await db.newsletterSend.findMany(
+		buildIncompleteScanReasonsArgs(projectId, sendIds),
+	);
+	for (const row of rows) {
+		if (row.errorMessage) {
+			reasons.set(row.id, row.errorMessage);
+		}
+	}
+	return reasons;
+}
+
 export async function countNewsletterSends(projectId: string, status?: string) {
 	return db.newsletterSend.count({ where: sendsWhere(projectId, status) });
 }
@@ -1304,8 +1373,26 @@ export type CreateNewsletterSendInput = {
 	// OPTIONAL: frozen onto the send row at creation (Fizzy 1869 approval gate)
 	// so a retry/read-back never re-reads live (possibly since-changed) settings.
 	requireApproval?: boolean;
+	// OPTIONAL like requireApproval: frozen so a reviewer's ability to attach
+	// images does not change under a held send when the setting changes.
+	screenshotsEnabled?: boolean;
+	// OPTIONAL like screenshotsEnabled: the environment screenshots are
+	// captured from, frozen so a held send keeps the one it started with.
+	screenshotEnvironmentId?: string | null;
 	chatChannels?: NewsletterChatChannel[];
 };
+
+const CREATED_SEND_SELECT = {
+	id: true,
+	status: true,
+	temporalWorkflowId: true,
+	detailLevel: true,
+	deliveryDestination: true,
+	requireApproval: true,
+	screenshotsEnabled: true,
+	screenshotEnvironmentId: true,
+	chatChannels: true,
+} as const;
 
 /**
  * Pure builder for the `create({ data })` payload of `createOrGetNewsletterSend`.
@@ -1326,6 +1413,11 @@ export function buildCreateSendData(input: CreateNewsletterSendInput) {
 		detailLevel: input.detailLevel,
 		deliveryDestination: input.deliveryDestination ?? "EMAIL",
 		requireApproval: input.requireApproval ?? false,
+		screenshotsEnabled: input.screenshotsEnabled ?? false,
+		// Only a send that takes images captures them.
+		screenshotEnvironmentId: input.screenshotsEnabled
+			? (input.screenshotEnvironmentId ?? null)
+			: null,
 		chatChannels: (input.chatChannels ?? []) as object,
 	};
 }
@@ -1345,6 +1437,8 @@ export async function createOrGetNewsletterSend(
 		detailLevel: string | null;
 		deliveryDestination: string | null;
 		requireApproval: boolean;
+		screenshotsEnabled: boolean;
+		screenshotEnvironmentId: string | null;
 		chatChannels: unknown;
 	};
 	created: boolean;
@@ -1396,15 +1490,7 @@ export async function createOrGetNewsletterSend(
 	try {
 		const send = await db.newsletterSend.create({
 			data: buildCreateSendData(input),
-			select: {
-				id: true,
-				status: true,
-				temporalWorkflowId: true,
-				detailLevel: true,
-				deliveryDestination: true,
-				requireApproval: true,
-				chatChannels: true,
-			},
+			select: CREATED_SEND_SELECT,
 		});
 		return { send, created: true };
 	} catch (error) {
@@ -1413,15 +1499,7 @@ export async function createOrGetNewsletterSend(
 		const existing =
 			(await db.newsletterSend.findUnique({
 				where: { dedupeKey: input.dedupeKey },
-				select: {
-					id: true,
-					status: true,
-					temporalWorkflowId: true,
-					detailLevel: true,
-					deliveryDestination: true,
-					requireApproval: true,
-					chatChannels: true,
-				},
+				select: CREATED_SEND_SELECT,
 			})) ??
 			(await db.newsletterSend.findFirst({
 				where: {
@@ -1429,15 +1507,7 @@ export async function createOrGetNewsletterSend(
 					status: { in: ["PENDING", "PENDING_APPROVAL", "APPROVED"] },
 				},
 				orderBy: { createdAt: "desc" },
-				select: {
-					id: true,
-					status: true,
-					temporalWorkflowId: true,
-					detailLevel: true,
-					deliveryDestination: true,
-					requireApproval: true,
-					chatChannels: true,
-				},
+				select: CREATED_SEND_SELECT,
 			}));
 		if (existing) {
 			return { send: existing, created: false };
@@ -1490,13 +1560,46 @@ interface ReviewAuditActor {
 /** Atomic PENDING_APPROVAL → APPROVED + audit, in one tx. count===0 ⇒ not
  *  approvable (already acted / wrong status). This transition closes the
  *  approve/reject race: reject/expire are conditional on PENDING_APPROVAL, so once
- *  APPROVED nothing else can move the row. */
+ *  APPROVED nothing else can move the row.
+ *
+ *  `highlightOrder` is stored beside the frozen content, which keeps its order
+ *  so every stored index stays valid. `publishedImages` are the images the
+ *  caller already copied to public keys; the ones still effective after the
+ *  flip are embedded into the content (see `writeApprovedNewsletterImages`),
+ *  and their ids come back as `embeddedImageIds`.
+ *
+ *  A send with a screenshot still being captured is not approved
+ *  (`stillCapturing`). The check runs under the send row lock that starting a
+ *  reviewer's capture also takes, so a capture cannot start between the check
+ *  and the flip. */
 export async function approveNewsletterSend(input: {
 	sendId: string;
 	removedHighlightIndexes: number[];
+	highlightOrder?: number[];
+	publishedImages?: PublishedNewsletterImage[];
 	audit: ReviewAuditActor;
-}): Promise<{ approved: boolean }> {
+}): Promise<{
+	approved: boolean;
+	embeddedImageIds: string[];
+	stillCapturing?: true;
+}> {
 	return db.$transaction(async (tx) => {
+		const locked = await tx.$queryRaw<Array<{ status: string }>>`
+			SELECT "status" FROM "newsletter_send"
+			WHERE "id" = ${input.sendId}
+			FOR UPDATE`;
+		if (locked[0]?.status === "PENDING_APPROVAL") {
+			const capturing = await tx.newsletterSendImage.count({
+				where: { sendId: input.sendId, captureState: "CAPTURING" },
+			});
+			if (capturing > 0) {
+				return {
+					approved: false,
+					embeddedImageIds: [],
+					stillCapturing: true as const,
+				};
+			}
+		}
 		const { count } = await tx.newsletterSend.updateMany({
 			where: { id: input.sendId, status: "PENDING_APPROVAL" },
 			data: {
@@ -1505,26 +1608,37 @@ export async function approveNewsletterSend(input: {
 				reviewedAt: new Date(),
 				removedHighlightIndexes:
 					input.removedHighlightIndexes as object,
+				...(input.highlightOrder !== undefined && {
+					highlightOrder: input.highlightOrder as object,
+				}),
 			},
 		});
-		if (count > 0) {
-			await recordAuditTx(tx, {
-				action: "newsletter.send.approved",
-				actor: {
-					type: "user",
-					userId: input.audit.reviewedByUserId,
-					emailSnapshot: input.audit.actorEmail ?? null,
-					nameSnapshot: input.audit.actorName ?? null,
-				},
-				organizationId: input.audit.organizationId,
-				projectId: input.audit.projectId,
-				resource: { type: "newsletter_send", id: input.sendId },
-				metadata: {
-					removedCount: input.removedHighlightIndexes.length,
-				},
-			});
+		if (count === 0) {
+			return { approved: false, embeddedImageIds: [] };
 		}
-		return { approved: count > 0 };
+		const embeddedImageIds = await writeApprovedNewsletterImages(tx, {
+			sendId: input.sendId,
+			removedHighlightIndexes: input.removedHighlightIndexes,
+			published: input.publishedImages ?? [],
+		});
+		await recordAuditTx(tx, {
+			action: "newsletter.send.approved",
+			actor: {
+				type: "user",
+				userId: input.audit.reviewedByUserId,
+				emailSnapshot: input.audit.actorEmail ?? null,
+				nameSnapshot: input.audit.actorName ?? null,
+			},
+			organizationId: input.audit.organizationId,
+			projectId: input.audit.projectId,
+			resource: { type: "newsletter_send", id: input.sendId },
+			metadata: {
+				removedCount: input.removedHighlightIndexes.length,
+				reordered: input.highlightOrder !== undefined,
+				imageCount: embeddedImageIds.length,
+			},
+		});
+		return { approved: true, embeddedImageIds };
 	});
 }
 
@@ -1653,6 +1767,9 @@ export async function getNewsletterSendForSendPhase(sendId: string) {
 			deliveryDestination: true,
 			chatChannels: true,
 			removedHighlightIndexes: true,
+			highlightOrder: true,
+			screenshotsEnabled: true,
+			screenshotEnvironmentId: true,
 			timeWindowEnd: true,
 		},
 	});
@@ -1683,7 +1800,9 @@ export async function getNewsletterSendStatus(
  *  (APPROVED) sends, newest first. APPROVED rows are surfaced so a send stranded
  *  by a Temporal-start failure (Codex plan-review finding 1) is visible and can
  *  be re-kicked via the idempotent approve path. `status` lets the UI render
- *  APPROVED as "Sending…" with a Retry action instead of review controls. */
+ *  APPROVED as "Sending…" with a Retry action instead of review controls.
+ *  `images` carries each send's review images (storage keys included, for the
+ *  caller to sign; never send them to a client). */
 export async function listPendingApprovalSends(projectId: string) {
 	return db.newsletterSend.findMany({
 		where: { projectId, status: { in: ["PENDING_APPROVAL", "APPROVED"] } },
@@ -1696,6 +1815,29 @@ export async function listPendingApprovalSends(projectId: string) {
 			timeWindowStart: true,
 			timeWindowEnd: true,
 			deliveryDestination: true,
+			screenshotsEnabled: true,
+			screenshotEnvironmentId: true,
+			images: {
+				orderBy: [{ highlightIndex: "asc" }, { position: "asc" }],
+				select: {
+					id: true,
+					highlightIndex: true,
+					position: true,
+					captureState: true,
+					included: true,
+					source: true,
+					storageKey: true,
+					altText: true,
+					placement: true,
+					width: true,
+					height: true,
+					bytes: true,
+					prompt: true,
+					errorMessage: true,
+					createdAt: true,
+					updatedAt: true,
+				},
+			},
 		},
 	});
 }

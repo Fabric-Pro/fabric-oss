@@ -32,7 +32,7 @@ import type { StoryPriority } from "../../../lib/stories/types";
  */
 const BAND_STYLES: Record<StoryPriority, string> = {
 	P0_CRITICAL:
-		"border-red-500/30 bg-red-500/10 text-red-700 dark:bg-red-500/20 dark:text-red-400",
+		"border-red-500/30 bg-red-500/10 text-red-700 dark:bg-red-500/20 dark:text-red-300",
 	P1_HIGH:
 		"border-amber-500/35 bg-amber-500/10 text-amber-800 dark:bg-amber-500/20 dark:text-amber-400",
 	P2_MEDIUM: "border-border bg-muted text-muted-foreground",

@@ -96,7 +96,7 @@ const BreadcrumbEllipsis = ({
 		className={cn("flex h-9 w-9 items-center justify-center", className)}
 		{...props}
 	>
-		<MoreHorizontalIcon className="h-4 w-4" />
+		<MoreHorizontalIcon strokeWidth={2.5} className="h-4 w-4" />
 		<span className="sr-only">More</span>
 	</span>
 );

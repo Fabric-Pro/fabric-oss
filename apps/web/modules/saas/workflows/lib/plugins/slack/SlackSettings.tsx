@@ -129,7 +129,7 @@ function SlackBotTokenForm({
 								</span>
 							</div>
 							{connectionStatus.login && (
-								<p className="text-sm text-green-700 dark:text-green-300 mt-1">
+								<p className="text-sm text-green-800 dark:text-green-300 mt-1">
 									Connected as{" "}
 									<span className="font-semibold">
 										{connectionStatus.login}

@@ -172,7 +172,7 @@ export function OrganizationInvitationsList({
 						>
 							{row.original.email}
 						</strong>
-						<small className="flex flex-wrap gap-1 text-foreground/60">
+						<small className="flex flex-wrap gap-1 text-muted-foreground">
 							<span className="flex items-center gap-0.5">
 								<InvitationStatusIcon className="size-3" />
 								{t(
@@ -242,7 +242,10 @@ export function OrganizationInvitationsList({
 							<DropdownMenu>
 								<DropdownMenuTrigger asChild>
 									<Button size="icon" variant="ghost">
-										<MoreVerticalIcon className="size-4" />
+										<MoreVerticalIcon
+											strokeWidth={2.5}
+											className="size-4"
+										/>
 									</Button>
 								</DropdownMenuTrigger>
 								<DropdownMenuContent>

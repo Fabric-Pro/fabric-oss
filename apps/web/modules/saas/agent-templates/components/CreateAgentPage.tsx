@@ -1532,7 +1532,7 @@ function AgentCreationForm({
 																			className={cn(
 																				"mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors",
 																				done
-																					? "bg-primary/15 text-primary"
+																					? "bg-primary/15 text-primary-active"
 																					: required
 																						? "border border-border bg-background"
 																						: "border border-dashed border-border/50 bg-background",
@@ -1557,7 +1557,7 @@ function AgentCreationForm({
 																					}
 																				</span>
 																				{!required && (
-																					<span className="text-[10px] text-muted-foreground/60">
+																					<span className="text-[10px] text-muted-foreground">
 																						optional
 																					</span>
 																				)}
@@ -2176,7 +2176,7 @@ function AgentCreationForm({
 																						available
 																					</p>
 																				) : (
-																					<p className="text-xs text-amber-600">
+																					<p className="text-xs text-amber-700 dark:text-amber-500">
 																						No
 																						connections
 																						found
@@ -2337,7 +2337,7 @@ function AgentCreationForm({
 													<div className="flex items-center gap-1.5">
 														{selectedWorkspaces.length >
 															0 && (
-															<span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+															<span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary-active">
 																{
 																	selectedWorkspaces.length
 																}
@@ -2451,7 +2451,7 @@ function AgentCreationForm({
 															(Notion, Drive,
 															Confluence…)
 														</span>
-														<span className="ml-auto text-muted-foreground/60">
+														<span className="ml-auto text-muted-foreground">
 															→
 														</span>
 													</button>
@@ -2516,13 +2516,13 @@ function AgentCreationForm({
 																		}
 																		className="flex items-center gap-2.5 rounded-lg bg-muted/40 px-3 py-2"
 																	>
-																		<PuzzleIcon className="h-3.5 w-3.5 shrink-0 text-secondary" />
+																		<PuzzleIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
 																		<span className="flex-1 truncate text-sm">
 																			{
 																				skill.name
 																			}
 																		</span>
-																		<span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+																		<span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary-active">
 																			Skill
 																		</span>
 																		<Button

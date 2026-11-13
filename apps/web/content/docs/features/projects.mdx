@@ -193,8 +193,31 @@ This means the agent understands your project context and can:
 - **Remove files**: Delete outdated documents
 - **Remove duplicates**: An item whose content matches another item's is marked *Duplicate of …*; **Remove duplicates** deletes the extra copies and keeps the original
 - **Living Memory**: Files a connected agent pushes from a working tree appear under *Living Memory*, grouped by folder, with each file's full path under its name
+- **Remove a Living Memory folder**: **Remove folder** beside a folder's name deletes every file synced under it, its subfolders included, for everyone; other folders stay. The dialog names the folder and how many files go, and you type the folder's path to confirm. It needs permission to delete any member's context sources and is not offered while a repository sync is connected. Push the folder again to bring the files back
 - **Organize**: Create folders for organization
 - **Search**: Find specific documents quickly
+
+### Sync Living Memory from a Repository
+
+Living Memory can read selected folders and files from one branch of a connected repository. In the Living Memory section of the Context tab, choose **Sync from repository**. The **Sync Living Memory from a repository** dialog asks for:
+
+- **Repository** and **Branch**;
+- what to sync. Tick folders and files in the tree, or type one under **Folder or file** and choose **Add**. You can select up to 50. A ticked folder includes everything inside it, including files added to it later;
+- what to skip. Under **Leave out a folder or file**, type something inside a selected folder and choose **Leave out**.
+
+The tree works the same way as the one for coding instructions. Above it you can search, choose **Show only selected**, or use **Collapse all**, **Select all** and **Select none**. It is a single stop when you press Tab: the arrow keys, Home and End move, Enter opens or closes a folder, Space ticks or unticks a row, and typing the start of a name jumps to it. A partly left-out folder shows a dash, and a row you cannot tick says why. If the repository type cannot be browsed, or the branch is too large to list in full, type the paths instead.
+
+Before you save, the dialog tells you that:
+
+- each selected folder's own `.contextignore` is read and applied the same way `fabric context push` applies it;
+- a file that is no longer selected, is left out, or was removed from the repository is pruned from Living Memory on the next sync;
+- every later sync runs as you, the member who configured it.
+
+Select **Keep in sync automatically** to pick up changes without choosing **Sync now**. Fabric picks up a change right after each push to a GitHub repository, and otherwise normally 15 to 20 minutes after a push. Choose **Save and sync** to start the first sync.
+
+A file the sync cannot store, such as one that is not text, is empty, or is too large, is skipped and named in the sync status. To stop one synced file from coming back, choose **Remove from Living Memory** on it: the file stays in the repository, and you can restore it from the list of left-out paths.
+
+The menu beside **Sync now** has **Change branch or paths…**, **Write folders** and **Disconnect**. Disconnecting keeps the files the sync brought in as ordinary synced files; delete them from the tab afterwards if you want them gone.
 
 ### Write Folders
 
@@ -213,7 +236,10 @@ Members who can't add context can open the list but not change it.
 
 Once a synced file's new version has been indexed, Fabric reads it with AI and offers the decisions it states as suggestions in the project's **Decisions** tab. Only a file's current version is offered. A statement you already created or dismissed from the same file is not offered again.
 
-- **What is read**: Files marked **Store only** are not read. Files a repository's first sync wrote are skipped too, because reading a whole repository takes one AI request per file; choose **Scan for decisions** in the Decisions tab to read them.
+- **What is read**: Files marked **Store only** are not read. Files a repository's first sync wrote are skipped too, because reading a whole repository takes one AI request per file. The Decisions tab says how many synced files have not been read for decisions yet, which also counts files synced before Fabric read decisions from Living Memory; choose **Scan for decisions** to read them all. Nothing is read until you ask.
+- **Who is told**: When a scan you started finds decisions, the project's other members who can create decisions get a notification, unless they turned project notifications off. You are not notified, because the suggestions arrive in the tab you are looking at.
+- **Limits**: Fabric reads the first 60,000 characters of a file and keeps the first 50 decisions it finds. When a file meets either limit, the Decisions tab names the file and says which limit applied, so you know to review the rest of it yourself.
+- **Linked work items**: When a decision names one of the project's features or bugs, such as `F-012`, the suggestion links to it. If the decision names none, the file's path or text is used, but only when it names exactly one. A decision you create from the suggestion keeps the link in its details. A work item that was deleted is not linked.
 - **Nothing is binding until accepted**: A suggestion binds nobody. Reject it, or create a decision from it. A created decision starts as proposed, and is not accepted until someone accepts it.
 - **Updates**: When a suggestion reads like an existing decision that is accepted or proposed, the review offers **Create as update** as well as **Create as new decision**. Creating it as an update links the two, and accepting the new decision marks the one it updates as superseded. A statement that only matches a rejected, deprecated or superseded decision is offered as new.
 

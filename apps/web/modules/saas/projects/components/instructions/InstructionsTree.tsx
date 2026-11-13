@@ -505,7 +505,7 @@ export function InstructionsTree({
 				<div
 					key={node.path}
 					title={t("leftOutTitle", { rule: node.leftOut.rule })}
-					className="flex w-full shrink-0 items-center gap-1.5 rounded-md px-2.5 font-mono text-foreground/40 text-xs"
+					className="flex w-full shrink-0 items-center gap-1.5 rounded-md px-2.5 font-mono text-muted-foreground text-xs"
 					style={{
 						...position,
 						height: ROW_HEIGHT_PX,
@@ -546,7 +546,7 @@ export function InstructionsTree({
 					className={cn(
 						"flex w-full shrink-0 items-center gap-1.5 rounded-md px-2.5 text-left font-mono text-xs",
 						active
-							? "bg-primary/10 font-medium text-primary shadow-[inset_2px_0_0_var(--primary)]"
+							? "bg-primary/10 font-medium text-primary-active shadow-[inset_2px_0_0_var(--primary)]"
 							: "hover:bg-accent",
 					)}
 					style={{
@@ -701,12 +701,10 @@ export function InstructionsTree({
 							type="button"
 							aria-pressed={kindFilter === null}
 							onClick={() => setKindFilter(null)}
-							className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium text-xs ${kindFilter === null ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-accent"}`}
+							className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium text-xs ${kindFilter === null ? "border-primary bg-primary/10 text-primary-active" : "border-border text-muted-foreground hover:bg-accent"}`}
 						>
 							{t("allKinds")}
-							<span className="font-mono opacity-70">
-								{files.length}
-							</span>
+							<span className="font-mono">{files.length}</span>
 						</button>
 						{kindsPresent.map((kind) => (
 							<button
@@ -714,10 +712,10 @@ export function InstructionsTree({
 								type="button"
 								aria-pressed={kindFilter === kind}
 								onClick={() => setKindFilter(kind)}
-								className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium text-xs ${kindFilter === kind ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-accent"}`}
+								className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium text-xs ${kindFilter === kind ? "border-primary bg-primary/10 text-primary-active" : "border-border text-muted-foreground hover:bg-accent"}`}
 							>
 								{kindLabels[kind] ?? kind}
-								<span className="font-mono opacity-70">
+								<span className="font-mono">
 									{kindCounts.get(kind)}
 								</span>
 							</button>

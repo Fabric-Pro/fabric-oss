@@ -200,6 +200,7 @@ import { searchMentionablesProcedure } from "./procedures/documents/search-menti
 import { setActiveDocumentProcedure } from "./procedures/documents/set-active";
 import { setDocumentAutoRefreshProcedure } from "./procedures/documents/set-auto-refresh";
 import { updateDocumentWithContextProcedure } from "./procedures/documents/update-with-context";
+import { getWebResearchAvailabilityProcedure } from "./procedures/documents/web-research-availability";
 // Epic & Feature procedures
 import { createEpicProcedure } from "./procedures/epics/create-epic";
 import { createFeatureProcedure } from "./procedures/epics/create-feature";
@@ -241,6 +242,7 @@ import { reviewGlossyVisualProcedure } from "./procedures/glossy/review-visual";
 import { listStageApproversProcedure } from "./procedures/governance/list-stage-approvers";
 import { setStageApproversProcedure } from "./procedures/governance/set-stage-approvers";
 // Coding Instructions (project instruction snapshots)
+import { applyTemplateProcedure } from "./procedures/instructions/apply-template";
 import { beginSnapshotProcedure } from "./procedures/instructions/begin-snapshot";
 import { commitChangeProcedure } from "./procedures/instructions/commit-change";
 import { compareSnapshotsProcedure } from "./procedures/instructions/compare-snapshots";
@@ -340,8 +342,15 @@ import {
 	rulesHealthProcedure as instructionRulesHealthProcedure,
 	reviewRulesProcedure as reviewInstructionRulesProcedure,
 } from "./procedures/instructions/rules-health";
+import {
+	createInstructionSetProcedure,
+	deleteInstructionSetProcedure,
+	listInstructionSetsProcedure,
+	updateInstructionSetProcedure,
+} from "./procedures/instructions/sets";
 import { submitGitInstructionChangeProcedure } from "./procedures/instructions/submit-git-change";
 import { suggestRuleEditsProcedure as suggestInstructionRuleEditsProcedure } from "./procedures/instructions/suggest-rule-edits";
+import { templateStatusProcedure } from "./procedures/instructions/template-status";
 import { updateSettingsProcedure as updateInstructionSettingsProcedure } from "./procedures/instructions/update-settings";
 import {
 	getKanbanUserPreferenceProcedure,
@@ -385,11 +394,15 @@ import {
 	setActionItemCompletedProcedure,
 	setIncludedProcedure,
 	setParlumeAutoJoinProcedure,
+	updateMeetingDetailsProcedure,
 } from "./procedures/meeting-digest";
 // Meeting transcript sync procedures
 import {
+	browseTranscriptFoldersProcedure,
+	connectTranscriptFoldersProcedure,
 	createTranscriptUploadUrlProcedure,
 	disableMeetingTranscriptSyncProcedure,
+	disconnectTranscriptFolderProcedure,
 	enableMeetingTranscriptSyncProcedure,
 	getTranscriptContentProcedure,
 	getTranscriptContextProcedure,
@@ -397,6 +410,7 @@ import {
 	listDeletedMeetingsProcedure,
 	listLinkedMeetingsProcedure,
 	listSyncedTranscriptsProcedure,
+	listTranscriptFoldersProcedure,
 	repairSyncProcedure,
 	restoreMeetingProcedure,
 	setAutoAnalyzeProcedure,
@@ -626,6 +640,7 @@ import {
 } from "./procedures/recipient-brand";
 import { recordProjectVisitProcedure } from "./procedures/record-project-visit";
 import { attachPatToRepoIntegrationProcedure } from "./procedures/repository-integrations/attach-pat";
+import { listRepoIntegrationBranchesProcedure } from "./procedures/repository-integrations/branches";
 // Repository Integration procedures
 import { cancelReindexRepoIntegrationProcedure } from "./procedures/repository-integrations/cancel-reindex";
 import { connectRepoIntegrationProcedure } from "./procedures/repository-integrations/connect";
@@ -1042,6 +1057,7 @@ export const projectsRouter = {
 		delete: deleteDocumentProcedure,
 		deleteAll: deleteAllDocumentsProcedure,
 		generate: generateDocumentProcedure,
+		webResearchAvailability: getWebResearchAvailabilityProcedure,
 		rejectRegeneration: rejectRegenerationProcedure,
 		batchGenerate: batchGenerateDocumentsProcedure,
 		// A batch paused for a ChatGPT plan reset (Fizzy #2770).
@@ -1278,6 +1294,11 @@ export const projectsRouter = {
 		setAutoAnalyze: setAutoAnalyzeProcedure,
 		createUploadUrl: createTranscriptUploadUrlProcedure,
 		startUploadIngest: startTranscriptUploadIngestProcedure,
+		// OneDrive transcript folders (Fizzy #3507)
+		browseFolders: browseTranscriptFoldersProcedure,
+		connectFolders: connectTranscriptFoldersProcedure,
+		listFolders: listTranscriptFoldersProcedure,
+		disconnectFolder: disconnectTranscriptFolderProcedure,
 	},
 
 	// AI-recommended item lifecycle (Fizzy #2211). Gated by
@@ -1312,6 +1333,8 @@ export const projectsRouter = {
 		listDigest: listDigestProcedure,
 		getMeeting: getMeetingProcedure,
 		setIncluded: setIncludedProcedure,
+		// #3507: correct a meeting's title or date, chiefly a folder import's.
+		updateMeetingDetails: updateMeetingDetailsProcedure,
 		// Parlume joins a linked series' occurrences on its own. The same
 		// permission as inviting it by hand, since every join is one.
 		setParlumeAutoJoin: setParlumeAutoJoinProcedure,
@@ -1467,6 +1490,9 @@ export const projectsRouter = {
 		disconnect: disconnectRepoIntegrationProcedure,
 		health: repoIntegrationHealthProcedure,
 		updateBranch: updateRepoIntegrationBranchProcedure,
+		// The provider's live default branch and the branch names; read
+		// only, never rewrites a stored branch.
+		branches: listRepoIntegrationBranchesProcedure,
 		attachPat: attachPatToRepoIntegrationProcedure,
 		setCredential: setRepoIntegrationCredentialProcedure,
 		updateTag: updateRepoIntegrationTagProcedure,
@@ -2239,6 +2265,10 @@ export const projectsRouter = {
 		// are uploaded, the rest inherited. `createUploadUrls` and `finalize`
 		// then run unchanged over the staged rows it returns.
 		derive: deriveSnapshotProcedure,
+		// A new version holding the organization template's published files
+		// this project does not have yet, and whether there is one to add.
+		applyTemplate: applyTemplateProcedure,
+		templateStatus: templateStatusProcedure,
 		// "Commit to <branch>" on a repository-backed project (Fizzy #2878
 		// §10): the change is validated and scanned, then pushed as one commit.
 		commitChange: commitChangeProcedure,
@@ -2270,6 +2300,12 @@ export const projectsRouter = {
 		getSettings: getInstructionSettingsProcedure,
 		// The plugin's name in coding tools (specs/2026-10-21).
 		getPluginName: getInstructionPluginNameProcedure,
+		// Named sets of instructions, each for chosen code repositories
+		// (spec 2026-11-11).
+		listSets: listInstructionSetsProcedure,
+		createSet: createInstructionSetProcedure,
+		updateSet: updateInstructionSetProcedure,
+		deleteSet: deleteInstructionSetProcedure,
 		// Rules health and AI review (specs/2026-10-21 §5.8).
 		rulesHealth: instructionRulesHealthProcedure,
 		reviewRules: reviewInstructionRulesProcedure,

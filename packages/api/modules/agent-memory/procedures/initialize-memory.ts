@@ -3,7 +3,7 @@ import { initializeMemoryFromTemplate, listMemoryFiles } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
@@ -16,7 +16,11 @@ const initializeMemoryInputSchema = z.object({
 });
 
 export const initializeMemoryProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AI_MEMORY_MANAGE))
+	.use(
+		requireInputOrgPermission(Permissions.AI_MEMORY_MANAGE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/agent-memory/initialize",

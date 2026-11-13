@@ -757,7 +757,7 @@ export function TopicRow({
 	 */
 	const highlightChip =
 		isHighlighted && topic.highlightReason ? (
-			<p className="inline-flex w-fit items-center rounded-full border border-primary/40 bg-primary/10 px-2.5 py-0.5 text-primary text-xs">
+			<p className="inline-flex w-fit items-center rounded-full border border-primary/40 bg-primary/10 px-2.5 py-0.5 text-primary-active text-xs">
 				{topic.highlightReason}
 			</p>
 		) : null;

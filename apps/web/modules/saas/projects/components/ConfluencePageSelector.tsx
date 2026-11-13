@@ -846,7 +846,7 @@ export function ConfluencePageSelector({
 						</div>
 					) : !hasRequiredTools ? (
 						<div className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-4">
-							<div className="flex items-start gap-2 text-highlight/80">
+							<div className="flex items-start gap-2 text-highlight">
 								<AlertCircleIcon className="size-5 mt-0.5" />
 								<div>
 									<p className="font-medium">

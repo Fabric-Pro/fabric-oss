@@ -213,8 +213,8 @@ export function SettingsReturnBanner() {
 						tabIndex={-1}
 					>
 						<div className="px-8 pb-6 pt-8 text-center">
-							<div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-secondary/10">
-								<CheckCircle2Icon className="h-7 w-7 text-secondary" />
+							<div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-success/10">
+								<CheckCircle2Icon className="h-7 w-7 text-success" />
 							</div>
 							<h3
 								id="settings-return-dialog-title"
@@ -235,9 +235,9 @@ export function SettingsReturnBanner() {
 							</Button>
 						</div>
 						{/* Animated progress bar */}
-						<div className="h-1 w-full bg-secondary/10">
+						<div className="h-1 w-full bg-success/10">
 							<div
-								className="h-full bg-secondary"
+								className="h-full bg-success"
 								style={{
 									animation:
 										"settings-return-shrink 3s linear forwards",

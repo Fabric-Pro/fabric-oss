@@ -205,7 +205,7 @@ export function TopicDecisionLog({
 								aria-hidden="true"
 							/>
 							<h3 className="publishing-label">AI Updates</h3>
-							<span className="text-[11px] text-muted-foreground/70">
+							<span className="text-[11px] text-muted-foreground">
 								{aiUpdates.length}
 							</span>
 						</button>
@@ -466,7 +466,7 @@ function DecisionCard({
 								{reply.content}
 							</p>
 							<time
-								className="text-[11px] text-muted-foreground/70"
+								className="text-[11px] text-muted-foreground"
 								dateTime={new Date(
 									reply.createdAt,
 								).toISOString()}
@@ -528,7 +528,7 @@ function StatusMarker({ status }: { status: string }) {
 	switch (status) {
 		case "RESOLVED":
 			return (
-				<span className="inline-flex shrink-0 items-center gap-1 text-secondary text-xs font-medium">
+				<span className="inline-flex shrink-0 items-center gap-1 text-success text-xs font-medium">
 					<CheckCircle2Icon className="size-3.5" aria-hidden="true" />
 					Resolved
 				</span>

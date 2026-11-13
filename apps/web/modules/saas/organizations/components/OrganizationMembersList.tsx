@@ -149,7 +149,7 @@ export function OrganizationMembersList({
 							<strong className="block">
 								{row.original.user.name}
 							</strong>
-							<small className="text-foreground/60">
+							<small className="text-muted-foreground">
 								{row.original.user.email}
 							</small>
 						</div>
@@ -189,7 +189,10 @@ export function OrganizationMembersList({
 								<DropdownMenu>
 									<DropdownMenuTrigger asChild>
 										<Button size="icon" variant="ghost">
-											<MoreVerticalIcon className="size-4" />
+											<MoreVerticalIcon
+												strokeWidth={2.5}
+												className="size-4"
+											/>
 										</Button>
 									</DropdownMenuTrigger>
 									<DropdownMenuContent>
@@ -233,7 +236,7 @@ export function OrganizationMembersList({
 								</DropdownMenu>
 							</>
 						) : (
-							<span className="font-medium text-foreground/60 text-sm">
+							<span className="font-medium text-muted-foreground text-sm">
 								{
 									memberRoles[
 										row.original

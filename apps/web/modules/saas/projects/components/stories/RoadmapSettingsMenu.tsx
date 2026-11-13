@@ -111,7 +111,7 @@ function SortableFieldRow({
 			<button
 				type="button"
 				aria-label={t("reorderField", { label })}
-				className="cursor-grab touch-none text-muted-foreground/50 transition-colors hover:text-foreground active:cursor-grabbing"
+				className="cursor-grab touch-none text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
 				{...attributes}
 				{...listeners}
 			>
@@ -122,7 +122,7 @@ function SortableFieldRow({
 				className={cn(
 					"flex flex-1 items-center gap-2 text-sm",
 					locked
-						? "text-foreground/50"
+						? "text-muted-foreground"
 						: "cursor-pointer text-foreground",
 				)}
 			>
@@ -375,7 +375,7 @@ export function RoadmapSettingsMenu({
 								<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 									{t("cardFields")}
 								</p>
-								<span className="text-[10px] text-muted-foreground/50">
+								<span className="text-[10px] text-muted-foreground">
 									{t("reorderHint")}
 								</span>
 							</div>
@@ -456,7 +456,7 @@ export function RoadmapSettingsMenu({
 						</div>
 					)}
 					{isDirty && (
-						<p className="text-center text-[11px] text-primary/80">
+						<p className="text-center text-[11px] text-primary">
 							{t("unsavedChanges")}
 						</p>
 					)}

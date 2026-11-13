@@ -7,12 +7,14 @@
  * request carries — exercised here through `check`, plus one `sync --hook`
  * case that shares the contract. The case
  * that matters most is the smallest one: under `--hook`, EVERY failure — no
- * key, no network, an HTTP error, a timeout — becomes one line on stderr and
- * exit 0. A coding session that will not start because Fabric is unreachable
+ * key, no network, an HTTP error, a timeout — becomes one line shown to the
+ * developer, a `systemMessage` in one JSON object on stdout, and exit 0. A coding session that will not start because Fabric is unreachable
  * is a worse outcome than instructions one version stale.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	hookMessageStdout,
+	hookSystemMessage,
 	makeTree,
 	resetInstructionsMocks,
 	runCli,
@@ -480,10 +482,12 @@ describe("--hook never fails", () => {
 		// A fixed sentence that names the deployment, never the network
 		// library's own words.
 		expect(result.code).toBe(0);
-		expect(result.stderr).toBe(
-			"fabric: coding instructions check skipped: Could not reach https://fabric.pro. Check your network and try again.\n",
+		expect(result.stdout).toBe(
+			hookMessageStdout([
+				"fabric: coding instructions check skipped: Could not reach https://fabric.pro. Check your network and try again.",
+			]),
 		);
-		expect(result.stdout).toBe("");
+		expect(result.stderr).toBe("");
 	});
 
 	it("says there is no project for the checkout when the deployment does not know it", async () => {
@@ -505,8 +509,10 @@ describe("--hook never fails", () => {
 
 		expect(result).toEqual({
 			code: 0,
-			stdout: "",
-			stderr: "fabric: coding instructions check skipped: no project for this checkout\n",
+			stdout: hookMessageStdout([
+				"fabric: coding instructions check skipped: no project for this checkout",
+			]),
+			stderr: "",
 		});
 	});
 
@@ -555,9 +561,10 @@ describe("--hook never fails", () => {
 		]);
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toMatch(
-			/^fabric: coding instructions check skipped: .*not valid JSON.*\n$/,
+		expect(hookSystemMessage(result.stdout)).toMatch(
+			/^fabric: coding instructions check skipped: .*not valid JSON.*$/,
 		);
+		expect(result.stderr).toBe("");
 	});
 
 	it("swallows an unpublished project on sync", async () => {
@@ -577,9 +584,12 @@ describe("--hook never fails", () => {
 		]);
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toBe(
-			"fabric: coding instructions sync skipped: This project has no published coding instructions yet.\n",
+		expect(result.stdout).toBe(
+			hookMessageStdout([
+				"fabric: coding instructions sync skipped: This project has no published coding instructions yet.",
+			]),
 		);
+		expect(result.stderr).toBe("");
 	});
 
 	/**
@@ -638,9 +648,12 @@ describe("--hook never fails", () => {
 		const elapsed = Date.now() - started;
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toBe(
-			"fabric: coding instructions check skipped: gave up after 9.5 s\n",
+		expect(result.stdout).toBe(
+			hookMessageStdout([
+				"fabric: coding instructions check skipped: gave up after 9.5 s",
+			]),
 		);
+		expect(result.stderr).toBe("");
 		// Comfortably inside Claude Code's own 15s hook timeout.
 		expect(elapsed).toBeLessThan(13_000);
 	}, 20_000);

@@ -513,7 +513,7 @@ function SortablePlanCaseRow({
 					aria-label={t("planDetail.reorderAria", {
 						identifier: link.testCase.identifier,
 					})}
-					className="relative z-10 cursor-grab touch-none rounded text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+					className="relative z-10 cursor-grab touch-none rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
 					{...attributes}
 					{...listeners}
 				>

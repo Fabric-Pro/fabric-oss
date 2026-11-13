@@ -45,13 +45,13 @@ const TONE: Record<HealthStatus, Tone> = {
 	OPERATIONAL: {
 		label: "Operational",
 		// Solid, like every other state. It was a 10% tint until the contrast
-		// proof measured `text-secondary` on `bg-secondary/10` at 4.41:1 over the
-		// page background — under the 4.5:1 AA floor. It cleared on `--card`
-		// (4.70:1) but a badge cannot assume which surface it sits on, so the
-		// tint had to go. Solid measures 5.48:1 light / 9.83:1 dark.
-		cls: "border-secondary bg-secondary text-secondary-foreground",
-		dot: "bg-secondary",
-		badgeDot: "bg-secondary-foreground",
+		// proof measured the then-emerald `secondary` text on its own 10% tint at
+		// 4.41:1 over the page background — under the 4.5:1 AA floor. It cleared
+		// on `--card` (4.70:1) but a badge cannot assume which surface it sits on,
+		// so the tint had to go.
+		cls: "border-success bg-success text-success-foreground",
+		dot: "bg-success",
+		badgeDot: "bg-success-foreground",
 	},
 	// Every state uses a SOLID fill with a paired foreground rather than coloured
 	// text on a 10% tint of itself. Measured on the real tokens by

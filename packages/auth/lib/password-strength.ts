@@ -26,20 +26,33 @@
  *     `/change-password`. A `PasswordTooWeakError` is translated into an
  *     `APIError("BAD_REQUEST", { code: "PASSWORD_TOO_WEAK", ... })` that the
  *     frontend can inspect and surface as field-level feedback.
+ *   - The estimator and its dictionaries load on the first check, not when
+ *     the module loads: every page imports the auth package, and building the
+ *     ranked dictionaries costs each new server process about half a second
+ *     of CPU and 45 MB of heap.
  */
 
-import { zxcvbn, zxcvbnOptions } from "@zxcvbn-ts/core";
-import * as zxcvbnCommonPackage from "@zxcvbn-ts/language-common";
-import * as zxcvbnEnPackage from "@zxcvbn-ts/language-en";
+import type { zxcvbn } from "@zxcvbn-ts/core";
 
-zxcvbnOptions.setOptions({
-	translations: zxcvbnEnPackage.translations,
-	graphs: zxcvbnCommonPackage.adjacencyGraphs,
-	dictionary: {
-		...zxcvbnCommonPackage.dictionary,
-		...zxcvbnEnPackage.dictionary,
-	},
-});
+type Estimator = typeof zxcvbn;
+
+let estimator: Promise<Estimator> | undefined;
+
+function loadEstimator(): Promise<Estimator> {
+	estimator ??= Promise.all([
+		import("@zxcvbn-ts/core"),
+		import("@zxcvbn-ts/language-common"),
+		import("@zxcvbn-ts/language-en"),
+	]).then(([core, common, en]) => {
+		core.zxcvbnOptions.setOptions({
+			translations: en.translations,
+			graphs: common.adjacencyGraphs,
+			dictionary: { ...common.dictionary, ...en.dictionary },
+		});
+		return core.zxcvbn;
+	});
+	return estimator;
+}
 
 const MIN_LENGTH = 12;
 const MIN_SCORE = 3;
@@ -60,10 +73,10 @@ export interface StrengthContext {
 	name?: string;
 }
 
-export function assertPasswordStrength(
+export async function assertPasswordStrength(
 	password: string,
 	ctx: StrengthContext,
-): void {
+): Promise<void> {
 	if (password.length < MIN_LENGTH) {
 		throw new PasswordTooWeakError(
 			`Password must be at least ${MIN_LENGTH} characters.`,
@@ -82,7 +95,8 @@ export function assertPasswordStrength(
 		userInputs.push(ctx.name);
 	}
 
-	const result = zxcvbn(password, userInputs);
+	const estimate = await loadEstimator();
+	const result = estimate(password, userInputs);
 	if (result.score < MIN_SCORE) {
 		throw new PasswordTooWeakError(
 			result.feedback.warning || "Password is too weak.",

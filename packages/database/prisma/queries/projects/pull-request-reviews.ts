@@ -108,6 +108,27 @@ const findingSelect = {
 } as const;
 
 /**
+ * Whether Fabric has already read this head commit of the pull request, so a
+ * caller can tell a new push from a repeated read before recording it.
+ */
+export async function hasPullRequestHeadBeenRead(input: {
+	projectId: string;
+	provider: string;
+	repoOwner: string;
+	repoName: string;
+	prNumber: number;
+	headSha: string;
+}): Promise<boolean> {
+	const existing = await db.pullRequestReview.findUnique({
+		where: {
+			projectId_provider_repoOwner_repoName_prNumber_headSha: input,
+		},
+		select: { id: true },
+	});
+	return existing !== null;
+}
+
+/**
  * Persist one read of a pull request.
  *
  * Upserts on the PR's identity INCLUDING the head commit: re-reading the same

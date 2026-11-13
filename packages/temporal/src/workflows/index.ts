@@ -90,6 +90,8 @@ export {
 export * from "./batch-document-generation";
 export * from "./browser-automation";
 export * from "./browser-rag-ingestion";
+// Newsletter — one release-notes screenshot a reviewer asked for (export queue)
+export { captureNewsletterScreenshotWorkflow } from "./capture-newsletter-screenshot";
 export * from "./chat-message";
 export * from "./chat-title-generation";
 // ChatGPT plan source-row sweep workflow (scheduled daily, Fizzy #3038)
@@ -381,6 +383,13 @@ export {
 	type GeneratePublishingWebinarScriptWorkflowOutput,
 	generatePublishingWebinarScriptWorkflow,
 } from "./generate-publishing-webinar-script";
+// Time suggestions (fire-and-forget: one member's suggested time entries over
+// a range of work dates, from their own activity).
+export {
+	type GenerateTimeSuggestionsWorkflowInput,
+	type GenerateTimeSuggestionsWorkflowOutput,
+	generateTimeSuggestionsWorkflow,
+} from "./generate-time-suggestions";
 // Glossy edition build (Fizzy #2589) — one claimed attempt per workflow
 export { glossyEditionBuildWorkflow } from "./glossy-edition-build";
 // Goal-Oriented Agent workflow (iterative goal achievement)
@@ -849,6 +858,11 @@ export {
 	testCaseSyncProgressQuery,
 	testCaseSyncWorkflow,
 } from "./test-case-sync-workflow";
+export {
+	syncTranscriptFoldersNowSignal,
+	type TranscriptFolderSyncWorkflowInput,
+	transcriptFolderSyncWorkflow,
+} from "./transcript-folder-sync";
 // Trigger System workflows (webhooks, schedules, mentions)
 export {
 	type ChannelMessageEvent,

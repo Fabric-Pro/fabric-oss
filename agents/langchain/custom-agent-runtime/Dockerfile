@@ -4,7 +4,7 @@
 # Multi-tenant runtime that hosts user-created custom agents with A2A protocol support
 # Port: 8240 (A2A protocol)
 
-FROM node:22-slim AS base
+FROM node:24-slim AS base
 
 # Install OpenSSL for Prisma and pnpm
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -79,7 +79,7 @@ COPY --from=prisma /app/packages/database/prisma/zod ./packages/database/prisma/
 # and creates a single ESM bundle that works with native Node.js
 RUN pnpm --filter custom-agent-runtime build
 
-FROM node:22-slim AS production
+FROM node:24-slim AS production
 
 # Install OpenSSL and pnpm for production dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

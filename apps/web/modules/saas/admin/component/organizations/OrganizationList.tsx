@@ -274,7 +274,10 @@ export function OrganizationList() {
 											"admin.organizations.overview.actions",
 										)}
 									>
-										<MoreVerticalIcon className="size-4" />
+										<MoreVerticalIcon
+											strokeWidth={2.5}
+											className="size-4"
+										/>
 									</Button>
 								</DropdownMenuTrigger>
 								<DropdownMenuContent>

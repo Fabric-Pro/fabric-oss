@@ -195,7 +195,7 @@ export function SignupForm({
 			<h1 className="font-bold text-xl md:text-2xl">
 				{t("auth.signup.title")}
 			</h1>
-			<p className="mt-1 mb-6 text-foreground/60">
+			<p className="mt-1 mb-6 text-muted-foreground">
 				{t("auth.signup.message")}
 			</p>
 
@@ -412,7 +412,7 @@ export function SignupForm({
 							<>
 								<div className="relative my-6 h-4">
 									<hr className="relative top-2" />
-									<p className="-translate-x-1/2 absolute top-0 left-1/2 mx-auto inline-block h-4 bg-card px-2 text-center font-medium text-foreground/60 text-sm leading-tight">
+									<p className="-translate-x-1/2 absolute top-0 left-1/2 mx-auto inline-block h-4 bg-card px-2 text-center font-medium text-muted-foreground text-sm leading-tight">
 										{t("auth.login.continueWith")}
 									</p>
 								</div>
@@ -437,7 +437,7 @@ export function SignupForm({
 			)}
 
 			<div className="mt-6 text-center text-sm">
-				<span className="text-foreground/60">
+				<span className="text-muted-foreground">
 					{t("auth.signup.alreadyHaveAccount")}{" "}
 				</span>
 				<Link

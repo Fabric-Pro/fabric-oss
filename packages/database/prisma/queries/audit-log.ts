@@ -400,6 +400,12 @@ export const AUDIT_ACTIONS = [
 	// path or content.
 	"project.instructions.removed",
 	"project.instructions.settings_updated",
+	// Coding Instructions sets (spec 2026-11-11): a set created, renamed or
+	// given other code repositories, and deleted from Fabric (its files stay in
+	// git). Names, slugs and repository counts only.
+	"project.instructions.set_created",
+	"project.instructions.set_updated",
+	"project.instructions.set_deleted",
 	"project.instructions.repository_sync_configured",
 	"project.instructions.repository_sync_started",
 	"project.instructions.repository_sync_completed",
@@ -576,6 +582,18 @@ export const AUDIT_ACTIONS = [
 	// security-relevant external-publication control; changing the requirement or a
 	// reviewer's approve/reject decision is audit-worthy.
 	"newsletter.approval.required_changed",
+	// Turning this on lets reviewers attach images that are then published
+	// under public URLs, so it is audited like the approval requirement.
+	"newsletter.screenshots.changed",
+	// Choosing a capture environment lets the worker sign in there with its
+	// stored credential, after an admin confirmed it shows sample data only.
+	"newsletter.screenshots.environment_changed",
+	// A reviewer started a screenshot capture, which signs in to the capture
+	// environment and drives a browser and a model there.
+	"newsletter.screenshots.capture_started",
+	// A sent newsletter's public images were taken down, so they disappear
+	// from emails already delivered.
+	"newsletter.screenshots.unpublished",
 	// Turning this on mails everyone in the organization.
 	"newsletter.organization_distribution.changed",
 	"newsletter.send.approved",
@@ -622,6 +640,14 @@ export const AUDIT_ACTIONS = [
 	// is an ordinary tenant mutation the automatic activity capture already
 	// covers.
 	"prompt.system_deleted",
+	// time (1) — a project or organization time report exported as CSV. The
+	// file hands out every member's logged time, so each export leaves a row,
+	// like `audit.exported`. `metadata` carries the scope, the project when
+	// there is one, the work-date range, the filters and the row count, never
+	// an entry's contents. Category is explicitly "audit" (the forensic bucket
+	// shared with `audit.exported`) rather than derived from the action prefix.
+	// Reading the report on screen is not recorded.
+	"time.report_exported",
 	// mcp (4) — MCP data-source credential-config lifecycle (SOC 2 CC7.2). A
 	// tenant creating/updating/deleting an MCP config manages stored credentials,
 	// so each mutation is recorded in the audit ledger.
@@ -1132,6 +1158,7 @@ export function mapToLegacyEventType(action: string): AuditEventType {
 		case "userActivity.viewed":
 			return "DATA_READ";
 		case "audit.exported":
+		case "time.report_exported":
 			return "DATA_EXPORT";
 		case "audit.retention.purged":
 			return "DATA_DELETE";

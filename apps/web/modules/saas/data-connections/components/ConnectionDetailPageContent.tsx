@@ -73,7 +73,7 @@ const JOB_STATUS_STYLES: Record<string, { label: string; className: string }> =
 		},
 		RUNNING: {
 			label: "Running",
-			className: "text-primary border-primary/30 bg-primary/10",
+			className: "text-primary-active border-primary/30 bg-primary/10",
 		},
 		COMPLETED: {
 			label: "Completed",

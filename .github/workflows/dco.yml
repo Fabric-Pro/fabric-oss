@@ -42,9 +42,12 @@ concurrency:
 jobs:
   check:
     name: DCO check
-    # arm64: this job only runs `gh api` and `jq` — no checkout, no compiled
-    # binaries.
-    runs-on: ubuntu-24.04-arm
+    # Architecture-neutral steps; private PRs use Namespace amd64,
+    # while other events retain the GitHub arm64 label.
+    # Only private pull requests use Namespace, by event allowlist. Pushes and
+    # other events retain GitHub runners: their caches can be restored by other
+    # branches, including secret-holding jobs. See unit-tests.yml vitest.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
     # Trusted-automation allowlist (GitHub Apps cannot sign off). A skipped
     # job reports success, so this stays compatible with a required check.
     if: >-

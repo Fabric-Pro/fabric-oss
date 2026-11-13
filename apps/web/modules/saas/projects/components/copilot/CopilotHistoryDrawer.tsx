@@ -979,7 +979,7 @@ export function CopilotHistoryDrawer({
 												/>
 												<span
 													aria-hidden="true"
-													className="text-foreground/30"
+													className="text-muted-foreground"
 												>
 													·
 												</span>
@@ -1045,6 +1045,9 @@ export function CopilotHistoryDrawer({
 															className="text-muted-foreground"
 														>
 															<MoreHorizontalIcon
+																strokeWidth={
+																	2.5
+																}
 																className="size-4"
 																aria-hidden="true"
 															/>

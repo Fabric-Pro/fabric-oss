@@ -35,7 +35,7 @@ import {
 	updateStory,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import { formatContextsForPrompt, retrieveProjectContexts } from "@repo/rag";
+import { retrieveRankedPassages } from "@repo/rag";
 import {
 	fetchLiveIntegrationContext,
 	formatLiveContextForPrompt,
@@ -229,22 +229,19 @@ export const reevaluateBugProcedure = tenantProtectedProcedure
 
 		const existingMarkdown = story.description ?? "";
 
-		// Fetch supporting context the same way createStoryFromProposal does
-		// so the re-analysis sees the same signals it had at creation time.
+		// Use the ranked-passage and live-integration retrieval used by
+		// createStoryFromProposal, queried with the current bug and new evidence.
 		const [ragSettled, liveSettled] = await Promise.allSettled([
 			(async () => {
 				const query =
 					`${input.newInfo ? `${input.newInfo} ` : ""}${story.title} ${existingMarkdown}`.trim();
-				const contexts = await retrieveProjectContexts({
+				const context = await retrieveRankedPassages({
 					projectId: input.projectId,
 					query,
 					userId: user.id,
 					organizationId: orgId,
-					topK: 5,
 				});
-				return contexts.length > 0
-					? formatContextsForPrompt(contexts)
-					: null;
+				return context || null;
 			})(),
 			(async () => {
 				const liveContext = await fetchLiveIntegrationContext({

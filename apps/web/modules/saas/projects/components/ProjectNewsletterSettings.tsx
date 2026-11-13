@@ -4,7 +4,9 @@ import { buildReleaseWidgetSnippet } from "@marketing/shared/lib/embed-snippet";
 import { getBaseUrl } from "@repo/utils";
 import { CapabilityGateBanner } from "@saas/projects/components/capability-gates/CapabilityGateBanner";
 import { useCapabilityGate } from "@saas/projects/components/capability-gates/useCapabilityGates";
+import { NewsletterImagesSetting } from "@saas/projects/components/NewsletterImagesSetting";
 import { NewsletterOrgDistributionSetting } from "@saas/projects/components/NewsletterOrgDistributionSetting";
+import { NewsletterPublishedImagesAction } from "@saas/projects/components/NewsletterPublishedImagesAction";
 import { NewsletterSubscriberRow } from "@saas/projects/components/NewsletterSubscriberRow";
 import { Pagination } from "@saas/shared/components/Pagination";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -58,16 +60,20 @@ import {
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { parseAsInteger, parseAsStringLiteral, useQueryState } from "nuqs";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ConnectChatChannelButton } from "./ConnectChatChannelButton";
-import { NewsletterReviewHighlight } from "./NewsletterReviewHighlight";
+import {
+	type NewsletterApproveRequest,
+	NewsletterPendingReviews,
+} from "./NewsletterPendingReviews";
 import {
 	describeReviewFailure,
 	describeReviewSuccess,
 	type ReviewFeedback,
 } from "./newsletter-review-feedback";
 import {
+	describeSendRecipients,
 	formatChatDeliveryStatus,
 	formatNewsletterSendStatus,
 	hasExpiredRepoIntegrations,
@@ -137,6 +143,25 @@ function hasInFlightSend(data: unknown): boolean {
 	return (
 		Array.isArray(sends) &&
 		sends.some((s) => IN_FLIGHT_SEND_STATUSES.has(s?.status ?? ""))
+	);
+}
+
+/**
+ * True when a held send in the `newsletter.sends.pending` payload has a
+ * screenshot still being captured. A capture ends within minutes, so this
+ * poll stops on its own.
+ */
+function hasCapturingImage(data: unknown): boolean {
+	const sends = (
+		data as
+			| { sends?: { images?: { captureState?: string }[] }[] }
+			| undefined
+	)?.sends;
+	return (
+		Array.isArray(sends) &&
+		sends.some((s) =>
+			(s?.images ?? []).some((i) => i?.captureState === "CAPTURING"),
+		)
 	);
 }
 
@@ -295,6 +320,15 @@ export function ProjectNewsletterSettings({
 	const [sendNowDetailLevel, setSendNowDetailLevel] = useState<
 		"BRIEF" | "STANDARD" | "DETAILED"
 	>("STANDARD");
+	const [sendNowOpen, setSendNowOpen] = useState(false);
+	// Who "Send now" would email, read fresh each time the dialog opens.
+	const recipientPreviewQuery = useQuery({
+		...orpc.newsletter.sends.recipientPreview.queryOptions({
+			input: { projectId, organizationId: orgId },
+		}),
+		enabled: sendNowOpen,
+		staleTime: 0,
+	});
 	// Which send-history row has its per-channel chat detail panel open.
 	const [expandedSendId, setExpandedSendId] = useState<string | null>(null);
 
@@ -354,21 +388,31 @@ export function ProjectNewsletterSettings({
 		// posted it.
 		refetchInterval: expandedSendInFlight ? IN_FLIGHT_SEND_POLL_MS : false,
 	});
-	const pendingQuery = useQuery(
-		orpc.newsletter.sends.pending.queryOptions({
+	const pendingQuery = useQuery({
+		...orpc.newsletter.sends.pending.queryOptions({
 			input: { projectId, organizationId: orgId },
 		}),
-	);
-	// Per-send set of highlight indexes the reviewer has marked for removal
-	// before approving — keyed by send id so switching between multiple
-	// pending drafts (rare, but possible after a missed review window)
-	// doesn't clobber an in-progress edit on another draft. The checkbox UI
-	// is inverted for display: a highlight is checked (selected) by default,
-	// and unchecking it is what adds its index here — so the set still stores
-	// the *removed* indexes sent up as `removedHighlightIndexes`.
-	const [removedBySend, setRemovedBySend] = useState<
-		Record<string, Set<number>>
-	>({});
+		// An approved send stays in this list until the worker has delivered it,
+		// and a screenshot being captured lands on its own, so both are polled
+		// the same self-disabling way as the history.
+		refetchInterval: (query: { state: { data: unknown } }) =>
+			hasInFlightSend(query.state.data) ||
+			hasCapturingImage(query.state.data)
+				? IN_FLIGHT_SEND_POLL_MS
+				: false,
+	});
+	// A started send becomes a held one when the worker finishes generating it.
+	// That moment is when the history stops reporting it in flight, so the
+	// awaiting-review list is read again then.
+	const historyHasInFlightSend = hasInFlightSend(sendsQuery.data);
+	const historyHadInFlightSend = useRef(false);
+	const refetchPending = pendingQuery.refetch;
+	useEffect(() => {
+		if (historyHadInFlightSend.current && !historyHasInFlightSend) {
+			refetchPending();
+		}
+		historyHadInFlightSend.current = historyHasInFlightSend;
+	}, [historyHasInFlightSend, refetchPending]);
 	/**
 	 * Single exit for both review mutations. `describeReview*` decides the toast
 	 * level and whether the cached list is now stale; this only performs it
@@ -389,12 +433,13 @@ export function ProjectNewsletterSettings({
 		}
 	};
 	const approveSend = useMutation({
-		mutationFn: async (v: { sendId: string; removed: number[] }) =>
+		mutationFn: async (v: NewsletterApproveRequest) =>
 			orpcClient.newsletter.sends.approve({
 				projectId,
 				organizationId: orgId,
 				sendId: v.sendId,
 				removedHighlightIndexes: v.removed,
+				highlightOrder: v.highlightOrder,
 			}),
 		onSuccess: (r) =>
 			applyReviewFeedback(describeReviewSuccess("approve", r)),
@@ -688,6 +733,7 @@ export function ProjectNewsletterSettings({
 	// server-side defaults (disabled, WEEKLY, Monday, 09:00 UTC).
 	const enabled = s?.enabled ?? false;
 	const requireApproval = s?.requireApproval ?? false;
+	const screenshotsEnabled = s?.screenshotsEnabled ?? false;
 	const cadence = (s?.cadence ?? "WEEKLY") as "WEEKLY" | "MONTHLY";
 	const dayOfWeek = s?.dayOfWeek ?? 1;
 	const dayOfMonth = s?.dayOfMonth ?? 1;
@@ -957,6 +1003,23 @@ export function ProjectNewsletterSettings({
 							}
 						/>
 					</div>
+
+					<NewsletterImagesSetting
+						projectId={projectId}
+						screenshotsEnabled={screenshotsEnabled}
+						requireApproval={requireApproval}
+						screenshotEnvironmentId={
+							s?.screenshotEnvironmentId ?? null
+						}
+						disabled={settingsDisabled}
+						onChange={(change) =>
+							updateSettings.mutate({
+								projectId,
+								organizationId: orgId,
+								...change,
+							})
+						}
+					/>
 
 					<div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border p-4">
 						<div className="min-w-0">
@@ -1675,7 +1738,10 @@ export function ProjectNewsletterSettings({
 				/>
 
 				<div className="mt-4">
-					<AlertDialog>
+					<AlertDialog
+						open={sendNowOpen}
+						onOpenChange={setSendNowOpen}
+					>
 						<AlertDialogTrigger asChild>
 							<Button
 								disabled={
@@ -1695,12 +1761,23 @@ export function ProjectNewsletterSettings({
 									Send the newsletter now?
 								</AlertDialogTitle>
 								<AlertDialogDescription>
-									This generates an AI-curated summary of
-									major features shipped since the last send
-									and emails every active subscriber. If no
-									major features are found, nobody is emailed.
+									{requireApproval
+										? "This generates an AI-curated summary of major features shipped since the last send and holds it for your review. Nobody is emailed until it is approved."
+										: "This generates an AI-curated summary of major features shipped since the last send and emails every active subscriber. If no major features are found, nobody is emailed."}
 								</AlertDialogDescription>
 							</AlertDialogHeader>
+							<p
+								className="text-sm font-medium text-foreground"
+								aria-live="polite"
+							>
+								{describeSendRecipients(
+									recipientPreviewQuery.isError
+										? null
+										: recipientPreviewQuery.data
+												?.recipientCount,
+									requireApproval,
+								)}
+							</p>
 							<div className="space-y-2 py-2">
 								<Label htmlFor="newsletter-send-now-detail-level">
 									Detail level
@@ -1750,6 +1827,7 @@ export function ProjectNewsletterSettings({
 							<AlertDialogFooter>
 								<AlertDialogCancel>Cancel</AlertDialogCancel>
 								<AlertDialogAction
+									disabled={recipientPreviewQuery.isPending}
 									onClick={() =>
 										sendNow.mutate(sendNowDetailLevel)
 									}
@@ -1780,132 +1858,15 @@ export function ProjectNewsletterSettings({
 					))}
 				</div>
 
-				{pendingQuery.data?.sends?.length ? (
-					<div className="mt-5 mb-6 space-y-4">
-						<p
-							className="font-medium text-foreground"
-							role="status"
-						>
-							Awaiting review
-						</p>
-						{pendingQuery.data.sends.map((p) => {
-							const content =
-								(p.content as {
-									headline?: string;
-									intro?: string;
-									highlights?: {
-										title: string;
-										description: string;
-									}[];
-								} | null) ?? null;
-							const removed =
-								removedBySend[p.id] ?? new Set<number>();
-							const toggle = (i: number) =>
-								setRemovedBySend((prev) => {
-									const next = new Set(prev[p.id] ?? []);
-									if (next.has(i)) {
-										next.delete(i);
-									} else {
-										next.add(i);
-									}
-									return { ...prev, [p.id]: next };
-								});
-							return (
-								<div
-									key={p.id}
-									className="rounded-lg border border-border p-4"
-								>
-									<p className="font-medium text-foreground">
-										{content?.headline ?? "Release notes"}
-									</p>
-									{content?.intro ? (
-										<p className="mt-1 text-sm text-muted-foreground">
-											{content.intro}
-										</p>
-									) : null}
-									{p.status === "APPROVED" ? (
-										// In-flight / recovery: an approved send that
-										// is delivering (or was stranded by a start
-										// failure). Offer an idempotent re-kick.
-										<div className="mt-3 flex items-center gap-3">
-											<span className="text-sm text-muted-foreground">
-												Sending…
-											</span>
-											<Button
-												size="sm"
-												variant="outline"
-												disabled={reviewInFlight}
-												onClick={() =>
-													approveSend.mutate({
-														sendId: p.id,
-														removed: [],
-													})
-												}
-											>
-												Retry send
-											</Button>
-										</div>
-									) : (
-										<>
-											<p className="mt-3 text-muted-foreground text-xs">
-												Unchecking an item leaves it out
-												of this issue only — nothing is
-												deleted.
-											</p>
-											<ul className="mt-2 space-y-2">
-												{(
-													content?.highlights ?? []
-												).map((h, i) => (
-													<NewsletterReviewHighlight
-														key={`${p.id}-${i}`}
-														title={h.title}
-														description={
-															h.description
-														}
-														excluded={removed.has(
-															i,
-														)}
-														onToggle={() =>
-															toggle(i)
-														}
-													/>
-												))}
-											</ul>
-											<div className="mt-4 flex gap-2">
-												<Button
-													size="sm"
-													variant="primary"
-													disabled={reviewInFlight}
-													onClick={() =>
-														approveSend.mutate({
-															sendId: p.id,
-															removed:
-																Array.from(
-																	removed,
-																),
-														})
-													}
-												>
-													Approve &amp; send
-												</Button>
-												<Button
-													size="sm"
-													variant="outline"
-													disabled={reviewInFlight}
-													onClick={() =>
-														rejectSend.mutate(p.id)
-													}
-												>
-													Reject
-												</Button>
-											</div>
-										</>
-									)}
-								</div>
-							);
-						})}
-					</div>
-				) : null}
+				<NewsletterPendingReviews
+					sends={pendingQuery.data?.sends ?? []}
+					projectId={projectId}
+					organizationId={orgId}
+					reviewInFlight={reviewInFlight}
+					onApprove={(request) => approveSend.mutate(request)}
+					onReject={(sendId) => rejectSend.mutate(sendId)}
+					onRefetch={() => pendingQuery.refetch()}
+				/>
 
 				<div className="mt-5">
 					{sendsQuery.isLoading ? (
@@ -1977,6 +1938,13 @@ export function ProjectNewsletterSettings({
 														>
 															{statusInfo.label}
 														</Badge>
+														{send.incompleteScanReason ? (
+															<p className="mt-1 max-w-xs whitespace-pre-line break-words text-xs text-muted-foreground">
+																{
+																	send.incompleteScanReason
+																}
+															</p>
+														) : null}
 													</TableCell>
 													<TableCell className="text-right tabular-nums text-muted-foreground">
 														{send.sentCount}/
@@ -2017,6 +1985,27 @@ export function ProjectNewsletterSettings({
 																	? "Hide channels"
 																	: "Channels"}
 															</button>
+														) : null}
+														{canEdit &&
+														send.publishedImageCount >
+															0 ? (
+															<NewsletterPublishedImagesAction
+																projectId={
+																	projectId
+																}
+																organizationId={
+																	orgId
+																}
+																sendId={send.id}
+																imageCount={
+																	send.publishedImageCount
+																}
+																onRemoved={() =>
+																	invalidate(
+																		"sends",
+																	)
+																}
+															/>
 														) : null}
 													</TableCell>
 												</TableRow>

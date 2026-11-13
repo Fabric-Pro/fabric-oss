@@ -13,7 +13,7 @@
 # =============================================================================
 # Stage 1: Dependencies
 # =============================================================================
-FROM node:22-slim AS deps
+FROM node:24-slim AS deps
 
 # Install pnpm
 RUN npm install -g pnpm@11.28.6
@@ -42,7 +42,7 @@ RUN pnpm install --frozen-lockfile --ignore-scripts --filter "@repo/mcp-stdio-wr
 # =============================================================================
 # Stage 2: Builder
 # =============================================================================
-FROM node:22-slim AS builder
+FROM node:24-slim AS builder
 
 # Install pnpm
 RUN npm install -g pnpm@11.28.6
@@ -70,7 +70,7 @@ COPY tooling/typescript tooling/typescript
 # =============================================================================
 # Stage 3: Production
 # =============================================================================
-FROM node:22-slim AS production
+FROM node:24-slim AS production
 
 # Install security updates
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*

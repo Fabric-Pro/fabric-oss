@@ -53,6 +53,7 @@ export interface AgentResponse {
 		approvalId: string;
 		stepId: string;
 		reason: string;
+		riskLevel?: "low" | "medium" | "high" | "critical";
 	} | null;
 }
 

@@ -14,6 +14,9 @@ import {
 
 export const memberListSendsProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_SETTINGS_READ))
+	// A read whose key does not look like one; the release notes list runs it
+	// when it opens.
+	.meta({ auditActivity: "never" })
 	.input(
 		z.object({
 			projectId: z.string(),

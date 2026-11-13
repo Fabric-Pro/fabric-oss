@@ -44,7 +44,13 @@ export type EffectiveProjectAccess = {
  *   - `packages/database/prisma/queries/projects/publishing-recipients.ts`
  *     (`selectPublishingRecipientIds`, predicate `PUBLISHING_TOPIC_CREATE`)
  *
- * Both say so at their top and point back here. This pointer is the other half of
+ * Both say so at their top and point back here. A third copy, in `@repo/api`
+ * itself, applies the C → B precedence over many projects at once, so a list
+ * costs a fixed number of queries instead of a lookup per project:
+ *
+ *   - `packages/api/modules/time-tracking/lib/project-access.ts`
+ *     (`effectiveProjectPermissions`)
+ * This pointer is the other half of
  * that arrangement and the half that actually makes it work: the duplication is
  * only defensible if a change made HERE — where the authority lives, and where
  * nobody is thinking about background recipients — is discoverable. Changing the

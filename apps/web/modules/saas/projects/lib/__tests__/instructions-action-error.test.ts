@@ -121,6 +121,8 @@ describe("instructionActionErrorKey", () => {
 		["SNAPSHOT_ACTIVE", "snapshotActive"],
 		["PULL_REQUEST_UNRESOLVED", "pullRequestUnresolved"],
 		["PROPOSAL_PENDING", "proposalPending"],
+		["TEMPLATE_CHANGED", "templateChanged"],
+		["TEMPLATE_UNAVAILABLE", "templateUnavailable"],
 		["SOMETHING_ELSE", "conflict"],
 	] as const)("words a CONFLICT with reason %s as %s", (reason, key) => {
 		expect(

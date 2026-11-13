@@ -122,7 +122,7 @@ export function QaSignOffSection({
 							<CheckCircle2Icon
 								className={cn(
 									"size-3.5 shrink-0",
-									"text-secondary",
+									"text-success",
 								)}
 								aria-hidden="true"
 							/>

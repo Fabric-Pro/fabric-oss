@@ -49,6 +49,13 @@ model User {
   twoFactorEnabled           Boolean?
   mfaPromptDismissedAt       DateTime?
   mfaPromptSnoozedUntil      DateTime?
+  // High-contrast theme choice (Fizzy #1444): "standard" or "high". NULL means
+  // the person never chose, which renders the standard palette. Stored as text
+  // rather than an enum so a value written by a newer build reads as
+  // "unrecognised" (logged, standard palette) instead of failing the session
+  // read that every authenticated page depends on. Written only through
+  // `users.appearance.update`; better-auth exposes it read-only.
+  contrastPreference         String?
   // Per-user "Get started" onboarding tour progress (status, per-step
   // completed/skipped map, resume position, one-shot auto-launch flag).
   // Shape validated in packages/database/prisma/queries/onboarding-tour.ts.
@@ -348,11 +355,19 @@ model User {
   // Meeting transcript sync relations
   linkedMeetings         ProjectLinkedMeeting[]
   meetingTranscripts     ProjectMeetingTranscript[]
+  transcriptFolders      ProjectTranscriptFolder[]
+  transcriptFolderFiles  ProjectTranscriptFolderFile[]
   parlumeMeetingSessions ParlumeMeetingSession[]
   parlumeMeetingSegments ParlumeMeetingSegment[]
   parlumeMeetingTurns    ParlumeMeetingTurn[]
   parlumeSettingsUpdates OrganizationParlumeSettings[] @relation("OrganizationParlumeSettingsUpdatedBy")
   parlumeAutoJoinSeries  ProjectLinkedMeeting[]        @relation("ProjectLinkedMeetingParlumeAutoJoinUser")
+  timeEntries            TimeEntry[]
+  timeSuggestions        TimeSuggestion[]
+  timeSuggestionRuns     TimeSuggestionRun[]
+  timeTimers             TimeTimer[]
+  timeTimerStops         TimeTimerStop[]
+  timeTrackingPrefs      TimeTrackingPreference[]
 
   // Teams channel monitor relations
   linkedTeamsChannels       ProjectLinkedTeamsChannel[]
@@ -774,9 +789,9 @@ model TwoFactor {
 }
 
 model Organization {
-  id                               String                        @id @default(cuid())
+  id                               String                           @id @default(cuid())
   name                             String
-  slug                             String?                       @unique
+  slug                             String?                          @unique
   logo                             String?
   createdAt                        DateTime
   metadata                         String?
@@ -786,7 +801,7 @@ model Organization {
   timezone                         String?
   azureAiApiKey                    String?
   azureAiConfiguredAt              DateTime?
-  azureAiEnabled                   Boolean                       @default(false)
+  azureAiEnabled                   Boolean                          @default(false)
   azureAiEndpoint                  String?
   azureAiLastUsedAt                DateTime?
   azureAiModelRouterName           String?
@@ -795,20 +810,20 @@ model Organization {
   azureAiResourceGroup             String?
   azureAiSubscriptionId            String?
   azureAiTenantId                  String?
-  azureAiUseModelRouter            Boolean                       @default(false)
-  useDelegatedExecution            Boolean                       @default(true) // Delegate Fabric AI operations to server instead of executing in Temporal
+  azureAiUseModelRouter            Boolean                          @default(false)
+  useDelegatedExecution            Boolean                          @default(true) // Delegate Fabric AI operations to server instead of executing in Temporal
   // Org-level kill switch for the persistent document-assistant chat history
   // feature. Default true so the feature is on
   // for every existing org; flip to false per-org if the SSR hydration path
   // regresses the document editor.
-  documentAssistantHistoryEnabled  Boolean                       @default(true)
+  documentAssistantHistoryEnabled  Boolean                          @default(true)
   // Org-level opt-in for the Feature Maturation V2 three-tab editor (Summary &
   // Questions / Decision Log / Clean Specification). Default true (#1797): V2 is
   // rolled out to all orgs now that every creation path drafts a Clean Spec (#1799).
   // Retained as the per-org kill-switch — flip an org back to false via SQL to
   // disable V2 for it without a deploy. The v1/v2 manual switch a flagged user
   // sees is session-scoped and separate.
-  featureMaturationV2Enabled       Boolean                       @default(true)
+  featureMaturationV2Enabled       Boolean                          @default(true)
   // SUPERSEDED (Fizzy #2300) — no code reads this column. AI answer
   // recommendations are gated by the AI_ANSWER_RECOMMENDATIONS runtime flag, set
   // from the admin console and resolved for a project's organization.
@@ -822,18 +837,22 @@ model Organization {
   // releases: first drop the field here and let that build fully replace every
   // older one, including as a rollback target, then drop the column itself in
   // a later migration.
-  aiAnswerRecommendationsEnabled   Boolean                       @default(false)
+  aiAnswerRecommendationsEnabled   Boolean                          @default(false)
   // SOC 2 CC6.1 — opt-in organization-wide MFA enforcement. When true, members
   // without two-factor enabled are redirected to enroll before they can access
   // this organization's resources. Default false so enabling the feature changes
   // nothing for any existing org until an owner/admin turns it on.
-  requireTwoFactor                 Boolean                       @default(false)
+  requireTwoFactor                 Boolean                          @default(false)
   /// Default retention window for soft-deleted attachments, in days (#1749).
   /// null = inherit the server default. Range enforced by a CHECK constraint.
   attachmentRetentionDays          Int?
   /// When attachmentRetentionDays last changed. Arms the grace floor: a newly
   /// shortened window cannot delete anything until this is 7 days old.
   attachmentRetentionDaysUpdatedAt DateTime?
+  /// Every project's time entries must carry start and stop times.
+  timeRequireStartStop             Boolean                          @default(false)
+  /// Whether new time entries default to billable. Null means billable.
+  timeDefaultBillable              Boolean?
   /// Soft-delete quartet (Fizzy #2462), mirroring `Project`. A deactivated
   /// organization keeps every row it owns — the 168 relations that cascade off
   /// this model are untouched — and is made unreachable by REFUSING it at
@@ -850,6 +869,17 @@ model Organization {
   /// Set when the 24-48h pre-purge reminder has been sent, so the daily sweep
   /// cannot send it twice.
   deletionReminderSentAt           DateTime?
+  /// The project whose published coding instructions this organization's other
+  /// projects can start from. Null = no template. Chosen by an admin or owner;
+  /// deleting that project clears it.
+  instructionTemplateProjectId     String?                          @unique
+  instructionTemplateProject       Project?                         @relation("OrganizationInstructionTemplate", fields: [instructionTemplateProjectId], references: [id], onDelete: SetNull)
+  timeEntries                      TimeEntry[]
+  timeSuggestions                  TimeSuggestion[]
+  timeSuggestionRuns               TimeSuggestionRun[]
+  timeTimers                       TimeTimer[]
+  timeTimerStops                   TimeTimerStop[]
+  timeTrackingPrefs                TimeTrackingPreference[]
   mcpServers                       MCPServer[]
   mcpConfigs                       MCPConfig[]
   mcpDurableToolCalls              McpDurableToolCall[]
@@ -1062,6 +1092,8 @@ model Organization {
   instructionRepositorySyncRuns ProjectInstructionRepositorySyncRun[]
   instructionsAccessGrants      ProjectInstructionsAccessGrant[]
   instructionProposalApprovals  ProjectInstructionProposalApproval[]
+  instructionSets               ProjectInstructionSet[]
+  instructionSetRepositories    ProjectInstructionSetRepository[]
 
   // Frame sharing policy
   canShareFramesPublicly   Boolean  @default(true)
@@ -1073,6 +1105,8 @@ model Organization {
   // Meeting transcript sync relations
   linkedMeetings         ProjectLinkedMeeting[]
   meetingTranscripts     ProjectMeetingTranscript[]
+  transcriptFolders      ProjectTranscriptFolder[]
+  transcriptFolderFiles  ProjectTranscriptFolderFile[]
   parlumeMeetingSessions ParlumeMeetingSession[]
   parlumeMeetingSegments ParlumeMeetingSegment[]
   parlumeMeetingTurns    ParlumeMeetingTurn[]
@@ -2023,8 +2057,9 @@ model AgentConversation {
   documentAttachment DocumentAssistantConversation?
 
   // Advisor turns started in this conversation (see ConversationTurn).
-  turns            ConversationTurn[]
-  chatMediaObjects ChatMediaObject[]
+  turns              ConversationTurn[]
+  chatMediaObjects   ChatMediaObject[]
+  advisorToolResults AdvisorToolResult[]
 
   @@index([userId, agentId])
   @@index([organizationId, agentId])
@@ -2176,11 +2211,12 @@ model ConversationTurn {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user         User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  conversation AgentConversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
-  attempts     ConversationTurnAttempt[]
-  events       ConversationTurnEvent[]
+  user               User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization       Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation       AgentConversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  attempts           ConversationTurnAttempt[]
+  events             ConversationTurnEvent[]
+  advisorToolResults AdvisorToolResult[]
 
   @@unique([id, organizationId, userId])
   @@unique([userId, organizationId, clientRequestKey])
@@ -2221,6 +2257,31 @@ model ConversationTurnEvent {
   @@index([turnId, runId, id])
   @@index([expiresAt, id])
   @@map("conversation_turn_event")
+}
+
+/// Latest successful activity-attempt snapshot of one declared read. Limits are
+/// enforced by advisorToolResultStorage; no tool arguments are represented.
+model AdvisorToolResult {
+  id             String   @id @default(cuid())
+  conversationId String
+  turnId         String
+  userId         String
+  organizationId String
+  sourceKey      String
+  attempt        Int
+  toolName       String
+  sizeBytes      Int
+  content        Json
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  turn         ConversationTurn  @relation(fields: [turnId, organizationId, userId], references: [id, organizationId, userId], onDelete: Cascade)
+
+  @@unique([turnId, sourceKey])
+  @@index([conversationId, createdAt(sort: Desc), expiresAt])
+  @@index([expiresAt, id])
+  @@map("advisor_tool_result")
 }
 
 enum ConversationTurnBudgetEnforcement {
@@ -2566,11 +2627,21 @@ model Project {
   recurringErrorLastScanAt          DateTime?
   recurringErrorLastScanError       String?
   recurringErrorSignatures          RecurringErrorSignature[]
+  billingModel                      ProjectBillingModel                  @default(FIXED_BID)
+  /// Time entries must carry start and stop times. Adds to the organization's
+  /// requirement; it cannot lift it.
+  timeRequireStartStop              Boolean                              @default(false)
+  /// Whether new time entries default to billable. Null inherits the
+  /// organization's default.
+  timeDefaultBillable               Boolean?
+  timeEntries                       TimeEntry[]
+  timeSuggestions                   TimeSuggestion[]
+  timeTimers                        TimeTimer[]
   createdAt                         DateTime                             @default(now())
   updatedAt                         DateTime                             @updatedAt
   organization                      Organization?                        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user                              User                                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  workspaceDocumentLinks ProjectWorkspaceDocumentLink[]
+  workspaceDocumentLinks            ProjectWorkspaceDocumentLink[]
   contexts                          ProjectContext[]                     @relation("ProjectContexts")
   contextPendingVectorCleanups      ProjectContextPendingVectorCleanup[]
   contextRepositorySync             ProjectContextRepositorySync?        @relation("ProjectContextRepositorySync")
@@ -2704,6 +2775,10 @@ model Project {
   instructionRepositorySyncRuns  ProjectInstructionRepositorySyncRun[] @relation("ProjectInstructionRepositorySyncRuns")
   instructionProposalBranches    ProjectInstructionProposalBranch[]    @relation("ProjectInstructionProposalBranches")
   instructionsAccessGrants       ProjectInstructionsAccessGrant[]      @relation("ProjectInstructionsAccessGrants")
+  instructionSets                ProjectInstructionSet[]
+  instructionSetRepositories     ProjectInstructionSetRepository[]
+  /// Set when this project is its organization's coding-instructions template.
+  instructionTemplateFor         Organization?                         @relation("OrganizationInstructionTemplate")
 
   // Weave (multi-agent orchestration)
   weaveConfig ProjectWeaveConfig?
@@ -2712,6 +2787,8 @@ model Project {
   // Meeting transcript sync relations
   linkedMeetings         ProjectLinkedMeeting[]
   meetingTranscripts     ProjectMeetingTranscript[]
+  transcriptFolders      ProjectTranscriptFolder[]
+  transcriptFolderFiles  ProjectTranscriptFolderFile[]
   meetingAgendas         ProjectMeetingAgenda[]
   meetingActionItemLinks MeetingActionItemLink[]
   parlumeMeetingSessions ParlumeMeetingSession[]
@@ -3256,16 +3333,16 @@ enum ProjectDocumentFindingType {
 /// A reference to a Workspace document, never a content copy or a sharing grant.
 /// Current project and Workspace permissions are checked independently on every read.
 model ProjectWorkspaceDocumentLink {
-  id String @id @default(cuid())
-  organizationId String
-  projectId String
-  documentId String
-  addedByUserId String
-  sourceRevisionAtLink String @db.VarChar(64)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                   String   @id @default(cuid())
+  organizationId       String
+  projectId            String
+  documentId           String
+  addedByUserId        String
+  sourceRevisionAtLink String   @db.VarChar(64)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project  Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
   document WorkspaceDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@unique([projectId, documentId], map: "project_workspace_doc_link_project_document_key")
@@ -3810,7 +3887,9 @@ model ProjectContextDecisionExtraction {
   contentHash      String
   /// The file's path when it was extracted, copied for display.
   sourcePath       String
-  /// `[{ text, rationale?, sourceQuote? }]`, in the order the model returned them.
+  /// `[{ text, rationale?, sourceQuote?, workItem? }]`, in the order the model
+  /// returned them. `workItem` is `{ id, identifier }`, the project's feature
+  /// or bug the decision names, when one could be determined.
   decisions        Json      @default("[]")
   /// Positions in `decisions` a reviewer declined.
   dismissedIndexes Int[]     @default([])
@@ -3819,6 +3898,10 @@ model ProjectContextDecisionExtraction {
   extractedAt      DateTime  @default(now())
   /// The at-most-once claim for the "decision candidates ready" notification.
   notifiedAt       DateTime?
+  /// The file was longer than the extraction reads, so its end was not read.
+  contentTruncated Boolean   @default(false)
+  /// The file listed more decisions than are kept; only the first were.
+  decisionsCapped  Boolean   @default(false)
 
   // Tenant isolation (copied from the parent ProjectContext)
   userId         String?
@@ -6670,6 +6753,389 @@ model ProjectLinkedMeeting {
   @@map("project_linked_meeting")
 }
 
+/// A OneDrive folder whose transcript files a project imports (Fizzy #3507).
+/// Read with the Microsoft connection of the person who connected it, as a
+/// linked meeting is read with its linker's. Only files directly in the folder
+/// count; nested folders are not read.
+model ProjectTranscriptFolder {
+  id             String    @id @default(cuid())
+  projectId      String
+  driveId        String
+  itemId         String
+  name           String
+  webUrl         String?
+  connectedAt    DateTime  @default(now())
+  /// Set = no further files are read; what was imported stays.
+  disconnectedAt DateTime?
+  lastSyncAt     DateTime?
+  /// Why the last read of the folder failed, in words for its admins.
+  lastSyncError  String?
+  /// Null until a read has listed the whole folder, so counts before then are
+  /// only what has been found so far.
+  discoveredAt   DateTime?
+  userId         String
+  organizationId String?
+
+  project      Project                       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user         User                          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization?                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  files        ProjectTranscriptFolderFile[]
+
+  @@unique([projectId, driveId, itemId])
+  @@index([projectId])
+  @@index([userId])
+  @@map("project_transcript_folder")
+}
+
+/// One file seen in a connected transcript folder, and what became of it. The
+/// unique key is what keeps a second read, a reconnect or a retry from
+/// importing the same file twice.
+model ProjectTranscriptFolderFile {
+  id             String   @id @default(cuid())
+  folderId       String
+  projectId      String
+  driveItemId    String
+  name           String
+  size           Int?
+  /// PENDING | IMPORTING | IMPORTED | DUPLICATE | SKIPPED | FAILED
+  status         String   @default("PENDING")
+  /// Why a file was skipped or failed, in words for the user.
+  reason         String?
+  contextId      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  userId         String
+  organizationId String?
+
+  folder       ProjectTranscriptFolder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  project      Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user         User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization?           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([folderId, driveItemId])
+  @@index([projectId, status])
+  @@index([userId])
+  @@map("project_transcript_folder_file")
+}
+
+/// How a project is billed. Time entries are recorded either way; the model
+/// only changes how reports read them.
+enum ProjectBillingModel {
+  FIXED_BID
+  TIME_AND_MATERIALS
+}
+
+enum TimeActivity {
+  PLANNING_REQUIREMENTS
+  DESIGN_UX
+  DEVELOPMENT
+  CODE_REVIEW
+  TESTING
+  MEETINGS_COLLABORATION
+  OTHER
+}
+
+/// One confirmed block of work a member logged against a project. Only its
+/// author reads or changes it through the time-tracking procedures; the
+/// organization is the tenant boundary so organization-wide reports can read
+/// every row.
+model TimeEntry {
+  id                 String       @id @default(cuid())
+  organizationId     String
+  projectId          String
+  /// Null once the author's account is deleted: the time stays in reports.
+  userId             String?
+  /// The author's name when the entry was last saved, so a report still
+  /// names who logged the time after their account is deleted.
+  userNameSnapshot   String?
+  /// The day the person says the work happened, as they chose it. Never
+  /// derived from a viewer's time zone.
+  workDate           DateTime     @db.Date
+  /// IANA time zone the entry was recorded in, so start and stop read back as
+  /// the author saw them.
+  timezone           String
+  durationMinutes    Int
+  /// Both set or both null.
+  startAt            DateTime?    @db.Timestamptz(3)
+  stopAt             DateTime?    @db.Timestamptz(3)
+  activity           TimeActivity
+  billable           Boolean
+  description        String?
+  storyId            String?
+  /// The work item's identifier and title when the entry was saved, so a
+  /// report stays readable after the item is renamed or deleted.
+  storyIdentifier    String?
+  storyTitle         String?
+  /// Whether start and stop times were required when the entry was saved.
+  /// Edits are validated against this rather than the current policy.
+  startStopRequired  Boolean
+  /// The suggestion this entry was confirmed from. Unique, so one suggestion
+  /// never yields two entries. No foreign key: the suggestion is deleted with
+  /// its owner's account, while the entry is kept for reports.
+  sourceSuggestionId String?      @unique
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  story        UserStory?   @relation(fields: [storyId], references: [id], onDelete: SetNull)
+
+  @@index([userId, workDate])
+  @@index([organizationId, projectId, workDate])
+  @@index([storyId])
+  @@map("time_entry")
+}
+
+enum TimeSuggestionStatus {
+  PENDING
+  CONFIRMED
+  DISMISSED
+}
+
+/// Where a piece of time evidence came from. One value per source the
+/// suggestion collectors read.
+enum TimeEvidenceKind {
+  MEETING_SESSION
+  TEST_RUN
+  FEATURE_EDIT
+  TEST_RESULT
+  TEST_CASE_ACTIVITY
+  PULL_REQUEST
+}
+
+enum TimeSuggestionRunStatus {
+  GENERATING
+  DONE
+  FAILED
+}
+
+/// A block of time Fabric suggests a member log, built from their own
+/// activity. Personal and unconfirmed: only its owner reads or changes it,
+/// and it goes with their account. Confirming it creates a TimeEntry.
+model TimeSuggestion {
+  id               String               @id @default(cuid())
+  organizationId   String
+  projectId        String
+  userId           String
+  workDate         DateTime             @db.Date
+  /// IANA time zone the work date and times were derived in.
+  timezone         String
+  activity         TimeActivity
+  /// Null takes the project's billable default when the suggestion is
+  /// confirmed.
+  billable         Boolean?
+  /// Null when no evidence carried a time span: the member enters it.
+  durationMinutes  Int?
+  /// Both set or both null.
+  startAt          DateTime?            @db.Timestamptz(3)
+  stopAt           DateTime?            @db.Timestamptz(3)
+  description      String
+  /// One short line saying which evidence the suggestion was built from.
+  explanation      String
+  storyId          String?
+  storyIdentifier  String?
+  storyTitle       String?
+  status           TimeSuggestionStatus @default(PENDING)
+  /// Copied from the run that created it. True when Fabric started the run
+  /// itself (opening My time, after a meeting or a pull request); false when
+  /// the member asked. Automatic pending suggestions are hidden while the
+  /// project is Fixed bid.
+  automatic        Boolean              @default(false)
+  /// End of the Sunday of the week after the work date, in `timezone`.
+  expiresAt        DateTime             @db.Timestamptz(3)
+  /// The entry confirming created. No foreign key, like
+  /// TimeEntry.sourceSuggestionId: the entry outlives the suggestion.
+  confirmedEntryId String?              @unique
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user         User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  story        UserStory?               @relation(fields: [storyId], references: [id], onDelete: SetNull)
+  evidence     TimeSuggestionEvidence[]
+
+  @@index([userId, organizationId, status, workDate])
+  @@index([projectId])
+  @@index([storyId])
+  @@map("time_suggestion")
+}
+
+/// One piece of activity a suggestion was built from: ids and times only,
+/// never content. A piece belongs to at most one suggestion of its user,
+/// whatever became of that suggestion, so confirmed or dismissed evidence is
+/// never suggested again.
+model TimeSuggestionEvidence {
+  id             String           @id @default(cuid())
+  suggestionId   String
+  organizationId String
+  userId         String
+  kind           TimeEvidenceKind
+  /// The id of the source row (a meeting session, a test run, ...).
+  sourceId       String
+  projectId      String
+  occurredAt     DateTime         @db.Timestamptz(3)
+  startAt        DateTime?        @db.Timestamptz(3)
+  endAt          DateTime?        @db.Timestamptz(3)
+  createdAt      DateTime         @default(now())
+
+  suggestion TimeSuggestion @relation(fields: [suggestionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, kind, sourceId])
+  @@index([suggestionId])
+  @@map("time_suggestion_evidence")
+}
+
+/// One generation of a member's time suggestions. At most one
+/// GENERATING run per member and organization (partial unique index in the
+/// migration).
+model TimeSuggestionRun {
+  id             String                  @id @default(cuid())
+  organizationId String
+  userId         String
+  status         TimeSuggestionRunStatus @default(GENERATING)
+  /// True when Fabric started the run itself, false when the member asked.
+  automatic      Boolean                 @default(false)
+  fromDate       DateTime                @db.Date
+  toDate         DateTime                @db.Date
+  timezone       String
+  createdCount   Int                     @default(0)
+  error          String?
+  startedAt      DateTime                @default(now()) @db.Timestamptz(3)
+  finishedAt     DateTime?               @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, userId, startedAt])
+  @@index([userId])
+  @@map("time_suggestion_run")
+}
+
+enum TimeTimerStatus {
+  RUNNING
+  PAUSED
+}
+
+/// A member's running or paused timer in an organization: at most one each.
+/// Personal: only its owner reads or changes it. Stopping it turns its
+/// segments into time entries and deletes it.
+model TimeTimer {
+  id              String          @id @default(cuid())
+  organizationId  String
+  userId          String
+  projectId       String
+  activity        TimeActivity
+  storyId         String?
+  /// The work item's identifier and title when it was chosen, for display.
+  /// The entries take a fresh snapshot when the timer stops.
+  storyIdentifier String?
+  storyTitle      String?
+  description     String?
+  /// Null takes the project's billable default when the timer stops.
+  billable        Boolean?
+  /// IANA time zone the timer was started in.
+  timezone        String
+  status          TimeTimerStatus @default(RUNNING)
+  /// Raised by every change, so a change made from a stale view is refused.
+  version         Int             @default(1)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  story        UserStory?         @relation(fields: [storyId], references: [id], onDelete: SetNull)
+  segments     TimeTimerSegment[]
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@index([projectId])
+  @@index([storyId])
+  @@map("time_timer")
+}
+
+/// One stretch a timer ran, from a start or resume to a pause or stop. At
+/// most one segment of a timer is open (partial unique index in the
+/// migration).
+model TimeTimerSegment {
+  id             String    @id @default(cuid())
+  timerId        String
+  organizationId String
+  userId         String
+  startAt        DateTime  @db.Timestamptz(3)
+  /// Null while the segment is running.
+  stopAt         DateTime? @db.Timestamptz(3)
+
+  timer TimeTimer @relation(fields: [timerId], references: [id], onDelete: Cascade)
+
+  @@index([timerId, startAt])
+  @@map("time_timer_segment")
+}
+
+enum TimeTimerStopOutcome {
+  SAVED
+  DISCARDED
+}
+
+/// What became of a stopped or discarded timer, so a repeated or concurrent
+/// stop of the same version answers with the same entries instead of saving
+/// them twice. Kept for a day.
+model TimeTimerStop {
+  /// The id the timer had. No foreign key: the timer is deleted as it stops.
+  timerId        String               @id
+  organizationId String
+  userId         String
+  /// The timer version that was stopped.
+  version        Int
+  outcome        TimeTimerStopOutcome
+  /// The entries the stop created. No foreign key: the member may delete
+  /// them later.
+  entryIds       String[]
+  createdAt      DateTime             @default(now()) @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([organizationId])
+  @@map("time_timer_stop")
+}
+
+/// Whether the floating timer shows.
+enum TimeTimerWidget {
+  SHOWN
+  // Closed until the next start, which shows it again.
+  HIDDEN_UNTIL_START
+  // Never shown; a start does not change it.
+  OFF
+}
+
+/// A member's time-tracking preferences in an organization. No row means
+/// the defaults.
+///
+/// Same shape as `CliConnectionPromptDismissal`: per-user within an
+/// organization, so `per_user_within_org` in `scripts/apply-rls-direct.ts`
+/// and `PER_USER_ORG_TABLES` in `src/tenant-db.ts`.
+model TimeTrackingPreference {
+  id             String          @id @default(cuid())
+  organizationId String
+  userId         String
+  timerWidget    TimeTimerWidget @default(SHOWN)
+  /// Opt-in browser reminder about a running timer.
+  timerReminders Boolean         @default(false)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("time_tracking_preference")
+}
+
 /// Lifecycle for a Parlume bot invited into a Teams meeting.
 enum ParlumeMeetingSessionStatus {
   PENDING
@@ -8815,6 +9281,14 @@ model NewsletterSettings {
   chatChannels         Json? // NewsletterChatChannel[] — selected chat delivery targets; null/[] = none
   approvalChatChannels Json? // NewsletterApprovalChatChannel[] — review-alert targets; null/[] = no chat alerts (Fizzy #2203)
   requireApproval      Boolean   @default(false) // when true, every send is held at PENDING_APPROVAL for reviewer sign-off before delivery
+  screenshotsEnabled   Boolean   @default(false) // when true, a reviewer can attach images to the highlights of a held send
+
+  // Where screenshots are captured automatically. Null = reviewers upload only.
+  // Set only together with `screenshotSampleDataConfirmedAt`: Fabric cannot see
+  // what the environment shows, so an admin confirms it holds sample data.
+  screenshotEnvironmentId         String?
+  screenshotSampleDataConfirmedAt DateTime?
+
   // Org-level distribution (Fizzy #1986): reconcile organization members into
   // the subscriber list before each send. The last sync's result is kept here
   // so a failure reaches the admin, not only the logs.
@@ -8833,13 +9307,15 @@ model NewsletterSettings {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project               Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user                  User?               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization          Organization?       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  screenshotEnvironment ProjectEnvironment? @relation(fields: [screenshotEnvironmentId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([organizationId])
   @@index([enabled])
+  @@index([screenshotEnvironmentId])
   @@map("newsletter_settings")
 }
 
@@ -8891,11 +9367,15 @@ model NewsletterSend {
   detailLevel             String? // effective verbosity tier used for this send (BRIEF|STANDARD|DETAILED)
   deliveryDestination     String? // effective destination used for this send (EMAIL|CHAT|BOTH)
   requireApproval         Boolean   @default(false) // effective gate decision frozen at row creation (retry-consistency)
-  chatChannels            Json? // NewsletterChatChannel[] frozen at creation; send phase reads these, never live settings
+  screenshotsEnabled      Boolean   @default(false) // whether a reviewer may attach images, frozen at row creation
+  screenshotEnvironmentId String? // environment screenshots are captured from, frozen at row creation; null = uploads only. No foreign key: a deleted environment fails the capture, not the send
+  captureStarts           Int       @default(0) // reviewer captures started on this send (new and again); bounded by NEWSLETTER_REVIEWER_CAPTURES_MAX
+  chatChannels           Json? // NewsletterChatChannel[] frozen at creation; send phase reads these, never live settings
   reviewedByUserId        String? // reviewer who approved/rejected
   reviewedAt              DateTime?
   rejectionReason         String? // optional reviewer note on reject
   removedHighlightIndexes Json? // number[] indexes into frozen content.highlights the reviewer dropped
+  highlightOrder          Json? // number[] reviewer's order of indexes into frozen content.highlights; null = natural order
   aiUsageTokens           Int?
   temporalWorkflowId      String?
   errorMessage            String?
@@ -8908,6 +9388,7 @@ model NewsletterSend {
   user           User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   deliveries     NewsletterDelivery[]
   chatDeliveries NewsletterChatDelivery[]
+  images         NewsletterSendImage[]
 
   @@index([projectId, createdAt(sort: Desc)])
   @@index([userId])
@@ -8974,6 +9455,41 @@ model NewsletterChatDelivery {
   @@index([userId])
   @@index([organizationId])
   @@map("newsletter_chat_delivery")
+}
+
+// An image a reviewer attached to one highlight of a held send. Editable only
+// while the send is PENDING_APPROVAL; approval copies included images to an
+// unguessable public key and writes their URLs into the send's content.
+model NewsletterSendImage {
+  id              String   @id @default(cuid())
+  sendId          String
+  projectId       String
+  organizationId  String?
+  userId          String?
+  highlightIndex  Int // index into the send's frozen content.highlights
+  position        Int // 0-based order within the highlight
+  captureState    String   @default("READY") // READY | CAPTURING | FAILED
+  included        Boolean  @default(false) // goes out in the email when the send is approved
+  source          String // UPLOAD | AI | PROMPT
+  storageKey      String? // tenant-owned review object; never served publicly
+  publicKey       String? // newsletter-public/<random>.<ext>, set when published at approval
+  altText         String   @default("")
+  placement       String   @default("BELOW") // BELOW | ABOVE the highlight's description in the email
+  width           Int?
+  height          Int?
+  bytes           Int?
+  prompt          String?
+  errorMessage    String?
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  send NewsletterSend @relation(fields: [sendId], references: [id], onDelete: Cascade)
+
+  @@index([sendId])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("newsletter_send_image")
 }
 
 // ProjectBriefCursor — per-user "last reviewed" marker used by the client-side
@@ -9788,6 +10304,9 @@ model UserStory {
   promotedFromPrReviewFindings PullRequestReviewFinding[] @relation("PrReviewFindingPromotedStory")
   stageTransitionRequests      StageTransitionRequest[]
   discoveryRuns                DiscoveryRun[]
+  timeEntries                  TimeEntry[]
+  timeSuggestions              TimeSuggestion[]
+  timeTimers                   TimeTimer[]
 
   // A PARTIAL unique index on (projectId, externalId) WHERE externalId IS NOT
   // NULL is enforced via the hand-written migration
@@ -13476,9 +13995,10 @@ model ProjectEnvironment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project            Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user               User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization       Organization?        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  newsletterSettings NewsletterSettings[]
 
   @@index([projectId])
   @@index([userId])
@@ -15710,9 +16230,9 @@ model WorkflowIntegration {
   lastUsedAt     DateTime?
 
   // Relations
-  workflow                 Workflow?                           @relation(fields: [workflowId], references: [id], onDelete: Cascade)
-  agentConfigurations      AgentIntegrationConfiguration[] // Agent instances using this integration
-  projectKnowledgeBindings ProjectDatabricksKnowledgeBinding[] // Projects using this integration for read-only knowledge retrieval
+  workflow                      Workflow?                           @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  agentConfigurations           AgentIntegrationConfiguration[] // Agent instances using this integration
+  projectKnowledgeBindings      ProjectDatabricksKnowledgeBinding[] // Projects using this integration for read-only knowledge retrieval
   projectContextQualityBindings ProjectContextQualityBinding[]
 
   // Partial unique index `workflow_integration_personal_gitlab_key`, owned by
@@ -15783,30 +16303,30 @@ model ProjectContextQualityPrincipal {
 }
 
 model ProjectContextQualityBinding {
-  id                   String   @id @default(cuid())
+  id                   String    @id @default(cuid())
   organizationId       String
-  projectId            String   @unique
+  projectId            String    @unique
   integrationId        String
-  workspaceOrigin      String   @db.VarChar(512)
-  jobId                String   @db.VarChar(32)
-  experimentId         String   @db.VarChar(32)
-  volumeRoot           String   @db.VarChar(512)
-  notebookPath         String   @db.VarChar(768)
-  notebookSha256       String   @db.VarChar(64)
-  principalFingerprint String   @db.VarChar(64)
-  configHash           String   @db.VarChar(64)
-  configVersion        Int      @default(1)
-  isEnabled            Boolean  @default(false)
+  workspaceOrigin      String    @db.VarChar(512)
+  jobId                String    @db.VarChar(32)
+  experimentId         String    @db.VarChar(32)
+  volumeRoot           String    @db.VarChar(512)
+  notebookPath         String    @db.VarChar(768)
+  notebookSha256       String    @db.VarChar(64)
+  principalFingerprint String    @db.VarChar(64)
+  configHash           String    @db.VarChar(64)
+  configVersion        Int       @default(1)
+  isEnabled            Boolean   @default(false)
   exportApprovedAt     DateTime?
   exportApprovedBy     String?
   createdBy            String
   updatedBy            String
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  project      Project                    @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  organization Organization               @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  integration  WorkflowIntegration        @relation(fields: [integrationId], references: [id], onDelete: Restrict)
+  project      Project                        @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  organization Organization                   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  integration  WorkflowIntegration            @relation(fields: [integrationId], references: [id], onDelete: Restrict)
   principal    ProjectContextQualityPrincipal @relation(fields: [principalFingerprint, organizationId], references: [fingerprint, organizationId], onDelete: Restrict)
   runs         ProjectContextQualityRun[]
 
@@ -15824,47 +16344,47 @@ model ProjectContextQualityBinding {
 /// deletion until confirmed remote cleanup so receipts cannot silently vanish.
 /// Migration-owned CHECKs bound status, hashes and exact UTF-8 payload size.
 model ProjectContextQualityRun {
-  id                 String   @id @default(cuid())
-  organizationId     String
-  projectId          String
-  bindingId          String
-  requestedBy        String
-  name               String   @db.VarChar(80)
-  idempotencyKey     String   @db.VarChar(128)
-  requestHash        String   @db.VarChar(64)
-  sourceRefsJson     Json
-  snapshotPayload    String?  @db.Text
-  payloadHash        String   @db.VarChar(64)
-  snapshotHash       String   @db.VarChar(64)
-  scorerVersion      String   @db.VarChar(128)
-  bindingConfigJson  Json
-  bindingConfigHash  String   @db.VarChar(64)
-  localResultJson    Json
-  status             String   @default("QUEUED") @db.VarChar(32)
-  stateVersion       Int      @default(0)
-  workflowId         String   @unique @db.VarChar(256)
-  dispatchToken      String   @unique @db.VarChar(64)
-  remoteRunId        String?  @db.VarChar(32)
-  remoteMlflowRunId  String?  @db.VarChar(64)
-  remoteLookupPageToken String? @db.VarChar(2048)
-  remoteState        String?  @db.VarChar(64)
-  providerReceiptJson Json?
-  resultJson         Json?
-  errorCode          String?  @db.VarChar(64)
-  remoteInputPath    String?  @db.VarChar(768)
-  cleanupStatus      String   @default("NOT_REQUIRED") @db.VarChar(32)
-  cleanupErrorCode   String?  @db.VarChar(64)
-  cancelRequestedAt  DateTime?
-  startedAt          DateTime?
-  completedAt        DateTime?
-  deadlineAt         DateTime
-  snapshotExpiresAt  DateTime
-  snapshotPurgedAt   DateTime?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  id                    String    @id @default(cuid())
+  organizationId        String
+  projectId             String
+  bindingId             String
+  requestedBy           String
+  name                  String    @db.VarChar(80)
+  idempotencyKey        String    @db.VarChar(128)
+  requestHash           String    @db.VarChar(64)
+  sourceRefsJson        Json
+  snapshotPayload       String?   @db.Text
+  payloadHash           String    @db.VarChar(64)
+  snapshotHash          String    @db.VarChar(64)
+  scorerVersion         String    @db.VarChar(128)
+  bindingConfigJson     Json
+  bindingConfigHash     String    @db.VarChar(64)
+  localResultJson       Json
+  status                String    @default("QUEUED") @db.VarChar(32)
+  stateVersion          Int       @default(0)
+  workflowId            String    @unique @db.VarChar(256)
+  dispatchToken         String    @unique @db.VarChar(64)
+  remoteRunId           String?   @db.VarChar(32)
+  remoteMlflowRunId     String?   @db.VarChar(64)
+  remoteLookupPageToken String?   @db.VarChar(2048)
+  remoteState           String?   @db.VarChar(64)
+  providerReceiptJson   Json?
+  resultJson            Json?
+  errorCode             String?   @db.VarChar(64)
+  remoteInputPath       String?   @db.VarChar(768)
+  cleanupStatus         String    @default("NOT_REQUIRED") @db.VarChar(32)
+  cleanupErrorCode      String?   @db.VarChar(64)
+  cancelRequestedAt     DateTime?
+  startedAt             DateTime?
+  completedAt           DateTime?
+  deadlineAt            DateTime
+  snapshotExpiresAt     DateTime
+  snapshotPurgedAt      DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
-  project      Project                    @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  organization Organization               @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  project      Project                      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  organization Organization                 @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   binding      ProjectContextQualityBinding @relation(fields: [bindingId, projectId, organizationId], references: [id, projectId, organizationId], onDelete: Restrict)
 
   @@unique([projectId, requestedBy, idempotencyKey], map: "context_quality_run_actor_request_key")
@@ -16494,11 +17014,11 @@ model WorkspaceDocument {
   uploadedBy String // User who uploaded
 
   // Relations
-  workspace      Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  chunks         WorkspaceDocumentChunk[]
-  uploader       User                     @relation("WorkspaceDocumentUploader", fields: [uploadedBy], references: [id])
+  workspace           Workspace                      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  chunks              WorkspaceDocumentChunk[]
+  uploader            User                           @relation("WorkspaceDocumentUploader", fields: [uploadedBy], references: [id])
   projectContextLinks ProjectWorkspaceDocumentLink[]
-  syncedResource SyncedResource? // Link to external synced resource (if created from data connection)
+  syncedResource      SyncedResource? // Link to external synced resource (if created from data connection)
 
   @@index([workspaceId])
   @@index([status])
@@ -17535,8 +18055,8 @@ model ReportTemplate {
   updatedAt DateTime @updatedAt
 
   // Relations
-  user         User?                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization?         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization?            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   executions   ReportExecution[]
   artifacts    ReportArtifact[]
   instances    TemplateInstance[]
@@ -21270,21 +21790,21 @@ model ProjectInstructionSnapshot {
   /// `project_instruction_proposal_intent_seq`.
   proposalIntentOrder    BigInt?
 
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  readyAt     DateTime?
-  publishedAt DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  readyAt           DateTime?
+  publishedAt       DateTime?
   /// When the project's members were told this version was published: the
   /// claim that makes the publish notification fire at most once per
   /// snapshot. `publishedAt` cannot serve, because a rollback to this version
   /// overwrites it. Null until the first publication's fan-out claims it.
   publishNotifiedAt DateTime?
 
-  project          Project                            @relation("ProjectInstructionSnapshots", fields: [projectId], references: [id], onDelete: Cascade)
-  organization     Organization                       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user             User                               @relation("InstructionSnapshotCreator", fields: [userId], references: [id], onDelete: Cascade)
-  reviewer         User?                              @relation("InstructionSnapshotReviewer", fields: [reviewerUserId], references: [id], onDelete: SetNull)
-  publishedFor     Project?                           @relation("PublishedInstructionSnapshot")
+  project          Project                              @relation("ProjectInstructionSnapshots", fields: [projectId], references: [id], onDelete: Cascade)
+  organization     Organization                         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user             User                                 @relation("InstructionSnapshotCreator", fields: [userId], references: [id], onDelete: Cascade)
+  reviewer         User?                                @relation("InstructionSnapshotReviewer", fields: [reviewerUserId], references: [id], onDelete: SetNull)
+  publishedFor     Project?                             @relation("PublishedInstructionSnapshot")
   files            ProjectInstructionFile[]
   gitIntentEntries ProjectInstructionGitIntentEntry[]
   approvals        ProjectInstructionProposalApproval[]
@@ -21619,6 +22139,83 @@ model ProjectInstructionProposalApproval {
   @@map("project_instruction_proposal_approval")
 }
 
+/// A named Coding Instructions set within a project (spec 2026-11-11, "a set
+/// is a folder"): the folder `instructions/<slug>/` of the project's one
+/// instructions source, applying to the code repositories assigned to it.
+/// Sync, versions, proposals and review stay per project; consumers (the CLI
+/// plugin, MCP reads) take only the set's folder. The default set is the
+/// source's root minus the other sets' folders; every project gets one,
+/// backfilled with its code repositories so nothing changes for it.
+///
+/// Exactly one default per project: the partial unique index
+/// `project_instruction_set_one_default_key` ON ("projectId") WHERE
+/// "isDefault", written by hand in the migration (Prisma cannot express it).
+/// A slug is unique among live sets: the partial unique index
+/// `project_instruction_set_live_slug_key` ON ("projectId", "slug") WHERE
+/// "deletedAt" IS NULL, also hand-written.
+///
+/// Tenancy: organization projects only (ADR-018); RLS `user_owned`,
+/// registered in src/tenant-db.ts. `userId` is the creator for RLS and is
+/// deliberately not a foreign key: a member leaving must never delete a set
+/// and, through it, the project's instructions.
+model ProjectInstructionSet {
+  id             String    @id @default(cuid())
+  projectId      String
+  organizationId String
+  userId         String
+  name           String
+  /// `[a-z0-9-]`, unique per project; names the set's folder and plugin.
+  /// Never changes after creation.
+  slug           String
+  isDefault      Boolean   @default(false)
+  /// Soft delete (D7): the set leaves Fabric; its files stay in git (and
+  /// fall back to the default set's view). Never set on the default set.
+  deletedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project      Project                           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization                      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repositories ProjectInstructionSetRepository[]
+
+  /// Target of the repository assignment's composite FK: an assignment can
+  /// only point at a set of its own project.
+  @@unique([id, projectId])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("project_instruction_set")
+}
+
+/// A code repository assigned to a Coding Instructions set (spec 2026-11-11,
+/// D1: a repository may be in several sets; D2: one in none gets no
+/// instructions). Both composite FKs keep the set and the repository in the
+/// same project. RLS `user_owned` like its set; `userId` is who assigned it,
+/// not a foreign key for the same reason as on the set.
+model ProjectInstructionSetRepository {
+  id                      String @id @default(cuid())
+  setId                   String
+  repositoryIntegrationId String
+  projectId               String
+  organizationId          String
+  userId                  String
+
+  createdAt DateTime @default(now())
+
+  set                   ProjectInstructionSet        @relation(fields: [setId, projectId], references: [id, projectId], onDelete: Cascade, map: "project_instruction_set_repository_set_fkey")
+  repositoryIntegration ProjectRepositoryIntegration @relation(fields: [repositoryIntegrationId, projectId], references: [id, projectId], onDelete: Cascade, map: "project_instruction_set_repository_integration_fkey")
+  project               Project                      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization          Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([setId, repositoryIntegrationId])
+  @@index([repositoryIntegrationId])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("project_instruction_set_repository")
+}
+
 /// A project's repository-sync configuration: at most one per project. The
 /// configuration identity is (id, generation); every change that alters what
 /// a run would produce (repository, branch, folder, ignore rules) bumps
@@ -21904,7 +22501,12 @@ model ProjectRepositoryIntegration {
   /// Living Memory repository syncs reading from this integration (at most one per project).
   contextRepositorySyncs     ProjectContextRepositorySync[]
   instructionRepositorySyncs ProjectInstructionRepositorySync[]
+  /// Coding Instructions sets this code repository is assigned to (spec 2026-11-11).
+  instructionSetRepositories ProjectInstructionSetRepository[]
 
+  /// Target of the set-assignment composite FK: a set can only take a
+  /// repository of its own project.
+  @@unique([id, projectId])
   @@unique([projectId, provider, repositoryOwner, repositoryName])
   @@index([projectId])
   @@index([status])

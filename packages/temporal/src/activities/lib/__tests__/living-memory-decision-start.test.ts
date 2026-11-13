@@ -152,6 +152,17 @@ describe("startLivingMemoryDecisionExtraction", () => {
 		expect(mocks.warn).toHaveBeenCalledTimes(2);
 	});
 
+	it("reads a never-read file a member's scan asks for, with no first-sync mark", async () => {
+		await expect(
+			startLivingMemoryDecisionExtraction({
+				contextId: "ctx-1",
+				scanRequested: true,
+				requestedByUserId: "member-9",
+			}),
+		).resolves.toBe("started");
+		expect(mocks.start).toHaveBeenCalledTimes(1);
+	});
+
 	describe("a version a repository's first sync wrote", () => {
 		beforeEach(() => {
 			mocks.contextFindUnique.mockResolvedValue({
@@ -167,11 +178,12 @@ describe("startLivingMemoryDecisionExtraction", () => {
 			expect(mocks.start).not.toHaveBeenCalled();
 		});
 
-		it("is read, without notifying, when a member asks", async () => {
+		it("is read when a member asks, naming that member so the notification leaves them out", async () => {
 			await expect(
 				startLivingMemoryDecisionExtraction({
 					contextId: "ctx-1",
 					scanRequested: true,
+					requestedByUserId: "member-9",
 				}),
 			).resolves.toBe("started");
 			expect(mocks.start).toHaveBeenCalledWith(
@@ -181,9 +193,24 @@ describe("startLivingMemoryDecisionExtraction", () => {
 						{
 							contextId: "ctx-1",
 							contentHash: HASH,
-							notify: false,
+							requestedByUserId: "member-9",
 						},
 					],
+				}),
+			);
+		});
+
+		it("is read and announced to every reviewer for a scan that names no member", async () => {
+			await expect(
+				startLivingMemoryDecisionExtraction({
+					contextId: "ctx-1",
+					scanRequested: true,
+				}),
+			).resolves.toBe("started");
+			expect(mocks.start).toHaveBeenCalledWith(
+				"livingMemoryDecisionExtractionWorkflow",
+				expect.objectContaining({
+					args: [{ contextId: "ctx-1", contentHash: HASH }],
 				}),
 			);
 		});

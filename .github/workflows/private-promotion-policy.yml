@@ -12,7 +12,10 @@ permissions:
 
 jobs:
   classify:
-    runs-on: ubuntu-24.04-arm
+    # Only private pull requests use Namespace, by event allowlist. Pushes and
+    # other events retain GitHub runners: their caches can be restored by other
+    # branches, including secret-holding jobs. See unit-tests.yml vitest.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
     timeout-minutes: 3
     outputs:
       reduced: ${{ steps.policy.outputs.reduced }}

@@ -165,7 +165,7 @@ function HelpSection({
 				<p className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
 					{category.label}
 				</p>
-				<p className="text-xs text-muted-foreground/90">
+				<p className="text-xs text-muted-foreground">
 					{category.description}
 				</p>
 			</header>

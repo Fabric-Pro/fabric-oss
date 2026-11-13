@@ -367,7 +367,7 @@ export function UnifiedAgentView() {
 						className={cn(
 							"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 							scopeFilter === value
-								? "border-primary/40 bg-primary/[0.08] text-primary dark:bg-primary/[0.15]"
+								? "border-primary/40 bg-primary/[0.08] text-primary-active dark:bg-primary/[0.15]"
 								: "border-border bg-background text-foreground hover:bg-muted/60",
 						)}
 					>
@@ -385,7 +385,7 @@ export function UnifiedAgentView() {
 					className={cn(
 						"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 						favoritedOnly
-							? "border-primary/40 bg-primary/[0.08] text-primary dark:bg-primary/[0.15]"
+							? "border-primary/40 bg-primary/[0.08] text-primary-active dark:bg-primary/[0.15]"
 							: "border-border bg-background text-foreground hover:bg-muted/60",
 					)}
 				>
@@ -400,7 +400,7 @@ export function UnifiedAgentView() {
 					className={cn(
 						"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 						certifiedOnly
-							? "border-primary/40 bg-primary/[0.08] text-primary dark:bg-primary/[0.15]"
+							? "border-primary/40 bg-primary/[0.08] text-primary-active dark:bg-primary/[0.15]"
 							: "border-border bg-background text-foreground hover:bg-muted/60",
 					)}
 				>
@@ -415,7 +415,7 @@ export function UnifiedAgentView() {
 					className={cn(
 						"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 						popularOnly
-							? "border-primary/40 bg-primary/[0.08] text-primary dark:bg-primary/[0.15]"
+							? "border-primary/40 bg-primary/[0.08] text-primary-active dark:bg-primary/[0.15]"
 							: "border-border bg-background text-foreground hover:bg-muted/60",
 					)}
 				>

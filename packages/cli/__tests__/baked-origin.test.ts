@@ -19,7 +19,11 @@ import {
 } from "vitest";
 import { getBaseUrl, saveApiKey } from "../src/lib/config.js";
 import { bakedOrigin } from "../src/lib/origin.js";
-import { makeTree, runCli } from "./helpers/instructions-commands.js";
+import {
+	hookMessageStdout,
+	makeTree,
+	runCli,
+} from "./helpers/instructions-commands.js";
 
 const BAKED = "https://deploy.example.com";
 const ELSEWHERE = "https://elsewhere.example.com";
@@ -274,9 +278,12 @@ describe("a deployment address that is not a URL", () => {
 		]);
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toBe(
-			`fabric: coding instructions check skipped: ${LINE}\n`,
+		expect(result.stdout).toBe(
+			hookMessageStdout([
+				`fabric: coding instructions check skipped: ${LINE}`,
+			]),
 		);
+		expect(result.stderr).toBe("");
 		expect(requestedUrls).toEqual([]);
 	});
 });

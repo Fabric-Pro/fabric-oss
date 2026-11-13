@@ -262,7 +262,7 @@ export const ReportTemplateSkillsSection = forwardRef<
 							{hasPendingChanges && (
 								<Badge
 									variant="outline"
-									className="text-xs text-amber-600 border-amber-300"
+									className="text-xs text-amber-700 border-amber-300 dark:text-amber-500"
 								>
 									Unsaved changes
 								</Badge>

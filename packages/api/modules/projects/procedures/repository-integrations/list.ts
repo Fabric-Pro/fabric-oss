@@ -10,6 +10,7 @@ import { ORPCError } from "@orpc/client";
 import {
 	getProjectCodeIndexes,
 	hasProjectAccess,
+	isCancelledCodeIndex,
 	listProjectRepoIntegrations,
 } from "@repo/database";
 import { z } from "zod";
@@ -84,6 +85,7 @@ export const listRepoIntegrationsProcedure = tenantProtectedProcedure
 				codeIndex: index
 					? {
 							status: index.status,
+							cancelled: isCancelledCodeIndex(index),
 							branch: index.branch,
 							commitSha: index.commitSha,
 							indexedAt: index.indexedAt,

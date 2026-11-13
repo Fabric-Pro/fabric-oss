@@ -1,5 +1,5 @@
 /**
- * fabric instructions rules --project <id> [--dest <dir>] [--hook]
+ * fabric instructions rules --project <id> [--set <slug>] [--dest <dir>] [--hook]
  *
  * Writes the project's rules (the instructions' `rules/**` and
  * `.claude/rules/**` markdown) into the project folder as
@@ -10,6 +10,10 @@
  * `--hook` is the Claude Code session hook's mode: it prints nothing on
  * stdout (a hook's stdout is the session's context), writes its notes to
  * stderr, stops at a deadline, and never fails.
+ *
+ * `--set` is a non-default Coding Instructions set: its rules only, in the
+ * set plugin's own folder (`.claude/rules/<name>-<slug>/`). Without it a
+ * project with sets delivers its default set's rules.
  */
 import path from "node:path";
 import type { Command } from "commander";
@@ -21,6 +25,11 @@ import {
 	resolveExistingRoot,
 } from "../../lib/instructions/safe-write.js";
 import { findProjectRoot } from "../../lib/memory/project-root.js";
+import {
+	isSetSlug,
+	loadRenderSet,
+	pluginSetSlug,
+} from "../../lib/plugin/instruction-sets.js";
 import { selectRules, tierRules } from "../../lib/plugin/rules.js";
 import {
 	type RulesSyncResult,
@@ -67,10 +76,19 @@ export async function syncRulesForProject(input: {
 	/** The project folder. */
 	root: string;
 	budgetMs?: number;
+	/** `--set`: a Coding Instructions set's slug. */
+	set?: string;
 }): Promise<RulesSyncResult> {
 	const budget = input.budgetMs ?? HOOK_BUDGET_MS;
 	const deadline = Date.now() + budget;
 	const { client, cacheDirectory } = connectForProject(input);
+	const chosen = await loadRenderSet({
+		client,
+		projectId: input.project,
+		org: input.org,
+		set: input.set,
+	});
+	const setSlug = pluginSetSlug(chosen?.set.slug);
 	const published = await client.instructions.getPublished(input.project, {
 		org: input.org,
 	});
@@ -82,15 +100,17 @@ export async function syncRulesForProject(input: {
 		cacheDirectory,
 		timeoutMs: REQUEST_TIMEOUT_MS,
 		signal: AbortSignal.timeout(budget),
+		set: chosen?.set ?? null,
 	});
 	const rules = tierRules(selectRules(read, "claude-code")).delivered;
 	const root = await resolveExistingRoot(input.root);
-	const folder = rulesFolderFor(input.project);
+	const folder = rulesFolderFor(input.project, setSlug);
 	const tree = await git.findWorkTree(root, Date.now() + 8_000);
 	const toplevel = tree.kind === "ok" ? tree.value.toplevel : null;
 	const result = await syncProjectRules({
 		root,
 		projectId: input.project,
+		set: setSlug,
 		rules,
 		tracked:
 			toplevel === null
@@ -120,6 +140,7 @@ interface RulesOptions {
 	org?: string;
 	dest?: string;
 	hook?: boolean;
+	set?: string;
 }
 
 export function registerRulesCommand(instructions: Command): void {
@@ -135,6 +156,10 @@ export function registerRulesCommand(instructions: Command): void {
 		)
 		.option("--org <slug>", "Organization context")
 		.option(
+			"--set <slug>",
+			"Coding Instructions set whose rules to write (default: the project's default set, when it has sets)",
+		)
+		.option(
 			"--dest <dir>",
 			"The project folder (default: the folder `init` set up, found from cwd)",
 		)
@@ -144,6 +169,9 @@ export function registerRulesCommand(instructions: Command): void {
 				process.stderr.write(`fabric: ${text}\n`);
 			try {
 				const project = opts.project as string;
+				if (opts.set !== undefined && !isSetSlug(opts.set)) {
+					throw new CliFailure("--set is not a set slug", 2);
+				}
 				let root: string;
 				if (opts.dest !== undefined) {
 					root = await resolveDestinationRoot(
@@ -160,6 +188,7 @@ export function registerRulesCommand(instructions: Command): void {
 					root = found.root;
 				}
 				const result = await syncRulesForProject({
+					set: opts.set,
 					project,
 					baseUrl: opts.baseUrl,
 					org: opts.org,

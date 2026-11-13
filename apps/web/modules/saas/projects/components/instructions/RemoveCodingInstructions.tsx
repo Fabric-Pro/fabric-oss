@@ -164,7 +164,7 @@ export function RemoveCodingInstructions({
 			{blockedLine === null ? null : (
 				<p
 					id={reasonId}
-					className="text-foreground/60 text-xs"
+					className="text-muted-foreground text-xs"
 					data-testid="instructions-remove-blocked"
 				>
 					{blockedLine}

@@ -618,7 +618,7 @@ function ChildPagesList({
 							className={cn(
 								"h-7 rounded-md border px-2.5 text-xs font-medium motion-safe:transition-colors",
 								active
-									? "border-primary bg-primary/10 text-primary"
+									? "border-primary bg-primary/10 text-primary-active"
 									: "border-border bg-card text-muted-foreground hover:bg-muted/40 hover:text-foreground",
 							)}
 							data-testid={`child-pages-filter-${f.value}`}
@@ -1886,6 +1886,7 @@ export function UrlSourcePageView({ context, backHref }: Props) {
 												aria-label="More options"
 											>
 												<MoreVerticalIcon
+													strokeWidth={2.5}
 													className="size-4"
 													aria-hidden="true"
 												/>
@@ -2053,7 +2054,7 @@ export function UrlSourcePageView({ context, backHref }: Props) {
 												<dt className="text-muted-foreground">
 													Indexed
 												</dt>
-												<dd className="text-right tabular-nums text-secondary">
+												<dd className="text-right tabular-nums text-success">
 													{context.indexedCount}
 												</dd>
 												{(context.pendingCount ?? 0) >
@@ -2175,7 +2176,7 @@ export function UrlSourcePageView({ context, backHref }: Props) {
 								{lastSynced && (
 									<li className="flex items-start gap-2">
 										<span
-											className="mt-1.5 size-1.5 shrink-0 rounded-full bg-secondary"
+											className="mt-1.5 size-1.5 shrink-0 rounded-full bg-success"
 											aria-hidden="true"
 										/>
 										<span>

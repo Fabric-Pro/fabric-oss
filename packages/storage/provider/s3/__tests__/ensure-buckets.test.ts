@@ -1,7 +1,7 @@
 import { HeadBucketCommand, S3Client } from "@aws-sdk/client-s3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@repo/observability", () => ({
+vi.mock("@repo/observability/breakers", () => ({
 	withProviderBreaker: (
 		_service: string,
 		_operation: string,

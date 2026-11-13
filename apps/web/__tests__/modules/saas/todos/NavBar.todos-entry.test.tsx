@@ -90,6 +90,10 @@ vi.mock("@saas/shared/components/IncidentRailIndicator", () => ({
 	IncidentRailIndicator: () => null,
 }));
 
+vi.mock("@saas/time-tracking/components/TimerDot", () => ({
+	useTimerNavIndicator: () => undefined,
+}));
+
 vi.mock("@saas/get-started/components/GetStartedPointer", () => ({
 	GetStartedPointer: () => null,
 }));

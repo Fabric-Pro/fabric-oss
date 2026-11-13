@@ -7,6 +7,7 @@ import {
 	getLinkedSlackChannels,
 	getLinkedTeamsChannels,
 	getNewsletterSettings,
+	getProjectEnvironment,
 	lockOrganizationSubscribers,
 	NEWSLETTER_CHAT_PLATFORMS,
 	NEWSLETTER_DELIVERY_DESTINATIONS,
@@ -87,6 +88,16 @@ export const updateNewsletterSettingsInput = z.object({
 	// Whether a send requires admin approval before delivery. Audited on a real
 	// transition (see the handler's `newsletter.approval.required_changed` emit).
 	requireApproval: z.boolean().optional(),
+	// Whether a reviewer can attach images to a held send's highlights. Audited
+	// on a real transition, like requireApproval: approved images are published
+	// under public URLs.
+	screenshotsEnabled: z.boolean().optional(),
+	// The project environment screenshots are captured from; null turns
+	// automatic capture off. Choosing one requires
+	// `screenshotSampleDataConfirmed: true` in the same request: Fabric signs
+	// in there and cannot tell sample data from real data. Audited.
+	screenshotEnvironmentId: z.string().min(1).nullable().optional(),
+	screenshotSampleDataConfirmed: z.boolean().optional(),
 	// Reconcile organization members into the subscriber list before each send.
 	// Organization projects only. Audited on a real transition.
 	sendToOrganization: z.boolean().optional(),
@@ -103,6 +114,47 @@ export const updateNewsletterSettingsInput = z.object({
 		.optional(),
 	publicWidgetConfig: z.record(z.string(), z.unknown()).nullable().optional(),
 });
+
+/**
+ * A capture environment must be one of this project's environments, must not
+ * be production, and must come with the admin's confirmation that it shows
+ * sample data only. Clearing it (`null`) needs none of these.
+ */
+async function assertScreenshotEnvironmentChoice(
+	projectId: string,
+	input: {
+		screenshotEnvironmentId?: string | null;
+		screenshotSampleDataConfirmed?: boolean;
+	},
+): Promise<void> {
+	const environmentId = input.screenshotEnvironmentId;
+	if (environmentId === undefined || environmentId === null) {
+		return;
+	}
+	if (input.screenshotSampleDataConfirmed !== true) {
+		throw new ORPCError("BAD_REQUEST", {
+			message:
+				"Confirm that this environment shows sample data only before screenshots are captured from it.",
+			data: { code: "sample_data_unconfirmed" },
+		});
+	}
+	const environment = await getProjectEnvironment({
+		projectId,
+		environmentId,
+	});
+	if (!environment) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: "That environment does not belong to this project.",
+		});
+	}
+	if (environment.type === "PRODUCTION") {
+		throw new ORPCError("BAD_REQUEST", {
+			message:
+				"Screenshots cannot be captured from a production environment. Choose one that shows sample data only.",
+			data: { code: "production_environment" },
+		});
+	}
+}
 
 // Turning the distribution off waits for a running sync, which can take longer
 // than Prisma's default five seconds for a large organization.
@@ -130,6 +182,10 @@ export const updateSettingsProcedure = tenantProtectedProcedure
 					"Only an organization project can send to its organization",
 			});
 		}
+		await assertScreenshotEnvironmentChoice(project.id, {
+			screenshotEnvironmentId: input.screenshotEnvironmentId,
+			screenshotSampleDataConfirmed: input.screenshotSampleDataConfirmed,
+		});
 
 		// F3: re-validate BOTH submitted lists — the audience list (chatChannels)
 		// and the review-alert list (approvalChatChannels, Fizzy #2203) — against
@@ -259,6 +315,65 @@ export const updateSettingsProcedure = tenantProtectedProcedure
 				}
 			}
 
+			if (input.screenshotsEnabled !== undefined) {
+				const current = await tx.newsletterSettings.findUnique({
+					where: { projectId: input.projectId },
+					select: { screenshotsEnabled: true },
+				});
+				const before = current?.screenshotsEnabled ?? false; // default-row = false
+				if (before !== input.screenshotsEnabled) {
+					await recordAuditTx(tx, {
+						action: "newsletter.screenshots.changed",
+						actor: {
+							type: "user",
+							userId: context.user.id,
+							emailSnapshot: context.user.email ?? null,
+							nameSnapshot: context.user.name ?? null,
+						},
+						organizationId: project.organizationId ?? null,
+						projectId: input.projectId,
+						resource: {
+							type: "newsletter_settings",
+							id: input.projectId,
+						},
+						metadata: {
+							screenshotsEnabled: input.screenshotsEnabled,
+						},
+					});
+				}
+			}
+
+			if (input.screenshotEnvironmentId !== undefined) {
+				const current = await tx.newsletterSettings.findUnique({
+					where: { projectId: input.projectId },
+					select: { screenshotEnvironmentId: true },
+				});
+				const before = current?.screenshotEnvironmentId ?? null;
+				if (before !== input.screenshotEnvironmentId) {
+					await recordAuditTx(tx, {
+						action: "newsletter.screenshots.environment_changed",
+						actor: {
+							type: "user",
+							userId: context.user.id,
+							emailSnapshot: context.user.email ?? null,
+							nameSnapshot: context.user.name ?? null,
+						},
+						organizationId: project.organizationId ?? null,
+						projectId: input.projectId,
+						resource: {
+							type: "newsletter_settings",
+							id: input.projectId,
+						},
+						metadata: {
+							screenshotEnvironmentId:
+								input.screenshotEnvironmentId,
+							sampleDataConfirmed:
+								input.screenshotEnvironmentId !== null,
+						},
+					});
+				}
+			}
+
 			const s = await upsertNewsletterSettings(
 				input.projectId,
 				{
@@ -273,6 +388,14 @@ export const updateSettingsProcedure = tenantProtectedProcedure
 					chatChannels,
 					approvalChatChannels,
 					requireApproval: input.requireApproval,
+					screenshotsEnabled: input.screenshotsEnabled,
+					screenshotEnvironmentId: input.screenshotEnvironmentId,
+					screenshotSampleDataConfirmedAt:
+						input.screenshotEnvironmentId === undefined
+							? undefined
+							: input.screenshotEnvironmentId === null
+								? null
+								: new Date(),
 					sendToOrganization: input.sendToOrganization,
 					publicWidgetTheme: input.publicWidgetTheme,
 					publicWidgetAccent: input.publicWidgetAccent,

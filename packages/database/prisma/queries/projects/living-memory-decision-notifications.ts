@@ -28,8 +28,10 @@
  * Recipients are the project's people who can create decisions on it (the
  * permission the candidate create flow requires): the owner and the project's
  * accepted, unexpired members, each checked with
- * `canCreateArchitectureDecisions`, minus whoever last wrote the file, then
- * narrowed by the `syncProject` preference toggle (category PROJECT). Never
+ * `canCreateArchitectureDecisions`, minus whoever last wrote the file and
+ * anyone the caller excludes (the member whose own scan found the decisions,
+ * who is already looking), then narrowed by the `syncProject` preference
+ * toggle (category PROJECT). Never
  * the organization at large: an organization role can grant the permission to
  * someone who cannot see the project.
  *
@@ -66,6 +68,8 @@ const SNIPPET_MAX_LENGTH = 280;
  */
 export async function createDecisionCandidatesReadyNotifications(args: {
 	extractionId: string;
+	/** People not to tell, beyond the file's last writer. */
+	excludeUserIds?: readonly string[];
 }): Promise<number> {
 	try {
 		const extraction = await db.projectContextDecisionExtraction.findUnique(
@@ -107,6 +111,7 @@ export async function createDecisionCandidatesReadyNotifications(args: {
 			projectId: extraction.projectId,
 			ownerUserId: project.userId,
 			writerUserId: extraction.context.contentUpdatedByUserId,
+			excludeUserIds: args.excludeUserIds,
 		});
 		if (recipients.length === 0) {
 			return 0;
@@ -157,7 +162,8 @@ export async function createDecisionCandidatesReadyNotifications(args: {
 
 /**
  * Everyone on the project who may create decisions on it, minus the file's
- * last writer, minus anyone who switched project notifications off.
+ * last writer and `excludeUserIds`, minus anyone who switched project
+ * notifications off.
  * Candidates are the owner and the project's accepted, unexpired members: the
  * people who can see the project at all. An organization member who was never
  * added to the project can hold the permission through an organization role
@@ -168,6 +174,7 @@ export async function resolveDecisionCandidateRecipients(input: {
 	projectId: string;
 	ownerUserId: string;
 	writerUserId: string | null;
+	excludeUserIds?: readonly string[];
 }): Promise<string[]> {
 	const now = new Date();
 	const members = await db.projectMember.findMany({
@@ -178,12 +185,16 @@ export async function resolveDecisionCandidateRecipients(input: {
 		},
 		select: { userId: true },
 	});
+	const excluded = new Set(input.excludeUserIds);
+	if (input.writerUserId) {
+		excluded.add(input.writerUserId);
+	}
 	const candidates = [
 		...new Set([
 			input.ownerUserId,
 			...members.map((member) => member.userId),
 		]),
-	].filter((userId) => userId !== input.writerUserId);
+	].filter((userId) => !excluded.has(userId));
 	const permitted: string[] = [];
 	for (let i = 0; i < candidates.length; i += PERMISSION_CHECK_BATCH) {
 		const batch = candidates.slice(i, i + PERMISSION_CHECK_BATCH);

@@ -264,7 +264,7 @@ export function NotificationPreferencesForm() {
 											{/* Visible to everyone (not hover-only) so
 											    sighted keyboard users get the reason too. */}
 											{disabled && (
-												<span className="text-muted-foreground/80 text-xs italic">
+												<span className="text-muted-foreground text-xs italic">
 													{SYNC_DISABLED_TOOLTIP}
 												</span>
 											)}

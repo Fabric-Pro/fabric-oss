@@ -1,3 +1,4 @@
+export * from "./capture-newsletter-screenshot";
 export * from "./curate-newsletter-from-releases";
 export * from "./curate-stakeholder-release-notes";
 export * from "./dispatch-newsletter-send";
@@ -6,6 +7,8 @@ export * from "./find-due-newsletter-projects";
 export * from "./hold-newsletter-for-approval";
 export * from "./load-active-subscribers";
 export * from "./load-approved-newsletter-send";
+export * from "./screenshot-capture-rows";
+export * from "./screenshot-targeting";
 export * from "./send-newsletter-approval-chat-messages";
 export * from "./send-newsletter-approval-emails";
 export * from "./send-newsletter-chat-messages";

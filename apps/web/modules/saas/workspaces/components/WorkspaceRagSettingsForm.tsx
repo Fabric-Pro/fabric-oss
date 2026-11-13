@@ -123,7 +123,7 @@ export function WorkspaceRagSettingsForm({
 							<h2 className="font-semibold text-xl">
 								RAG Settings
 							</h2>
-							<p className="text-foreground/50 text-sm">
+							<p className="text-muted-foreground text-sm">
 								Configure how documents are searched and
 								retrieved
 							</p>
@@ -223,7 +223,7 @@ export function WorkspaceRagSettingsForm({
 							step={1}
 							className="py-2"
 						/>
-						<p className="text-foreground/50 text-xs">
+						<p className="text-muted-foreground text-xs">
 							Number of most relevant document chunks to retrieve
 							for each query
 						</p>
@@ -252,7 +252,7 @@ export function WorkspaceRagSettingsForm({
 							step={0.05}
 							className="py-2"
 						/>
-						<p className="text-foreground/50 text-xs">
+						<p className="text-muted-foreground text-xs">
 							Minimum similarity score for retrieved chunks.
 							Higher values mean more relevant but fewer results.
 						</p>
@@ -262,7 +262,7 @@ export function WorkspaceRagSettingsForm({
 
 			{/* Help text */}
 			<div className="rounded-lg border border-foreground/10 bg-foreground/5 p-4">
-				<p className="text-foreground/60 text-sm">
+				<p className="text-muted-foreground text-sm">
 					These settings control how document content is searched when
 					you ask questions. Adjusting these values can help improve
 					the relevance and accuracy of AI responses based on your

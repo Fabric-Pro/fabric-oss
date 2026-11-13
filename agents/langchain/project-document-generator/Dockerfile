@@ -4,7 +4,7 @@
 # Unified server that handles both AG-UI and A2A protocols
 # Port: 8125 (single server for both protocols)
 
-FROM node:22-slim AS base
+FROM node:24-slim AS base
 
 # Install OpenSSL for Prisma and pnpm
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -100,7 +100,7 @@ COPY --from=prisma /app/packages/database/prisma/generated ./packages/database/p
 COPY --from=prisma /app/packages/database/prisma/zod ./packages/database/prisma/zod
 RUN pnpm --filter project-document-generator-agent build
 
-FROM node:22-slim AS production
+FROM node:24-slim AS production
 
 # Install OpenSSL and pnpm for production dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

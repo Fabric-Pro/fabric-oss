@@ -75,6 +75,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						...o,
 					}),
 				},
+				recipientPreview: {
+					queryOptions: (o: { input: unknown }) => ({
+						__q: "recipientPreview",
+						...o,
+					}),
+				},
 				// Declared unconditionally by the component (the lazily-enabled
 				// per-channel chat delivery panel, Fizzy #2013) so the stub has
 				// to exist even though no row is expanded in these tests.
@@ -179,6 +185,7 @@ beforeEach(() => {
 	queryData.repos = { integrations: [] };
 	queryData.teamsLinked = [];
 	queryData.slackLinked = [];
+	delete queryData.recipientPreview;
 });
 
 describe("ProjectNewsletterSettings — detail level", () => {
@@ -252,5 +259,56 @@ describe("ProjectNewsletterSettings — detail level", () => {
 		);
 
 		expect(sendNowMutate).toHaveBeenCalledWith("BRIEF");
+	});
+
+	it("says a Send-now run held for review emails nobody until approved", async () => {
+		setSettings({ requireApproval: true });
+		queryData.recipientPreview = { recipientCount: 4 };
+		const user = userEvent.setup();
+		render(
+			<ProjectNewsletterSettings projectId="p-1" organizationId={null} />,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Send now" }));
+
+		const dialog = within(screen.getByRole("alertdialog"));
+		expect(
+			dialog.getByText(
+				"Held for review first. Approving it emails 4 people.",
+			),
+		).toBeTruthy();
+		expect(dialog.queryByText(/emails every active subscriber/)).toBeNull();
+	});
+
+	it("tells the sender how many people the Send-now run will email", async () => {
+		queryData.recipientPreview = { recipientCount: 4 };
+		const user = userEvent.setup();
+		render(
+			<ProjectNewsletterSettings projectId="p-1" organizationId={null} />,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Send now" }));
+
+		expect(
+			within(screen.getByRole("alertdialog")).getByText(
+				"Will email 4 people.",
+			),
+		).toBeTruthy();
+	});
+
+	it("says nobody will be emailed when the preview finds no recipients", async () => {
+		queryData.recipientPreview = { recipientCount: 0 };
+		const user = userEvent.setup();
+		render(
+			<ProjectNewsletterSettings projectId="p-1" organizationId={null} />,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Send now" }));
+
+		expect(
+			within(screen.getByRole("alertdialog")).getByText(
+				/^Nobody will be emailed/,
+			),
+		).toBeTruthy();
 	});
 });

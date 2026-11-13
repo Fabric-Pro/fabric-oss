@@ -100,7 +100,8 @@
 /* Template variable highlighting */
 .template-variable {
 	background-color: rgba(59, 130, 246, 0.1);
-	color: rgb(59, 130, 246);
+	/* blue-700: blue-500 measured 3.3:1 on this tint (WCAG AA, Fizzy #1444). */
+	color: rgb(29, 78, 216);
 	padding: 0.125rem 0.25rem;
 	border-radius: 0.25rem;
 	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;

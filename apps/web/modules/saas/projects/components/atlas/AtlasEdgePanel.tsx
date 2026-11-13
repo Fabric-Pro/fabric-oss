@@ -463,7 +463,7 @@ export function AtlasEdgePanel({
 															aria-label={t(
 																"history",
 															)}
-															className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+															className="rounded p-0.5 text-muted-foreground transition-colors hover:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 														>
 															<ClockIcon
 																aria-hidden="true"
@@ -524,7 +524,7 @@ export function AtlasEdgePanel({
 													aria-label={t(
 														"editDescription",
 													)}
-													className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+													className="rounded p-0.5 text-muted-foreground transition-colors hover:text-muted-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 												>
 													<PencilIcon
 														aria-hidden="true"
@@ -622,7 +622,7 @@ export function AtlasEdgePanel({
 										onClick={() =>
 											setDescExpanded((v) => !v)
 										}
-										className="mt-1 text-xs font-medium text-primary transition-colors hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+										className="mt-1 text-xs font-medium text-primary transition-colors hover:text-primary-hover focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 									>
 										{descExpanded
 											? t("showLess")

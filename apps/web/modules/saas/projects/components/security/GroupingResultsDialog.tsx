@@ -502,8 +502,7 @@ function Section({
 	return (
 		<section className="space-y-2">
 			<h3 className="font-medium text-muted-foreground text-xs uppercase tracking-wider">
-				{title}{" "}
-				<span className="text-muted-foreground/70">({count})</span>
+				{title} <span className="text-muted-foreground">({count})</span>
 			</h3>
 			<ul className="space-y-2">{children}</ul>
 		</section>

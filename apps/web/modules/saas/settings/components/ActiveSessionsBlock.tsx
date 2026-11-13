@@ -85,7 +85,7 @@ export function ActiveSessionsBlock() {
 												)
 											: session.ipAddress}
 									</strong>
-									<small className="block text-foreground/60 text-xs leading-tight">
+									<small className="block text-muted-foreground text-xs leading-tight">
 										{session.userAgent}
 									</small>
 								</div>

@@ -286,6 +286,7 @@ export async function projectDocumentGenerationWorkflow(
 		generationStartedAt,
 		skipDependencyWait,
 		planEligible,
+		allowWebResearch,
 	} = input;
 	// Not `const`. The dispatch mints this token for a fifteen-minute run, and
 	// the dependency wait below can outlast that several times over — a run that
@@ -535,6 +536,13 @@ export async function projectDocumentGenerationWorkflow(
 						// expired token than one that never queued at all.
 						expirySeconds: GENERATION_TOKEN_EXPIRY_SECONDS,
 						planEligible,
+						// The fresh token keeps the person's permission for this
+						// action, bound to this run's project. Unset otherwise, so
+						// the payload is today's.
+						...(allowWebResearch === true && {
+							webResearch: true,
+							webResearchProjectId: projectId,
+						}),
 					}));
 
 					log.info(
@@ -655,6 +663,12 @@ export async function projectDocumentGenerationWorkflow(
 						excludeContextId, // filtered out of this run's retrieval
 						planEligible, // the clicking member's own plan may serve it
 						generationStartedAt, // scopes a Proposal plan's takeover to this attempt
+						// Only a boolean travels (`false`: offered and declined).
+						// A run that offered no choice, and every history
+						// recorded before the field, carries no key.
+						...(typeof allowWebResearch === "boolean" && {
+							allowWebResearch,
+						}),
 					},
 				],
 			},

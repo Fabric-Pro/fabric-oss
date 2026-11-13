@@ -47,7 +47,7 @@ export function ProjectUnavailable({
 			<p className="mb-2 font-medium text-foreground/70">
 				{notFound ? "Project not found" : "Couldn't load this project"}
 			</p>
-			<p className="mb-6 text-foreground/50 text-sm">
+			<p className="mb-6 text-muted-foreground text-sm">
 				{notFound
 					? "The project you're looking for doesn't exist or has been deleted."
 					: "Something went wrong while loading it. Try again in a moment."}

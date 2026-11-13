@@ -70,7 +70,7 @@ export function AiReprioritizeControl({
 						mutation.mutate({ storyId, withListContext: false });
 					}}
 					className={cn(
-						"inline-flex items-center gap-1 rounded p-1 text-secondary transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+						"inline-flex items-center gap-1 rounded p-1 text-success transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 						pending && "opacity-60",
 						className,
 					)}

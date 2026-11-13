@@ -15,7 +15,11 @@ import {
 	executeMicrosoftTeamsTool,
 	isMicrosoftAccessDeniedError,
 } from "@repo/integrations/microsoft";
-import { executeSlackTool } from "@repo/integrations/slack";
+import {
+	executeSlackTool,
+	isDeadSlackTokenError,
+	SlackConfigurationError,
+} from "@repo/integrations/slack";
 import {
 	neutralizeAiChatAttachmentBody,
 	neutralizeAiChatAttachmentFilename,
@@ -290,9 +294,15 @@ async function fetchSlackMessages(
 ): Promise<IntegrationMessage[]> {
 	const messagesPerChannel = Math.ceil(limit / contexts.length);
 
+	interface ChannelResult {
+		messages: IntegrationMessage[];
+		/** Set when Slack refused the requesting user's token outright. */
+		rejectedToken?: SlackConfigurationError;
+	}
+
 	// Fetch all channels in parallel
 	const results = await Promise.all(
-		contexts.map(async (ctx): Promise<IntegrationMessage[]> => {
+		contexts.map(async (ctx): Promise<ChannelResult> => {
 			try {
 				const result = (await executeSlackTool(
 					"get_channel_messages",
@@ -308,26 +318,52 @@ async function fetchSlackMessages(
 					}>;
 					count: number;
 				};
-				return (result.messages || []).map((msg) => ({
-					id: msg.id,
-					content: msg.content,
-					from: msg.from,
-					createdAt: msg.createdAt,
-					source: ctx.channelName,
-					sourceLabel: ctx.sourceLabel ?? undefined,
-					sourceGuidance: ctx.sourceGuidance ?? undefined,
-				}));
+				return {
+					messages: (result.messages || []).map((msg) => ({
+						id: msg.id,
+						content: msg.content,
+						from: msg.from,
+						createdAt: msg.createdAt,
+						source: ctx.channelName,
+						sourceLabel: ctx.sourceLabel ?? undefined,
+						sourceGuidance: ctx.sourceGuidance ?? undefined,
+					})),
+				};
 			} catch (error) {
+				// The requesting user's own Slack connection is dead: every
+				// channel fails the same way, and only that user can clear it by
+				// reconnecting. Like the Teams 403 above it is a per-user
+				// condition, not an operational fault, and it is reported once
+				// below rather than as an error per channel (Fizzy #3504).
+				if (isDeadSlackTokenError(error)) {
+					return { messages: [], rejectedToken: error };
+				}
+				// The bot cannot read this one channel (not invited, archived,
+				// a missing scope). Someone has to change the workspace.
+				if (error instanceof SlackConfigurationError) {
+					console.warn(
+						`[LiveIntegrationContext] Slack channel ${ctx.channelName} is not readable (${error.slackError}):`,
+						error.message,
+					);
+					return { messages: [] };
+				}
 				console.error(
 					`[LiveIntegrationContext] Error fetching Slack messages from ${ctx.channelName}:`,
 					error instanceof Error ? error.message : error,
 				);
-				return [];
+				return { messages: [] };
 			}
 		}),
 	);
 
-	const allMessages = results.flat();
+	const rejected = results.filter((result) => result.rejectedToken);
+	if (rejected.length > 0) {
+		console.warn(
+			`[LiveIntegrationContext] Slack rejected the requesting user's token (${rejected[0]?.rejectedToken?.slackError}); skipped ${rejected.length} channel(s) until they reconnect Slack in Settings > Integrations.`,
+		);
+	}
+
+	const allMessages = results.flatMap((result) => result.messages);
 
 	// Sort most recent first and limit
 	allMessages.sort((a, b) => {

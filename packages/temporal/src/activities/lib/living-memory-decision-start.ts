@@ -10,8 +10,10 @@
  *
  * A version a repository's first sync wrote is skipped too, because reading a
  * whole repository costs one AI request per file. `scanRequested` is a member
- * asking for it from the Decisions tab: it reads the version anyway, without a
- * notification per file, since the member who asked is already looking.
+ * asking for it from the Decisions tab: it reads the version anyway. Its
+ * candidates are announced to the project's other reviewers;
+ * `requestedByUserId`, the member who asked, is left out, since they are
+ * already looking.
  *
  * The workflow id is `living-memory-decisions-<contextId>-<contentHash>`:
  * a second start for the same version while one is open joins nothing and
@@ -54,6 +56,7 @@ type LivingMemoryDecisionStartOutcome =
 export async function startLivingMemoryDecisionExtraction(input: {
 	contextId: string;
 	scanRequested?: boolean;
+	requestedByUserId?: string;
 }): Promise<LivingMemoryDecisionStartOutcome> {
 	try {
 		const context = await db.projectContext.findUnique({
@@ -101,7 +104,9 @@ export async function startLivingMemoryDecisionExtraction(input: {
 				{
 					contextId: context.id,
 					contentHash,
-					...(input.scanRequested ? { notify: false } : {}),
+					...(input.requestedByUserId
+						? { requestedByUserId: input.requestedByUserId }
+						: {}),
 				},
 			],
 		});

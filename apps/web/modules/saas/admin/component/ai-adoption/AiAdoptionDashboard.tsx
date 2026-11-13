@@ -440,7 +440,7 @@ function BacklogSection({
 						{
 							label: "Accepted",
 							count: accepted,
-							colorClass: "bg-secondary",
+							colorClass: "bg-success",
 						},
 						{
 							label: "Rejected",
@@ -907,7 +907,7 @@ function ChangeLogSection({
 							className={cn(
 								"rounded px-1.5 py-0.5 text-xs",
 								annotation.kind === "PROMPT_VERSION"
-									? "bg-primary/10 text-primary"
+									? "bg-primary/10 text-primary-active"
 									: "bg-highlight/10 text-highlight",
 							)}
 						>

@@ -674,7 +674,7 @@ export function PmSyncCloudToggle({
 
 	// Icon color classes — token-based so light/dark themes both render
 	// visibly without hardcoded hex values. Replaces the previous
-	// `text-muted-foreground/40-45` muted fades; the emerald `--secondary`
+	// `text-muted-foreground/40-45` muted fades; the green `--success`
 	// token explicitly signals "active/syncing" the same way it does for
 	// AI-active states across the app.
 	const iconColorClass = (() => {
@@ -684,23 +684,23 @@ export function PmSyncCloudToggle({
 				// icon + label agree; emerald otherwise. The roadmap icon (no
 				// label) always stays emerald.
 				return armedUnlinked && showLabel
-					? "text-muted-foreground/65 hover:text-muted-foreground"
-					: "text-secondary hover:text-secondary/80";
+					? "text-muted-foreground hover:text-muted-foreground"
+					: "text-success hover:text-success";
 			case "synced-with-conflict":
 				// Emerald — visible against both warm-stone light bg and dark
 				// zinc bg. Slightly deeper on hover so the affordance reads
 				// clearly without changing dimension.
-				return "text-secondary hover:text-secondary/80";
+				return "text-success hover:text-success";
 			case "synced-with-failure":
 				// Destructive — the row is auto-sync-on but the last attempt
 				// failed; the user must act to recover. Matches the Red used
 				// for the not-configured state and the roadmap card's
 				// PmSyncFailureBadge so failure semantics read consistently
 				// across surfaces.
-				return "text-destructive hover:text-destructive/80";
+				return "text-destructive hover:text-destructive";
 			case "off":
 				// Muted but visibly more present than the previous /45 fade.
-				return "text-muted-foreground/65 hover:text-muted-foreground";
+				return "text-muted-foreground hover:text-muted-foreground";
 			case "not-configured":
 				return "text-destructive";
 		}
@@ -718,11 +718,11 @@ export function PmSyncCloudToggle({
 				// for a real synced item.
 				return armedUnlinked
 					? "border border-border/50 hover:bg-accent hover:border-accent-foreground/20"
-					: "bg-secondary/10 hover:bg-secondary/20 dark:bg-secondary/20 dark:hover:bg-secondary/30";
+					: "bg-success/10 hover:bg-success/20 dark:bg-success/20 dark:hover:bg-success/30";
 			case "off":
 				return "border border-border/50 hover:bg-accent hover:border-accent-foreground/20";
 			case "synced-with-conflict":
-				return "bg-secondary/10 hover:bg-secondary/20 dark:bg-secondary/20 dark:hover:bg-secondary/30 ring-1 ring-highlight";
+				return "bg-success/10 hover:bg-success/20 dark:bg-success/20 dark:hover:bg-success/30 ring-1 ring-highlight";
 			case "synced-with-failure":
 				return "bg-destructive/10 hover:bg-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 ring-1 ring-destructive";
 			case "not-configured":
@@ -802,7 +802,7 @@ export function PmSyncCloudToggle({
 						aria-label={ariaLabel}
 						data-state={state}
 						className={cn(
-							"inline-flex items-center justify-center text-destructive hover:text-destructive/80 cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
+							"inline-flex items-center justify-center text-destructive hover:text-destructive cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
 							className,
 						)}
 						onClick={(e) => {

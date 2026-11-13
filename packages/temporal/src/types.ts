@@ -193,6 +193,14 @@ export interface ProjectDocumentGenerationInput {
 	 */
 	planEligible?: boolean;
 	/**
+	 * The person's web research answer for this one action (create or
+	 * regenerate): `true` allowed; `false` offered and not allowed; absent
+	 * when no choice was offered (background, bulk and API runs). Only `true`
+	 * turns research on; `false` and absent differ only in whether the
+	 * document may say research was not authorized.
+	 */
+	allowWebResearch?: boolean;
+	/**
 	 * This attempt's identity — the `generationStartedAt` the queue write
 	 * returned — as an ISO-8601 string.
 	 *

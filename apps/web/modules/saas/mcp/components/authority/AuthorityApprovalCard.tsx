@@ -68,15 +68,27 @@ const ACCESS_LEVEL_COLORS = {
 const STATUS_CONFIG = {
 	PENDING: {
 		icon: Clock,
-		color: "text-yellow-500",
+		color: "text-yellow-800 dark:text-yellow-500",
 		label: "Pending Approval",
 	},
-	ACTIVE: { icon: ShieldCheck, color: "text-green-500", label: "Active" },
-	EXPIRED: { icon: Clock, color: "text-gray-400", label: "Expired" },
-	REVOKED: { icon: XCircle, color: "text-red-500", label: "Revoked" },
+	ACTIVE: {
+		icon: ShieldCheck,
+		color: "text-green-800 dark:text-green-500",
+		label: "Active",
+	},
+	EXPIRED: {
+		icon: Clock,
+		color: "text-gray-600 dark:text-gray-400",
+		label: "Expired",
+	},
+	REVOKED: {
+		icon: XCircle,
+		color: "text-red-700 dark:text-red-400",
+		label: "Revoked",
+	},
 	COMPLETED: {
 		icon: CheckCircle2,
-		color: "text-gray-500",
+		color: "text-gray-600 dark:text-gray-400",
 		label: "Completed",
 	},
 };

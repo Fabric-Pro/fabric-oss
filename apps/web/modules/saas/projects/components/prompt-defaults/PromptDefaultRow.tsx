@@ -198,7 +198,7 @@ function RowControl({
 		);
 	}
 	return (
-		<span className="whitespace-nowrap text-muted-foreground/80 text-xs">
+		<span className="whitespace-nowrap text-muted-foreground text-xs">
 			No alternatives
 		</span>
 	);

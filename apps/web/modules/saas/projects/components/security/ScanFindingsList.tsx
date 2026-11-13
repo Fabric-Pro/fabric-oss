@@ -1082,7 +1082,7 @@ function ThemeTagChip({
 						"inline-flex min-w-0 max-w-[min(16rem,100%)] items-center gap-1 rounded-sm border px-2 py-0.5 font-medium text-xs transition-colors",
 						"focus-visible:outline-hidden focus-visible:ring-[3px] focus-visible:ring-ring/50",
 						active
-							? "border-transparent bg-primary/10 text-primary dark:bg-primary/20"
+							? "border-transparent bg-primary/10 text-primary-active dark:bg-primary/20"
 							: "border-border/50 text-muted-foreground hover:border-accent-foreground/20 hover:bg-accent hover:text-accent-foreground",
 					)}
 				>
@@ -1147,7 +1147,7 @@ function SeveritySectionBlock({
 					)}
 				/>
 				{SEVERITY_LABEL[section.severity]}
-				<span className="font-normal text-muted-foreground/80 normal-case tracking-normal">
+				<span className="font-normal text-muted-foreground normal-case tracking-normal">
 					{total} {total === 1 ? "finding" : "findings"}
 				</span>
 			</h3>
@@ -1802,7 +1802,7 @@ function FindingActions({
 			>
 				<CheckCircle2Icon
 					aria-hidden="true"
-					className="size-4 text-secondary"
+					className="size-4 text-success"
 				/>
 				Resolve
 			</Button>
@@ -2121,15 +2121,15 @@ function CleanScanCard({
 	return (
 		<Card
 			className={cn(
-				"border-secondary/30 bg-secondary/5",
+				"border-success/30 bg-success/5",
 				"text-card-foreground",
 			)}
 		>
 			<CardContent className="flex items-start gap-3 p-5">
-				<div className="rounded-full bg-secondary/10 p-2">
+				<div className="rounded-full bg-success/10 p-2">
 					<ShieldCheckIcon
 						aria-hidden="true"
-						className="size-5 text-secondary"
+						className="size-5 text-success"
 					/>
 				</div>
 				<div className="min-w-0">

@@ -16,6 +16,8 @@ import type {
 	collectGitHubReleasesActivity as CollectReleasesFn,
 } from "../activities/daily-brief";
 import type {
+	CollectNewsletterTargetingOutput,
+	collectNewsletterTargetingActivity as CollectTargetingFn,
 	curateStakeholderReleaseNotesActivity as CurateFn,
 	curateNewsletterFromReleasesActivity as CurateReleasesFn,
 	finalizeNewsletterSendActivity as FinalizeFn,
@@ -35,8 +37,15 @@ import {
 import { APPROVAL_CHAT_RETRY } from "./newsletter-approval-chat-retry";
 import { APPROVAL_EMAIL_RETRY } from "./newsletter-approval-email-retry";
 import { computeDeliveryOutcome } from "./newsletter-delivery-outcome";
-import { selectNewsletterReleases } from "./newsletter-release-select";
+import {
+	formatIncompleteScanReason,
+	selectNewsletterReleases,
+} from "./newsletter-release-select";
 import { splitReleasePrs } from "./newsletter-release-split";
+import {
+	captureNewsletterScreenshots,
+	NEWSLETTER_AUTO_SCREENSHOTS_PATCH,
+} from "./newsletter-screenshots";
 
 export interface GenerateAndSendNewsletterInput {
 	sendId: string;
@@ -55,6 +64,9 @@ export interface GenerateAndSendNewsletterInput {
 	// Undefined (un-threaded / legacy history) safely falls back to straight-to-
 	// delivery — the park branch below is additionally gated by patched().
 	requireApproval?: boolean;
+	// Optional: true when the send takes images and an environment to capture
+	// them from was frozen onto it. Undefined (legacy history) never captures.
+	captureScreenshots?: boolean;
 	timeWindowStart: string; // ISO
 	timeWindowEnd: string; // ISO
 }
@@ -129,6 +141,16 @@ const { curateNewsletterFromReleasesActivity } = proxyActivities<{
 			...AI_NON_RETRYABLE_ERROR_TYPES,
 		],
 	},
+});
+
+// Screenshot targeting is optional context: the activity never throws, and a
+// failure here is caught at the call site so curation runs without it.
+const { collectNewsletterTargetingActivity } = proxyActivities<{
+	collectNewsletterTargetingActivity: typeof CollectTargetingFn;
+}>({
+	startToCloseTimeout: "2 minutes",
+	heartbeatTimeout: "1 minute",
+	retry: { maximumAttempts: 1 },
 });
 
 const { loadActiveSubscribersActivity, finalizeNewsletterSendActivity } =
@@ -238,6 +260,9 @@ export async function generateAndSendNewsletterWorkflow(
 		let aiUsageTokens: number | null;
 		// Reason recorded if the run ends with nothing to mail. Each branch refines it.
 		let noContentReason: NewsletterSkipReason = "NO_MAJOR_FEATURES";
+		// Automatic screenshots: release-based sends only. The patch is read only
+		// for a send that asks for them, so every other history is unchanged.
+		let autoScreenshots = false;
 
 		if (patched("newsletter-release-based-collection-2026-06-15")) {
 			// NEW: published-release source. New activity TYPES → only ever scheduled
@@ -249,21 +274,35 @@ export async function generateAndSendNewsletterWorkflow(
 				userId: triggeredByUserId,
 				timeWindowStart: new Date(timeWindowStart),
 				timeWindowEnd: new Date(timeWindowEnd),
+				productionTagsOnly: true,
 			});
 			const sel = selectNewsletterReleases(
 				{ items: collected.items, failures: collected.failures },
 				timeWindowStart,
+				{
+					capTruncationSends: patched(
+						"newsletter-cap-truncation-sends-2026-11-11",
+					),
+				},
 			);
 			if (sel.incomplete) {
 				// Incomplete scan: do NOT email a partial set and do NOT advance the
 				// cursor — the full window is retried next send. Emailing a
 				// partial set + withholding the cursor would re-query the same window
 				// and duplicate-announce.
+				//
+				// `errorMessage` records which repositories failed so the send
+				// history can show it. Only the activity's argument changes, which
+				// replay does not compare (core checks activity id and type), so
+				// no patch marker is needed.
 				await finalizeNewsletterSendActivity({
 					sendId,
 					projectId,
 					status: "SKIPPED_EMPTY",
 					skipReason: "INCOMPLETE_SCAN",
+					errorMessage: formatIncompleteScanReason(
+						sel.incompleteFailures,
+					),
 					aiUsageTokens: null,
 				});
 				return { status: "SKIPPED_EMPTY", sentCount: 0 };
@@ -279,6 +318,31 @@ export async function generateAndSendNewsletterWorkflow(
 						? "NO_ACTIVE_REPOS"
 						: "NO_RELEASES";
 			}
+			autoScreenshots =
+				input.captureScreenshots === true &&
+				patched(NEWSLETTER_AUTO_SCREENSHOTS_PATCH);
+			// What curation needs to mark visible changes: the files each release
+			// changed and the work items behind its pull requests.
+			let targeting:
+				| CollectNewsletterTargetingOutput["releases"]
+				| undefined;
+			if (autoScreenshots && sel.releases.length > 0) {
+				try {
+					({ releases: targeting } =
+						await collectNewsletterTargetingActivity({
+							projectId,
+							organizationId,
+							userId: triggeredByUserId,
+							releases: sel.releases,
+						}));
+				} catch (e) {
+					log.warn("[Newsletter] screenshot targeting failed", {
+						sendId,
+						error: e instanceof Error ? e.message : String(e),
+					});
+					targeting = [];
+				}
+			}
 			// A scheduled send's curation may run on a shared ChatGPT plan
 			// (Fizzy #2770): when every plan is spent it waits for a reset and
 			// curates once more. "Send now" is a person's click and is not held.
@@ -292,6 +356,7 @@ export async function generateAndSendNewsletterWorkflow(
 					projectName,
 					releases: sel.releases, // [] → curate returns hasMajorFeatures=false → SKIPPED_EMPTY below
 					detailLevel,
+					...(targeting && { targeting }),
 				});
 			({ content, aiUsageTokens } =
 				input.trigger === "SCHEDULED"
@@ -356,6 +421,18 @@ export async function generateAndSendNewsletterWorkflow(
 				aiUsageTokens,
 			});
 			return { status: "SKIPPED_EMPTY", sentCount: 0 };
+		}
+
+		// Automatic screenshots, before the send is held or delivered. Never
+		// throws: a capture that fails is a FAILED image, not a failed send.
+		if (autoScreenshots) {
+			content = await captureNewsletterScreenshots({
+				sendId,
+				projectId,
+				content,
+				requireApproval: requireApproval === true,
+				createdByUserId: triggeredByUserId,
+			});
 		}
 
 		// Approval gate (Fizzy 1869): hold the curated content for reviewer

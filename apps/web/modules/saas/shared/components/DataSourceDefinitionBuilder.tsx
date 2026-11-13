@@ -549,7 +549,7 @@ function DataSourceItem({
 		integration: {
 			bg: "bg-pink-50 dark:bg-pink-950/30",
 			border: "border-pink-200 dark:border-pink-800",
-			icon: "text-pink-600 dark:text-pink-400",
+			icon: "text-pink-700 dark:text-pink-400",
 			iconBg: "bg-pink-100 dark:bg-pink-900",
 		},
 		mcp: {

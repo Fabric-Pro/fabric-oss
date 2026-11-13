@@ -91,7 +91,7 @@ function sessionStatusMeta(status: string): {
 		case "APPLIED":
 			return {
 				label: "Applied",
-				className: "border-secondary/30 bg-secondary/15 text-secondary",
+				className: "border-success/30 bg-success/15 text-success",
 			};
 		case "APPLYING":
 			return {
@@ -259,7 +259,7 @@ function SessionResults({
 									className={cn(
 										"truncate text-sm",
 										item.deleted
-											? "text-muted-foreground/70 line-through"
+											? "text-muted-foreground line-through"
 											: "text-muted-foreground",
 									)}
 								>
@@ -385,7 +385,7 @@ function SessionDetailView({
 				</button>
 				<div className="mt-2 flex items-center gap-2">
 					<SparklesIcon
-						className="size-4 shrink-0 text-secondary"
+						className="size-4 shrink-0 text-success"
 						aria-hidden="true"
 					/>
 					<DialogTitle className="truncate font-semibold text-xl">
@@ -519,7 +519,7 @@ function SessionListCard({
 				<div className="min-w-0">
 					<div className="flex items-center gap-2">
 						<SparklesIcon
-							className="size-4 shrink-0 text-secondary"
+							className="size-4 shrink-0 text-success"
 							aria-hidden="true"
 						/>
 						<span className="truncate font-medium text-foreground text-sm">
@@ -540,7 +540,7 @@ function SessionListCard({
 					>
 						{session.summary}
 					</p>
-					<p className="mt-1 text-muted-foreground/80 text-xs">
+					<p className="mt-1 text-muted-foreground text-xs">
 						{session.createCount} to create · {session.updateCount}{" "}
 						to update
 						{session.status !== "APPLYING"

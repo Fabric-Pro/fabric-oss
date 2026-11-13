@@ -722,11 +722,11 @@ export function WeaveExecutionMonitor({
 							className={cn(
 								"size-10 rounded-full flex items-center justify-center",
 								mergedExecution.status === "COMPLETED" &&
-									"bg-secondary/10 text-secondary",
+									"bg-success/10 text-success",
 								isFailedLike &&
 									"bg-destructive/10 text-destructive",
 								isRunning &&
-									"bg-primary/10 text-primary animate-pulse",
+									"bg-primary/10 text-primary-active animate-pulse",
 								isCheckpoint &&
 									"bg-highlight/10 text-highlight",
 							)}
@@ -751,7 +751,7 @@ export function WeaveExecutionMonitor({
 									className={cn(
 										mergedExecution.status ===
 											"COMPLETED" &&
-											"border-secondary text-secondary",
+											"border-success text-success",
 										isFailedLike &&
 											"border-destructive text-destructive",
 										isRunning &&
@@ -768,8 +768,8 @@ export function WeaveExecutionMonitor({
 									</span>
 								)}
 								{streamConnected && (
-									<span className="flex items-center gap-1 text-xs text-secondary">
-										<span className="size-1.5 rounded-full bg-secondary animate-pulse" />
+									<span className="flex items-center gap-1 text-xs text-success">
+										<span className="size-1.5 rounded-full bg-success animate-pulse" />
 										Live
 									</span>
 								)}
@@ -1144,7 +1144,7 @@ export function WeaveExecutionMonitor({
 								className={cn(
 									"size-8 rounded-full flex items-center justify-center text-primary-foreground",
 									agent.id === "loom" && "bg-primary/80",
-									agent.id === "thread" && "bg-secondary/80",
+									agent.id === "thread" && "bg-success/80",
 									agent.id === "spindle" && "bg-highlight/80",
 									agent.id === "shuttle" && "bg-primary/60",
 									agent.id === "weft" && "bg-highlight/60",
@@ -1185,7 +1185,7 @@ export function WeaveExecutionMonitor({
 									className={cn(
 										"flex items-start gap-2 p-2 rounded-lg text-sm",
 										step.status === "completed" &&
-											"bg-secondary/5",
+											"bg-success/5",
 										step.status === "in_progress" &&
 											"bg-primary/5 border border-primary/20",
 										step.status === "failed" &&
@@ -1196,7 +1196,7 @@ export function WeaveExecutionMonitor({
 								>
 									<div className="mt-0.5">
 										{step.status === "completed" ? (
-											<CheckCircleIcon className="size-4 text-secondary" />
+											<CheckCircleIcon className="size-4 text-success" />
 										) : step.status === "in_progress" ? (
 											<Loader2Icon className="size-4 animate-spin text-primary" />
 										) : step.status === "failed" ? (
@@ -1264,8 +1264,8 @@ export function WeaveExecutionMonitor({
 							Status Log
 						</h4>
 						{streamConnected ? (
-							<span className="flex items-center gap-1 text-xs text-secondary">
-								<span className="size-1.5 rounded-full bg-secondary animate-pulse" />
+							<span className="flex items-center gap-1 text-xs text-success">
+								<span className="size-1.5 rounded-full bg-success animate-pulse" />
 								Streaming
 							</span>
 						) : (
@@ -1289,14 +1289,14 @@ export function WeaveExecutionMonitor({
 											log.type === "agent" &&
 												"text-primary",
 											log.type === "tool" &&
-												"text-secondary",
+												"text-success",
 											log.type === "checkpoint" &&
 												"text-highlight",
 											log.type === "info" &&
 												"text-muted-foreground",
 										)}
 									>
-										<span className="opacity-50">
+										<span className="text-muted-foreground">
 											[
 											{new Date(
 												log.timestamp,

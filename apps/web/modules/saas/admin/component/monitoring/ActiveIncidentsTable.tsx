@@ -139,7 +139,7 @@ const STATUS_TONE: Record<
 const STATUS_DOT_CLS: Record<IncidentRow["status"], string> = {
 	FIRING: "bg-destructive motion-safe:animate-pulse",
 	ACKNOWLEDGED: "bg-highlight",
-	RESOLVED: "bg-secondary",
+	RESOLVED: "bg-success",
 };
 
 const STATUS_TOOLTIP: Record<IncidentRow["status"], string> = {

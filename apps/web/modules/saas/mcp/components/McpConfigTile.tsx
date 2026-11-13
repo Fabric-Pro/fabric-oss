@@ -39,8 +39,8 @@ import {
 } from "./ReadOnlyBadge";
 
 const TRANSPORT_COLORS: Record<string, string> = {
-	SSE: "bg-secondary/10 text-secondary",
-	HTTP: "bg-primary/10 text-primary",
+	SSE: "bg-success/10 text-success",
+	HTTP: "bg-primary/10 text-primary-active",
 	STDIO: "bg-highlight/10 text-highlight",
 };
 
@@ -55,7 +55,7 @@ const AUTH_CONFIG: Record<string, { label: string; color: string }> = {
 	},
 	OAUTH2: {
 		label: "OAuth",
-		color: "bg-primary/10 text-primary",
+		color: "bg-primary/10 text-primary-active",
 	},
 };
 
@@ -234,7 +234,7 @@ export function McpConfigTile({
 					defaultUrl={config.baseUrl || config.mcpServer?.defaultUrl}
 					size={36}
 					className="h-9 w-9 rounded-md ring-1 ring-border"
-					fallbackClassName="bg-primary/10 text-primary"
+					fallbackClassName="bg-primary/10 text-primary-active"
 				/>
 
 				{/* Content */}

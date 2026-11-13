@@ -5,6 +5,7 @@ import {
 	groupAwaitingByDay,
 	groupMeetingsByDay,
 	groupPersonalMeetingsByDay,
+	meetingCalendarDay,
 } from "../lib/group-meetings";
 import type {
 	AwaitingMeeting,
@@ -70,7 +71,9 @@ export function AgendaView({
 	awaitingMeetings?: AwaitingMeeting[];
 }) {
 	const inMonth = meetings.filter(
-		(m) => m.meetingDate && isSameMonth(new Date(m.meetingDate), monthDate),
+		(m) =>
+			m.meetingDate &&
+			isSameMonth(meetingCalendarDay(m.meetingDate), monthDate),
 	);
 	const byDay = groupMeetingsByDay(
 		inMonth.map((m) => ({

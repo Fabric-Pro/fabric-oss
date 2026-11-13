@@ -55,6 +55,7 @@ import {
 	truncateMcpTextOutput,
 } from "../../../lib/payload-elision";
 import { assertPayloadWithinLimit } from "../../../lib/payload-size-guard";
+import { storeAdvisorResult } from "../../advisor-result-store";
 import {
 	cacheToolResult,
 	getCachedToolResult,
@@ -796,6 +797,19 @@ export async function executeMcpTool(
 			`executeMcpTool(${input.toolName}) result`,
 		);
 
+		if (result.success) {
+			await storeAdvisorResult({
+				userId: input.userId,
+				organizationId: input.organizationId,
+				advisorResultStore: input.advisorResultStore,
+				toolName: input.toolName,
+				route:
+					input.mcpConfigId === FABRIC_AI_SERVER_CONFIG_ID
+						? "catalog"
+						: "external",
+				result: bounded.output,
+			});
+		}
 		return { ...result, output: bounded.output };
 	} finally {
 		clearInterval(heartbeatInterval);

@@ -272,7 +272,7 @@ function BackgroundRunIndicator({
 	const elapsedMs = Math.max(0, now - new Date(startedAt).getTime());
 	return (
 		<span
-			className="flex items-center gap-1.5 text-secondary"
+			className="flex items-center gap-1.5 text-success"
 			aria-live="polite"
 		>
 			<Loader2Icon
@@ -999,7 +999,7 @@ export function AtlasStatusBar({
 							className="flex cursor-help items-center gap-1 font-mono text-xs"
 						>
 							{hasAheadCommits && (
-								<span className="text-secondary">
+								<span className="text-success">
 									{`+${aheadCount}`}
 								</span>
 							)}
@@ -1201,7 +1201,7 @@ export function AtlasStatusBar({
 						{index > 0 && (
 							<span
 								aria-hidden="true"
-								className="text-muted-foreground/50"
+								className="text-muted-foreground"
 							>
 								·
 							</span>

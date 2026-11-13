@@ -412,11 +412,11 @@ it("key-vault-canceled requires all proof clauses and event recheck", () => {
 
 it("replica-scheduling requires all proof clauses and event recheck", () => {
 	expect(buildErrorGroupQuery(SCOPE)).toContain(
-		"| join kind=leftouter (_noise1 | extend _proven1 = true) on _revision, $left.TimeGenerated == $right.failAt",
+		"| join kind=leftouter (_noise1 | extend _proven1 = true) on _replica, $left.TimeGenerated == $right.failAt",
 	);
 	const q = buildErrorGroupQuery(SCOPE);
 	expect(q).toContain(
-		'let _proof1_0 = _systemLogs\n| where _reason in ("AssigningReplica")\n| where isnotempty(_revision)\n| project _revision, okAt = TimeGenerated;\nlet _noise1_0 = _systemLogs\n| where _reason in ("AssigningReplicaFailed") and _log endswith "Waiting for infrastructure to be ready"\n| where isnotempty(_revision)\n| distinct _revision, failAt = TimeGenerated\n| join kind=inner (_proof1_0) on _revision\n| where failAt < okAt and okAt <= failAt + 2m\n| distinct _revision, failAt;\nlet _noise1 = union _noise1_0\n| distinct _revision, failAt;',
+		'let _proof1_0 = _systemLogs\n| where _reason in ("AssigningReplica")\n| where isnotempty(_replica)\n| project _replica, okAt = TimeGenerated;\nlet _noise1_0 = _systemLogs\n| where _reason in ("AssigningReplicaFailed") and _log endswith "Waiting for infrastructure to be ready"\n| where isnotempty(_replica)\n| distinct _replica, failAt = TimeGenerated\n| join kind=inner (_proof1_0) on _replica\n| where failAt <= okAt and okAt <= failAt + 2m\n| distinct _replica, failAt;\nlet _noise1 = union _noise1_0\n| distinct _replica, failAt;',
 	);
 	expect(q).toContain(
 		'| extend _rule1 = coalesce(_proven1, false) and _reason in ("AssigningReplicaFailed") and _log endswith "Waiting for infrastructure to be ready"',
@@ -449,7 +449,7 @@ it("replica-readiness requires all proof clauses and event recheck", () => {
 	);
 });
 
-it("shares only the autoscaler metric reasons, with teardown first", () => {
+it("shares only the autoscaler metric and replica scheduling reasons, with teardown first", () => {
 	const reasons = PLATFORM_NOISE_RULES.flatMap((rule) => [
 		...rule.failureReasons,
 	]);
@@ -460,14 +460,67 @@ it("shares only the autoscaler metric reasons, with teardown first", () => {
 			),
 		),
 	).toEqual(
-		new Set(["FailedGetExternalMetric", "FailedComputeMetricsReplicas"]),
+		new Set([
+			"FailedGetExternalMetric",
+			"FailedComputeMetricsReplicas",
+			"AssigningReplicaFailed",
+		]),
 	);
 	expect(PLATFORM_NOISE_RULES.slice(4).map((rule) => rule.id)).toEqual([
 		"autoscaler-teardown",
 		"metrics-service-blip",
 		"autoscaler-replica-start",
 		"resource-metrics-blip",
+		"rollout-update-canceled",
+		"replica-scheduling-teardown",
 	]);
+});
+
+describe("replica-scheduling-teardown", () => {
+	const q = buildErrorGroupQuery(SCOPE);
+	const waits =
+		'_reason in ("AssigningReplicaFailed") and _log endswith "Waiting for infrastructure to be ready"';
+
+	it("sets aside a wait when its revision is torn down within 2 minutes", () => {
+		expect(q).toContain(
+			`let _proof9_0 = _systemLogs\n| where _reason in ("ScaledObjectDeleted")\n| where isnotempty(_revision)\n| project _revision, okAt = TimeGenerated;\nlet _noise9_0 = _systemLogs\n| where ${waits}\n| where isnotempty(_revision)\n| distinct _revision, failAt = TimeGenerated\n| join kind=inner (_proof9_0) on _revision\n| where failAt <= okAt and okAt <= failAt + 2m\n| distinct _revision, failAt;`,
+		);
+	});
+
+	it("keeps a wait whose teardown comes more than 2 minutes later", () => {
+		const rule = PLATFORM_NOISE_RULES.find(
+			(r) => r.id === "replica-scheduling-teardown",
+		);
+		expect(rule?.proofs).toEqual([
+			{
+				reasons: ["ScaledObjectDeleted"],
+				direction: "at-or-after",
+				gapMinutes: 2,
+			},
+		]);
+		const noise = q.slice(
+			q.indexOf("let _noise9_0"),
+			q.indexOf("let _noise9 ="),
+		);
+		expect(noise).toContain(
+			"| where failAt <= okAt and okAt <= failAt + 2m",
+		);
+	});
+
+	it("keeps a wait when only a different revision is torn down", () => {
+		expect(q).toContain(
+			"| join kind=leftouter (_noise9 | extend _proven9 = true) on _revision, $left.TimeGenerated == $right.failAt",
+		);
+		expect(q).not.toMatch(
+			/join kind=inner \(_proof9_0\) on _(app|replica)\b/,
+		);
+	});
+
+	it("keeps a wait when no teardown is logged at all", () => {
+		expect(q).toContain(
+			`| extend _rule9 = coalesce(_proven9, false) and ${waits}`,
+		);
+	});
 });
 
 it("autoscaler-replica-start requires all proof clauses and event recheck", () => {
@@ -491,6 +544,19 @@ it("resource-metrics-blip requires all proof clauses and event recheck", () => {
 	);
 	expect(q).toContain(
 		'| extend _rule7 = coalesce(_proven7, false) and _reason in ("FailedComputeMetricsReplicas") and _log endswith "(get pods.metrics.k8s.io)"',
+	);
+});
+
+it("rollout-update-canceled requires the app's next successful update and event recheck", () => {
+	const q = buildErrorGroupQuery(SCOPE);
+	expect(q).toContain(
+		'let _proof8_0 = _systemLogs\n| where _reason in ("ContainerAppReady")\n| where isnotempty(_app)\n| project _app, okAt = TimeGenerated;\nlet _noise8_0 = _systemLogs\n| where _reason in ("ResourceUpdateFailed", "ContainerAppFailure") and _log endswith "context canceled"\n| where isnotempty(_app)\n| distinct _app, failAt = TimeGenerated\n| join kind=inner (_proof8_0) on _app\n| where failAt < okAt and okAt <= failAt + 2m\n| distinct _app, failAt;\nlet _noise8 = union _noise8_0\n| distinct _app, failAt;',
+	);
+	expect(q).toContain(
+		"| join kind=leftouter (_noise8 | extend _proven8 = true) on _app, $left.TimeGenerated == $right.failAt",
+	);
+	expect(q).toContain(
+		'| extend _rule8 = coalesce(_proven8, false) and _reason in ("ResourceUpdateFailed", "ContainerAppFailure") and _log endswith "context canceled"',
 	);
 });
 
@@ -572,7 +638,7 @@ it("removes explained events before grouping and reports rules outside the cap",
 		q.indexOf("| take 25"),
 	);
 	expect(q).toContain(
-		'| extend _noiseRule = case(_rule0, "key-vault-canceled", _rule1, "replica-scheduling", _rule2, "revision-autoscaler", _rule3, "replica-readiness", _rule4, "autoscaler-teardown", _rule5, "metrics-service-blip", _rule6, "autoscaler-replica-start", _rule7, "resource-metrics-blip", "")',
+		'| extend _noiseRule = case(_rule0, "key-vault-canceled", _rule1, "replica-scheduling", _rule2, "revision-autoscaler", _rule3, "replica-readiness", _rule4, "autoscaler-teardown", _rule5, "metrics-service-blip", _rule6, "autoscaler-replica-start", _rule7, "resource-metrics-blip", _rule8, "rollout-update-canceled", _rule9, "replica-scheduling-teardown", "")',
 	);
 	expect(q).toContain("by GroupKey = _noiseRule");
 	expect(q).toContain(

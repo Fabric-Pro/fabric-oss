@@ -191,7 +191,7 @@ export function OAuthConsent() {
 								>
 									<CheckIcon
 										aria-hidden="true"
-										className="mt-0.5 size-4 shrink-0 text-secondary"
+										className="mt-0.5 size-4 shrink-0 text-success"
 									/>
 									<span>{t(`${scopeWords}.${scope}`)}</span>
 								</li>

@@ -129,13 +129,13 @@ function TagSelector({
 					{selected.map((item) => (
 						<span
 							key={item}
-							className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-sm text-primary"
+							className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-sm text-primary-active"
 						>
 							{item}
 							<button
 								type="button"
 								onClick={() => toggle(item)}
-								className="ml-0.5 rounded-full hover:text-primary/70"
+								className="ml-0.5 rounded-full hover:text-primary-hover"
 							>
 								<XIcon className="size-3" />
 							</button>
@@ -189,7 +189,7 @@ function TagSelector({
 												className={cn(
 													"rounded-full border px-2.5 py-0.5 text-xs transition-colors",
 													isSelected
-														? "border-primary/50 bg-primary/15 text-primary font-medium"
+														? "border-primary/50 bg-primary/15 text-primary-active font-medium"
 														: "border-foreground/20 bg-background text-foreground/70 hover:border-foreground/40 hover:bg-foreground/5",
 												)}
 											>

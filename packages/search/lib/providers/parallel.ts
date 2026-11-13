@@ -88,7 +88,8 @@ export class ParallelSearchProvider extends BaseSearchProvider {
 
 		const { maxResults = 10, category = "general" } = options;
 
-		logger.info(`[ParallelSearchProvider] Searching for: "${query}"`, {
+		logger.info("[ParallelSearchProvider] Searching", {
+			queryLength: query.length,
 			maxResults,
 			category,
 		});
@@ -162,9 +163,9 @@ export class ParallelSearchProvider extends BaseSearchProvider {
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
-			logger.error(
-				`[ParallelSearchProvider] Search failed: ${errorMessage}`,
-			);
+			logger.error("[ParallelSearchProvider] Search failed", {
+				errorKind: error instanceof Error ? error.name : typeof error,
+			});
 			throw new Error(`Parallel search failed: ${errorMessage}`);
 		}
 	}

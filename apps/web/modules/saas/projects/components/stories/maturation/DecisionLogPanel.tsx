@@ -202,7 +202,7 @@ export function DecisionLogPanel({ threads, onAmend, amendingId }: Props) {
 									<h3 className="editorial-label text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
 										{label}
 									</h3>
-									<span className="text-[11px] text-muted-foreground/70">
+									<span className="text-[11px] text-muted-foreground">
 										{group.items.length}
 									</span>
 								</button>
@@ -390,7 +390,7 @@ function DecisionThreadCard({
 								{thread.root.sourceProvenance}
 							</span>
 						) : (
-							<span className="inline-flex items-center gap-1 text-xs text-muted-foreground/60 italic">
+							<span className="inline-flex items-center gap-1 text-xs text-muted-foreground italic">
 								{t("unattributed")}
 							</span>
 						)}
@@ -437,7 +437,7 @@ function DecisionThreadCard({
 												{reply.sourceProvenance}
 											</span>
 										) : (
-											<span className="inline-flex items-center gap-1 text-xs text-muted-foreground/60 italic">
+											<span className="inline-flex items-center gap-1 text-xs text-muted-foreground italic">
 												{t("unattributed")}
 											</span>
 										)}
@@ -563,7 +563,7 @@ function DecisionThreadCard({
 															</Markdown>
 															<time
 																dateTime={old.createdAt.toISOString()}
-																className="text-xs text-muted-foreground/70"
+																className="text-xs text-muted-foreground"
 															>
 																{old.createdAt.toLocaleString()}
 															</time>
@@ -577,7 +577,7 @@ function DecisionThreadCard({
 						</ul>
 					) : (
 						<p
-							className="text-xs text-muted-foreground/60"
+							className="text-xs text-muted-foreground"
 							aria-hidden="true"
 						>
 							—
@@ -599,7 +599,7 @@ function StatusMarker({ status }: { status: DecisionStatus }) {
 	switch (status) {
 		case "RESOLVED":
 			return (
-				<span className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-secondary">
+				<span className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-success">
 					<CheckCircle2 className="size-3.5" aria-hidden="true" />
 					{t("resolvedMarker")}
 				</span>

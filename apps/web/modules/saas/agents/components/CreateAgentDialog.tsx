@@ -1750,7 +1750,7 @@ export function CreateAgentDialog({
 																"px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
 																trigger.kind ===
 																	k
-																	? "border-primary bg-primary/10 text-primary"
+																	? "border-primary bg-primary/10 text-primary-active"
 																	: "border-border text-muted-foreground hover:border-primary/40",
 															)}
 														>
@@ -1880,7 +1880,7 @@ export function CreateAgentDialog({
 								) : (
 									<ChevronRightIcon className="h-4 w-4" />
 								)}
-								<PlayIcon className="h-4 w-4 text-secondary" />
+								<PlayIcon className="h-4 w-4 text-success" />
 								Test Agent
 							</button>
 

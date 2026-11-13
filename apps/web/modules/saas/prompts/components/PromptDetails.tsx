@@ -1043,7 +1043,7 @@ export function PromptDetails({
 																}
 															</span>
 															{isLatestVersion && (
-																<span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">
+																<span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary-active font-medium">
 																	Current
 																</span>
 															)}

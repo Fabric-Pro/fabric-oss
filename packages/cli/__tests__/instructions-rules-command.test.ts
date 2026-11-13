@@ -20,6 +20,7 @@ import { gitBlobOid } from "../src/lib/git-blob.js";
 const state = vi.hoisted(() => ({
 	cache: "",
 	files: [] as Array<{ path: string; text: string }>,
+	sets: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("../src/commands/instructions/render.js", () => ({
@@ -29,6 +30,9 @@ vi.mock("../src/commands/instructions/render.js", () => ({
 			origin: "https://example.com",
 			cacheDirectory: state.cache,
 			client: {
+				projects: {
+					listInstructionSets: async () => ({ sets: state.sets }),
+				},
 				instructions: {
 					getPublished: async () => ({
 						published: true,
@@ -107,6 +111,7 @@ beforeEach(async () => {
 		},
 		{ path: ".claude/rules/team/naming.md", text: "Names." },
 	];
+	state.sets = [];
 	git("init", "-q");
 });
 
@@ -191,5 +196,61 @@ describe("syncRulesForProject", () => {
 				"utf8",
 			).catch(() => ""),
 		).not.toContain("fabric-");
+	});
+});
+
+describe("syncRulesForProject with Coding Instructions sets", () => {
+	const sets = [
+		{
+			id: "set-default",
+			name: "Default",
+			slug: "default",
+			isDefault: true,
+			repositoryIntegrationIds: [],
+			folder: "",
+			excludedFolders: ["instructions/mobile/"],
+		},
+		{
+			id: "set-mobile",
+			name: "Mobile",
+			slug: "mobile",
+			isDefault: false,
+			repositoryIntegrationIds: [],
+			folder: "instructions/mobile/",
+			excludedFolders: [],
+		},
+	];
+
+	beforeEach(() => {
+		state.sets = sets;
+		state.files = [
+			{ path: "rules/style.md", text: "Tabs.\n" },
+			{ path: "instructions/mobile/rules/naming.md", text: "Names.\n" },
+		];
+	});
+
+	it("writes a non-default set's rules, relative to its folder, in the set plugin's own folder", async () => {
+		const result = await syncRulesForProject({
+			project: PROJECT,
+			root,
+			set: "mobile",
+		});
+
+		expect(result.written).toEqual(["naming.md"]);
+		expect(
+			await readFile(
+				path.join(root, rulesFolderFor(PROJECT, "mobile"), "naming.md"),
+				"utf8",
+			),
+		).toBe("Names.\n");
+	});
+
+	it("writes the default set's rules, without the other sets' folders, where the project's rules always went", async () => {
+		const result = await run();
+
+		expect(result.written).toEqual(["style.md"]);
+		expect(
+			await readFile(path.join(root, FOLDER, "style.md"), "utf8"),
+		).toBe("Tabs.\n");
 	});
 });

@@ -93,7 +93,7 @@ export function AtlasAboutDialog() {
 				<button
 					type="button"
 					aria-label={t("triggerLabel")}
-					className="rounded-full p-1 text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+					className="rounded-full p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 				>
 					<InfoIcon aria-hidden="true" className="size-4" />
 				</button>
@@ -149,7 +149,7 @@ export function AtlasAboutDialog() {
 										)}
 									>
 										<div className="flex items-baseline gap-2">
-											<span className="font-mono text-[10px] font-medium tabular-nums text-muted-foreground/60">
+											<span className="font-mono text-[10px] font-medium tabular-nums text-muted-foreground">
 												{String(index + 1).padStart(
 													2,
 													"0",
@@ -198,7 +198,7 @@ export function AtlasAboutDialog() {
 									<h3 className="text-sm font-semibold text-foreground">
 										{t("systemTitle")}
 									</h3>
-									<span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-primary">
+									<span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-primary-active">
 										{t("systemTag")}
 									</span>
 								</div>

@@ -80,11 +80,11 @@ const statusConfig = {
 	},
 	ACTIVE: {
 		label: "Active",
-		color: "bg-green-500/10 text-green-700 dark:bg-green-500/20 dark:text-green-400 border-0",
+		color: "bg-green-500/10 text-green-800 dark:bg-green-500/20 dark:text-green-400 border-0",
 	},
 	COMPLETED: {
 		label: "Completed",
-		color: "bg-blue-500/10 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400 border-0",
+		color: "bg-blue-500/10 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300 border-0",
 	},
 	ARCHIVED: {
 		label: "Archived",
@@ -416,7 +416,10 @@ function ProjectListItem({
 										size="icon-sm"
 										className="opacity-0 group-hover:opacity-100 transition-opacity"
 									>
-										<MoreVerticalIcon className="h-4 w-4" />
+										<MoreVerticalIcon
+											strokeWidth={2.5}
+											className="h-4 w-4"
+										/>
 									</Button>
 								</DropdownMenuTrigger>
 								<DropdownMenuContent align="end">

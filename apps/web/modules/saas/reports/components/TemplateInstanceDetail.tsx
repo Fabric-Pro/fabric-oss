@@ -2379,7 +2379,7 @@ export function TemplateInstanceDetail({
 												: "—"}
 										</p>
 										{!instance.isActive && (
-											<p className="text-xs text-muted-foreground/70 motion-safe:transition-opacity">
+											<p className="text-xs text-muted-foreground motion-safe:transition-opacity">
 												Scheduling applies once this
 												report is active.
 											</p>
@@ -3745,7 +3745,7 @@ export function TemplateInstanceDetail({
 																	key={key}
 																	className="flex items-center gap-3 p-2 border rounded-lg bg-muted/20"
 																>
-																	<code className="bg-primary/10 text-primary px-2 py-0.5 rounded font-mono text-xs">
+																	<code className="bg-primary/10 text-primary-active px-2 py-0.5 rounded font-mono text-xs">
 																		{`{{${key}}}`}
 																	</code>
 																	<span className="text-sm text-muted-foreground flex-1">

@@ -20,6 +20,13 @@ describe("worker activity registration", () => {
 			// workflow test cannot catch it, because that harness supplies its
 			// own activities map rather than the worker barrel.
 			"sendNewsletterApprovalChatMessagesActivity",
+			// Automatic screenshots: the capture runs on the export queue and the
+			// rest on the default one, and both workers load this barrel.
+			"captureNewsletterScreenshotActivity",
+			"collectNewsletterTargetingActivity",
+			"createNewsletterCaptureRowsActivity",
+			"failNewsletterScreenshotCaptureActivity",
+			"publishNewsletterScreenshotsActivity",
 		]) {
 			expect(typeof (activities as Record<string, unknown>)[name]).toBe(
 				"function",

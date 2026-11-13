@@ -1,7 +1,16 @@
-import { Button, Heading, Hr, Section, Text } from "@react-email/components";
+import {
+	Button,
+	Heading,
+	Hr,
+	Img,
+	Section,
+	Text,
+} from "@react-email/components";
 import {
 	groupHighlightsByRelease,
+	highlightImagesAt,
 	type ReleaseHighlight,
+	type ReleaseHighlightImage,
 } from "@repo/utils/group-highlights";
 import React from "react";
 import { createTranslator } from "use-intl/core";
@@ -10,6 +19,37 @@ import { defaultLocale, defaultTranslations } from "../src/util/translations";
 import type { BaseMailProps, MailTranslator } from "../types";
 
 export type ReleaseNotesHighlight = ReleaseHighlight;
+
+/** The Wrapper's 520 px card less its 32 px padding on each side. */
+const CONTENT_WIDTH_PX = 456;
+
+/**
+ * The Wrapper's `border` colour, set inline: `Img` writes `border: none` into
+ * its own style, which a Tailwind border class would not reliably beat.
+ */
+const IMAGE_BORDER = "1px solid #ece8e1";
+
+/** A highlight's images at full content width, above or below its text. */
+function HighlightImages({ images }: { images: ReleaseHighlightImage[] }) {
+	return (
+		<>
+			{images.map((image) => (
+				<Img
+					key={image.url}
+					src={image.url}
+					alt={image.alt}
+					width={CONTENT_WIDTH_PX}
+					className="mt-2"
+					style={{
+						maxWidth: "100%",
+						height: "auto",
+						border: IMAGE_BORDER,
+					}}
+				/>
+			))}
+		</>
+	);
+}
 
 export function ReleaseNotesNewsletter({
 	projectName,
@@ -109,9 +149,15 @@ export function ReleaseNotesNewsletter({
 							<Text className="m-0 text-sm font-semibold text-foreground">
 								{h.title}
 							</Text>
+							<HighlightImages
+								images={highlightImagesAt(h.images, "ABOVE")}
+							/>
 							<Text className="m-0 mt-1 text-sm text-foreground leading-relaxed">
 								{h.description}
 							</Text>
+							<HighlightImages
+								images={highlightImagesAt(h.images, "BELOW")}
+							/>
 						</Section>
 					))}
 				</Section>
@@ -180,6 +226,14 @@ ReleaseNotesNewsletter.PreviewProps = {
 			releaseTag: "v1.3.7",
 			repoFullName: "acme/web",
 			prUrl: "https://github.com/acme/web/releases/tag/v1.3.7",
+			images: [
+				{
+					url: "https://example.com/newsletter-dashboard.png",
+					alt: "The redesigned dashboard home",
+					width: 1200,
+					height: 680,
+				},
+			],
 		},
 		{
 			title: "Bulk export",

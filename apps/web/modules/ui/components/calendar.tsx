@@ -45,7 +45,10 @@ function Calendar({
 				selected:
 					"bg-primary text-primary-foreground hover:bg-[var(--primary-hover)] hover:text-primary-foreground focus:bg-primary focus:text-primary-foreground rounded-md",
 				today: "bg-accent text-accent-foreground rounded-md",
-				outside: "text-muted-foreground opacity-50",
+				// Days of the neighbouring months are real, selectable dates:
+				// muted, not faded under AA (Fizzy #1444). Disabled days keep
+				// the fade, which WCAG exempts.
+				outside: "text-muted-foreground",
 				disabled: "text-muted-foreground opacity-50",
 				range_middle:
 					"aria-selected:bg-accent aria-selected:text-accent-foreground",

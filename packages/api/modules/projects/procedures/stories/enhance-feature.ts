@@ -30,7 +30,7 @@ import {
 } from "@repo/database";
 import { listDecisionLogThreads } from "@repo/database/prisma/queries/feature-maturation";
 import { logger } from "@repo/logs";
-import { formatContextsForPrompt, retrieveProjectContexts } from "@repo/rag";
+import { retrieveRankedPassages } from "@repo/rag";
 import {
 	fetchLiveIntegrationContext,
 	formatLiveContextForPrompt,
@@ -484,7 +484,7 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 				select: { name: true, description: true, techStack: true },
 			}),
 			(async () => {
-				const contexts = await retrieveProjectContexts({
+				const context = await retrieveRankedPassages({
 					projectId: input.projectId,
 					query: [
 						story.title,
@@ -496,11 +496,8 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 						.trim(),
 					userId: user.id,
 					organizationId,
-					topK: 5,
 				});
-				return contexts.length > 0
-					? formatContextsForPrompt(contexts)
-					: null;
+				return context || null;
 			})(),
 			(async () => {
 				const liveContext = await fetchLiveIntegrationContext({

@@ -72,7 +72,7 @@ const TYPE_CONFIG = {
 	project_update_draft: {
 		label: "Update draft",
 		icon: FilePenLineIcon,
-		className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+		className: "bg-amber-500/10 text-amber-800 dark:text-amber-300",
 	},
 } as const;
 
@@ -80,22 +80,22 @@ const STATUS_CONFIG = {
 	running: {
 		label: "Running",
 		icon: PlayCircleIcon,
-		className: "text-blue-600",
+		className: "text-blue-600 dark:text-blue-400",
 	},
 	needs_review: {
 		label: "Needs review",
 		icon: ShieldCheckIcon,
-		className: "text-amber-600",
+		className: "text-amber-700 dark:text-amber-500",
 	},
 	failed: {
 		label: "Failed",
 		icon: AlertTriangleIcon,
-		className: "text-red-600",
+		className: "text-red-700 dark:text-red-400",
 	},
 	completed: {
 		label: "Completed",
 		icon: CheckCircle2Icon,
-		className: "text-emerald-600",
+		className: "text-emerald-700 dark:text-emerald-500",
 	},
 } as const;
 
@@ -143,7 +143,7 @@ export function AgentInboxView({
 			<div className="rounded-lg border border-border/70 bg-card/70 p-6 shadow-sm">
 				<div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
 					<div>
-						<div className="mb-3 inline-flex items-center gap-2 rounded-full border border-primary/15 bg-primary/8 px-2.5 py-1 text-primary text-xs font-medium">
+						<div className="mb-3 inline-flex items-center gap-2 rounded-full border border-primary/15 bg-primary/8 px-2.5 py-1 text-primary-active text-xs font-medium">
 							<InboxIcon className="size-3.5" />
 							Workspace Agent Inbox
 						</div>
@@ -262,7 +262,7 @@ export function AgentInboxView({
 													{item.description}
 												</p>
 											)}
-											<div className="mt-2 flex flex-wrap items-center gap-3 text-muted-foreground/75 text-xs">
+											<div className="mt-2 flex flex-wrap items-center gap-3 text-muted-foreground text-xs">
 												<span className="inline-flex items-center gap-1">
 													<ClockIcon className="size-3" />
 													{formatRelativeTime(

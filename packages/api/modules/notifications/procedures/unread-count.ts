@@ -7,13 +7,10 @@ import {
 import {
 	Permissions,
 	requirePermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
-import {
-	INCIDENT_NOTIFICATION_TYPES,
-	WEEKLY_DIGEST_DEDUPE_PREFIX,
-} from "../lib/incident-notification-types";
+import { bellVisibleWhere } from "../lib/bell-visible-where";
+import { resolveNotificationOrganization } from "../lib/resolve-notification-organization";
 
 export const unreadCountNotificationsProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.NOTIFICATIONS_READ))
@@ -29,34 +26,46 @@ export const unreadCountNotificationsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const organizationId =
-			resolveOrganizationId(input.organizationId, context.session) ??
-			null;
+		const organizationId = await resolveNotificationOrganization(
+			input.organizationId,
+			context,
+		);
 
 		const cached = await getCachedUnreadCount(
 			context.user.id,
 			organizationId,
 		);
+		const visibleWhere = bellVisibleWhere({
+			userId: context.user.id,
+			organizationId,
+		});
+		const countUnreadInScope = (scopeOrganizationId: string | null) =>
+			db.notification.count({
+				where: {
+					...visibleWhere,
+					organizationId: scopeOrganizationId,
+					readAt: null,
+					archivedAt: null,
+				},
+			});
+
+		// The cache stores only the organization-local component. The global
+		// weekly digest is queried live so its database writer does not have to
+		// discover and invalidate every organization-specific key for the user.
 		if (cached !== null) {
-			return { count: cached };
+			const globalDigestCount = await countUnreadInScope(null);
+			return { count: cached + globalDigestCount };
 		}
 
-		const count = await db.notification.count({
-			where: {
-				userId: context.user.id,
-				organizationId,
-				readAt: null,
-				archivedAt: null,
-				// Per-incident alert notifications don't count toward the bell;
-				// the low-noise weekly digest (same type, distinct dedupe-key
-				// prefix) still does.
-				OR: [
-					{ type: { notIn: INCIDENT_NOTIFICATION_TYPES } },
-					{ dedupeKey: { startsWith: WEEKLY_DIGEST_DEDUPE_PREFIX } },
-				],
-			},
-		});
+		const [organizationCount, globalDigestCount] = await Promise.all([
+			countUnreadInScope(organizationId),
+			countUnreadInScope(null),
+		]);
 
-		await setCachedUnreadCount(context.user.id, organizationId, count);
-		return { count };
+		await setCachedUnreadCount(
+			context.user.id,
+			organizationId,
+			organizationCount,
+		);
+		return { count: organizationCount + globalDigestCount };
 	});

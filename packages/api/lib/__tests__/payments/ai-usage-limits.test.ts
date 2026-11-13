@@ -1307,9 +1307,40 @@ describe("recordAiUsageAndCheckOverage", () => {
 			}),
 		).resolves.toBeUndefined();
 		expect(logger.error).toHaveBeenCalledWith(
-			expect.objectContaining({ event: "aiUsageLimits.recordFailed" }),
+			expect.objectContaining({
+				event: "aiUsageLimits.recordFailed",
+				stage: "updateLimit",
+				limitId: "lim_1",
+			}),
 			expect.any(String),
 		);
+	});
+
+	it("a limits-load failure is logged with stage loadLimits and no limit id (Fizzy #3528)", async () => {
+		const { recordAiUsageAndCheckOverage } = await loadLib();
+		const db = await getMockDb();
+		const { logger } = await import("@repo/logs");
+		db.user.findUnique.mockResolvedValue({ timezone: "UTC" });
+		db.aiUsageLimit.findMany.mockRejectedValue(
+			new Error("Connection terminated due to connection timeout"),
+		);
+
+		await expect(
+			recordAiUsageAndCheckOverage({
+				userId: "user-1",
+				totalTokens: 50,
+				costMicroUsd: 0,
+			}),
+		).resolves.toBeUndefined();
+		expect(logger.error).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event: "aiUsageLimits.recordFailed",
+				stage: "loadLimits",
+				limitId: null,
+			}),
+			expect.any(String),
+		);
+		expect(db.aiUsageLimitCounter.upsert).not.toHaveBeenCalled();
 	});
 
 	it("token-dimension limit: tokens delta is incremented; micro-USD delta is zeroed", async () => {

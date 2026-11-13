@@ -26,8 +26,9 @@ export type CodexPluginInstall =
 export function codexPluginReference(
 	projectId: string,
 	marketplaceName: string,
+	set?: string | null,
 ): string {
-	return `${pluginNameFor(projectId)}@${marketplaceName}`;
+	return `${pluginNameFor(projectId, set)}@${marketplaceName}`;
 }
 
 export async function installCodexPlugin(input: {
@@ -35,11 +36,12 @@ export async function installCodexPlugin(input: {
 	projectId: string;
 	marketplaceName: string;
 	cwd: string;
+	set?: string | null;
 }): Promise<CodexPluginInstall> {
 	const args = [
 		"plugin",
 		"add",
-		codexPluginReference(input.projectId, input.marketplaceName),
+		codexPluginReference(input.projectId, input.marketplaceName, input.set),
 	];
 	const result = await input.run("codex", args, {
 		cwd: input.cwd,
@@ -68,6 +70,8 @@ export async function refreshCodexInstall(input: {
 	/** The rendered plugin's version (`0.0.0-<pin>`). */
 	version: string;
 	cwd: string;
+	/** A non-default Coding Instructions set: its own plugin. */
+	set?: string | null;
 }): Promise<void> {
 	try {
 		const marketplaceName = await codexMarketplaceListing(input);
@@ -79,7 +83,7 @@ export async function refreshCodexInstall(input: {
 			"plugins",
 			"cache",
 			marketplaceName,
-			pluginNameFor(input.projectId),
+			pluginNameFor(input.projectId, input.set),
 			input.version,
 		);
 		if (
@@ -95,7 +99,11 @@ export async function refreshCodexInstall(input: {
 			[
 				"plugin",
 				"add",
-				codexPluginReference(input.projectId, marketplaceName),
+				codexPluginReference(
+					input.projectId,
+					marketplaceName,
+					input.set,
+				),
 			],
 			{ cwd: input.cwd, timeoutMs: REFRESH_TIMEOUT_MS },
 		);

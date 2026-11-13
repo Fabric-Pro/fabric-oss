@@ -29,6 +29,10 @@ import type {
 	LogSourceAdapter,
 	RawErrorGroup,
 } from "@repo/ai/lib/log-context";
+import {
+	namesSharedLogWorkspace,
+	sharedLogWorkspaceId,
+} from "@repo/database/src/shared-log-workspace";
 import { logger } from "@repo/logs";
 import type { RawLogEntry } from "@repo/utils/log-redaction";
 
@@ -184,11 +188,13 @@ export const PLATFORM_NOISE_RULES: readonly PlatformNoiseRule[] = [
 			operator: "endswith",
 			value: "Waiting for infrastructure to be ready",
 		},
-		key: "revision",
+		// Per replica, so a scheduled sibling cannot hide a stuck replica. Ties count:
+		// the platform can log the last failure in the same batch as the scheduling.
+		key: "replica",
 		proofs: [
 			{
 				reasons: ["AssigningReplica"],
-				direction: "after",
+				direction: "at-or-after",
 				gapMinutes: 2,
 			},
 		],
@@ -291,6 +297,46 @@ export const PLATFORM_NOISE_RULES: readonly PlatformNoiseRule[] = [
 			},
 		],
 	},
+	// During a rollout the environment's controller abandons an update that a
+	// newer reconcile of the same app supersedes, and logs the abandoned call
+	// as canceled: a deployment update (ResourceUpdateFailed) or an app
+	// setting such as authConfig, managed identity or custom domain
+	// (ContainerAppFailure). Only a cancellation followed by the app's next
+	// successful update is set aside; any other failure, or a cancellation the
+	// app does not recover from, stays reported.
+	{
+		id: "rollout-update-canceled",
+		failureReasons: ["ResourceUpdateFailed", "ContainerAppFailure"],
+		log: { operator: "endswith", value: "context canceled" },
+		key: "app",
+		proofs: [
+			{
+				reasons: ["ContainerAppReady"],
+				direction: "after",
+				gapMinutes: 2,
+			},
+		],
+	},
+	// A deploy that replaces a revision moments after creating it tears the
+	// revision down before its replica is scheduled. Keyed on the revision,
+	// because a replica of a removed revision never logs AssigningReplica: a
+	// wait whose revision is still there two minutes later stays reported.
+	{
+		id: "replica-scheduling-teardown",
+		failureReasons: ["AssigningReplicaFailed"],
+		log: {
+			operator: "endswith",
+			value: "Waiting for infrastructure to be ready",
+		},
+		key: "revision",
+		proofs: [
+			{
+				reasons: ["ScaledObjectDeleted"],
+				direction: "at-or-after",
+				gapMinutes: 2,
+			},
+		],
+	},
 ];
 
 function noisePredicate(rule: PlatformNoiseRule): string {
@@ -333,7 +379,7 @@ function noiseClassification(): string[] {
 				);
 				return;
 			}
-			// after is strict; KEDA accepts ties explicitly. before includes ties because
+			// after is strict; at-or-after accepts ties explicitly. before includes ties because
 			// shutdown/startup events can share the readiness event's timestamp.
 			const time =
 				proof.direction === "before"
@@ -695,8 +741,7 @@ export function parseLogAnalyticsResponse(payload: unknown): RawLogEntry[] {
  * which is an ordinary FR3 outcome, not an error.
  */
 export function configuredWorkspaceId(): string | undefined {
-	const id = process.env.FABRIC_BUG_ANALYSIS_LOG_WORKSPACE_ID?.trim();
-	return id ? id : undefined;
+	return sharedLogWorkspaceId();
 }
 
 /**
@@ -739,11 +784,15 @@ export interface AzureMonitorAdapterOptions {
 	/** Injected in tests; defaults to the real credential + fetch. */
 	getToken?: () => Promise<string>;
 	fetchImpl?: typeof fetch;
-	/** Ceiling on the HTTP call itself. */
+	/** Ceiling on each attempt of the HTTP call. */
 	timeoutMs?: number;
 }
 
 const DEFAULT_QUERY_TIMEOUT_MS = 30_000;
+
+type QueryAttempt =
+	| { ok: true; body: unknown }
+	| { ok: false; error: Error; retryable: boolean };
 
 /**
  * Client id of the managed identity to authenticate as, when the host has more
@@ -812,8 +861,10 @@ export function createAzureMonitorLogSourceAdapter(
 	const getToken = options.getToken ?? defaultGetToken;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS;
 
-	const runQuery = async (query: string): Promise<unknown> => {
-		const token = await getToken();
+	const attemptQuery = async (
+		query: string,
+		token: string,
+	): Promise<QueryAttempt> => {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 		try {
@@ -835,14 +886,48 @@ export function createAzureMonitorLogSourceAdapter(
 			if (!response.ok) {
 				// The body can echo the query, which carries user terms, so it
 				// is deliberately not logged.
-				throw new Error(
-					`Azure Monitor query failed with ${response.status}`,
-				);
+				return {
+					ok: false,
+					error: new Error(
+						`Azure Monitor query failed with ${response.status}`,
+					),
+					retryable: response.status >= 500,
+				};
 			}
-			return await response.json();
+			return { ok: true, body: await response.json() };
+		} catch (cause) {
+			// fetch rejects with a TypeError when the connection fails, and
+			// either call rejects once the timer has aborted the request. A
+			// malformed body is a SyntaxError and is not worth repeating.
+			return {
+				ok: false,
+				error:
+					cause instanceof Error ? cause : new Error(String(cause)),
+				retryable:
+					controller.signal.aborted || cause instanceof TypeError,
+			};
 		} finally {
 			clearTimeout(timer);
 		}
+	};
+
+	// One retry, with its own timeout, for a stalled request, a dropped
+	// connection or a server error: a single transient stall otherwise fails
+	// the whole scan. A rejected request (4xx) is not retried.
+	const runQuery = async (query: string): Promise<unknown> => {
+		const token = await getToken();
+		const first = await attemptQuery(query, token);
+		if (first.ok) {
+			return first.body;
+		}
+		if (!first.retryable) {
+			throw first.error;
+		}
+		const second = await attemptQuery(query, token);
+		if (second.ok) {
+			return second.body;
+		}
+		throw second.error;
 	};
 
 	return {
@@ -989,14 +1074,10 @@ export const azureMonitorProvider = {
 		// The worker identity holds read on that workspace for THIS feature, so
 		// honouring such a binding would hand any project admin the cross-
 		// tenant reads the shared-store predicate exists to prevent — the same
-		// escalation by another door. Workspace ids are GUIDs and Azure treats
-		// them case-insensitively, so the guard compares that way too: an exact
-		// match would be bypassed by re-casing the id.
-		const deploymentWorkspace = configuredWorkspaceId()?.toLowerCase();
-		if (
-			deploymentWorkspace &&
-			workspaceId.toLowerCase() === deploymentWorkspace
-		) {
+		// escalation by another door. `projects.update` refuses the same ids
+		// through the same comparison, so this only catches rows saved before
+		// that check or while the web runtime lacked the deployment value.
+		if (namesSharedLogWorkspace(workspaceId)) {
 			logger.warn(
 				"[BugAnalysis] project log-source binding names the deployment's shared telemetry workspace; refusing",
 				{ providerId: "azure-monitor" },

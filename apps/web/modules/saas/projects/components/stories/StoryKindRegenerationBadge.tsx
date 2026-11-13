@@ -53,7 +53,7 @@ export function StoryKindRegenerationBadge({
 						data-state={running ? "running" : "failed"}
 						className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
 							running
-								? "border-primary/40 bg-primary/10 text-primary"
+								? "border-primary/40 bg-primary/10 text-primary-active"
 								: "border-destructive/40 bg-destructive/10 text-destructive"
 						}`}
 					>

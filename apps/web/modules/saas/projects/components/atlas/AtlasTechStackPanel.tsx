@@ -79,7 +79,7 @@ const GROUP_LABEL_KEY: Record<TechGroupId, string> = {
  */
 const TAG_COLOR_VAR: Record<TechTag, string> = {
 	framework: "var(--atlas-cat-integration)",
-	runtime: "var(--secondary)",
+	runtime: "var(--success)",
 	language: "var(--atlas-cat-infra)",
 	ai: "var(--atlas-cat-ai)",
 	data: "var(--atlas-cat-data)",
@@ -260,7 +260,7 @@ export function AtlasTechStackPanel({
 		<div className="space-y-5">
 			{grouped.map(({ group, rows }) => (
 				<div key={group}>
-					<p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+					<p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
 						{t(GROUP_LABEL_KEY[group])}
 					</p>
 					<ul className="space-y-0.5">{rows.map(renderRow)}</ul>
@@ -295,10 +295,10 @@ export function AtlasTechStackPanel({
 						>
 							<AccordionTrigger className="py-2.5 hover:no-underline">
 								<span className="flex items-center gap-2">
-									<span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+									<span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
 										{t(GROUP_LABEL_KEY[group])}
 									</span>
-									<span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground/70">
+									<span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
 										{rows.length}
 									</span>
 								</span>
@@ -329,7 +329,7 @@ export function AtlasTechStackPanel({
 							</span>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<span className="rounded text-muted-foreground/50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring">
+									<span className="rounded text-muted-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring">
 										<InfoIcon
 											aria-hidden="true"
 											className="size-3"

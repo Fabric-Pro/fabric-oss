@@ -96,7 +96,7 @@ export function RequireTwoFactorForm() {
 					<div className="flex-1 space-y-0.5">
 						<div className="flex items-center gap-2">
 							{requireTwoFactor ? (
-								<ShieldCheckIcon className="size-4 text-secondary" />
+								<ShieldCheckIcon className="size-4 text-success" />
 							) : (
 								<ShieldIcon className="size-4 text-muted-foreground" />
 							)}

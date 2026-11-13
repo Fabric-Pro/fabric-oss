@@ -65,7 +65,7 @@ export function CompactDocumentTypeSelector({
 							}}
 							className={`w-full flex items-center gap-3 px-3 py-2 rounded text-left transition-colors ${
 								value === type.value
-									? "bg-primary/10 text-primary"
+									? "bg-primary/10 text-primary-active"
 									: "hover:bg-muted"
 							}`}
 						>

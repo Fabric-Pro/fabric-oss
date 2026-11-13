@@ -30,6 +30,9 @@ interface CugaCodePanelProps {
 	className?: string;
 }
 
+// Each status names its own dark pair: the Badge's default variant carries
+// `dark:bg-primary/15`, which would otherwise replace the light chip in dark
+// mode and leave the dark status ink on a dark fill (WCAG AA, Fizzy #1444).
 const STATUS_CONFIG = {
 	pending: {
 		icon: <Terminal className="h-4 w-4" />,
@@ -39,17 +42,17 @@ const STATUS_CONFIG = {
 	running: {
 		icon: <Loader2 className="h-4 w-4 animate-spin" />,
 		label: "Running",
-		color: "bg-blue-100 text-blue-700",
+		color: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300",
 	},
 	complete: {
 		icon: <CheckCircle2 className="h-4 w-4" />,
 		label: "Complete",
-		color: "bg-green-100 text-green-700",
+		color: "bg-green-100 text-green-800 dark:bg-green-500/15 dark:text-green-300",
 	},
 	failed: {
 		icon: <XCircle className="h-4 w-4" />,
 		label: "Failed",
-		color: "bg-red-100 text-red-700",
+		color: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
 	},
 };
 

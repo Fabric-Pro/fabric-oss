@@ -312,7 +312,7 @@ export function StoryContextActions({
 									})
 								}
 							>
-								<SparklesIcon className="mr-2 size-4 text-secondary" />
+								<SparklesIcon className="mr-2 size-4 text-success" />
 								Re-assess priority with AI
 							</ContextMenuItem>
 						</>

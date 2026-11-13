@@ -105,7 +105,7 @@ export function ResetPasswordForm() {
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("auth.resetPassword.title")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t("auth.resetPassword.message")}{" "}
 				</p>
 
@@ -144,7 +144,7 @@ export function ResetPasswordForm() {
 			<h1 className="font-bold text-xl md:text-2xl">
 				{t("auth.resetPassword.title")}
 			</h1>
-			<p className="mt-1 mb-6 text-foreground/60">
+			<p className="mt-1 mb-6 text-muted-foreground">
 				{t("auth.resetPassword.message")}{" "}
 			</p>
 

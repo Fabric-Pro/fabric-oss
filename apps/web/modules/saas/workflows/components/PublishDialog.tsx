@@ -195,7 +195,7 @@ export function PublishDialog({
 						<div className="flex items-center gap-3 p-4 rounded-lg bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-800">
 							<CheckCircle2Icon className="h-8 w-8 text-success" />
 							<div>
-								<p className="font-medium text-green-700 dark:text-green-300">
+								<p className="font-medium text-green-800 dark:text-green-300">
 									Workflow Published!
 								</p>
 								<p className="text-sm text-success dark:text-green-400">
@@ -305,7 +305,7 @@ export function PublishDialog({
 								variant={isPublished ? "default" : "secondary"}
 								className={cn(
 									isPublished &&
-										"bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
+										"bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",
 								)}
 							>
 								{status}

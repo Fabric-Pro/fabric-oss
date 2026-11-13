@@ -3,28 +3,29 @@
 <head>
 <meta charset="utf-8">
 <title>Fabric — QA gates (docs mock)</title>
-<!-- Real Inter + JetBrains Mono, the app's --font-sans / --font-mono. -->
+<!-- Real Inter + IBM Plex Mono, the app's --font-sans / --font-mono. -->
 <link rel="stylesheet" href="../.fonts/fonts.css">
 <style>
 /* Tokens copied verbatim from tooling/tailwind/theme.css :root (light). */
 :root{
-  --border:#d8d2cc; --ring:#9f2a3a;
-  --background:#f7f6f2; --foreground:#1f1c19;
-  --primary:#9f2a3a; --primary-foreground:#fff7f7;
-  --secondary:#047857;
-  --destructive:#c81e1e; --destructive-foreground:#ffffff;
-  --muted:#efede8; --muted-foreground:#625c55;
-  --accent:#f2e7e7; --accent-foreground:#6b1521;
-  --card:#fffdf9; --card-foreground:#1f1c19;
-  --highlight:#d97706; --highlight-foreground:#451a03;
-  --radius:0.625rem; --radius-lg:var(--radius);
+  --border:#dce0e5; --ring:#bc3e0b;
+  --background:#ffffff; --foreground:#11171c;
+  --primary:#bc3e0b; --primary-foreground:#ffffff;
+  --success:#24773f;
+  --destructive:#b8223b; --destructive-foreground:#ffffff;
+  --muted:#f1f3f6; --muted-foreground:#4f6170;
+  --accent:#e8edf2; --accent-foreground:#11171c;
+  --card:#ffffff; --card-foreground:#11171c;
+  --highlight:#8a5a00; --highlight-foreground:#ffffff;
+  --radius:0.25rem; --radius-lg:calc(var(--radius) + 2px);
   --font-sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-  --font-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --font-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--background);color:var(--foreground);font-family:var(--font-sans);
   -webkit-font-smoothing:antialiased;padding:24px;width:820px}
 .shot{width:772px;margin-bottom:40px}
+#shot-revise{width:804px;padding:16px}
 
 /* --- shared component primitives, mirroring the app's class structure --- */
 .card{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--card)}
@@ -62,9 +63,11 @@ h4{font-size:.875rem;line-height:1.25rem;font-weight:500}
   font-weight:500;color:var(--muted-foreground);border-bottom:2px solid transparent}
 .tab.on{color:var(--foreground);border-bottom-color:var(--primary)}
 .tab .warn{width:15px;height:15px;color:var(--highlight)}
-.badge{display:inline-flex;min-width:19px;height:19px;align-items:center;justify-content:center;
-  border-radius:9999px;padding:0 6px;font-size:11px;font-weight:600;
-  background:color-mix(in srgb,var(--highlight) 16%,transparent);color:var(--highlight-foreground)}
+/* Badge variant="warning" + "h-5 min-w-5 justify-center px-1.5 text-[11px]" (StoryWorkspace) */
+.badge{display:inline-flex;min-width:20px;height:20px;align-items:center;justify-content:center;
+  border-radius:calc(var(--radius) - 1px);padding:0 6px;font-family:var(--font-mono);font-size:11px;
+  font-weight:400;border:1px solid color-mix(in srgb,var(--highlight) 35%,transparent);
+  background:transparent;color:var(--highlight)}
 
 /* Dialog shell */
 .dialog{border:1px solid var(--border);border-radius:calc(var(--radius) + 2px);
@@ -117,8 +120,8 @@ h4{font-size:.875rem;line-height:1.25rem;font-weight:500}
   padding:12px;font-size:.8125rem;line-height:1.2rem}
 .warnrow .acref{flex-shrink:0;font-family:var(--font-mono);font-size:.75rem;color:var(--muted-foreground)}
 .revealed{display:inline-flex;align-items:center;vertical-align:middle;margin-left:8px;
-  border:1px solid color-mix(in srgb,var(--secondary) 40%,transparent);
-  background:color-mix(in srgb,var(--secondary) 10%,transparent);color:var(--secondary);
+  border:1px solid color-mix(in srgb,var(--success) 40%,transparent);
+  background:color-mix(in srgb,var(--success) 10%,transparent);color:var(--success);
   border-radius:9999px;padding:1px 8px;font-size:10px;font-weight:500;
   text-transform:uppercase;letter-spacing:.05em}
 </style>

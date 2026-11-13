@@ -141,7 +141,7 @@ export function OrganizationInvitationModal({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("organizations.invitationModal.expiredTitle")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t("organizations.invitationModal.expiredDescription", {
 						organizationName,
 					})}
@@ -165,7 +165,7 @@ export function OrganizationInvitationModal({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("organizations.invitationModal.alreadyAcceptedTitle")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t(
 						"organizations.invitationModal.alreadyAcceptedDescription",
 						{ organizationName },
@@ -197,7 +197,7 @@ export function OrganizationInvitationModal({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("organizations.invitationModal.alreadyRejectedTitle")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t(
 						"organizations.invitationModal.alreadyRejectedDescription",
 						{ organizationName },
@@ -224,7 +224,7 @@ export function OrganizationInvitationModal({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("organizations.invitationModal.canceledTitle")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t("organizations.invitationModal.canceledDescription", {
 						organizationName,
 					})}
@@ -248,7 +248,7 @@ export function OrganizationInvitationModal({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("organizations.invitationModal.signInRequiredTitle")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t(
 						"organizations.invitationModal.signInRequiredDescription",
 						{ organizationName },
@@ -290,7 +290,7 @@ export function OrganizationInvitationModal({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("organizations.invitationModal.emailMismatchTitle")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t(
 						"organizations.invitationModal.emailMismatchDescription",
 						{
@@ -317,7 +317,7 @@ export function OrganizationInvitationModal({
 							)}
 				</Button>
 
-				<p className="mt-4 text-foreground/60 text-sm">
+				<p className="mt-4 text-muted-foreground text-sm">
 					{t("organizations.invitationModal.providerHint", {
 						currentEmail: state.currentEmail,
 					})}
@@ -332,7 +332,7 @@ export function OrganizationInvitationModal({
 			<h1 className="font-bold text-xl md:text-2xl">
 				{t("organizations.invitationModal.title")}
 			</h1>
-			<p className="mt-1 mb-6 text-foreground/60">
+			<p className="mt-1 mb-6 text-muted-foreground">
 				{t("organizations.invitationModal.description", {
 					organizationName,
 				})}

@@ -6,7 +6,7 @@
  * `next-intl` is left on the shared echoing mock (`vitest.setup.ts`).
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -80,6 +80,19 @@ function withNews(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+/** The text of each item in the group the heading named `title` leads. */
+function groupItems(panel: HTMLElement, title: string): Array<string | null> {
+	const group = within(panel).getByRole("heading", {
+		name: title,
+	}).parentElement;
+	if (!group) {
+		throw new Error(`no group around the ${title} heading`);
+	}
+	return within(group)
+		.getAllByRole("listitem")
+		.map((item) => item.textContent);
+}
+
 beforeEach(() => {
 	m.digest = null;
 	m.seenCalls.length = 0;
@@ -118,6 +131,51 @@ describe("InstructionsDigestPanel", () => {
 		await waitFor(() =>
 			expect(m.seenCalls).toEqual([{ projectId: "p", snapshotId: "s5" }]),
 		);
+	});
+
+	it("lists added lessons as New lessons, and only there", async () => {
+		m.digest = withNews({
+			paths: {
+				added: [
+					{ path: "docs/new.md" },
+					{ path: "Lessons/2026-10-02-check-the-migration.md" },
+					{ path: "Lessons/2026-10-03-pin-the-runtime.md" },
+				],
+				// A changed lesson is an ordinary change, not a new one.
+				changed: [{ path: "Lessons/2026-09-01-older.md" }],
+				removed: [],
+			},
+		});
+		render(<InstructionsDigestPanel projectId="p" />, { wrapper: Wrapper });
+
+		const panel = await screen.findByTestId("instructions-digest");
+		expect(groupItems(panel, "lessonsTitle")).toEqual([
+			"2026-10-02-check-the-migration.md",
+			"2026-10-03-pin-the-runtime.md",
+		]);
+		expect(groupItems(panel, "pathsTitle")).toEqual([
+			"change.addeddocs/new.md",
+			"change.changedLessons/2026-09-01-older.md",
+		]);
+	});
+
+	it("shows only the New lessons group when lessons are all that was added", async () => {
+		m.digest = withNews({
+			paths: {
+				added: [{ path: "Lessons/2026-10-02-check-the-migration.md" }],
+				changed: [],
+				removed: [],
+			},
+		});
+		render(<InstructionsDigestPanel projectId="p" />, { wrapper: Wrapper });
+
+		const panel = await screen.findByTestId("instructions-digest");
+		expect(
+			within(panel).getByRole("heading", { name: "lessonsTitle" }),
+		).toBeInTheDocument();
+		expect(
+			within(panel).queryByRole("heading", { name: "pathsTitle" }),
+		).toBeNull();
 	});
 
 	it("says the seen version is gone when there is nothing to compare with", async () => {

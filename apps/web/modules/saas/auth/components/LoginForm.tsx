@@ -306,7 +306,7 @@ export function LoginForm({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("auth.login.title")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t("auth.login.subtitle")}
 				</p>
 				<div className="space-y-4 animate-pulse">
@@ -324,7 +324,7 @@ export function LoginForm({
 				<h1 className="font-bold text-xl md:text-2xl">
 					{t("auth.login.accountMismatch.title")}
 				</h1>
-				<p className="mt-1 mb-6 text-foreground/60">
+				<p className="mt-1 mb-6 text-muted-foreground">
 					{t("auth.login.accountMismatch.description", {
 						currentEmail: user.email,
 						// `email` is non-null here (the panel only renders when
@@ -344,7 +344,7 @@ export function LoginForm({
 						? t("auth.login.accountMismatch.switching")
 						: t("auth.login.accountMismatch.switchAccount")}
 				</Button>
-				<p className="mt-4 text-foreground/60 text-sm">
+				<p className="mt-4 text-muted-foreground text-sm">
 					{t("auth.login.accountMismatch.providerHint")}
 				</p>
 			</div>
@@ -356,7 +356,7 @@ export function LoginForm({
 			<h1 className="font-bold text-xl md:text-2xl">
 				{t("auth.login.title")}
 			</h1>
-			<p className="mt-1 mb-6 text-foreground/60">
+			<p className="mt-1 mb-6 text-muted-foreground">
 				{t("auth.login.subtitle")}
 			</p>
 
@@ -473,7 +473,7 @@ export function LoginForm({
 													<Link
 														href="/auth/forgot-password"
 														prefetch={false}
-														className="text-foreground/60 text-xs"
+														className="text-muted-foreground text-xs"
 													>
 														{t(
 															"auth.login.forgotPassword",
@@ -546,7 +546,7 @@ export function LoginForm({
 						<>
 							<div className="relative my-6 h-4">
 								<hr className="relative top-2" />
-								<p className="-translate-x-1/2 absolute top-0 left-1/2 mx-auto inline-block h-4 bg-card px-2 text-center font-medium text-foreground/60 text-sm leading-tight">
+								<p className="-translate-x-1/2 absolute top-0 left-1/2 mx-auto inline-block h-4 bg-card px-2 text-center font-medium text-muted-foreground text-sm leading-tight">
 									{t("auth.login.continueWith")}
 								</p>
 							</div>
@@ -582,7 +582,7 @@ export function LoginForm({
 
 					{config.auth.enableSignup && (
 						<div className="mt-6 text-center text-sm">
-							<span className="text-foreground/60">
+							<span className="text-muted-foreground">
 								{t("auth.login.dontHaveAnAccount")}{" "}
 							</span>
 							<Link

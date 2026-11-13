@@ -46,6 +46,11 @@ import {
 	visibleReplyText,
 } from "./nodes/proposal-client-mode.js";
 import {
+	emptyWebResearchOutcome,
+	resolveAllowWebResearch,
+	resolveWebResearchChoiceOffered,
+} from "./nodes/web-research.js";
+import {
 	PUBLISHING_TOPIC_READABLE,
 	readPublishingTopic,
 } from "./publishing-topic.js";
@@ -825,6 +830,13 @@ const { app, start } = createUnifiedServer(
 		// This is critical for maintaining conversation context across tool calls
 		const result = await projectDocumentGeneratorGraph.invoke(
 			{
+				// None of this executor's callers carries the person's consent
+				// for web research, and the A2A relay forwards caller metadata
+				// into this input, so research stays off here.
+				allowWebResearch: false,
+				webResearchChoiceOffered: false,
+				webResearchOutcome: emptyWebResearchOutcome(false),
+				webResearchSearchedUrls: [],
 				messages,
 				documentType,
 				projectContext: {
@@ -1219,8 +1231,27 @@ const { app, start } = createUnifiedServer(
 		// Stream from the LangGraph graph with both updates and messages
 		// IMPORTANT: Pass FULL message history to maintain conversation context
 		// This is critical for the agent to know if it's after a confirmation
+		// Web research is allowed only by server-set signals: the top-level
+		// input flag the generation activity sends, the run token's research
+		// claim, no Proposal run and no CopilotKit chat marker. It never comes
+		// from CopilotKit state, readable context or forwarded props, which a
+		// browser controls.
+		const runConfigurable = config?.configurable as
+			| Record<string, unknown>
+			| undefined;
+		const allowWebResearch = resolveAllowWebResearch(
+			input,
+			runConfigurable,
+		);
 		const stream = await projectDocumentGeneratorGraph.stream(
 			{
+				allowWebResearch,
+				webResearchChoiceOffered: resolveWebResearchChoiceOffered(
+					input,
+					runConfigurable,
+				),
+				webResearchOutcome: emptyWebResearchOutcome(allowWebResearch),
+				webResearchSearchedUrls: [],
 				...pickTraceState<
 					AgentState["toolCallsByTurn"][number][number]
 				>(input.state, input.messages),

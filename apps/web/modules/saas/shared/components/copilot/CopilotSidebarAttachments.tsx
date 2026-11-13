@@ -159,7 +159,7 @@ function describeExtraction(
  */
 function ExtractionStatusIcon({ notice }: { notice: ExtractionNotice | null }) {
 	if (!notice) {
-		return <CheckCircle2 className="size-3 shrink-0 text-secondary" />;
+		return <CheckCircle2 className="size-3 shrink-0 text-success" />;
 	}
 
 	return (
@@ -169,7 +169,7 @@ function ExtractionStatusIcon({ notice }: { notice: ExtractionNotice | null }) {
 					{notice.warn ? (
 						<AlertTriangle className="size-3 text-highlight" />
 					) : (
-						<CheckCircle2 className="size-3 text-secondary" />
+						<CheckCircle2 className="size-3 text-success" />
 					)}
 					<span className="sr-only">{notice.lines.join(" ")}</span>
 				</span>
@@ -295,7 +295,7 @@ export function CopilotSidebarAttachments({
 								"border-highlight/40 bg-highlight/5",
 							file.status === "ready" &&
 								!readyWarns &&
-								"border-secondary/40 bg-secondary/5",
+								"border-success/40 bg-success/5",
 							readyWarns && "border-highlight/40 bg-highlight/5",
 							file.status === "pending" && "border-border",
 						)}

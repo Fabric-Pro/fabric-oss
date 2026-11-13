@@ -166,6 +166,54 @@ describe("ingestUploadedTranscript", () => {
 		});
 	});
 
+	it("dates an upload by the upload, as before", async () => {
+		await ingestUploadedTranscript(INPUT);
+
+		expect(
+			mocks.createUploadedTranscript.mock.calls[0]?.[0].meetingDate,
+		).toEqual(new Date("2026-11-02T12:00:00Z"));
+	});
+
+	it("dates a folder import from the file, never by the import (#3507)", async () => {
+		mocks.contextFindFirst.mockResolvedValue(
+			storedContext({
+				originalFilename: "Planning 2026-03-04.vtt",
+				metadata: {
+					provider: "onedrive-folder",
+					meetingSubject: "Planning",
+				},
+			}),
+		);
+
+		await ingestUploadedTranscript(INPUT);
+
+		const stored = mocks.createUploadedTranscript.mock.calls[0]?.[0];
+		expect(stored.meetingDate).toEqual(new Date("2026-03-04T12:00:00Z"));
+		expect(stored.metadata).toMatchObject({
+			provider: "onedrive-folder",
+			transcriptSource: "onedrive",
+			meetingDate: "2026-03-04T12:00:00.000Z",
+		});
+	});
+
+	it("leaves a folder import's date unknown when the file does not say (#3507)", async () => {
+		mocks.contextFindFirst.mockResolvedValue(
+			storedContext({
+				metadata: {
+					provider: "onedrive-folder",
+					meetingSubject: "Planning",
+				},
+			}),
+		);
+
+		await ingestUploadedTranscript(INPUT);
+
+		const stored = mocks.createUploadedTranscript.mock.calls[0]?.[0];
+		expect(stored.meetingDate).toBeNull();
+		expect(stored.metadata.meetingDate).toBeNull();
+		expect(stored.content).toContain("Unknown date");
+	});
+
 	it("leaves the pipelines to their own step, so a crash here cannot skip them", async () => {
 		await ingestUploadedTranscript(INPUT);
 

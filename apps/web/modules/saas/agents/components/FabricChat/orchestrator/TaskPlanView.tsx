@@ -153,7 +153,7 @@ function TaskStepItem({
 			case "error":
 				return "text-destructive";
 			case "skipped":
-				return "text-muted-foreground/50 line-through";
+				return "text-muted-foreground line-through";
 			default:
 				return "text-muted-foreground";
 		}

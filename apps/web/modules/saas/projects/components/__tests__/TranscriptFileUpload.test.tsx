@@ -62,6 +62,7 @@ vi.mock(
 import {
 	TranscriptFileUpload,
 	transcriptListPollInterval,
+	useUploadedTranscripts,
 } from "../TranscriptFileUpload";
 
 function row(overrides: Record<string, unknown> = {}) {
@@ -383,6 +384,60 @@ describe("TranscriptFileUpload", () => {
 		await waitFor(() => {
 			expect(screen.queryByText("Planning")).toBeNull();
 		});
+	});
+
+	it("keeps a removal after the uploader closes, until the row is really gone (#3507)", async () => {
+		// The uploader also lives in a dialog now, and the digest's progress
+		// line reads the same rows. Closing the dialog mid-removal must not
+		// bring the removed file back there.
+		mocks.list.mockResolvedValue({ contexts: [row()] });
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const wrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={client}>
+				{children}
+			</QueryClientProvider>
+		);
+		const uploader = render(
+			<TranscriptFileUpload
+				projectId="project-1"
+				organizationId="org-1"
+			/>,
+			{ wrapper },
+		);
+		fireEvent.click(
+			await screen.findByRole("button", { name: "Remove Planning" }),
+		);
+		await act(async () => {
+			await mocks.confirm.mock.calls[0]?.[0].onConfirm();
+		});
+		uploader.unmount();
+
+		function Reader() {
+			const { uploads, storedIds } = useUploadedTranscripts({
+				projectId: "project-1",
+				organizationId: "org-1",
+			});
+			return (
+				<p>
+					shown:{uploads.map((u) => u.id).join(",")} stored:
+					{storedIds}
+				</p>
+			);
+		}
+		render(<Reader />, { wrapper });
+		await screen.findByText("shown: stored:context-1");
+
+		// The worker has deleted it: the record is dropped with the row.
+		mocks.list.mockResolvedValue({ contexts: [] });
+		await act(async () => {
+			await client.invalidateQueries({ queryKey: ["contexts"] });
+		});
+		await screen.findByText("shown: stored:");
+		expect(
+			client.getQueryData(["uploaded-transcript-removals", "project-1"]),
+		).toEqual(new Set());
 	});
 
 	it("confirms before removing an upload", async () => {

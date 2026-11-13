@@ -3,27 +3,27 @@
 <head>
 <meta charset="utf-8">
 <title>Fabric — Pull requests (docs mock)</title>
-<!-- Real Inter + JetBrains Mono, the app's --font-sans / --font-mono. -->
+<!-- Real Inter + IBM Plex Mono, the app's --font-sans / --font-mono. -->
 <link rel="stylesheet" href="../.fonts/fonts.css">
 <style>
 /* Design tokens copied verbatim from tooling/tailwind/theme.css :root (light). */
 :root{
-  --border:#d8d2cc; --input:#d2ccc5; --ring:#9f2a3a;
-  --background:#f7f6f2; --foreground:#1f1c19;
-  --primary:#9f2a3a; --primary-foreground:#fff7f7;
-  --secondary:#047857; --secondary-foreground:#ffffff;
-  --destructive:#c81e1e; --destructive-foreground:#ffffff;
-  --muted:#efede8; --muted-foreground:#625c55;
-  --accent:#f2e7e7; --accent-foreground:#6b1521;
-  --card:#fffdf9; --card-foreground:#1f1c19;
-  --popover:#fffdf9;
-  --highlight:#d97706; --highlight-foreground:#451a03;
-  --radius:0.625rem;
-  --radius-md:calc(var(--radius) - 2px);
-  --radius-lg:var(--radius);
+  --border:#dce0e5; --input:#7d90a0; --ring:#bc3e0b;
+  --background:#ffffff; --foreground:#11171c;
+  --primary:#bc3e0b; --primary-foreground:#ffffff;
+  --success:#24773f; --success-foreground:#ffffff;
+  --destructive:#b8223b; --destructive-foreground:#ffffff;
+  --muted:#f1f3f6; --muted-foreground:#4f6170;
+  --accent:#e8edf2; --accent-foreground:#11171c;
+  --card:#ffffff; --card-foreground:#11171c;
+  --popover:#ffffff;
+  --highlight:#8a5a00; --highlight-foreground:#ffffff;
+  --radius:0.25rem;
+  --radius-md:var(--radius);
+  --radius-lg:calc(var(--radius) + 2px);
   /* Inter is the app's --font-sans (next/font). Falls back to the host sans. */
   --font-sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-  --font-mono:"JetBrains Mono",ui-monospace,"Cascadia Mono",Consolas,monospace;
+  --font-mono:"IBM Plex Mono",ui-monospace,"Cascadia Mono",Consolas,monospace;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{
@@ -31,7 +31,7 @@ body{
   font-family:var(--font-sans); -webkit-font-smoothing:antialiased;
   padding:28px; width:1120px;
 }
-.shot{background:var(--background)}
+.shot{background:var(--background);padding:16px}
 .shot + .shot{margin-top:40px}
 
 /* --- shared type scale (Tailwind) --- */
@@ -41,14 +41,18 @@ body{
 .medium{font-weight:500}
 .muted{color:var(--muted-foreground)}
 
-/* --- the tab's segmented control (TestCasesList.tsx) --- */
-.segments{display:inline-flex;border:1px solid color-mix(in srgb,var(--border) 60%,transparent);
-  border-radius:var(--radius-lg);padding:2px}
-.segments button{font-family:inherit;font-size:.875rem;line-height:1.25rem;font-weight:500;
-  padding:6px 16px;border:0;border-radius:var(--radius-md);background:transparent;
-  color:var(--muted-foreground);cursor:pointer}
-.segments button[aria-pressed="true"]{background:var(--primary);color:var(--primary-foreground)}
-.seg-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px}
+/* --- the tab's underlined section tabs (TestCasesList.tsx) --- */
+.segments{display:flex;min-width:0;align-items:center;gap:2px;margin-bottom:-1px}
+.segments button{display:inline-flex;align-items:center;gap:6px;font-family:inherit;
+  font-size:.875rem;line-height:1.25rem;font-weight:500;padding:10px 12px;border:0;
+  border-bottom:2px solid transparent;background:transparent;color:var(--muted-foreground)}
+.segments button .n{border-radius:9999px;padding:1px 6px;font-size:11px;line-height:1rem;
+  font-variant-numeric:tabular-nums;background:var(--muted);color:var(--muted-foreground)}
+.segments button[aria-pressed="true"]{border-bottom-color:var(--primary);color:var(--foreground)}
+.segments button[aria-pressed="true"] .n{background:color-mix(in srgb,var(--primary) 12%,transparent);
+  color:var(--primary)}
+.seg-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px;
+  border-bottom:1px solid var(--border)}
 .about{width:28px;height:28px;display:grid;place-items:center;color:var(--muted-foreground)}
 
 /* --- PullRequestReviewsPanel --- */
@@ -89,7 +93,7 @@ label{display:block;font-size:.875rem;line-height:1;font-weight:500}
 svg.icon{width:16px;height:16px;flex-shrink:0;color:var(--muted-foreground)}
 
 /* --- PullRequestDiffSheet (rendered as the right-hand sheet) --- */
-#shot-sheet{width:768px}
+#shot-sheet{width:800px}
 .sheet{width:768px;background:var(--background);
   border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;
   display:flex;flex-direction:column}
@@ -105,7 +109,7 @@ svg.icon{width:16px;height:16px;flex-shrink:0;color:var(--muted-foreground)}
 .trunc svg{width:16px;height:16px;flex-shrink:0;color:var(--highlight);margin-top:1px}
 pre{padding:20px;font-family:var(--font-mono);font-size:.75rem;line-height:1.625;overflow:auto;flex:1}
 pre div{white-space:pre}
-.add{color:var(--secondary)} .del{color:var(--destructive)} .hunk{color:var(--muted-foreground)}
+.add{color:var(--success)} .del{color:var(--destructive)} .hunk{color:var(--muted-foreground)}
 </style>
 </head>
 <body>
@@ -114,12 +118,12 @@ pre div{white-space:pre}
 <div class="shot" id="shot-panel">
   <div class="seg-row">
     <div class="segments">
-      <button type="button" aria-pressed="false">Cases</button>
-      <button type="button" aria-pressed="false">Plans</button>
-      <button type="button" aria-pressed="false">Features</button>
-      <button type="button" aria-pressed="false">Runs</button>
-      <button type="button" aria-pressed="true">Pull requests</button>
-      <button type="button" aria-pressed="false">Questions</button>
+      <button type="button" aria-pressed="false">Cases <span class="n">214</span></button>
+      <button type="button" aria-pressed="false">Plans <span class="n">6</span></button>
+      <button type="button" aria-pressed="false">Coverage <span class="n">3</span></button>
+      <button type="button" aria-pressed="false">Runs <span class="n">312</span></button>
+      <button type="button" aria-pressed="true">Pull requests <span class="n">4</span></button>
+      <button type="button" aria-pressed="false">Questions <span class="n">3</span></button>
     </div>
     <div class="about" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
@@ -127,13 +131,13 @@ pre div{white-space:pre}
   </div>
 
   <div class="panel">
-    <p class="t-sm muted">Point Fabric at a pull request and it fetches the diff through this project’s connected repository, then keeps what it read. No analysis yet — this is the ingest the QA and architecture review lenses will be built on.</p>
+    <p class="t-sm muted">Point Fabric at a pull request and it fetches the diff through this project’s connected repository, then keeps what it read. Open one to review it for test coverage or circular imports.</p>
 
     <div class="readform">
       <div class="field">
         <label for="repo">Repository</label>
         <div class="select" id="repo">
-          <span>northwind/checkout</span>
+          <span>example-org/checkout</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="opacity:.5"><path d="m6 9 6 6 6-6"/></svg>
         </div>
       </div>
@@ -149,14 +153,14 @@ pre div{white-space:pre}
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12"/></svg>
         <span class="body">
           <span class="title">Retry the payment capture once on a gateway timeout</span>
-          <span class="meta">northwind/checkout #248 · dana · 4 files · 12 minutes ago</span>
+          <span class="meta">example-org/checkout #248 · dana · 4 files · 12 minutes ago</span>
         </span>
       </div>
       <div class="row">
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12"/></svg>
         <span class="body">
           <span class="title">Regenerate the pricing API client</span>
-          <span class="meta">northwind/checkout #245 · mira · 214 files · 3 hours ago</span>
+          <span class="meta">example-org/checkout #245 · mira · 214 files · 3 hours ago</span>
         </span>
         <span class="pill warn">Partial diff</span>
       </div>
@@ -164,7 +168,7 @@ pre div{white-space:pre}
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12"/></svg>
         <span class="body">
           <span class="title">Move the tax table behind a feature flag</span>
-          <span class="meta">northwind/checkout #241 · dana · 9 files · yesterday</span>
+          <span class="meta">example-org/checkout #241 · dana · 9 files · yesterday</span>
         </span>
         <span class="pill bad">Diff unavailable</span>
       </div>
@@ -172,7 +176,7 @@ pre div{white-space:pre}
         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7M6 9v12"/></svg>
         <span class="body">
           <span class="title">Add an idempotency key to the refund endpoint</span>
-          <span class="meta">northwind/checkout #236 · pri · 6 files · 2 days ago</span>
+          <span class="meta">example-org/checkout #236 · pri · 6 files · 2 days ago</span>
         </span>
       </div>
     </div>
@@ -185,7 +189,7 @@ pre div{white-space:pre}
     <div class="sheet-head">
       <h2>Regenerate the pricing API client</h2>
       <div class="sheet-meta">
-        <span>northwind/checkout #245</span><span aria-hidden="true">·</span>
+        <span>example-org/checkout #245</span><span aria-hidden="true">·</span>
         <span>214 files</span><span aria-hidden="true">·</span>
         <span class="mono">9f3c1ab</span>
         <a href="#">Open on GitHub

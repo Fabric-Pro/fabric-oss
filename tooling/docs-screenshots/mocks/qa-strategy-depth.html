@@ -2,68 +2,322 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Fabric — Strategy &amp; depth (docs mock)</title>
-<!-- Real Inter + JetBrains Mono, the app's --font-sans / --font-mono. -->
+<title>Fabric project settings, Testing, Depth &amp; scope (docs mock)</title>
+<!-- Real Inter + IBM Plex Mono, the app's --font-sans / --font-mono (Document.tsx). -->
 <link rel="stylesheet" href="../.fonts/fonts.css">
 <style>
 /* Tokens copied verbatim from tooling/tailwind/theme.css :root (light). */
 :root{
-  --border:#d8d2cc; --ring:#9f2a3a;
-  --background:#f7f6f2; --foreground:#1f1c19;
-  --primary:#9f2a3a; --primary-foreground:#fff7f7;
-  --muted:#efede8; --muted-foreground:#625c55;
-  --accent:#f2e7e7; --card:#fffdf9;
-  --radius:0.625rem; --radius-lg:var(--radius);
-  --font-sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --border: #dce0e5; --input: #7d90a0; --ring: #bc3e0b;
+  --background: #ffffff; --foreground: #11171c;
+  --primary: #bc3e0b; --primary-foreground: #ffffff;
+  --destructive: #b8223b; --success: #24773f;
+  --muted: #f1f3f6; --muted-foreground: #4f6170;
+  --accent: #e8edf2; --card: #ffffff;
+  --fab-accent-fill: #ea580c;
+  --radius: 0.25rem;
+  --font-sans: Inter, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  /* Tailwind's emerald-500, which ProjectSettingsNav names directly. */
+  --emerald-500: #10b981;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--background);color:var(--foreground);font-family:var(--font-sans);
-  -webkit-font-smoothing:antialiased;padding:24px;width:720px}
-#shot-depth{width:672px}
+  font-size:13px;line-height:20px;-webkit-font-smoothing:antialiased;padding:24px 0;width:1228px}
+#shot-depth{width:1180px;padding:16px 24px 8px;background:var(--background)}
+#shot-depth > * + *{margin-top:24px}
+svg.i{width:16px;height:16px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.5px;
+  stroke-linecap:round;stroke-linejoin:round}
+.s35{width:14px!important;height:14px!important}
+.muted{color:var(--muted-foreground)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;
+  border-radius:var(--radius);font:500 13px/20px var(--font-sans);border:1px solid transparent;
+  background:transparent;color:var(--foreground)}
+.btn.sm{height:32px;padding:0 10px}
+.btn.md{height:36px;padding:0 14px}
+.btn.outline{border-color:var(--input);background:var(--background)}
+.btn.primary{background:var(--primary);color:var(--primary-foreground)}
 
-/* Section (ProjectQaSettingsForm.tsx) */
-section{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--card);padding:16px}
-.head{margin-bottom:12px}
-h4{font-size:.875rem;line-height:1.25rem;font-weight:500}
-.head p{margin-top:2px;color:var(--muted-foreground);font-size:.75rem;line-height:1rem}
+/* PageBreadcrumbs */
+.crumbs{display:flex;align-items:center;gap:10px;font-size:12px;line-height:16px;color:var(--muted-foreground)}
+.crumbs .home{display:inline-flex;align-items:center;gap:4px}
+.crumbs .sep svg{width:14px;height:14px}
+.crumbs .page{font-weight:500;color:var(--foreground)}
 
-/* the three depth options */
-.grid{display:grid;gap:8px}
-.opt{display:block;width:100%;text-align:left;border:1px solid var(--border);
-  border-radius:var(--radius-lg);padding:12px;background:transparent;font-family:inherit}
-.opt.sel{border-color:var(--primary);background:color-mix(in srgb,var(--primary) 5%,transparent)}
+/* ProjectHeader identity row */
+.identity{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
+.identity h1{font-size:20px;line-height:28px;font-weight:600;letter-spacing:-0.015em}
+.ready{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--card);padding:4px 10px;font-size:12px;line-height:16px;font-weight:500;color:var(--muted-foreground)}
+.ready .d{width:8px;height:8px;border-radius:9999px;background:var(--success)}
+.meta{display:flex;align-items:center;gap:6px 12px}
+.meta span{display:inline-flex;align-items:center;gap:6px;color:var(--muted-foreground)}
+.soft{border:1px solid var(--border);background:var(--muted);color:var(--muted-foreground);font-weight:500;
+  border-radius:3px;padding:2px 8px;font-size:12px;line-height:16px}
+.head-actions{margin-left:auto;display:flex;align-items:center;gap:8px}
+.fav{display:inline-flex;width:28px;height:28px;align-items:center;justify-content:center;color:var(--muted-foreground)}
+.complete{border-color:color-mix(in srgb,var(--success) 25%,transparent)!important;
+  background:color-mix(in srgb,var(--success) 10%,transparent)!important;color:var(--success)!important;gap:8px}
+
+/* Project tab bar */
+.tabbar{display:flex;align-items:flex-end;gap:8px;border-bottom:1px solid var(--border)}
+.tabrow{display:flex;flex:1;min-width:0;align-items:flex-end;gap:4px;overflow:hidden}
+.tab{display:flex;align-items:center;gap:8px;white-space:nowrap;border:0;border-bottom:2px solid transparent;
+  margin-bottom:-1px;padding:8px 12px 10px;background:none;font:400 13px/20px var(--font-sans);color:var(--muted-foreground)}
+.tab.on{border-bottom-color:var(--foreground);font-weight:500;color:var(--foreground)}
+.tab .chev{width:14px;height:14px;color:var(--muted-foreground)}
+.pinned{display:flex;align-items:flex-end;gap:4px}
+.customize{display:flex;width:32px;height:32px;align-items:center;justify-content:center;margin-bottom:6px;
+  color:color-mix(in srgb,var(--muted-foreground) 70%,transparent)}
+
+/* ProjectSettings */
+.settings{display:flex;gap:24px}
+.snav{width:200px;flex-shrink:0;display:flex;flex-direction:column;gap:4px}
+.snav button{display:flex;align-items:center;gap:10px;border:0;border-radius:var(--radius);padding:6px 10px;
+  background:none;text-align:left;font:400 13px/20px var(--font-sans);color:var(--foreground)}
+.snav button > div{min-width:0}
+.snav .n{display:flex;align-items:center;gap:8px;font-size:13px}
+.snav .ok{width:6px;height:6px;border-radius:9999px;background:var(--emerald-500)}
+.snav .desc{font-size:12px;line-height:16px;color:var(--muted-foreground);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.snav button.on{background:color-mix(in srgb,var(--primary) 12%,transparent);font-weight:600;color:var(--primary)}
+.snav button.on .n{font-weight:600;color:var(--primary)}
+.snav button.danger svg{color:color-mix(in srgb,var(--destructive) 70%,transparent)}
+.scontent{flex:1;min-width:0}
+.tourrow{display:flex;justify-content:flex-end;margin-bottom:16px}
+.tour{display:inline-flex;width:32px;height:32px;align-items:center;justify-content:center;color:var(--muted-foreground)}
+.tour svg{width:17px;height:17px}
+
+/* TestingSettingsPanel */
+.tpanel{display:grid;grid-template-columns:210px minmax(0,1fr);gap:24px}
+.tnav{display:flex;flex-direction:column;gap:4px}
+.tnav button{display:inline-flex;align-items:center;gap:8px;border:0;border-radius:calc(var(--radius) + 2px);
+  padding:8px 12px;background:none;text-align:left;font:500 13px/20px var(--font-sans);color:var(--muted-foreground);width:100%}
+.tnav button.on{background:var(--accent);color:var(--foreground)}
+.policy{margin-top:12px;border:1px solid var(--border);border-radius:calc(var(--radius) + 2px);background:var(--card);padding:12px}
+.label{display:inline-flex;align-items:center;gap:8px;font:600 12px/16px var(--font-sans);letter-spacing:.01em;color:var(--muted-foreground)}
+.label::before{content:"";display:block;width:6px;height:6px;border-radius:2px;background:var(--fab-accent-fill)}
+.policy p{margin-top:8px;font-size:12px;line-height:1.625;color:var(--muted-foreground)}
+.policy b{font-weight:600;color:var(--foreground)}
+.tmain > * + *{margin-top:20px}
+.thead{display:flex;align-items:center;gap:6px}
+.thead h3{font-size:24px;line-height:32px;font-weight:600;letter-spacing:-0.01em}
+.thead .about{display:inline-flex;width:28px;height:28px;align-items:center;justify-content:center;color:var(--muted-foreground)}
+.blurb{margin-top:4px;max-width:672px;font-size:13px;line-height:1.625;color:var(--muted-foreground)}
+
+/* ProjectQaSettingsForm Section */
+.form > * + *{margin-top:16px}
+.section{border:1px solid var(--border);border-radius:calc(var(--radius) + 2px);background:var(--card);padding:16px}
+.section h4{font-size:13px;line-height:20px;font-weight:500;letter-spacing:-0.01em}
+.section .desc{margin-top:2px;font-size:12px;line-height:16px;color:var(--muted-foreground)}
+.opts{display:grid;gap:8px;margin-top:12px}
+.opt{display:block;width:100%;text-align:left;border:1px solid var(--border);border-radius:calc(var(--radius) + 2px);
+  padding:12px;background:none;font-family:inherit;color:var(--foreground)}
+.opt.on{border-color:var(--primary);background:color-mix(in srgb,var(--primary) 5%,transparent)}
 .opt .row{display:flex;align-items:center;gap:8px}
-.dot{display:flex;width:16px;height:16px;flex-shrink:0;align-items:center;justify-content:center;
-  border-radius:9999px;border:1px solid color-mix(in srgb,var(--muted-foreground) 40%,transparent)}
-.opt.sel .dot{border-color:var(--primary);background:var(--primary);color:var(--primary-foreground)}
-.dot svg{width:10px;height:10px}
-.name{font-weight:500;font-size:.875rem;line-height:1.25rem}
-ul{display:flex;flex-wrap:wrap;gap:2px 12px;margin-top:6px;padding-left:24px;
-  list-style:none;color:var(--muted-foreground);font-size:.75rem;line-height:1rem}
+.opt .dot{display:flex;width:16px;height:16px;flex-shrink:0;align-items:center;justify-content:center;border-radius:9999px;
+  border:1px solid color-mix(in srgb,var(--muted-foreground) 40%,transparent)}
+.opt.on .dot{border-color:var(--primary);background:var(--primary);color:var(--primary-foreground)}
+.opt .dot svg{width:10px;height:10px}
+.opt .name{font-weight:500;font-size:13px}
+.opt ul{display:flex;flex-wrap:wrap;gap:2px 12px;margin-top:6px;padding-left:24px;list-style:none;
+  font-size:12px;line-height:16px;color:var(--muted-foreground)}
+.types{margin-top:16px;border-top:1px solid var(--border);padding-top:16px}
+.types .lbl{font-size:13px;font-weight:500;line-height:1.25}
+.types p{font-size:12px;line-height:16px;color:var(--muted-foreground)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.chip{border:1px solid var(--border);border-radius:9999px;padding:4px 12px;font:400 12px/16px var(--font-sans);
+  background:none;color:var(--muted-foreground)}
+.chip.on{border-color:var(--primary);background:color-mix(in srgb,var(--primary) 5%,transparent);font-weight:500;color:var(--foreground)}
+.savebar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;
+  border-top:1px solid var(--border);background:var(--background);padding:12px 0}
+.savebar p{font-size:12px;line-height:16px;color:var(--muted-foreground)}
+.savebar div{display:flex;align-items:center;gap:8px}
 </style>
 </head>
 <body>
-<div id="shot-depth">
-  <section>
-    <div class="head">
-      <h4>Strategy &amp; depth</h4>
-      <p>The default rigor applied when planning or running tests.</p>
+<!-- lucide-react icon geometry, copied from the installed package. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-house" viewBox="0 0 24 24"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-file-text" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></symbol>
+  <symbol id="i-circle-check-big" viewBox="0 0 24 24"><path d="M21.801 10A10 10 0 1 1 17 3.335"/><path d="m9 11 3 3L22 4"/></symbol>
+  <symbol id="i-square-pen" viewBox="0 0 24 24"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></symbol>
+  <symbol id="i-layout-dashboard" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></symbol>
+  <symbol id="i-scroll-text" viewBox="0 0 24 24"><path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/></symbol>
+  <symbol id="i-map" viewBox="0 0 24 24"><path d="M14.106 5.553a2 2 0 0 0 1.788 0l3.659-1.83A1 1 0 0 1 21 4.619v12.764a1 1 0 0 1-.553.894l-4.553 2.277a2 2 0 0 1-1.788 0l-4.212-2.106a2 2 0 0 0-1.788 0l-3.659 1.83A1 1 0 0 1 3 19.381V6.618a1 1 0 0 1 .553-.894l4.553-2.277a2 2 0 0 1 1.788 0z"/><path d="M15 5.764v15"/><path d="M9 3.236v15"/></symbol>
+  <symbol id="i-clipboard-check" viewBox="0 0 24 24"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/></symbol>
+  <symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></symbol>
+  <symbol id="i-pen-tool" viewBox="0 0 24 24"><path d="M15.707 21.293a1 1 0 0 1-1.414 0l-1.586-1.586a1 1 0 0 1 0-1.414l5.586-5.586a1 1 0 0 1 1.414 0l1.586 1.586a1 1 0 0 1 0 1.414z"/><path d="m18 13-1.375-6.874a1 1 0 0 0-.746-.776L3.235 2.028a1 1 0 0 0-1.207 1.207L5.35 15.879a1 1 0 0 0 .776.746L13 18"/><path d="m2.3 2.3 7.286 7.286"/><circle cx="11" cy="11" r="2"/></symbol>
+  <symbol id="i-clipboard-list" viewBox="0 0 24 24"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-settings-2" viewBox="0 0 24 24"><path d="M14 17H5"/><path d="M19 7h-9"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></symbol>
+  <symbol id="i-compass" viewBox="0 0 24 24"><path d="m16.24 7.76-1.804 5.411a2 2 0 0 1-1.265 1.265L7.76 16.24l1.804-5.411a2 2 0 0 1 1.265-1.265z"/><circle cx="12" cy="12" r="10"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"/><path d="M20 2v4"/><path d="M22 4h-4"/><circle cx="4" cy="20" r="2"/></symbol>
+  <symbol id="i-layout-list" viewBox="0 0 24 24"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/><path d="M14 4h7"/><path d="M14 9h7"/><path d="M14 15h7"/><path d="M14 20h7"/></symbol>
+  <symbol id="i-book-open" viewBox="0 0 24 24"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></symbol>
+  <symbol id="i-workflow" viewBox="0 0 24 24"><rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/></symbol>
+  <symbol id="i-server-cog" viewBox="0 0 24 24"><path d="m10.852 14.772-.383.923"/><path d="M13.148 14.772a3 3 0 1 0-2.296-5.544l-.383-.923"/><path d="m13.148 9.228.383-.923"/><path d="m13.53 15.696-.382-.924a3 3 0 1 1-2.296-5.544"/><path d="m14.772 10.852.923-.383"/><path d="m14.772 13.148.923.383"/><path d="M4.5 10H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-.5"/><path d="M4.5 14H4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-4a2 2 0 0 0-2-2h-.5"/><path d="M6 18h.01"/><path d="M6 6h.01"/><path d="m9.228 10.852-.923-.383"/><path d="m9.228 13.148-.923.383"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></symbol>
+  <symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol>
+  <symbol id="i-flask-conical" viewBox="0 0 24 24"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7"/><rect x="2" y="4" width="20" height="16" rx="2"/></symbol>
+  <symbol id="i-triangle-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></symbol>
+  <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></symbol>
+  <symbol id="i-git-pull-request-arrow" viewBox="0 0 24 24"><circle cx="5" cy="6" r="3"/><path d="M5 9v12"/><circle cx="19" cy="18" r="3"/><path d="m15 9-3-3 3-3"/><path d="M12 6h5a2 2 0 0 1 2 2v7"/></symbol>
+  <symbol id="i-monitor-smartphone" viewBox="0 0 24 24"><path d="M18 8V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h8"/><path d="M10 19v-3.96 3.15"/><path d="M7 19h5"/><rect width="6" height="10" x="16" y="12" rx="2"/></symbol>
+  <symbol id="i-refresh-cw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+  <symbol id="i-user-check" viewBox="0 0 24 24"><path d="m16 11 2 2 4-4"/><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></symbol>
+  <symbol id="i-user-search" viewBox="0 0 24 24"><circle cx="10" cy="7" r="4"/><path d="M10.3 15H7a4 4 0 0 0-4 4v2"/><circle cx="17" cy="17" r="3"/><path d="m21 21-1.9-1.9"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+</svg>
+
+<!-- Synthetic data. Mirrors ProjectDetails (PageBreadcrumbs, ProjectHeader, the tab
+     bar in the viewer's saved order with Settings pinned), ProjectSettings with
+     ProjectSettingsNav, and TestingSettingsPanel + ProjectQaSettingsForm on
+     section "depth": the saved depth is Enterprise and the draft picks Standard,
+     so the policy card still reads the saved value and the save bar is dirty. -->
+<section id="shot-depth">
+  <nav class="crumbs" aria-label="Breadcrumb">
+    <span class="home"><svg class="i s35"><use href="#i-house"/></svg>Home</span>
+    <span class="sep"><svg class="i"><use href="#i-chevron-right"/></svg></span>
+    <span>Projects</span>
+    <span class="sep"><svg class="i"><use href="#i-chevron-right"/></svg></span>
+    <span>Checkout Revamp</span>
+    <span class="sep"><svg class="i"><use href="#i-chevron-right"/></svg></span>
+    <span class="page">Settings</span>
+  </nav>
+
+  <div class="identity">
+    <h1>Checkout Revamp</h1>
+    <span class="ready"><span class="d"></span>Ready<svg class="i s35"><use href="#i-chevron-down"/></svg></span>
+    <div class="meta">
+      <span><svg class="i s35"><use href="#i-file-text"/></svg>12 documents</span>
+      <span><svg class="i s35"><use href="#i-folder"/></svg>48 contexts</span>
+      <span class="soft">Web App</span>
     </div>
-    <div class="grid">
-      <button class="opt" type="button" aria-pressed="false">
-        <span class="row"><span class="dot" aria-hidden="true"></span><span class="name">HARD — Hard</span></span>
-        <ul><li>· Functional + integration + E2E</li><li>· Security and accessibility cases</li><li>· Boundary values and concurrency</li><li>· Tenant-isolation cases</li></ul>
-      </button>
-      <button class="opt sel" type="button" aria-pressed="true">
-        <span class="row"><span class="dot" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg></span><span class="name">AVG — Average</span></span>
-        <ul><li>· Functional + integration + E2E</li><li>· Main negative paths</li><li>· Obvious edge cases</li><li>· Security, performance and accessibility only on request</li></ul>
-      </button>
-      <button class="opt" type="button" aria-pressed="false">
-        <span class="row"><span class="dot" aria-hidden="true"></span><span class="name">EASY — Easy</span></span>
-        <ul><li>· Functional / acceptance cases only</li><li>· Happy path + the key negative case</li><li>· No integration or E2E cases</li><li>· No security, performance or accessibility cases</li></ul>
-      </button>
+    <div class="head-actions">
+      <span class="fav" aria-label="Add to favorites"><svg class="i"><use href="#i-star"/></svg></span>
+      <button class="btn sm outline complete" type="button"><svg class="i"><use href="#i-circle-check-big"/></svg>Mark Complete</button>
+      <button class="btn sm outline" type="button" style="gap:8px"><svg class="i"><use href="#i-square-pen"/></svg>Edit Project</button>
     </div>
-  </section>
-</div>
+  </div>
+
+  <div class="tabbar">
+    <div class="tabrow">
+      <button class="tab" type="button"><svg class="i"><use href="#i-layout-dashboard"/></svg>Overview</button>
+      <button class="tab" type="button"><svg class="i"><use href="#i-file-text"/></svg>Documents</button>
+      <button class="tab" type="button"><svg class="i"><use href="#i-scroll-text"/></svg>Decisions</button>
+      <button class="tab" type="button"><svg class="i"><use href="#i-map"/></svg>Roadmap</button>
+      <button class="tab" type="button"><svg class="i"><use href="#i-clipboard-check"/></svg>Testing</button>
+      <button class="tab" type="button"><svg class="i"><use href="#i-bot"/></svg>Coding Agents</button>
+      <button class="tab" type="button"><svg class="i"><use href="#i-pen-tool"/></svg>Diagrams</button>
+      <button class="tab" type="button"><svg class="i"><use href="#i-clipboard-list"/></svg>Reports</button>
+      <button class="tab" type="button"><span>More</span><svg class="i chev"><use href="#i-chevron-down"/></svg></button>
+    </div>
+    <div class="pinned">
+      <button class="tab on" type="button"><svg class="i"><use href="#i-settings"/></svg>Settings</button>
+      <span class="customize" aria-label="Customize tabs"><svg class="i"><use href="#i-settings-2"/></svg></span>
+    </div>
+  </div>
+
+  <div class="settings">
+    <nav class="snav" aria-label="Settings sections">
+      <button type="button"><svg class="i"><use href="#i-settings"/></svg><div><div class="n">General</div><p class="desc">Name, brief, types, stack</p></div></button>
+      <button type="button"><svg class="i"><use href="#i-compass"/></svg><div><div class="n">Engagement</div><p class="desc">Profile, gates, approvers, vision</p></div></button>
+      <button type="button"><svg class="i"><use href="#i-sparkles"/></svg><div><div class="n">AI assistant</div><p class="desc">Questions, testing depth, read-only</p></div></button>
+      <button type="button"><svg class="i"><use href="#i-layout-list"/></svg><div><div class="n">Navigation</div><p class="desc">Tabs and feature stages</p></div></button>
+      <button type="button"><svg class="i"><use href="#i-book-open"/></svg><div><div class="n">Knowledge<span class="ok"></span></div><p class="desc">PRD sources, transcripts</p></div></button>
+      <button type="button"><svg class="i"><use href="#i-workflow"/></svg><div><div class="n">Development<span class="ok"></span></div><p class="desc">Repositories &amp; Git</p></div></button>
+      <button type="button"><svg class="i"><use href="#i-server-cog"/></svg><div><div class="n">Agent Runtime</div><p class="desc">Desktop, remote servers, harness</p></div></button>
+      <button type="button"><svg class="i"><use href="#i-users"/></svg><div><div class="n">Members<span class="ok"></span></div><p class="desc">Team access &amp; invitations</p></div></button>
+      <button type="button"><svg class="i"><use href="#i-brain"/></svg><div><div class="n">Retrieval</div><p class="desc">RAG config &amp; chunking</p></div></button>
+      <button type="button"><svg class="i"><use href="#i-globe"/></svg><div><div class="n">Environments</div><p class="desc">Deployment targets</p></div></button>
+      <button class="on" type="button"><svg class="i"><use href="#i-flask-conical"/></svg><div><div class="n">Testing</div><p class="desc">Policy, depth, CI, sceptics</p></div></button>
+      <button type="button"><svg class="i"><use href="#i-mail"/></svg><div><div class="n">Newsletter</div><p class="desc">External release notes &amp; subscribers</p></div></button>
+      <button class="danger" type="button"><svg class="i"><use href="#i-triangle-alert"/></svg><div><div class="n">Danger Zone</div><p class="desc">Delete project</p></div></button>
+    </nav>
+
+    <div class="scontent">
+      <div class="tourrow"><span class="tour" aria-label="Get started with this page"><svg class="i"><use href="#i-compass"/></svg></span></div>
+      <div class="tpanel">
+        <div>
+          <nav class="tnav" aria-label="Testing settings sections">
+            <button type="button"><svg class="i"><use href="#i-sparkles"/></svg>Generation</button>
+            <button class="on" type="button" aria-current="true"><svg class="i"><use href="#i-layers"/></svg>Depth &amp; scope</button>
+            <button type="button"><svg class="i"><use href="#i-target"/></svg>Confidence &amp; coverage</button>
+            <button type="button"><svg class="i"><use href="#i-git-pull-request-arrow"/></svg>Review lenses</button>
+            <button type="button"><svg class="i"><use href="#i-globe"/></svg>Environments</button>
+            <button type="button"><svg class="i"><use href="#i-monitor-smartphone"/></svg>Devices &amp; browsers</button>
+            <button type="button"><svg class="i"><use href="#i-scroll-text"/></svg>Rules &amp; evidence</button>
+            <button type="button"><svg class="i"><use href="#i-refresh-cw"/></svg>CI &amp; result sync</button>
+            <button type="button"><svg class="i"><use href="#i-user-check"/></svg>Sign-off</button>
+            <button type="button"><svg class="i"><use href="#i-user-search"/></svg>Sceptic roles</button>
+          </nav>
+          <div class="policy">
+            <p class="label" style="margin-top:0">Current policy</p>
+            <p>Depth <b>Enterprise</b> · confidence <b>80%</b> · automation target <b>80%</b> · <b>3</b> sceptic roles · sync every <b>15 min</b></p>
+          </div>
+        </div>
+
+        <div class="tmain">
+          <div>
+            <div class="thead">
+              <h3>Depth &amp; scope</h3>
+              <span class="about" aria-label="About Depth &amp; scope"><svg class="i"><use href="#i-info"/></svg></span>
+            </div>
+            <p class="blurb">How far a drafted suite goes. Depth sets the baseline scope and rigour of every case Fabric writes for this project — it is a floor, not a ceiling.</p>
+          </div>
+
+          <div class="form">
+            <section class="section">
+              <h4>Strategy &amp; depth</h4>
+              <p class="desc">The default rigor applied when planning or running tests. This decides what Fabric writes as TEST CASES — Settings ▸ AI Assistant has a similarly-named depth that decides how deep the Testing Strategy document goes. Two settings, two artifacts.</p>
+              <div class="opts">
+                <button class="opt" type="button" aria-pressed="false">
+                  <span class="row"><span class="dot"></span><span class="name">Enterprise</span></span>
+                  <ul><li>· Functional + integration + E2E</li><li>· Security and accessibility cases</li><li>· Boundary values and concurrency</li><li>· Tenant-isolation cases</li></ul>
+                </button>
+                <button class="opt on" type="button" aria-pressed="true">
+                  <span class="row"><span class="dot"><svg class="i"><use href="#i-check"/></svg></span><span class="name">Standard</span></span>
+                  <ul><li>· Functional + integration + E2E</li><li>· Main negative paths</li><li>· Obvious edge cases</li><li>· Security, performance and accessibility only on request</li></ul>
+                </button>
+                <button class="opt" type="button" aria-pressed="false">
+                  <span class="row"><span class="dot"></span><span class="name">Light</span></span>
+                  <ul><li>· Functional / acceptance cases only</li><li>· Happy path + the key negative case</li><li>· No integration or E2E cases</li><li>· No security, performance or accessibility cases</li></ul>
+                </button>
+              </div>
+              <div class="types">
+                <p class="lbl">Required test types</p>
+                <p>Every drafted suite gives each of these at least one case. Following the tier above — change any chip to set your own list.</p>
+                <div class="chips">
+                  <button class="chip on" type="button" aria-pressed="true">Functional</button>
+                  <button class="chip on" type="button" aria-pressed="true">Integration</button>
+                  <button class="chip on" type="button" aria-pressed="true">End-to-end</button>
+                  <button class="chip" type="button" aria-pressed="false">Security</button>
+                  <button class="chip" type="button" aria-pressed="false">Performance</button>
+                  <button class="chip" type="button" aria-pressed="false">Accessibility</button>
+                </div>
+              </div>
+            </section>
+
+            <div class="savebar">
+              <p role="status">Unsaved changes in Depth &amp; scope</p>
+              <div>
+                <button class="btn md" type="button">Discard</button>
+                <button class="btn md primary" type="button">Save changes</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 </body>
 </html>

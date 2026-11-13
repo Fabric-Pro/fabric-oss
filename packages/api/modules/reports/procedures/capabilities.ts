@@ -32,6 +32,9 @@ const capabilitiesInputSchema = z.object({
  */
 export const reportCapabilitiesProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.REPORT_READ))
+	// A read whose name does not look like one; without this every page that
+	// asks what the caller may manage writes an activity row.
+	.meta({ auditActivity: "never" })
 	.input(capabilitiesInputSchema)
 	.handler(async ({ input, context }) => {
 		const organizationId = resolveOrganizationId(

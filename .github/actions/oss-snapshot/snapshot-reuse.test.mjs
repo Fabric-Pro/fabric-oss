@@ -335,7 +335,7 @@ test("every snapshot Dockerfile in this repository is reusable", () => {
 				"utf8",
 			),
 		);
-		assert.ok(parsed.images.includes("node:22-slim"), dockerfile);
+		assert.ok(parsed.images.includes("node:24-slim"), dockerfile);
 		assert.ok(parsed.sources.length > 0, dockerfile);
 	}
 });

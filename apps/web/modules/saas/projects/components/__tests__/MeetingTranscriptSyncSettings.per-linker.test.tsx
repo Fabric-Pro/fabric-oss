@@ -303,6 +303,25 @@ describe("MeetingTranscriptSyncSettings — a stalled connection", () => {
 		expect(banner).toHaveTextContent("They sync as Project Member.");
 	});
 
+	it("leaves out a stopped meeting that failed before it was stopped", async () => {
+		const stopped = {
+			...stalled,
+			id: "linked_stopped",
+			subject: "Old call",
+			deactivatedAt: new Date().toISOString(),
+		};
+		listLinkedMeetingsMock.mockResolvedValue([myMeeting, stopped]);
+		renderSettings();
+
+		await screen.findByRole("button", { name: "Options for Old call" });
+		expect(
+			screen.queryByText(/not syncing$|sync is not running/),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Sync these as me" }),
+		).not.toBeInTheDocument();
+	});
+
 	it("scopes its fix to the meetings that actually stalled", async () => {
 		listLinkedMeetingsMock.mockResolvedValue([myMeeting, stalled]);
 		const user = userEvent.setup();

@@ -336,6 +336,85 @@ describe("createAzureMonitorLogSourceAdapter", () => {
 	});
 });
 
+describe("createAzureMonitorLogSourceAdapter retry", () => {
+	const ROWS = {
+		tables: [{ columns: [{ name: "Message" }], rows: [["recovered"]] }],
+	};
+
+	function reply(status: number) {
+		return { ok: status < 400, status, json: async () => ROWS };
+	}
+
+	// Never settles on its own: rejects only when the adapter's timer aborts.
+	function stall(_url: string, init: RequestInit) {
+		return new Promise((_resolve, reject) => {
+			init.signal?.addEventListener("abort", () =>
+				reject(new DOMException("aborted", "AbortError")),
+			);
+		});
+	}
+
+	function adapterWith(fetchImpl: ReturnType<typeof vi.fn>) {
+		return createAzureMonitorLogSourceAdapter({
+			workspaceId: "ws-1",
+			sharedStore: false,
+			getToken: async () => "token-value",
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+			timeoutMs: 20,
+		});
+	}
+
+	it("retries a server error once and returns the second answer", async () => {
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValueOnce(reply(503))
+			.mockResolvedValueOnce(reply(200));
+
+		const out = await adapterWith(fetchImpl).fetchLogExcerpts(SCOPE);
+
+		expect(out.map((entry) => entry.message)).toEqual(["recovered"]);
+		expect(fetchImpl).toHaveBeenCalledTimes(2);
+	});
+
+	it.each([
+		["a stalled request", stall],
+		[
+			"a dropped connection",
+			async () => {
+				throw new TypeError("fetch failed");
+			},
+		],
+	])("retries %s once, with a fresh timeout", async (_label, first) => {
+		const fetchImpl = vi
+			.fn()
+			.mockImplementationOnce(first)
+			.mockResolvedValueOnce(reply(200));
+
+		const out = await adapterWith(fetchImpl).fetchLogExcerpts(SCOPE);
+
+		expect(out.map((entry) => entry.message)).toEqual(["recovered"]);
+		expect(fetchImpl).toHaveBeenCalledTimes(2);
+		const retryInit: RequestInit = fetchImpl.mock.calls[1]?.[1];
+		expect(retryInit.signal?.aborted).toBe(false);
+	});
+
+	it("does not retry a rejected request", async () => {
+		const fetchImpl = vi.fn().mockResolvedValue(reply(400));
+		const adapter = adapterWith(fetchImpl);
+
+		await expect(adapter.fetchLogExcerpts(SCOPE)).rejects.toThrow(/400/);
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+	});
+
+	it("gives up after the second server error", async () => {
+		const fetchImpl = vi.fn().mockResolvedValue(reply(503));
+		const adapter = adapterWith(fetchImpl);
+
+		await expect(adapter.fetchLogExcerpts(SCOPE)).rejects.toThrow(/503/);
+		expect(fetchImpl).toHaveBeenCalledTimes(2);
+	});
+});
+
 describe("managed identity selection", () => {
 	// A host with only user-assigned identities cannot resolve a credential
 	// without being told which one. Getting this wrong fails the token request,

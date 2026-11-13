@@ -126,6 +126,11 @@ import {
 } from "../../lib/instructions/hook.js";
 import { resolveHookLauncher } from "../../lib/instructions/hook-launcher.js";
 import {
+	emptyHookOutput,
+	type HookOutput,
+	hookOutputText,
+} from "../../lib/instructions/hook-output.js";
+import {
 	hookTiming,
 	sinceProcessStart,
 } from "../../lib/instructions/hook-timing.js";
@@ -414,7 +419,7 @@ export function buildInstructionsCommand(): Command {
 		)
 		.option(
 			"--hook",
-			"Session-hook mode: plain text, never fails, never blocks a session",
+			"Session-hook mode: never fails, never blocks a session; a line for the developer is a JSON systemMessage on stdout",
 		)
 		// No default: a default here would shadow the program-level --format,
 		// which is where `FABRIC_FORMAT` enters.
@@ -485,7 +490,7 @@ export function buildInstructionsCommand(): Command {
 		)
 		.option(
 			"--hook",
-			"Session-hook mode: plain text, never fails, never blocks a session",
+			"Session-hook mode: never fails, never blocks a session; a line for the developer is a JSON systemMessage on stdout",
 		)
 		.option("--format <format>", "Output format: text|json")
 		.action(async function (
@@ -618,6 +623,10 @@ export function buildInstructionsCommand(): Command {
 			"--rename",
 			"Give an already-installed plugin the project's readable name (e.g. /slotik:<skill>)",
 		)
+		.option(
+			"--set <slug>",
+			"Coding Instructions set to set up (default: the set this folder's repository belongs to, or the project's default set)",
+		)
 		.option("--format <format>", "Output format: text|json")
 		.option(
 			"--verbose",
@@ -630,6 +639,7 @@ export function buildInstructionsCommand(): Command {
 				verbose?: boolean;
 				repos?: boolean;
 				rename?: boolean;
+				set?: string;
 				mcpSignIn?: boolean;
 				apply?: boolean;
 				reportOnly?: boolean;
@@ -648,6 +658,12 @@ export function buildInstructionsCommand(): Command {
 					opts.reportOnly ||
 					opts.lessons ||
 					opts.plugin === false;
+				if (opts.set !== undefined && cloneMode) {
+					throw new CliFailure(
+						"--set chooses the Coding Instructions set of the plugin setup, so it cannot be combined with --clone, --apply, --report-only, --lessons or --no-plugin.",
+						2,
+					);
+				}
 				if (opts.plugin && cloneMode) {
 					throw new CliFailure(
 						"--plugin sets the project up without a copy of its instructions, so it cannot be combined with --clone, --apply, --report-only, --lessons or --no-plugin.",
@@ -685,6 +701,7 @@ export function buildInstructionsCommand(): Command {
 							dest: opts.dest,
 							mcp: opts.mcp,
 							rename: opts.rename,
+							set: opts.set,
 							format,
 							// The JSON report already carries all of it.
 							summary:
@@ -695,7 +712,10 @@ export function buildInstructionsCommand(): Command {
 							reportMcpSignIn(summary, {
 								signIn: mcpSignIn,
 								headersHelper: plugin.claudeMcpHeadersHelper,
-								serverName: pluginMcpServerName(bound.project),
+								serverName: pluginMcpServerName(
+									bound.project,
+									plugin.set,
+								),
 							});
 						}
 					} else {
@@ -809,6 +829,9 @@ async function run(
 	let hookDeadlineAt: number | undefined;
 	hookPhases = {};
 	hookTraced = false;
+	// Reset on every run, so one that ended without flushing cannot hold the
+	// next run's output.
+	resetHookOutput(Boolean(opts.hook));
 	try {
 		if (opts.hook) {
 			// The deadline's signal is published for the bundle download
@@ -844,8 +867,8 @@ async function run(
 		}
 		if (opts.hook) {
 			// A sign-in that cannot be used is the one failure the agent must
-			// hear about: on stdout, with the line that fixes it. Everything
-			// else is a skip, on stderr.
+			// hear about: in its context, with the line that fixes it.
+			// Everything else is a skip, the developer's message.
 			const authFailure = takeAuthFailure();
 			const signedOutOf =
 				error instanceof NotSignedInError
@@ -861,8 +884,8 @@ async function run(
 			} else if (error instanceof UpgradeRequiredFailure) {
 				line(error.line);
 			} else {
-				process.stderr.write(
-					`${HOOK_PREFIX} ${verb} skipped: ${failure.message === outcomeLine("project-not-found", {}) ? "no project for this checkout" : failure.message}\n`,
+				hookMessage(
+					`${HOOK_PREFIX} ${verb} skipped: ${failure.message === outcomeLine("project-not-found", {}) ? "no project for this checkout" : failure.message}`,
 				);
 			}
 			await traceHookFailure(opts, {
@@ -878,6 +901,7 @@ async function run(
 				// update.
 				await refreshKeptCopyAfterHook(opts, hookDeadlineAt);
 			}
+			flushHookOutput();
 			await endHookProcess();
 			process.exit(0);
 		}
@@ -889,6 +913,7 @@ async function run(
 	showUpgradeNotice(Boolean(opts.hook));
 	if (opts.hook) {
 		await refreshKeptCopyAfterHook(opts, hookDeadlineAt);
+		flushHookOutput();
 		await endHookProcess();
 	}
 }
@@ -974,7 +999,8 @@ const BACKGROUND_UPDATE_SLACK_MS = 5_000;
  * After a hook run has said what it has to say: the kept copy of the served
  * build asks its deployment for a newer one (`self-update.ts`). Only the
  * deployment the hook is bound to with `--base-url` is ever asked. Its one line,
- * when there is one, goes to stderr, never stdout.
+ * when there is one, is the developer's hook message, never the agent's
+ * context (stderr for the detached `self-update`).
  */
 async function refreshKeptCopyAfterHook(
 	opts: { baseUrl?: string },
@@ -1030,7 +1056,7 @@ async function refreshKeptCopyAfterHook(
 	}
 	const message = selfUpdateLine(outcome);
 	if (message !== null) {
-		process.stderr.write(`${message}\n`);
+		hookMessage(message);
 	}
 }
 
@@ -1416,18 +1442,19 @@ function hasSignInFor(origin: string, project: string | undefined): boolean {
 }
 
 /**
- * The project a folder outside any git checkout was last synced from, as its
- * own lock records it. Such a folder has no remote to ask, and a sign-in for
- * that one project is then all the run needs. Inside a checkout the lock may
- * have arrived with the repository, so the repository's connection decides
- * there, as before. A damaged or symlinked lock is reported, not skipped.
+ * For a folder outside any git checkout, the project it was last synced
+ * from, as its own lock records it, or null when no usable lock names one.
+ * Such a folder has no remote to ask, and a sign-in for that one project is
+ * then all the run needs. `inside` for a git checkout, or when git cannot
+ * tell: there the lock may have arrived with the repository, so the
+ * repository's connection decides, as before.
  */
-async function projectOfLockOutsideGit(
+async function lockOutsideGit(
 	destination: string,
-): Promise<string | null> {
+): Promise<{ kind: "outside"; project: string | null } | { kind: "inside" }> {
 	const tree = await git.findWorkTree(destination, gitDeadline());
 	if (tree.kind !== "absent") {
-		return null;
+		return { kind: "inside" };
 	}
 	// The guarded read needs a canonical root: through a symlinked or
 	// junctioned folder the lock would otherwise look like it escapes it. A
@@ -1437,9 +1464,13 @@ async function projectOfLockOutsideGit(
 	const lock = await readLockSafely(root, {
 		maxBytes: MAX_HINT_LOCK_BYTES,
 	}).catch(() => null);
-	return lock !== null && isIdentifier(lock.projectId)
-		? lock.projectId
-		: null;
+	return {
+		kind: "outside",
+		project:
+			lock !== null && isIdentifier(lock.projectId)
+				? lock.projectId
+				: null,
+	};
 }
 
 /**
@@ -1479,8 +1510,9 @@ async function withProject<T extends RawOptions>(
 		}
 		return { ...bound, project: opts.project };
 	}
-	const locked = await projectOfLockOutsideGit(destinationOf(opts));
-	if (locked !== null) {
+	const outside = await lockOutsideGit(destinationOf(opts));
+	if (outside.kind === "outside" && outside.project !== null) {
+		const locked = outside.project;
 		activeProject = locked;
 		if (verb === "init") {
 			await ensureSignedIn({ ...bound, project: locked });
@@ -1489,6 +1521,11 @@ async function withProject<T extends RawOptions>(
 	}
 	if (opts.hook) {
 		throw outcomeFailure("hook-needs-project", {});
+	}
+	// No remote to ask and no lock to read: only `--project` can name it, so
+	// say that before any sign-in is asked for.
+	if (outside.kind === "outside") {
+		throw outcomeFailure("needs-project", { verb });
 	}
 	// Finding the project from the checkout asks the server, which needs a
 	// sign-in that is not tied to one project.
@@ -1884,8 +1921,48 @@ function refuseManualSync(
 	return new CliFailure(classLine(checkout, repository ?? null), 7);
 }
 
+/**
+ * What the `check --hook` or `sync --hook` run in progress has to say, held
+ * until it ends (`hook-output.ts`); `null` outside one.
+ */
+let hookOutput: HookOutput | null = null;
+
+/** A line for the agent: stdout, or the hook run's context. */
 function line(text: string): void {
+	if (hookOutput !== null) {
+		hookOutput.context.push(text);
+		return;
+	}
 	process.stdout.write(`${text}\n`);
+}
+
+/**
+ * A line for the developer: the hook run's message, which the coding tool
+ * shows them, or stderr outside a hook run. Never for the agent.
+ */
+function hookMessage(text: string): void {
+	if (hookOutput !== null) {
+		hookOutput.messages.push(text);
+		return;
+	}
+	process.stderr.write(`${text}\n`);
+}
+
+/** Holds a hook run's output from here on; anything else writes at once. */
+function resetHookOutput(hook: boolean): void {
+	hookOutput = hook ? emptyHookOutput() : null;
+}
+
+/** Writes what the hook run held, once, and stops holding. */
+function flushHookOutput(): void {
+	if (hookOutput === null) {
+		return;
+	}
+	const text = hookOutputText(hookOutput);
+	hookOutput = null;
+	if (text !== null) {
+		process.stdout.write(text);
+	}
 }
 
 /** The command that makes this checkout current, as this install runs it. */
@@ -1980,10 +2057,10 @@ async function runCheck(
 			);
 		} else {
 			if (!opts.hook || !status.current) {
-				process.stdout.write(`${status.line}\n`);
+				line(status.line);
 			}
 			if (opts.verify) {
-				process.stdout.write(`${NO_VERIFY_FOR_DIRECT}\n`);
+				line(NO_VERIFY_FOR_DIRECT);
 			}
 		}
 		return;
@@ -2327,7 +2404,7 @@ async function runSync(
 				{ format: "json" },
 			);
 		} else if (opts.hook) {
-			process.stderr.write(`${NOTHING_PUBLISHED_HOOK_LINE}\n`);
+			hookMessage(NOTHING_PUBLISHED_HOOK_LINE);
 		} else {
 			line(nothingPublishedSyncLine(synced.uploaded));
 		}
@@ -2358,12 +2435,13 @@ async function runSync(
 			);
 		} else if (synced.fastForward !== null) {
 			// The hook's own fast-forward has said what happened: what the
-			// session must know on stdout, the rest in the log.
+			// session must know in its context, a skip as the developer's
+			// message.
 			for (const text of synced.fastForward.stdout) {
 				line(text);
 			}
 			for (const text of synced.fastForward.stderr) {
-				process.stderr.write(`${text}\n`);
+				hookMessage(text);
 			}
 		} else if (synced.checkout.line !== null) {
 			line(synced.checkout.line);
@@ -2381,14 +2459,14 @@ async function runSync(
 	}
 	// Spec §6.4: a session start must not bury the one thing the developer
 	// needs to know, that their edits were kept rather than replaced. One
-	// line on stderr, the channel the hook boundary already uses.
+	// line, the developer's hook message.
 	if (opts.hook && result.keptEdited.length > 0) {
-		process.stderr.write(
-			`fabric: ${result.keptEdited.length} local edit(s) kept; run ${repairInstruction(opts)} to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.\n`,
+		hookMessage(
+			`fabric: ${result.keptEdited.length} local edit(s) kept; run ${repairInstruction(opts)} to replace them. Keep notes meant only for this machine in CLAUDE.local.md or .claude/settings.local.json.`,
 		);
 	}
 	// What a new version changed, computed locally from the lock's previous
-	// version and the files this run wrote; stderr only, like the line above.
+	// version and the files this run wrote; the developer's message too.
 	const sinceLastSync = opts.hook
 		? changedSinceLastSyncLine({
 				...result,
@@ -2396,7 +2474,7 @@ async function runSync(
 			})
 		: null;
 	if (sinceLastSync !== null) {
-		process.stderr.write(`${sinceLastSync}\n`);
+		hookMessage(sinceLastSync);
 	}
 }
 

@@ -51,8 +51,8 @@ import type {
 
 /**
  * Character budget for one `code_tree` result. The chat loop shows a tool
- * result whole only up to `TOOL_RESULTS.maxChars` and summarizes anything
- * longer, which loses the range line and next offset. The 2,000 characters
+ * result whole up to a versioned cap. Keep this budget based on the legacy
+ * `TOOL_RESULTS.maxChars` so page sizes stay stable. The 2,000 characters
  * of margin cover the adapter's `{ error }` / JSON envelope and the notes.
  */
 const CODE_TREE_OUTPUT_BUDGET = TOOL_RESULTS.maxChars - 2_000;

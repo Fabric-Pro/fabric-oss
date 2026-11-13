@@ -10,7 +10,7 @@ import { Button } from "@ui/components/button";
 import { Skeleton } from "@ui/components/skeleton";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useEffect, useId, useMemo, useRef } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef } from "react";
 import { fromMarkdown } from "../../lib/diff-utils";
 import { isDocumentGenerationStale } from "../../lib/document-generation-timestamp";
 import { createAdvancedExtensions } from "../../lib/tiptap-extensions-advanced";
@@ -128,6 +128,11 @@ export type ProposalLiveSectionsProps = {
 	onRetry?: () => void;
 	isRetrying?: boolean;
 	/**
+	 * An option for the next Retry, on its own line wherever a stalled run
+	 * offers one; never while the run is healthy, nor without `onRetry`.
+	 */
+	retryOption?: ReactNode;
+	/**
 	 * The Proposal theme's root, for the document itself (Fizzy #2946);
 	 * absent while the theme is off.
 	 */
@@ -158,6 +163,7 @@ export function ProposalLiveSections({
 	updatedAt,
 	onRetry,
 	isRetrying = false,
+	retryOption,
 	themeRootProps,
 }: ProposalLiveSectionsProps) {
 	const t = useTranslations("projects.proposalArtifactPage.live");
@@ -173,6 +179,9 @@ export function ProposalLiveSections({
 		generationStartedAt,
 		updatedAt,
 	);
+	// Keyed on the stall, not on `onRetry` alone: a healthy run shows no
+	// Retry, so there is nothing an option for one could apply to.
+	const showRetryOption = Boolean(isStalled && onRetry && retryOption);
 	// A milestone, not a range: the run writes exactly this value when its
 	// preview stops, and 80 once the stream has ended.
 	const previewStopped =
@@ -241,6 +250,11 @@ export function ProposalLiveSections({
 								)}
 							</div>
 						)}
+						{showRetryOption && (
+							<div className="w-full max-w-md text-left">
+								{retryOption}
+							</div>
+						)}
 					</div>
 				</>
 			) : (
@@ -257,6 +271,15 @@ export function ProposalLiveSections({
 							isRetrying={isRetrying}
 							isRegenerating={saved.length > 0}
 						/>
+						{/* The progress card owns its Retry; the option sits
+						    directly beneath it, aligned with the card. The card
+						    shows no Retry once progress reaches 100, so neither
+						    does the option. */}
+						{showRetryOption && progress < 100 && (
+							<div className="mx-auto mt-3 w-full max-w-xl text-left">
+								{retryOption}
+							</div>
+						)}
 					</div>
 					{saved ? (
 						<section aria-labelledby={previousLabelId}>
@@ -266,7 +289,9 @@ export function ProposalLiveSections({
 							>
 								{t("previousVersion")}
 							</p>
-							<div className="opacity-60">
+							{/* Dimmed by removing colour, not by fading, so the
+							    previous body keeps full text contrast (Fizzy #1444). */}
+							<div data-stale="" className="grayscale">
 								<ReadOnlyDocument
 									markdown={saved}
 									themeRootProps={themeRootProps}

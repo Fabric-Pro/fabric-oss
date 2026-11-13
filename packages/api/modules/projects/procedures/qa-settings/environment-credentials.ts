@@ -11,6 +11,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { releaseScreenshotEnvironment } from "../../../newsletter/lib/screenshot-environment";
 
 /**
  * Sign-in credentials for a deployment target — the write path behind the
@@ -220,6 +221,14 @@ export const setEnvironmentCredentialProcedure = tenantProtectedProcedure
 					input.secret === "",
 				username: input.authUsername ?? null,
 			},
+		});
+		// Release-notes screenshots sign in with this credential; the sample-data
+		// confirmation was about the account it used to name.
+		await releaseScreenshotEnvironment({
+			projectId: input.projectId,
+			environmentId: input.environmentId,
+			user: context.user,
+			changed: ["credential"],
 		});
 
 		// The redacted summary, so the form can re-render from the write's own

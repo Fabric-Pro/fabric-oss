@@ -42,9 +42,9 @@ const MARKER_VERSION = 1;
 const MAX_MARKER_BYTES = 256 * 1024;
 const MAX_RULE_READ_BYTES = 2 * 1024 * 1024;
 
-/** The folder of a project's rules, relative to the project root. */
-export function rulesFolderFor(projectId: string): string {
-	return `.claude/rules/${pluginNameFor(projectId)}`;
+/** The folder of a project's (or a non-default set's) rules, relative to the project root. */
+export function rulesFolderFor(projectId: string, set?: string | null): string {
+	return `.claude/rules/${pluginNameFor(projectId, set)}`;
 }
 
 type KeptReason = "edited" | "not-managed" | "unsafe";
@@ -169,12 +169,14 @@ async function pruneEmpty(
 export async function syncProjectRules(input: {
 	root: string;
 	projectId: string;
+	/** A non-default Coding Instructions set: its own rules folder. */
+	set?: string | null;
 	rules: readonly ProjectRule[];
 	tracked?: ReadonlySet<string>;
 	/** `Date.now()` value after which no further file is touched. */
 	deadline?: number;
 }): Promise<RulesSyncResult> {
-	const folder = rulesFolderFor(input.projectId);
+	const folder = rulesFolderFor(input.projectId, input.set);
 	const { kept: wanted, omitted } = capRules(input.rules);
 	const result: RulesSyncResult = {
 		written: [],

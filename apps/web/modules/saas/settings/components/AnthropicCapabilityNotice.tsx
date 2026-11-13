@@ -46,7 +46,7 @@ export function AnthropicCapabilityNotice({
 					<button
 						type="button"
 						aria-label={ANTHROPIC_CAPABILITY_TITLE}
-						className="inline-flex shrink-0 rounded-sm text-highlight/80 hover:text-highlight focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+						className="inline-flex shrink-0 rounded-sm text-highlight hover:text-highlight focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 					>
 						<InfoIcon aria-hidden="true" className="size-3.5" />
 					</button>

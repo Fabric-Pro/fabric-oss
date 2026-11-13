@@ -542,7 +542,7 @@ export function AzureDevOpsPatRepoPicker({
 													</span>
 													<span className="ml-auto flex items-center gap-2">
 														{selectedCount > 0 && (
-															<span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-primary text-xs">
+															<span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-primary-active text-xs">
 																{selectedCount}
 															</span>
 														)}

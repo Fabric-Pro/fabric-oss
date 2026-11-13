@@ -48,14 +48,17 @@ export async function listProjectCodeRepositories(
 			},
 			orderBy: { createdAt: "asc" },
 		}),
-		db.projectInstructionRepositorySync.findFirst({
+		// Every repository a set's instructions are read from (several sets
+		// may share one), never only the first.
+		db.projectInstructionRepositorySync.findMany({
 			where: { projectId },
 			select: { repositoryIntegrationId: true },
 		}),
 	]);
+	const sources = new Set(sync.map((s) => s.repositoryIntegrationId));
 	const used = new Set<string>();
 	return rows
-		.filter((row) => row.id !== sync?.repositoryIntegrationId)
+		.filter((row) => !sources.has(row.id))
 		.flatMap((row) => {
 			const url = credentialFreeUrl(row.repositoryUrl);
 			if (!url) {

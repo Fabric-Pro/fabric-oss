@@ -497,3 +497,191 @@ describe("fetchAndStoreMeetingTranscript — reissued transcript ids", () => {
 		expect(mocks.hasTranscriptNearOccurrenceMock).not.toHaveBeenCalled();
 	});
 });
+
+describe("fetchAndStoreMeetingTranscript — a transcript Graph will not hand over", () => {
+	const REFUSAL =
+		'Microsoft Graph API error: 400 Bad Request - {"error":{"code":"BadRequest","message":"Invalid transcript id"}}';
+
+	function wireTwoTranscripts(refused: ReadonlySet<string>) {
+		mocks.executeMicrosoftTeamsToolMock.mockImplementation(
+			async (tool: string, args: { transcriptId?: string }) => {
+				if (tool === "get_meeting_by_join_url") {
+					return { meeting: { id: "meeting-1" } };
+				}
+				if (tool === "list_meeting_transcripts") {
+					return {
+						transcripts: [
+							{
+								id: "transcript-newest",
+								createdDateTime: "2026-06-17T10:30:00.000Z",
+							},
+							{
+								id: "transcript-older",
+								createdDateTime: "2026-06-16T10:30:00.000Z",
+							},
+						],
+						count: 2,
+					};
+				}
+				if (tool === "get_meeting_transcript_content") {
+					if (args.transcriptId && refused.has(args.transcriptId)) {
+						throw new Error(REFUSAL);
+					}
+					return { entries: [{ speaker: "Alice", text: "Hello." }] };
+				}
+				return {};
+			},
+		);
+	}
+
+	beforeEach(() => {
+		for (const m of Object.values(mocks)) {
+			m.mockReset();
+		}
+		mocks.isTranscriptAlreadySyncedMock.mockResolvedValue(false);
+		mocks.hasTranscriptNearOccurrenceMock.mockResolvedValue(false);
+		mocks.projectContextCreateMock.mockResolvedValue({ id: "ctx-1" });
+		mocks.createMeetingTranscriptRecordMock.mockResolvedValue({
+			id: "tr-rec-1",
+		});
+		mocks.projectFindUniqueMock.mockResolvedValue({
+			meetingTranscriptSyncEnabled: false,
+		});
+		mocks.getTemporalClientMock.mockResolvedValue({
+			workflow: {
+				start: (...a: unknown[]) => mocks.workflowStartMock(...a),
+			},
+		});
+	});
+
+	afterEach(() => {
+		vi.clearAllMocks();
+	});
+
+	it("still stores the other new transcripts of the series", async () => {
+		wireTwoTranscripts(new Set(["transcript-newest"]));
+
+		const result = await fetchAndStoreMeetingTranscript(BASE_INPUT);
+
+		expect(result.success).toBe(true);
+		expect(result.transcriptsFetched).toBe(1);
+		expect(result.error).toBeUndefined();
+		expect(mocks.createMeetingTranscriptRecordMock).toHaveBeenCalledTimes(
+			1,
+		);
+		expect(mocks.createMeetingTranscriptRecordMock).toHaveBeenCalledWith(
+			expect.objectContaining({ transcriptId: "transcript-older" }),
+		);
+	});
+
+	it("reports the refusal when no transcript could be read", async () => {
+		wireTwoTranscripts(new Set(["transcript-newest", "transcript-older"]));
+
+		const result = await fetchAndStoreMeetingTranscript(BASE_INPUT);
+
+		expect(result.success).toBe(false);
+		expect(result.transcriptsFetched).toBe(0);
+		expect(result.error).toBe(
+			`Failed to fetch meeting transcript: ${REFUSAL}`,
+		);
+		expect(mocks.projectContextCreateMock).not.toHaveBeenCalled();
+	});
+
+	describe("on a channel meeting", () => {
+		const CHANNEL_INPUT = {
+			...BASE_INPUT,
+			joinUrl:
+				"https://teams.microsoft.com/l/meetup-join/19%3Athread%40thread.tacv2/123",
+		};
+		const RECORDING = {
+			id: "stream:item-1",
+			createdDateTime: "2026-06-17T11:20:00.000Z",
+			driveId: "drive-1",
+			recordingItemId: "item-1",
+			recordingWebUrl: "https://example.com/rec",
+		};
+
+		function wireRefusedChannelTranscript(recordings: unknown[]) {
+			mocks.executeMicrosoftTeamsToolMock.mockImplementation(
+				async (tool: string) => {
+					if (tool === "get_meeting_by_join_url") {
+						return { meeting: { id: "meeting-1" } };
+					}
+					if (tool === "list_meeting_transcripts") {
+						return {
+							transcripts: [
+								{
+									id: "transcript-refused",
+									createdDateTime: "2026-06-17T10:30:00.000Z",
+								},
+							],
+							count: 1,
+						};
+					}
+					if (tool === "get_meeting_transcript_content") {
+						throw new Error(REFUSAL);
+					}
+					if (tool === "list_recording_transcripts") {
+						return { transcripts: recordings };
+					}
+					if (tool === "get_recording_transcript_content") {
+						return {
+							entries: [{ speaker: "Alice", text: "Hello." }],
+						};
+					}
+					return {};
+				},
+			);
+		}
+
+		it("stores the occurrence from its recording instead", async () => {
+			wireRefusedChannelTranscript([RECORDING]);
+
+			const result = await fetchAndStoreMeetingTranscript(CHANNEL_INPUT);
+
+			expect(result.success).toBe(true);
+			expect(result.transcriptsFetched).toBe(1);
+			expect(mocks.executeMicrosoftTeamsToolMock).toHaveBeenCalledWith(
+				"list_recording_transcripts",
+				expect.objectContaining({
+					meetingDate: "2026-06-17T10:30:00.000Z",
+				}),
+				"u-1",
+				"o-1",
+			);
+			const createRecord = mocks.createMeetingTranscriptRecordMock;
+			expect(createRecord).toHaveBeenCalledWith(
+				expect.objectContaining({
+					meetingId: "meeting-1",
+					transcriptId: "stream:item-1",
+				}),
+			);
+		});
+
+		it("does not store a recording that is already stored", async () => {
+			wireRefusedChannelTranscript([RECORDING]);
+			mocks.isTranscriptAlreadySyncedMock.mockImplementation(
+				async (...args: unknown[]) => args[2] === "stream:item-1",
+			);
+
+			const result = await fetchAndStoreMeetingTranscript(CHANNEL_INPUT);
+
+			expect(result.transcriptsFetched).toBe(0);
+			expect(result.error).toBe(
+				`Failed to fetch meeting transcript: ${REFUSAL}`,
+			);
+			expect(mocks.projectContextCreateMock).not.toHaveBeenCalled();
+		});
+
+		it("reports the refusal when the occurrence has no recording", async () => {
+			wireRefusedChannelTranscript([]);
+
+			const result = await fetchAndStoreMeetingTranscript(CHANNEL_INPUT);
+
+			expect(result.success).toBe(false);
+			expect(result.error).toBe(
+				`Failed to fetch meeting transcript: ${REFUSAL}`,
+			);
+		});
+	});
+});

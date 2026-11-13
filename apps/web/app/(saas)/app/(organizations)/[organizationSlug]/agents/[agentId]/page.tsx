@@ -244,7 +244,7 @@ export default function OrganizationAgentDetailsPage() {
 						<CheckCircleIcon className="h-4 w-4 text-green-500" />
 					),
 					text: "Active",
-					color: "text-green-600",
+					color: "text-green-800 dark:text-green-500",
 					bgColor: "bg-green-500/10",
 				};
 			case "DEPLOYING":
@@ -253,14 +253,14 @@ export default function OrganizationAgentDetailsPage() {
 						<LoaderIcon className="h-4 w-4 animate-spin text-blue-500" />
 					),
 					text: "Deploying",
-					color: "text-blue-600",
+					color: "text-blue-600 dark:text-blue-400",
 					bgColor: "bg-blue-500/10",
 				};
 			case "ERROR":
 				return {
 					icon: <XCircleIcon className="h-4 w-4 text-red-500" />,
 					text: "Error",
-					color: "text-red-600",
+					color: "text-red-700 dark:text-red-400",
 					bgColor: "bg-red-500/10",
 				};
 			default:

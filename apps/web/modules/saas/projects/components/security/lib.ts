@@ -195,7 +195,7 @@ export const SEVERITY_FILL_CLASS: Record<ScanSeverity, string> = {
 	CRITICAL: "bg-destructive",
 	HIGH: "bg-destructive/70",
 	MEDIUM: "bg-yellow-500",
-	LOW: "bg-secondary",
+	LOW: "bg-muted-foreground",
 };
 
 export const CATEGORY_LABEL: Record<ScanCategory, string> = {
@@ -251,7 +251,7 @@ export const SCAN_STATUS_BADGE_VARIANT: Record<
  * accompanies the icon in the UI, so state never rests on color alone (WCAG
  * 1.4.1); the SCANNING loader is spun under `motion-safe:` at the call site.
  *
- *   SCANNED     → Check   / `text-secondary`        (settled — up to date)
+ *   SCANNED     → Check   / `text-success`          (settled — up to date)
  *   STALE       → Clock   / `text-highlight`        (amber — drifted since scan)
  *   NOT_SCANNED → Minus   / `text-muted-foreground` (never scanned)
  *   SCANNING    → Loader2 / `text-primary`          (in flight)
@@ -266,7 +266,7 @@ const BRANCH_STATUS_INDICATOR: Record<
 	BranchScanStatusValue,
 	BranchStatusIndicator
 > = {
-	SCANNED: { icon: CheckIcon, label: "Scanned", className: "text-secondary" },
+	SCANNED: { icon: CheckIcon, label: "Scanned", className: "text-success" },
 	STALE: { icon: ClockIcon, label: "Stale", className: "text-highlight" },
 	NOT_SCANNED: {
 		icon: MinusIcon,

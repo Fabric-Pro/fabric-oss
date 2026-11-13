@@ -375,7 +375,7 @@ export function AtlasOverview({
 
 								{/* Language mix — segmented proportion bar + legend. */}
 								<div className="mt-4 border-t border-border/60 pt-4">
-									<p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground/70">
+									<p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
 										{t("languageMixLabel")}
 									</p>
 									{topLanguages.length === 0 ? (
@@ -486,7 +486,7 @@ export function AtlasOverview({
 										onClick={() =>
 											onOpenNode("BUSINESS", "")
 										}
-										className="flex items-center gap-1 rounded text-xs text-primary transition-colors hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+										className="flex items-center gap-1 rounded text-xs text-primary transition-colors hover:text-primary-hover focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 									>
 										{t("capabilitiesViewAll", {
 											count: allCapabilities.length,
@@ -578,7 +578,7 @@ export function AtlasOverview({
 									{t("techStackTitle")}
 								</h3>
 								{techEcosystem && (
-									<span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+									<span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
 										{techEcosystem}
 									</span>
 								)}

@@ -491,6 +491,7 @@ export function applyOrchestratorStreamEvent(
 					approvalId: data.approvalId,
 					stepId: data.stepId,
 					reason: data.reason,
+					...(data.riskLevel ? { riskLevel: data.riskLevel } : {}),
 				},
 			}));
 			break;

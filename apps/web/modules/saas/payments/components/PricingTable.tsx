@@ -180,7 +180,7 @@ export function PricingTable({
 											{title}
 										</h3>
 										{description && (
-											<div className="prose mt-2 text-foreground/60 text-sm">
+											<div className="prose mt-2 text-muted-foreground text-sm">
 												{description}
 											</div>
 										)}
@@ -206,7 +206,7 @@ export function PricingTable({
 										{price &&
 											"trialPeriodDays" in price &&
 											price.trialPeriodDays && (
-												<div className="mt-4 flex items-center justify-start font-medium text-primary text-sm opacity-80">
+												<div className="mt-4 flex items-center justify-start font-medium text-primary text-sm">
 													<BadgePercentIcon className="mr-2 size-4" />
 													{t("pricing.trialPeriod", {
 														days: price.trialPeriodDays,
@@ -226,7 +226,7 @@ export function PricingTable({
 													currency: price.currency,
 												})}
 												{"interval" in price && (
-													<span className="font-normal text-xs opacity-60">
+													<span className="font-normal text-xs text-muted-foreground">
 														{" / "}
 														{interval === "month"
 															? t(
@@ -250,7 +250,7 @@ export function PricingTable({
 												{organizationId &&
 													"seatBased" in price &&
 													price.seatBased && (
-														<span className="font-normal text-xs opacity-60">
+														<span className="font-normal text-xs text-muted-foreground">
 															{" / "}
 															{t(
 																"pricing.perSeat",

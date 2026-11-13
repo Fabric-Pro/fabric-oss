@@ -24,7 +24,7 @@ describe("TestCaseResultPill", () => {
 
 	it("renders a tone icon + label for each run result (never colour alone)", () => {
 		const cases = [
-			{ result: "PASSED", label: "Passed", tone: "text-secondary" },
+			{ result: "PASSED", label: "Passed", tone: "text-success" },
 			{ result: "FAILED", label: "Failed", tone: "text-destructive" },
 			{ result: "BLOCKED", label: "Blocked", tone: "text-highlight" },
 			{

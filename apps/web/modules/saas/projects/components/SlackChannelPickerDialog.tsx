@@ -293,7 +293,7 @@ export function SlackChannelPickerDialog({
 						<p className="text-foreground/70">
 							Failed to load Slack data
 						</p>
-						<p className="text-foreground/50 text-sm">
+						<p className="text-muted-foreground text-sm">
 							{slackQuery.error instanceof Error
 								? slackQuery.error.message
 								: "An unexpected error occurred"}
@@ -310,7 +310,7 @@ export function SlackChannelPickerDialog({
 							<p className="font-medium text-foreground/80">
 								Slack workspace not connected
 							</p>
-							<p className="mt-1 text-foreground/50 text-sm">
+							<p className="mt-1 text-muted-foreground text-sm">
 								{fetchError ||
 									"Connect your Slack workspace in Settings → Integrations to access channels."}
 							</p>
@@ -327,7 +327,7 @@ export function SlackChannelPickerDialog({
 							<p className="text-foreground/70">
 								No channels found
 							</p>
-							<p className="text-foreground/50 text-sm">
+							<p className="text-muted-foreground text-sm">
 								No accessible channels were found in your Slack
 								workspace.
 							</p>
@@ -359,7 +359,7 @@ export function SlackChannelPickerDialog({
 								{filteredChannels.length === 0 ? (
 									<div className="flex flex-col items-center gap-2 py-6 text-center">
 										<SearchIcon className="size-6 text-foreground/30" />
-										<p className="text-foreground/50 text-sm">
+										<p className="text-muted-foreground text-sm">
 											No channels match your search
 										</p>
 									</div>
@@ -408,7 +408,7 @@ export function SlackChannelPickerDialog({
 													</span>
 													{channel.memberCount >
 														0 && (
-														<span className="ml-auto flex shrink-0 items-center gap-1 text-foreground/50 text-xs">
+														<span className="ml-auto flex shrink-0 items-center gap-1 text-muted-foreground text-xs">
 															<UsersIcon className="size-3" />
 															{
 																channel.memberCount
@@ -416,7 +416,7 @@ export function SlackChannelPickerDialog({
 														</span>
 													)}
 													{isLinked && (
-														<span className="ml-2 shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-primary text-xs">
+														<span className="ml-2 shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-primary-active text-xs">
 															Linked
 														</span>
 													)}

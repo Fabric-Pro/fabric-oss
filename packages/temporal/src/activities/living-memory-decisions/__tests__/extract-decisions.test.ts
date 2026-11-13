@@ -7,9 +7,15 @@
  * a version is extracted at most once; store-only, non-synced and superseded
  * rows are skipped; a project without an AI provider is skipped without a
  * record; the instructions come from the Prompt Library binding with the
- * seeded body as the fallback; and only an extraction that found something
- * announces it.
+ * seeded body as the fallback; only an extraction that found something
+ * announces it, leaving out the member whose own scan started it; a decision
+ * is linked to the one project work item it (or else its file) names; and the
+ * record says when the file met the character or decision limit.
  */
+import {
+	LIVING_MEMORY_DECISION_FILE_CHAR_CAP,
+	LIVING_MEMORY_DECISION_MAX_PER_FILE,
+} from "@repo/utils/living-memory-decision-limits";
 import {
 	LIVING_MEMORY_DECISIONS_FALLBACK_BODY,
 	LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,
@@ -28,6 +34,8 @@ const mocks = vi.hoisted(() => {
 		generateText: vi.fn(),
 		trackUsage: vi.fn(),
 		resolveBoundPromptText: vi.fn(),
+		resolveProjectFeatureRef: vi.fn(),
+		warn: vi.fn(),
 	};
 });
 
@@ -58,13 +66,17 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/logs", () => ({
-	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+	logger: { info: vi.fn(), warn: mocks.warn, error: vi.fn() },
 }));
 
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 
 vi.mock("../../lib/bound-prompt", () => ({
 	resolveBoundPromptText: mocks.resolveBoundPromptText,
+}));
+
+vi.mock("../../shared/project-feature-reads", () => ({
+	resolveProjectFeatureRef: mocks.resolveProjectFeatureRef,
 }));
 
 import { extractLivingMemoryDecisionsActivity } from "../extract-decisions";
@@ -99,6 +111,7 @@ beforeEach(() => {
 		text: "SYSTEM INSTRUCTIONS",
 		source: "BOUND",
 	});
+	mocks.resolveProjectFeatureRef.mockResolvedValue(undefined);
 	mocks.generateText.mockResolvedValue({
 		output: {
 			decisions: [
@@ -137,6 +150,8 @@ describe("extractLivingMemoryDecisionsActivity", () => {
 					},
 				],
 				model: "example-model",
+				contentTruncated: false,
+				decisionsCapped: false,
 				userId: "user-1",
 				organizationId: "org-1",
 			},
@@ -144,9 +159,24 @@ describe("extractLivingMemoryDecisionsActivity", () => {
 		});
 		expect(mocks.trackUsage).toHaveBeenCalledTimes(1);
 		expect(mocks.notify).toHaveBeenCalledWith({ extractionId: "ext-1" });
+		expect(mocks.warn).not.toHaveBeenCalled();
 	});
 
-	it("records a requested scan's decisions without notifying per file", async () => {
+	it("announces a requested scan's decisions to the reviewers, leaving out the member who asked", async () => {
+		await expect(
+			extractLivingMemoryDecisionsActivity({
+				...input,
+				requestedByUserId: "member-9",
+			}),
+		).resolves.toMatchObject({ status: "recorded" });
+
+		expect(mocks.notify).toHaveBeenCalledWith({
+			extractionId: "ext-1",
+			excludeUserIds: ["member-9"],
+		});
+	});
+
+	it("records without notifying when the start said not to", async () => {
 		await expect(
 			extractLivingMemoryDecisionsActivity({ ...input, notify: false }),
 		).resolves.toMatchObject({ status: "recorded" });
@@ -278,5 +308,231 @@ describe("extractLivingMemoryDecisionsActivity", () => {
 			extractLivingMemoryDecisionsActivity(input),
 		).rejects.toThrow("provider down");
 		expect(mocks.extractionCreate).not.toHaveBeenCalled();
+	});
+
+	describe("the work item a decision came from", () => {
+		/** The decisions the activity recorded. */
+		function recorded(): Array<Record<string, unknown>> {
+			return mocks.extractionCreate.mock.calls[0]?.[0].data.decisions;
+		}
+
+		beforeEach(() => {
+			mocks.resolveProjectFeatureRef.mockImplementation(
+				async (ref: string) =>
+					ref === "F-12"
+						? {
+								id: "story-12",
+								identifier: "F-012",
+								kind: "FEATURE",
+								title: "Storage",
+							}
+						: undefined,
+			);
+		});
+
+		it("links the one work item the decision's quote names, within the project", async () => {
+			mocks.generateText.mockResolvedValue({
+				output: {
+					decisions: [
+						{
+							text: "We use Postgres.",
+							sourceQuote: "Decided in F-012: we use Postgres.",
+						},
+					],
+				},
+			});
+
+			await extractLivingMemoryDecisionsActivity(input);
+
+			expect(mocks.resolveProjectFeatureRef).toHaveBeenCalledWith(
+				"F-12",
+				"proj-1",
+			);
+			expect(recorded()).toEqual([
+				{
+					text: "We use Postgres.",
+					sourceQuote: "Decided in F-012: we use Postgres.",
+					workItem: { id: "story-12", identifier: "F-012" },
+				},
+			]);
+		});
+
+		it("reads the decision's text when its quote names none", async () => {
+			mocks.generateText.mockResolvedValue({
+				output: { decisions: [{ text: "F-12 keeps Postgres." }] },
+			});
+
+			await extractLivingMemoryDecisionsActivity(input);
+
+			expect(recorded()[0]?.workItem).toEqual({
+				id: "story-12",
+				identifier: "F-012",
+			});
+		});
+
+		it("falls back to the one work item the file names", async () => {
+			mocks.contextFindUnique.mockResolvedValue({
+				...syncedRow,
+				sourcePath: "specs/F-012-storage/decisions.md",
+				content:
+					"# Storage decisions\n\nWe use Postgres for all persistence.",
+			});
+
+			await extractLivingMemoryDecisionsActivity(input);
+
+			expect(recorded()[0]?.workItem).toEqual({
+				id: "story-12",
+				identifier: "F-012",
+			});
+		});
+
+		it("links nothing when the file names more than one work item", async () => {
+			mocks.contextFindUnique.mockResolvedValue({
+				...syncedRow,
+				content:
+					"# F-012 and F-013\n\nWe use Postgres for all persistence.",
+			});
+
+			await extractLivingMemoryDecisionsActivity(input);
+
+			expect(mocks.resolveProjectFeatureRef).not.toHaveBeenCalled();
+			expect(recorded()[0]).not.toHaveProperty("workItem");
+		});
+
+		it("links nothing when the decision itself names more than one", async () => {
+			mocks.generateText.mockResolvedValue({
+				output: {
+					decisions: [
+						{
+							text: "We use Postgres.",
+							sourceQuote: "F-012 replaces B-4: we use Postgres.",
+						},
+					],
+				},
+			});
+
+			await extractLivingMemoryDecisionsActivity(input);
+
+			expect(mocks.resolveProjectFeatureRef).not.toHaveBeenCalled();
+			expect(recorded()[0]).not.toHaveProperty("workItem");
+		});
+
+		it("links nothing for an identifier the project does not have", async () => {
+			mocks.generateText.mockResolvedValue({
+				output: {
+					decisions: [
+						{ text: "We use Postgres.", sourceQuote: "Per B-77." },
+					],
+				},
+			});
+
+			await extractLivingMemoryDecisionsActivity(input);
+
+			expect(mocks.resolveProjectFeatureRef).toHaveBeenCalledWith(
+				"B-77",
+				"proj-1",
+			);
+			expect(recorded()[0]).not.toHaveProperty("workItem");
+		});
+
+		it("looks each identifier up once per file", async () => {
+			mocks.generateText.mockResolvedValue({
+				output: {
+					decisions: [
+						{ text: "F-012 uses Postgres." },
+						{ text: "F-12 keeps one store." },
+					],
+				},
+			});
+
+			await extractLivingMemoryDecisionsActivity(input);
+
+			expect(mocks.resolveProjectFeatureRef).toHaveBeenCalledTimes(1);
+			expect(recorded().map((d) => d.workItem)).toEqual([
+				{ id: "story-12", identifier: "F-012" },
+				{ id: "story-12", identifier: "F-012" },
+			]);
+		});
+	});
+
+	describe("a file that met a limit", () => {
+		it("records that only the first characters of a long file were read", async () => {
+			mocks.contextFindUnique.mockResolvedValue({
+				...syncedRow,
+				content: `We use Postgres.\n${"x".repeat(LIVING_MEMORY_DECISION_FILE_CHAR_CAP)}`,
+			});
+
+			await extractLivingMemoryDecisionsActivity(input);
+
+			expect(mocks.extractionCreate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						contentTruncated: true,
+						decisionsCapped: false,
+					}),
+				}),
+			);
+			expect(mocks.generateText.mock.calls[0]?.[0].prompt).toContain(
+				`[truncated at ${LIVING_MEMORY_DECISION_FILE_CHAR_CAP} characters]`,
+			);
+			expect(mocks.warn).toHaveBeenCalledWith(
+				"[LivingMemoryDecisions] file only partly read",
+				expect.objectContaining({
+					contextId: "ctx-1",
+					contentTruncated: true,
+				}),
+			);
+		});
+
+		it("records that only the first decisions were kept, counting distinct ones past the cap", async () => {
+			mocks.generateText.mockResolvedValue({
+				output: {
+					decisions: Array.from(
+						{ length: LIVING_MEMORY_DECISION_MAX_PER_FILE + 1 },
+						(_, i) => ({ text: `Decision ${i}` }),
+					),
+				},
+			});
+
+			await expect(
+				extractLivingMemoryDecisionsActivity(input),
+			).resolves.toMatchObject({
+				decisionCount: LIVING_MEMORY_DECISION_MAX_PER_FILE,
+			});
+
+			expect(mocks.extractionCreate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						contentTruncated: false,
+						decisionsCapped: true,
+					}),
+				}),
+			);
+			expect(mocks.warn).toHaveBeenCalledTimes(1);
+		});
+
+		it("does not call a file capped when its extras past the cap are only repeats", async () => {
+			mocks.generateText.mockResolvedValue({
+				output: {
+					decisions: [
+						...Array.from(
+							{ length: LIVING_MEMORY_DECISION_MAX_PER_FILE },
+							(_, i) => ({ text: `Decision ${i}` }),
+						),
+						{ text: "decision 0" },
+						{ text: "  " },
+					],
+				},
+			});
+
+			await extractLivingMemoryDecisionsActivity(input);
+
+			expect(mocks.extractionCreate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({ decisionsCapped: false }),
+				}),
+			);
+			expect(mocks.warn).not.toHaveBeenCalled();
+		});
 	});
 });

@@ -856,7 +856,7 @@ export function WorkflowIntegrationSettingsPageContent({
 											<p className="text-sm font-medium text-success">
 												Configured via {configSource}
 											</p>
-											<p className="mt-1 text-xs text-green-700 dark:text-green-300">
+											<p className="mt-1 text-xs text-green-800 dark:text-green-300">
 												This integration is already
 												configured in your{" "}
 												{configSource?.toLowerCase()}.
@@ -867,7 +867,7 @@ export function WorkflowIntegrationSettingsPageContent({
 											{canConfigureViaSettings ? (
 												<Link
 													href={`${settingsBasePath}/../ai-providers`}
-													className="mt-2 inline-flex items-center gap-1 text-xs text-green-700 hover:underline dark:text-green-300"
+													className="mt-2 inline-flex items-center gap-1 text-xs text-green-800 hover:underline dark:text-green-300"
 												>
 													Manage in Settings
 													<ExternalLinkIcon className="h-3 w-3" />

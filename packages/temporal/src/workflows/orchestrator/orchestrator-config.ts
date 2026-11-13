@@ -44,7 +44,7 @@ export const MAX_CONTEXT_CHARS =
 // =============================================================================
 
 export const TOOL_RESULTS = {
-	/** Max characters per tool result before LLM summarization */
+	/** Legacy per-result cap; toolResultCap selects the versioned chat allowance. */
 	maxChars: 12_000,
 	/** Don't prune results smaller than this */
 	pruneMinChars: 500,
@@ -53,9 +53,10 @@ export const TOOL_RESULTS = {
 	/** Number of recent iterations whose tool results are kept in full */
 	recentIterationsToKeep: 2,
 	/**
-	 * Largest page a paged Fabric body read (`fabric_get_project_document`,
-	 * `fabric_get_project_source`) may request. Two-thirds of `maxChars`,
-	 * leaving room for the JSON envelope and for escaping in the body, so a
+	 * Legacy page allowance a paged Fabric body read (`fabric_get_project_document`,
+	 * `fabric_get_project_source`) may request. Marker-enabled chat runs use 24,000
+	 * through `pagedBodyMaxLength` in tool-result-cap.ts. Both allowances leave room
+	 * for the JSON envelope and for escaping in the body, so a
 	 * typical page is shown whole with its `nextOffset`. A page that still
 	 * overflows keeps its pagination fields through the over-cap path.
 	 */

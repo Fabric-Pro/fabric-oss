@@ -98,7 +98,7 @@ export function isPlainObject(
  * Slice by code point, not UTF-16 unit: a plain `slice` can cut an emoji in half
  * and leave a lone surrogate behind.
  */
-function clipText(text: string, maxChars: number): string {
+export function clipText(text: string, maxChars: number): string {
 	if (text.length <= maxChars) {
 		return text;
 	}

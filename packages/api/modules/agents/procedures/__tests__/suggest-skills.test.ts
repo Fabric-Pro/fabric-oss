@@ -45,6 +45,7 @@ vi.mock("../../../../orpc/procedures", () => {
 	const chainable: Record<string, unknown> = {};
 	Object.assign(chainable, {
 		use: () => chainable,
+		meta: () => chainable,
 		route: () => chainable,
 		input: () => chainable,
 		output: () => chainable,

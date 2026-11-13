@@ -10,6 +10,10 @@
 import { CopilotKitStateAnnotation } from "@copilotkit/sdk-js/langgraph";
 import { Annotation } from "@langchain/langgraph";
 import type { DocumentType, ProjectContext } from "@repo/agent-types";
+import {
+	emptyWebResearchOutcome,
+	type WebResearchOutcome,
+} from "../nodes/web-research";
 import type { PublishingTopic } from "../publishing-topic";
 
 /**
@@ -145,6 +149,48 @@ export const AgentStateAnnotation = Annotation.Root({
 	hasRepoIntegration: Annotation<boolean>({
 		reducer: (x, y) => y ?? x,
 		default: () => false,
+	}),
+
+	/**
+	 * Whether the server authorized external web research for this
+	 * generation. Set only by the stream executor from server-set signals;
+	 * when true (and the run's token carries the claim), the agent offers
+	 * and runs web_search and read_url.
+	 */
+	allowWebResearch: Annotation<boolean>({
+		reducer: (x, y) => y ?? x,
+		default: () => false,
+	}),
+
+	/**
+	 * Whether the person was offered the research choice for this generation
+	 * (the dialog's research option, on or off). Only then may a document
+	 * open with a notice that research was not authorized. Set only by the
+	 * stream executor from the generation input.
+	 */
+	webResearchChoiceOffered: Annotation<boolean>({
+		reducer: (x, y) => y ?? x,
+		default: () => false,
+	}),
+
+	/**
+	 * What this run's web research did. Seeded when the run starts and
+	 * rewritten whole by the tool node after every round that included a
+	 * research call. Read by the evidence rules for the in-document notices.
+	 */
+	webResearchOutcome: Annotation<WebResearchOutcome>({
+		reducer: (x, y) => y ?? x,
+		default: () => emptyWebResearchOutcome(),
+	}),
+
+	/**
+	 * Normalized URLs this run's searches returned. read_url reads only
+	 * these, so text on a read page cannot steer the model to another
+	 * address. Rewritten whole by the tool node.
+	 */
+	webResearchSearchedUrls: Annotation<string[]>({
+		reducer: (x, y) => y ?? x,
+		default: () => [],
 	}),
 
 	/**

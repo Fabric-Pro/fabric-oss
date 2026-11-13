@@ -172,6 +172,7 @@
 			"documentGenerator": "Dokument-Generator",
 			"organizationSettings": "Organisationseinstellungen",
 			"start": "Start",
+			"time": "Zeit",
 			"todos": "To-do"
 		},
 		"userMenu": {
@@ -179,7 +180,8 @@
 			"colorMode": "Farbmodus",
 			"documentation": "Dokumentation",
 			"home": "Startseite",
-			"logout": "Abmelden"
+			"logout": "Abmelden",
+			"highContrast": "Hoher Kontrast"
 		},
 		"jobs": {
 			"sectionLabel": "Job-Hub",
@@ -1542,7 +1544,7 @@
 						"metadata_updated": "Details der Kontextquelle aktualisiert",
 						"content_upserted": "Synchronisierte Kontextdatei erstellt, aktualisiert oder verschoben",
 						"synced_file_deleted": "Synchronisierte Kontextdatei gelöscht",
-						"synced_files_reset": "Living Memory zurückgesetzt (alle synchronisierten Dateien gelöscht)"
+						"synced_files_reset": "Living Memory zurückgesetzt (synchronisierte Dateien gelöscht)"
 					},
 					"context": {
 						"repository_sync_configured": "Repository-Synchronisierung für Living Memory eingerichtet",
@@ -1566,6 +1568,9 @@
 						"deleted": "Version der Coding-Instructions gelöscht",
 						"removed": "Coding-Instructions entfernt (alle Versionen)",
 						"settings_updated": "Einstellungen der Coding-Instructions aktualisiert",
+						"set_created": "Coding-Instructions-Set erstellt",
+						"set_updated": "Coding-Instructions-Set aktualisiert",
+						"set_deleted": "Coding-Instructions-Set gelöscht",
 						"repository_sync_configured": "Repository-Synchronisierung für Coding-Instructions eingerichtet",
 						"repository_sync_started": "Repository-Synchronisierung für Coding-Instructions gestartet",
 						"repository_sync_completed": "Repository-Synchronisierung für Coding-Instructions abgeschlossen",
@@ -1624,6 +1629,9 @@
 					"deletion_impact_viewed": "Auswirkungen der Prompt-Löschung angesehen",
 					"system_deleted": "System-Prompt gelöscht"
 				},
+				"time": {
+					"report_exported": "Zeitbericht exportiert"
+				},
 				"admin": {
 					"auditLog": {
 						"viaApiKey": "Kunden-Audit-Log abgefragt (Staff)"
@@ -1671,6 +1679,12 @@
 					},
 					"organization_distribution": {
 						"changed": "Versand an die gesamte Organisation geändert"
+					},
+					"screenshots": {
+						"capture_started": "Newsletter-Screenshot-Aufnahme gestartet",
+						"changed": "Newsletter-Bildeinstellung geändert",
+						"environment_changed": "Newsletter-Screenshot-Umgebung geändert",
+						"unpublished": "Newsletter-Bilder nach dem Versand entfernt"
 					},
 					"send": {
 						"approved": "Newsletter-Versand freigegeben",
@@ -2094,7 +2108,28 @@
 					}
 				}
 			},
-			"title": "Kontoeinstellungen"
+			"title": "Kontoeinstellungen",
+			"appearance": {
+				"title": "Darstellung",
+				"label": "Konto",
+				"description": "Legen Sie fest, wie Fabric für Sie aussieht. Diese Einstellungen gelten nur für Sie und ändern nichts an der Ansicht anderer Mitglieder Ihrer Organisation.",
+				"colorMode": {
+					"title": "Farbmodus",
+					"description": "Hell, dunkel oder wie in Ihrem Betriebssystem eingestellt. Wird in diesem Browser gespeichert.",
+					"system": "System",
+					"light": "Hell",
+					"dark": "Dunkel"
+				},
+				"highContrast": {
+					"title": "Hoher Kontrast",
+					"description": "Kräftigere Text-, Rahmen- und Fokusfarben in der gesamten App. Funktioniert im hellen und dunklen Modus und wird in Ihrem Konto gespeichert, damit es auf allen Geräten gilt.",
+					"label": "Hohen Kontrast verwenden"
+				},
+				"notifications": {
+					"saveFailed": "Hoher Kontrast ist in diesem Tab aktiv, konnte aber nicht in Ihrem Konto gespeichert werden. Andere Geräte übernehmen die Einstellung erst, wenn sie gespeichert ist.",
+					"notSavedWhileImpersonating": "Hoher Kontrast gilt auf dieser Seite bis zum Neuladen. Er wird nicht in einem Konto gespeichert, als das Sie angemeldet sind."
+				}
+			}
 		},
 		"billing": {
 			"createCustomerPortal": {
@@ -2218,7 +2253,8 @@
 				"dangerZone": "Danger-Zone",
 				"general": "Allgemein",
 				"security": "Sicherheit",
-				"title": "Konto"
+				"title": "Konto",
+				"appearance": "Darstellung"
 			},
 			"organization": {
 				"billing": "Abrechnung",
@@ -2226,7 +2262,9 @@
 				"members": "Mitglieder",
 				"title": "Org",
 				"dangerZone": "Gefahrenzone",
-				"companyContext": "Unternehmenskontext"
+				"companyContext": "Unternehmenskontext",
+				"timeTracking": "Zeiterfassung",
+				"timeReports": "Zeitberichte"
 			}
 		},
 		"save": "Speichern",
@@ -3049,6 +3087,13 @@
 			"badgeTooltip": "– von der KI in einer Living-Memory-Datei gefunden. Prüfe und ergänze die Details.",
 			"legend": "– von der KI in einer Living-Memory-Datei gefunden.",
 			"sourceNote": "aus Living Memory übernommen",
+			"workItemLink": "{identifier} öffnen, das Arbeitselement, aus dem diese Entscheidung stammt",
+			"limits": {
+				"label": "Nur teilweise auf Entscheidungen gelesene Dateien",
+				"truncated": "nur die ersten {limit, number} Zeichen wurden gelesen.",
+				"capped": "nur die ersten {limit, number} Entscheidungen wurden übernommen.",
+				"more": "{count, plural, one {# weitere Datei wurde} other {# weitere Dateien wurden}} nur teilweise gelesen."
+			},
 			"strip": {
 				"count": "{count, plural, one {# Entscheidung} other {# Entscheidungen}}",
 				"detected": "in Living-Memory-Dateien gefunden",
@@ -3062,7 +3107,7 @@
 				"paginationLabel": "Seitennavigation für Entscheidungsvorschläge aus Living Memory",
 				"previousPage": "Vorherige Seite, Vorschläge aus Living Memory",
 				"nextPage": "Nächste Seite, Vorschläge aus Living Memory",
-				"firstSyncSkipped": "{count, plural, one {# Datei} other {# Dateien}} aus der ersten Repository-Synchronisierung {count, plural, one {wurde} other {wurden}} nicht auf Entscheidungen gelesen. Der Scan nutzt eine KI-Anfrage pro Datei.",
+				"filesNotScanned": "{count, plural, one {# synchronisierte Datei wurde} other {# synchronisierte Dateien wurden}} noch nicht auf Entscheidungen gelesen. Der Scan nutzt eine KI-Anfrage pro Datei, und die Prüfer des Projekts werden benachrichtigt, wenn er Entscheidungen findet.",
 				"scanFirstSync": "Nach Entscheidungen scannen"
 			},
 			"dialog": {
@@ -3348,12 +3393,41 @@
 					"removed": "Entfernt"
 				},
 				"morePaths": "und {count} weitere",
+				"lessonsTitle": "{count, plural, one {# neue Lektion} other {# neue Lektionen}}",
 				"seenVersionGone": "Version {version}, die Sie zuletzt gesehen haben, wird nicht mehr aufbewahrt, daher lassen sich die geänderten Dateien nicht auflisten.",
 				"proposalsTitle": "{count, plural, one {# Vorschlag entschieden} other {# Vorschläge entschieden}}",
 				"proposalApproved": "{title} wurde von {name} angenommen",
 				"proposalRejected": "{title} wurde von {name} abgelehnt",
 				"proposalVersion": "Vorschlag Version {version}",
 				"markSeen": "Alle als gesehen markieren"
+			},
+			"sets": {
+				"title": "Instruktionssets",
+				"new": "Neues Set",
+				"default": "Standard",
+				"noRepositories": "Keine Code-Repositorys: Diese Instruktionen gelten noch nirgends.",
+				"uncovered": "Für {names} gelten keine Instruktionen: Fügen Sie sie einem Set hinzu.",
+				"editLabel": "{name} bearbeiten",
+				"deleteLabel": "{name} löschen",
+				"deleteTitle": "{name} löschen?",
+				"deleteMessage": "Das Set wird aus Fabric entfernt und seine Repositorys erhalten keine Instruktionen mehr daraus. Seine Dateien bleiben im Instruktions-Repository.",
+				"delete": "Set löschen",
+				"deleted": "{name} gelöscht. Seine Dateien bleiben im Instruktions-Repository.",
+				"deleteFailed": "Das Set wurde nicht gelöscht.",
+				"newTitle": "Neues Instruktionsset",
+				"editTitle": "Instruktionsset bearbeiten",
+				"dialogHelp": "Die Instruktionen eines Sets sind die Dateien in seinem eigenen Ordner unter instructions/ und gelten für die ausgewählten Code-Repositorys. Ein Repository kann in mehreren Sets sein.",
+				"name": "Name",
+				"slugStays": "Seine Dateien liegen in {folder}; das bleibt beim Umbenennen so.",
+				"repositories": "Code-Repositorys",
+				"noCodeRepositories": "Verbinden Sie zuerst ein Code-Repository mit dem Projekt.",
+				"cancel": "Abbrechen",
+				"save": "Speichern",
+				"create": "Set erstellen",
+				"saved": "Set gespeichert.",
+				"created": "{name} erstellt.",
+				"saveFailed": "Das Set wurde nicht gespeichert.",
+				"rootFolder": "das Stammverzeichnis"
 			}
 		},
 		"documents": {
@@ -3382,6 +3456,8 @@
 				"started": "Regenerierung des Dokuments gestartet",
 				"alreadyQueued": "Für dieses Dokument steht bereits eine Generierung in der Warteschlange — es wurde keine zweite gestartet",
 				"alreadyRunning": "Für dieses Dokument läuft bereits eine Generierung — es wurde keine zweite gestartet und neue Anweisungen wurden nicht übernommen",
+				"alreadyQueuedResearchNotApplied": "Für dieses Dokument steht bereits eine Generierung mit ihren ursprünglichen Einstellungen in der Warteschlange, daher wurden Ihre Anweisungen und Ihre Auswahl zur Webrecherche nicht übernommen. Versuchen Sie es erneut, sobald sie abgeschlossen ist, falls Sie sie noch benötigen.",
+				"alreadyRunningResearchNotApplied": "Für dieses Dokument läuft bereits eine Generierung mit ihren ursprünglichen Einstellungen, daher wurden Ihre Anweisungen und Ihre Auswahl zur Webrecherche nicht übernommen. Versuchen Sie es erneut, sobald sie abgeschlossen ist, falls Sie sie noch benötigen.",
 				"liveRunUnknown": "Es konnte nicht bestätigt werden, ob für dieses Dokument bereits eine Generierung läuft — versuchen Sie es gleich noch einmal",
 				"failed": "Regenerierung fehlgeschlagen: {message}"
 			},
@@ -3863,6 +3939,18 @@
 					"resetting": "Wird zurückgesetzt…",
 					"done": "Living Memory zurückgesetzt: {count, plural, =0 {es gab keine synchronisierten Dateien zu löschen} one {# synchronisierte Datei gelöscht} other {# synchronisierte Dateien gelöscht}}.",
 					"failed": "Living Memory konnte nicht zurückgesetzt werden: {message}"
+				},
+				"removeFolder": {
+					"action": "Ordner entfernen",
+					"actionLabel": "Ordner {folder} entfernen",
+					"title": "Ordner {folder} entfernen?",
+					"description": "Damit werden alle unter {folder} in das Living Memory dieses Projekts synchronisierten Dateien ({count, plural, one {# Datei} other {# Dateien}}, einschließlich der Dateien in Unterordnern) für alle Mitglieder gelöscht. Andere Ordner und Kontextquellen sind nicht betroffen. Dies kann nicht rückgängig gemacht werden; übertragen Sie den Ordner mit fabric context push erneut, um die Dateien wiederherzustellen.",
+					"confirmLabel": "Geben Sie zur Bestätigung den Ordner {folder} ein",
+					"cancel": "Abbrechen",
+					"confirm": "Ordner entfernen",
+					"removing": "Wird entfernt…",
+					"done": "Ordner {folder} entfernt: {count, plural, =0 {es gab keine synchronisierten Dateien zu löschen} one {# synchronisierte Datei gelöscht} other {# synchronisierte Dateien gelöscht}}.",
+					"failed": "Ordner {folder} konnte nicht entfernt werden: {message}"
 				},
 				"repositorySync": {
 					"entry": "Von einem Repository synchronisieren",
@@ -7188,7 +7276,8 @@
 				"sectionRevised": "Abschnitt überarbeitet",
 				"updatedFromContext": "Aus dem Kontext aktualisiert",
 				"regenerated": "Neu generiert",
-				"restored": "Version {version} wiederhergestellt"
+				"restored": "Version {version} wiederhergestellt",
+				"edited": "Bearbeitet"
 			}
 		},
 		"updateWithContext": {
@@ -7607,5 +7696,326 @@
 		"agents": "Agenten",
 		"runs": "Ausführungen und Verlauf",
 		"inbox": "Posteingang"
+	},
+	"timeTracking": {
+		"title": "Meine Zeit",
+		"aboutTitle": "Über Meine Zeit",
+		"about": "Ihre eigene bestätigte Zeit in den Projekten dieser Organisation. Nur Sie sehen diese Seite.",
+		"logTime": "Zeit erfassen",
+		"view": "Ansicht",
+		"dayView": "Tag",
+		"weekView": "Woche",
+		"previousWeek": "Vorherige Woche",
+		"nextWeek": "Nächste Woche",
+		"previousDay": "Vorheriger Tag",
+		"nextDay": "Nächster Tag",
+		"weekTotal": "Diese Woche",
+		"dayTotal": "Dieser Tag",
+		"loading": "Ihre Zeit wird geladen",
+		"loadFailed": "Ihre Zeit konnte nicht geladen werden. Versuchen Sie es später erneut.",
+		"emptyWeek": "Keine Zeit in dieser Woche erfasst",
+		"week": {
+			"caption": "Erfasste Zeit pro Projekt und Tag",
+			"project": "Projekt",
+			"total": "Gesamt",
+			"today": "heute",
+			"openCell": "{duration} in {project}, {date}. Tag öffnen"
+		},
+		"day": {
+			"today": "heute",
+			"logTime": "Zeit erfassen",
+			"noLoggableProjects": "Sie können in keinem Projekt dieser Organisation Zeit erfassen.",
+			"entriesFor": "Einträge für {date}",
+			"noEntries": "An diesem Tag wurde keine Zeit erfasst."
+		},
+		"form": {
+			"date": "Arbeitstag",
+			"duration": "Dauer",
+			"durationPlaceholder": "z. B. 1h 30m",
+			"startTime": "Startzeit",
+			"stopTime": "Endzeit",
+			"stopDate": "Enddatum",
+			"calculatedDuration": "Berechnete Dauer",
+			"to": "bis",
+			"on": "in",
+			"project": "Projekt",
+			"projectPlaceholder": "Projekt",
+			"activity": "Tätigkeit",
+			"workItem": "Arbeitselement",
+			"workItemPlaceholder": "Arbeitselement (optional)",
+			"workItemSearch": "Arbeitselemente suchen",
+			"workItemLoading": "Arbeitselemente werden geladen…",
+			"workItemLoadFailed": "Die Arbeitselemente konnten nicht geladen werden.",
+			"workItemNoMatches": "Keine passenden Arbeitselemente.",
+			"clearWorkItem": "Arbeitselement entfernen",
+			"add": "Hinzufügen",
+			"save": "Speichern",
+			"cancel": "Abbrechen",
+			"more": "Mehr",
+			"aboutQuickEntry": "Über das Erfassen von Zeit",
+			"aboutDuration": "Geben Sie 1h 30m, 1.5 oder 90m ein und drücken Sie die Eingabetaste. Projekt und Tätigkeit werden aus Ihrem letzten Eintrag übernommen.",
+			"aboutStartStop": "Dieses Projekt verlangt Start- und Endzeiten, und Fabric berechnet die Dauer. Für Arbeit nach Mitternacht wählen Sie den nächsten Tag als Enddatum. Der Eintrag zählt zu dem Tag, an dem er begonnen hat.",
+			"note": "Notiz",
+			"billable": "Abrechenbar",
+			"timeZone": "Zeitzone",
+			"added": "Zeit erfasst",
+			"updated": "Eintrag aktualisiert",
+			"saveFailed": "Der Eintrag konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+			"problems": {
+				"project": "Wählen Sie ein Projekt.",
+				"duration": "Geben Sie eine Dauer ein, zum Beispiel 1h 30m.",
+				"times": "Geben Sie eine Start- und eine Endzeit ein.",
+				"stopBeforeStart": "Die Endzeit muss nach der Startzeit liegen.",
+				"tooLong": "Ein Eintrag darf höchstens 24 Stunden dauern."
+			}
+		},
+		"warnings": {
+			"duplicate": "Sie haben für dieses Datum bereits {duration} {activity} in {target} erfasst. Ist das eine andere Arbeit?",
+			"duplicateConfirm": "Ja, hinzufügen",
+			"overLimit": "Damit kommt {date} auf {total}. Beibehalten?",
+			"overLimitConfirm": "Ja, beibehalten",
+			"skip": "Nein, überspringen"
+		},
+		"suggestions": {
+			"title": "Zu bestätigen",
+			"aboutTitle": "Über Zu bestätigen",
+			"about": "Zeit, die Fabric aus Ihren eigenen Meetings, Testläufen, Testarbeiten und Änderungen an Arbeitselementen vorschlägt. Eine Dauer wird nur eingetragen, wenn Beginn und Ende tatsächlich bekannt sind; sonst geben Sie ein, wie lange Sie gearbeitet haben. Mit Bestätigen oder der Eingabetaste erfassen Sie sie, mit Keine Arbeitszeit verwerfen Sie sie. Öffnen Sie eine Zeile, um vorher Notiz, abrechenbar, Tätigkeit oder Arbeitselement zu ändern. Bei Projekten nach Aufwand füllt sich die Liste nach Ihren Meetings und beim Öffnen dieser Seite von selbst; bei Festpreisprojekten wählen Sie Meine Aktivität prüfen. Vorschläge verfallen am Ende der folgenden Woche.",
+			"check": "Meine Aktivität prüfen",
+			"checking": "Wird geprüft…",
+			"confirm": "Bestätigen",
+			"dismiss": "Keine Arbeitszeit",
+			"confirmAll": "Alle mit bekannter Dauer bestätigen ({count})",
+			"showDetails": "Details zu {project}, {date} anzeigen",
+			"hideDetails": "Details zu {project}, {date} ausblenden",
+			"description": "Notiz",
+			"dayHasSuggestions": "Zeit zu bestätigen",
+			"confirmed": "Zeit erfasst",
+			"confirmedMany": "{count, plural, one {# Eintrag erfasst} other {# Einträge erfasst}}",
+			"confirmFailed": "Der Vorschlag konnte nicht bestätigt werden. Versuchen Sie es erneut.",
+			"dismissFailed": "Der Vorschlag konnte nicht verworfen werden. Versuchen Sie es erneut.",
+			"notices": {
+				"alreadyChecking": "Ihre Aktivität wird bereits geprüft",
+				"unavailable": "Die Prüfung ist gerade nicht verfügbar. Versuchen Sie es später erneut.",
+				"failed": "Ihre Aktivität konnte nicht geprüft werden.",
+				"nothingNew": "Nichts Neues zu bestätigen"
+			},
+			"evidence": {
+				"meetings": "{count, plural, one {# Meeting} other {# Meetings}}",
+				"testRuns": "{count, plural, one {# Testlauf} other {# Testläufe}}",
+				"workItemEdits": "{count, plural, one {# Änderung an einem Arbeitselement} other {# Änderungen an Arbeitselementen}}",
+				"testResults": "{count, plural, one {# erfasstes Testergebnis} other {# erfasste Testergebnisse}}",
+				"testCaseChanges": "{count, plural, one {# Änderung an einem Testfall} other {# Änderungen an Testfällen}}",
+				"pullRequestPushes": "{count, plural, one {# Push in einen Pull Request} other {# Pushes in Pull Requests}}"
+			}
+		},
+		"entry": {
+			"nonBillable": "Nicht abrechenbar",
+			"edit": "{duration} {activity} bearbeiten",
+			"summary": "{duration} {activity}"
+		},
+		"delete": {
+			"action": "Löschen",
+			"title": "Diesen Eintrag löschen?",
+			"description": "{summary} wird aus Ihrer Zeit entfernt. Das kann nicht rückgängig gemacht werden.",
+			"cancel": "Abbrechen",
+			"confirm": "Löschen",
+			"deleted": "Eintrag gelöscht",
+			"failed": "Der Eintrag konnte nicht gelöscht werden. Versuchen Sie es erneut."
+		},
+		"story": {
+			"title": "Meine Zeit für dieses Element",
+			"aboutTitle": "Über meine Zeit für dieses Element",
+			"about": "Hier sehen Sie nur Ihre eigene Zeit für dieses Arbeitselement.",
+			"logTime": "Zeit erfassen",
+			"loadFailed": "Ihre Zeit für dieses Element konnte nicht geladen werden.",
+			"empty": "Sie haben für dieses Element keine Zeit erfasst."
+		},
+		"settings": {
+			"title": "Zeiterfassung",
+			"aboutTitle": "Über die Einstellungen der Zeiterfassung",
+			"about": "Mitglieder können Zeit immer von Hand erfassen. Diese Einstellungen gelten nur für neue Einträge: Bestehende Einträge behalten die Regeln, mit denen sie gespeichert wurden. Änderungen werden sofort gespeichert.",
+			"readOnly": "Nur Administratoren können diese Einstellungen ändern.",
+			"loadFailed": "Die Einstellungen der Zeiterfassung konnten nicht geladen werden. Versuchen Sie es später erneut.",
+			"saveFailed": "Die Änderung konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+			"projectType": "Projektart",
+			"aboutProjectTypeTitle": "Über die Projektart",
+			"aboutProjectType": "Festpreis: Mitglieder erfassen Zeit, wenn sie es möchten. Nach Aufwand: Zeit wird erwartet, und das Projekt erscheint im Zeitbericht zum Monatsende. Der Bericht folgt der aktuellen Art jedes Projekts, daher verschiebt ein Wechsel die gesamte bisherige Zeit dieses Projekts in diese Ansicht oder aus ihr heraus. Die Einträge selbst ändern sich nicht.",
+			"entryRules": "Regeln für Einträge",
+			"aboutEntryRulesTitle": "Über die Regeln für Einträge",
+			"aboutEntryRules": "Start- und Endzeit verlangen: Mitglieder geben zwei Zeiten ein, und Fabric berechnet die Dauer. Wenn Ihre Organisation das verlangt, ist es hier eingeschaltet und kann nicht ausgeschaltet werden. Neue Einträge beginnen als: der Abrechenbar-Wert, mit dem jeder neue Eintrag beginnt. Mitglieder können ihn bei jedem Eintrag ändern.",
+			"aboutOrganizationEntryRules": "Diese Regeln gelten für jedes Projekt. Ein Projekt kann zusätzlich Start- und Endzeiten verlangen, diese Vorgabe aber nicht aufheben. Ein Projekt kann statt dieser Vorgabe einen eigenen Abrechenbar-Standard festlegen.",
+			"requireStartStop": "Start- und Endzeit verlangen",
+			"setByOrganization": "Von Ihrer Organisation festgelegt",
+			"defaultBillable": "Neue Einträge beginnen als",
+			"billableInherit": "Standard der Organisation ({value})",
+			"billable": "Abrechenbar",
+			"notBillable": "Nicht abrechenbar",
+			"viewReport": "Zeitbericht anzeigen"
+		},
+		"report": {
+			"titleOrganization": "Zeitberichte",
+			"titleProject": "Zeitbericht",
+			"aboutTitle": "Über Zeitberichte",
+			"about": "Die bestätigte Zeit aller Personen im gewählten Monat, auch von Personen, die inzwischen ausgeschieden sind. Der Filter für die Projektart verwendet die aktuelle Art jedes Projekts, daher folgt die bisherige Zeit eines Projekts seiner Art. Die CSV-Datei hat eine Zeile pro Eintrag und ergibt dieselben Summen.",
+			"previousMonth": "Vorheriger Monat",
+			"nextMonth": "Nächster Monat",
+			"total": "Gesamt",
+			"billablePart": "{duration} abrechenbar",
+			"exportCsv": "CSV exportieren",
+			"exportFailed": "Der Bericht konnte nicht exportiert werden. Versuchen Sie es erneut.",
+			"loading": "Bericht wird geladen",
+			"loadFailed": "Der Bericht konnte nicht geladen werden. Versuchen Sie es später erneut.",
+			"empty": "Keine Zeit in diesem Monat",
+			"emptyRange": "Keine Zeit in diesem Zeitraum",
+			"tooManyRows": "Dieser Bericht hat zu viele Einträge, um ihn auf einmal anzuzeigen. Grenzen Sie die Filter ein, um ihn zu sehen.",
+			"noAccess": "Sie haben keinen Zugriff auf diesen Zeitbericht.",
+			"filters": {
+				"filter": "Filter",
+				"activeCount": "{count, plural, one {# aktiver Filter} other {# aktive Filter}}",
+				"project": "Projekt",
+				"person": "Person",
+				"billable": "Abrechenbar",
+				"activity": "Tätigkeit",
+				"projectType": "Projektart",
+				"allProjects": "Alle Projekte",
+				"everyone": "Alle Personen",
+				"all": "Alle",
+				"billableOnly": "Abrechenbar",
+				"nonBillableOnly": "Nicht abrechenbar",
+				"allActivities": "Alle Tätigkeiten",
+				"allTypes": "Alle Projektarten",
+				"workItem": "Arbeitselement",
+				"period": "Zeitraum",
+				"periodMonth": "Monat",
+				"periodCustom": "Eigener Zeitraum",
+				"rangeFrom": "Von",
+				"rangeTo": "Bis",
+				"rangeInvalid": "Wählen Sie ein Startdatum und ein Enddatum am selben Tag oder danach.",
+				"rangeTooLong": "Wählen Sie einen Zeitraum von höchstens {days} Tagen.",
+				"clear": "Zurücksetzen"
+			},
+			"table": {
+				"caption": "Zeit pro Projekt",
+				"project": "Projekt",
+				"people": "Personen",
+				"billable": "Abrechenbar",
+				"nonBillable": "Nicht abrechenbar",
+				"total": "Gesamt",
+				"showAll": "Alle {count} Einträge anzeigen"
+			}
+		},
+		"timer": {
+			"start": "Timer starten",
+			"runningButton": "Timer läuft",
+			"pausedButton": "Timer pausiert",
+			"openTimer": "Timer öffnen",
+			"switchHere": "Beenden und hier einen starten",
+			"started": "Timer gestartet",
+			"startFailed": "Der Timer konnte nicht gestartet werden. Versuchen Sie es erneut.",
+			"changeFailed": "Der Timer konnte nicht geändert werden. Versuchen Sie es erneut.",
+			"stopFailed": "Der Timer konnte nicht beendet werden. Versuchen Sie es erneut.",
+			"changedElsewhere": "Ihr Timer wurde in einem anderen Tab oder auf einem anderen Gerät geändert. Hier sehen Sie seinen aktuellen Stand.",
+			"alreadyRunning": "Bei Ihnen läuft bereits ein Timer.",
+			"discarded": "Timer verworfen",
+			"nothingSaved": "Der Timer lief weniger als eine Minute, daher wurde nichts gespeichert.",
+			"spokenDuration": "{hours, plural, =0 {} one {# Stunde } other {# Stunden }}{minutes, plural, one {# Minute} other {# Minuten}}",
+			"chipLabel": "Timer {state}, {duration}, {project}. Timer öffnen",
+			"panelLabel": "Timer",
+			"since": "seit {time}",
+			"minimize": "Timer minimieren",
+			"close": "Timer-Widget schließen",
+			"state": {
+				"running": "Läuft",
+				"paused": "Pausiert",
+				"long": "Läuft schon lange",
+				"saved": "Gespeichert"
+			},
+			"fields": {
+				"project": "Projekt",
+				"activity": "Tätigkeit",
+				"workItem": "Arbeitselement",
+				"note": "Notiz",
+				"notePlaceholder": "Notiz hinzufügen"
+			},
+			"pause": "Pausieren",
+			"resume": "Fortsetzen",
+			"stopAndSave": "Beenden und speichern",
+			"discard": "Verwerfen",
+			"discardQuestion": "Ohne Speichern verwerfen?",
+			"discardCancel": "Behalten",
+			"discardConfirm": "Verwerfen",
+			"question": {
+				"title": "Um {time} beenden?",
+				"lastAction": "Letzte Aktion: {action}, {time}",
+				"yourLastAction": "Ihre letzte Aktion",
+				"noActivity": "Seit dem Start des Timers gab es keine Aktivität in Fabric.",
+				"stopAt": "Um {time} beenden",
+				"stopNow": "Jetzt beenden",
+				"pickTime": "Uhrzeit wählen",
+				"pickLabel": "Endzeit",
+				"pickSave": "Zu dieser Uhrzeit beenden",
+				"pickInvalid": "Wählen Sie eine Uhrzeit zwischen {start} und jetzt.",
+				"cancel": "Abbrechen"
+			},
+			"actions": {
+				"created": "{object} erstellt",
+				"edited": "{object} bearbeitet",
+				"deleted": "{object} gelöscht",
+				"worked": "an {object} gearbeitet"
+			},
+			"objects": {
+				"testCase": "Testfälle",
+				"todo": "eine Aufgabe",
+				"comment": "einen Kommentar",
+				"workItem": "ein Arbeitselement",
+				"document": "ein Dokument",
+				"agent": "einen Agenten",
+				"workflow": "einen Workflow",
+				"meeting": "ein Meeting",
+				"time": "Ihre Zeit",
+				"project": "ein Projekt"
+			},
+			"saved": {
+				"close": "Timer-Widget schließen",
+				"entries": "{count, plural, =0 {Keine Einträge} one {Ein Eintrag} other {# Einträge}} zu {date} hinzugefügt",
+				"startAgain": "Erneut starten",
+				"openInMyTime": "In Meine Zeit öffnen",
+				"undo": "Rückgängig",
+				"undone": "Die Einträge des Timers wurden entfernt.",
+				"undoFailed": "Nicht alle Einträge konnten entfernt werden. Versuchen Sie es erneut."
+			},
+			"closeMenu": {
+				"hide": "Bis zum nächsten Timer ausblenden",
+				"hideHint": "Der Timer läuft weiter. Ein Punkt bei Meine Zeit zeigt ihn an.",
+				"off": "Timer-Widget nicht anzeigen",
+				"offHint": "In den Timer-Einstellungen unter Meine Zeit wieder einschalten.",
+				"hidden": "Timer-Widget bis zum nächsten Timer ausgeblendet.",
+				"turnedOff": "Timer-Widget ausgeschaltet.",
+				"undo": "Rückgängig"
+			},
+			"nav": {
+				"running": "Timer läuft",
+				"paused": "Timer pausiert",
+				"long": "Timer läuft schon lange"
+			},
+			"settings": {
+				"open": "Timer-Einstellungen",
+				"title": "Timer",
+				"widget": "Timer-Widget",
+				"aboutWidgetTitle": "Über das Timer-Widget",
+				"aboutWidget": "Ein kleiner Timer unten rechts auf jeder Seite, solange ein Timer läuft, pausiert ist oder gerade gespeichert wurde. Ist es ausgeschaltet, zeigt ein Punkt bei Meine Zeit einen laufenden Timer weiterhin an.",
+				"reminders": "Erinnerungen",
+				"aboutRemindersTitle": "Über Erinnerungen",
+				"aboutReminders": "Eine Browser-Benachrichtigung pro Timer, wenn er länger als vier Stunden läuft oder Sie anscheinend aufgehört haben zu arbeiten. Nie für einen pausierten Timer.",
+				"blocked": "Benachrichtigungen für Fabric sind in diesem Browser blockiert.",
+				"unsupported": "Dieser Browser kann keine Benachrichtigungen anzeigen.",
+				"notAllowedYet": "Erlauben Sie Benachrichtigungen in diesem Browser, um Erinnerungen zu erhalten.",
+				"saveFailed": "Die Einstellung konnte nicht gespeichert werden. Versuchen Sie es erneut."
+			},
+			"reminder": {
+				"title": "Ihr Timer läuft noch",
+				"body": "{project} · seit {time}"
+			}
+		}
 	}
 }

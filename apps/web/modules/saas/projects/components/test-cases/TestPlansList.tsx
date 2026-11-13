@@ -231,7 +231,7 @@ function PlanCard({
 						"line-clamp-2 text-xs",
 						plan.description
 							? "text-muted-foreground"
-							: "text-muted-foreground/60 italic",
+							: "text-muted-foreground italic",
 					)}
 				>
 					{plan.description || t("plans.card.noDescription")}

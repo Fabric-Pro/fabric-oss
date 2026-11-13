@@ -78,7 +78,7 @@ interface SystemMessageProps {
 function outcomeSurface(outcome: SystemMessageOutcome): string {
 	switch (outcome) {
 		case "success":
-			return "border-secondary bg-secondary/5";
+			return "border-success bg-success/5";
 		case "failure":
 			return "border-destructive bg-destructive/5";
 		case "partial":
@@ -108,7 +108,7 @@ function OutcomeIndicator({
 	const colour = ((): string => {
 		switch (outcome) {
 			case "success":
-				return "text-secondary";
+				return "text-success";
 			case "failure":
 				return "text-destructive";
 			case "partial":

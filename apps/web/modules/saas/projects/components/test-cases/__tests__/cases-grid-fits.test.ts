@@ -10,6 +10,12 @@ import {
 
 /** The `gap-x-2` the grid classes apply, in px. */
 const GAP = 8;
+/**
+ * The `px-3` the row and the column header apply, both sides, in px. It sits
+ * inside the `@container` box the breakpoints measure, so the tracks get the
+ * breakpoint width minus this.
+ */
+const ROW_PADDING = 24;
 
 type Tier = { breakpoint: number; tracks: string[] };
 
@@ -71,9 +77,25 @@ describe("cases grid tiers", () => {
 				0,
 			);
 			const gaps = (tier.tracks.length - 1) * GAP;
-			expect(content + gaps).toBeLessThanOrEqual(breakpoint);
+			expect(content + gaps + ROW_PADDING).toBeLessThanOrEqual(
+				breakpoint,
+			);
 		},
 	);
+
+	/**
+	 * The State track is the 5th of 8 at the narrowest tier and moves one place
+	 * right once "Covers" appears. "Proposed" plus the edit chevron measures
+	 * 103px, so a narrower track lets the chip run into the priority column.
+	 */
+	it("gives the State column room for its widest chip", () => {
+		const stateIndex = (tier: Tier) => (tier.tracks.length === 8 ? 4 : 5);
+		for (const tier of tiers) {
+			expect(
+				trackMin(tier.tracks[stateIndex(tier)]),
+			).toBeGreaterThanOrEqual(104);
+		}
+	});
 
 	it("adds exactly one column per tier as the container widens", () => {
 		expect(tiers.map((t) => t.tracks.length)).toEqual([8, 9, 10]);

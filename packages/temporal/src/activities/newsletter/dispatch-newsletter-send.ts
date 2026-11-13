@@ -12,6 +12,7 @@ import { heartbeat } from "@temporalio/activity";
 import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 import { getTemporalClient } from "../../client";
 import type { GenerateAndSendNewsletterInput } from "../../workflows/generate-and-send-newsletter";
+import { discardExpiredReviewImages } from "./discard-expired-review-images";
 import type { DueNewsletterProject } from "./find-due-newsletter-projects";
 
 export async function dispatchNewsletterSendActivity(
@@ -51,6 +52,9 @@ export async function dispatchNewsletterSendActivity(
 			failedApprovedId: reclaimed.failedApprovedId,
 		});
 	}
+	if (reclaimed.expiredDraftId) {
+		await discardExpiredReviewImages(p.projectId, reclaimed.expiredDraftId);
+	}
 	const { send, created } = await createOrGetNewsletterSend({
 		projectId: p.projectId,
 		organizationId: p.organizationId,
@@ -63,6 +67,8 @@ export async function dispatchNewsletterSendActivity(
 		detailLevel: p.detailLevel,
 		deliveryDestination: p.deliveryDestination,
 		requireApproval: p.requireApproval,
+		screenshotsEnabled: p.screenshotsEnabled,
+		screenshotEnvironmentId: p.screenshotEnvironmentId,
 		chatChannels: p.chatChannels,
 	});
 	// Only skip TERMINAL reused rows (already ran this period). A reused PENDING
@@ -95,6 +101,9 @@ export async function dispatchNewsletterSendActivity(
 		),
 		chatChannels: (send.chatChannels ?? []) as NewsletterChatChannel[],
 		requireApproval: send.requireApproval,
+		captureScreenshots: Boolean(
+			send.screenshotsEnabled && send.screenshotEnvironmentId,
+		),
 	};
 	const workflowId = `newsletter-send-${send.id}`;
 

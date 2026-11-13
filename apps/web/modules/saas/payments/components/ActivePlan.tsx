@@ -71,7 +71,7 @@ export function ActivePlan({
 								currency: price.currency,
 							})}
 							{"interval" in price && (
-								<span className="font-normal text-xs opacity-60">
+								<span className="font-normal text-xs text-muted-foreground">
 									{" / "}
 									{price.interval === "month"
 										? t("pricing.month", {
@@ -85,7 +85,7 @@ export function ActivePlan({
 							{organizationId &&
 								"seatBased" in price &&
 								price.seatBased && (
-									<span className="font-normal text-xs opacity-60">
+									<span className="font-normal text-xs text-muted-foreground">
 										{" / "}
 										{t("pricing.perSeat")}
 									</span>

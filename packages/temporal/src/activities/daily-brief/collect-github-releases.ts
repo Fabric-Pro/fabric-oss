@@ -37,6 +37,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
+import { PRODUCTION_TAG_PATTERN } from "../../workflows/newsletter-release-select";
 import {
 	ADO_RELEASE_SCAN_INCOMPLETE,
 	fetchAdoAnnotatedTagReleases,
@@ -54,6 +55,12 @@ export interface CollectGitHubReleasesActivityInput {
 	userId: string;
 	timeWindowStart: Date | string;
 	timeWindowEnd: Date | string;
+	/**
+	 * Keep only production tags (`PRODUCTION_TAG_PATTERN`) BEFORE the item cap.
+	 * The newsletter announces only those; without this, a repo that also
+	 * publishes package releases fills the cap with tags the newsletter drops.
+	 */
+	productionTagsOnly?: boolean;
 }
 
 export interface GitHubRepoFailure {
@@ -73,7 +80,12 @@ export interface CollectGitHubReleasesActivityOutput {
 
 const GITHUB_API_URL = "https://api.github.com";
 const PER_PAGE = 100;
-const MAX_RELEASE_PAGES = 5; // up to 500 releases per repo — a safety net
+// Safety net only: paging normally stops once it is past the window (below).
+const MAX_RELEASE_PAGES = 20;
+// GitHub lists releases by created_at, so a draft created before the window and
+// published inside it sorts after the window start. Paging continues this far
+// past the start to catch those.
+const DRAFT_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
 const RELEASE_BODY_CHAR_CAP = 10_000; // per-release ceiling; aggregate budget below bounds the section
 const MAX_DEPLOYMENT_ITEMS = 50; // hard cap on rendered/persisted in-window releases
 const RELEASE_NOTES_TOTAL_BUDGET = 100_000; // aggregate body-char budget across items
@@ -98,6 +110,8 @@ export interface GitHubRelease {
 	draft: boolean;
 	prerelease: boolean;
 	published_at: string | null;
+	/** The list order key on GitHub; absent from the GitLab/ADO normalizers. */
+	created_at?: string;
 	html_url: string;
 	author: GitHubReleaseAuthor | null;
 	body: string | null;
@@ -211,21 +225,23 @@ function parseNextLink(linkHeader: string | null): string | null {
 }
 
 /**
- * Follow GitHub's `Link: rel="next"` pagination up to MAX_RELEASE_PAGES. Returns
- * `truncated: true` ONLY when the cap is hit while a `next` page still exists — so
- * an exhausted list (no next link) never reports a false truncation, even when the
- * final page is exactly full.
+ * Follow GitHub's `Link: rel="next"` pagination until a page ends with a release
+ * created before `windowStart - DRAFT_GRACE_MS`. The endpoint is ordered by
+ * created_at, so later pages hold only older releases; the grace keeps a
+ * draft-then-published release (old created_at, in-window published_at).
  *
- * We do NOT short-circuit on published_at: the endpoint is ordered by created_at,
- * so a draft-then-published release (old created_at, in-window published_at) can
- * appear on a later page. We page exhaustively up to the cap and filter client-side.
+ * `truncated: true` ONLY when MAX_RELEASE_PAGES stops paging before that point
+ * while a `next` page still exists. A repository with a long release history is
+ * not truncated just because it has more releases than the cap.
  */
 async function fetchReleasesForRepo(args: {
 	accessToken: string;
 	owner: string;
 	repo: string;
+	windowStart: Date;
 }): Promise<FetchReleasesResult> {
 	const { accessToken, owner, repo } = args;
+	const pastWindowMs = args.windowStart.getTime() - DRAFT_GRACE_MS;
 	const collected: GitHubRelease[] = [];
 	let lastHeartbeat = Date.now();
 	let nextUrl: string | null =
@@ -269,6 +285,11 @@ async function fetchReleasesForRepo(args: {
 		collected.push(...pageReleases);
 		nextUrl = parseNextLink(response.headers.get("link"));
 		pages++;
+
+		const oldestCreated = pageReleases.at(-1)?.created_at;
+		if (oldestCreated && new Date(oldestCreated).getTime() < pastWindowMs) {
+			return { releases: collected, truncated: false };
+		}
 	}
 
 	// Stopped because of the cap but a `next` link still exists → more remain.
@@ -421,6 +442,7 @@ export async function collectGitHubReleasesActivity(
 					accessToken: target.auth.token,
 					owner: target.owner,
 					repo: target.repo,
+					windowStart: timeWindowStart,
 				}));
 			} else if (target.auth.kind === "gitlab") {
 				({ releases, truncated } = await fetchGitLabReleases({
@@ -429,6 +451,7 @@ export async function collectGitHubReleasesActivity(
 					repo: target.repo,
 					repositoryUrl: target.repositoryUrl,
 					remainingMs: phaseRemaining,
+					windowStart: timeWindowStart,
 				}));
 			} else {
 				const scan = await fetchAdoAnnotatedTagReleases({
@@ -455,6 +478,12 @@ export async function collectGitHubReleasesActivity(
 				if (!release.published_at) {
 					continue;
 				}
+				if (
+					input.productionTagsOnly &&
+					!PRODUCTION_TAG_PATTERN.test(release.tag_name)
+				) {
+					continue;
+				}
 				const publishedAt = new Date(release.published_at);
 				if (
 					!isWithinWindow(publishedAt, timeWindowStart, timeWindowEnd)
@@ -470,7 +499,7 @@ export async function collectGitHubReleasesActivity(
 			if (truncated) {
 				failures.push({
 					repoFullName: target.repoFullName,
-					reason: `Release list truncated at ${MAX_RELEASE_PAGES * PER_PAGE}; some older in-window releases may be missing`,
+					reason: "Release list truncated before it reached the window start; some older in-window releases may be missing",
 				});
 			}
 		} catch (err) {

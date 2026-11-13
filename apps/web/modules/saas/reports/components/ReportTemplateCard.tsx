@@ -198,7 +198,10 @@ export function ReportTemplateCard({
 									className="h-7 w-7 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 -mt-1 -mr-1"
 									aria-label={`Actions for ${template.name}`}
 								>
-									<MoreVerticalIcon className="h-4 w-4" />
+									<MoreVerticalIcon
+										strokeWidth={2.5}
+										className="h-4 w-4"
+									/>
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end">
@@ -334,7 +337,7 @@ export function ReportTemplateCard({
 										className={cn(
 											"text-xs",
 											integration.isConfigured
-												? "border-green-200 text-green-700 dark:border-green-800 dark:text-green-400"
+												? "border-green-200 text-green-800 dark:border-green-800 dark:text-green-400"
 												: "border-amber-200 text-amber-700 dark:border-amber-800 dark:text-amber-400",
 										)}
 									>

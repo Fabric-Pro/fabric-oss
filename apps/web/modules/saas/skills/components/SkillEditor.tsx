@@ -493,7 +493,7 @@ export function SkillEditor({ skill }: SkillEditorProps) {
 												className={cn(
 													"flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all",
 													isSelected
-														? "border border-primary/40 bg-primary/10 text-primary shadow-sm"
+														? "border border-primary/40 bg-primary/10 text-primary-active shadow-sm"
 														: "border border-border/60 bg-background/55 text-muted-foreground hover:border-border hover:bg-background/75 hover:text-foreground",
 												)}
 											>
@@ -773,7 +773,7 @@ export function SkillEditor({ skill }: SkillEditorProps) {
 											key={i}
 											className="flex items-start gap-2"
 										>
-											<span className="text-muted-foreground/50 mt-0.5">
+											<span className="text-muted-foreground mt-0.5">
 												•
 											</span>
 											<span>{tip}</span>
@@ -797,7 +797,7 @@ export function SkillEditor({ skill }: SkillEditorProps) {
 											key={i}
 											className="flex items-start gap-2"
 										>
-											<span className="text-muted-foreground/50 mt-0.5">
+											<span className="text-muted-foreground mt-0.5">
 												•
 											</span>
 											<span>{tip}</span>

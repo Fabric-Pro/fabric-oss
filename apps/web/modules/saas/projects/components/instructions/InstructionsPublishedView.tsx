@@ -89,6 +89,7 @@ export function InstructionsPublishedView({
 	published,
 	snapshots,
 	onReplaceClick,
+	applyTemplate,
 	onChanged,
 	canEdit = false,
 	canReview = false,
@@ -111,6 +112,8 @@ export function InstructionsPublishedView({
 	published: InstructionsSnapshot | null;
 	snapshots: InstructionsSnapshot[];
 	onReplaceClick: () => void;
+	/** Add the organization template's missing files; offered beside Upload. */
+	applyTemplate?: { pending: boolean; onApply: () => void };
 	onChanged: () => void;
 	/**
 	 * The pointer query FAILED, as opposed to there being nothing published.
@@ -536,6 +539,10 @@ export function InstructionsPublishedView({
 							pausedReason,
 						}
 					: undefined,
+		applyTemplate:
+			applyTemplate && canMutateDirect
+				? { ...applyTemplate, pausedReason }
+				: undefined,
 		settings: { onOpen: () => setSettingsOpen(true) },
 	};
 

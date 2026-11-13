@@ -1,9 +1,11 @@
 import { ORPCError } from "@orpc/server";
 import {
 	approveNewsletterSend,
+	countCapturingNewsletterImages,
 	db,
 	getNewsletterSendForSendPhase,
 	newsletterContentSchema,
+	releaseStaleNewsletterCaptures,
 	removedHighlightIndexesSchema,
 } from "@repo/database";
 import { getTemporalClient, isTemporalAvailable } from "@repo/temporal";
@@ -16,6 +18,10 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import {
+	deleteNewsletterImageObjects,
+	publishReviewImages,
+} from "../lib/review-images";
 import { classifyReviewOutcome } from "../lib/review-outcome";
 
 /**
@@ -26,6 +32,9 @@ import { classifyReviewOutcome } from "../lib/review-outcome";
 function reviewConflict(message: string, currentStatus: string | null) {
 	return new ORPCError("CONFLICT", { message, data: { currentStatus } });
 }
+
+const STILL_CAPTURING =
+	"Wait for the screenshots that are still being captured.";
 
 /**
  * Guards the two paths that actually reach Temporal — the fresh transition and
@@ -82,6 +91,12 @@ export const approveSendProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 			sendId: z.string(),
 			removedHighlightIndexes: removedHighlightIndexesSchema.default([]),
+			// The reviewer's order, as indexes into the frozen highlights. May be
+			// partial: unlisted highlights follow in their natural order.
+			highlightOrder: z
+				.array(z.number().int().min(0))
+				.max(500)
+				.optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -144,6 +159,38 @@ export const approveSendProcedure = tenantProtectedProcedure
 				message: "removedHighlightIndexes out of range",
 			});
 		}
+		if (input.highlightOrder?.some((i) => i >= maxIndex)) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "highlightOrder out of range",
+			});
+		}
+		if (
+			input.highlightOrder &&
+			new Set(input.highlightOrder).size !== input.highlightOrder.length
+		) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "highlightOrder lists a highlight more than once",
+			});
+		}
+
+		// A screenshot still being captured would be skipped by the publish
+		// below and its late result discarded, so an image the reviewer
+		// included would silently go missing. Wait for it instead. This early
+		// check only saves copying images for nothing; the transition below
+		// checks again under the send lock, which a capture start also takes.
+		if (row.screenshotsEnabled) {
+			await releaseStaleNewsletterCaptures({
+				projectId: input.projectId,
+				sendId: input.sendId,
+			});
+			const capturing = await countCapturingNewsletterImages(
+				input.projectId,
+				input.sendId,
+			);
+			if (capturing > 0) {
+				throw reviewConflict(STILL_CAPTURING, row.status);
+			}
+		}
 
 		// No capability gate here (Fizzy #1930). Approving sends content that
 		// was already generated and frozen onto this row — nothing is read from
@@ -159,19 +206,47 @@ export const approveSendProcedure = tenantProtectedProcedure
 		// than after the transition has already committed.
 		await requireTemporal();
 
+		// Copy the images that will go out to their public keys BEFORE the
+		// transition: the copy is the slow, failure-prone part, and an image that
+		// fails is skipped rather than failing the approval.
+		const publishedImages = row.screenshotsEnabled
+			? await publishReviewImages({
+					projectId: input.projectId,
+					sendId: input.sendId,
+					removedHighlightIndexes: input.removedHighlightIndexes,
+					highlightCount: maxIndex,
+				})
+			: [];
+
 		// Atomic PENDING_APPROVAL → APPROVED + audit (closes the approve/reject race
-		// AND commits the audit row in the same tx as the decision).
-		const { approved } = await approveNewsletterSend({
-			sendId: input.sendId,
-			removedHighlightIndexes: input.removedHighlightIndexes,
-			audit: {
-				reviewedByUserId: context.user.id,
-				actorEmail: context.user.email ?? null,
-				actorName: context.user.name ?? null,
-				organizationId: project.organizationId ?? null,
-				projectId: input.projectId,
-			},
-		});
+		// AND commits the audit row in the same tx as the decision). The images
+		// still effective after the flip are written into the content there.
+		const { approved, embeddedImageIds, stillCapturing } =
+			await approveNewsletterSend({
+				sendId: input.sendId,
+				removedHighlightIndexes: input.removedHighlightIndexes,
+				highlightOrder: input.highlightOrder,
+				publishedImages,
+				audit: {
+					reviewedByUserId: context.user.id,
+					actorEmail: context.user.email ?? null,
+					actorName: context.user.name ?? null,
+					organizationId: project.organizationId ?? null,
+					projectId: input.projectId,
+				},
+			});
+		// A published copy that did not make it into the content (the approval
+		// lost a race, or the image changed meanwhile) is referenced by nothing.
+		const embedded = new Set(embeddedImageIds);
+		await deleteNewsletterImageObjects(
+			publishedImages
+				.filter((image) => !embedded.has(image.imageId))
+				.map((image) => image.publicKey),
+		);
+		if (stillCapturing) {
+			// A reviewer started a capture after the early check above.
+			throw reviewConflict(STILL_CAPTURING, row.status);
+		}
 		if (!approved) {
 			// Raced between the read above and this conditional update — the row
 			// moved on. Re-read to report what it actually became rather than

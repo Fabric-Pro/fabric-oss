@@ -367,7 +367,7 @@ export function makeCopilotAssistantMessage(
 									<time
 										dateTime={formattedTimestamp.iso}
 										title={formattedTimestamp.tooltip}
-										className="shrink-0 text-[10px] leading-none text-muted-foreground/60"
+										className="shrink-0 text-[10px] leading-none text-muted-foreground"
 									>
 										{formattedTimestamp.label}
 									</time>

@@ -82,7 +82,7 @@ function SummaryRow({
 			</span>
 			<span className="min-w-0">
 				<span className="flex items-center gap-1.5 font-medium text-foreground">
-					<CheckIcon aria-hidden className="h-4 w-4 text-secondary" />
+					<CheckIcon aria-hidden className="h-4 w-4 text-success" />
 					{title}
 				</span>
 				<span className="mt-0.5 block text-sm text-muted-foreground">

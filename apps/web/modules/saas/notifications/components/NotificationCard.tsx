@@ -122,7 +122,7 @@ export function NotificationCard({
 					className={cn(
 						"inline-flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
 						isUnread
-							? "bg-primary/15 text-primary"
+							? "bg-primary/15 text-primary-active"
 							: "bg-muted text-muted-foreground",
 					)}
 				>
@@ -131,7 +131,7 @@ export function NotificationCard({
 						{context ? `${category} · ${context}` : category}
 					</span>
 				</span>
-				<span className="ml-auto flex shrink-0 items-center gap-2 text-[10px] uppercase tracking-wide text-muted-foreground/70">
+				<span className="ml-auto flex shrink-0 items-center gap-2 text-[10px] uppercase tracking-wide text-muted-foreground">
 					{notification.actor?.name ? (
 						<span className="max-w-[10ch] truncate">
 							{notification.actor.name}

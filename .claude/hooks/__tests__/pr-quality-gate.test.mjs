@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
@@ -17,6 +17,8 @@ import {
 	GATED_GH_API_COMMANDS,
 	GATED_OPEN_PR_COMMANDS,
 } from "./gate-fixtures.mjs";
+
+import { PR, refusedPrCwdCommands } from "./pr-cwd-fixtures.mjs";
 
 const HOOK = "pr-quality-gate.mjs";
 
@@ -1033,4 +1035,138 @@ c.unref();
 			}
 		},
 	);
+});
+
+describe("pr-quality-gate — governing cd with heredocs and HOME", () => {
+	let root;
+	let main;
+	let slot;
+	const git = (cwd, ...args) =>
+		execFileSync("git", args, { cwd, stdio: "ignore" });
+	before(() => {
+		root = mkdtempSync(join(tmpdir(), "pr-cd-resolution-"));
+		main = join(root, "main-checkout");
+		slot = join(root, "slot-worktree");
+		execFileSync("git", ["init", "-q", "-b", "staging", main]);
+		git(main, "config", "user.email", "test@example.com");
+		git(main, "config", "user.name", "test");
+		writeFabricManifest(main);
+		git(main, "add", "package.json");
+		git(main, "commit", "-qm", "init");
+		git(main, "worktree", "add", "-q", "-b", "fix/example", slot);
+		mkdirSync(join(main, "apps", "web"), { recursive: true });
+		mkdirSync(join(slot, "apps", "web"), { recursive: true });
+	});
+	after(() => rmSync(root, { recursive: true, force: true }));
+
+	async function judged(command, expected, extraEnv = {}, payloadCwd = main) {
+		const result = await runHook(
+			HOOK,
+			{
+				tool_input: { command },
+				...(payloadCwd === null ? {} : { cwd: payloadCwd }),
+			},
+			{
+				spawnCwd: main,
+				env: {
+					PATH: `${stubDir}${delimiter}${process.env.PATH ?? ""}`,
+					CLAUDE_PROJECT_DIR: main,
+					HOME: root,
+					STUB_TYPECHECK_EXIT: "1",
+					STUB_ECHO_PWD: "1",
+					...extraEnv,
+				},
+			},
+		);
+		assert.equal(result.exitCode, 0, result.stderr);
+		const reason = askDecision(result.stdout).permissionDecisionReason;
+		// Git Bash's pwd uses /c/...; directory-name fragments work on both OSes.
+		assert.match(reason, new RegExp(`PWD=.*${expected}`));
+	}
+
+	it("uses the slot for leading tilde cd", () =>
+		judged(`cd ~/slot-worktree && ${PR}`, "slot-worktree"));
+	it("uses the slot for heredoc then absolute cd", () =>
+		judged(
+			`cat <<'EOF'\nbody\nEOF\ncd '${slot}' && ${PR}`,
+			"slot-worktree",
+		));
+	it("uses the slot for heredoc then tilde cd", () =>
+		judged(
+			`cat <<'EOF'\nbody\nEOF\ncd ~/slot-worktree && ${PR}`,
+			"slot-worktree",
+		));
+	it("keeps payload fallback for a later relative cd", () =>
+		judged(`true; cd ../slot-worktree && ${PR}`, "main-checkout"));
+	it("keeps leading slot fallback after a second relative cd", () =>
+		judged(
+			`cd '${slot}' && cd apps/web && gh pr create --fill`,
+			"slot-worktree",
+		));
+	for (const prefix of [
+		"pnpm lint || # lint may fail\n",
+		"pnpm lint ||\n# lint may fail\n",
+		"echo y | # feed\n",
+	]) {
+		it(`keeps payload fallback for commented gh operator ${JSON.stringify(prefix)}`, () =>
+			judged(
+				`${prefix}cd '${slot}' && gh pr create --fill`,
+				"main-checkout",
+			));
+	}
+	for (const redirect of [">&2", "2>&1", "&>out"]) {
+		it(`uses the slot with PR redirection ${redirect}`, () =>
+			judged(
+				`cd '${slot}' && open-pr.sh ${redirect} --title t --body-file b`,
+				"slot-worktree",
+			));
+	}
+	it("uses governing cd ahead of the old leading cd", () =>
+		judged(`cd '${main}' && true; cd '${slot}' && ${PR}`, "slot-worktree"));
+	it("tries old leading cd when the new candidate is not a repo", () =>
+		judged(
+			`cd '${slot}' && true; cd /definitely-missing && ${PR}`,
+			"slot-worktree",
+		));
+	it("keeps project fallback without payload cwd for a later absolute cd", () =>
+		judged(`true; cd '${slot}' && ${PR}`, "main-checkout", {}, null));
+	it("tries project dir after a non-repo payload cwd", () =>
+		judged(`true; ${PR}`, "main-checkout", {}, root));
+
+	for (const target of [
+		'"~/slot-worktree"',
+		"'~/slot-worktree'",
+		"~user",
+		"~+",
+		"~-",
+	]) {
+		it(`keeps today's payload fallback for ${target}`, () =>
+			judged(`cd ${target} && ${PR}`, "main-checkout"));
+	}
+	it("keeps today's payload fallback with empty HOME", () =>
+		judged(`cd ~/slot-worktree && ${PR}`, "main-checkout", { HOME: "" }));
+	it("keeps today's fallback for quoted Windows path", () =>
+		judged(`cd "C:\\Users\\example\\slot-2" && ${PR}`, "main-checkout"));
+
+	for (const [name, makeCommand] of refusedPrCwdCommands("SLOT")) {
+		if (name === "no PR invocation") {
+			continue;
+		}
+		it(`keeps today's leading-cd fallback for ${name}`, () => {
+			const command = makeCommand.replaceAll("SLOT", slot);
+			return judged(`cd '${main}' && ${command}`, "main-checkout");
+		});
+	}
+	for (const invocation of [
+		"gh pr create --fill",
+		"gh api -X POST repos/o/r/pulls --input body.json",
+	]) {
+		it(`uses existing predicate for ${invocation}`, () =>
+			judged(`true; cd '${slot}' && ${invocation}`, "slot-worktree"));
+		it(`counts a second ${invocation}`, () =>
+			judged(
+				`cd '${main}' && ${invocation}; cd '${slot}' && ${PR}`,
+				"main-checkout",
+			));
+	}
 });

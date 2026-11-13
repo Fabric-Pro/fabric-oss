@@ -49,7 +49,7 @@ name: Docker Build Check
 # It is tempting to drop `pnpm-lock.yaml` so Dependabot and lockfile refreshes
 # skip this check, since every required PR check also runs a frozen install of
 # the same lockfile. That covers resolution and the supply-chain policies, not
-# the image. The temporal image installs on `node:22-slim` (Debian) and runs
+# the image. The temporal image installs on `node:24-slim` (Debian) and runs
 # `playwright install-deps chromium` and `install chromium` for whichever
 # Playwright the lockfile resolves, then launches it; the unit-tests browser
 # job does the same on the Ubuntu runner, whose package set differs. A

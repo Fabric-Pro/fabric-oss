@@ -14,6 +14,7 @@
  */
 
 import { db } from "../client";
+import type { Prisma } from "../generated/client";
 
 /**
  * True when `userId` holds a membership row in `organizationId`.
@@ -26,12 +27,13 @@ import { db } from "../client";
 export async function isOrganizationMember(
 	userId: string,
 	organizationId: string,
+	client: Pick<Prisma.TransactionClient, "member"> = db,
 ): Promise<boolean> {
 	if (!userId || !organizationId) {
 		return false;
 	}
 
-	const membership = await db.member.findFirst({
+	const membership = await client.member.findFirst({
 		where: { userId, organizationId },
 		select: { id: true },
 	});

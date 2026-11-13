@@ -3,14 +3,11 @@ import { z } from "zod";
 import {
 	Permissions,
 	requirePermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { filterByCurrentAccess } from "../lib/access-filter";
-import {
-	INCIDENT_NOTIFICATION_TYPES,
-	WEEKLY_DIGEST_DEDUPE_PREFIX,
-} from "../lib/incident-notification-types";
+import { bellVisibleWhere } from "../lib/bell-visible-where";
+import { resolveNotificationOrganization } from "../lib/resolve-notification-organization";
 
 const listInputSchema = z.object({
 	organizationId: z.string().nullable().optional(),
@@ -34,9 +31,10 @@ export const listNotificationsProcedure = tenantProtectedProcedure
 	})
 	.input(listInputSchema)
 	.handler(async ({ input, context }) => {
-		const organizationId =
-			resolveOrganizationId(input.organizationId, context.session) ??
-			null;
+		const organizationId = await resolveNotificationOrganization(
+			input.organizationId,
+			context,
+		);
 
 		// `archived` tab shows only archived rows; every other tab hides them.
 		const archivedFilter =
@@ -50,16 +48,10 @@ export const listNotificationsProcedure = tenantProtectedProcedure
 		const fetchLimit = input.limit * 2 + 1;
 		const rows = await db.notification.findMany({
 			where: {
-				userId: context.user.id,
-				organizationId,
-				// Per-incident alert notifications live on the monitoring page
-				// now — hide them from the bell — but KEEP the low-noise weekly
-				// incident digest (same SYSTEM_INCIDENT type, told apart by its
-				// dedupe-key prefix).
-				OR: [
-					{ type: { notIn: INCIDENT_NOTIFICATION_TYPES } },
-					{ dedupeKey: { startsWith: WEEKLY_DIGEST_DEDUPE_PREFIX } },
-				],
+				...bellVisibleWhere({
+					userId: context.user.id,
+					organizationId,
+				}),
 				...archivedFilter,
 				...unreadFilter,
 				...(input.category ? { category: input.category } : {}),
@@ -95,9 +87,9 @@ export const listNotificationsProcedure = tenantProtectedProcedure
 
 		// Resolve each notification's owning-org slug so the client can build the
 		// click target from the notification's OWN org, not whichever workspace
-		// the user is currently in (the #1528 wrong-workspace bug). The list is
-		// org-scoped, so this is effectively a single lookup, but the batch form
-		// stays correct if that ever changes. The slug only forms the URL base —
+		// the user is currently in (the #1528 wrong-workspace bug). Bell-visible
+		// rows carry at most the resolved organization plus account-global digest
+		// rows, so this remains a single lookup. The slug only forms the URL base;
 		// the destination route enforces its own access.
 		const orgIds = Array.from(
 			new Set(

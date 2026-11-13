@@ -98,6 +98,14 @@ const COVERAGE_EXEMPTIONS: ReadonlyMap<string, string> = new Map([
 		"self-action — caller revokes own pending email change",
 	],
 	[
+		"packages/api/modules/users/procedures/appearance/update.ts",
+		// Self-action: saves the caller's own high-contrast theme choice
+		// (Fizzy #1444) on their own user row. Account-global and the same in
+		// every organization, so no tenant permission applies, and AC-11 wants
+		// it for every role. Scoped to the caller by `protectedProcedure`.
+		"self-action — caller saves own appearance preference",
+	],
+	[
 		"packages/api/modules/users/procedures/mfa-prompt/dismiss.ts",
 		// Self-action: caller dismisses their own MFA-enrollment prompt
 		// state. Scoped to the authenticated user by `protectedProcedure`.

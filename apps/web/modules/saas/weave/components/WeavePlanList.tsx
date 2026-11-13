@@ -124,32 +124,32 @@ const STATUS_CONFIG: Record<
 	},
 	PENDING_APPROVAL: {
 		label: "Pending Approval",
-		color: "bg-yellow-500/10 text-yellow-600 border-yellow-500/20",
+		color: "bg-yellow-500/10 text-yellow-800 border-yellow-500/20 dark:text-yellow-500",
 		icon: <AlertCircleIcon className="size-3" />,
 	},
 	NEEDS_REVISION: {
 		label: "Revising...",
-		color: "bg-orange-500/10 text-orange-600 border-orange-500/20",
+		color: "bg-orange-500/10 text-orange-800 border-orange-500/20 dark:text-orange-500",
 		icon: <RefreshCwIcon className="size-3 animate-spin" />,
 	},
 	APPROVED: {
 		label: "Approved",
-		color: "bg-blue-500/10 text-blue-600 border-blue-500/20",
+		color: "bg-blue-500/10 text-blue-700 border-blue-500/20 dark:text-blue-400",
 		icon: <CheckCircleIcon className="size-3" />,
 	},
 	RUNNING: {
 		label: "Running",
-		color: "bg-purple-500/10 text-purple-600 border-purple-500/20",
+		color: "bg-purple-500/10 text-purple-600 border-purple-500/20 dark:text-purple-400",
 		icon: <Loader2Icon className="size-3 animate-spin" />,
 	},
 	COMPLETED: {
 		label: "Completed",
-		color: "bg-green-500/10 text-green-600 border-green-500/20",
+		color: "bg-green-500/10 text-green-800 border-green-500/20 dark:text-green-500",
 		icon: <CheckCircleIcon className="size-3" />,
 	},
 	FAILED: {
 		label: "Failed",
-		color: "bg-red-500/10 text-red-600 border-red-500/20",
+		color: "bg-red-500/10 text-red-700 border-red-500/20 dark:text-red-400",
 		icon: <XCircleIcon className="size-3" />,
 	},
 	CANCELLED: {
@@ -671,7 +671,7 @@ export function WeavePlanList({
 											{plan.userStory && (
 												<Badge
 													variant="outline"
-													className="text-[10px] bg-primary/5 border-primary/20 text-primary"
+													className="text-[10px] bg-primary/5 border-primary/20 text-primary-active"
 												>
 													{plan.userStory.identifier
 														? `${plan.userStory.identifier} `
@@ -848,7 +848,7 @@ export function WeavePlanList({
 											<Button
 												size="sm"
 												variant="ghost"
-												className="gap-1 text-red-600"
+												className="gap-1 text-red-700 dark:text-red-400"
 												onClick={(e) => {
 													e.stopPropagation();
 													approvePlanMutation.mutate({
@@ -1155,7 +1155,7 @@ export function WeavePlanList({
 														</div>
 														<Badge
 															variant="outline"
-															className="shrink-0 rounded-full border-primary/20 bg-primary/5 px-2.5 py-1 text-xs text-primary"
+															className="shrink-0 rounded-full border-primary/20 bg-primary/5 px-2.5 py-1 text-xs text-primary-active"
 															title={`Estimated ${Math.round(estimate.totalTokens / 1000)}k tokens across ${planCheckboxes.length} steps`}
 														>
 															{estimate.label}{" "}
@@ -1457,7 +1457,7 @@ export function WeavePlanList({
 																		className={cn(
 																			"flex items-start gap-2 text-xs",
 																			isChanged
-																				? "text-destructive line-through opacity-60"
+																				? "text-destructive line-through"
 																				: "text-muted-foreground",
 																		)}
 																	>
@@ -1530,7 +1530,7 @@ export function WeavePlanList({
 																		{isNew && (
 																			<Badge
 																				variant="outline"
-																				className="text-[9px] bg-green-500/10 border-green-500/20 text-green-600 px-1"
+																				className="text-[9px] bg-green-500/10 border-green-500/20 text-green-800 px-1 dark:text-green-500"
 																			>
 																				new
 																			</Badge>
@@ -1538,7 +1538,7 @@ export function WeavePlanList({
 																		{isModified && (
 																			<Badge
 																				variant="outline"
-																				className="text-[9px] bg-blue-500/10 border-blue-500/20 text-blue-600 px-1"
+																				className="text-[9px] bg-blue-500/10 border-blue-500/20 text-blue-700 px-1 dark:text-blue-400"
 																			>
 																				changed
 																			</Badge>

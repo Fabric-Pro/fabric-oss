@@ -139,6 +139,7 @@ export const ONBOARDING_ANCHORS = {
 	navProjects: "nav-projects",
 	navNew: "nav-new",
 	navTodos: "nav-todos",
+	navTime: "nav-time",
 	launcher: "onboarding-launcher",
 	/** The mobile hamburger — small-screen fallback anchor for sidebar steps. */
 	mobileNavTrigger: "mobile-nav-trigger",

@@ -202,7 +202,7 @@ function HistoryRunRow({ run }: { run: AnalysisRunSummary }) {
 					) : (
 						<Badge
 							variant="outline"
-							className="border-secondary/40 px-1.5 py-0 text-[10px] text-secondary"
+							className="border-success/40 px-1.5 py-0 text-[10px] text-success"
 						>
 							{t("statusReady")}
 						</Badge>
@@ -254,7 +254,7 @@ function HistoryRunRow({ run }: { run: AnalysisRunSummary }) {
 							<>
 								<span
 									aria-hidden="true"
-									className="text-muted-foreground/40"
+									className="text-muted-foreground"
 								>
 									·
 								</span>
@@ -272,7 +272,7 @@ function HistoryRunRow({ run }: { run: AnalysisRunSummary }) {
 								{index > 0 && (
 									<span
 										aria-hidden="true"
-										className="text-muted-foreground/40"
+										className="text-muted-foreground"
 									>
 										·
 									</span>

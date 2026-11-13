@@ -1,6 +1,12 @@
 import de from "@repo/i18n/translations/de.json";
 import en from "@repo/i18n/translations/en.json";
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 import { afterEach, expect, it, vi } from "vitest";
@@ -74,6 +80,7 @@ import { TemplateInstancesList } from "@saas/reports/components/TemplateInstance
 
 afterEach(() => {
 	cleanup();
+	vi.useRealTimers();
 	state.locale = "en";
 });
 it("pages report instances on the server beyond the first 50", async () => {
@@ -85,7 +92,12 @@ it("pages report instances on the server beyond the first 50", async () => {
 	await userEvent.type(screen.getByRole("spinbutton"), "7{Enter}");
 	expect(state.input).toMatchObject({ offset: 60, limit: 10 });
 });
-it("jumps to an artifact delivery page", async () => {
+// The delivery dialog debounces its search for 250 ms. These two tests fake
+// the clock and drive the dialog with synchronous fireEvent calls, so no timer
+// can fire until a test advances time: the jump always lands before the
+// debounce window, then the clock passes it. (userEvent awaits a timer of its
+// own, which nothing advances while the clock is faked under Vitest.)
+function renderDeliveryDialog() {
 	render(
 		<ArtifactDeliveryHistoryDialog
 			artifactId="example-artifact"
@@ -94,11 +106,44 @@ it("jumps to an artifact delivery page", async () => {
 			onOpenChange={vi.fn()}
 		/>,
 	);
+}
+function jumpToPage(page: string) {
+	const input = screen.getByRole("spinbutton");
+	fireEvent.change(input, { target: { value: page } });
+	const form = input.closest("form");
+	if (!form) {
+		throw new Error("page jump input is not inside a form");
+	}
+	fireEvent.submit(form);
+}
+function passDebounceWindow() {
+	act(() => {
+		vi.advanceTimersByTime(400);
+	});
+}
+it("jumps to an artifact delivery page", () => {
+	vi.useFakeTimers();
+	renderDeliveryDialog();
 	expect(
 		document.body.textContent?.match(/1\s*[-–]\s*10\s+of\s+120/g),
 	).toHaveLength(1);
-	await userEvent.type(screen.getByRole("spinbutton"), "4{Enter}");
+	jumpToPage("4");
 	expect(state.input).toMatchObject({ offset: 30, limit: 10 });
+	// Opening the dialog must not schedule a reset that undoes the jump.
+	passDebounceWindow();
+	expect(state.input).toMatchObject({ offset: 30, limit: 10 });
+});
+it("returns an artifact delivery search to the first page", () => {
+	vi.useFakeTimers();
+	renderDeliveryDialog();
+	jumpToPage("4");
+	fireEvent.change(
+		screen.getByPlaceholderText("Search by recipient email or note…"),
+		{ target: { value: "example" } },
+	);
+	expect(state.input).toMatchObject({ offset: 30 });
+	passDebounceWindow();
+	expect(state.input).toMatchObject({ offset: 0, search: "example" });
 });
 it("jumps to a PM import page and resets on committed search", async () => {
 	render(

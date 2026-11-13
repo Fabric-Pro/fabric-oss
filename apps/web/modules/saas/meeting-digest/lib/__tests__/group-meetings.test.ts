@@ -4,6 +4,7 @@ import {
 	groupAwaitingByDay,
 	groupMeetingsByDay,
 	groupPersonalMeetingsByDay,
+	meetingCalendarDay,
 	monthGridDays,
 } from "../group-meetings";
 import type { AwaitingMeeting, DigestMeeting, PersonalMeeting } from "../types";
@@ -149,5 +150,21 @@ describe("monthGridDays", () => {
 		const days = monthGridDays(new Date("2026-06-15"));
 		expect(days.length % 7).toBe(0);
 		expect(days.some((d) => d.getMonth() === 5)).toBe(true); // June present
+	});
+});
+
+describe("meetingCalendarDay (#3507)", () => {
+	it("reads a date stored without a time as that day, in every zone", () => {
+		// 12:00:00.000 UTC is how a file's or a person's date is stored. Read as
+		// an instant it is the next day east of UTC+12.
+		const day = meetingCalendarDay("2026-10-21T12:00:00.000Z");
+		expect(dayKey(day)).toBe("2026-10-21");
+	});
+
+	it("reads a real timestamp in the viewer's zone, as before", () => {
+		const instant = "2026-10-21T09:37:12.345Z";
+		expect(meetingCalendarDay(instant).getTime()).toBe(
+			new Date(instant).getTime(),
+		);
 	});
 });

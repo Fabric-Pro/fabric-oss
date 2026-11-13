@@ -368,7 +368,7 @@ export function FieldMappingPanel({ project }: Props) {
 										Unsaved changes
 									</span>
 								) : save.isSuccess ? (
-									<span className="flex items-center gap-1.5 text-secondary">
+									<span className="flex items-center gap-1.5 text-success">
 										<CheckCircle2Icon
 											className="size-4"
 											aria-hidden="true"

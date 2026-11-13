@@ -11,6 +11,7 @@
 import {
 	db,
 	getProjectContextAvailability,
+	getProjectRepositoryBranch,
 	getProjectRepositoryRoles,
 	type ProjectRepositoryRole,
 	parseRepoUrl,
@@ -18,10 +19,15 @@ import {
 } from "@repo/database";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { log } from "@temporalio/activity";
+import { ragToolResultText } from "../lib/rag-tool-result";
 import {
 	type SecondaryUsageInput,
 	secondaryUsageFields,
 } from "../workflows/orchestrator/usage-attribution";
+import {
+	type AdvisorResultStoreContext,
+	storeAdvisorResult,
+} from "./advisor-result-store";
 import {
 	runWithTurnDispatch,
 	startTurnHeartbeat,
@@ -47,6 +53,7 @@ export async function getProjectMetadataActivity(
 			features: true,
 			status: true,
 			repositoryUrl: true,
+			defaultBranch: true,
 			codeAnalysisStatus: true,
 			_count: {
 				select: {
@@ -88,8 +95,25 @@ export async function getProjectMetadataActivity(
 	// Raw URL array for background scan consumers and in-flight workflow replay
 	const repositoryUrls = repositoryRoles.map((r) => r.url);
 
+	// The primary repository's branch: the project's stored one, else its
+	// connected integration's (the provider default unless someone chose
+	// another). `null` when neither is known; the caller owns the last resort.
+	const parsedPrimary = project.repositoryUrl
+		? parseRepoUrl(project.repositoryUrl)
+		: null;
+	const defaultBranch =
+		project.defaultBranch ||
+		(await getProjectRepositoryBranch(
+			projectId,
+			parsedPrimary
+				? { owner: parsedPrimary.owner, name: parsedPrimary.name }
+				: null,
+		)) ||
+		null;
+
 	return {
 		...project,
+		defaultBranch,
 		repositoryUrls,
 		repositoryRoles,
 		contextCount: project._count.contexts,
@@ -108,6 +132,7 @@ export async function getProjectMetadataActivity(
  * and therefore trivially idempotent under Temporal's retries.
  */
 export async function listMeetingTranscriptsActivity(input: {
+	advisorResultStore?: AdvisorResultStoreContext;
 	projectId: string;
 	userId: string;
 	organizationId?: string;
@@ -119,23 +144,39 @@ export async function listMeetingTranscriptsActivity(input: {
 	const { listProjectMeetingTranscripts, readTranscriptFilters } =
 		await import("./shared/meeting-transcript-listing");
 
+	let readSucceeded = false;
 	try {
-		const listing = await listProjectMeetingTranscripts({
-			projectId: input.projectId,
-			userId: input.userId,
-			organizationId: input.organizationId,
-			filters: readTranscriptFilters({
-				from: input.from,
-				to: input.to,
-				subject: input.subject,
-				limit: input.limit,
-			}),
-		});
+		const listing = await listProjectMeetingTranscripts(
+			{
+				projectId: input.projectId,
+				userId: input.userId,
+				organizationId: input.organizationId,
+				filters: readTranscriptFilters({
+					from: input.from,
+					to: input.to,
+					subject: input.subject,
+					limit: input.limit,
+				}),
+			},
+			() => {
+				readSucceeded = true;
+			},
+		);
 		log.info("[MeetingTranscripts] Listed transcripts", {
 			projectId: input.projectId,
 			transcriptCount: listing.transcriptCount,
 			total: listing.total,
 		});
+		if (readSucceeded) {
+			await storeAdvisorResult({
+				userId: input.userId,
+				organizationId: input.organizationId,
+				advisorResultStore: input.advisorResultStore,
+				toolName: "fabric_list_meeting_transcripts",
+				route: "built-in",
+				result: listing.response,
+			});
+		}
 		return listing;
 	} catch (error) {
 		log.error("[MeetingTranscripts] Failed to list transcripts", {
@@ -191,6 +232,7 @@ export async function retrieveProjectContextsActivity(
 	organizationId: string | undefined,
 	topK?: number,
 	options?: SecondaryUsageInput & {
+		advisorResultStore?: AdvisorResultStoreContext;
 		turnScope?: TurnScope;
 		/** Each source's matched passages, joined, keep at most this many characters, cut at a line or sentence break. */
 		maxPassageChars?: number;
@@ -198,8 +240,9 @@ export async function retrieveProjectContextsActivity(
 ): Promise<{ context: string; chunkCount: number }> {
 	const turnScope = options?.turnScope;
 	const stopHeartbeat = startTurnHeartbeat(turnScope);
+	let readSucceeded = true;
 	try {
-		return await runWithTurnDispatch(turnScope, () =>
+		const result = await runWithTurnDispatch(turnScope, () =>
 			retrieveProjectContextsForTool(
 				query,
 				projectId,
@@ -207,8 +250,22 @@ export async function retrieveProjectContextsActivity(
 				organizationId,
 				topK,
 				options,
+				() => {
+					readSucceeded = false;
+				},
 			),
 		);
+		if (readSucceeded) {
+			await storeAdvisorResult({
+				userId,
+				organizationId,
+				advisorResultStore: options?.advisorResultStore,
+				toolName: "project_rag_query",
+				route: "built-in",
+				result: ragToolResultText("project", query, result),
+			});
+		}
+		return result;
 	} finally {
 		stopHeartbeat();
 	}
@@ -220,7 +277,8 @@ async function retrieveProjectContextsForTool(
 	userId: string,
 	organizationId: string | undefined,
 	topK: number | undefined,
-	usage?: SecondaryUsageInput & { maxPassageChars?: number },
+	usage: (SecondaryUsageInput & { maxPassageChars?: number }) | undefined,
+	onReadFailed: () => void,
 ): Promise<{ context: string; chunkCount: number }> {
 	try {
 		const {
@@ -269,12 +327,13 @@ async function retrieveProjectContextsForTool(
 			);
 		}
 
+		const maxPassageChars = usage.maxPassageChars;
 		const formattedResults = results
 			.map(
 				(
 					r: {
 						content: string;
-						matchedPassages?: { content: string }[];
+						matchedPassages?: { content: string; score: number }[];
 						filename?: string;
 						sourceTitle?: string;
 						sourcePath?: string;
@@ -303,15 +362,41 @@ async function retrieveProjectContextsForTool(
 						`Context ${i + 1}`;
 					// Type label + AI guidance (#1888): metadata arrives
 					// flag-gated from retrieval; header is "" when unset.
-					const content = usage?.maxPassageChars
-						? headAtLineBreak(
-								r.matchedPassages
-									?.map((p) => p.content)
-									.filter((text) => text.trim())
-									.join("\n\n") || r.content,
-								usage.maxPassageChars,
-							)
-						: r.content;
+					const selected = new Map<number, string>();
+					let remaining = maxPassageChars;
+					const ranked = (r.matchedPassages ?? [])
+						.map((p, index) => ({ ...p, index }))
+						.filter((p) => p.content.trim())
+						.sort((a, b) => b.score - a.score);
+					for (const passage of ranked) {
+						const available = remaining - (selected.size ? 2 : 0);
+						if (available <= 0) {
+							break;
+						}
+						if (
+							selected.size &&
+							passage.content.length > available
+						) {
+							continue;
+						}
+						const text = headAtLineBreak(
+							passage.content,
+							available,
+						);
+						if (text) {
+							selected.set(passage.index, text);
+						}
+						remaining = available - text.length;
+						if (passage.content.length > available) {
+							break;
+						}
+					}
+					const content =
+						[...selected.entries()]
+							.sort(([a], [b]) => a - b)
+							.map(([, text]) => text)
+							.join("\n\n") ||
+						headAtLineBreak(r.content, maxPassageChars);
 					return `### From: ${source}\n${contextMetaHeader(r)}${content}`;
 				},
 			)
@@ -328,6 +413,7 @@ async function retrieveProjectContextsForTool(
 			error: String(error),
 			projectId,
 		});
+		onReadFailed();
 		return { context: "", chunkCount: 0 };
 	}
 }

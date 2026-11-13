@@ -66,7 +66,7 @@ export function TopicRankReason({
 		<p
 			className={cn(
 				variant === "pill"
-					? "inline-flex w-fit items-center rounded-full border border-primary/40 bg-primary/10 px-2.5 py-0.5 font-medium text-primary text-xs"
+					? "inline-flex w-fit items-center rounded-full border border-primary/40 bg-primary/10 px-2.5 py-0.5 font-medium text-primary-active text-xs"
 					: "border-l-2 border-primary pl-2 text-xs text-muted-foreground",
 				className,
 			)}
@@ -492,7 +492,7 @@ export function TopicDetails({
 									<>
 										<span>{p.label}</span>
 										{rec?.theme ? (
-											<span className="text-muted-foreground/70">
+											<span className="text-muted-foreground">
 												{" · "}
 												{rec.theme}
 											</span>

@@ -271,7 +271,7 @@ export function TeamsChatPickerDialog({
 						<p className="text-foreground/70">
 							Failed to load Teams data
 						</p>
-						<p className="text-foreground/50 text-sm">
+						<p className="text-muted-foreground text-sm">
 							{teamsQuery.error instanceof Error
 								? teamsQuery.error.message
 								: "An unexpected error occurred"}
@@ -288,7 +288,7 @@ export function TeamsChatPickerDialog({
 							<p className="font-medium text-foreground/80">
 								Microsoft account not connected
 							</p>
-							<p className="mt-1 text-foreground/50 text-sm">
+							<p className="mt-1 text-muted-foreground text-sm">
 								{fetchError ||
 									"Connect your Microsoft account in Settings → Integrations to access Teams chats."}
 							</p>
@@ -305,7 +305,7 @@ export function TeamsChatPickerDialog({
 									<p className="text-foreground/70">
 										No chats found
 									</p>
-									<p className="text-foreground/50 text-sm">
+									<p className="text-muted-foreground text-sm">
 										No group chats or 1:1 direct chats were
 										found on your Microsoft account.
 									</p>
@@ -351,19 +351,19 @@ export function TeamsChatPickerDialog({
 														{chat.topic}
 													</p>
 													{isDirectChat && (
-														<span className="shrink-0 rounded-full bg-amber-500/10 px-1.5 py-0.5 font-medium text-[10px] text-amber-600 dark:text-amber-400">
+														<span className="shrink-0 rounded-full bg-amber-500/10 px-1.5 py-0.5 font-medium text-[10px] text-amber-800 dark:text-amber-400">
 															1:1 Direct
 														</span>
 													)}
 												</div>
 												{chat.members && (
-													<p className="truncate text-xs text-foreground/50">
+													<p className="truncate text-xs text-muted-foreground">
 														{chat.members}
 													</p>
 												)}
 											</div>
 											{isLinked && (
-												<span className="ml-auto shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-primary text-xs">
+												<span className="ml-auto shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-primary-active text-xs">
 													Linked
 												</span>
 											)}
@@ -373,7 +373,7 @@ export function TeamsChatPickerDialog({
 							)}
 							<div ref={loadMoreRef} className="h-1 w-full" />
 							{teamsQuery.isFetchingNextPage && (
-								<div className="flex items-center justify-center gap-2 py-3 text-foreground/60 text-xs">
+								<div className="flex items-center justify-center gap-2 py-3 text-muted-foreground text-xs">
 									<LoaderIcon className="size-3.5 animate-spin" />
 									Loading more chats…
 								</div>

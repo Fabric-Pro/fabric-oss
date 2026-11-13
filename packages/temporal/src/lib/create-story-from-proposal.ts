@@ -25,7 +25,7 @@ import {
 	type TrackSetBy,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import { formatContextsForPrompt, retrieveProjectContexts } from "@repo/rag";
+import { retrieveRankedPassages } from "@repo/rag";
 import {
 	fetchLiveIntegrationContext,
 	formatLiveContextForPrompt,
@@ -917,16 +917,13 @@ export async function createStoryFromProposal(
 				.filter(Boolean)
 				.join(" ")
 				.trim();
-			const contexts = await retrieveProjectContexts({
+			const context = await retrieveRankedPassages({
 				projectId: params.projectId,
 				query,
 				userId: params.createdById,
 				organizationId: orgId,
-				topK: 5,
 			});
-			return contexts.length > 0
-				? formatContextsForPrompt(contexts)
-				: null;
+			return context || null;
 		})(),
 		(async () => {
 			const liveContext = await fetchLiveIntegrationContext({
@@ -1309,16 +1306,13 @@ export async function draftBodyByKind(
 				.filter(Boolean)
 				.join(" ")
 				.trim();
-			const contexts = await retrieveProjectContexts({
+			const context = await retrieveRankedPassages({
 				projectId: params.projectId,
 				query,
 				userId: params.userId,
 				organizationId: orgId,
-				topK: 5,
 			});
-			return contexts.length > 0
-				? formatContextsForPrompt(contexts)
-				: null;
+			return context || null;
 		})(),
 	]);
 

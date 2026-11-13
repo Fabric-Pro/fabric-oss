@@ -430,7 +430,7 @@ function TicketMetaStrip({
 							{index > 0 ? (
 								<span
 									aria-hidden="true"
-									className="text-muted-foreground/40"
+									className="text-muted-foreground"
 								>
 									·
 								</span>
@@ -781,7 +781,7 @@ function TicketPanel({
 				<span className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
 					<span
 						className={cn(
-							"size-3 shrink-0 rounded-[3px] ring-1 ring-inset ring-secondary/40",
+							"size-3 shrink-0 rounded-[3px] ring-1 ring-inset ring-success/40",
 							"bg-[var(--mkt-diff-add)]",
 						)}
 						aria-hidden="true"

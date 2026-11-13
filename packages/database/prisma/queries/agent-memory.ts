@@ -15,6 +15,7 @@ import type {
 	AgentMemoryFileType,
 	Prisma,
 } from "../generated/client";
+import { getAgentTemplate } from "./agent-templates";
 
 // Re-export types for external use
 export type {
@@ -473,13 +474,14 @@ export async function initializeMemoryFromTemplate(params: {
 	agentInstanceId: string;
 	templateId: string;
 	userId: string;
-	organizationId?: string | null;
+	organizationId: string | null | undefined;
 }): Promise<AgentMemoryFile[]> {
 	const { agentInstanceId, templateId, userId, organizationId } = params;
 
 	// Get the template
-	const template = await db.agentTemplate.findUnique({
-		where: { id: templateId },
+	const template = await getAgentTemplate(templateId, {
+		userId,
+		organizationId,
 	});
 
 	if (!template) {

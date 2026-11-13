@@ -152,7 +152,7 @@ describe("CopilotSidebarAttachments — extraction notice", () => {
 		});
 
 		expect(container.querySelector(".border-highlight\\/40")).toBeTruthy();
-		expect(container.querySelector(".border-secondary\\/40")).toBeNull();
+		expect(container.querySelector(".border-success\\/40")).toBeNull();
 	});
 
 	it("shows the server's reason for a file that couldn't be read", () => {
@@ -175,7 +175,7 @@ describe("CopilotSidebarAttachments — extraction notice", () => {
 		});
 
 		expect(screen.getByText(/Sheets read: Summary/i)).toBeTruthy();
-		expect(container.querySelector(".border-secondary\\/40")).toBeTruthy();
+		expect(container.querySelector(".border-success\\/40")).toBeTruthy();
 		expect(container.querySelector(".border-highlight\\/40")).toBeNull();
 	});
 
@@ -185,7 +185,7 @@ describe("CopilotSidebarAttachments — extraction notice", () => {
 		const { container } = renderChip({ status: "skipped" });
 
 		expect(container.querySelector(".sr-only")).toBeNull();
-		expect(container.querySelector(".border-secondary\\/40")).toBeTruthy();
+		expect(container.querySelector(".border-success\\/40")).toBeTruthy();
 	});
 
 	it("says nothing for a client-read text attachment", () => {

@@ -455,7 +455,10 @@ export function ContextRepositorySyncStatus({
 								aria-label={t("menu.label")}
 								data-testid="context-sync-menu-trigger"
 							>
-								<MoreVerticalIcon className="size-4" />
+								<MoreVerticalIcon
+									strokeWidth={2.5}
+									className="size-4"
+								/>
 							</Button>
 						</DropdownMenuTrigger>
 						<DropdownMenuContent align="start" className="max-w-xs">

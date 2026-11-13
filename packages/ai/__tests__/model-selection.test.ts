@@ -709,6 +709,18 @@ describe("getEmbeddingModel", () => {
 // =============================================================================
 
 describe("getImageModel", () => {
+	it.each(["gpt-image-2.6-sunburst", "gpt-image-2.6-flare"])(
+		"supports %s directly",
+		async (id) => {
+			const { getImageModel } = await getModelFunctions();
+			expect(
+				getImageModel(id, {
+					apiKey: TEST_KEYS.OPENAI_DIRECT,
+					provider: "OPENAI_DIRECT",
+				}).modelId,
+			).toBe(id);
+		},
+	);
 	it("should route through gateway when VERCEL_GATEWAY provider specified", async () => {
 		const { getImageModel } = await getModelFunctions();
 		const model = getImageModel("dall-e-3", {

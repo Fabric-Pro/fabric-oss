@@ -83,7 +83,11 @@ import { orchestratorExecutionWorkflow } from "../../index";
 import { createInitialState } from "../../types";
 import * as phases from "../index";
 import { executeTimeLimitExit } from "../iterative-execution";
-import { installDefaultStubs } from "./advisor-scenario-harness";
+import {
+	installDefaultStubs,
+	preloaded,
+	runTurn,
+} from "./advisor-scenario-harness";
 
 const minute = 60_000;
 const summary = `## Summary\nThe example report is partially complete.\n\n## What I did\n- Read example data.\n\n## What's still needed\n- Save the final report. ${"Check the example sources before saving. ".repeat(10)}`;
@@ -330,4 +334,162 @@ it("uses the entry-point marker decision when recording the token allowance stop
 			.mocked(patched)
 			.mock.calls.filter(([id]) => id === "orch-main-round-budget-v1"),
 	).toHaveLength(1);
+});
+
+it.each([
+	[{}, true, 1],
+	[{ turnId: undefined }, false, 0],
+	[{ markerOff: true }, false, 1],
+] as const)(
+	"captures result-read decision at the workflow entry point: %j",
+	async (overrides, expected, markerCalls) => {
+		if ("markerOff" in overrides) {
+			mocks.off.add("orch-advisor-result-reads-v1");
+		}
+		await run(overrides);
+		const requests = mocks.stub("runAgentIteration").mock.calls;
+		expect(requests.length).toBeGreaterThan(0);
+		for (const [request] of requests) {
+			expect(
+				Object.hasOwn(request.availableTools, "advisor_result_read"),
+			).toBe(expected);
+		}
+		expect(
+			vi
+				.mocked(patched)
+				.mock.calls.filter(
+					([id]) => id === "orch-advisor-result-reads-v1",
+				),
+		).toHaveLength(markerCalls);
+	},
+);
+
+it("leaves result reads off on the upfront planner path", async () => {
+	await run({ executionMode: "save_reuse" });
+	expect(
+		vi
+			.mocked(patched)
+			.mock.calls.filter(([id]) => id === "orch-advisor-result-reads-v1"),
+	).toHaveLength(0);
+});
+
+it.each([{}, { turnId: undefined }])(
+	"keeps a same-named external awaiting-auth result on the disabled upfront path: %j",
+	async (overrides) => {
+		const result = { rows: ["External source evidence"] };
+		const call = {
+			id: "external-example",
+			name: "advisor_result_read",
+			args: {},
+			result,
+			status: "success",
+			durationMs: 1,
+		};
+		vi.spyOn(phases, "executeExecutionPhase").mockImplementation(
+			async (state) => {
+				expect(state.advisorResultReadsEnabled).toBe(false);
+				return {
+					success: false,
+					shouldContinue: false,
+					data: {
+						finalResponse: "Authorization required",
+						authRequired: {
+							configId: "config-example",
+							serverName: "Example",
+						},
+					},
+				};
+			},
+		);
+		const output = await run({
+			...overrides,
+			executionMode: "save_reuse",
+			resumeState: {
+				toolCalls: [call],
+				taskPlan: { id: "plan-example", steps: [] },
+			},
+		});
+		expect(output.status).toBe("awaiting_auth");
+		expect(output.toolCalls[0].result).toEqual(result);
+	},
+);
+
+it("awaiting-auth output preserves records when resuming through the disabled upfront path", async () => {
+	const text = Array.from(
+		{ length: 8000 },
+		(_, i) => `${String(i).padStart(6, "0")}=record!\n`,
+	).join("");
+	mocks
+		.stub("executeMcpTool")
+		.mockResolvedValue({ output: text, success: true, durationMs: 1 });
+	const recorded = await runTurn(mocks, {
+		message: "Read",
+		input: { turnId: "example-turn" },
+		enabledMcpConfigIds: ["config-example"],
+		preload: preloaded(["example_read"], "config-example", "Example"),
+		steps: [
+			{ calls: [{ name: "example_read", args: {} }] },
+			...[0, 16_000, 32_000].map((offset) => ({
+				calls: [
+					{
+						name: "advisor_result_read",
+						args: { ref: "r1", offset },
+					},
+				],
+			})),
+			{ answer: "Read complete." },
+		],
+	});
+	// Awaiting-auth is an upfront-path projection. Feed it records produced by
+	// the real iterative loop to exercise that raw serialization boundary.
+	vi.spyOn(phases, "executeExecutionPhase").mockResolvedValue({
+		success: false,
+		shouldContinue: false,
+		data: {
+			finalResponse: "Authorization required",
+			authRequired: { configId: "config-example", serverName: "Example" },
+		},
+	});
+	const output = await run({
+		executionMode: "save_reuse",
+		resumeState: {
+			...recorded.state,
+			taskPlan: { id: "plan-example", steps: [] },
+		},
+	});
+	expect(output.status).toBe("awaiting_auth");
+	const reads = recorded.state.toolCalls.filter(
+		(entry) => entry.name === "advisor_result_read",
+	);
+	expect(reads).toHaveLength(3);
+	for (const entry of output.toolCalls.filter(
+		(call) => call.name === "advisor_result_read",
+	)) {
+		expect(entry.result).toEqual(
+			reads.find((read) => read.id === entry.id)?.result,
+		);
+	}
+	for (const [index, read] of reads.entries()) {
+		expect(read.result).toEqual({
+			v: 1,
+			status: "success",
+			ref: "r1",
+			tool: "example_read",
+			offset: index * 16_000,
+			nextOffset: (index + 1) * 16_000,
+			returnedCharacters: 16_000,
+			totalCharacters: text.length,
+		});
+	}
+	for (const page of [
+		text.slice(0, 16_000),
+		text.slice(16_000, 32_000),
+		text.slice(32_000, 48_000),
+	]) {
+		expect(
+			JSON.stringify(output.toolCalls).split(
+				JSON.stringify(page).slice(1, -1),
+			).length - 1,
+		).toBe(1);
+	}
 });

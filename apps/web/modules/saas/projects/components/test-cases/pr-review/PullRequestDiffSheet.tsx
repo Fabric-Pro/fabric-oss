@@ -140,7 +140,7 @@ export function PullRequestDiffSheet({
 												"whitespace-pre",
 												line.startsWith("+") &&
 													!line.startsWith("+++")
-													? "text-secondary"
+													? "text-success"
 													: line.startsWith("-") &&
 															!line.startsWith(
 																"---",

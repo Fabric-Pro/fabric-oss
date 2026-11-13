@@ -351,7 +351,7 @@ function AuditNode({
 							"flex w-full flex-col gap-2 rounded-lg border bg-card p-3 shadow-sm",
 							isFailure
 								? "border-destructive/50"
-								: "border-secondary/40",
+								: "border-success/40",
 						)}
 						data-testid={`audit-trace-node-${index}`}
 					>
@@ -360,7 +360,7 @@ function AuditNode({
 								{isFailure ? (
 									<XCircleIcon className="size-4 shrink-0 text-destructive" />
 								) : (
-									<CheckCircle2Icon className="size-4 shrink-0 text-secondary" />
+									<CheckCircle2Icon className="size-4 shrink-0 text-success" />
 								)}
 								<code className="truncate font-mono text-xs font-semibold text-foreground">
 									{row.action}
@@ -411,7 +411,7 @@ function AuditNode({
 						"flex w-56 flex-col gap-2 rounded-lg border bg-card p-4 shadow-sm",
 						isFailure
 							? "border-destructive/50"
-							: "border-secondary/40",
+							: "border-success/40",
 					)}
 					data-testid={`audit-trace-node-${index}`}
 				>
@@ -419,7 +419,7 @@ function AuditNode({
 						{isFailure ? (
 							<XCircleIcon className="size-4 shrink-0 text-destructive" />
 						) : (
-							<CheckCircle2Icon className="size-4 shrink-0 text-secondary" />
+							<CheckCircle2Icon className="size-4 shrink-0 text-success" />
 						)}
 						<code className="truncate font-mono text-xs font-semibold text-foreground">
 							{row.action}
@@ -666,7 +666,7 @@ function DiagramSurface({
 										"absolute left-[3px] top-3 size-2 rounded-full",
 										item.audit.outcome === "failure"
 											? "bg-destructive"
-											: "bg-secondary",
+											: "bg-success",
 									)}
 								/>
 								<div className="min-w-0 flex-1">

@@ -8,6 +8,7 @@ import {
 	FolderIcon,
 	GitBranchIcon,
 	HistoryIcon,
+	LayoutTemplateIcon,
 	Loader2Icon,
 	PlugIcon,
 	RefreshCwIcon,
@@ -35,6 +36,7 @@ export function InstructionsEmptyState({
 	canUpload = true,
 	localSetup = null,
 	repositorySync,
+	template,
 	notice = null,
 }: {
 	projectId: string;
@@ -55,6 +57,11 @@ export function InstructionsEmptyState({
 	localSetup?: LocalSetupRoute | null;
 	/** The tab's repository-sync state and actions (§7.1). Absent, no sync button renders. */
 	repositorySync?: RepositorySyncControls;
+	/**
+	 * Start from the organization template, offered beside Upload when the
+	 * organization has one with published files. Absent, nothing renders.
+	 */
+	template?: { pending: boolean; onApply: () => void };
 }) {
 	const t = useTranslations("projects.codingInstructions.emptyState");
 	const [connectOpen, setConnectOpen] = useState(false);
@@ -126,6 +133,26 @@ export function InstructionsEmptyState({
 						<Button onClick={onUploadClick}>
 							<UploadIcon className="size-4" aria-hidden="true" />
 							{t("uploadButton")}
+						</Button>
+					) : null}
+					{canUpload && template ? (
+						<Button
+							variant="outline"
+							disabled={template.pending}
+							onClick={template.onApply}
+						>
+							{template.pending ? (
+								<Loader2Icon
+									className="size-4 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : (
+								<LayoutTemplateIcon
+									className="size-4"
+									aria-hidden="true"
+								/>
+							)}
+							{t("templateButton")}
 						</Button>
 					) : null}
 					{repositorySync && offersSyncNow(repositorySync.state) ? (

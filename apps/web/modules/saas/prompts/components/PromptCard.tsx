@@ -146,7 +146,7 @@ function renderContentWithVariables(content: string): React.ReactNode[] {
 		parts.push(
 			<span
 				key={keyIndex++}
-				className="bg-primary/10 text-primary px-0.5 rounded text-[10px]"
+				className="bg-primary/10 text-primary-active px-0.5 rounded text-[10px]"
 			>
 				{name}
 			</span>,
@@ -344,7 +344,10 @@ export function PromptCard({
 										{deletion.isPreparing ? (
 											<Spinner className="size-3.5 motion-reduce:animate-none" />
 										) : (
-											<MoreVerticalIcon className="h-3.5 w-3.5 text-muted-foreground" />
+											<MoreVerticalIcon
+												strokeWidth={2.5}
+												className="h-3.5 w-3.5 text-muted-foreground"
+											/>
 										)}
 									</button>
 								</DropdownMenuTrigger>

@@ -133,7 +133,7 @@ export function ProjectImplementationDefaultsSettings({
 								</h3>
 								<Badge
 									variant="outline"
-									className="rounded-full border-primary/25 bg-primary/5 px-2.5 py-0.5 text-[11px] text-primary"
+									className="rounded-full border-primary/25 bg-primary/5 px-2.5 py-0.5 text-[11px] text-primary-active"
 								>
 									Subscription Offload Ready
 								</Badge>
@@ -328,7 +328,7 @@ export function ProjectImplementationDefaultsSettings({
 									}
 									className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
 										isSelected
-											? "border-primary bg-primary/10 text-primary"
+											? "border-primary bg-primary/10 text-primary-active"
 											: "border-border/70 bg-background text-foreground/80 hover:border-border hover:bg-muted/40"
 									}`}
 								>
@@ -422,7 +422,7 @@ export function ProjectImplementationDefaultsSettings({
 						</div>
 						<Badge
 							variant="outline"
-							className="rounded-full border-primary/25 bg-primary/5 px-2.5 py-0.5 text-[11px] text-primary"
+							className="rounded-full border-primary/25 bg-primary/5 px-2.5 py-0.5 text-[11px] text-primary-active"
 						>
 							User Controlled
 						</Badge>
@@ -518,7 +518,7 @@ export function ProjectImplementationDefaultsSettings({
 											aria-pressed={included}
 											className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
 												included
-													? "border-primary/40 bg-primary/10 text-primary"
+													? "border-primary/40 bg-primary/10 text-primary-active"
 													: "border-border/60 bg-muted/20 text-muted-foreground hover:text-foreground"
 											}`}
 										>

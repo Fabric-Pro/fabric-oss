@@ -32,6 +32,7 @@ import {
 import { getCodingExecutionProvider } from "../../lib/coding-execution/get-provider";
 import { getLocalKanbanSessionUrl } from "../../lib/coding-execution/local-kanban-provider";
 import { dispatchLifecycleEvent } from "../../lib/lifecycle-dispatcher";
+import { resolveRunTargetBranch } from "./target-branch";
 
 export * from "./follow-up";
 // Spike run activities (plan Slice 3) live in ./spike and are part of this
@@ -438,9 +439,15 @@ export async function buildImplementationPrompt(
 	parts.push(
 		`Repository: ${input.repositoryOwner && input.repositoryName ? `${input.repositoryOwner}/${input.repositoryName}` : (story.project.repositoryUrl ?? "Repository not specified")}`,
 	);
-	parts.push(
-		`Target branch: ${input.targetBranch ?? story.project.defaultBranch ?? "main"}`,
-	);
+	// One branch for the context line and the pull request below.
+	const targetBranch = await resolveRunTargetBranch({
+		projectId: input.projectId,
+		targetBranch: input.targetBranch,
+		repositoryOwner: input.repositoryOwner,
+		repositoryName: input.repositoryName,
+		projectDefaultBranch: story.project.defaultBranch,
+	});
+	parts.push(`Target branch: ${targetBranch}`);
 	if (input.workingDirectory) {
 		parts.push(`Working directory: ${input.workingDirectory}`);
 		parts.push(
@@ -484,7 +491,7 @@ export async function buildImplementationPrompt(
 		"Run relevant unit tests and type-checks to verify your implementation before committing.",
 	);
 	parts.push(
-		`Stage and commit your changes on the current feature worktree branch, push the branch to origin, and open a GitHub Pull Request targeting \`${input.targetBranch ?? "main"}\` (for example using \`gh pr create --base ${input.targetBranch ?? "main"} --fill\` or \`gh pr create\`).`,
+		`Stage and commit your changes on the current feature worktree branch, push the branch to origin, and open a GitHub Pull Request targeting \`${targetBranch}\` (for example using \`gh pr create --base ${targetBranch} --fill\` or \`gh pr create\`).`,
 	);
 	parts.push(
 		"Include the opened Pull Request URL (`https://github.com/<owner>/<repo>/pull/<number>`) and a concise summary of what was implemented and validated in your final response.",

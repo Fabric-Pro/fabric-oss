@@ -17,6 +17,7 @@ vi.mock("../../backlog-context/azure-monitor-log-source", () => ({
 }));
 
 const registry = vi.hoisted(() => ({
+	knownProviderIds: () => ["azure-monitor"],
 	resolveConfiguredLogSource: vi.fn(),
 	resolveProjectLogSource: vi.fn(),
 }));
@@ -24,7 +25,7 @@ vi.mock("../../backlog-context/log-source-registry", () => registry);
 
 import {
 	resolveRecurringErrorSource,
-	UNUSABLE_BINDING_REASON,
+	UNUSABLE_BINDING_REASONS,
 } from "../resolve-error-source";
 
 function adapter(label: string, sharedStore: boolean) {
@@ -101,9 +102,36 @@ describe("resolveRecurringErrorSource", () => {
 		);
 
 		await expect(resolveRecurringErrorSource(PROJECT)).rejects.toThrow(
-			UNUSABLE_BINDING_REASON,
+			UNUSABLE_BINDING_REASONS.incompleteSettings,
 		);
 		expect(registry.resolveConfiguredLogSource).not.toHaveBeenCalled();
+	});
+
+	it("says so when the binding names a provider the deployment does not support", async () => {
+		getProjectLogSourceBinding.mockResolvedValue({
+			provider: "datadog",
+			config: { workspaceId: "ws-own" },
+		});
+
+		await expect(resolveRecurringErrorSource(PROJECT)).rejects.toThrow(
+			UNUSABLE_BINDING_REASONS.unknownProvider,
+		);
+	});
+
+	it("says the binding names the shared workspace when the registry refused it for that", async () => {
+		vi.stubEnv("FABRIC_BUG_ANALYSIS_LOG_WORKSPACE_ID", "WS-Shared");
+		try {
+			getProjectLogSourceBinding.mockResolvedValue({
+				provider: "azure-monitor",
+				config: { workspaceId: "ws-shared" },
+			});
+
+			await expect(resolveRecurringErrorSource(PROJECT)).rejects.toThrow(
+				UNUSABLE_BINDING_REASONS.sharedWorkspace,
+			);
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 
 	it("refuses, visibly, a binding that resolves to a shared store", async () => {
@@ -116,7 +144,7 @@ describe("resolveRecurringErrorSource", () => {
 		);
 
 		await expect(resolveRecurringErrorSource(PROJECT)).rejects.toThrow(
-			UNUSABLE_BINDING_REASON,
+			UNUSABLE_BINDING_REASONS.sharedWorkspace,
 		);
 	});
 
@@ -131,7 +159,7 @@ describe("resolveRecurringErrorSource", () => {
 		});
 
 		await expect(resolveRecurringErrorSource(PROJECT)).rejects.toThrow(
-			UNUSABLE_BINDING_REASON,
+			UNUSABLE_BINDING_REASONS.cannotAggregate,
 		);
 	});
 

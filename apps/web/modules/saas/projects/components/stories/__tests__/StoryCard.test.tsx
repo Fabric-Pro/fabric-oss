@@ -650,7 +650,10 @@ describe("Roadmap list row contract", () => {
 		const view = row({ deliveryTrack: "DEFER" });
 		const track = within(view.container).getByTestId("delivery-track-chip");
 		expect(track).toHaveTextContent("Track: Defer");
-		expect(track).toHaveClass("line-through", "opacity-60");
+		// Struck through and in the secondary ink — not faded with opacity,
+		// which took it to 2.7:1 (WCAG AA, Fizzy #1444).
+		expect(track).toHaveClass("line-through", "text-muted-foreground");
+		expect(track).not.toHaveClass("opacity-60");
 		expect(track.closest("[data-row-secondary]")).not.toBeNull();
 	});
 

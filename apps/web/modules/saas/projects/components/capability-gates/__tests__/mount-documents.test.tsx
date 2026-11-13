@@ -54,6 +54,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 			documents: {
 				create: { mutationOptions: () => ({ mutationFn: vi.fn() }) },
 				list: { queryKey: () => ["projects.documents.list"] },
+				// Mounted with the dialog; nothing here is about web research.
+				webResearchAvailability: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: [
+							"projects.documents.webResearchAvailability",
+							input,
+						],
+						queryFn: () => ({ available: true, missing: [] }),
+					}),
+				},
 			},
 		},
 		prompts: {

@@ -345,7 +345,7 @@ export function GitLabSettings({
 								</span>
 							</div>
 							{gitlabStatus.username ? (
-								<p className="text-sm text-green-700 dark:text-green-300 mt-1">
+								<p className="text-sm text-green-800 dark:text-green-300 mt-1">
 									Signed in as{" "}
 									<span className="font-semibold">
 										@{gitlabStatus.username}

@@ -64,6 +64,12 @@ export const generateDocumentProcedure = tenantProtectedProcedure
 				.describe(
 					"Specific prompt version ID for attribution tracking",
 				),
+			allowWebResearch: z
+				.boolean()
+				.optional()
+				.describe(
+					"Allow this run to search and read the public web. Applies to this request only; anything but true leaves it off.",
+				),
 			// Deliberately no `skipDependencyWait`. The workflow input carries
 			// that flag for one in-process Temporal caller only; accepting it
 			// here would hand every client a "generate anyway" switch past the
@@ -142,6 +148,8 @@ export const generateDocumentProcedure = tenantProtectedProcedure
 				promptVersionId: input.promptVersionId,
 				currentDocument,
 				planEligible: true,
+				// Forwarded as given: the dispatcher grants it only for `true`.
+				allowWebResearch: input.allowWebResearch,
 			});
 		} catch (error) {
 			// One exception to the generalization below: a structured refusal

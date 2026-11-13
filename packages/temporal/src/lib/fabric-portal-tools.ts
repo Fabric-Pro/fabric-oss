@@ -60,6 +60,13 @@ export const FABRIC_PORTAL_PROJECT_TOOL_NAMES = [
 	"fabric_instruction_checks",
 	"fabric_propose_project_instruction_change",
 	"fabric_add_instruction_lesson",
+	// Coding Instructions sets (spec 2026-11-11 §4.4): the agent manages a
+	// project's sets as a person does in the tab, under the acting person's
+	// live INSTRUCTION_UPDATE.
+	"fabric_list_instruction_sets",
+	"fabric_create_instruction_set",
+	"fabric_update_instruction_set",
+	"fabric_delete_instruction_set",
 ] as const;
 
 /**
@@ -199,6 +206,9 @@ const PORTAL_REQUEST_PATTERNS: readonly RegExp[] = [
 	/\b(?:search|look up|find)\b[^.?!]{0,40}\b(?:knowledge|project knowledge|docs|documentation|documents|contexts?)\b/i,
 	/\b(?:workspaces?|library|libraries)\b/i,
 	/\b(?:coding )?instructions?\b|\blessons?\b/i,
+	// Coding Instructions sets: "a set for the web and api repositories",
+	// "add the ios repository to the mobile set".
+	/\b(?:instruction|rules?|skills?)\s+sets?\b|\bsets?\b[^.?!]{0,40}\b(?:repos?|repositor(?:y|ies))\b|\b(?:repos?|repositor(?:y|ies))\b[^.?!]{0,40}\bset\b/i,
 	/\b(?:feature|task|subtask)\s+(?:history|versions?|decisions?)\b/i,
 	/\b(?:which|what|list|show|open|archive|rename|update)\b[^.?!]{0,30}\bprojects\b|\b(?:create|start|set up)\b[^.?!]{0,30}\b(?:new )?project\b/i,
 	/\b(?:organi[sz]ations?|who am i|which account|my (?:role|identity|account))\b/i,

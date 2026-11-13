@@ -1,6 +1,7 @@
 import { planConversationTurnReservation } from "@repo/database/prisma/queries/lib/conversation-turn-room";
 import { measureSerializedBytes } from "../../lib/payload-size-guard";
 import { type EffectiveToolCalls, historyCallIndex } from "./advisor-call-tool";
+import { resultReadPlaceholder } from "./advisor-result-read";
 import { isFabricOwnedRead } from "./fabric-catalog-access";
 import { TOOL_RESULTS } from "./orchestrator-config";
 import {
@@ -218,6 +219,7 @@ export function boundedHistoryV2Decision<
 		riskOptionsByToolCallId?: ReadonlyMap<string, RiskAssessmentOptions>;
 		effectiveToolCalls?: EffectiveToolCalls;
 		autonomyLevel?: AutonomyLevel;
+		resultReadsEnabled?: boolean;
 	},
 ) {
 	const before = measureBoundedHistoryV2Request(input);
@@ -305,7 +307,14 @@ export function boundedHistoryV2Decision<
 			.replace(/\n/g, " ");
 		proposed[index] = {
 			...message,
-			content: `[Previous tool result pruned to save context. Tool: ${name} returned ${message.content.length} chars. Summary: ${summary}...]`,
+			content:
+				input.resultReadsEnabled && message.toolResultRef
+					? resultReadPlaceholder(
+							name ?? "unknown",
+							message.content,
+							message.toolResultRef,
+						)
+					: `[Previous tool result pruned to save context. Tool: ${name} returned ${message.content.length} chars. Summary: ${summary}...]`,
 		};
 	}
 	const after = measureBoundedHistoryV2Request({
