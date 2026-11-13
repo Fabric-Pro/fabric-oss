@@ -811,7 +811,7 @@ export function AiProvidersSettingsForm({
 											}
 										/>
 									) : null}
-									<p className="text-success/80 text-sm">
+									<p className="text-success text-sm">
 										{configStatus.message}
 									</p>
 									{configStatus.configuredProviders.length >
@@ -870,14 +870,14 @@ export function AiProvidersSettingsForm({
 											{/* Embedding Provider Status */}
 											<div className="flex items-center gap-2 text-sm flex-wrap">
 												<DatabaseIcon className="size-4 text-success" />
-												<span className="text-success/80">
+												<span className="text-success">
 													Document Search:
 												</span>
 												{configStatus.embeddingProvider ? (
 													<div className="flex items-center gap-1.5">
 														<Badge
 															variant="outline"
-															className="text-xs border-secondary/30 bg-secondary/10 text-secondary"
+															className="text-xs border-success/30 bg-success/10 text-success"
 														>
 															{getConfiguredProviderLabel(
 																configStatus.embeddingProvider,
@@ -907,7 +907,7 @@ export function AiProvidersSettingsForm({
 																		}
 																	</Badge>
 																)}
-																<span className="text-success/80 text-xs">
+																<span className="text-success text-xs">
 																	{
 																		configStatus
 																			.embeddingModel
@@ -942,7 +942,7 @@ export function AiProvidersSettingsForm({
 									<p className="font-medium text-foreground">
 										No AI Provider Configured
 									</p>
-									<p className="text-highlight/80 text-sm">
+									<p className="text-highlight text-sm">
 										Configure at least one AI provider below
 										to enable AI-powered features.
 									</p>
@@ -2696,7 +2696,7 @@ export function AiProvidersSettingsForm({
 
 					{enabledProviders.length === 0 && (
 						<div className="rounded-md border border-highlight/20 bg-highlight/5 p-3">
-							<p className="text-highlight/80 text-sm">
+							<p className="text-highlight text-sm">
 								Select at least one provider to see models in
 								the model selector.
 							</p>
@@ -2779,7 +2779,7 @@ export function AiProvidersSettingsForm({
 										previous provider may not be searchable
 										correctly.
 									</p>
-									<p className="text-highlight/80 text-sm mt-2">
+									<p className="text-highlight text-sm mt-2">
 										Consider re-indexing your documents
 										after changing the embedding provider.
 									</p>

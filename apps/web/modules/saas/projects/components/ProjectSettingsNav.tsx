@@ -5,6 +5,7 @@ import {
 	AlertTriangleIcon,
 	BookOpenIcon,
 	BrainIcon,
+	ClockIcon,
 	CompassIcon,
 	FlaskConicalIcon,
 	GlobeIcon,
@@ -30,6 +31,7 @@ export type SettingsTab =
 	| "project-management"
 	| "agent-runtime"
 	| "members"
+	| "time-tracking"
 	| "retrieval"
 	| "environments"
 	| "testing"
@@ -101,6 +103,12 @@ const TABS: TabItem[] = [
 		description: "Team access & invitations",
 	},
 	{
+		id: "time-tracking",
+		label: "Time tracking",
+		icon: ClockIcon,
+		description: "Project type, entry rules",
+	},
+	{
 		id: "retrieval",
 		label: "Retrieval",
 		icon: BrainIcon,
@@ -160,6 +168,9 @@ type Props = {
 	 *  for the viewer's organization, same reasoning as `showQa` — no settings
 	 *  for a surface the flag hides. */
 	showPublishing?: boolean;
+	/** Time is tracked on an organization's projects only, so a personal
+	 *  project has no Time tracking tab. */
+	showTimeTracking?: boolean;
 };
 
 export function ProjectSettingsNav({
@@ -171,6 +182,7 @@ export function ProjectSettingsNav({
 	showProjectManagement = false,
 	showQa = false,
 	showPublishing = false,
+	showTimeTracking = false,
 }: Props) {
 	const visibleTabs = TABS.filter((tab) => {
 		if (tab.id === "danger") {
@@ -184,6 +196,9 @@ export function ProjectSettingsNav({
 		}
 		if (tab.id === "publishing") {
 			return showPublishing;
+		}
+		if (tab.id === "time-tracking") {
+			return showTimeTracking;
 		}
 		return true;
 	});
@@ -208,7 +223,7 @@ export function ProjectSettingsNav({
 						className={cn(
 							"group flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors whitespace-nowrap lg:whitespace-normal cursor-pointer",
 							isActive
-								? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary"
+								? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary-active"
 								: "text-foreground hover:bg-foreground/[0.06]",
 							tab.destructive &&
 								isActive &&
@@ -254,7 +269,7 @@ export function ProjectSettingsNav({
 							</div>
 							<p
 								className={cn(
-									"text-xs text-muted-foreground/70 truncate",
+									"text-xs text-muted-foreground truncate",
 									isActive && "text-muted-foreground",
 								)}
 							>

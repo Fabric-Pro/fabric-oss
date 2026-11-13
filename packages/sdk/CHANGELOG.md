@@ -1,5 +1,12 @@
 # @fabricorg/sdk
 
+## 0.8.2
+
+### Patch Changes
+
+- c283fae: Projects can now split their Coding Instructions into named sets, each a folder (`instructions/<name>/`) of the one instructions source that applies to the code repositories chosen for it. Sets are managed from the Coding Instructions tab, the API, the SDK (`projects.listInstructionSets`, `createInstructionSet`, `updateInstructionSet`, `deleteInstructionSet`) and MCP. `fabric instructions init` picks the set for the current checkout, or the one named with `--set`, and installs a separate plugin per set. Projects without sets keep working as before.
+- c283fae: Remove one Living Memory folder, see new lessons in the digest, and show session-start notes to developers as hook messages.
+
 ## 0.8.1
 
 ### Patch Changes

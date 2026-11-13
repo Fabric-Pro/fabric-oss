@@ -12,7 +12,6 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@ui/components/dialog";
-import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
 import { Loader2Icon } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -59,9 +58,11 @@ import {
 	type SelectionMessage,
 	selectionTreeListingOf,
 } from "../repository-sync/lib/selection-row";
+import { RepositoryBranchInput } from "../repository-sync/RepositoryBranchInput";
 import { RepositorySyncSelectionTree } from "../repository-sync/RepositorySyncSelectionTree";
 import { SelectedPathsList } from "../repository-sync/SelectedPathsList";
 import { SelectionSummary } from "../repository-sync/SelectionSummary";
+import { useRepositoryBranchField } from "../repository-sync/useRepositoryBranchField";
 import { RepositoryChoice } from "./RepositoryChoice";
 
 const NAMESPACE = "projects.codingInstructions.repositorySync";
@@ -181,7 +182,21 @@ export function ConfigureRepositorySyncDialog({
 		integrations[0] ??
 		null;
 	const [integrationId, setIntegrationId] = useState(seed?.id ?? "");
-	const [ref, setRef] = useState(current?.ref ?? seed?.defaultBranch ?? "");
+	// A configured sync keeps its ref; otherwise the repository's live
+	// provider default seeds the field (`useRepositoryBranchField`).
+	const branchField = useRepositoryBranchField({
+		projectId,
+		open,
+		integrationId,
+		configuredRef:
+			current && current.repositoryIntegrationId === integrationId
+				? current.ref
+				: null,
+		storedBranch:
+			integrations.find((i) => i.id === integrationId)?.defaultBranch ??
+			null,
+	});
+	const { ref, setRef } = branchField;
 	const [selection, setSelection] = useState<InstructionsSelection>(() => ({
 		root: current ? current.rootPath : null,
 		edits: NO_EXCLUSION_EDITS,
@@ -513,7 +528,9 @@ export function ConfigureRepositorySyncDialog({
 						integrationId={integrationId}
 						onChoose={(next) => {
 							setIntegrationId(next.id);
-							setRef(next.defaultBranch);
+							// Its branch: the configured ref, else its live
+							// provider default, else its stored branch.
+							branchField.reset();
 							// Another repository's folders: start again from
 							// the saved rules.
 							setSelection((prev) => ({
@@ -528,14 +545,13 @@ export function ConfigureRepositorySyncDialog({
 						<Label htmlFor="instructions-sync-branch">
 							{t("configureDialog.branchLabel")}
 						</Label>
-						<Input
+						<RepositoryBranchInput
 							id="instructions-sync-branch"
 							value={ref}
-							onChange={(e) => changeRef(e.target.value)}
-							aria-invalid={
-								inlineErrorField === "branch" ? true : undefined
-							}
-							aria-describedby={
+							onChange={changeRef}
+							branches={branchField.branches}
+							invalid={inlineErrorField === "branch"}
+							describedBy={
 								inlineErrorField === "branch"
 									? ids.error
 									: undefined

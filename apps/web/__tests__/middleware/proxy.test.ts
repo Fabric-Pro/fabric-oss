@@ -66,6 +66,10 @@ vi.mock("next/server", () => ({
 }));
 
 import { config as appConfig } from "@repo/config";
+import {
+	PROXY_TIMING_HEADER,
+	parseProxyTiming,
+} from "@shared/lib/proxy-timing";
 import { getSessionCookie } from "better-auth/cookies";
 // Import after mocks are set up (hoisted by vitest)
 import proxy, {
@@ -503,6 +507,28 @@ describe("Middleware (proxy.ts)", () => {
 				expect(
 					response.requestHeaders?.get("x-embed-route") ?? null,
 				).toBeNull();
+			},
+		);
+
+		it.each([
+			["an ordinary app page", "/app/example-org/workspaces"],
+			["a frame's embed view", "/app/example-org/frames/frame-1/embed"],
+		])(
+			"stamps %s with its own timing and drops a client's copy",
+			async (_label, path) => {
+				mockGetSessionCookie.mockReturnValue("token");
+
+				const response = await proxy(
+					createMockRequest(path, {
+						headers: { [PROXY_TIMING_HEADER]: "1;2;3" },
+					}),
+				);
+
+				const timing = parseProxyTiming(
+					response.requestHeaders?.get(PROXY_TIMING_HEADER) ?? null,
+				);
+				expect(timing?.receivedAt).toBeGreaterThan(Date.now() - 60_000);
+				expect(timing?.requestIndex).toBeGreaterThan(0);
 			},
 		);
 

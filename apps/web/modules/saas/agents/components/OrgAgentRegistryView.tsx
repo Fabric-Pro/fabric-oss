@@ -179,7 +179,7 @@ export function OrgAgentRegistryView({
 							<p className="font-medium text-foreground">
 								View Only
 							</p>
-							<p className="text-highlight/80">
+							<p className="text-highlight">
 								Only organization administrators can register or
 								modify agents.
 							</p>

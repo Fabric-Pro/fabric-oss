@@ -385,9 +385,7 @@ function ResourceContentBody({
 					)}
 					{data.pageCount && <span>{data.pageCount} pages</span>}
 					{!data.extractedText && data.contentPreview && (
-						<span className="text-muted-foreground/50">
-							preview
-						</span>
+						<span className="text-muted-foreground">preview</span>
 					)}
 				</div>
 			) : null}
@@ -400,7 +398,7 @@ function ResourceContentBody({
 						{!data.extractedText &&
 							data.contentPreview &&
 							data.contentPreview.length >= 2000 && (
-								<span className="text-muted-foreground/50">
+								<span className="text-muted-foreground">
 									{" "}
 									…
 								</span>

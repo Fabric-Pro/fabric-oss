@@ -478,7 +478,7 @@ export function OrganizationContactsList({
 															)}
 														</Badge>
 													</div>
-													<small className="block truncate text-foreground/60">
+													<small className="block truncate text-muted-foreground">
 														{secondaryLine ??
 															t(`${T}.noDetails`)}
 													</small>
@@ -498,7 +498,12 @@ export function OrganizationContactsList({
 																`${T}.rowActions`,
 															)}
 														>
-															<MoreVerticalIcon className="size-4" />
+															<MoreVerticalIcon
+																strokeWidth={
+																	2.5
+																}
+																className="size-4"
+															/>
 														</Button>
 													</DropdownMenuTrigger>
 													<DropdownMenuContent align="end">
@@ -560,7 +565,7 @@ export function OrganizationContactsList({
 								<strong className="block truncate">
 									{duplicate.name}
 								</strong>
-								<small className="block truncate text-foreground/60">
+								<small className="block truncate text-muted-foreground">
 									{duplicate.email?.trim() ||
 										duplicate.company?.trim() ||
 										t(`${T}.noDetails`)}

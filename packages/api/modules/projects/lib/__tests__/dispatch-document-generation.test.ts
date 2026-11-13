@@ -30,6 +30,9 @@
  *     are absent — not null, not empty string — when the caller has none.
  *   - The organization the caller resolved reaches both the AI token and the
  *     workflow args.
+ *   - Web research reaches the token and the run only for a literal `true`,
+ *     gets its own workflow id, and leaves an unauthorized request's id
+ *     exactly as it was before the field existed.
  *   - Infrastructure errors propagate raw, for the procedure boundary to log
  *     and generalize; the client's failure surfaces ahead of the token's,
  *     without an unhandled rejection.
@@ -324,6 +327,15 @@ describe("dispatchDocumentGeneration — a run is already live", () => {
 		expect(result.runId).toBeNull();
 	});
 
+	it("marks the duplicate as this same request, since the inputs were identical", async () => {
+		const result = await dispatchDocumentGeneration(baseInput());
+
+		expect(result).toMatchObject({
+			outcome: "alreadyInProgress",
+			sameRequest: true,
+		});
+	});
+
 	it("never touches the document row", async () => {
 		// The live attempt's `generationStartedAt` is its identity: stamping a
 		// fresh one here would strand its own QUEUED → GENERATING flip.
@@ -509,6 +521,163 @@ describe("dispatchDocumentGeneration — workflow arguments", () => {
 			mocks.issueAIToken.mock.calls[0]?.[0].organizationId,
 		).toBeUndefined();
 		expect(workflowArgs().organizationId).toBeUndefined();
+	});
+});
+
+/**
+ * Web research is a per-action permission a person ticks. Only a literal `true`
+ * grants it; zod refuses a non-boolean at the HTTP edge, but an in-process
+ * caller can still hand this function anything, so the dispatcher compares
+ * strictly rather than trusting truthiness.
+ */
+describe("dispatchDocumentGeneration — web research permission", () => {
+	/** The ids an unauthorized request got before the field existed. */
+	const PINNED_BASE_ID = "project-document-generation-doc-1-1b39cba62b2bbfc4";
+	const PINNED_FULL_ID = "project-document-generation-doc-1-cde23d5c3b97e94e";
+	const FULL_INPUT = {
+		prompt: "tighten the risks section",
+		promptId: "prompt-9",
+		promptVersionId: "v3",
+		currentDocument: "existing content",
+		suppliedContext: "<fabric_attachment>src</fabric_attachment>",
+		excludeContextId: "ctx-1",
+	};
+
+	it.each([
+		["absent", {}],
+		["false", { allowWebResearch: false }],
+		['the string "true"', { allowWebResearch: "true" }],
+		["the number 1", { allowWebResearch: 1 }],
+	])("keeps research off when the field is %s", async (_label, overrides) => {
+		await dispatchDocumentGeneration(baseInput(overrides) as never);
+
+		expect(mocks.issueAIToken.mock.calls[0]?.[0].webResearch).toBeFalsy();
+		// No project is bound when nothing was granted.
+		expect(mocks.issueAIToken.mock.calls[0]?.[0]).not.toHaveProperty(
+			"webResearchProjectId",
+		);
+		// Nor a research grant.
+		expect(mocks.issueAIToken.mock.calls[0]?.[0]).not.toHaveProperty(
+			"webResearchGrantId",
+		);
+	});
+
+	it("starts the run with allowWebResearch: false when the choice was offered and declined", async () => {
+		await dispatchDocumentGeneration(
+			baseInput({ allowWebResearch: false }),
+		);
+
+		expect(workflowArgs()).toHaveProperty("allowWebResearch", false);
+	});
+
+	it.each([
+		["absent", {}],
+		['the string "true"', { allowWebResearch: "true" }],
+		["the number 1", { allowWebResearch: 1 }],
+	])(
+		"starts the run with no allowWebResearch key when the field is %s, as no choice was offered",
+		async (_label, overrides) => {
+			await dispatchDocumentGeneration(baseInput(overrides) as never);
+
+			expect(workflowArgs()).not.toHaveProperty("allowWebResearch");
+		},
+	);
+
+	it("never grants research without a project to bind it to", async () => {
+		await dispatchDocumentGeneration(
+			baseInput({
+				projectId: "",
+				capabilityAlreadyAsserted: true,
+				allowWebResearch: true,
+			}),
+		);
+
+		const tokenOptions = mocks.issueAIToken.mock.calls[0]?.[0];
+		expect(tokenOptions.webResearch).toBe(false);
+		expect(tokenOptions).not.toHaveProperty("webResearchProjectId");
+		expect(mocks.loggerWarn).toHaveBeenCalledWith(
+			"Web research was allowed for a run with no project; issuing the token without it",
+			{ documentId: DOCUMENT_ID, userId: USER_ID },
+		);
+	});
+
+	it("grants research to the token and the run when the field is true", async () => {
+		await dispatchDocumentGeneration(baseInput({ allowWebResearch: true }));
+
+		expect(mocks.issueAIToken).toHaveBeenCalledWith(
+			expect.objectContaining({ webResearch: true }),
+		);
+		expect(workflowArgs().allowWebResearch).toBe(true);
+	});
+
+	it("binds the granted research to the run's project", async () => {
+		await dispatchDocumentGeneration(baseInput({ allowWebResearch: true }));
+
+		expect(mocks.issueAIToken.mock.calls[0]?.[0].webResearchProjectId).toBe(
+			PROJECT_ID,
+		);
+	});
+
+	it("gives each granted action its own research grant id", async () => {
+		await dispatchDocumentGeneration(baseInput({ allowWebResearch: true }));
+		await dispatchDocumentGeneration(baseInput({ allowWebResearch: true }));
+
+		const first = mocks.issueAIToken.mock.calls[0]?.[0].webResearchGrantId;
+		const second = mocks.issueAIToken.mock.calls[1]?.[0].webResearchGrantId;
+		expect(first).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+		);
+		expect(second).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+		);
+		expect(second).not.toBe(first);
+	});
+
+	it("writes no research grant when research is off for want of a project", async () => {
+		await dispatchDocumentGeneration(
+			baseInput({
+				projectId: "",
+				capabilityAlreadyAsserted: true,
+				allowWebResearch: true,
+			}),
+		);
+
+		expect(mocks.issueAIToken.mock.calls[0]?.[0]).not.toHaveProperty(
+			"webResearchGrantId",
+		);
+	});
+
+	it.each([
+		["absent", {}],
+		["false", { allowWebResearch: false }],
+		['the string "true"', { allowWebResearch: "true" }],
+		["the number 1", { allowWebResearch: 1 }],
+	])(
+		"keeps the id an unauthorized request had before the field existed when it is %s",
+		async (_label, overrides) => {
+			// A repeat request during the deploy must still land on the id of the
+			// run it would have joined before the field existed.
+			expect(await idFor(overrides)).toBe(PINNED_BASE_ID);
+			expect(await idFor({ ...FULL_INPUT, ...overrides })).toBe(
+				PINNED_FULL_ID,
+			);
+		},
+	);
+
+	it("gives an authorized request its own id, so it never joins a run that cannot research", async () => {
+		const unauthorized = await idFor(FULL_INPUT);
+		const declined = await idFor({
+			...FULL_INPUT,
+			allowWebResearch: false,
+		});
+		const authorized = await idFor({
+			...FULL_INPUT,
+			allowWebResearch: true,
+		});
+
+		expect(authorized).toMatch(WORKFLOW_ID_PATTERN);
+		expect(authorized).not.toBe(unauthorized);
+		expect(authorized).not.toBe(declined);
 	});
 });
 
@@ -949,6 +1118,8 @@ describe("dispatchDocumentGeneration — a client-document Proposal joins its li
 				workflowId: OTHER_WORKFLOW_ID,
 				runId: null,
 				message: "Document generation already in progress",
+				// Joined under a different workflow id: not this request's run.
+				sameRequest: false,
 			});
 			expect(mocks.getHandle).toHaveBeenCalledWith(OTHER_WORKFLOW_ID);
 			expect(mocks.workflowStart).not.toHaveBeenCalled();
@@ -1153,6 +1324,7 @@ describe("dispatchDocumentGeneration — a client-document Proposal joins its li
 		expect(repeat).toMatchObject({
 			outcome: "alreadyInProgress",
 			workflowId: own.workflowId,
+			sameRequest: true,
 		});
 		expect(mocks.getHandle).not.toHaveBeenCalled();
 	});

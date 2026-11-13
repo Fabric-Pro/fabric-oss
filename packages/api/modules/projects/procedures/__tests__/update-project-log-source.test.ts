@@ -6,8 +6,11 @@
  * toggle, and it is written through `setProjectLogSourceBinding` and audited
  * like every other update-project field.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { projectLogSourceInputSchema } from "../../lib/log-source-input";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	projectLogSourceInputSchema,
+	SHARED_LOG_WORKSPACE_MESSAGE,
+} from "../../lib/log-source-input";
 
 const mockUpdateProject = vi.fn();
 const mockGetProject = vi.fn();
@@ -230,5 +233,69 @@ describe("projectLogSourceInputSchema", () => {
 				workspaceId: WORKSPACE_ID,
 			}).success,
 		).toBe(false);
+	});
+});
+
+describe("updateProjectProcedure — the deployment's shared telemetry workspace", () => {
+	const SHARED_ID = "7c2e9a41-5b3d-4f6e-8a1c-2d9b0e4f7a63";
+	const bind = (workspaceId: string) => ({
+		id: "proj-1",
+		logSource: { provider: "azure-monitor", workspaceId },
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	it.each([SHARED_ID, SHARED_ID.toUpperCase()])(
+		"refuses %s before writing anything, and says why",
+		async (workspaceId) => {
+			vi.stubEnv("FABRIC_BUG_ANALYSIS_LOG_WORKSPACE_ID", SHARED_ID);
+			asAdmin();
+			const handler = await loadHandler();
+
+			await expect(
+				handler({ input: bind(workspaceId), context }),
+			).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+				message: SHARED_LOG_WORKSPACE_MESSAGE,
+			});
+			expect(mockUpdateProject).not.toHaveBeenCalled();
+			expect(mockSetBinding).not.toHaveBeenCalled();
+		},
+	);
+
+	it("still answers FORBIDDEN to a caller who may not change the log source", async () => {
+		vi.stubEnv("FABRIC_BUG_ANALYSIS_LOG_WORKSPACE_ID", SHARED_ID);
+		mockResolveAccess.mockResolvedValue({
+			source: "org-role",
+			permissions: ["PROJECT_UPDATE"],
+			organizationId: null,
+		});
+		const handler = await loadHandler();
+
+		await expect(
+			handler({ input: bind(SHARED_ID), context }),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+	});
+
+	it("saves a different workspace while the shared one is configured", async () => {
+		vi.stubEnv("FABRIC_BUG_ANALYSIS_LOG_WORKSPACE_ID", SHARED_ID);
+		asAdmin();
+		const handler = await loadHandler();
+
+		await handler({ input: bind(WORKSPACE_ID), context });
+
+		expect(mockSetBinding).toHaveBeenCalled();
+	});
+
+	it("has nothing to refuse where the deployment names no shared workspace", async () => {
+		vi.stubEnv("FABRIC_BUG_ANALYSIS_LOG_WORKSPACE_ID", "");
+		asAdmin();
+		const handler = await loadHandler();
+
+		await handler({ input: bind(SHARED_ID), context });
+
+		expect(mockSetBinding).toHaveBeenCalled();
 	});
 });

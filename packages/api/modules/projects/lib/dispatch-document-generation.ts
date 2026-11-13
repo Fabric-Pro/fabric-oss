@@ -64,7 +64,7 @@
  * reach a toast.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { ORPCError } from "@orpc/server";
 import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { issueAIToken } from "@repo/ai-token";
@@ -210,6 +210,20 @@ export interface DispatchDocumentGenerationInput {
 	 */
 	planEligible?: boolean;
 	/**
+	 * The person's answer to "Allow web research" for this action only; it is
+	 * never remembered or inherited. Three states:
+	 *
+	 * - `true`: allowed. Only this grants research to the run's token and
+	 *   gives the run its own id.
+	 * - `false`: the choice was offered and left unticked. The run carries it,
+	 *   so the document says research was not authorized where it was needed.
+	 * - absent: no choice was offered (background, bulk and API callers). The
+	 *   run carries no key, and no research notice is written.
+	 *
+	 * A non-boolean from an in-process caller counts as absent.
+	 */
+	allowWebResearch?: boolean;
+	/**
 	 * The caller already ran {@link assertDocumentGenerationAvailable} — the
 	 * type's capability and, for a Proposal, its bound Main prompt — before a
 	 * write that changes the answer. Server-internal: no procedure schema
@@ -252,7 +266,9 @@ export type DispatchDocumentGenerationResult =
 	| {
 			/**
 			 * An equivalent run already holds this workflow id, so Temporal
-			 * refused the duplicate start. Named "in progress" rather than
+			 * refused the duplicate start; or a client-document Proposal
+			 * joined the different run still live on the document (told apart
+			 * by `sameRequest`). Named "in progress" rather than
 			 * "queued" on purpose: the live run may well have moved past its
 			 * dependency wait already, and only the document's own status can
 			 * say which — the surface reads that, it does not infer it here.
@@ -261,6 +277,15 @@ export type DispatchDocumentGenerationResult =
 			workflowId: string;
 			runId: null;
 			message: string;
+			/**
+			 * `true` when Temporal refused this request's own start as a
+			 * duplicate: the live run was started with exactly these inputs,
+			 * so the request IS that run. `false` when a client-document
+			 * Proposal joined a live run under a different workflow id, which
+			 * someone else may have started with other instructions; the
+			 * surface can say so rather than present it as this request.
+			 */
+			sameRequest: boolean;
 	  }
 	| {
 			/**
@@ -307,6 +332,11 @@ export type DispatchDocumentGenerationResult =
  * `aiToken` is excluded because it is minted inside `dispatchDocumentGeneration`
  * and differs on every call; folding it in would make the id unique again and
  * silently undo the whole mechanism.
+ *
+ * `allowWebResearch` is hashed only when it is `true`, so a run allowed to
+ * research never joins one that is not. Otherwise the key is `undefined`,
+ * which `canonicalize` drops: absent and `false` hash alike, and an
+ * unauthorized request keeps the id it had before the field existed.
  */
 function buildGenerationWorkflowId(
 	input: DispatchDocumentGenerationInput,
@@ -325,6 +355,8 @@ function buildGenerationWorkflowId(
 				currentDocument: input.currentDocument,
 				suppliedContext: input.suppliedContext,
 				excludeContextId: input.excludeContextId,
+				allowWebResearch:
+					input.allowWebResearch === true ? true : undefined,
 			}),
 		)
 		.digest("hex")
@@ -445,6 +477,18 @@ export async function dispatchDocumentGeneration(
 	// This token will be passed to Temporal activities for agent authentication.
 	// Both start together; the client is awaited first, so its failure still
 	// surfaces ahead of the token's.
+	// The permission holds for this run's project only, so it is never issued
+	// without one: no research rather than research bound to nothing.
+	const webResearchAllowed =
+		input.allowWebResearch === true &&
+		typeof input.projectId === "string" &&
+		input.projectId.length > 0;
+	if (input.allowWebResearch === true && !webResearchAllowed) {
+		logger.warn(
+			"Web research was allowed for a run with no project; issuing the token without it",
+			{ documentId: input.documentId, userId: input.userId },
+		);
+	}
 	const pendingToken = issueAIToken({
 		userId: input.userId,
 		organizationId: input.organizationId,
@@ -453,6 +497,14 @@ export async function dispatchDocumentGeneration(
 		// Use longer expiry for document generation (15 minutes)
 		expirySeconds: 900,
 		planEligible: input.planEligible,
+		webResearch: webResearchAllowed,
+		// The permission holds for this run's project only: the research
+		// endpoint refuses the token for any other one.
+		...(webResearchAllowed && { webResearchProjectId: input.projectId }),
+		// One research grant per action. A token re-minted for a retry of this
+		// action carries the same id, so the endpoint's call budget spans all
+		// of them rather than starting over with each attempt.
+		...(webResearchAllowed && { webResearchGrantId: randomUUID() }),
 	});
 	// The token's rejection is read below, unless the client's comes first.
 	pendingToken.catch(() => {});
@@ -520,6 +572,7 @@ async function joinLiveRun(
 			workflowId: current.workflowId,
 			runId: null,
 			message: "Document generation already in progress",
+			sameRequest: false,
 		};
 	}
 	if (liveness === "unknown") {
@@ -642,6 +695,12 @@ async function startGeneration(
 						// queues and never starts generating.
 						generationStartedAt: attemptStartedAt.toISOString(),
 						planEligible: input.planEligible,
+						// Only a boolean travels: `false` is a choice offered
+						// and declined, and an absent key is a run that offered
+						// none, which then writes no research notice.
+						...(typeof input.allowWebResearch === "boolean" && {
+							allowWebResearch: input.allowWebResearch,
+						}),
 					},
 				],
 			}),
@@ -669,6 +728,7 @@ async function startGeneration(
 				workflowId,
 				runId: null,
 				message: "Document generation already in progress",
+				sameRequest: true,
 			};
 		}
 		// No flag beside this: `handle` is assigned only on success and this

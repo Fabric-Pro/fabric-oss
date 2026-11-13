@@ -48,8 +48,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		getAIModelWithMetadata: vi.fn(),
 		generateText: vi.fn(),
 		logModelUsageAsync: vi.fn(),
-		retrieveProjectContexts: vi.fn(),
-		formatContextsForPrompt: vi.fn(),
+		retrieveRankedPassages: vi.fn(),
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		renderTemplate: vi.fn(),
@@ -106,8 +105,7 @@ vi.mock("@repo/ai/lib/story-title-generator", () => ({
 }));
 
 vi.mock("@repo/rag", () => ({
-	retrieveProjectContexts: mocks.retrieveProjectContexts,
-	formatContextsForPrompt: mocks.formatContextsForPrompt,
+	retrieveRankedPassages: mocks.retrieveRankedPassages,
 }));
 
 vi.mock("@repo/rag/lib/project-contexts/live-integration-context", () => ({
@@ -282,8 +280,7 @@ beforeEach(() => {
 		name: "Test project",
 		description: "Test project description",
 	});
-	mocks.retrieveProjectContexts.mockResolvedValue([]);
-	mocks.formatContextsForPrompt.mockReturnValue("");
+	mocks.retrieveRankedPassages.mockResolvedValue("");
 	mocks.fetchLiveIntegrationContext.mockResolvedValue({});
 	mocks.formatLiveContextForPrompt.mockReturnValue(null);
 	mocks.renderTemplate.mockResolvedValue({

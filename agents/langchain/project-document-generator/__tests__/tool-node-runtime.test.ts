@@ -92,6 +92,16 @@ function searchTeamsMessagesCall(toolCallId: string, query = "auth") {
 	return toolCallMessage(toolCallId, "search_teams_messages", { query });
 }
 
+/**
+ * An unsigned JWT-shaped token whose payload carries the web research claim;
+ * the agent reads the claim without verifying the token.
+ */
+function researchToken(): string {
+	const encode = (value: unknown) =>
+		Buffer.from(JSON.stringify(value)).toString("base64url");
+	return `${encode({ alg: "HS256" })}.${encode({ sub: "user-example", wr: true })}.signature`;
+}
+
 function mockFetchOk(formatted = "Found: auth notes") {
 	return vi.fn().mockResolvedValue({
 		ok: true,
@@ -670,6 +680,11 @@ describe("toolNode — logged failures on a Proposal run", () => {
 		},
 	];
 
+	// The web research tools have no row: research is never allowed on a
+	// Proposal run, so neither can reach a Proposal run's failure log. Their
+	// failure logging is asserted in tool-node-web-research.test.ts.
+	const RESEARCH_TOOLS = ["web_search", "read_url"];
+
 	// A tool added later without a row above would otherwise leave its catch
 	// unchecked with every test green.
 	it("has a row for every tool the node builds with every gate on", async () => {
@@ -683,8 +698,9 @@ describe("toolNode — logged failures on a Proposal run", () => {
 				hasTeamsIntegration: true,
 				hasSlackIntegration: true,
 				hasRepoIntegration: true,
+				allowWebResearch: true,
 			}),
-			{ configurable: {} },
+			{ configurable: { ai_token: researchToken() } },
 		);
 
 		expect(toolNodeConstructions.mock.calls.length).toBe(
@@ -692,7 +708,7 @@ describe("toolNode — logged failures on a Proposal run", () => {
 		);
 		const built = toolNodeConstructions.mock.lastCall?.[0] as string[];
 		expect([...built].sort()).toEqual(
-			FAILING_TOOLS.map((row) => row.tool).sort(),
+			[...FAILING_TOOLS.map((row) => row.tool), ...RESEARCH_TOOLS].sort(),
 		);
 	});
 

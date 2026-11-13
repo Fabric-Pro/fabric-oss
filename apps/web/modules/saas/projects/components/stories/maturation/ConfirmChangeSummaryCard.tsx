@@ -72,7 +72,7 @@ export function ConfirmChangeSummaryCard({
 				<h3 className="editorial-label text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
 					{t("heading")}
 				</h3>
-				<span className="text-[11px] text-muted-foreground/70">
+				<span className="text-[11px] text-muted-foreground">
 					{bullets.length}
 				</span>
 			</button>

@@ -11,6 +11,11 @@
  *
  * A Codex plugin is installed from a fixed home-relative path, so it is the
  * one render that replaces a directory instead of adding one.
+ *
+ * A Coding Instructions set renders only the set's files, with its folder
+ * taken off their paths, plus a generated `REPOSITORIES.md`. A non-default
+ * set is a plugin of its own (`<name>-<slug>`, `plugins/<project>--<slug>`);
+ * the default set keeps the project's plugin and folders.
  */
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -45,6 +50,12 @@ import {
 	type PluginBinding,
 } from "./binding.js";
 import { instructionAccessBootstrap } from "./instruction-access.js";
+import {
+	pluginCacheKey,
+	pluginSetSlug,
+	type RenderSet,
+	repositoriesMarkdown,
+} from "./instruction-sets.js";
 import type { KnowledgeTypes } from "./knowledge.js";
 import {
 	alwaysOnFile,
@@ -54,6 +65,7 @@ import {
 	type PluginTool,
 	pluginNameFor,
 	RENDER_VERSION,
+	setGuidanceOf,
 } from "./layout.js";
 import { commandLineProblem } from "./register.js";
 import { type ProjectRule, selectRules, tierRules } from "./rules.js";
@@ -80,6 +92,8 @@ export interface RenderInput {
 	fetchImpl?: typeof fetch;
 	/** Progress and warnings; never stdout. */
 	log?: (line: string) => void;
+	/** The Coding Instructions set to render (`loadRenderSet`); absent or `null` for a project without sets. */
+	set?: RenderSet | null;
 }
 
 export interface Rendered {
@@ -233,12 +247,21 @@ export function mcpHeadersHelperCommand(input: {
 	return commandLineProblem(command) === null ? command : undefined;
 }
 
+/** What names a set's render: which files it holds and its `REPOSITORIES.md`. */
+interface SetPin {
+	slug: string;
+	folder: string;
+	excludedFolders: readonly string[];
+	repositories: string;
+}
+
 function pinOf(
 	sourcePin: string,
 	memory: MemoryFolders,
 	knowledge: KnowledgeTypes,
 	tool: PluginTool,
 	mcpHeadersHelper?: string,
+	set?: SetPin,
 ): string {
 	return createHash("sha256")
 		.update(
@@ -249,6 +272,7 @@ function pinOf(
 				memory,
 				knowledge,
 				...(mcpHeadersHelper ? { mcpHeadersHelper } : {}),
+				...(set ? { set } : {}),
 			}),
 		)
 		.digest("hex")
@@ -396,6 +420,7 @@ export async function renderPlugin(input: RenderInput): Promise<Rendered> {
 		await input.client.instructions.getPublished(input.projectId, {
 			org: input.org,
 		});
+	const chosen = input.set ?? null;
 	const read = await readInstructions({
 		client: input.client,
 		projectId: input.projectId,
@@ -405,7 +430,22 @@ export async function renderPlugin(input: RenderInput): Promise<Rendered> {
 		timeoutMs: input.timeoutMs,
 		signal: input.signal,
 		fetchImpl: input.fetchImpl,
+		set: chosen?.set ?? null,
 	});
+	const setPin: SetPin | undefined =
+		chosen === null
+			? undefined
+			: {
+					slug: chosen.set.slug,
+					folder: chosen.set.folder,
+					excludedFolders: [...chosen.set.excludedFolders].sort(),
+					repositories: repositoriesMarkdown(
+						chosen.set,
+						chosen.repositories,
+					),
+				};
+	const setSlug = pluginSetSlug(setPin?.slug);
+	const pluginName = pluginNameFor(input.projectId, setSlug);
 	for (const skipped of read.skipped) {
 		input.log?.(
 			`${skipped} is unavailable as inline text, so the plugin leaves its bytes out. Its path remains in the fabric-instruction-access catalog; MCP reads may report a binary or size refusal.`,
@@ -434,7 +474,16 @@ export async function renderPlugin(input: RenderInput): Promise<Rendered> {
 		knowledge,
 		input.tool,
 		mcpHeadersHelper,
+		setPin,
 	);
+	const pluginSet =
+		setPin === undefined
+			? undefined
+			: {
+					slug: setPin.slug,
+					folder: setPin.folder,
+					repositories: setPin.repositories,
+				};
 	const files = buildPlugin({
 		mcpHeadersHelper,
 		onDemandRules: tiers.onDemand,
@@ -446,29 +495,33 @@ export async function renderPlugin(input: RenderInput): Promise<Rendered> {
 		gatewayUrl: projectResource(input.origin, "mcp", input.projectId),
 		pin,
 		instructionAccess: { listed: read.listed, source: read.source },
+		set: pluginSet,
 	});
 	const always = alwaysOnFile(read.files, input.tool);
 	const guidance = instructionAccessBootstrap(
-		pluginNameFor(input.projectId),
+		pluginName,
 		input.tool,
+		setGuidanceOf(pluginSet),
 	);
 	const installed =
 		input.tool === "claude-code"
 			? await installClaude(
-					path.join(input.cacheDirectory, "plugins", input.projectId),
+					path.join(
+						input.cacheDirectory,
+						"plugins",
+						pluginCacheKey(input.projectId, setSlug),
+					),
 					pin,
 					files,
 				)
 			: await installCodex(
-					path.join(
-						input.codexPluginsDirectory,
-						pluginNameFor(input.projectId),
-					),
+					path.join(input.codexPluginsDirectory, pluginName),
 					pin,
 					files,
 					{
 						projectId: input.projectId,
 						origin: originOf(input.origin),
+						set: setSlug,
 					},
 				);
 	return {

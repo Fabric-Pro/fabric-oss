@@ -794,7 +794,7 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 	),
 	"project.context_source.synced_files_reset": D(
 		"project.context_source.synced_files_reset",
-		"Living Memory reset (all synced files deleted)",
+		"Living Memory reset (synced files deleted)",
 		Trash2,
 		"warning",
 		"project",
@@ -975,6 +975,15 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"System prompt deleted",
 		Trash2,
 		"warning",
+		"audit",
+	),
+	// A project or organization time report exported as CSV: the file holds
+	// every member's logged time, so it sits with `audit.exported`.
+	"time.report_exported": D(
+		"time.report_exported",
+		"Time report exported",
+		Download,
+		"info",
 		"audit",
 	),
 

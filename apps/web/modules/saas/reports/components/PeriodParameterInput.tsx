@@ -108,7 +108,7 @@ export function PeriodParameterInput({
 								className={cn(
 									"h-7 rounded-full px-3 text-xs",
 									active &&
-										"border-primary/50 bg-primary/10 text-primary",
+										"border-primary/50 bg-primary/10 text-primary-active",
 								)}
 							>
 								{preset.label}

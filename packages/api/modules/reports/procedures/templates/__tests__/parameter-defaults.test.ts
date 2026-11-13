@@ -30,6 +30,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 	const chain: Record<string, unknown> = {};
 	Object.assign(chain, {
 		use: () => chain,
+		meta: () => chain,
 		input: () => chain,
 		handler: (fn: typeof m.handler) => {
 			m.handler = fn;

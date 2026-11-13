@@ -26,8 +26,8 @@ const LEVEL_STYLE = {
 	},
 	ready: {
 		Icon: CircleCheckIcon,
-		card: "border-secondary/35 bg-secondary/[0.06]",
-		icon: "text-secondary",
+		card: "border-success/35 bg-success/[0.06]",
+		icon: "text-success",
 	},
 	unknown: {
 		Icon: CircleHelpIcon,

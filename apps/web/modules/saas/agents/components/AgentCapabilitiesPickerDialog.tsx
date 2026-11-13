@@ -381,7 +381,7 @@ const STAKE_BADGE: Record<
 	low: { label: "Auto-executes", className: "text-muted-foreground" },
 	medium: {
 		label: "May ask for approval",
-		className: "text-amber-600 border-amber-300",
+		className: "text-amber-700 border-amber-300 dark:text-amber-500",
 	},
 	high: {
 		label: "Always asks for approval",

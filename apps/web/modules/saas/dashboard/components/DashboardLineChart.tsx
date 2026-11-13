@@ -174,7 +174,7 @@ export function DashboardLineChart({
 							className={cn(
 								"font-bold",
 								total > 0
-									? "text-emerald-500"
+									? "text-emerald-700 dark:text-emerald-500"
 									: "text-muted-foreground",
 							)}
 						>

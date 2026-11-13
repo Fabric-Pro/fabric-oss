@@ -18,6 +18,10 @@
  * git-excluded `AGENTS.override.md` at the project root: the tracked
  * `AGENTS.md`, then the instructions, so the override never hides the tracked
  * file's own words.
+ *
+ * A non-default Coding Instructions set is a plugin of its own
+ * (`pluginNameFor(projectId, set)`), so every name here takes the set; the
+ * default set and a project without sets keep the project's plugin.
  */
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -29,6 +33,7 @@ import {
 	bindingText,
 	originOf,
 } from "./binding.js";
+import { isSetSlug, pluginSetSlug } from "./instruction-sets.js";
 import {
 	descriptionFor,
 	isFabricAgentsOverride,
@@ -42,13 +47,13 @@ const COMMAND_MAX_LENGTH = 500;
 /** Seconds Claude Code gives the render command: a cold start fetches every file. */
 const RENDER_TIMEOUT_SECONDS = 120;
 
-function marketplaceNameFor(projectId: string): string {
-	return pluginNameFor(projectId);
+function marketplaceNameFor(projectId: string, set?: string | null): string {
+	return pluginNameFor(projectId, set);
 }
 
 /** The id of the plugin in settings: `<plugin>@<marketplace>`. */
-export function pluginIdFor(projectId: string): string {
-	return `${pluginNameFor(projectId)}@${marketplaceNameFor(projectId)}`;
+export function pluginIdFor(projectId: string, set?: string | null): string {
+	return `${pluginNameFor(projectId, set)}@${marketplaceNameFor(projectId, set)}`;
 }
 
 /**
@@ -85,6 +90,8 @@ export function renderCommandLine(input: {
 	projectId: string;
 	baseUrl?: string;
 	org?: string;
+	/** A non-default Coding Instructions set, kept by every re-render. */
+	set?: string | null;
 }): string {
 	const prefix =
 		input.nodeWord !== null && input.launcherPrefix.startsWith("node ")
@@ -103,6 +110,13 @@ export function renderCommandLine(input: {
 	if (input.org) {
 		parts.push("--org", input.org);
 	}
+	const set = pluginSetSlug(input.set);
+	if (set !== null) {
+		if (!isSetSlug(set)) {
+			throw new CliFailure(`"${set}" is not a set slug`, 2);
+		}
+		parts.push("--set", set);
+	}
 	const command = parts.join(" ");
 	const problem = commandLineProblem(command);
 	if (problem !== null) {
@@ -118,11 +132,12 @@ export function renderCommandLine(input: {
 export function claudeMarketplaceDirectory(
 	cacheDirectory: string,
 	projectId: string,
+	set?: string | null,
 ): string {
 	return path.join(
 		cacheDirectory,
 		"marketplaces",
-		marketplaceNameFor(projectId),
+		marketplaceNameFor(projectId, set),
 	);
 }
 
@@ -135,13 +150,14 @@ function claudeMarketplace(input: {
 	projectId: string;
 	origin: string;
 	command: string;
+	set?: string | null;
 }): Record<string, unknown> {
 	return {
-		name: marketplaceNameFor(input.projectId),
+		name: marketplaceNameFor(input.projectId, input.set),
 		owner: { name: "Fabric" },
 		plugins: [
 			{
-				name: pluginNameFor(input.projectId),
+				name: pluginNameFor(input.projectId, input.set),
 				description: descriptionFor(input.projectId, input.origin),
 				source: {
 					source: "command",
@@ -166,14 +182,18 @@ export async function writeClaudeMarketplace(input: {
 	/** The deployment, as an origin. */
 	origin: string;
 	command: string;
+	/** A non-default Coding Instructions set: its own marketplace folder. */
+	set?: string | null;
 }): Promise<string> {
 	const directory = claudeMarketplaceDirectory(
 		input.cacheDirectory,
 		input.projectId,
+		input.set,
 	);
 	const binding = {
 		projectId: input.projectId,
 		origin: originOf(input.origin),
+		set: pluginSetSlug(input.set),
 	};
 	await assertLocationFree({
 		directory,
@@ -195,6 +215,7 @@ export async function writeClaudeMarketplace(input: {
 interface ClaudeRegistration {
 	projectId: string;
 	marketplaceDirectory: string;
+	set?: string | null;
 }
 
 /**
@@ -213,13 +234,14 @@ export function withClaudePlugin(
 		settingsPath,
 	);
 	const enabled = objectAt(settings, "enabledPlugins", settingsPath);
-	marketplaces[marketplaceNameFor(registration.projectId)] = {
-		source: {
-			source: "directory",
-			path: registration.marketplaceDirectory,
-		},
-	};
-	enabled[pluginIdFor(registration.projectId)] = true;
+	marketplaces[marketplaceNameFor(registration.projectId, registration.set)] =
+		{
+			source: {
+				source: "directory",
+				path: registration.marketplaceDirectory,
+			},
+		};
+	enabled[pluginIdFor(registration.projectId, registration.set)] = true;
 	return {
 		...settings,
 		extraKnownMarketplaces: marketplaces,
@@ -231,6 +253,7 @@ export async function registerClaudePlugin(input: {
 	root: string;
 	projectId: string;
 	marketplaceDirectory: string;
+	set?: string | null;
 }) {
 	return updateHookConfig({
 		root: input.root,
@@ -244,10 +267,11 @@ export async function registerClaudePlugin(input: {
 export function claudeApprovalCommands(input: {
 	projectId: string;
 	marketplaceDirectory: string;
+	set?: string | null;
 }): { add: string; install: string } {
 	return {
 		add: `claude plugin marketplace add ${input.marketplaceDirectory} --scope local`,
-		install: `claude plugin install ${pluginIdFor(input.projectId)} --scope local`,
+		install: `claude plugin install ${pluginIdFor(input.projectId, input.set)} --scope local`,
 	};
 }
 
@@ -356,6 +380,7 @@ export async function registerCodexPlugin(input: {
 	home: string;
 	projectId: string;
 	pluginDirectory: string;
+	set?: string | null;
 }): Promise<CodexRegistration> {
 	const file = path.join(input.home, CODEX_MARKETPLACE_RELATIVE);
 	const { marketplace } = await readCodexMarketplace(file);
@@ -364,7 +389,7 @@ export async function registerCodexPlugin(input: {
 		.split(path.sep)
 		.join("/");
 	const next = withCodexPlugin(marketplace, {
-		name: pluginNameFor(input.projectId),
+		name: pluginNameFor(input.projectId, input.set),
 		pluginPathFromHome: `./${relative}`,
 	});
 	const before = JSON.stringify(marketplace);
@@ -393,12 +418,13 @@ export async function registerCodexPlugin(input: {
 export async function codexMarketplaceListing(input: {
 	home: string;
 	projectId: string;
+	set?: string | null;
 }): Promise<string | null> {
 	try {
 		const { marketplace, existed } = await readCodexMarketplace(
 			path.join(input.home, CODEX_MARKETPLACE_RELATIVE),
 		);
-		const name = pluginNameFor(input.projectId);
+		const name = pluginNameFor(input.projectId, input.set);
 		return existed &&
 			marketplace.plugins.some((plugin) => plugin.name === name)
 			? marketplace.name

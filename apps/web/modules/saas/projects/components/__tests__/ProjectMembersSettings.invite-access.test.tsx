@@ -6,7 +6,8 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ----------------------------------------------------------------------------
@@ -255,6 +256,43 @@ describe("ProjectMembersSettings — who can invite", () => {
 		expect(listSentInvitations).not.toHaveBeenCalled();
 	});
 
+	it("does not tell a project admin that only owners can invite", async () => {
+		listMembers.mockResolvedValue(members("PROJECT_ADMIN"));
+		getProject.mockResolvedValue({ project: { canManageMembers: true } });
+
+		renderPage("org_example");
+
+		await screen.findByRole("button", { name: "Invite Member" });
+		expect(
+			screen.queryByText(/can invite members and manage roles/),
+		).toBeNull();
+	});
+
+	it("tells an editor who can invite", async () => {
+		listMembers.mockResolvedValue(members("EDITOR"));
+		getProject.mockResolvedValue({ project: { canManageMembers: false } });
+
+		renderPage("org_example");
+
+		expect(
+			await screen.findByText(
+				"Only project owners and project admins can invite members and manage roles.",
+			),
+		).toBeTruthy();
+	});
+
+	it("does not show that notice while the project is still loading", async () => {
+		listMembers.mockResolvedValue(members("PROJECT_ADMIN"));
+		getProject.mockReturnValue(new Promise(() => {}));
+
+		renderPage("org_example");
+
+		await screen.findByText("Current User");
+		expect(
+			screen.queryByText(/can invite members and manage roles/),
+		).toBeNull();
+	});
+
 	it("has nobody to pick from on a personal project", async () => {
 		listMembers.mockResolvedValue(members("OWNER", true));
 		getProject.mockResolvedValue({ project: { canManageMembers: true } });
@@ -267,5 +305,94 @@ describe("ProjectMembersSettings — who can invite", () => {
 		expect(
 			screen.queryByRole("button", { name: "Add from organization" }),
 		).toBeNull();
+	});
+});
+
+describe("ProjectMembersSettings — who can change roles and remove members", () => {
+	function row(userId: string, name: string, role: string) {
+		return {
+			id: `m-${userId}`,
+			userId,
+			role,
+			isOwner: role === "OWNER",
+			isCreator: false,
+			isGuest: false,
+			user: {
+				id: userId,
+				name,
+				email: `${userId}@example.com`,
+				image: null,
+			},
+			invitedAt: null,
+			acceptedAt: null,
+		};
+	}
+
+	async function menuItemsFor(userId: string) {
+		const user = userEvent.setup();
+		const line = (await screen.findByText(`${userId}@example.com`)).closest(
+			"div.flex.items-center.justify-between",
+		) as HTMLElement;
+		await user.click(within(line).getByLabelText("Member actions"));
+		const items = (await screen.findAllByRole("menuitem")).map(
+			(item) => item.textContent,
+		);
+		await user.keyboard("{Escape}");
+		return items;
+	}
+
+	it("lets a project admin manage a non-owner but not an owner", async () => {
+		listMembers.mockResolvedValue({
+			members: [
+				row("user-2", "Some Owner", "OWNER"),
+				row("user-1", "Current User", "PROJECT_ADMIN"),
+				row("user-3", "Some Editor", "EDITOR"),
+			],
+		});
+		getProject.mockResolvedValue({ project: { canManageMembers: true } });
+
+		renderPage("org_example");
+
+		expect(await menuItemsFor("user-3")).toEqual(
+			expect.arrayContaining(["Change Role", "Remove Member"]),
+		);
+		const ownerItems = await menuItemsFor("user-2");
+		expect(ownerItems).not.toContain("Change Role");
+		expect(ownerItems).not.toContain("Remove Member");
+	});
+
+	it("gives an editor no member actions, even on another non-owner", async () => {
+		listMembers.mockResolvedValue({
+			members: [
+				row("user-2", "Some Owner", "OWNER"),
+				row("user-1", "Current User", "EDITOR"),
+				row("user-3", "Some Editor", "EDITOR"),
+			],
+		});
+		getProject.mockResolvedValue({ project: { canManageMembers: false } });
+
+		renderPage("org_example");
+
+		await screen.findByText("user-3@example.com");
+		await screen.findByText(
+			"Only project owners and project admins can invite members and manage roles.",
+		);
+		expect(screen.queryByLabelText("Member actions")).toBeNull();
+	});
+
+	it("still lets an owner manage another owner", async () => {
+		listMembers.mockResolvedValue({
+			members: [
+				row("user-2", "Some Owner", "OWNER"),
+				row("user-1", "Current User", "OWNER"),
+			],
+		});
+		getProject.mockResolvedValue({ project: { canManageMembers: true } });
+
+		renderPage("org_example");
+
+		expect(await menuItemsFor("user-2")).toEqual(
+			expect.arrayContaining(["Change Role", "Remove Member"]),
+		);
 	});
 });

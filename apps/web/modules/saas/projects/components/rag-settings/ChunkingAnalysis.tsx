@@ -1,7 +1,7 @@
 "use client";
 
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -13,6 +13,8 @@ import {
 	AlertDialogTitle,
 } from "@ui/components/alert-dialog";
 import { Button } from "@ui/components/button";
+import { Progress } from "@ui/components/progress";
+import { Loader2Icon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -138,29 +140,111 @@ export function useChunkingAnalysis(projectId: string) {
 		</AlertDialog>
 	);
 
-	return { ask, starting: start.isPending, dialog };
+	return {
+		ask,
+		starting: start.isPending,
+		confirming: confirm.isPending,
+		dialog,
+	};
+}
+
+/** Where a running analysis stands, as its activities write it. */
+interface AnalysisProgress {
+	stage?: "questions" | "evaluating";
+	done?: number;
+	total?: number;
+}
+
+type AnalysisRun = {
+	status: string;
+	progress?: unknown;
+} | null;
+
+/** The running analysis's line, or null when none runs. */
+export function analysisStatus(
+	measure: AnalysisRun | undefined,
+	tune: AnalysisRun | undefined,
+): { label: string; done: number; total: number } | null {
+	const run =
+		measure?.status === "RUNNING"
+			? { what: "Measuring", progress: measure.progress }
+			: tune?.status === "RUNNING"
+				? { what: "Working out suggestions", progress: tune.progress }
+				: null;
+	if (!run) {
+		return null;
+	}
+	const progress = (run.progress ?? {}) as AnalysisProgress;
+	const done = progress.done ?? 0;
+	const total = progress.total ?? 0;
+	const step =
+		progress.stage === "evaluating"
+			? `testing content types, ${done} of ${total}`
+			: progress.stage === "questions"
+				? `writing test questions, ${done} of ${total} sources`
+				: "starting";
+	return { label: `${run.what}: ${step}`, done, total };
 }
 
 export function ChunkingAnalysisActions({ projectId }: { projectId: string }) {
-	const { ask, starting, dialog } = useChunkingAnalysis(projectId);
+	const { ask, starting, confirming, dialog } =
+		useChunkingAnalysis(projectId);
+	// The table polls this query while a run is running.
+	const { data: runs } = useQuery(
+		orpc.projects.ragSettings.chunkingRuns.queryOptions({
+			input: { projectId },
+		}),
+	);
+	const status = analysisStatus(runs?.measure, runs?.tune);
+	const busy = starting || confirming || status !== null;
+	const measured = runs?.measure?.status === "COMPLETED";
 	return (
-		<div className="flex items-center gap-2">
-			<Button
-				variant="outline"
-				size="sm"
-				disabled={starting}
-				onClick={() => ask("MEASURE")}
-			>
-				Measure
-			</Button>
-			<Button
-				variant="outline"
-				size="sm"
-				disabled={starting}
-				onClick={() => ask("TUNE")}
-			>
-				Suggest settings
-			</Button>
+		<div className="flex flex-col items-end gap-1.5">
+			<div className="flex items-center gap-2">
+				<Button
+					variant="outline"
+					size="sm"
+					disabled={busy}
+					onClick={() => ask("MEASURE")}
+				>
+					Measure
+				</Button>
+				<Button
+					variant="outline"
+					size="sm"
+					disabled={busy || !measured}
+					title={measured ? undefined : "Measure first"}
+					onClick={() => ask("TUNE")}
+				>
+					Suggest settings
+				</Button>
+			</div>
+			{status ? (
+				<output className="flex w-64 flex-col gap-1 text-muted-foreground text-xs">
+					<span className="flex items-center gap-1.5">
+						<Loader2Icon
+							className="size-3 animate-spin"
+							aria-hidden="true"
+						/>
+						{status.label}
+					</span>
+					{status.total > 0 && (
+						<Progress
+							value={Math.round(
+								(status.done / status.total) * 100,
+							)}
+							aria-label={status.label}
+							className="h-1"
+						/>
+					)}
+				</output>
+			) : (
+				!measured && (
+					<span className="text-muted-foreground text-xs">
+						Measure first; suggestions build on it.
+					</span>
+				)
+			)}
 			{dialog}
 		</div>
 	);

@@ -666,11 +666,11 @@ function Badge({
 }) {
 	const toneClass =
 		tone === "done"
-			? "border-secondary/40 bg-secondary/10 text-secondary"
+			? "border-success/40 bg-success/10 text-success"
 			: tone === "warn"
 				? "border-highlight/40 bg-highlight/10 text-highlight"
 				: tone === "recommend"
-					? "border-primary/40 bg-primary/10 text-primary"
+					? "border-primary/40 bg-primary/10 text-primary-active"
 					: "border-border bg-muted text-muted-foreground";
 	return (
 		<span

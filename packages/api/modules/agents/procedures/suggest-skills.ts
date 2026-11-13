@@ -136,6 +136,9 @@ function resolveSuggestions(
  */
 export const suggestSkillsProcedure = tenantProtectedProcedure
 	.use(requireInputOrgPermission(Permissions.SKILL_READ))
+	// Chat asks for suggestions on its own after each message; nothing the
+	// member chose to do, so it stays out of the activity log.
+	.meta({ auditActivity: "never" })
 	.route({
 		method: "POST",
 		path: "/agents/suggest-skills",

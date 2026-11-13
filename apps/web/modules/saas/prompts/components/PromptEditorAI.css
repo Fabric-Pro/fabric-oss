@@ -68,20 +68,26 @@
 	font-style: italic;
 }
 
+/*
+ * Light-mode inks below are one or two Tailwind steps darker than they were
+ * (Fizzy #1444): blue-500, purple-500, pink-500, sky-500 and yellow-500 measure
+ * 1.9-3.9:1 on white, under the WCAG AA 4.5:1 floor for text. The dark-mode
+ * inks already cleared it and are unchanged.
+ */
 .tiptap a {
-	color: rgb(59, 130, 246);
+	color: rgb(37, 99, 235);
 	text-decoration: underline;
 	cursor: pointer;
 }
 
 .tiptap a:hover {
-	color: rgb(37, 99, 235);
+	color: rgb(29, 78, 216);
 }
 
 /* Template variable highlighting */
 .template-variable {
 	background-color: rgba(59, 130, 246, 0.1);
-	color: rgb(59, 130, 246);
+	color: rgb(29, 78, 216);
 	padding: 0.125rem 0.25rem;
 	border-radius: 0.25rem;
 	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -127,30 +133,30 @@ details[open] summary {
 
 /* Template syntax highlighting in code blocks */
 .hljs-template-variable {
-	color: rgb(59, 130, 246);
+	color: rgb(29, 78, 216);
 	background-color: rgba(59, 130, 246, 0.1);
 	padding: 0.125rem 0.25rem;
 	border-radius: 0.25rem;
 }
 
 .hljs-template-tag {
-	color: rgb(168, 85, 247);
+	color: rgb(126, 34, 206);
 	background-color: rgba(168, 85, 247, 0.1);
 	padding: 0.125rem 0.25rem;
 	border-radius: 0.25rem;
 }
 
 .hljs-keyword {
-	color: rgb(236, 72, 153);
+	color: rgb(190, 24, 93);
 	font-weight: 600;
 }
 
 .hljs-name {
-	color: rgb(14, 165, 233);
+	color: rgb(3, 105, 161);
 }
 
 .hljs-filter {
-	color: rgb(234, 179, 8);
+	color: rgb(133, 77, 14);
 }
 
 .dark .hljs-template-variable {
@@ -177,7 +183,9 @@ details[open] summary {
 
 /* Placeholder styles */
 .tiptap p.is-editor-empty:first-child::before {
-	color: rgba(0, 0, 0, 0.3);
+	/* Placeholder text is still text: the 30% black / 30% white it used measured
+	   about 2:1. The secondary ink clears AA in both themes. */
+	color: var(--muted-foreground);
 	content: attr(data-placeholder);
 	float: left;
 	height: 0;
@@ -185,18 +193,18 @@ details[open] summary {
 }
 
 .dark .tiptap p.is-editor-empty:first-child::before {
-	color: rgba(255, 255, 255, 0.3);
+	color: var(--muted-foreground);
 }
 
 /* Link styles */
 .tiptap-link {
-	color: rgb(59, 130, 246);
+	color: rgb(37, 99, 235);
 	text-decoration: underline;
 	cursor: pointer;
 }
 
 .tiptap-link:hover {
-	color: rgb(37, 99, 235);
+	color: rgb(29, 78, 216);
 }
 
 .dark .tiptap-link {

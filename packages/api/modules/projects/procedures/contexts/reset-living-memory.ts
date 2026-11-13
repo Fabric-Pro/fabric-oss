@@ -1,7 +1,8 @@
 /**
- * resetLivingMemory — delete every synced knowledge file of a project at
- * once: the Context tab's "Reset Living Memory", for a project whose synced
- * files are in a state the per-file delete cannot untangle.
+ * resetLivingMemory — delete every synced knowledge file of a project, or of
+ * one folder (`folder`), at once: the Context tab's "Reset Living Memory" and
+ * each folder's "Remove folder", for synced files in a state the per-file
+ * delete cannot untangle.
  *
  * The session half; the key-backed twin, which `fabric context reset` calls
  * behind the `projects:write` scope, is
@@ -35,7 +36,10 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { resetSyncedContexts } from "../../lib/reset-synced-contexts";
+import {
+	MAX_RESET_FOLDER_INPUT_LENGTH,
+	resetSyncedContexts,
+} from "../../lib/reset-synced-contexts";
 
 export const resetLivingMemoryProcedure = tenantProtectedProcedure
 	// Visibility before permission: see the file comment.
@@ -47,11 +51,18 @@ export const resetLivingMemoryProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Contexts"],
 		summary: "Reset Living Memory",
 		description:
-			"Delete every file synced into the project's Living Memory (every context with a source path) at once, and queue their entries in the search index for removal in the same step. Answers `{ deleted }`, which is 0 when there was nothing to delete, so a repeat is harmless. While a repository sync is connected the call answers CONFLICT with `data.code` `REPOSITORY_SYNC_ACTIVE` and deletes nothing: disconnect the sync first.",
+			"Delete every file synced into the project's Living Memory (every context with a source path) at once, and queue their entries in the search index for removal in the same step. With `folder` (a relative folder path such as `docs/guides`), only the synced files under that folder are deleted. Answers `{ deleted }`, which is 0 when there was nothing to delete, so a repeat is harmless. A `folder` that is absolute, names the root, or holds a `.` or `..` segment answers BAD_REQUEST. While a repository sync is connected the call answers CONFLICT with `data.code` `REPOSITORY_SYNC_ACTIVE` and deletes nothing: disconnect the sync first.",
 	})
 	.input(
 		z.object({
 			projectId: z.string().min(1).max(128),
+			// Normalized and validated by `resetSyncedContexts` with the
+			// synced-file path rules; this only bounds the string.
+			folder: z
+				.string()
+				.min(1)
+				.max(MAX_RESET_FOLDER_INPUT_LENGTH)
+				.optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -78,5 +89,6 @@ export const resetLivingMemoryProcedure = tenantProtectedProcedure
 			organizationId: access.organizationId,
 			via: "web",
 			request: context,
+			...(input.folder === undefined ? {} : { folder: input.folder }),
 		});
 	});

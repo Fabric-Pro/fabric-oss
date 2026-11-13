@@ -14,11 +14,13 @@
 
 import { ORPCError } from "@orpc/client";
 import {
+	hasPullRequestHeadBeenRead,
 	type PullRequestReviewSummary,
 	recordPullRequestRead,
 } from "@repo/database";
 import { db } from "@repo/database/prisma/client";
 import { resolveFreshRepoToken } from "@repo/integrations";
+import { startTimeSuggestionsAfterPullRequest } from "../../time-tracking/lib/automatic-suggestions";
 import { providerFor } from "./pr-review-hosts";
 
 /**
@@ -122,16 +124,20 @@ export async function readPullRequestIntoReview(input: {
 		});
 	}
 
-	const review = await recordPullRequestRead({
+	const identity = {
 		projectId: input.projectId,
-		integrationId: integration.id,
 		provider: integration.provider,
 		repoOwner: owner,
 		repoName: repo,
 		prNumber: input.prNumber,
+		headSha,
+	};
+	const newHead = !(await hasPullRequestHeadBeenRead(identity));
+	const review = await recordPullRequestRead({
+		...identity,
+		integrationId: integration.id,
 		title: pullRequest.title,
 		authorLabel: pullRequest.authorLabel,
-		headSha,
 		baseSha: pullRequest.baseSha,
 		prUrl: pullRequest.webUrl,
 		diff,
@@ -144,6 +150,21 @@ export async function readPullRequestIntoReview(input: {
 		failureText: read.failureText,
 		requestedById: input.actingUserId,
 	});
+
+	// A new head is a push by the pull request's author, which is evidence of
+	// their time; a repeated read of the same commit is not. Awaited so a
+	// serverless route does not cut it off; it never throws.
+	if (newHead) {
+		await startTimeSuggestionsAfterPullRequest({
+			reviewId: review.id,
+			organizationId,
+			projectId: input.projectId,
+			provider: review.provider,
+			prUrl: review.prUrl,
+			authorLabel: review.authorLabel,
+			createdAt: review.createdAt,
+		});
+	}
 
 	return { review, owner, repo, headSha };
 }

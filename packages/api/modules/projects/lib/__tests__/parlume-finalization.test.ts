@@ -17,6 +17,11 @@ const mocks = vi.hoisted(() => ({
 	recordUsage: vi.fn(),
 	deleteProviderData: vi.fn(),
 	getSettings: vi.fn(),
+	startTimeSuggestionsAfterMeeting: vi.fn(),
+}));
+
+vi.mock("../../../time-tracking/lib/automatic-suggestions", () => ({
+	startTimeSuggestionsAfterMeeting: mocks.startTimeSuggestionsAfterMeeting,
 }));
 
 vi.mock("@repo/database", () => {
@@ -86,6 +91,7 @@ function storedSession(overrides: Record<string, unknown> = {}) {
 		finalizedAt: null,
 		transcriptContextId: null,
 		providerDataDeletedAt: null,
+		trigger: "MANUAL",
 		createdAt: new Date("2026-10-01T17:00:00Z"),
 		...overrides,
 	};
@@ -110,6 +116,7 @@ beforeEach(() => {
 	mocks.contextCreate.mockResolvedValue({ id: "context-1" });
 	mocks.getSettings.mockResolvedValue(attendee);
 	mocks.deleteProviderData.mockResolvedValue(undefined);
+	mocks.startTimeSuggestionsAfterMeeting.mockResolvedValue(undefined);
 });
 
 function storedTurn(overrides: Record<string, unknown> = {}) {
@@ -868,6 +875,91 @@ describe("finalizeParlumeSession provider usage", () => {
 			expect(mocks.recordUsage).not.toHaveBeenCalled();
 			expect(mocks.workflowStart).not.toHaveBeenCalled();
 			expect(mocks.deleteProviderData).not.toHaveBeenCalled();
+			expect(
+				mocks.startTimeSuggestionsAfterMeeting,
+			).not.toHaveBeenCalled();
 		},
 	);
+});
+
+describe("finalizeParlumeSession time suggestions", () => {
+	const joinedAt = new Date("2026-10-01T17:06:00Z");
+
+	it("suggests time for a meeting the member had the agent join, once it ends", async () => {
+		mocks.sessionFindUnique.mockResolvedValue(storedSession({ joinedAt }));
+
+		await finalizeParlumeSession("session-1");
+
+		expect(mocks.startTimeSuggestionsAfterMeeting).toHaveBeenCalledOnce();
+		expect(mocks.startTimeSuggestionsAfterMeeting).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			organizationId: "org-1",
+			userId: "user-1",
+			projectId: "project-1",
+			joinedAt,
+		});
+	});
+
+	it("starts them only after the session is committed as finalized", async () => {
+		mocks.sessionFindUnique.mockResolvedValue(storedSession({ joinedAt }));
+		let committedBeforeStart = false;
+		mocks.startTimeSuggestionsAfterMeeting.mockImplementation(async () => {
+			committedBeforeStart = mocks.sessionUpdateMany.mock.calls.some(
+				([args]) => args.data?.finalizedAt instanceof Date,
+			);
+		});
+
+		await finalizeParlumeSession("session-1");
+
+		expect(committedBeforeStart).toBe(true);
+		expect(mocks.deleteProviderData).toHaveBeenCalledOnce();
+	});
+
+	it("still completes finalization when starting them throws", async () => {
+		mocks.sessionFindUnique.mockResolvedValue(storedSession({ joinedAt }));
+		mocks.startTimeSuggestionsAfterMeeting.mockRejectedValue(
+			new Error("database is down"),
+		);
+
+		await expect(
+			finalizeParlumeSession("session-1"),
+		).resolves.toBeUndefined();
+		expect(mocks.startTimeSuggestionsAfterMeeting).toHaveBeenCalledOnce();
+		expect(mocks.recordUsage).toHaveBeenCalledOnce();
+		expect(mocks.deleteProviderData).toHaveBeenCalledOnce();
+	});
+
+	it("suggests nothing for a meeting the agent joined on its own", async () => {
+		mocks.sessionFindUnique.mockResolvedValue(
+			storedSession({ joinedAt, trigger: "AUTO" }),
+		);
+
+		await finalizeParlumeSession("session-1");
+
+		expect(mocks.startTimeSuggestionsAfterMeeting).not.toHaveBeenCalled();
+	});
+
+	it("suggests nothing for a failed session", async () => {
+		mocks.sessionFindUnique.mockResolvedValue(storedSession({ joinedAt }));
+
+		await finalizeParlumeSession("session-1", { preserveFailure: true });
+
+		expect(mocks.recordUsage).toHaveBeenCalledOnce();
+		expect(mocks.startTimeSuggestionsAfterMeeting).not.toHaveBeenCalled();
+	});
+
+	it("suggests nothing again when a finished session is finalized again", async () => {
+		mocks.sessionFindUnique.mockResolvedValue(
+			storedSession({
+				joinedAt,
+				status: "ENDED",
+				finalizedAt: new Date("2026-10-01T18:00:05Z"),
+				providerDataDeletedAt: new Date("2026-10-01T18:00:06Z"),
+			}),
+		);
+
+		await finalizeParlumeSession("session-1");
+
+		expect(mocks.startTimeSuggestionsAfterMeeting).not.toHaveBeenCalled();
+	});
 });

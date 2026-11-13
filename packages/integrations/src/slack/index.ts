@@ -17,6 +17,7 @@
 export { addSlackReaction } from "./add-reaction";
 // Export reaction support
 export {
+	isDeadSlackTokenError,
 	isPermanentSlackError,
 	PERMANENT_SLACK_ERRORS,
 	SlackConfigurationError,

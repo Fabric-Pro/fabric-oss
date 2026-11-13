@@ -110,7 +110,7 @@ export function PriorityTrail({
 							type="button"
 							onClick={() => setDialogOpen(true)}
 							aria-label={trailHint}
-							className="inline-flex shrink-0 items-center rounded text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+							className="inline-flex shrink-0 items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							<HistoryIcon aria-hidden className="size-3.5" />
 						</button>
@@ -148,7 +148,7 @@ export function PriorityTrail({
 							aria-hidden
 							className="size-3 shrink-0 text-muted-foreground/50"
 						/>
-						<span className="shrink-0 text-[11px] text-muted-foreground/70">
+						<span className="shrink-0 text-[11px] text-muted-foreground">
 							{t("trailEllipsis", {
 								count: totalCount - shown.length,
 							})}
@@ -175,7 +175,7 @@ export function PriorityTrail({
 									{entry.source === "AI" && (
 										<SparklesIcon
 											aria-hidden
-											className="size-2.5 text-secondary"
+											className="size-2.5 text-success"
 										/>
 									)}
 									<span className="sr-only">

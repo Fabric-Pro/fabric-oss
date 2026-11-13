@@ -92,7 +92,7 @@ const statusConfig = {
 	},
 	COMPLETED: {
 		label: "Completed",
-		className: "bg-primary/10 text-primary",
+		className: "bg-primary/10 text-primary-active",
 		dot: "bg-primary",
 	},
 	ARCHIVED: {
@@ -366,7 +366,10 @@ export function ProjectCard({
 											className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
 											onClick={(e) => e.stopPropagation()}
 										>
-											<MoreHorizontalIcon className="h-3.5 w-3.5" />
+											<MoreHorizontalIcon
+												strokeWidth={2.5}
+												className="h-3.5 w-3.5"
+											/>
 										</Button>
 									</DropdownMenuTrigger>
 									<DropdownMenuContent align="end">

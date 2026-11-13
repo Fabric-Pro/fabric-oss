@@ -94,6 +94,7 @@ const LOOP_BUILT_IN_READ_TOOLS = new Set([
 	"workspace_rag_summarize",
 	"search_tools",
 	"get_tool_schema",
+	"advisor_result_read",
 	"search_slack_messages",
 	"search_teams_messages",
 	"fabric_list_meeting_transcripts",
@@ -103,9 +104,11 @@ const LOOP_BUILT_IN_READ_TOOLS = new Set([
 export function isLoopBuiltInReadTool(
 	name: string,
 	toolSchemaEnabled = true,
+	resultReadsEnabled = false,
 ): boolean {
 	return (
 		(name !== "get_tool_schema" || toolSchemaEnabled) &&
+		(name !== "advisor_result_read" || resultReadsEnabled) &&
 		LOOP_BUILT_IN_READ_TOOLS.has(name)
 	);
 }

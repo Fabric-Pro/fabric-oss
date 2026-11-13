@@ -1,7 +1,10 @@
 /**
- * Start the scan a member asks for from the Decisions tab: the files a
- * repository's first Living Memory sync did not read for decisions. The
- * workflow lives in `@repo/temporal` and is started by its registered name.
+ * Start the scan a member asks for from the Decisions tab: the synced Living
+ * Memory files not read for decisions yet, whether a repository's first sync
+ * skipped them or their current version was never read. The workflow lives in
+ * `@repo/temporal` and is started by its registered name. `requestedByUserId`
+ * is the member who asked: the project's other reviewers are notified of the
+ * candidates the scan finds, and that member is not.
  */
 import { getTemporalClient } from "@repo/temporal";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
@@ -17,6 +20,7 @@ const FIRST_SYNC_SCAN_TASK_QUEUE = "fabric-worker";
 export async function startLivingMemoryFirstSyncScan(input: {
 	projectId: string;
 	organizationId: string | null;
+	requestedByUserId: string;
 }): Promise<boolean> {
 	const client = await getTemporalClient();
 	try {

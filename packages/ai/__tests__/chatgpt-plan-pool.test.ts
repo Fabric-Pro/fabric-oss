@@ -756,6 +756,7 @@ describe("PLAN_POOL_BACKGROUND_JOB_TYPES", () => {
 			"publishing-suggestion",
 			"publishing-suggestion-manual",
 			"newsletter-curation",
+			"newsletter-screenshot",
 			"living-document-refresh",
 			"context-summarization",
 			"context-enrichment",

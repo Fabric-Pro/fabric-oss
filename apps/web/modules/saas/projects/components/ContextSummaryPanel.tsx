@@ -163,7 +163,7 @@ function ContextSummaryPanelInner({ projectId }: { projectId: string }) {
 									type="button"
 									variant="ghost"
 									disabled
-									className="gap-2 border border-primary/20 bg-primary/12 text-primary"
+									className="gap-2 border border-primary/20 bg-primary/12 text-primary-active"
 								>
 									<SparklesIcon
 										className="size-4"
@@ -184,7 +184,7 @@ function ContextSummaryPanelInner({ projectId }: { projectId: string }) {
 				variant="ghost"
 				onClick={() => setSourceDialogOpen(true)}
 				disabled={triggerPending}
-				className="gap-2 border border-primary/20 bg-primary/12 text-primary hover:bg-primary/18"
+				className="gap-2 border border-primary/20 bg-primary/12 text-primary-active hover:bg-primary/18"
 			>
 				<SparklesIcon className="size-4" aria-hidden="true" />
 				{label}
@@ -223,7 +223,7 @@ function ContextSummaryPanelInner({ projectId }: { projectId: string }) {
 									<button
 										type="button"
 										aria-label={t("info.aria")}
-										className="inline-flex text-muted-foreground/70 motion-safe:transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+										className="inline-flex text-muted-foreground motion-safe:transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 									>
 										<InfoIcon
 											className="size-3.5"

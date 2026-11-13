@@ -12,8 +12,11 @@ import { CLAUDE_PLUGIN_MCP_SERVER, pluginNameFor } from "./layout.js";
 export type McpSignIn = "signed-in" | "already" | "no-browser" | "failed";
 
 /** The name Claude Code lists the plugin's MCP server under in `/mcp`. */
-export function pluginMcpServerName(projectId: string): string {
-	return `plugin:${pluginNameFor(projectId)}:${CLAUDE_PLUGIN_MCP_SERVER}`;
+export function pluginMcpServerName(
+	projectId: string,
+	set?: string | null,
+): string {
+	return `plugin:${pluginNameFor(projectId, set)}:${CLAUDE_PLUGIN_MCP_SERVER}`;
 }
 
 /**

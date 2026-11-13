@@ -22,12 +22,14 @@ const OPEN: SettingsTabGates = {
 	pmFieldMappingEnabled: true,
 	qaEnabled: true,
 	publishingEnabled: true,
+	timeTrackingEnabled: true,
 };
 /** All gates shut. */
 const SHUT: SettingsTabGates = {
 	pmFieldMappingEnabled: false,
 	qaEnabled: false,
 	publishingEnabled: false,
+	timeTrackingEnabled: false,
 };
 
 describe("resolveStoredSettingsTab", () => {
@@ -112,6 +114,7 @@ describe("resolveStoredSettingsTab", () => {
 				pmFieldMappingEnabled: true,
 				qaEnabled: false,
 				publishingEnabled: true,
+				timeTrackingEnabled: true,
 			}),
 		).toBe("development");
 	});
@@ -142,7 +145,19 @@ describe("resolveStoredSettingsTab", () => {
 				pmFieldMappingEnabled: false,
 				qaEnabled: true,
 				publishingEnabled: false,
+				timeTrackingEnabled: true,
 			}),
 		).toBe("development");
+	});
+
+	it('resolves "time-tracking" only for a project of an organization', () => {
+		// Missing from KNOWN_SETTINGS_TABS, a reload would rewrite it to
+		// "development" and lose the tab the member was on.
+		expect(KNOWN_SETTINGS_TABS).toContain("time-tracking");
+		expect(resolveStoredSettingsTab("time-tracking", OPEN)).toBe(
+			"time-tracking",
+		);
+		// A personal project has no time tracking, so no tab to reopen.
+		expect(resolveStoredSettingsTab("time-tracking", SHUT)).toBe("general");
 	});
 });

@@ -17,8 +17,10 @@ import {
 } from "@ui/components/tooltip";
 import { CameraIcon, TriangleAlertIcon } from "lucide-react";
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import type { ParsedCriterion } from "../../../lib/stories/qa-traceability";
+import { RESULT_I18N_KEY, type TestResult } from "../../test-cases/constants";
 
 /** The pyramid levels a person can assign, plus the honest "not said" option. */
 const COVERAGE_TYPE_OPTIONS = [
@@ -34,7 +36,7 @@ export interface MatrixCase {
 	id: string;
 	identifier: string;
 	title: string;
-	currentResult: string;
+	currentResult: TestResult;
 }
 
 type Props = {
@@ -101,6 +103,7 @@ export function CoverageMatrixTable({
 	unmappedLabel,
 	criterionLabel,
 }: Props) {
+	const tTestCases = useTranslations("projects.testCases");
 	const queryClient = useQueryClient();
 
 	const indexQuery = useQuery(
@@ -139,7 +142,7 @@ export function CoverageMatrixTable({
 				</Link>
 
 				<span className="text-muted-foreground">
-					{testCase.currentResult}
+					{tTestCases(RESULT_I18N_KEY[testCase.currentResult])}
 				</span>
 
 				{detail && (

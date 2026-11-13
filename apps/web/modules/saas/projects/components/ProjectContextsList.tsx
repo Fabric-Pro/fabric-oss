@@ -6,6 +6,7 @@ import {
 	hasExtractionLifecycle,
 } from "@repo/api/modules/projects/lib/extraction-lifecycle";
 import {
+	ONEDRIVE_TRANSCRIPT_PROVIDER,
 	pmDetectedTypeDisplayName,
 	UPLOADED_TRANSCRIPT_PROVIDER,
 } from "@repo/utils";
@@ -145,6 +146,7 @@ import {
 import { LivingMemorySection } from "./LivingMemorySection";
 import { ProjectSectionHero } from "./ProjectSectionHero";
 import { ProjectWorkspaceDocuments } from "./ProjectWorkspaceDocuments";
+import { RemoveLivingMemoryFolder } from "./RemoveLivingMemoryFolder";
 import {
 	placeLeftOutPaths,
 	useLivingMemoryExclusion,
@@ -221,6 +223,14 @@ function isUploadedTranscript(context: { metadata?: unknown }): boolean {
 	return (
 		(context.metadata as { provider?: string } | null)?.provider ===
 		UPLOADED_TRANSCRIPT_PROVIDER
+	);
+}
+
+/** Imported from a connected OneDrive folder (#3507). */
+function isOneDriveTranscript(context: { metadata?: unknown }): boolean {
+	return (
+		(context.metadata as { provider?: string } | null)?.provider ===
+		ONEDRIVE_TRANSCRIPT_PROVIDER
 	);
 }
 
@@ -304,6 +314,23 @@ function groupSyncedContextsByFolder<T extends { sourcePath?: string | null }>(
 		}
 		return comparePathText(a.path, b.path);
 	});
+}
+
+/**
+ * How many synced files a "Remove folder" on `path` deletes: the folder's
+ * own and every subfolder's, since the server removes the whole prefix.
+ */
+function syncedFileCountUnder<T>(
+	folders: readonly LivingMemoryFolder<T>[],
+	path: string,
+): number {
+	return folders.reduce(
+		(total, folder) =>
+			folder.path === path || folder.path.startsWith(`${path}/`)
+				? total + folder.files.length
+				: total,
+		0,
+	);
 }
 
 /**
@@ -476,6 +503,13 @@ type Props = {
 	 * connect repositories.
 	 */
 	onConnectRepository?: () => void;
+	/**
+	 * The "Add meeting" actions the Meeting Digest has (Fizzy #3507), beside
+	 * Add Context. Absent when the viewer cannot change meeting sources.
+	 */
+	meetingActions?: React.ReactNode;
+	/** Linked meetings still waiting for their first transcript (Fizzy #3507). */
+	meetingPlaceholders?: React.ReactNode;
 };
 
 const contextTypeConfig: Record<
@@ -555,7 +589,7 @@ const extractionStatusConfig: Record<
 > = {
 	PENDING: {
 		icon: LoaderIcon,
-		color: "text-foreground/40",
+		color: "text-muted-foreground",
 		label: "Pending",
 	},
 	EXTRACTING: {
@@ -766,7 +800,7 @@ function LinkStatusRow({
 
 	return (
 		<div
-			className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-foreground/50 text-xs"
+			className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs"
 			data-testid="link-status-row"
 		>
 			{primary}
@@ -952,7 +986,12 @@ export function UrlContextCard({
 	);
 }
 
-export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
+export function ProjectContextsList({
+	projectId,
+	onConnectRepository,
+	meetingActions,
+	meetingPlaceholders,
+}: Props) {
 	const { organizationId, organizationSlug } = useOrganizationContext();
 	const [uploaderOpen, setUploaderOpen] = useState(false);
 	// Context Source Type Labeling (#1888): the row menus flip this target;
@@ -2365,7 +2404,7 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 								</div>
 								{synced && (
 									<p
-										className="mt-0.5 truncate font-mono text-foreground/50 text-xs"
+										className="mt-0.5 truncate font-mono text-muted-foreground text-xs"
 										title={synced.path}
 										data-testid={`context-source-path-${context.id}`}
 									>
@@ -2378,13 +2417,13 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 									aiInstructions={context.aiInstructions}
 								/>
 								{description && (
-									<p className="mt-1 line-clamp-2 text-foreground/50 text-sm">
+									<p className="mt-1 line-clamp-2 text-muted-foreground text-sm">
 										{description}
 									</p>
 								)}
 
 								{/* Meta info */}
-								<div className="mt-2 flex flex-wrap items-center gap-3 text-foreground/40 text-xs">
+								<div className="mt-2 flex flex-wrap items-center gap-3 text-muted-foreground text-xs">
 									{/* Live connections report "Connected"; anything
 									    with a real extraction pipeline reports its
 									    actual status. */}
@@ -2504,7 +2543,10 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 													e.stopPropagation()
 												}
 											>
-												<MoreVerticalIcon className="size-4" />
+												<MoreVerticalIcon
+													strokeWidth={2.5}
+													className="size-4"
+												/>
 											</Button>
 										</DropdownMenuTrigger>
 									</TooltipTrigger>
@@ -2779,7 +2821,7 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 											onClick={() =>
 												setUploaderOpen(true)
 											}
-											className="gap-2 border border-primary/20 bg-primary/12 text-primary hover:bg-primary/18"
+											className="gap-2 border border-primary/20 bg-primary/12 text-primary-active hover:bg-primary/18"
 											variant="ghost"
 										>
 											<PlusIcon className="size-4" />
@@ -2790,6 +2832,11 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 										{t("addContext")}
 									</TooltipContent>
 								</Tooltip>
+								{meetingActions && (
+									<span data-onboarding-target="context-add-meeting">
+										{meetingActions}
+									</span>
+								)}
 								{onConnectRepository && (
 									<Button
 										variant="outline"
@@ -2853,6 +2900,7 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 				onSubjectSelect={revealContext}
 			/>
 
+			{meetingPlaceholders}
 			<ContextSummaryPanel projectId={projectId} />
 			<ProjectWorkspaceDocuments
 				projectId={projectId}
@@ -3002,13 +3050,13 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 						<LivingMemorySection {...livingMemoryProps} />
 					)}
 					<div className="flex flex-col items-center justify-center rounded-lg border border-border/60 bg-card/40 py-16 backdrop-blur-sm">
-						<div className="mb-4 rounded-lg border border-primary/15 bg-primary/10 p-4 text-primary">
+						<div className="mb-4 rounded-lg border border-primary/15 bg-primary/10 p-4 text-primary-active">
 							<FolderIcon className="size-8 text-primary" />
 						</div>
 						<p className="mb-2 font-medium text-foreground/70">
 							No context yet
 						</p>
-						<p className="mb-6 max-w-md text-center text-foreground/50 text-sm">
+						<p className="mb-6 max-w-md text-center text-muted-foreground text-sm">
 							Add files, links, or text to provide context for
 							your project. This helps generate better, more
 							accurate documents.
@@ -3017,7 +3065,7 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 							<TooltipTrigger asChild>
 								<Button
 									onClick={() => setUploaderOpen(true)}
-									className="gap-2 border border-primary/20 bg-primary/12 text-primary hover:bg-primary/18"
+									className="gap-2 border border-primary/20 bg-primary/12 text-primary-active hover:bg-primary/18"
 									variant="ghost"
 								>
 									<SparklesIcon className="size-4" />
@@ -3072,11 +3120,21 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 											).length,
 										0,
 									);
+								const oneDriveTranscripts =
+									transcriptGroups.reduce(
+										(sum, g) =>
+											sum +
+											g.transcripts.filter(
+												isOneDriveTranscript,
+											).length,
+										0,
+									);
 								const provenanceLabel =
 									transcriptProvenanceLabel({
 										total: totalTranscripts,
 										imported: importedTranscripts,
 										uploaded: uploadedTranscripts,
+										fromOneDrive: oneDriveTranscripts,
 									});
 								const isMeetingsExpanded =
 									expandedGroups.has("meetings-top");
@@ -3137,7 +3195,7 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 														meetingsStuck,
 													)}
 												</div>
-												<p className="mt-1 text-foreground/50 text-xs">
+												<p className="mt-1 text-muted-foreground text-xs">
 													{provenanceLabel}
 												</p>
 											</div>
@@ -3194,7 +3252,7 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 																				meetingStuck,
 																			)}
 																		</div>
-																		<div className="mt-0.5 flex items-center gap-2 text-foreground/40 text-xs">
+																		<div className="mt-0.5 flex items-center gap-2 text-muted-foreground text-xs">
 																			<span>
 																				{
 																					group
@@ -3216,6 +3274,14 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 																					·
 																					Uploaded
 																					file
+																				</span>
+																			)}
+																			{group.transcripts.some(
+																				isOneDriveTranscript,
+																			) && (
+																				<span>
+																					·
+																					OneDrive
 																				</span>
 																			)}
 																			{latestDate && (
@@ -3320,7 +3386,7 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 																									context.aiInstructions
 																								}
 																							/>
-																							<div className="mt-0.5 flex flex-wrap items-center gap-2 text-foreground/40 text-xs">
+																							<div className="mt-0.5 flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
 																								<span
 																									className={cn(
 																										"flex items-center gap-1",
@@ -3404,7 +3470,12 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 																													e.stopPropagation()
 																												}
 																											>
-																												<MoreVerticalIcon className="size-3.5" />
+																												<MoreVerticalIcon
+																													strokeWidth={
+																														2.5
+																													}
+																													className="size-3.5"
+																												/>
 																											</Button>
 																										</DropdownMenuTrigger>
 																									</TooltipTrigger>
@@ -3560,7 +3631,7 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 												stalledCountIn(teamsGroup),
 											)}
 										</div>
-										<p className="mt-1 text-foreground/50 text-xs">
+										<p className="mt-1 text-muted-foreground text-xs">
 											Synced from Microsoft Teams
 										</p>
 									</div>
@@ -3630,7 +3701,7 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 																context.aiInstructions
 															}
 														/>
-														<div className="mt-1 flex flex-wrap items-center gap-3 text-foreground/40 text-xs">
+														<div className="mt-1 flex flex-wrap items-center gap-3 text-muted-foreground text-xs">
 															<span>
 																{formatDistanceToNow(
 																	new Date(
@@ -3717,7 +3788,12 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 																				e.stopPropagation()
 																			}
 																		>
-																			<MoreVerticalIcon className="size-3.5" />
+																			<MoreVerticalIcon
+																				strokeWidth={
+																					2.5
+																				}
+																				className="size-3.5"
+																			/>
 																		</Button>
 																	</DropdownMenuTrigger>
 																</TooltipTrigger>
@@ -3811,7 +3887,7 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 												stalledCountIn(notionGroup),
 											)}
 										</div>
-										<p className="mt-1 text-foreground/50 text-xs">
+										<p className="mt-1 text-muted-foreground text-xs">
 											Imported from Notion workspace
 										</p>
 									</div>
@@ -3863,7 +3939,7 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 																context.aiInstructions
 															}
 														/>
-														<div className="mt-1 flex flex-wrap items-center gap-3 text-foreground/40 text-xs">
+														<div className="mt-1 flex flex-wrap items-center gap-3 text-muted-foreground text-xs">
 															<span>
 																{formatDistanceToNow(
 																	new Date(
@@ -3945,7 +4021,12 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 																				e.stopPropagation()
 																			}
 																		>
-																			<MoreVerticalIcon className="size-3.5" />
+																			<MoreVerticalIcon
+																				strokeWidth={
+																					2.5
+																				}
+																				className="size-3.5"
+																			/>
 																		</Button>
 																	</DropdownMenuTrigger>
 																</TooltipTrigger>
@@ -4039,78 +4120,100 @@ export function ProjectContextsList({ projectId, onConnectRepository }: Props) {
 										data-testid={`context-folder-${slug}`}
 										data-folder-path={folder.path}
 									>
-										<h4>
-											<button
-												type="button"
-												onClick={() =>
-													toggleFolder(folder.path)
-												}
-												aria-expanded={!isCollapsed}
-												aria-controls={
-													isCollapsed
-														? undefined
-														: panelId
-												}
-												className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
-											>
-												<FolderIcon
-													className="size-4 shrink-0 text-muted-foreground"
-													aria-hidden="true"
-												/>
-												<span
-													className={cn(
-														"min-w-0 flex-1 truncate font-medium text-sm",
-														folder.path !== "" &&
-															"font-mono",
-													)}
-													title={label}
+										<div className="flex items-center gap-1 pr-2">
+											<h4 className="min-w-0 flex-1">
+												<button
+													type="button"
+													onClick={() =>
+														toggleFolder(
+															folder.path,
+														)
+													}
+													aria-expanded={!isCollapsed}
+													aria-controls={
+														isCollapsed
+															? undefined
+															: panelId
+													}
+													className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
 												>
-													{label}
-												</span>
-												<Badge
-													variant="outline"
-													className="shrink-0 border-foreground/20 text-xs"
-												>
-													{tLivingMemory(
-														"fileCount",
-														{
-															count: folder.files
-																.length,
-														},
-													)}
-												</Badge>
-												{leftOut.byFolder.has(
-													folder.path,
-												) ? (
+													<FolderIcon
+														className="size-4 shrink-0 text-muted-foreground"
+														aria-hidden="true"
+													/>
+													<span
+														className={cn(
+															"min-w-0 flex-1 truncate font-medium text-sm",
+															folder.path !==
+																"" &&
+																"font-mono",
+														)}
+														title={label}
+													>
+														{label}
+													</span>
 													<Badge
 														variant="outline"
-														className="shrink-0 border-dashed text-muted-foreground text-xs"
+														className="shrink-0 border-foreground/20 text-xs"
 													>
 														{tLivingMemory(
-															"repositorySync.exclusions.listTitle",
+															"fileCount",
 															{
-																count:
-																	leftOut.byFolder.get(
-																		folder.path,
-																	)?.length ??
-																	0,
+																count: folder
+																	.files
+																	.length,
 															},
 														)}
 													</Badge>
-												) : null}
-												{renderGroupStuckBadge(
-													folderStuck,
-												)}
-												<ChevronDownIcon
-													className={cn(
-														"size-4 shrink-0 text-muted-foreground transition-transform",
-														!isCollapsed &&
-															"rotate-180",
+													{leftOut.byFolder.has(
+														folder.path,
+													) ? (
+														<Badge
+															variant="outline"
+															className="shrink-0 border-dashed text-muted-foreground text-xs"
+														>
+															{tLivingMemory(
+																"repositorySync.exclusions.listTitle",
+																{
+																	count:
+																		leftOut.byFolder.get(
+																			folder.path,
+																		)
+																			?.length ??
+																		0,
+																},
+															)}
+														</Badge>
+													) : null}
+													{renderGroupStuckBadge(
+														folderStuck,
 													)}
-													aria-hidden="true"
-												/>
-											</button>
-										</h4>
+													<ChevronDownIcon
+														className={cn(
+															"size-4 shrink-0 text-muted-foreground transition-transform",
+															!isCollapsed &&
+																"rotate-180",
+														)}
+														aria-hidden="true"
+													/>
+												</button>
+											</h4>
+											<RemoveLivingMemoryFolder
+												projectId={projectId}
+												organizationId={organizationId}
+												folderPath={folder.path}
+												fileCount={syncedFileCountUnder(
+													livingMemoryFolders,
+													folder.path,
+												)}
+												repositorySyncConnected={Boolean(
+													repositorySyncState?.configured,
+												)}
+												onRemoved={
+													onRepositorySyncChanged
+												}
+											/>
+										</div>
 										{!isCollapsed && (
 											<div
 												id={panelId}

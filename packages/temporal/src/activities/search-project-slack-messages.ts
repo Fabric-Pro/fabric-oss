@@ -18,6 +18,10 @@ import {
 	neutralizeAiChatAttachmentBody,
 	neutralizeAiChatAttachmentFilename,
 } from "@repo/utils/ai-chat-attachment";
+import {
+	type AdvisorResultStoreContext,
+	storeAdvisorResult,
+} from "./advisor-result-store";
 
 // Internal type for parsed Slack contexts
 interface SlackIntegrationContext {
@@ -57,6 +61,7 @@ function parseSlackContexts(
  * Input for the search activity
  */
 export interface SearchProjectSlackMessagesInput {
+	advisorResultStore?: AdvisorResultStoreContext;
 	/** The project to search Slack messages for */
 	projectId: string;
 	/** Search query - keywords, phrases, or topics */
@@ -195,6 +200,23 @@ export async function checkProjectHasSlackIntegration(params: {
  * as INTEGRATION contexts.
  */
 export async function searchProjectSlackMessages(
+	input: SearchProjectSlackMessagesInput,
+): Promise<SearchProjectSlackMessagesResult> {
+	const result = await runSlackMessageSearch(input);
+	if (result.errors.length === 0) {
+		await storeAdvisorResult({
+			userId: input.userId,
+			organizationId: input.organizationId,
+			advisorResultStore: input.advisorResultStore,
+			toolName: "search_slack_messages",
+			route: "built-in",
+			result,
+		});
+	}
+	return result;
+}
+
+async function runSlackMessageSearch(
 	input: SearchProjectSlackMessagesInput,
 ): Promise<SearchProjectSlackMessagesResult> {
 	const { projectId, query, userId, organizationId, limit = 15 } = input;

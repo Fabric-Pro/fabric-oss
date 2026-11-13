@@ -44,7 +44,7 @@ const categories = [
 		value: "Content Analysis",
 		label: "Content Analysis",
 		icon: BarChart3Icon,
-		color: "text-secondary",
+		color: "text-success",
 	},
 	{
 		value: "Development",

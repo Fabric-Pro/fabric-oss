@@ -1,5 +1,5 @@
 /**
- * fabric instructions render --project <id> [--target claude-code|codex] [--out <dir>]
+ * fabric instructions render --project <id> [--set <slug>] [--target claude-code|codex] [--out <dir>]
  *
  * Builds a project's instructions into a plugin directory and prints its
  * absolute path, and nothing else, on stdout. That is the contract of a Claude
@@ -15,6 +15,9 @@
  * never failing, because a hook's stdout is the session's context and a hook
  * must not stop a session. It also refreshes the project's `AGENTS.override.md`
  * (Codex has no plugin slot for always-on text) when `--target codex`.
+ *
+ * `--set` names the Coding Instructions set a non-default set's plugin was
+ * set up for; without it a project with sets renders its default set.
  */
 import os from "node:os";
 import path from "node:path";
@@ -30,6 +33,11 @@ import { machine } from "../../lib/instructions/machine.js";
 import { resolveExistingRoot } from "../../lib/instructions/safe-write.js";
 import { DEFAULT_ORIGIN, normalizeOrigin } from "../../lib/origin.js";
 import { refreshCodexInstall } from "../../lib/plugin/codex-install.js";
+import {
+	isSetSlug,
+	loadRenderSet,
+	pluginSetSlug,
+} from "../../lib/plugin/instruction-sets.js";
 import {
 	codexPluginVersion,
 	type PluginTool,
@@ -49,6 +57,7 @@ interface RenderOptions {
 	out?: string;
 	dest?: string;
 	hook?: boolean;
+	set?: string;
 }
 
 function toolOf(target: string | undefined): PluginTool {
@@ -120,9 +129,19 @@ export async function renderForProject(input: {
 	tool: PluginTool;
 	out?: string;
 	log?: (line: string) => void;
+	/** `--set`: a Coding Instructions set's slug. */
+	set?: string;
 }): Promise<RenderedPlugin> {
 	const { origin, client, cacheDirectory } = connectForProject(input);
+	const set = await loadRenderSet({
+		client,
+		projectId: input.project,
+		org: input.org,
+		set: input.set,
+		withRepositories: true,
+	});
 	const rendered = await renderPlugin({
+		set,
 		client,
 		projectId: input.project,
 		org: input.org,
@@ -198,6 +217,10 @@ export function registerRenderCommand(instructions: Command): void {
 		)
 		.option("--org <slug>", "Organization context")
 		.option(
+			"--set <slug>",
+			"Coding Instructions set to build (default: the project's default set, when it has sets)",
+		)
+		.option(
 			"--target <tool>",
 			"Plugin to build: claude-code (default) or codex",
 		)
@@ -213,7 +236,11 @@ export function registerRenderCommand(instructions: Command): void {
 		.action(async (opts: RenderOptions) => {
 			try {
 				const tool = toolOf(opts.target);
+				if (opts.set !== undefined && !isSetSlug(opts.set)) {
+					throw new CliFailure("--set is not a set slug", 2);
+				}
 				const rendered = await renderForProject({
+					set: opts.set,
 					project: opts.project as string,
 					baseUrl: opts.baseUrl,
 					org: opts.org,
@@ -239,6 +266,7 @@ export function registerRenderCommand(instructions: Command): void {
 						projectId: opts.project as string,
 						version: codexPluginVersion(rendered.pin),
 						cwd: path.resolve(opts.dest ?? process.cwd()),
+						set: pluginSetSlug(opts.set),
 					});
 				}
 				if (!opts.hook) {

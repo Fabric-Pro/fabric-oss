@@ -110,6 +110,7 @@ export type {
 export { readRepositoryBlobSizes } from "./repository-blob-sizes";
 export type {
 	BranchVerifyOutcome,
+	FetchProviderDefaultBranchInput,
 	ListRepositoryBranchesInput,
 	ListRepositoryBranchesResult,
 	RepositoryBranchRef,
@@ -119,6 +120,7 @@ export type {
 } from "./repository-branch";
 // Remote branch verification + listing (request-path helpers)
 export {
+	fetchProviderDefaultBranch,
 	listRepositoryBranches,
 	parseAdoRepositoryUrl,
 	resolveDefaultBranch,

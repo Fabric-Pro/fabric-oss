@@ -53,6 +53,7 @@ import { PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY } from "./publishing-webinar-script
 import { RECURRING_ERROR_BUG_PROMPT_AGENT_KEY } from "./recurring-error-bug-prompt";
 import { REPORT_PARAMETER_DEFAULTS_PROMPT_AGENT_KEY } from "./report-parameter-defaults-prompt";
 import { REPORT_SAMPLE_PROMPT_AGENT_KEY } from "./report-sample-prompt";
+import { TIME_SUGGESTION_PROMPT_AGENT_KEY } from "./time-suggestion-prompt";
 
 export type PromptStoryKind = "FEATURE" | "BUG" | null;
 
@@ -478,6 +479,15 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		actions: nonStage("GENERAL"),
 	},
 	{
+		// Drives the browser that captures release-notes screenshots. Editing
+		// it changes what a picture shows; it cannot widen what the browser may
+		// do — the operation set and the origin guard are enforced in code.
+		key: "newsletter_screenshot_capture",
+		label: "Release Notes Screenshot Capture",
+		featureType: "AUTOMATION",
+		actions: nonStage("GENERAL"),
+	},
+	{
 		key: "qa_analysis_generator",
 		label: "QA Analysis Generator",
 		featureType: "QUALITY",
@@ -537,6 +547,16 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		// a template can mark a setting the prompt must never fill.
 		key: REPORT_PARAMETER_DEFAULTS_PROMPT_AGENT_KEY,
 		label: "Report parameter defaults",
+		featureType: "REPORTS",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The descriptions of the time entries Fabric suggests a member log,
+		// and the activity each one gets. Editing it changes the wording; the
+		// evidence is fenced as untrusted data code-side, and the duration,
+		// project and work item never come from the model.
+		key: TIME_SUGGESTION_PROMPT_AGENT_KEY,
+		label: "Time suggestions",
 		featureType: "REPORTS",
 		actions: nonStage("GENERAL"),
 	},

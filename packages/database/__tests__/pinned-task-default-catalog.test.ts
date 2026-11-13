@@ -70,6 +70,7 @@ describe("new connection task templates", () => {
 		["CEREBRAS", "SIMPLE", "llama-3-1-8b"],
 		["DATABRICKS", "SIMPLE", "llama-3-3-70b"],
 		["OPENAI_DIRECT", "IMAGE", "dall-e-3"],
+		["VERCEL_GATEWAY", "IMAGE", "gemini-nano-banana-2.1"],
 		["OPENAI_DIRECT", "EMBEDDING", "text-embedding-3-small"],
 		["VERCEL_GATEWAY", "DECISION", "gpt-6-luna-decisions"],
 		["GROQ", "AUDIO", "whisper-1"],

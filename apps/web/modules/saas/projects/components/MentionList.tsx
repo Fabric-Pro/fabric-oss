@@ -146,7 +146,7 @@ export const MentionList = forwardRef<
 						onClick={() => select(index)}
 						className={`w-full flex items-center gap-3 px-3 py-2 rounded text-left transition-colors cursor-pointer ${
 							index === selectedIndex
-								? "bg-primary/10 text-primary"
+								? "bg-primary/10 text-primary-active"
 								: "text-foreground hover:bg-muted"
 						}`}
 					>

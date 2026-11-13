@@ -295,7 +295,7 @@ export function ChatHistoryGroup(props: ChatHistoryGroupProps) {
 	// from the pre-refactor shape — same DOM tree, same hover/swipe row).
 	return (
 		<div className={cn("mb-5 w-full px-2.5", props.className)}>
-			<h3 className="mb-2 px-2 text-[10px] font-semibold tracking-[-0.01em] text-muted-foreground/65">
+			<h3 className="mb-2 px-2 text-[10px] font-semibold tracking-[-0.01em] text-muted-foreground">
 				{props.label}
 			</h3>
 			<div className="w-full space-y-0.5">

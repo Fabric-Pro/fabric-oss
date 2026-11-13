@@ -567,10 +567,47 @@ async function resolveAzureDevOpsDefaultBranch(
 	return null;
 }
 
+export type FetchProviderDefaultBranchInput = Omit<
+	ResolveDefaultBranchInput,
+	"providedBranch"
+>;
+
 /**
- * Fetch the actual default branch from the provider.
- * Wraps upstream API queries with a 5s timeout and gracefully catches all errors.
- * Returns the provided branch if given, or natively falls back to "main" on any failure.
+ * The repository's own default branch as the provider reports it (GitHub and
+ * GitLab `default_branch`, Azure DevOps `defaultBranch`), or `null` when the
+ * provider cannot answer (rejected credential, missing repository, timeout,
+ * unknown provider). Never throws and never invents a name: a caller that
+ * needs a branch whatever happens chooses its own last resort.
+ */
+export async function fetchProviderDefaultBranch(
+	input: FetchProviderDefaultBranchInput,
+): Promise<string | null> {
+	try {
+		switch (input.provider) {
+			case "GITHUB":
+				return await resolveGitHubDefaultBranch(input);
+			case "GITLAB":
+				return await resolveGitLabDefaultBranch(input);
+			case "AZURE_DEVOPS":
+				return await resolveAzureDevOpsDefaultBranch(input);
+			default:
+				return null;
+		}
+	} catch (error) {
+		console.warn("Failed to resolve default branch; falling back", {
+			provider: input.provider,
+			repo: input.repo,
+			error: error instanceof Error ? error.message : "Unknown error",
+		});
+		return null;
+	}
+}
+
+/**
+ * The branch to store for a newly connected repository: the provided branch
+ * when one was chosen, else the provider's default branch
+ * (`fetchProviderDefaultBranch`), else "main" - the last resort only when the
+ * provider cannot answer at all.
  */
 export async function resolveDefaultBranch(
 	input: ResolveDefaultBranchInput,
@@ -578,27 +615,5 @@ export async function resolveDefaultBranch(
 	if (input.providedBranch) {
 		return input.providedBranch;
 	}
-
-	try {
-		let fetched: string | null = null;
-		switch (input.provider) {
-			case "GITHUB":
-				fetched = await resolveGitHubDefaultBranch(input);
-				break;
-			case "GITLAB":
-				fetched = await resolveGitLabDefaultBranch(input);
-				break;
-			case "AZURE_DEVOPS":
-				fetched = await resolveAzureDevOpsDefaultBranch(input);
-				break;
-		}
-		return fetched || "main";
-	} catch (error) {
-		console.warn("Failed to resolve default branch; falling back", {
-			provider: input.provider,
-			repo: input.repo,
-			error: error instanceof Error ? error.message : "Unknown error",
-		});
-		return "main";
-	}
+	return (await fetchProviderDefaultBranch(input)) || "main";
 }

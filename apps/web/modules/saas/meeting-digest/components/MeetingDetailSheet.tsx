@@ -234,6 +234,7 @@ export function MeetingDetailSheet({
 	highlightItemKey = null,
 	panelExpanded = false,
 	onPanelExpandedChange = () => {},
+	onEditDetails,
 }: {
 	projectId: string;
 	organizationId: string | null;
@@ -247,6 +248,15 @@ export function MeetingDetailSheet({
 	 *  renders standalone in tests. */
 	panelExpanded?: boolean;
 	onPanelExpandedChange?: (expanded: boolean) => void;
+	/**
+	 * #3507: correct the meeting's title or date. Absent for someone who
+	 * cannot change the digest.
+	 */
+	onEditDetails?: (meeting: {
+		transcriptId: string;
+		subject: string | null;
+		meetingDate: Date | string | null;
+	}) => void;
 }) {
 	// Poll bookkeeping + trigger dedup are per opened meeting: the sheet stays
 	// mounted across open/close (only transcriptId changes), so everything
@@ -568,6 +578,21 @@ export function MeetingDetailSheet({
 						Meeting digest detail: summary, insights, and
 						transcript.
 					</SheetDescription>
+					{onEditDetails && transcriptId && data && (
+						<button
+							type="button"
+							className="self-start text-sm underline"
+							onClick={() =>
+								onEditDetails({
+									transcriptId,
+									subject: data.subject ?? null,
+									meetingDate: data.meetingDate ?? null,
+								})
+							}
+						>
+							Edit title or date
+						</button>
+					)}
 				</SheetHeader>
 				<PanelExpandButton
 					expanded={panelExpanded}

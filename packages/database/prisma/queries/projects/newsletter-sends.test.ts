@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	buildIncompleteScanReasonsArgs,
 	buildMemberSendsListArgs,
 	buildPublicArchiveListArgs,
 	buildSendsListArgs,
@@ -94,6 +95,21 @@ describe("buildSendsListArgs — member-safe projection (Codex §5)", () => {
 	it("carries requireApproval so the badge can tell curating apart from sending", () => {
 		const args = buildSendsListArgs("p1", {});
 		expect(args.select).toHaveProperty("requireApproval", true);
+	});
+});
+
+describe("buildIncompleteScanReasonsArgs", () => {
+	it("reads the recorded reason of this project's incomplete-scan sends only", () => {
+		expect(buildIncompleteScanReasonsArgs("p1", ["s1", "s2"])).toEqual({
+			where: {
+				projectId: "p1",
+				id: { in: ["s1", "s2"] },
+				status: "SKIPPED_EMPTY",
+				skipReason: "INCOMPLETE_SCAN",
+				errorMessage: { not: null },
+			},
+			select: { id: true, errorMessage: true },
+		});
 	});
 });
 

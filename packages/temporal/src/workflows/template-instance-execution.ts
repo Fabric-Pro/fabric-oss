@@ -34,7 +34,10 @@ import {
 	hasNoUsableData,
 	mapAgenticGatheredData,
 } from "../activities/template-instance/report-data-gate";
-import { reportPeriodParameter } from "../activities/template-instance/report-plain-list-pages";
+import {
+	deploymentRecordsParameter,
+	reportPeriodParameter,
+} from "../activities/template-instance/report-plain-list-pages";
 import type { McpServerDiagnostic } from "../activities/template-instance/types";
 import {
 	planSpentFailureAsError,
@@ -593,6 +596,8 @@ export async function templateInstanceExecutionWorkflow(
 					},
 					// Activity input is not compared on replay, so no `patched()`.
 					reportPeriod: reportPeriodParameter(mergedParameters),
+					deploymentRecords:
+						deploymentRecordsParameter(mergedParameters),
 					mcpConfigIds,
 					providers,
 					maxIterations: effectiveConnections.maxIterations || 15,

@@ -1,6 +1,10 @@
 import type { PluginEntry, PluginTool } from "@fabricorg/sdk";
 import { checkRelativePath, findCollision } from "../instructions/paths.js";
-import { READ_ONLY_RULE, WORKSPACE_RULE } from "./change-instructions.js";
+import {
+	READ_ONLY_RULE,
+	setSetFolderNote,
+	workspaceRule,
+} from "./change-instructions.js";
 import { KNOWLEDGE_RULE } from "./knowledge.js";
 
 export const INSTRUCTION_ACCESS_SKILL = "fabric-instruction-access";
@@ -20,12 +24,18 @@ export interface InstructionCatalogEntry extends PluginEntry {
 export function instructionAccessBootstrap(
 	pluginName: string,
 	tool: PluginTool,
+	/** What to say about the Coding Instructions set the plugin carries, if any. */
+	set: { repositoriesFile?: string; setFolder?: string } = {},
 ): string {
+	const setNote =
+		set.setFolder === undefined
+			? ""
+			: `${setSetFolderNote(set.setFolder)}\n`;
 	const skill =
 		tool === "claude-code"
 			? `/${pluginName}:${INSTRUCTION_ACCESS_SKILL}`
 			: INSTRUCTION_ACCESS_SKILL;
-	return `${READ_ONLY_RULE}${WORKSPACE_RULE}${KNOWLEDGE_RULE}Fabric instruction access for plugin ${pluginName}: Load the generated ${skill} skill from this plugin before following references or choosing rules for a task. Its catalog lists every source instruction path, including rules beyond automatic delivery limits and files outside plugin folders. Read applicable rules and referenced files from their mapped local copies or this plugin's Fabric MCP server. Resolve @ references and relative paths in the original instruction tree, not by guessing paths in the user's checkout.\n`;
+	return `${READ_ONLY_RULE}${workspaceRule(set.repositoriesFile)}${setNote}${KNOWLEDGE_RULE}Fabric instruction access for plugin ${pluginName}: Load the generated ${skill} skill from this plugin before following references or choosing rules for a task. Its catalog lists every source instruction path, including rules beyond automatic delivery limits and files outside plugin folders. Read applicable rules and referenced files from their mapped local copies or this plugin's Fabric MCP server. Resolve @ references and relative paths in the original instruction tree, not by guessing paths in the user's checkout.\n`;
 }
 
 export function instructionCatalog(input: {

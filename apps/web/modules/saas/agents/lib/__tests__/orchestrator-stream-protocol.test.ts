@@ -222,3 +222,27 @@ it.each([parseOrchestratorStreamEvent, parseResearchStreamEvent])(
 		);
 	},
 );
+
+it("retains the explicit risk level on approval events", () => {
+	const event = {
+		type: "approval_required",
+		stepId: "step-1",
+		reason: "Review action",
+		riskLevel: "high",
+	} as const;
+	expect(
+		parseOrchestratorStreamEvent(
+			JSON.parse(encodeOrchestratorStreamEvent(event).slice(6)),
+		),
+	).toEqual(event);
+});
+it("rejects an unsupported approval risk level", () => {
+	expect(() =>
+		parseOrchestratorStreamEvent({
+			type: "approval_required",
+			stepId: "step-1",
+			reason: "Review action",
+			riskLevel: "extreme",
+		}),
+	).toThrow();
+});

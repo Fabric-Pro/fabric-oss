@@ -1,7 +1,8 @@
 /**
  * Reset a project's Living Memory: delete every synced knowledge file of the
- * project at once. The ONE function behind `projects.contexts.resetLivingMemory`
- * (the Context tab's "Reset Living Memory") and the v1 REST route
+ * project, or of one folder (`folder`), at once. The ONE function behind
+ * `projects.contexts.resetLivingMemory` (the Context tab's "Reset Living
+ * Memory" and each folder's "Remove folder") and the v1 REST route
  * `POST /api/v1/projects/:projectId/contexts/reset` that `fabric context
  * reset` calls, so the cleanup, the audit row and the realtime refresh
  * cannot drift between them.
@@ -21,7 +22,9 @@
  *    repository and branch, nothing deleted, while a repository sync is
  *    configured: it would bring the files straight back;
  *  - FORBIDDEN for a personal project, as every synced-file surface answers
- *    (ADR-018: never the fail-closed personal arm).
+ *    (ADR-018: never the fail-closed personal arm);
+ *  - BAD_REQUEST for a `folder` the synced-file path rules refuse, or one
+ *    naming the root of the tree, before anything is read.
  *
  * Authorization is the CALLER's: visibility, then the caller's LIVE
  * `CONTEXT_DELETE` on the project, resolved server-side. `organizationId` is
@@ -30,7 +33,11 @@
 
 import { randomUUID } from "node:crypto";
 import { ORPCError } from "@orpc/client";
-import { resetSyncedContextRows } from "@repo/database";
+import {
+	ContextSourcePathError,
+	normalizeSyncedContextResetFolder,
+	resetSyncedContextRows,
+} from "@repo/database";
 import {
 	type AuditRequestContext,
 	auditRequestFields,
@@ -42,6 +49,13 @@ import { drainSyncedContextCleanupOnce } from "./delete-synced-context";
 import type { RepositoryManagedLabel } from "./repository-managed";
 
 export const REPOSITORY_SYNC_ACTIVE_CODE = "REPOSITORY_SYNC_ACTIVE" as const;
+
+/**
+ * Bound on a reset's `folder` as sent, before normalising, as the synced-file
+ * surfaces bound a path; the normaliser holds the folder itself to the
+ * stored path's length.
+ */
+export const MAX_RESET_FOLDER_INPUT_LENGTH = 2048;
 
 export interface RepositorySyncActiveErrorData extends RepositoryManagedLabel {
 	code: typeof REPOSITORY_SYNC_ACTIVE_CODE;
@@ -56,6 +70,12 @@ export interface ResetSyncedContextsInput {
 	via: SyncedContextSurface;
 	/** The request, for the audit row and the realtime events. */
 	request: AuditRequestContext;
+	/**
+	 * Only the synced files under this folder of the working tree, as the
+	 * caller sent it; a spelling `normalizeSyncedContextResetFolder` refuses
+	 * is BAD_REQUEST. Absent means every synced file.
+	 */
+	folder?: string;
 }
 
 export interface ResetSyncedContextsResult {
@@ -135,12 +155,25 @@ export async function resetSyncedContexts(
 		});
 	}
 
+	let folder: string | undefined;
+	if (input.folder !== undefined) {
+		try {
+			folder = normalizeSyncedContextResetFolder(input.folder);
+		} catch (error) {
+			if (error instanceof ContextSourcePathError) {
+				throw new ORPCError("BAD_REQUEST", { message: error.message });
+			}
+			throw error;
+		}
+	}
+
 	const outcome = await resetSyncedContextRows({
 		projectId: input.projectId,
 		organizationId,
 		userId: input.userId,
 		operationId: randomUUID(),
 		audit: { via: input.via, ...auditRequestFields(input.request) },
+		...(folder === undefined ? {} : { folder }),
 	});
 
 	switch (outcome.status) {
@@ -176,7 +209,11 @@ export async function resetSyncedContexts(
 	// One event of each kind, not one per file: a listener refetches the
 	// whole list on any context change.
 	const userName = input.request.user?.name || "Anonymous";
-	const resourceName = `Living Memory (${deletedIds.length} synced ${deletedIds.length === 1 ? "file" : "files"})`;
+	const count = `${deletedIds.length} synced ${deletedIds.length === 1 ? "file" : "files"}`;
+	const resourceName =
+		folder === undefined
+			? `Living Memory (${count})`
+			: `Living Memory folder ${folder} (${count})`;
 	await Promise.all([
 		emitContextChange({
 			projectId: input.projectId,

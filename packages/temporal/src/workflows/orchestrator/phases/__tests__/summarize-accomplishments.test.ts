@@ -40,6 +40,28 @@ const state = {
 } as unknown as State;
 
 describe("summarizeAccomplishments", () => {
+	it.each([false, true])(
+		"passes its own result-read decision to partial findings: %s",
+		(enabled) => {
+			const current = {
+				...state,
+				advisorResultReadsEnabled: enabled,
+				toolCalls: [
+					{
+						...state.toolCalls[0],
+						name: "advisor_result_read",
+						result: { v: 1, status: "unavailable" },
+					},
+				],
+			};
+			const text = summarizeAccomplishments(current, {
+				includeFindings: true,
+			});
+			expect(text.includes("## What I found so far")).toBe(!enabled);
+			expect(text.includes('"unavailable"')).toBe(!enabled);
+		},
+	);
+
 	it("keeps the original text without the flag", () => {
 		const text = summarizeAccomplishments(state);
 		expect(text).toContain(

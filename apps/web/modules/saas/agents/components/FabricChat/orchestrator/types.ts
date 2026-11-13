@@ -60,6 +60,7 @@ export interface TemporalOrchestratorActivityState {
 	pendingApproval?: {
 		stepId: string;
 		reason: string;
+		riskLevel?: "low" | "medium" | "high" | "critical";
 	};
 }
 

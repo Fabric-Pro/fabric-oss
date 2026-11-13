@@ -1473,13 +1473,13 @@ export function BacklogChangeProposal({
 											className={cn(
 												"text-xs font-medium",
 												applyResult.status === "failed"
-													? "text-destructive/80"
+													? "text-destructive"
 													: applyResult.status ===
 															"unconfirmed"
 														? "text-muted-foreground"
 														: partialFailure
 															? "text-amber-700 dark:text-amber-300"
-															: "text-green-700 dark:text-green-300",
+															: "text-green-800 dark:text-green-300",
 											)}
 										>
 											{applyResult.status === "failed"
@@ -1511,7 +1511,7 @@ export function BacklogChangeProposal({
 																			: item._action ===
 																					"failed"
 																				? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
-																				: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
+																				: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300",
 																)}
 															>
 																{item._action ===
@@ -1556,7 +1556,7 @@ export function BacklogChangeProposal({
 																)}
 																{item.title}
 																{item.reason ? (
-																	<span className="text-muted-foreground/70">
+																	<span className="text-muted-foreground">
 																		{
 																			" \u2014 "
 																		}
@@ -1839,7 +1839,7 @@ export function BacklogChangeProposal({
 											className={cn(
 												"text-xs capitalize",
 												effectiveAction === "create"
-													? "border-green-500 text-green-700 dark:text-green-400"
+													? "border-green-500 text-green-800 dark:text-green-400"
 													: "border-amber-500 text-amber-700 dark:text-amber-400",
 											)}
 										>

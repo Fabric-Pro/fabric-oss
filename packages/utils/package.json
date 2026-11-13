@@ -227,6 +227,16 @@
 			"import": "./lib/living-memory-decisions-prompt.ts",
 			"default": "./lib/living-memory-decisions-prompt.ts"
 		},
+		"./living-memory-decision-limits": {
+			"types": "./lib/living-memory-decision-limits.ts",
+			"import": "./lib/living-memory-decision-limits.ts",
+			"default": "./lib/living-memory-decision-limits.ts"
+		},
+		"./notification-delivery-channels": {
+			"types": "./lib/notification-delivery-channels.ts",
+			"import": "./lib/notification-delivery-channels.ts",
+			"default": "./lib/notification-delivery-channels.ts"
+		},
 		"./page-limits": {
 			"types": "./lib/page-limits.ts",
 			"import": "./lib/page-limits.ts",
@@ -396,6 +406,16 @@
 			"types": "./lib/group-highlights.ts",
 			"import": "./lib/group-highlights.ts",
 			"default": "./lib/group-highlights.ts"
+		},
+		"./newsletter-highlight-order": {
+			"types": "./lib/newsletter-highlight-order.ts",
+			"import": "./lib/newsletter-highlight-order.ts",
+			"default": "./lib/newsletter-highlight-order.ts"
+		},
+		"./newsletter-public-image": {
+			"types": "./lib/newsletter-public-image.ts",
+			"import": "./lib/newsletter-public-image.ts",
+			"default": "./lib/newsletter-public-image.ts"
 		},
 		"./normalize-for-comparison": {
 			"types": "./lib/normalize-for-comparison.ts",
@@ -737,6 +757,11 @@
 			"import": "./lib/brand-colors.ts",
 			"default": "./lib/brand-colors.ts"
 		},
+		"./contrast-preference": {
+			"types": "./lib/contrast-preference.ts",
+			"import": "./lib/contrast-preference.ts",
+			"default": "./lib/contrast-preference.ts"
+		},
 		"./brand-assets": {
 			"types": "./lib/brand-assets.ts",
 			"import": "./lib/brand-assets.ts",
@@ -746,6 +771,26 @@
 			"types": "./lib/pm-target.ts",
 			"import": "./lib/pm-target.ts",
 			"default": "./lib/pm-target.ts"
+		},
+		"./time-tracking": {
+			"types": "./lib/time-tracking.ts",
+			"import": "./lib/time-tracking.ts",
+			"default": "./lib/time-tracking.ts"
+		},
+		"./time-suggestions": {
+			"types": "./lib/time-suggestions.ts",
+			"import": "./lib/time-suggestions.ts",
+			"default": "./lib/time-suggestions.ts"
+		},
+		"./time-suggestion-prompt": {
+			"types": "./lib/time-suggestion-prompt.ts",
+			"import": "./lib/time-suggestion-prompt.ts",
+			"default": "./lib/time-suggestion-prompt.ts"
+		},
+		"./csv": {
+			"types": "./lib/csv.ts",
+			"import": "./lib/csv.ts",
+			"default": "./lib/csv.ts"
 		}
 	},
 	"name": "@repo/utils",

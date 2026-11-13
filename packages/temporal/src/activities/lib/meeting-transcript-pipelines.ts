@@ -45,7 +45,8 @@ export interface StartTranscriptPipelinesInput {
 	meetingId: string;
 	transcriptId: string;
 	meetingSubject: string;
-	meetingDate: string;
+	/** Absent when the meeting's date is not known (#3507). */
+	meetingDate?: string;
 	transcriptText: string;
 	provider: string;
 	/**

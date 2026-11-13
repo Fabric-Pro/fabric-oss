@@ -41,7 +41,7 @@ export const ToolSuggestionCard = memo(function ToolSuggestionCard({
 				<div
 					className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${
 						action === "add"
-							? "bg-secondary/10 text-secondary"
+							? "bg-success/10 text-success"
 							: "bg-destructive/10 text-destructive"
 					}`}
 				>

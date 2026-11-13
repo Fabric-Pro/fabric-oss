@@ -141,7 +141,11 @@ export function RoadmapActionsMenu({
 					aria-label={t("trigger")}
 					data-onboarding-target="roadmap-actions"
 				>
-					<MoreHorizontalIcon aria-hidden className="size-4" />
+					<MoreHorizontalIcon
+						strokeWidth={2.5}
+						aria-hidden
+						className="size-4"
+					/>
 					{t("trigger")}
 				</Button>
 			</DropdownMenuTrigger>

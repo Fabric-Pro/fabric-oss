@@ -45,6 +45,7 @@ import {
 	hasIncompleteListing,
 	isBoardFullyRead,
 } from "./report-board-facts";
+import { attachPullRequestFacts } from "./report-pull-request-facts";
 import {
 	declaresClosedListing,
 	extractCardsArray,
@@ -69,6 +70,7 @@ import {
 	periodTextStart,
 	readToolResultPages,
 	reportPeriodStart,
+	reportSettingsPromptLines,
 } from "./report-plain-list-pages";
 import type { McpServerDiagnostic } from "./types";
 
@@ -126,10 +128,10 @@ function collectFetchedCardIds(toolResults: ToolCallResult[]): Set<string> {
 }
 
 /**
- * Add the board facts, computed over every card, then bound `gatheredData` to
- * the payload budget just before returning it from the activity. A diagnostic
- * marker + warn log record what was cut, so any truncation is visible in
- * Temporal history and worker logs. `recordsDropped` says whether the run lost
+ * Add the board and pull request facts, computed over every record read, then
+ * bound `gatheredData` to the payload budget just before returning it from the
+ * activity. A diagnostic marker + warn log record what was cut, so any
+ * truncation is visible in Temporal history and worker logs. `recordsDropped` says whether the run lost
  * records, which is what marks it partial. `wholeBoardKept` says the source
  * confirmed every listing and no card was lost, so how the model's turns ended
  * says nothing about the data.
@@ -138,6 +140,7 @@ function finalizeGatheredData(
 	gatheredData: Record<string, unknown>,
 	toolResults: ToolCallResult[],
 	closedListingTools: ReadonlySet<string>,
+	periodStart: number | undefined,
 	executionId: string,
 ): {
 	data: Record<string, unknown>;
@@ -145,7 +148,9 @@ function finalizeGatheredData(
 	wholeBoardKept: boolean;
 	truncation?: GatheredDataTruncation;
 } {
-	attachBoardFacts(gatheredData, new Date(), closedListingTools);
+	const now = new Date();
+	attachBoardFacts(gatheredData, now, closedListingTools);
+	attachPullRequestFacts(gatheredData, periodStart, now);
 	const boardRead = isBoardFullyRead(gatheredData);
 	const bounded = boundGatheredData(gatheredData, {
 		maxBytes: readGatheredDataMaxBytes(),
@@ -621,6 +626,8 @@ export interface ExecuteAgentLoopInput {
 	context: InstanceContext;
 	/** The report's period parameter as written, such as "Last 3 months". */
 	reportPeriod?: string;
+	/** Where the person says deployments are recorded, such as a committed file. */
+	deploymentRecords?: string;
 	/** MCP config IDs to connect to */
 	mcpConfigIds: string[];
 	/** Provider types for tool filtering (e.g., ["azure_devops"]) */
@@ -714,7 +721,7 @@ Read each tool's own description first, then use the strategy it calls for:
 - A card listing is read to its end for you: one call fetches every page, and its result says so under \`_listing\`. Never ask for a \`page\` of a card listing yourself, and never repeat one
 - If a tool's description says its result is COMPLETE (it fetches every upstream page server-side), trust it: use the result as-is and do NOT re-query it with filters to "check" for more
 - If another tool returns pagination metadata (has_more/next_page/total_count), page through results — stop when has_more is false OR a page comes back empty — instead of guessing from page size
-- A plain list from a tool that takes a \`page\` argument is read past its first page for you while pages come back full, and its result says so under \`_pagesRead\`. A search is read up to its match count the same way, and says it under \`_totalMatches\`. Ask for the largest page size the tool allows. When the tool takes a \`fields\` argument, ask only for the fields the report needs, such as number, title, dates and state: a full search of several hundred pull requests is larger than the report can hold. When the tool can filter or search by date, ask for the report period instead of listing everything
+- A plain list from a tool that takes a \`page\` argument is read past its first page for you while pages come back full, and its result says so under \`_pagesRead\`. A search is read up to its match count the same way, and says it under \`_totalMatches\`. Ask for the largest page size the tool allows. When the tool takes a \`fields\` argument, ask only for the fields the report needs, such as number, title, dates and state, so every record the report needs fits. When the tool can filter or search by date, ask for the report period instead of listing everything
 - If results are not pageable and you have column IDs, call get_cards/get_items for EACH column individually using the \`column_id\` filter
 - If the tool supports a status filter, fetch for EACH status separately
 - If you have categories/groups, fetch for each one
@@ -742,12 +749,13 @@ function toSnakeCase(str: string): string {
  * @param context - Instance context (project, team, etc.)
  * @param basePrompt - Base system prompt (custom, enriched, or default)
  * @param sweptListings - One line per card listing already read for this board
+ * @param settings - The report period and where deployments are recorded
  */
 function buildDataGatheringPrompt(
 	context: Record<string, string | undefined>,
 	basePrompt: string = REPORT_AGENT_SYSTEM_PROMPT,
 	sweptListings: string[] = [],
-	reportPeriod?: { text: string; start?: number },
+	settings: Parameters<typeof reportSettingsPromptLines>[0] = {},
 ): string {
 	const parts: string[] = [basePrompt];
 
@@ -823,17 +831,7 @@ function buildDataGatheringPrompt(
 		}
 	}
 
-	if (reportPeriod) {
-		const from =
-			reportPeriod.start !== undefined
-				? `, from ${new Date(reportPeriod.start).toISOString().slice(0, 10)} (UTC)`
-				: "";
-		parts.push("");
-		parts.push("## Report Period");
-		parts.push(
-			`The report covers \`${reportPeriod.text}\`${from}. When a tool can filter or search by date, ask for this period.`,
-		);
-	}
+	parts.push(...reportSettingsPromptLines(settings));
 
 	parts.push("");
 	parts.push(GATHERING_STOP_INSTRUCTION);
@@ -1258,9 +1256,11 @@ function withPagesRead(copy: unknown, read: PlainListPages): unknown {
 	const status = {
 		_pagesRead: read.pages,
 		...(read.total !== undefined ? { _totalMatches: read.total } : {}),
-		_note: read.stoppedEarly
-			? `Pages ${read.startPage} to ${lastPage} were read for you; ${read.stoppedEarly}. Do not request those pages again; continue from page ${lastPage + 1} only if the report needs more.`
-			: `Every page from page ${read.startPage} on was read for you (${read.pages} pages). Do not request another page of this list.`,
+		_note: read.windows
+			? `This search was read for you in ${read.windows} narrower date ranges (${read.pages} calls)${read.stoppedEarly ? `; ${read.stoppedEarly}` : ", and every match was read"}. Do not run it again.`
+			: read.stoppedEarly
+				? `Pages ${read.startPage} to ${lastPage} were read for you; ${read.stoppedEarly}. Do not request those pages again; continue from page ${lastPage + 1} only if the report needs more.`
+				: `Every page from page ${read.startPage} on was read for you (${read.pages} pages). Do not request another page of this list.`,
 	};
 	return isPlainObject(copy)
 		? { ...copy, ...status }
@@ -2142,9 +2142,12 @@ export async function executeAgentDataGatheringLoop(
 			context,
 			baseSystemPrompt,
 			sweptListings,
-			input.reportPeriod
-				? { text: input.reportPeriod, start: periodStart }
-				: undefined,
+			{
+				reportPeriod: input.reportPeriod
+					? { text: input.reportPeriod, start: periodStart }
+					: undefined,
+				deploymentRecords: input.deploymentRecords,
+			},
 		);
 
 		// 5. Get AI model
@@ -2330,6 +2333,7 @@ export async function executeAgentDataGatheringLoop(
 					gatheredData,
 					toolResults,
 					closedListingTools,
+					periodStart,
 					executionId,
 				);
 				return {
@@ -2670,6 +2674,7 @@ export async function executeAgentDataGatheringLoop(
 			gatheredData,
 			toolResults,
 			closedListingTools,
+			periodStart,
 			executionId,
 		);
 		return {
@@ -2719,6 +2724,7 @@ export async function executeAgentDataGatheringLoop(
 			gatheredData,
 			toolResults,
 			closedListingTools,
+			periodStart,
 			executionId,
 		);
 		return {

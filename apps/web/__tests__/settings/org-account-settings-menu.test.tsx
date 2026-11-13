@@ -26,8 +26,12 @@ vi.mock("@repo/config", () => ({
 	},
 }));
 
+// False unless a test says otherwise: most of this file is about what any
+// member sees.
+const isOrganizationAdmin = vi.fn(() => false);
+
 vi.mock("@repo/auth/lib/helper", () => ({
-	isOrganizationAdmin: () => false,
+	isOrganizationAdmin: () => isOrganizationAdmin(),
 	// Danger Zone is gated on ownership rather than admin since Fizzy #2462 —
 	// the server has always accepted owners alone, so showing the entry to an
 	// admin only produced a refusal. This suite is about the ACCOUNT group, so
@@ -200,7 +204,7 @@ describe("organization settings menu — account group", () => {
 		expect(
 			menuItems.slice(0, -1).some((group) => group.title === "Account"),
 		).toBe(false);
-		// Five now, not two. The personal settings tree is gone, so the
+		// Six now, not two. The personal settings tree is gone, so the
 		// account-global pages that lived only there — the profile and account
 		// deletion — moved here with the other two. Each would have collided
 		// with an organization page of the same slug at the top level, which is
@@ -208,8 +212,11 @@ describe("organization settings menu — account group", () => {
 		// coding agents a member signed in) is per person too, so it joins
 		// them, ahead of the danger zone. The member's own AI provider keys
 		// left this group for the Personal tab of AI Providers (Fizzy #3082).
+		// Appearance (Fizzy #1444) is the person's own too — colour mode and
+		// high contrast — and sits beside their profile.
 		expect(accountGroup.items.map((item) => item.title)).toEqual([
 			"settings.menu.account.general",
+			"settings.menu.account.appearance",
 			"Security",
 			"Notifications",
 			"settings.menu.account.connectedAgents",
@@ -328,5 +335,56 @@ describe("organization settings menu — company context gate", () => {
 
 		await expect(buildMenu()).rejects.toThrow("redirect:/app/example-org");
 		expect(isFeatureEnabled).not.toHaveBeenCalled();
+	});
+});
+
+describe("organization settings menu — time tracking", () => {
+	const TIME_TRACKING_HREF = "/app/example-org/settings/time-tracking";
+	const TIME_REPORTS_HREF = "/app/example-org/settings/time-reports";
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		isOrganizationAdmin.mockReturnValue(false);
+		getSession.mockResolvedValue({
+			user: {
+				id: "user-1",
+				name: "Example Member",
+				email: "dev@example.com",
+				image: null,
+			},
+		});
+		getActiveOrganization.mockResolvedValue({
+			id: "org-1",
+			name: "Example Org",
+			slug: "example-org",
+			logo: null,
+			members: [],
+		});
+		isGuestInOrg.mockResolvedValue(false);
+		isFeatureEnabled.mockResolvedValue(false);
+	});
+
+	it("shows every member the time policy in the organization's own group", async () => {
+		const menuItems = await buildMenu();
+
+		expect(menuItems[0].items.map((item) => item.href)).toContain(
+			TIME_TRACKING_HREF,
+		);
+	});
+
+	it("offers time reports only to owners and admins", async () => {
+		const memberHrefs = (await buildMenu()).flatMap((group) =>
+			group.items.map((item) => item.href),
+		);
+		expect(memberHrefs).not.toContain(TIME_REPORTS_HREF);
+
+		isOrganizationAdmin.mockReturnValue(true);
+		const activity = (await buildMenu()).find(
+			(group) => group.title === "Activity",
+		);
+
+		expect(activity?.items.map((item) => item.href)).toContain(
+			TIME_REPORTS_HREF,
+		);
 	});
 });

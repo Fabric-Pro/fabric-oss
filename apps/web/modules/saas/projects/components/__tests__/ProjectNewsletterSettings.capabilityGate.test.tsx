@@ -81,6 +81,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						...o,
 					}),
 				},
+				recipientPreview: {
+					queryOptions: (o: { input: unknown }) => ({
+						__q: "recipientPreview",
+						...o,
+					}),
+				},
 				// Declared unconditionally by the component (the lazily-enabled
 				// per-channel chat delivery panel, Fizzy #2013) so the stub has
 				// to exist even though no row is expanded in these tests.

@@ -176,6 +176,12 @@ export const createDocumentProcedure = tenantProtectedProcedure
 				.describe(
 					"Specific prompt version ID for attribution tracking",
 				),
+			allowWebResearch: z
+				.boolean()
+				.optional()
+				.describe(
+					"Allow this run to search and read the public web. Applies to this request only; anything but true leaves it off. Ignored when nothing is generated (a file source or Use As-Is).",
+				),
 			// Deliberately no `skipDependencyWait`. The workflow input carries
 			// that flag for one in-process Temporal caller only; accepting it
 			// on either dispatch route would hand every client a "generate
@@ -452,6 +458,9 @@ export const createDocumentProcedure = tenantProtectedProcedure
 					// write; re-asserting now would read it after the demotion.
 					capabilityAlreadyAsserted: true,
 					planEligible: true,
+					// Only this branch carries it: no other route here starts a
+					// run. The dispatcher grants it only for `true`.
+					allowWebResearch: input.allowWebResearch,
 				})
 			: Promise.resolve(null);
 

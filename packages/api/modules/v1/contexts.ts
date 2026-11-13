@@ -7,6 +7,7 @@
  *   POST   /projects/:projectId/contexts/synced-files/missing
  *                                                      which of the paths named hold no file
  *   POST   /projects/:projectId/contexts/reset          delete every synced file at once
+ *                                                      (or one folder's, `folder`)
  *
  * The key-backed twin of `projects.contexts.upsertSyncedFile`. That procedure
  * is a `tenantProtectedProcedure`, whose chain authenticates through
@@ -105,6 +106,9 @@ const MAX_SYNCED_FILE_BODY_BYTES = 6 * MAX_SYNCED_CONTEXT_BYTES + 64 * 1024;
  * escapable to six bytes each, plus 64 hex characters and punctuation.
  */
 const MAX_SYNCED_FILE_DELETE_BODY_BYTES = 16 * 1024;
+
+/** A reset's body is at most one folder, escapable to six bytes a character. */
+const MAX_RESET_BODY_BYTES = 16 * 1024;
 
 /** The most paths one missing-files check answers for. */
 const MAX_MISSING_CHECK_PATHS = 500;
@@ -406,6 +410,30 @@ function readMissingCheckBody(
 		paths.push(sourcePath);
 	}
 	return { sourcePaths: paths };
+}
+
+/**
+ * A reset's body, shaped, or why it is not. Shape only: the folder's rules
+ * belong to `resetSyncedContexts`.
+ */
+function readResetBody(body: unknown): { folder?: string } | { error: string } {
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		return { error: "Body must be a JSON object." };
+	}
+	const { folder } = body as { folder?: unknown };
+	if (folder === undefined || folder === null) {
+		return {};
+	}
+	if (
+		typeof folder !== "string" ||
+		folder.length === 0 ||
+		folder.length > MAX_SOURCE_PATH_INPUT_LENGTH
+	) {
+		return {
+			error: `folder must be a folder's path relative to the folder the files were pushed from, a string of 1 to ${MAX_SOURCE_PATH_INPUT_LENGTH} characters.`,
+		};
+	}
+	return { folder };
 }
 
 /**
@@ -792,7 +820,12 @@ export function registerContextRoutes(
 	 * POST /projects/:projectId/contexts/reset
 	 *
 	 * Reset the project's Living Memory: delete every synced file at once,
-	 * the key-backed twin of `projects.contexts.resetLivingMemory`. No body.
+	 * the key-backed twin of `projects.contexts.resetLivingMemory`. The body
+	 * is optional: none, or `{}`, resets every synced file; `{ folder }`
+	 * (a relative folder path such as `docs/guides`) only the synced files
+	 * under that folder, with the synced-file path rules applied to it, so an
+	 * absolute folder, the root, or a `.` or `..` segment answers 400. In the
+	 * body, not the URL, so the path stays out of access logs.
 	 * Same gates, same order, as the DELETE above (`projects:write`, then the
 	 * key creator's live `CONTEXT_DELETE`, visibility first): a reset deletes
 	 * every member's files, and that is the permission that deletes any
@@ -806,11 +839,35 @@ export function registerContextRoutes(
 	app.post(
 		"/projects/:projectId/contexts/reset",
 		requireScope("projects:write"),
+		bodyLimit({
+			maxSize: MAX_RESET_BODY_BYTES,
+			onError: (c) =>
+				c.json(
+					{
+						error: `Request body is too large: at most ${MAX_RESET_BODY_BYTES} bytes, for a folder.`,
+					},
+					413,
+				),
+		}),
 		async (c) => {
 			const apiCtx = c.get("externalApiContext");
 			const projectId = c.req.param("projectId");
 			if (!projectId) {
 				return c.json(badRequest("projectId is required"), 400);
+			}
+
+			const text = await c.req.text();
+			let rawBody: unknown = {};
+			if (text.trim().length > 0) {
+				try {
+					rawBody = JSON.parse(text);
+				} catch {
+					return c.json(badRequest("Invalid JSON body"), 400);
+				}
+			}
+			const body = readResetBody(rawBody);
+			if ("error" in body) {
+				return c.json(badRequest(body.error), 400);
 			}
 
 			const resolved = await resolveContextProject(
@@ -839,6 +896,7 @@ export function registerContextRoutes(
 					projectId,
 					userId: resolved.userId,
 					organizationId: resolved.organizationId,
+					...body,
 					via: "v1-api",
 					request: {
 						headers: c.req.raw.headers,

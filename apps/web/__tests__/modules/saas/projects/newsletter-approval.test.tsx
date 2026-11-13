@@ -35,6 +35,8 @@ const { PENDING_SENDS } = vi.hoisted(() => ({
 		{
 			id: "send-1",
 			status: "PENDING_APPROVAL",
+			screenshotsEnabled: false,
+			images: [],
 			content: {
 				headline: "This week's release notes",
 				intro: "Two changes shipped since the last send.",
@@ -104,6 +106,11 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					},
 					pending: {
 						queryOptions: queryOptions("newsletter.sends.pending"),
+					},
+					recipientPreview: {
+						queryOptions: queryOptions(
+							"newsletter.sends.recipientPreview",
+						),
 					},
 					// Declared unconditionally by the component (the lazily
 					// enabled per-channel chat delivery panel, Fizzy #2013), so

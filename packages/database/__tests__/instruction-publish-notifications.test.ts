@@ -181,6 +181,18 @@ describe("createInstructionPublishedNotifications", () => {
 		expect(data.snippet).toContain("repository sync from main at 0123456");
 	});
 
+	it("returns the rows an automatic publish wrote, so the worker can start their email/webhook delivery", async () => {
+		const rows = await createInstructionPublishedNotifications({
+			...args,
+			via: "automatic",
+		});
+
+		expect(rows.sort((a, b) => a.userId.localeCompare(b.userId))).toEqual([
+			{ id: "n-member", userId: "member" },
+			{ id: "n-owner", userId: "owner" },
+		]);
+	});
+
 	it("leaves out members who switched project notifications off", async () => {
 		mocks.enabled.mockResolvedValue(new Set(["owner"]));
 

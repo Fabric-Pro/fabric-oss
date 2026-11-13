@@ -478,6 +478,9 @@ export * from "./publishing-linkedin-post";
 export * from "./publishing-newsletter-blurb";
 export * from "./publishing-planning";
 export * from "./publishing-refine";
+// Time suggestions a member generates for their own timesheet: collect and
+// group their evidence, describe each block, store, and the failure marker.
+export * from "./time-suggestions";
 export * from "./parlume";
 export * from "./code-index-refresh";
 export * from "./parlume-auto-join";
@@ -774,6 +777,15 @@ export {
 	markUploadedTranscriptFailed,
 	startUploadedTranscriptPipelines,
 } from "./meeting-transcript-upload";
+// OneDrive transcript folders (#3507)
+export {
+	type ImportTranscriptFolderFileOutput,
+	importTranscriptFolderFile,
+	listTranscriptFoldersToSync,
+	markTranscriptFolderFileFailed,
+	readTranscriptFolder,
+	recordTranscriptFolderFileOutcome,
+} from "./transcript-folder-sync";
 // Meeting Agenda activities (#1901 — pre-meeting agenda generation)
 export * from "./meeting-agenda";
 // Meeting Digest activities (#1902 — action item to work item linking)
@@ -839,14 +851,19 @@ export {
 } from "./monitoring";
 // Newsletter activities (external release-notes newsletter)
 export {
+	captureNewsletterScreenshotActivity,
+	collectNewsletterTargetingActivity,
+	createNewsletterCaptureRowsActivity,
 	curateNewsletterFromReleasesActivity,
 	curateStakeholderReleaseNotesActivity,
 	dispatchNewsletterSendActivity,
+	failNewsletterScreenshotCaptureActivity,
 	finalizeNewsletterSendActivity,
 	findDueNewsletterProjectsActivity,
 	holdNewsletterForApprovalActivity,
 	loadActiveSubscribersActivity,
 	loadApprovedNewsletterSendActivity,
+	publishNewsletterScreenshotsActivity,
 	sendNewsletterApprovalChatMessagesActivity,
 	sendNewsletterApprovalEmailsActivity,
 	sendNewsletterChatMessagesActivity,
@@ -947,6 +964,7 @@ export {
 	loadInstanceMemoryActivity,
 	preloadMcpToolsForConfigsActivity,
 	preloadResourcesActivity,
+	readAdvisorStoredResult,
 	// Publishes MCP default-tool analytics signals to the SSE pipeline
 	// via Redis pub/sub.
 	publishMcpDefaultToolSignalActivity,
@@ -1621,6 +1639,14 @@ export * from "./workflow-schedule-kickoff";
 export { isProbeableAgent } from "../lib/agent-probeable";
 // Agent URL resolution utility (shared between orchestrator delegation and health-check procedures)
 export { resolveAgentUrl } from "../lib/agent-url-resolver";
+// Web search and scraping for the internal web-research endpoint in apps/web
+export {
+	getWebResearchScraper,
+	getWebResearchSearcher,
+	type WebResearchProviderUnavailable,
+	type WebResearchSearcher,
+} from "./lib/web-research-providers";
+export type { WebScraper, WebScrapeErrorCode } from "./lib/web-scraper";
 // Security & Accessibility scanning activities
 export * from "./ai-cost-reconciliation";
 export * from "./security-scan";

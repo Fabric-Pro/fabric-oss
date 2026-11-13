@@ -12,6 +12,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fakeGit } from "./helpers/git-fake.js";
 import {
+	hookContext,
+	hookSystemMessage,
 	makeTree,
 	resetInstructionsMocks,
 	runCli,
@@ -228,9 +230,12 @@ describe("a project id and an organization slug", () => {
 		]);
 
 		expect(result.code).toBe(0);
-		expect(result.stdout).toBe("");
-		expect(result.stderr).toContain("--project must be a project id");
-		expect(result.stderr).not.toContain("pwned");
+		expect(hookSystemMessage(result.stdout)).toContain(
+			"--project must be a project id",
+		);
+		expect(hookContext(result.stdout)).toBe("");
+		expect(result.stdout).not.toContain("pwned");
+		expect(result.stderr).toBe("");
 		expect(mocks.getPublished).not.toHaveBeenCalled();
 	});
 
@@ -329,11 +334,12 @@ describe("a remote name", () => {
 		]);
 
 		expect(result.code).toBe(0);
-		expect(result.stdout).toBe("");
-		expect(result.stderr).toContain(
+		expect(hookSystemMessage(result.stdout)).toContain(
 			"--remote must be the name of a git remote",
 		);
-		expect(result.stderr).not.toContain("pwned");
+		expect(hookContext(result.stdout)).toBe("");
+		expect(result.stdout).not.toContain("pwned");
+		expect(result.stderr).toBe("");
 		expect(mocks.getPublished).not.toHaveBeenCalled();
 	});
 

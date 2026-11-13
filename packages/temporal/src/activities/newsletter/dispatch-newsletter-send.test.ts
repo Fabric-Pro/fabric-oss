@@ -26,6 +26,7 @@ const {
 	mockGetClient,
 	mockActorValid,
 	mockReclaim,
+	mockDiscardImages,
 } = vi.hoisted(() => ({
 	mockCreateOrGet: vi.fn(),
 	mockSetWorkflowId: vi.fn(),
@@ -33,6 +34,7 @@ const {
 	mockGetClient: vi.fn(),
 	mockActorValid: vi.fn(),
 	mockReclaim: vi.fn(),
+	mockDiscardImages: vi.fn(),
 }));
 
 // Surface a real instanceof-able class so the activity's
@@ -57,6 +59,12 @@ vi.mock("@repo/database", () => ({
 // Relative to THIS test file (src/activities/newsletter/) → resolves to the
 // same module the activity imports (`../../client` → src/client).
 vi.mock("../../client", () => ({ getTemporalClient: mockGetClient }));
+
+// Its own rows-and-objects cleanup is covered in
+// discard-expired-review-images.test.ts; here only when it is called.
+vi.mock("./discard-expired-review-images", () => ({
+	discardExpiredReviewImages: mockDiscardImages,
+}));
 
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -87,6 +95,7 @@ beforeEach(() => {
 	mockGetClient.mockResolvedValue({ workflow: { start: mockStart } });
 	mockSetWorkflowId.mockResolvedValue(undefined);
 	mockActorValid.mockResolvedValue(true);
+	mockDiscardImages.mockResolvedValue(undefined);
 	mockReclaim.mockResolvedValue({
 		expiredDraftId: null,
 		failedApprovedId: null,
@@ -323,6 +332,50 @@ describe("dispatchNewsletterSendActivity", () => {
 		expect(startArgs.requireApproval).toBe(true);
 	});
 
+	it.each([
+		{
+			screenshotsEnabled: true,
+			screenshotEnvironmentId: "env-1",
+			expected: true,
+		},
+		{
+			screenshotsEnabled: true,
+			screenshotEnvironmentId: null,
+			expected: false,
+		},
+		{
+			screenshotsEnabled: false,
+			screenshotEnvironmentId: "env-1",
+			expected: false,
+		},
+	])(
+		"asks for screenshots only when the frozen send takes images and has an environment ($screenshotsEnabled, $screenshotEnvironmentId)",
+		async ({ screenshotsEnabled, screenshotEnvironmentId, expected }) => {
+			mockCreateOrGet.mockResolvedValue({
+				send: {
+					id: "send-1",
+					status: "PENDING",
+					temporalWorkflowId: null,
+					screenshotsEnabled,
+					screenshotEnvironmentId,
+				},
+				created: true,
+			});
+
+			await dispatchNewsletterSendActivity({
+				...project,
+				screenshotsEnabled: true,
+				screenshotEnvironmentId: "env-1",
+			});
+
+			expect(mockCreateOrGet).toHaveBeenCalledWith(
+				expect.objectContaining({ screenshotEnvironmentId: "env-1" }),
+			);
+			const startArgs = mockStart.mock.calls[0][1].args[0];
+			expect(startArgs.captureScreenshots).toBe(expected);
+		},
+	);
+
 	it("(l) reclaims stale review sends for the project before creating/reusing the send row", async () => {
 		mockCreateOrGet.mockResolvedValue({
 			send: { id: "send-1", status: "PENDING", temporalWorkflowId: null },
@@ -365,5 +418,37 @@ describe("dispatchNewsletterSendActivity", () => {
 			"[Newsletter] reclaimed stale review send",
 			expect.anything(),
 		);
+	});
+
+	it("(o) discards the review images of the draft the reclaim expired, before creating the next send", async () => {
+		mockReclaim.mockResolvedValue({
+			expiredDraftId: "expired-1",
+			failedApprovedId: null,
+		});
+		mockCreateOrGet.mockResolvedValue({
+			send: { id: "send-1", status: "PENDING", temporalWorkflowId: null },
+			created: true,
+		});
+		await dispatchNewsletterSendActivity(project);
+		expect(mockDiscardImages).toHaveBeenCalledWith("proj-1", "expired-1");
+		const discardOrder = mockDiscardImages.mock.invocationCallOrder[0];
+		const createOrGetOrder = mockCreateOrGet.mock.invocationCallOrder[0];
+		expect(discardOrder).toBeLessThan(createOrGetOrder);
+	});
+
+	it.each([
+		["nothing was reclaimed", null],
+		["only a dead approved send was failed", "approved-1"],
+	])("(p) discards no images when %s", async (_label, failedApprovedId) => {
+		mockReclaim.mockResolvedValue({
+			expiredDraftId: null,
+			failedApprovedId,
+		});
+		mockCreateOrGet.mockResolvedValue({
+			send: { id: "send-1", status: "PENDING", temporalWorkflowId: null },
+			created: true,
+		});
+		await dispatchNewsletterSendActivity(project);
+		expect(mockDiscardImages).not.toHaveBeenCalled();
 	});
 });

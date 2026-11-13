@@ -63,6 +63,72 @@ const setPreference = setOrgModelPreferenceProcedure as unknown as {
 
 const context = { user: { id: "user-1" }, session: {} };
 
+describe("image capability validation", () => {
+	it.each(["OPENAI_DIRECT", "VERCEL_GATEWAY"])(
+		"rejects a text model for %s",
+		async (provider) => {
+			mockGetProviderByProvider.mockResolvedValue({
+				provider,
+				source: "organization",
+				apiKey: "example-key",
+			});
+			mockGetModel.mockResolvedValue({
+				id: "text",
+				capabilities: ["TEXT"],
+				suitableForTasks: [],
+				providerMappings: [{ provider }],
+			});
+			await expect(
+				setPreference._handler({
+					input: {
+						organizationId: "org-1",
+						taskType: "IMAGE",
+						modelCanonicalName: "text",
+						overrideProvider: provider,
+					},
+					context,
+				}),
+			).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+				message: "Image tasks require an image-capable model.",
+			});
+			expect(mockSetPreference).not.toHaveBeenCalled();
+		},
+	);
+	it.each(["OPENAI_DIRECT", "VERCEL_GATEWAY"])(
+		"accepts an image model for %s",
+		async (provider) => {
+			mockGetProviderByProvider.mockResolvedValue({
+				provider,
+				source: "organization",
+				apiKey: "example-key",
+			});
+			mockGetModel.mockResolvedValue({
+				id: "image",
+				capabilities: ["IMAGE"],
+				suitableForTasks: [],
+				providerMappings: [{ provider }],
+			});
+			await setPreference._handler({
+				input: {
+					organizationId: "org-1",
+					taskType: "IMAGE",
+					modelCanonicalName: "image",
+					overrideProvider: provider,
+				},
+				context,
+			});
+			expect(mockSetPreference).toHaveBeenCalledWith(
+				expect.objectContaining({
+					taskType: "IMAGE",
+					modelId: "image",
+					provider,
+				}),
+			);
+		},
+	);
+});
+
 const decisionModel = {
 	id: "model-jev",
 	canonicalName: "typesafe-ai-jev",
@@ -447,26 +513,112 @@ it("saves text against the organization default when the caller's fallback provi
 	);
 });
 
-it("rejects IMAGE saves outside Vercel AI Gateway before deleting the saved choice", async () => {
+it("accepts an OPENAI_DIRECT IMAGE choice with an organization OpenAI key", async () => {
 	mockGetModel.mockResolvedValue({
 		id: "example-image",
 		canonicalName: "example-image",
+		displayName: "Example image",
 		capabilities: ["IMAGE"],
 		providerMappings: [{ provider: "OPENAI_DIRECT" }],
 	});
+	mockGetProviderByProvider.mockResolvedValue({
+		provider: "OPENAI_DIRECT",
+		source: "organization",
+		apiKey: "encrypted-example-key",
+	});
+
+	await setPreference._handler({
+		input: {
+			organizationId: "example-org",
+			taskType: "IMAGE",
+			modelCanonicalName: "example-image",
+			overrideProvider: "OPENAI_DIRECT",
+		},
+		context,
+	});
+
+	expect(mockGetProviderByProvider).toHaveBeenCalledWith({
+		userId: "user-1",
+		organizationId: "example-org",
+		provider: "OPENAI_DIRECT",
+	});
+	expect(mockSetPreference).toHaveBeenCalledWith(
+		expect.objectContaining({
+			organizationId: "example-org",
+			provider: "OPENAI_DIRECT",
+			taskType: "IMAGE",
+			modelId: "example-image",
+		}),
+	);
+	expect(mockDeleteByTask).not.toHaveBeenCalled();
+});
+
+it.each([
+	["missing", { provider: null, source: null, apiKey: null }],
+	[
+		"personal",
+		{
+			provider: "OPENAI_DIRECT",
+			source: "user",
+			apiKey: "encrypted-example-key",
+		},
+	],
+	[
+		"mismatched",
+		{
+			provider: "VERCEL_GATEWAY",
+			source: "organization",
+			apiKey: "encrypted-example-key",
+		},
+	],
+	[
+		"empty",
+		{ provider: "OPENAI_DIRECT", source: "organization", apiKey: null },
+	],
+])(
+	"refuses an OPENAI_DIRECT IMAGE choice with a %s OpenAI key",
+	async (_case, config) => {
+		mockGetProviderByProvider.mockResolvedValue(config);
+		mockGetModel.mockResolvedValue({
+			id: "example-image",
+			canonicalName: "example-image",
+			capabilities: ["IMAGE"],
+			providerMappings: [{ provider: "OPENAI_DIRECT" }],
+		});
+
+		await expect(
+			setPreference._handler({
+				input: {
+					organizationId: "example-org",
+					taskType: "IMAGE",
+					modelCanonicalName: "example-image",
+					overrideProvider: "OPENAI_DIRECT",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			message: expect.stringContaining("organization OpenAI"),
+		});
+		expect(mockSetPreference).not.toHaveBeenCalled();
+		expect(mockDeleteByTask).not.toHaveBeenCalled();
+	},
+);
+
+it("keeps OPENROUTER unavailable for IMAGE choices", async () => {
 	await expect(
 		setPreference._handler({
 			input: {
 				organizationId: "example-org",
 				taskType: "IMAGE",
 				modelCanonicalName: "example-image",
-				overrideProvider: "OPENAI_DIRECT",
+				overrideProvider: "OPENROUTER",
 			},
 			context,
 		}),
 	).rejects.toMatchObject({ code: "BAD_REQUEST" });
+	expect(mockGetProviderByProvider).not.toHaveBeenCalled();
 	expect(mockSetPreference).not.toHaveBeenCalled();
-	expect(mockDeleteByTask).not.toHaveBeenCalled();
 });
 
 it("refuses IMAGE when the organization gateway lacks a usable key", async () => {
@@ -637,7 +789,7 @@ describe("Databricks decision settings", () => {
 			);
 		},
 	);
-	it("keeps IMAGE restricted to the gateway", async () => {
+	it("keeps Databricks outside the IMAGE runtimes", async () => {
 		await expect(
 			setPreference._handler({
 				input: { ...openjevInput, taskType: "IMAGE" },

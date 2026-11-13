@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fabric time tracking (documentation examples)</title>
+<link rel="stylesheet" href="../.fonts/fonts.css">
+<style>
+/* Tokens copied verbatim from tooling/tailwind/theme.css :root (light). */
+:root {
+		--border: #dce0e5;
+		--input: #7d90a0;
+		--ring: #bc3e0b;
+		--background: #ffffff;
+		--foreground: #11171c;
+		--primary: #bc3e0b;
+		--primary-foreground: #ffffff;
+		--primary-ink: var(--primary-ink-light, #bc3e0b);
+		--secondary: #f1f3f6;
+		--secondary-foreground: #11171c;
+		--destructive: #b8223b;
+		--destructive-foreground: #ffffff;
+		--success: #24773f;
+		--success-foreground: #ffffff;
+		--muted: #f1f3f6;
+		--muted-foreground: #4f6170;
+		--accent: #e8edf2;
+		--accent-foreground: #11171c;
+		--popover: #ffffff;
+		--popover-foreground: #11171c;
+		--card: #ffffff;
+		--card-foreground: #11171c;
+		--highlight: #8a5a00;
+		--highlight-foreground: #ffffff;
+		--highlight-ink: #8a5a00;
+		--radius: 0.25rem;
+		--sidebar: #f6f7f9;
+		--fab-accent: #d94e14;
+		--fab-accent-fill: #ea580c;
+		--fab-accent-wash: rgba(234, 88, 12, 0.08);
+		--fab-composer-shadow: 0 0 0 1px rgba(17, 23, 28, 0.06), 0 2px 12px rgba(17, 23, 28, 0.06);
+		--fab-warn: #8a5a00;
+		--fab-bad: #b8223b;
+		--fab-good: #24773f;
+		--bg-texture: none;
+}
+:root{
+  --font-sans:Inter,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+  --radius-md:calc(var(--radius) - 2px);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1096px;padding:24px;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.shot{background:var(--background);padding:24px;width:1048px}
+.shot + .shot{margin-top:40px}
+svg.i{width:16px;height:16px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+svg.i.s14{width:14px;height:14px}
+.muted{color:var(--muted-foreground)}
+.xs{font-size:12px;line-height:16px}
+.sm{font-size:14px;line-height:20px}
+.medium{font-weight:500}
+.semibold{font-weight:600}
+.tabular{font-variant-numeric:tabular-nums}
+.row{display:flex;align-items:center}
+.card{border:1px solid var(--border);border-radius:var(--radius);background:var(--card);color:var(--card-foreground)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:4px;font:inherit;font-size:14px;font-weight:500;border:0;height:36px;padding:0 12px}
+.btn-primary{background:var(--primary);color:var(--primary-foreground)}
+.btn-outline{border:1px solid var(--input);background:transparent;color:var(--foreground)}
+.btn-ghost{background:transparent;color:var(--foreground)}
+.btn-sm{height:32px;padding:0 10px;font-size:13px}
+.icon-btn{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;color:var(--muted-foreground)}
+.field{display:flex;align-items:center;height:36px;border-radius:var(--radius-md);background:var(--background);border:1px solid var(--input);padding:0 10px;font-size:14px;white-space:nowrap;overflow:hidden;gap:8px}
+.field.placeholder{color:var(--muted-foreground)}
+.select{justify-content:space-between}
+.select svg{opacity:.5}
+.label{font-size:14px;font-weight:500}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:var(--radius);padding:2px;gap:2px}
+.seg span{padding:4px 10px;font-size:13px;font-weight:500;border-radius:2px;color:var(--muted-foreground)}
+.seg span.on{background:var(--muted);color:var(--foreground)}
+.switch{width:36px;height:20px;border-radius:999px;background:var(--primary);position:relative;flex-shrink:0}
+.switch::after{content:"";position:absolute;top:2px;left:18px;width:16px;height:16px;border-radius:50%;background:var(--background)}
+.switch.off{background:var(--input)}
+.switch.off::after{left:2px}
+.radio{width:16px;height:16px;border-radius:50%;border:1px solid var(--primary);flex-shrink:0;display:flex;align-items:center;justify-content:center}
+.radio.on::after{content:"";width:8px;height:8px;border-radius:50%;background:var(--primary)}
+.badge{display:inline-flex;align-items:center;border-radius:4px;border:1px solid var(--border);padding:1px 6px;font-family:var(--font-mono);font-size:11px;line-height:15px;color:var(--muted-foreground);white-space:nowrap}
+.h1{font-size:24px;font-weight:600;letter-spacing:-.025em}
+.day{border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;flex:1;display:flex;flex-direction:column;gap:2px}
+.day.on{border-color:var(--primary)}
+.group-head{display:flex;justify-content:space-between;padding:10px 16px;background:var(--muted);font-weight:600;font-size:14px}
+.entry{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-top:1px solid var(--border)}
+.warn{display:flex;align-items:center;gap:10px;border:1px solid color-mix(in srgb,var(--highlight) 30%,transparent);background:color-mix(in srgb,var(--highlight) 6%,transparent);border-radius:var(--radius);padding:8px 12px;font-size:14px}
+.warn > svg{color:var(--highlight)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--fab-accent-fill);flex-shrink:0}
+.panel{width:380px;border:1px solid var(--border);border-radius:6px;background:var(--popover);box-shadow:0 8px 28px rgba(17,23,28,.12);padding:16px;display:flex;flex-direction:column;gap:12px}
+.pfield{display:grid;grid-template-columns:84px 1fr;align-items:center;gap:10px}
+.chip{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:999px;background:var(--popover);box-shadow:0 4px 14px rgba(17,23,28,.1);padding:6px 14px 6px 12px;font-size:13px}
+table{border-collapse:collapse;width:100%}
+th{font-size:12px;font-weight:500;color:var(--muted-foreground);text-align:right;padding:10px 16px;border-bottom:1px solid var(--border)}
+th:first-child,td:first-child{text-align:left}
+td{padding:10px 16px;border-top:1px solid var(--border);text-align:right;font-variant-numeric:tabular-nums}
+.sub td{font-size:13px;color:var(--muted-foreground);padding:8px 16px 8px 40px}
+.sub td:not(:first-child){padding-left:16px}
+.settings-group{border:1px solid var(--border);border-radius:var(--radius)}
+.settings-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px}
+.settings-row + .settings-row{border-top:1px solid var(--border)}
+.settings-row.on{background:var(--muted)}
+.popover{width:340px;border:1px solid var(--border);border-radius:6px;background:var(--popover);box-shadow:0 8px 28px rgba(17,23,28,.12);padding:16px;display:flex;flex-direction:column;gap:12px}
+</style>
+</head>
+<body>
+
+<!-- My time: header, week strip, entry line with More open, the day's entries. Synthetic data. -->
+<section id="shot-my-time" class="shot">
+  <div class="row" style="justify-content:space-between;margin-bottom:16px">
+    <div class="row" style="gap:10px"><h1 class="h1">My time</h1><span class="icon-btn"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span></div>
+    <div class="row" style="gap:8px">
+      <span class="btn btn-outline"><svg class="i" viewBox="0 0 24 24"><path d="M9.94 14.06 4 20"/><path d="m15 4 5 5"/><path d="M12 3v2"/><path d="M19 12h2"/><path d="m17 7 3-3"/></svg>Check my activity</span>
+      <span class="btn btn-outline"><svg class="i" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></svg>Start timer</span>
+      <span class="btn btn-primary"><svg class="i" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>Log time</span>
+    </div>
+  </div>
+  <div class="row" style="justify-content:space-between;margin-bottom:12px">
+    <div class="row" style="gap:12px"><span class="seg"><span class="on">Day</span><span>Week</span></span><span class="semibold" style="font-size:16px">Tuesday, March 10, 2026</span></div>
+    <span class="row" style="gap:8px"><span class="sm muted">This day</span><span class="semibold" style="font-size:18px">6h 15m</span></span>
+  </div>
+  <div class="row" style="gap:8px;margin-bottom:16px">
+    <div class="day"><span class="xs muted">9 Mon</span><span class="sm medium">7h 30m</span></div>
+    <div class="day on"><span class="xs muted">10 Tue · today</span><span class="sm medium">6h 15m</span></div>
+    <div class="day"><span class="xs muted">11 Wed</span><span class="sm muted">–</span></div>
+    <div class="day"><span class="xs muted">12 Thu</span><span class="sm muted">–</span></div>
+    <div class="day"><span class="xs muted">13 Fri</span><span class="sm muted">–</span></div>
+  </div>
+  <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:12px;margin-bottom:16px">
+    <div class="row" style="gap:8px">
+      <span class="field" style="width:120px">1h 30m</span>
+      <span class="sm muted">on</span>
+      <span class="field select" style="width:200px">Payments API<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
+      <span class="field select" style="width:150px">Development<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
+      <span class="field select" style="flex:1">12 · Export the weekly summary<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
+      <span class="btn btn-primary">Add</span>
+    </div>
+    <span class="sm muted row" style="gap:4px">More<svg class="i s14" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></svg></span>
+    <div class="row" style="gap:10px"><span class="label" style="width:72px">Note</span><span class="field" style="flex:1">Wire the CSV download to the weekly summary</span><span class="switch"></span><span class="sm medium">Billable</span></div>
+    <div class="row" style="gap:10px"><span class="label" style="width:72px">Time zone</span><span class="field select" style="width:260px">Europe/Berlin<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span></div>
+  </div>
+  <div class="card" style="overflow:hidden">
+    <div class="group-head"><span>Payments API</span><span>4h 45m</span></div>
+    <div class="entry"><span class="sm"><span class="medium">Development</span> <span class="muted">· 12 Export the weekly summary</span><br><span class="muted">Weekly summary query and tests</span></span><span class="semibold sm">3h 15m</span></div>
+    <div class="entry"><span class="sm medium">Code review</span><span class="row" style="gap:12px"><span class="badge">Non-billable</span><span class="semibold sm">1h 30m</span></span></div>
+    <div class="group-head"><span>Mobile app</span><span>1h 30m</span></div>
+    <div class="entry"><span class="sm"><span class="medium">Testing</span><br><span class="muted">Regression pass on the release build</span></span><span class="semibold sm">1h 30m</span></div>
+  </div>
+</section>
+
+<!-- The likely-duplicate question under the entry line, start/stop project. Synthetic data. -->
+<section id="shot-duplicate" class="shot">
+  <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:12px">
+    <div class="row" style="gap:8px">
+      <span class="field" style="width:118px">09:30 AM</span><span class="sm muted">to</span><span class="field" style="width:118px">10:30 AM</span>
+      <span class="field select" style="width:128px">Tue, Mar 10<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
+      <span class="sm semibold">= 1h</span><span class="sm muted">on</span>
+      <span class="field select" style="width:150px">Mobile app<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
+      <span class="field select" style="width:136px">Development<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
+      <span class="btn btn-primary" style="margin-left:auto">Add</span>
+    </div>
+    <div class="warn">
+      <svg class="i" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+      <span style="flex:1">You already logged 1h of Development on Payments API for this date. Is this separate work?</span>
+      <span class="btn btn-outline btn-sm">Yes, add it</span><span class="btn btn-ghost btn-sm">No, skip</span>
+    </div>
+  </div>
+</section>
+
+<!-- Timer widget: the open panel above its corner chip. Synthetic data. -->
+<section id="shot-timer" class="shot" style="width:428px">
+  <div class="panel">
+    <div class="row" style="justify-content:space-between"><span class="row xs muted" style="gap:8px"><span class="dot"></span>Running</span><span class="row" style="gap:4px"><span class="icon-btn"><svg class="i" viewBox="0 0 24 24"><path d="M5 12h14"/></svg></span><span class="icon-btn"><svg class="i" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></span></span></div>
+    <div class="row" style="gap:10px;align-items:baseline"><span class="tabular semibold" style="font-size:32px;line-height:1">1:24:07</span><span class="sm muted">since 09:12</span></div>
+    <div class="pfield"><span class="sm muted">Project</span><span class="field select">Payments API<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span></div>
+    <div class="pfield"><span class="sm muted">Activity</span><span class="field select">Development<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span></div>
+    <div class="pfield"><span class="sm muted">Work item</span><span class="field select">12 · Export the weekly summary<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span></div>
+    <div class="pfield"><span class="sm muted">Note</span><span class="field placeholder">Add a note</span></div>
+    <div class="row" style="gap:8px"><span class="btn btn-outline"><svg class="i" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>Pause</span><span class="btn btn-primary"><svg class="i" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>Stop and save</span><span class="btn btn-ghost" style="margin-left:auto">Discard</span></div>
+  </div>
+  <div class="row" style="justify-content:flex-end;margin-top:12px"><span class="chip"><span class="dot"></span><span class="tabular semibold">1:24:07</span><span class="muted">Payments API</span></span></div>
+</section>
+
+<!-- Timer panel asking when work stopped after a quiet stretch. Synthetic data. -->
+<section id="shot-stop-question" class="shot" style="width:428px">
+  <div class="panel">
+    <div class="row" style="justify-content:space-between"><span class="row xs muted" style="gap:8px"><span class="dot"></span>Running a long time</span><span class="icon-btn"><svg class="i" viewBox="0 0 24 24"><path d="M5 12h14"/></svg></span></div>
+    <div class="row" style="gap:10px;align-items:baseline"><span class="tabular semibold" style="font-size:32px;line-height:1">9:48:31</span><span class="sm muted">since 09:12</span></div>
+    <div style="border-top:1px solid var(--border);padding-top:12px;display:flex;flex-direction:column;gap:6px">
+      <span class="semibold" style="font-size:16px">Stop at 17:42?</span>
+      <span class="sm muted">Last action: edited a work item, 17:42</span>
+    </div>
+    <div class="row" style="gap:8px;flex-wrap:wrap"><span class="btn btn-primary">Stop at 17:42</span><span class="btn btn-outline">Stop now</span><span class="btn btn-outline">Pick a time</span><span class="btn btn-ghost">Cancel</span></div>
+  </div>
+</section>
+
+<!-- To confirm: one suggestion row opened. Synthetic data. -->
+<section id="shot-to-confirm" class="shot">
+  <div class="card" style="padding:16px;display:flex;flex-direction:column;gap:12px">
+    <div class="row" style="justify-content:space-between"><span class="row" style="gap:8px"><span class="semibold" style="font-size:16px">To confirm</span><span class="icon-btn"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span></span><span class="btn btn-outline">Check my activity</span></div>
+    <div class="row" style="gap:10px">
+      <svg class="i s14 muted" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+      <span class="sm muted">Tue, Mar 10</span><span class="sm semibold">Payments API</span><span class="sm">Planning and requirements</span><span class="sm muted">12</span>
+      <span class="row" style="gap:8px;margin-left:auto"><span class="field placeholder" style="width:110px">--:--</span><span class="sm muted">to</span><span class="field placeholder" style="width:110px">--:--</span><span class="sm semibold">= –</span><span class="btn btn-primary">Confirm</span><span class="btn btn-ghost">Not work time</span></span>
+    </div>
+    <div class="row" style="gap:10px;padding-left:24px"><span class="label" style="width:44px">Note</span><span class="field" style="flex:1">Planning and requirements on 12 Export the weekly summary</span></div>
+    <div class="row" style="gap:10px;padding-left:24px">
+      <span class="field select" style="width:220px">Planning and requirements<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
+      <span class="field select" style="flex:1">12 · Export the weekly summary<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
+      <span class="switch"></span><span class="sm medium">Billable</span>
+    </div>
+    <span class="xs muted" style="padding-left:24px">3 work item edits, 10:05 to 11:40</span>
+  </div>
+</section>
+
+<!-- Project settings: Time tracking section. Synthetic data. -->
+<section id="shot-project-settings" class="shot" style="width:720px">
+  <div style="display:flex;flex-direction:column;gap:16px">
+    <div class="row" style="gap:8px"><span class="semibold" style="font-size:20px">Time tracking</span><span class="icon-btn"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span></div>
+    <span class="label">Project type</span>
+    <div class="settings-group"><div class="settings-row"><span class="row sm medium" style="gap:12px"><span class="radio"></span>Fixed bid</span></div><div class="settings-row on"><span class="row sm medium" style="gap:12px"><span class="radio on"></span>Time and materials</span></div></div>
+    <span class="label">Entry rules</span>
+    <div class="settings-group"><div class="settings-row"><span class="sm medium">Require start and stop times</span><span class="switch"></span></div><div class="settings-row"><span class="sm medium">New entries start as</span><span class="field select" style="width:240px">Organization default (Billable)<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span></div></div>
+  </div>
+</section>
+
+<!-- Organization Settings, Time reports: month view with a project expanded. Synthetic data. -->
+<section id="shot-org-report" class="shot">
+  <div class="row" style="justify-content:space-between;margin-bottom:16px"><span class="semibold" style="font-size:20px">Time reports</span><span class="btn btn-primary"><svg class="i" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>Export CSV</span></div>
+  <div class="row" style="justify-content:space-between;margin-bottom:12px">
+    <div class="row" style="gap:10px"><span class="btn btn-outline" style="width:36px;padding:0"><svg class="i" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg></span><span class="semibold" style="font-size:16px">March 2026</span><span class="btn btn-outline" style="width:36px;padding:0"><svg class="i" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></span><span class="btn btn-outline"><svg class="i" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/></svg>Filter <span class="badge">1</span></span></div>
+    <span class="row" style="gap:8px"><span class="sm muted">Total</span><span class="semibold" style="font-size:20px">142h 30m</span><span class="sm muted">131h billable</span></span>
+  </div>
+  <div class="card" style="overflow:hidden">
+    <table>
+      <tr><th>Project</th><th>People</th><th>Billable</th><th>Non-billable</th><th>Total</th></tr>
+      <tr><td><span class="row" style="gap:8px"><svg class="i s14 muted" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg><span class="semibold">Payments API</span><span class="xs muted">Time and materials</span></span></td><td class="semibold">3</td><td class="semibold">86h 15m</td><td class="semibold">6h 45m</td><td class="semibold">93h</td></tr>
+      <tr class="sub"><td>Tue, Mar 10 · Alex Morgan · Development · 12 Export the weekly summary</td><td></td><td>3h 15m</td><td></td><td>3h 15m</td></tr>
+      <tr class="sub"><td>Tue, Mar 10 · Alex Morgan · Code review</td><td></td><td></td><td>1h 30m</td><td>1h 30m</td></tr>
+      <tr class="sub"><td>Mon, Mar 9 · Sam Lee · Testing · 14 Retry failed payouts</td><td></td><td>4h</td><td></td><td>4h</td></tr>
+      <tr><td><span class="row" style="gap:8px"><svg class="i s14 muted" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg><span class="semibold">Mobile app</span><span class="xs muted">Time and materials</span></span></td><td class="semibold">2</td><td class="semibold">44h 45m</td><td class="semibold">4h 45m</td><td class="semibold">49h 30m</td></tr>
+      <tr><td class="semibold">Total</td><td class="semibold">4</td><td class="semibold">131h</td><td class="semibold">11h 30m</td><td class="semibold">142h 30m</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- Project time report: the filter popover with a custom range and one work item. Synthetic data. -->
+<section id="shot-report-filters" class="shot" style="width:388px">
+  <div class="popover">
+    <span class="label">Period</span>
+    <span class="seg" style="align-self:flex-start"><span>Month</span><span class="on">Custom range</span></span>
+    <div class="row" style="gap:10px"><div style="flex:1;display:flex;flex-direction:column;gap:6px"><span class="label">From</span><span class="field">03/02/2026</span></div><div style="flex:1;display:flex;flex-direction:column;gap:6px"><span class="label">To</span><span class="field">03/13/2026</span></div></div>
+    <span class="label">Person</span><span class="field select">Everyone<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
+    <span class="label">Work item</span><span class="field select">12 · Export the weekly summary<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
+    <span class="label">Billable</span><span class="field select">All<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
+    <span class="label">Activity</span><span class="field select">All activities<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
+    <span class="label">Project type</span><span class="field select">All project types<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
+    <span class="btn btn-ghost" style="align-self:flex-end">Clear</span>
+  </div>
+</section>
+
+</body>
+</html>

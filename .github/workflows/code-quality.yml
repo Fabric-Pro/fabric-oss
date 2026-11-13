@@ -51,9 +51,12 @@ jobs:
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
     needs: [promotion_policy]
     name: Biome (format + lint)
-    # arm64: every step here is architecture-neutral (JS actions, pnpm/node
-    # commands, Biome — @biomejs/cli-linux-arm64 ships in pnpm-lock.yaml).
-    runs-on: ubuntu-24.04-arm
+    # Architecture-neutral steps; private PRs use Namespace amd64,
+    # while other events retain the GitHub arm64 label.
+    # Only private pull requests use Namespace, by event allowlist. Pushes and
+    # other events retain GitHub runners: their caches can be restored by other
+    # branches, including secret-holding jobs. See unit-tests.yml vitest.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -72,7 +75,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '24'
           check-latest: true
 
       - name: Install dependencies
@@ -104,8 +107,11 @@ jobs:
         run: pnpm lint
 
       - name: Staging pipeline contract tests
+        # The runner is discarded after the job. Namespace's Ubuntu 24.04 image
+        # enforces PEP 668 for the system Python, which GitHub's images relax,
+        # so the flag is needed there and harmless here.
         run: |
-          python3 -m pip install --disable-pip-version-check PyYAML==6.0.3
+          python3 -m pip install --disable-pip-version-check --break-system-packages PyYAML==6.0.3
           python3 .github/scripts/staging/test_workflows.py
           node --test .github/actions/oss-snapshot/*manifest.test.mjs
           node --test .github/scripts/staging/promotion-*.test.mjs .github/scripts/staging/public-relay-changeset.test.mjs

@@ -74,7 +74,8 @@ export class FirecrawlSearchProvider extends BaseSearchProvider {
 
 		const { maxResults = 10 } = options;
 
-		logger.info(`[FirecrawlSearchProvider] Searching for: "${query}"`, {
+		logger.info("[FirecrawlSearchProvider] Searching", {
+			queryLength: query.length,
 			maxResults,
 		});
 
@@ -137,9 +138,9 @@ export class FirecrawlSearchProvider extends BaseSearchProvider {
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
-			logger.error(
-				`[FirecrawlSearchProvider] Search failed: ${errorMessage}`,
-			);
+			logger.error("[FirecrawlSearchProvider] Search failed", {
+				errorKind: error instanceof Error ? error.name : typeof error,
+			});
 			throw new Error(`Firecrawl search failed: ${errorMessage}`);
 		}
 	}

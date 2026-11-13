@@ -11,10 +11,11 @@
  * 5 forbidden, 6 rate limited, 7 refused.
  *
  * Under `--hook` a line is printed only when the person or agent must know:
- * on stdout for what the agent has to act on (the checkout's state, a sign-in
- * that cannot be used, an upgrade), on stderr, behind
- * `fabric: coding instructions <verb> skipped:`, for everything that merely
- * stopped the check. The exit code is always 0 there. A line that starts
+ * in the agent's context for what the agent has to act on (the checkout's
+ * state, a sign-in that cannot be used, an upgrade), and as the developer's
+ * hook message, behind `fabric: coding instructions <verb> skipped:`, for
+ * everything that merely stopped the check (`hook-output.ts` says how both
+ * reach stdout). The exit code is always 0 there. A line that starts
  * `fabric: coding instructions` carries that prefix itself.
  */
 import { CliFailure } from "../command-boundary.js";

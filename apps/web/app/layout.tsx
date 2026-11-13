@@ -1,12 +1,13 @@
 import { config } from "@repo/config";
 import { measureCatalogRequestPhase } from "@saas/shared/lib/catalog-request-timing";
 import { Document } from "@shared/components/Document";
+import { startWebAppInsights } from "@shared/lib/web-app-insights";
 import type { Metadata } from "next";
+import { after } from "next/server";
 import { getLocale } from "next-intl/server";
 import type { PropsWithChildren } from "react";
 import "./globals.css";
 import "./register-ai-usage-threshold-notifier";
-import "./start-web-app-insights";
 
 export const metadata: Metadata = {
 	title: {
@@ -49,6 +50,7 @@ export const viewport = {
 };
 
 export default async function RootLayout({ children }: PropsWithChildren) {
+	after(startWebAppInsights);
 	const locale = await measureCatalogRequestPhase("root_locale", getLocale);
 	return <Document locale={locale}>{children}</Document>;
 }

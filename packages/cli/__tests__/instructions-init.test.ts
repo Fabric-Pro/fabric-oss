@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { computeSnapshotDigest } from "../src/lib/instructions/manifest.js";
 import { fakeGit } from "./helpers/git-fake.js";
 import {
+	hookSystemMessage,
 	makeTree,
 	manifestEntry,
 	resetInstructionsMocks,
@@ -700,9 +701,10 @@ describe("a source of truth that changed after the hook was installed", () => {
 		]);
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toContain(
+		expect(hookSystemMessage(result.stdout)).toContain(
 			"instruction source changed while this command ran; nothing was written",
 		);
+		expect(result.stderr).toBe("");
 		expect(mocks.getPublished).toHaveBeenCalledTimes(2);
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 		// Nothing was put back: the refusal came before the plan.

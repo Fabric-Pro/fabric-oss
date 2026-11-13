@@ -12,8 +12,9 @@
  * @langchain/core/tools) that reads graph state and the run's AI token off
  * the `ToolRuntime` LangGraph hands it on invocation, instead of a factory
  * rebuilt on every tool-node call. `ToolNode`s are built lazily, one per
- * gate combination (integration flags + active skill), and cached in a
- * module-level map so an invocation never constructs tools or a node.
+ * gate combination (integration flags + active skill + web research), and
+ * cached in a module-level map so an invocation never constructs tools or a
+ * node.
  */
 
 import type { BaseMessage } from "@langchain/core/messages";
@@ -29,7 +30,14 @@ import { SYNTHETIC_TOOL_IMAGE_MESSAGE_FLAG } from "@repo/agent-core/recursion";
 import { logger } from "@repo/logs";
 import { z } from "zod";
 import type { AgentState } from "../state";
+import { getApiUrl, internalApiFailure } from "./internal-api";
 import { isProposalRun } from "./proposal-client-mode";
+import { isWebResearchAllowed } from "./web-research";
+import {
+	pendingResearchRound,
+	runRoundWithWebResearch,
+} from "./web-research-round";
+import { readUrlTool, webSearchTool } from "./web-research-tools";
 
 // Mirrors packages/integrations/src/microsoft/config/limits.ts. Duplicated here
 // because the agent bundle can't pull @repo/integrations (would inline the whole
@@ -109,16 +117,6 @@ function formatSlackMessageLine(p: SlackLineParts): string {
 	return `${metaPrefix}**${p.from}**${channelPart} (${p.createdAt || "unknown time"})${linkSuffix}: ${p.content}`;
 }
 
-/** Resolve the internal API base URL */
-function getApiUrl(): string {
-	return (
-		process.env.RUNTIME_API_URL ||
-		process.env.FABRIC_API_URL ||
-		process.env.NEXT_PUBLIC_SITE_URL ||
-		"http://localhost:3001"
-	);
-}
-
 /** Resolve the run's AI token from the ToolRuntime's RunnableConfig. */
 function getAiToken(runtime: ToolRuntime<AgentState>): string | undefined {
 	return runtime.configurable?.ai_token as string | undefined;
@@ -156,20 +154,6 @@ function loggedFailure(
 	ordinary: unknown,
 ): unknown {
 	return isProposalToolRun(runtime) ? errorLogFields(error) : ordinary;
-}
-
-/**
- * A 401 from an internal API almost always means the run's AI token expired
- * mid-generation (a long model call outliving the token TTL), not a
- * transient failure — so it's logged at error and the model is told to stop
- * retrying instead of silently continuing without the tool's context.
- */
-function internalApiFailure(tool: string, status: number): string {
-	logger.error(
-		`[ToolNode] ${tool} auth failed (401) — AI token likely expired mid-run`,
-		{ status },
-	);
-	return `Authentication to ${tool} expired mid-run. Do not retry this tool; finish with the context already gathered.`;
 }
 
 /**
@@ -2377,22 +2361,27 @@ The document viewer renders it inline at that anchor.`,
 
 /**
  * Derive the cache key for a state's tool-gate combination: one character
- * per gate, in a fixed order, `"1"`/`"0"` for on/off. Four independent
- * boolean gates means at most 16 distinct keys exist for the life of the
- * process.
+ * per gate, in a fixed order, `"1"`/`"0"` for on/off. Five independent
+ * boolean gates means at most 32 distinct keys exist for the life of the
+ * process. The web research gate depends on the run's config as well as its
+ * state, so the caller decides it once and passes it in.
  */
-function toolGateKey(state: AgentState): string {
+function toolGateKey(state: AgentState, researchAllowed: boolean): string {
 	const hasAsset = !!(state.activeSkill && state.documentId);
 	return [
 		hasAsset ? "1" : "0",
 		state.hasTeamsIntegration ? "1" : "0",
 		state.hasSlackIntegration ? "1" : "0",
 		state.hasRepoIntegration ? "1" : "0",
+		researchAllowed ? "1" : "0",
 	].join("");
 }
 
 /** Build the tool list for one gate combination — mirrors master's old conditional push order. */
-function toolsForGates(state: AgentState): StructuredToolInterface[] {
+function toolsForGates(
+	state: AgentState,
+	researchAllowed: boolean,
+): StructuredToolInterface[] {
 	const tools: StructuredToolInterface[] = [
 		searchProjectKnowledgeTool,
 		readProjectSourceTool,
@@ -2434,50 +2423,77 @@ function toolsForGates(state: AgentState): StructuredToolInterface[] {
 		);
 	}
 
+	// Only for a run the server authorized to research. The gate is part of
+	// the cache key, so a node built for such a run never serves another.
+	if (researchAllowed) {
+		tools.push(webSearchTool, readUrlTool);
+	}
+
 	return tools;
 }
 
 // One ToolNode per gate combination, built the first time that combination
 // is seen and reused for every later call that shares it. The tools
 // themselves are always the shared module-level `tool()` instances above —
-// only the (at most 16) small per-combination ToolNode wrappers are cached.
+// only the (at most 32) small per-combination ToolNode wrappers are cached.
 const TOOL_NODE_CACHE = new Map<string, ToolNode>();
 
-function getToolNodeForState(state: AgentState): ToolNode {
-	const key = toolGateKey(state);
+function getToolNodeForState(
+	state: AgentState,
+	researchAllowed: boolean,
+): ToolNode {
+	const key = toolGateKey(state, researchAllowed);
 	const cached = TOOL_NODE_CACHE.get(key);
 	if (cached) {
 		return cached;
 	}
 
-	const node = new ToolNode(toolsForGates(state));
+	const node = new ToolNode(toolsForGates(state, researchAllowed));
 	TOOL_NODE_CACHE.set(key, node);
 	return node;
 }
 
 /**
- * Tool node that executes server-side Teams, Slack, project-knowledge, and
- * repository tools.
+ * Tool node that executes server-side Teams, Slack, project-knowledge,
+ * repository and web research tools.
  *
- * Re-applies the same four gates `chat-node.ts` uses when deciding which
+ * Re-applies the same five gates `chat-node.ts` uses when deciding which
  * tools to offer the model (`model.bindTools(...)`, gated by
- * hasTeamsIntegration, hasSlackIntegration, hasRepoIntegration, and
- * activeSkill/documentId) when selecting which tools the underlying
- * `ToolNode` knows about for this call. That's a guard against tool calls
- * the model was never offered, not a duplicate of the model-side gate:
- * `stripDisallowedToolCalls` in chat-node.ts documents that "gateways do
- * return calls to tools that were never sent", so a stale or hallucinated
- * call to a disallowed tool must still land here as LangGraph's normal
- * `Tool "<name>" not found.` error ToolMessage instead of reaching the
- * network. `getToolNodeForState` builds at most 16 `ToolNode`s (one per
- * gate combination) over the life of the process and reuses them — no tool
- * or `ToolNode` is constructed per call.
+ * hasTeamsIntegration, hasSlackIntegration, hasRepoIntegration,
+ * activeSkill/documentId, and the web research gate) when selecting which
+ * tools the underlying `ToolNode` knows about for this call. That's a guard
+ * against tool calls the model was never offered, not a duplicate of the
+ * model-side gate: `stripDisallowedToolCalls` in chat-node.ts documents that
+ * "gateways do return calls to tools that were never sent", so a stale or
+ * hallucinated call to a disallowed tool must still land here as LangGraph's
+ * normal `Tool "<name>" not found.` error ToolMessage instead of reaching
+ * the network. A research call is refused earlier still, by the pre-pass in
+ * `runRoundWithWebResearch`, which also enforces the run's research budget.
+ * `getToolNodeForState` builds at most 32 `ToolNode`s (one per gate
+ * combination) over the life of the process and reuses them — no tool or
+ * `ToolNode` is constructed per call.
  */
 export async function toolNode(
 	state: AgentState,
 	config?: { configurable?: Record<string, unknown> },
 ): Promise<Partial<AgentState>> {
-	const node = getToolNodeForState(state);
+	const researchAllowed = isWebResearchAllowed(state, config?.configurable);
+	const node = getToolNodeForState(state, researchAllowed);
+	const round = pendingResearchRound(state.messages ?? []);
+	if (round) {
+		const update = await runRoundWithWebResearch(
+			node,
+			state,
+			config,
+			round,
+			researchAllowed,
+		);
+		return {
+			...update,
+			messages: splitImageToolMessages(update.messages ?? []),
+		};
+	}
+
 	const result = (await node.invoke(state, config)) as Record<string, any>;
 
 	return { messages: splitImageToolMessages(result.messages || []) };

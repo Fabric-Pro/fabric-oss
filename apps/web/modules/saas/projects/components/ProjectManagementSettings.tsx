@@ -1742,7 +1742,7 @@ export function ProjectManagementSettings({ project }: Props) {
 								<p className="text-sm font-medium text-destructive">
 									Admin access required
 								</p>
-								<p className="text-sm text-destructive/80 mt-1">
+								<p className="text-sm text-destructive mt-1">
 									Configuring project management integrations
 									requires project admin or owner access. Ask
 									a project admin or owner to set up or change
@@ -1781,7 +1781,7 @@ export function ProjectManagementSettings({ project }: Props) {
 												? `${savedContainerName} · via ${connectedProviderLabel}`
 												: savedContainerName}
 										</p>
-										<p className="text-sm text-highlight/80 mt-2">
+										<p className="text-sm text-highlight mt-2">
 											{pmConnectionError}
 										</p>
 										<a
@@ -1871,7 +1871,7 @@ export function ProjectManagementSettings({ project }: Props) {
 													onClick={() =>
 														testPMSyncMutation.mutate()
 													}
-													className="text-green-700 border-green-200 hover:bg-green-50 dark:text-green-300 dark:border-green-800 dark:hover:bg-green-900/30"
+													className="text-green-800 border-green-200 hover:bg-green-50 dark:text-green-300 dark:border-green-800 dark:hover:bg-green-900/30"
 												>
 													{testPMSyncMutation.isPending ? (
 														<Loader2Icon className="h-4 w-4 animate-spin" />
@@ -1893,7 +1893,7 @@ export function ProjectManagementSettings({ project }: Props) {
 														setIsChangingBoard(true)
 													}
 													aria-label="Change board"
-													className="text-green-700 hover:text-green-800 hover:bg-green-100 dark:text-green-300 dark:hover:bg-green-900/50"
+													className="text-green-800 hover:bg-green-100 dark:text-green-300 dark:hover:bg-green-900/50"
 												>
 													<PencilIcon className="h-4 w-4" />
 												</Button>
@@ -1930,7 +1930,7 @@ export function ProjectManagementSettings({ project }: Props) {
 					!isPMConfigured &&
 					canConfigurePmIntegration && (
 						<div className="p-4 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
-							<p className="text-sm text-highlight/80">
+							<p className="text-sm text-highlight">
 								No project management tools configured.{" "}
 								<a
 									href={mcpSettingsUrl}
@@ -1953,7 +1953,7 @@ export function ProjectManagementSettings({ project }: Props) {
 					!isChangingBoard &&
 					canConfigurePmIntegration && (
 						<div className="p-4 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
-							<p className="text-sm text-highlight/80">
+							<p className="text-sm text-highlight">
 								The configured project management tool is no
 								longer available (it may have been disabled or
 								removed).{" "}
@@ -2092,7 +2092,7 @@ export function ProjectManagementSettings({ project }: Props) {
 									className="p-3 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg"
 									role="alert"
 								>
-									<p className="text-sm text-destructive/80">
+									<p className="text-sm text-destructive">
 										{error}
 									</p>
 									{isRestGitHub &&
@@ -2248,7 +2248,7 @@ export function ProjectManagementSettings({ project }: Props) {
 											</div>
 										) : teamsError ? (
 											<div className="space-y-2">
-												<p className="text-sm text-amber-600 dark:text-amber-400">
+												<p className="text-sm text-amber-700 dark:text-amber-400">
 													{teamsError} You can enter
 													area path manually below.
 												</p>

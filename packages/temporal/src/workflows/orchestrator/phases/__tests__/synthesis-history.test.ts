@@ -8,6 +8,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { RESULT_READ_TOOL } from "../../advisor-result-read";
 import type { IterativeMessage } from "../../types";
 import {
 	buildSynthesisHistory,
@@ -130,6 +131,27 @@ describe("buildSynthesisHistory", () => {
 });
 
 describe("renderPartialFindings", () => {
+	it.each([false, undefined])(
+		"keeps a same-named external partial finding with decision %s",
+		(enabled) => {
+			const external = {
+				name: RESULT_READ_TOOL,
+				status: "success",
+				result: "External source finding",
+			};
+			const ordinary = { ...external, name: "example_read" };
+			expect(renderPartialFindings([external], enabled)).toBe(
+				renderPartialFindings([ordinary], enabled)?.replace(
+					"**example_read**",
+					`**${RESULT_READ_TOOL}**`,
+				),
+			);
+			expect(renderPartialFindings([external], enabled)).toContain(
+				"External source finding",
+			);
+		},
+	);
+
 	it("shows the latest successful outputs, shortened", () => {
 		const text = renderPartialFindings([
 			{ name: "a", status: "success", result: "old" },
@@ -144,6 +166,60 @@ describe("renderPartialFindings", () => {
 		expect(text).not.toContain("**a**");
 		expect(text).not.toContain("nope");
 		expect(text?.length).toBeLessThan(2_000);
+	});
+
+	it.each(["success", "unavailable"])(
+		"keeps real findings ahead of three %s page-read records",
+		(status) => {
+			const state = {
+				toolCalls: [
+					{
+						name: "example_read",
+						status: "success",
+						result: `Example source evidence: ${"real document text ".repeat(2000)}`,
+					},
+					...[0, 16_000, 32_000].map((offset) => ({
+						name: RESULT_READ_TOOL,
+						status: "success",
+						result:
+							status === "unavailable"
+								? { v: 1, status: "unavailable" }
+								: {
+										v: 1,
+										status: "success",
+										ref: "r1",
+										offset,
+										nextOffset: offset + 16_000,
+										returnedCharacters: 16_000,
+										totalCharacters: 80_000,
+									},
+					})),
+				],
+			};
+			const text = renderPartialFindings(state.toolCalls, true);
+			expect(text).toContain("Example source evidence");
+			expect(text).not.toContain(RESULT_READ_TOOL);
+			expect(text).not.toContain('"returnedCharacters"');
+			expect(text).not.toContain('"unavailable"');
+		},
+	);
+	it("takes the last three real results and renders no read-only findings", () => {
+		const reads = [1, 2, 3].map(() => ({
+			name: RESULT_READ_TOOL,
+			status: "success",
+			result: { v: 1, status: "unavailable" },
+		}));
+		const real = [1, 2, 3, 4].map((index) => ({
+			name: `source_${index}`,
+			status: "success",
+			result: `evidence_${index}`,
+		}));
+		const text = renderPartialFindings([...real, ...reads], true);
+		expect(text).not.toContain("evidence_1");
+		for (const index of [2, 3, 4]) {
+			expect(text).toContain(`evidence_${index}`);
+		}
+		expect(renderPartialFindings(reads, true)).toBeNull();
 	});
 
 	it("returns null when nothing succeeded", () => {

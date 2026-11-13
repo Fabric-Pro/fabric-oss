@@ -145,7 +145,7 @@ function PriorityRowImpl({
 					<button
 						type="button"
 						aria-label={`Reorder ${story.identifier}, position ${rank} of ${total}`}
-						className="mt-0.5 hidden cursor-grab touch-none rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring sm:block"
+						className="mt-0.5 hidden cursor-grab touch-none rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring sm:block"
 						{...attributes}
 						{...listeners}
 					>
@@ -240,7 +240,7 @@ function PriorityRowImpl({
 						)}
 
 						{story.priorityChangedAt && (
-							<span className="whitespace-nowrap text-[11px] text-muted-foreground/70">
+							<span className="whitespace-nowrap text-[11px] text-muted-foreground">
 								{t("lastChangedPrefix")}{" "}
 								<HistoryTimestamp
 									value={story.priorityChangedAt}
@@ -274,7 +274,7 @@ function PriorityRowImpl({
 					    long note from stretching the row; the rest is in the
 					    history. Null after a drag (which carries no note). */}
 					{story.priorityChangeReason && (
-						<p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-muted-foreground/80">
+						<p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-muted-foreground">
 							<MessageSquareTextIcon
 								aria-hidden
 								className="mt-px size-3 shrink-0"

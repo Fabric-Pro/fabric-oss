@@ -469,6 +469,8 @@ describe("internal MCP tools", () => {
 		["OAUTH_ERROR", 409],
 		["INVALID_TWILIO_CREDENTIALS", 409],
 		["RATE_LIMIT", 429],
+		// #3531: a retired server whose package is not on npm.
+		["SERVER_UNAVAILABLE", 410],
 		["OAUTH_REFRESH_FAILED", 502],
 		["AUTH_ERROR", 502],
 		["CONNECTION_ERROR", 502],
@@ -486,6 +488,9 @@ describe("internal MCP tools", () => {
 			expect(body.code).toBe(code);
 			if (status === 409) {
 				expect(body.error).toMatch(/reconnect.*Fabric/);
+			}
+			if (status === 410) {
+				expect(body.error).toMatch(/remove it in Fabric/);
 			}
 			expect(JSON.stringify(body)).not.toContain("secret-value");
 			expect(console.warn).toHaveBeenCalledWith(

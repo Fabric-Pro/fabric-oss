@@ -1,5 +1,130 @@
 # fabric-app
 
+## 1.16.45
+
+### Patch Changes
+
+- c283fae: Text on the brand-orange highlight — the active item in the settings menu, selected chips and tabs — is now dark enough to read, and success, warning and error captions are no longer faded. Deferred work items keep their strike-through without being dimmed, and the test-case tab counters read clearly on the active tab.
+- c283fae: Coloured status text — green, amber, red, blue and the other badge and label colours — is now dark enough to read in the light theme and light enough in the dark theme, so every status label clears the WCAG AA contrast minimum in both.
+- c283fae: Advisor now keeps a snapshot of each successful read result from a chat answer for two days, so a later change can reuse it in the next message instead of running the tool again.
+- c283fae: Advisor can now read a tool result saved from an earlier message of the same chat instead of running the tool again.
+- c283fae: Advisor chat turns now keep ordinary tool results of up to 32,000 characters in full before summarization, up from 12,000, so answers using mid-sized results are faster and can quote exact content.
+- c283fae: Agent services now shut down cleanly when they stop or scale down, finishing in-flight requests instead of being force-stopped.
+- c283fae: AI usage limits no longer miss usage that the web app records just after sending a response, so spending and token limits count those AI calls toward their totals.
+- c283fae: API key delete and revoke buttons are now named for screen readers and confirm in the app's own dialog instead of the browser prompt.
+- c283fae: The app request timing log also records CPU time and the longest event-loop stall, to tell slow queries from a busy process.
+- c283fae: Update the Aspire AppHost to 13.6.5, which fixes a high-severity security advisory in Aspire.Hosting and Aspire.Hosting.AppHost.
+- c283fae: Project name checks, approval templates, Kanban pushes, and document uploads now only act in an organization you have access to.
+- c283fae: Image generation now works for organizations whose default AI provider is not Vercel AI Gateway but which have a Vercel AI Gateway connection, the Advisor no longer asks for delete approval before generating an image, and approval cards show the risk level the Advisor actually assigned.
+- c283fae: Advisor chat answers can now read back exact pages of a large tool result from the same answer instead of working from a summary of it.
+- c283fae: Measure and Suggest settings on RAG Settings now show their progress, run one at a time per project, and Suggest settings becomes available after a measure has finished.
+- c283fae: Projects can now split their Coding Instructions into named sets, each a folder (`instructions/<name>/`) of the one instructions source that applies to the code repositories chosen for it. Sets are managed from the Coding Instructions tab, the API, the SDK (`projects.listInstructionSets`, `createInstructionSet`, `updateInstructionSet`, `deleteInstructionSet`) and MCP. `fabric instructions init` picks the set for the current checkout, or the one named with `--set`, and installs a separate plugin per set. Projects without sets keep working as before.
+- c283fae: App pages log where a slow or first request spent its time, from the proxy receiving it to the response finishing.
+- c283fae: Cold pages no longer wait for the App Insights client: the root layout starts log forwarding after the response is sent.
+- c283fae: A report's send history dialog no longer returns to the first page on its own shortly after it opens, undoing a page you had just picked.
+- c283fae: Direct Gemini image generation now defaults to Nano Banana 2.1 instead of a retired model.
+- c283fae: Document generation and regeneration can now search the web for external evidence when you turn on Allow web research for that run; it is off by default.
+- c283fae: Document generation gains the server side of optional web research: an internal endpoint that searches the web and reads public pages only for a generation the user explicitly allowed, checks project access, and refuses queries or links that name the organization, project or client. Nothing calls it yet; the generation option arrives in a later release.
+- c283fae: Plain PDF and Word exports of a document now show Markdown quotes as indented quotes instead of a paragraph starting with ">".
+- c283fae: The Engineering Metrics template description names the repository records it needs, so the data gathering step reads merged pull requests for lead time.
+- c283fae: Update fast-xml-parser to 5.12.0 for its UTF-8 input and metadata-offset fixes.
+- c283fae: Image generation can now edit an attached image with GPT Image models, and refuses edit requests on image providers that cannot edit.
+- c283fae: Microsoft Graph reads now retry a 500 server error, so one failed calendar page no longer fails a whole meeting sync.
+- c283fae: A high-contrast theme can be turned on from the sidebar, the user menu, or the new Account → Appearance settings page. It works with both light and dark mode, applies immediately, and is saved to your account so it follows you to every device. Secondary text across the app — captions, labels, helper text — is now dark enough to read in the ordinary light and dark themes too, and links in the document editor show in the link colour again.
+- c283fae: Updated the agent and MCP wrapper HTTP servers to `@hono/node-server` 2.1.6, which rejects a raw backslash in the request path with `400 Bad Request` instead of treating it as a path separator (GHSA-jpvv-r467-5p4w).
+- c283fae: The image and decision model pickers now group choices by the connection that runs them and show the selected connection before saving.
+- c283fae: The organization template picker offers only projects that can be the template and marks those with nothing published yet.
+- c283fae: The organization template picker lists projects with published coding instructions first, then sorts names ignoring case.
+- c283fae: Coding instructions CLI: outside a git checkout with no usable lock, a command without `--project` says to pass one instead of asking you to sign in.
+- c283fae: New server processes load less code before their first page: password dictionaries, email templates, the Stripe and S3 SDKs and the OpenTelemetry SDK now load on first use.
+- c283fae: Living Memory decisions now link their work item, say when a file was only partly read, and a scan covers never-read files and notifies reviewers.
+- c283fae: Remove one Living Memory folder, see new lessons in the digest, and show session-start notes to developers as hook messages.
+- c283fae: Opening the Fabric AI page no longer saves your chat and reasoning modes: they are saved only when you change them.
+- c283fae: Add My time: log, edit and review your own time per project by day or week, from the new Time page or a work item.
+- c283fae: The Fabric MCP App cards' **Open in Fabric Desktop** buttons now open a new Fabric Agents chat with the task filled in, **Delegate to Remote Server** asks your assistant to hand the task to a Remote Fabric Agents Server, and a card button whose request fails now says why instead of doing nothing.
+- c283fae: Informational startup messages from MCP servers are no longer reported as errors in monitoring.
+- c283fae: Project admins can now add meetings from the Meeting Digest and the Context tab in three ways: link a meeting from their calendar, upload a transcript file, or configure the Teams and Slack meeting series. Uploads show their progress in the Meeting Digest, and linked meetings are listed on the Context tab while they wait for their first transcript.
+- c283fae: The meeting sync warning no longer counts stopped meetings, so it stops reporting "2 of 1 meetings are not syncing".
+- c283fae: Teams channel meeting sync reads a transcript from the meeting recording when Microsoft lists the transcript but refuses to return it.
+- c283fae: Teams meeting sync stores new transcripts again when Microsoft refuses one transcript's structured content.
+- c283fae: GPT Image 2.6 Sunburst and Flare, Nano Banana 2.1, and Nano Banana 2 Lite are available for image generation, Nano Banana 2.1 is now the default image model on Vercel AI Gateway, and Nano Banana 2 now uses Google’s stable model.
+- c283fae: Release notes can now capture screenshots of the product automatically from a chosen sample-data environment, with review or sent directly.
+- c283fae: Newsletter screenshots wait for an in-app navigation to finish before reading the page, and a click blocked by a dialog fails fast and says what covers it.
+- c283fae: Automatic release-notes screenshots no longer save the wrong screen or a cookie banner: an unreachable screen now leaves an empty slot with a reason.
+- c283fae: Release-notes screenshots now stay out of admin screens, never double up on a rerun, and approval waits for screenshots still being captured.
+- c283fae: Automatic release-notes screenshots no longer fail at the masking step before every capture.
+- c283fae: Release-notes screenshots no longer stall behind an open menu or a cookie banner: overlays are hidden on every page read and a blocked click is retried after Escape.
+- c283fae: Newsletter screenshots wait for a screen to finish loading before reading it, and hide floating chat buttons from the picture.
+- c283fae: Download in the newsletter review image dialog now saves the image instead of opening it in a new tab.
+- c283fae: Newsletter send history now shows which repositories failed, and why, when a send is skipped because the release scan was incomplete.
+- c283fae: Removing one published newsletter image now says "Remove published image" and "Remove image" instead of the plural.
+- c283fae: Newsletter screenshots stay readable in the email, the image dialog shows each field once, and the first keyboard move of a highlight works.
+- c283fae: Pressing Escape while reordering highlights in the newsletter review now cancels only the reorder instead of closing the review.
+- c283fae: Fix newsletter review images: wide but light images upload, the awaiting-review list refreshes by itself, and "Add image" is a small button.
+- c283fae: Release-notes review images must now really be PNG or JPEG files, and a rejected or expired draft's images are removed from storage.
+- c283fae: Release-notes reviewers can attach up to two images to each highlight of a held newsletter and reorder its highlights before approving.
+- c283fae: Newsletter review: the first arrow key moves a highlight, and the send and image-removal dialogs say exactly what will happen.
+- c283fae: Newsletter screenshots: captures read the pull requests a release names, skip settings views opened in place, log why they stop, and leave no stray images in storage.
+- c283fae: Newsletter reviewers can place images above the text, include all images at once and take down a sent newsletter's images.
+- c283fae: Fabric's services, agents and CI now run on Node.js 24, ahead of Node.js 22 reaching end of life.
+- c283fae: Projects can now import meeting transcripts from OneDrive folders: connect a folder from the Meeting Digest, the Context tab or Settings → Knowledge, and the .txt, .vtt and .docx transcripts already in it, and those added later, are imported with their progress shown. Each meeting is dated from its file, meetings whose date is not known are listed under Unknown date, and any meeting's title and date can be corrected.
+- c283fae: Organizations can generate images with image models selected through their direct OpenAI connection, and that choice applies to every image request in the organization.
+- c283fae: Direct OpenAI one-off requests using GPT-5.6 and later avoid prompt-cache writes when the caller has not selected caching.
+- c283fae: Organizations can name a coding instructions template project; other projects can add its published files from the Coding Instructions tab.
+- c283fae: Plain PDF exports keep bold text inside quotes, such as the label of a research notice, instead of drawing it in the regular font.
+- c283fae: Project admins can now change the roles of project members other than owners and remove them from a project's Members settings, and they no longer see a notice that only owners can invite. Only a project owner can remove another owner.
+- c283fae: Project documents stay searchable when updating their search index fails, for example during an AI provider outage, instead of dropping out of search until the next successful update.
+- c283fae: The project "More" tabs menu now fits the window and scrolls, so its last tabs can be reached on short screens.
+- c283fae: Project knowledge search now shows the passages it matched in each source in the order they appear in that source instead of by relevance, so a meeting transcript's later decisions follow the earlier discussion they respond to.
+- c283fae: Story and bug drafts now use the most relevant passages from project documents instead of whole documents.
+- c283fae: The recurring-error scan no longer proposes bugs for Container Apps deployment updates canceled during a rollout when the same app reports a successful update within two minutes.
+- c283fae: Release notes now read far enough back through busy repositories to cover the whole send window, a disabled newsletter no longer enrolls project members when someone sends it manually, the Send now dialog shows how many people will be emailed, a code index you cancel now shows as cancelled instead of failed, and a project log source that cannot be used now says exactly why, with the deployment's shared telemetry workspace refused when it is saved.
+- c283fae: Release notes no longer stop sending for a project whose repository publishes many releases: package releases no longer crowd production releases out of the scan, and a backlog larger than one issue holds now sends its newest releases instead of being skipped as an incomplete scan every week.
+- c283fae: Removes the temporary staging render CPU profile.
+- c283fae: Removes the temporary staging startup CPU profiler now that its first-request profiles are captured.
+- c283fae: The recurring-error scan no longer proposes a bug when a Container Apps replica waits for infrastructure and the platform schedules that replica in the same moment, and a replica that stays unscheduled is still reported even when another replica of the same revision is scheduled.
+- c283fae: The recurring-error scan no longer proposes a bug when a Container Apps replica waits for infrastructure on a revision that a newer deploy removes within two minutes.
+- c283fae: A GitHub token refresh no longer marks a repository the token cannot read as active again.
+- c283fae: Reports read a busy repository's whole commit history for the period and keep each commit small, so they are no longer marked partial for dropped commits.
+- c283fae: Engineering Metrics reports can be told where deployments are recorded, and count revert and hotfix pull requests themselves for the change failure rate proxy.
+- c283fae: Engineering Metrics states that named deployment records set deployment frequency, and that the release proxy applies only when no records are named.
+- c283fae: Engineering Metrics reports deployment frequency from the deployment records a person names, instead of falling back to the release count.
+- c283fae: Engineering Metrics reports compute pull request lead time from every merged pull request read, instead of leaving the median to the model.
+- c283fae: Reports keep each pull request and issue they read small, so a busy repository's three months of merged pull requests no longer get dropped and marked partial.
+- c283fae: Reports read searches past GitHub's 1,000-result limit, the standard template seed leaves person-made templates alone, and report callouts lose their stray quotation marks.
+- c283fae: The report gathering step is no longer told that a full search is too large, a line that led it to skip the pull request search.
+- c283fae: A repository whose CI-results sync fails now shows one compact warning line with the provider's full answer behind it, the duplicate Choose credential button is gone from the card, and row menu icons are easier to see.
+- c283fae: Connected repositories now use their own default branch as the provider reports it, so a repository on `master` is no longer treated as `main`, and the Coding Instructions and Living Memory sync dialogs suggest the repository's real branches.
+- c283fae: Archiving and restoring notifications works again, and platform administrators see the weekly incident digest in the notification bell.
+- c283fae: A connection to the retired Fetch, Time or SQLite MCP server is no longer started: their packages are not published on npm, so every start failed. Using one now says plainly that the server can no longer run and should be removed in MCP Settings.
+- c283fae: A connection to the retired Raycast, Notion, Vercel, Turso, Asana or Browserbase MCP server is no longer started: their packages are not published on npm, or need more credentials than a connection can hold, so every start failed. Using one now says plainly that the server can no longer run and should be removed in MCP Settings.
+- c283fae: Remove the server process warm-up; it raised memory by about 200 MB per process and did not shorten the first page load.
+- c283fae: The "Revise this section" button on a Proposal's section headings now sits inside the heading, and its instruction box is as wide as the heading instead of overhanging it.
+- c283fae: Deployments now fail when a database access policy cannot be applied, and the self-hosted production Helm profile runs the background worker with its dedicated database role.
+- c283fae: The recurring-error scan sets aside cancelled app-setting updates during a rollout, not only cancelled deployment updates.
+- c283fae: A project created from a repository now connects a separate coding instructions or Living Memory repository on that repository's own default branch, instead of the product repository's branch, so the coding instructions sync is set up as chosen.
+- c283fae: When Slack refuses a user's connection, Fabric now records one warning that names the Slack error and asks that user to reconnect Slack, instead of logging a worker error for every linked channel on each request.
+- c283fae: Success states, added diff lines and passed results show in green again, traceability results read as words, and the Proposed chip fits its column.
+- c283fae: Cancelling a workflow, for example by disconnecting a repository while it is being indexed, is no longer recorded as hundreds of errors in tracing, and the recurring-error scan no longer proposes a bug for it.
+- c283fae: Agent templates, chat artifacts and notifications no longer show or change content that belongs to an organization you have no access to.
+- c283fae: Time report CSV uses stable column names, ISO 8601 start and stop times with UTC offsets and a time zone column, and entries can be logged in a chosen time zone.
+- c283fae: Time suggestions Fabric created on its own no longer show in To confirm after their project changes to Fixed bid; ones you asked for still do.
+- c283fae: Time and materials projects now fill "To confirm" on their own after your meetings and when you open My time; fixed bid projects stay on demand.
+- c283fae: Time report CSV exports open correctly in Excel, and automatic background reads no longer count as user activity for the forgotten-timer check.
+- c283fae: Time tracking keeps logged time when an account is deleted, clears a skipped entry, records CSV exports in the audit log and adds German for My time.
+- c283fae: Time suggestions now count your own GitHub pull request pushes, and a new push on a time and materials project starts a suggestion run for that day.
+- c283fae: My time now offers only projects you created or are a member of, and no longer logs a page-load error in the week view.
+- c283fae: Add time-tracking settings (project type, start/stop times, billable default) and time reports with CSV export for projects and organizations.
+- c283fae: Add time suggestions: Fabric proposes time entries from your own meetings, test runs and edits, for you to confirm or dismiss.
+- c283fae: Project time reports filter by work item and date range, new entries start in your profile time zone, and overlaps across projects are flagged.
+- c283fae: Add a running timer: start it from My time or a work item, pause or stop it from a widget on every page, and it saves as time entries.
+- c283fae: The running timer's chip now sits in the bottom-right dock on every page, so it no longer covers page controls such as the dashboard's filters.
+- c283fae: "Open the timer" and "Stop it and start one here" on the Timer running menu now keep the timer's panel open.
+- c283fae: Timer reminders now arrive while the Fabric tab is in the background, instead of only once you return to it.
+- c283fae: A retired MCP server that cannot start now says so without claiming its package is missing from npm.
+- c283fae: Document version history now labels each version with the change that made it, at the time it was made, instead of the change that later replaced it, says what made the current version beside its number, and credits a version replaced by a regeneration to whoever wrote it rather than to whoever regenerated it.
+- c283fae: Background worker errors now reach application logs with their message, status code and cause instead of an empty `{}`.
+
 ## 1.16.44
 
 ### Patch Changes

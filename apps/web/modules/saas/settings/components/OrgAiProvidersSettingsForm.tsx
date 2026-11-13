@@ -814,7 +814,7 @@ export function OrgAiProvidersSettingsForm({
 									<p className="font-medium text-foreground">
 										AI Providers Configured
 									</p>
-									<p className="text-success/80 text-sm">
+									<p className="text-success text-sm">
 										{configStatus.message}
 									</p>
 									{configStatus.configuredProviders.length >
@@ -874,7 +874,7 @@ export function OrgAiProvidersSettingsForm({
 											{/* Embedding Provider Status */}
 											<div className="flex items-center gap-2 text-sm flex-wrap">
 												<DatabaseIcon className="size-4 text-success" />
-												<span className="text-success/80">
+												<span className="text-success">
 													Document Search:
 												</span>
 												{configStatus
@@ -897,7 +897,7 @@ export function OrgAiProvidersSettingsForm({
 													<div className="flex items-center gap-1.5">
 														<Badge
 															variant="outline"
-															className="text-xs border-secondary/30 bg-secondary/10 text-secondary"
+															className="text-xs border-success/30 bg-success/10 text-success"
 														>
 															{getConfiguredProviderLabel(
 																configStatus
@@ -935,7 +935,7 @@ export function OrgAiProvidersSettingsForm({
 																		}
 																	</Badge>
 																)}
-																<span className="text-success/80 text-xs">
+																<span className="text-success text-xs">
 																	{
 																		configStatus
 																			.organizationEmbedding
@@ -966,7 +966,7 @@ export function OrgAiProvidersSettingsForm({
 									<p className="font-medium text-foreground">
 										No AI Provider Configured
 									</p>
-									<p className="text-highlight/80 text-sm">
+									<p className="text-highlight text-sm">
 										{readOnly
 											? "No AI providers have been configured for this organization yet."
 											: "Configure at least one AI provider below to enable AI-powered features for your organization."}
@@ -2549,7 +2549,7 @@ export function OrgAiProvidersSettingsForm({
 
 					{enabledProviders.length === 0 && (
 						<div className="rounded-md border border-highlight/20 bg-highlight/5 p-3">
-							<p className="text-highlight/80 text-sm">
+							<p className="text-highlight text-sm">
 								Select at least one provider to see models in
 								the model selector.
 							</p>

@@ -252,6 +252,9 @@ const listAvailablePromptsProcedure = tenantProtectedProcedure
  */
 const getClarifyingPolicyProcedure = tenantProtectedProcedure
 	.use(requireInputOrgPermission(Permissions.PROMPT_READ))
+	// A read exposed under the key `clarifyingPolicy`, which does not look like
+	// one; without this every lookup writes an activity row.
+	.meta({ auditActivity: "never" })
 	.input(
 		z.object({
 			frequency: z

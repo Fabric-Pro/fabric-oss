@@ -113,6 +113,7 @@ import {
 	proposeNativeInstructionChange,
 	proposeNativeInstructionLesson,
 } from "./instruction-native-write";
+import { createInstructionSetTools } from "./instruction-set-tools";
 import {
 	KNOWLEDGE_SEARCH_DEFAULT_BYTES,
 	KNOWLEDGE_SEARCH_MAX_BYTES,
@@ -233,6 +234,9 @@ const KNOWLEDGE_TOOLS = createKnowledgeTools({
 	resolveGatewayProjectWriteAccessWithHost,
 });
 const CODE_REPOSITORIES_TOOLS = createCodeRepositoriesTools({
+	resolveGatewayProjectWriteAccessWithHost,
+});
+const INSTRUCTION_SET_TOOLS = createInstructionSetTools({
 	resolveGatewayProjectWriteAccessWithHost,
 });
 const PROJECT_RAG_TOOLS = createProjectRagTools({
@@ -1301,6 +1305,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	...KNOWLEDGE_TOOLS.definitions,
 	...RULES_TOOLS.definitions,
 	...CODE_REPOSITORIES_TOOLS.definitions,
+	...INSTRUCTION_SET_TOOLS.definitions,
 	...PROJECT_RAG_TOOLS.definitions,
 
 	// ── Connected MCP Servers ──
@@ -1490,6 +1495,7 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 	...KNOWLEDGE_TOOLS.scopes,
 	...RULES_TOOLS.scopes,
 	...CODE_REPOSITORIES_TOOLS.scopes,
+	...INSTRUCTION_SET_TOOLS.scopes,
 	...PROJECT_RAG_TOOLS.scopes,
 
 	// Chats
@@ -1541,6 +1547,7 @@ const FAMILY_HANDLERS: ReadonlyMap<string, PlatformToolHandler> = new Map([
 	...KNOWLEDGE_TOOLS.handlers,
 	...RULES_TOOLS.handlers,
 	...CODE_REPOSITORIES_TOOLS.handlers,
+	...INSTRUCTION_SET_TOOLS.handlers,
 	...PROJECT_RAG_TOOLS.handlers,
 ]);
 
@@ -2551,7 +2558,9 @@ type GatewayWritePermission =
 	| "CONTEXT_READ"
 	| "CONTEXT_CREATE"
 	| "CONTEXT_UPDATE"
-	| "INSTRUCTION_CREATE";
+	| "INSTRUCTION_CREATE"
+	| "INSTRUCTION_READ"
+	| "INSTRUCTION_UPDATE";
 
 /**
  * {@link resolveGatewayProjectWriteAccess}, plus the tenant to write under —
@@ -5582,6 +5591,66 @@ async function resolveInstructionDelta(
 	};
 }
 
+/**
+ * The Coding Instructions set a list call narrows to (`set`, a slug from
+ * `fabric_list_instruction_sets`): its folder's files, under their full
+ * paths, so `fabric_get_project_instruction` reads them as listed. Asked only
+ * after the caller is known to read the project's instructions, so a slug
+ * says nothing to anyone else.
+ */
+async function instructionSetFilter(
+	args: Record<string, unknown>,
+	projectId: string,
+	session: GatewaySession,
+): Promise<
+	{ filter: (body: unknown) => unknown } | { error: ToolCallResult } | null
+> {
+	const slug = args.set;
+	if (slug === undefined) {
+		return null;
+	}
+	if (typeof slug !== "string" || slug.length === 0) {
+		return { error: errorResult("set must be a set's slug") };
+	}
+	if (!(await callerCanReadInstructions(projectId, session))) {
+		return { error: errorResult("Project not found or access denied") };
+	}
+	const { findInstructionSet, listInstructionSets, pathInInstructionSet } =
+		await import("@repo/database");
+	const set = await findInstructionSet(projectId, { slug });
+	if (!set) {
+		const known = (await listInstructionSets(projectId)).map((s) => s.slug);
+		return {
+			error: errorResult(
+				known.length > 0
+					? `No set "${slug}". Sets: ${known.join(", ")}`
+					: "This project has no Coding Instructions sets",
+			),
+		};
+	}
+	return {
+		filter: (body) => {
+			if (
+				typeof body !== "object" ||
+				body === null ||
+				!("files" in body) ||
+				!Array.isArray(body.files)
+			) {
+				return body;
+			}
+			return {
+				...body,
+				set: { slug: set.slug, folder: set.folder },
+				files: body.files.filter(
+					(file: { path?: unknown }) =>
+						typeof file.path === "string" &&
+						pathInInstructionSet(file.path, set) !== null,
+				),
+			};
+		},
+	};
+}
+
 async function handleListProjectInstructions(
 	args: Record<string, unknown>,
 	session: GatewaySession,
@@ -5594,6 +5663,12 @@ async function handleListProjectInstructions(
 	if (typeof projectId !== "string" || projectId.length === 0) {
 		return errorResult("projectId is required");
 	}
+	const setFilter = await instructionSetFilter(args, projectId, session);
+	if (setFilter && "error" in setFilter) {
+		return setFilter.error;
+	}
+	const respond = (body: unknown) =>
+		jsonResult(setFilter ? setFilter.filter(body) : body);
 	const direct = await handleDirectInstructionList({
 		args,
 		projectId,
@@ -5601,7 +5676,7 @@ async function handleListProjectInstructions(
 		access: {
 			ensureInstructionRead: () =>
 				callerCanReadInstructions(projectId, session),
-			jsonResult,
+			jsonResult: respond,
 			errorResult,
 		},
 	});
@@ -5661,7 +5736,7 @@ async function handleListProjectInstructions(
 		{ kind: kind as InstructionFileKind | undefined, query },
 	);
 	const header = await instructionSnapshotSummary(resolved.snapshot);
-	return jsonResult({
+	return respond({
 		snapshot: header.summary,
 		repository: header.repository,
 		files: files.map((f) => ({

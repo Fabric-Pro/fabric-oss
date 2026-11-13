@@ -58,7 +58,7 @@ export function LivingMemorySection({
 						/>
 						{t("title")}
 					</h3>
-					<p className="mt-1 text-foreground/50 text-xs">
+					<p className="mt-1 text-muted-foreground text-xs">
 						{t("description")}
 					</p>
 				</div>

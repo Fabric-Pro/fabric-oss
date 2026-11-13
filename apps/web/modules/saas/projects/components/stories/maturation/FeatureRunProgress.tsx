@@ -31,7 +31,7 @@ const POLL_MS = 4000;
 const TONE: Record<string, string> = {
 	QUEUED: "text-muted-foreground",
 	RUNNING: "text-highlight",
-	PASSED: "text-secondary",
+	PASSED: "text-success",
 	FAILED: "text-destructive",
 	BLOCKED: "text-highlight",
 	NEEDS_REVIEW: "text-highlight",

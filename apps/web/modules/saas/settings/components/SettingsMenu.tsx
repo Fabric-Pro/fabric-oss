@@ -83,7 +83,7 @@ export function SettingsMenu({
 									className="space-y-2"
 								>
 									<div className="flex min-w-0 items-center gap-2">
-										<div className="shrink-0 text-muted-foreground/70">
+										<div className="shrink-0 text-muted-foreground">
 											{item.avatar}
 										</div>
 										<p className="text-xs font-normal text-muted-foreground truncate">
@@ -103,7 +103,7 @@ export function SettingsMenu({
 														isActiveMenuItem(
 															subitem.href,
 														)
-															? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary"
+															? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary-active"
 															: "text-foreground hover:bg-foreground/[0.06]",
 													)}
 													aria-current={
@@ -175,7 +175,7 @@ export function SettingsMenu({
 																isActiveMenuItem(
 																	subitem.href,
 																)
-																	? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary"
+																	? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary-active"
 																	: "text-foreground hover:bg-foreground/[0.06]",
 															)}
 															aria-current={

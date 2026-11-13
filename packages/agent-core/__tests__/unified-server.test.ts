@@ -794,6 +794,59 @@ describe("createUnifiedServer AG-UI streaming", () => {
 		},
 	);
 
+	it.each([
+		["no configurable of its own", undefined],
+		[
+			"a configurable that names another transport",
+			{ fabric_transport: "langgraph", reply_streaming: true },
+		],
+		[
+			"a configurable that clears the marker",
+			{ fabric_transport: null, reply_streaming: null },
+		],
+	])(
+		"marks the run's configurable as an AG-UI run when the body sends %s",
+		async (_label, bodyConfigurable) => {
+			const configs: Record<string, unknown>[] = [];
+			const { app } = createUnifiedServer(
+				{
+					name: "example-agent",
+					description: "Example",
+					baseUrl: "http://localhost:3000",
+					port: 3000,
+					skills: [],
+					supportsStreaming: true,
+				},
+				async () => ({ response: "ok" }),
+				() => ({ response: "ok" }),
+				undefined,
+				async function* (_messages, config) {
+					configs.push(config?.configurable ?? {});
+					yield { nodeName: "chat", state: { messages: [] } };
+				},
+			);
+			const response = await app.request("/", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					threadId: "t-1",
+					messages: [{ role: "user", content: "Hello" }],
+					...(bodyConfigurable
+						? {
+								config: { configurable: bodyConfigurable },
+								forwardedProps: bodyConfigurable,
+								properties: bodyConfigurable,
+							}
+						: {}),
+				}),
+			});
+			await response.text();
+			expect(configs).toHaveLength(1);
+			expect(configs[0]?.fabric_transport).toBe("ag-ui");
+			expect(configs[0]?.reply_streaming).toBe(false);
+		},
+	);
+
 	it("mints distinct reply ids at the same millisecond and overwrites request provenance keys", async () => {
 		vi.spyOn(Date, "now").mockReturnValue(1793000000000);
 		try {

@@ -93,3 +93,28 @@ export async function resolveWorkflowIntegrationForProvider(
 		orderBy: [{ lastUsedAt: "desc" }, { id: "asc" }],
 	});
 }
+
+/**
+ * The actor's own connection, never a shared one. For reading what belongs to
+ * the person, such as their own OneDrive (#3507): a shared connection would
+ * show someone else's files as theirs.
+ */
+export async function resolveOwnWorkflowIntegrationForProvider(
+	provider: NonNullable<Prisma.WorkflowIntegrationWhereInput["provider"]>,
+	userId: string,
+	organizationId?: string | null,
+): Promise<{ id: string } | null> {
+	if (!(await canUseWorkflowIntegrations(userId, organizationId))) {
+		return null;
+	}
+	return db.workflowIntegration.findFirst({
+		where: {
+			...workflowIntegrationAccessWhere(userId, organizationId),
+			provider,
+			isActive: true,
+			userId,
+		},
+		orderBy: [{ lastUsedAt: "desc" }, { id: "asc" }],
+		select: { id: true },
+	});
+}

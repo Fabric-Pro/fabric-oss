@@ -37,6 +37,9 @@ export const templateParameterDefaultsProcedure = tenantProtectedProcedure
 			requireOrganization: true,
 		}),
 	)
+	// A read the create dialog runs when it opens; its key does not look
+	// like one.
+	.meta({ auditActivity: "never" })
 	.input(parameterDefaultsInputSchema)
 	.handler(async ({ input, context, path }) => {
 		await assertProjectPermission(

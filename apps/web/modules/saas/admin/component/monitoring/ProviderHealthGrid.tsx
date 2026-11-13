@@ -68,7 +68,7 @@ const HEALTH_TONE: Record<
 > = {
 	OPERATIONAL: {
 		label: "Operational",
-		cls: "border-secondary/40 bg-secondary/10 text-secondary",
+		cls: "border-success/40 bg-success/10 text-success",
 		tooltipKey: "healthOperational",
 	},
 	DEGRADED: {
@@ -332,7 +332,7 @@ export function ProviderHealthGrid() {
 											) : null}
 										</dl>
 										{row.activeIncident ? (
-											<p className="line-clamp-3 rounded-md bg-destructive/5 px-2 py-1.5 text-xs text-destructive/90">
+											<p className="line-clamp-3 rounded-md bg-destructive/5 px-2 py-1.5 text-xs text-destructive">
 												{row.activeIncident.summary ??
 													"Active incident — click to act."}
 											</p>

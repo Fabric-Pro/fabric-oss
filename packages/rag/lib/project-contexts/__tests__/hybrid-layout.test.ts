@@ -204,3 +204,32 @@ describe.each([null, "dense"])("dense vector name %s", (name) => {
 		expect(request.points[0]?.vector).toEqual(embedding);
 	});
 });
+
+import { scrollProjectChunks } from "../store";
+
+it("reads suffix positions while preferring explicit payload positions", async () => {
+	h.scroll.mockResolvedValue({
+		points: [
+			{
+				payload: {
+					contextId: "abc-chunk-12",
+					originalContextId: "abc",
+				},
+			},
+			{
+				payload: {
+					contextId: "abc-chunk-3",
+					originalContextId: "abc",
+					chunkIndex: 7,
+				},
+			},
+			{ payload: { contextId: "abc", originalContextId: "abc" } },
+		],
+	});
+	const result = await scrollProjectChunks({
+		projectId: "example-project",
+		organizationId: "example-org",
+		maxPoints: 100,
+	});
+	expect(result.chunks.map((p) => p.chunkIndex)).toEqual([12, 7, 0]);
+});

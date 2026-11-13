@@ -177,6 +177,21 @@ describe("MCP tool route error responses", () => {
 		expect(body.retryAfter).toBe(42);
 		expect(body.error).not.toContain("private");
 	});
+	it("says a server that can no longer run must be removed (#3531)", async () => {
+		mocks.connect.mockRejectedValue(
+			new McpClientError({
+				code: "SERVER_UNAVAILABLE",
+				message: "private",
+				serverName: "Fetch",
+			}),
+		);
+		const { status, body } = await response();
+		expect(status).toBe(410);
+		expect(body.code).toBe("SERVER_UNAVAILABLE");
+		expect(body.error).toBe(
+			"This MCP server can no longer run. Remove it in MCP Settings.",
+		);
+	});
 	it("maps execution authentication errors to 401", async () => {
 		executeError(
 			new McpClientError({

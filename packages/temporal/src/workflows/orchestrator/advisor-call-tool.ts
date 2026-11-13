@@ -84,6 +84,7 @@ export function toolBinding(
 		WorkflowState["preloadedResources"]
 	>["toolMap"][string],
 	directMeetingListing = false,
+	resultReadsEnabled = false,
 ): ToolBinding {
 	// Mirrors the workflow dispatch order, then EMT's OAuth prefix order.
 	if (name.startsWith("delegate_to_")) {
@@ -103,7 +104,8 @@ export function toolBinding(
 		name === "search_teams_messages" ||
 		name === "list_skills" ||
 		name === "load_skill" ||
-		name === "read_skill_file"
+		name === "read_skill_file" ||
+		(resultReadsEnabled && name === "advisor_result_read")
 	) {
 		return { kind: "loop" };
 	}

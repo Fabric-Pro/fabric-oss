@@ -22,7 +22,9 @@ const PROTECTED_BRANCHES = new Set(["main", "master", "ops", "staging"]);
 /**
  * Extract `<dir>` from a command that leads with `cd <dir> && …` — the pattern
  * used to run a command inside a worktree. Handles single/double-quoted and
- * bare paths; returns null when the command doesn't start with a `cd`.
+ * bare paths. Expands only a bare `~` or `~/rest` with nonempty HOME;
+ * quoted tilde and other targets pass through unchanged, including Windows
+ * paths. Returns null when the command does not start with a `cd`.
  *
  * Moved here from pr-quality-gate.mjs so the destructive-op and branch-naming
  * guards can resolve the same effective tree that gate already did, instead of
@@ -35,7 +37,17 @@ export function leadingCdTarget(command) {
 	const m = String(command ?? "").match(
 		/^\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s'"&|;]+))\s*&&/,
 	);
-	return m ? (m[1] ?? m[2] ?? m[3] ?? null) : null;
+	if (!m) {
+		return null;
+	}
+	return m[1] ?? m[2] ?? expandBareHome(m[3]);
+}
+
+/** Expand the two bare tilde forms shared by the leading and PR-only scanners. */
+export function expandBareHome(target) {
+	return process.env.HOME && /^(?:~$|~\/)/.test(target)
+		? process.env.HOME + target.slice(1)
+		: target;
 }
 
 /**

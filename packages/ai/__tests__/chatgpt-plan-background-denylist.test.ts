@@ -103,6 +103,7 @@ describe("own-plan background denylist", () => {
 			"meeting-transcript-sync",
 			"parlume-meeting-notes",
 			"newsletter-curation",
+			"newsletter-screenshot",
 			"security-scan",
 			"recurring-error-scan",
 			"batch-document-generation",

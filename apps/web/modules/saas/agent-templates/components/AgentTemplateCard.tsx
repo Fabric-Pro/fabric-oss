@@ -195,7 +195,10 @@ export function AgentTemplateCard({
 									className="-mr-1 -mt-1 h-7 w-7 opacity-0 group-hover:opacity-100"
 									onClick={(e) => e.stopPropagation()}
 								>
-									<MoreVerticalIcon className="h-4 w-4" />
+									<MoreVerticalIcon
+										strokeWidth={2.5}
+										className="h-4 w-4"
+									/>
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end">

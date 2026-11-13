@@ -504,6 +504,34 @@ beforeEach(() => {
 });
 
 describe("the finalization synthesis of a ledgered turn", () => {
+	it("keeps a request-only stored catalog out of finalization history fitting", async () => {
+		const history = largeHistory();
+		const before = structuredClone(history);
+		const sent = answeringProvider();
+		ledgerWithFinalizationRoom(100_000);
+		await run(
+			finalizationInput(history, {
+				advisorStoredResults: [
+					{
+						ref: "s:example-row",
+						tool: "code_tree",
+						storedAt: "2026-01-01T00:00:00.000Z",
+						sizeBytes: 7,
+						excerpt: "example",
+					},
+				],
+			}),
+		);
+		expect(sent).toHaveLength(1);
+		expect(JSON.stringify(sent[0].prompt)).toContain(
+			"advisor_stored_result_data",
+		);
+		// The ordinary dispatch reads the ledger once. Preparing a fit plan would
+		// make a second read and hand the SDK suffix to the history-only fitter.
+		expect(store.snapshotReads).toBe(1);
+		expect(history).toEqual(before);
+	});
+
 	it("at a budget stop with a large history, fits the room, is reserved and settled, and returns the model's answer", async () => {
 		const history = largeHistory();
 		const sent = answeringProvider();

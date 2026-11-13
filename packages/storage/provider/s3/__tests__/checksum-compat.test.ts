@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@repo/observability", () => ({
+vi.mock("@repo/observability/breakers", () => ({
 	withProviderBreaker: (_service: string, _op: string, fn: () => unknown) =>
 		fn(),
 }));

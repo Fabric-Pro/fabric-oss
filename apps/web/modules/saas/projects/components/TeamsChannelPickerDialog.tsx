@@ -281,7 +281,7 @@ export function TeamsChannelPickerDialog({
 						<p className="text-foreground/70">
 							Failed to load Teams data
 						</p>
-						<p className="text-foreground/50 text-sm">
+						<p className="text-muted-foreground text-sm">
 							{teamsQuery.error instanceof Error
 								? teamsQuery.error.message
 								: "An unexpected error occurred"}
@@ -298,7 +298,7 @@ export function TeamsChannelPickerDialog({
 							<p className="font-medium text-foreground/80">
 								Microsoft account not connected
 							</p>
-							<p className="mt-1 text-foreground/50 text-sm">
+							<p className="mt-1 text-muted-foreground text-sm">
 								{fetchError ||
 									"Connect your Microsoft account in Settings → Integrations to access Teams channels."}
 							</p>
@@ -315,7 +315,7 @@ export function TeamsChannelPickerDialog({
 							<p className="text-foreground/70">
 								No team channels found
 							</p>
-							<p className="text-foreground/50 text-sm">
+							<p className="text-muted-foreground text-sm">
 								You must be a member of a team with channels in
 								Microsoft Teams.
 							</p>
@@ -359,7 +359,7 @@ export function TeamsChannelPickerDialog({
 													<span className="truncate font-medium text-sm">
 														{team.teamName}
 													</span>
-													<span className="ml-auto shrink-0 text-foreground/40 text-xs">
+													<span className="ml-auto shrink-0 text-muted-foreground text-xs">
 														{team.channels.length}{" "}
 														channel
 														{team.channels
@@ -428,7 +428,7 @@ export function TeamsChannelPickerDialog({
 																			}
 																		</span>
 																		{isLinked && (
-																			<span className="ml-auto shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-primary text-xs">
+																			<span className="ml-auto shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-primary-active text-xs">
 																				Linked
 																			</span>
 																		)}

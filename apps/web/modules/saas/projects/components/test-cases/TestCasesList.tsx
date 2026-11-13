@@ -612,7 +612,7 @@ export function TestCasesList({
 													className={cn(
 														"rounded-full px-1.5 py-px text-[11px] tabular-nums",
 														active
-															? "bg-primary/12 text-primary"
+															? "bg-primary/12 text-primary-active"
 															: "bg-muted text-muted-foreground",
 													)}
 												>

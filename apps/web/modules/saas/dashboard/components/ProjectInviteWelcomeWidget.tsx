@@ -279,7 +279,7 @@ export function ProjectInviteWelcomeWidget({
 						<div className="mt-3 flex items-center gap-2 text-muted-foreground text-xs">
 							<Avatar className="size-5">
 								<AvatarImage src={inviterImageSrc} />
-								<AvatarFallback className="bg-secondary/10 text-[10px] text-secondary">
+								<AvatarFallback className="bg-secondary/10 text-[10px] text-muted-foreground">
 									{getAvatarInitials(mostRecent.inviter.name)}
 								</AvatarFallback>
 							</Avatar>

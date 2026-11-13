@@ -571,6 +571,25 @@ describe("First-Time Codebase Indexing Warning Suppression", () => {
 		).not.toBeInTheDocument();
 	});
 
+	it("labels a user-cancelled index as cancelled, not failed", () => {
+		renderPanel({
+			codeIndex: { status: "FAILED", cancelled: true },
+			isStateKnown: true,
+		});
+
+		expect(screen.getByText("Indexing cancelled")).toBeInTheDocument();
+		expect(screen.queryByText("Indexing failed")).not.toBeInTheDocument();
+	});
+
+	it("keeps the failed label for an index that broke", () => {
+		renderPanel({
+			codeIndex: { status: "FAILED", cancelled: false },
+			isStateKnown: true,
+		});
+
+		expect(screen.getByText("Indexing failed")).toBeInTheDocument();
+	});
+
 	it("hides prompt banner when user lacks management permissions", () => {
 		renderPanel({ codeIndex: null, canManageIntegrations: false });
 

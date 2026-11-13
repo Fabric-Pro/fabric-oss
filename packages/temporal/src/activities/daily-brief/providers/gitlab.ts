@@ -11,7 +11,8 @@ import type { GitHubPullRequest } from "../collect-github-pull-requests";
 import type { GitHubRelease } from "../collect-github-releases";
 
 const PER_PAGE = 100;
-const MAX_RELEASE_PAGES = 5;
+// Safety net only: paging normally stops once it is past the window.
+const MAX_RELEASE_PAGES = 20;
 const MR_PER_PAGE = 50;
 const MAX_MRS_PER_REPO = 100; // mirrors MAX_PRS_PER_REPO
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -91,6 +92,8 @@ export async function fetchGitLabReleases(args: {
 	repo: string;
 	repositoryUrl: string;
 	remainingMs: () => number;
+	/** Paging stops after a page that ends before this instant (list is released_at desc). */
+	windowStart: Date;
 }): Promise<{ releases: GitHubRelease[]; truncated: boolean }> {
 	try {
 		// Budget the token acquisition itself — a stalled OAuth refresh must not
@@ -116,7 +119,12 @@ export async function fetchGitLabReleases(args: {
 			const { body, headers } = await gitlabRequest<GitLabReleaseJson[]>({
 				path: `/projects/${projectPath}/releases`,
 				token,
-				query: { per_page: PER_PAGE, page },
+				query: {
+					per_page: PER_PAGE,
+					page,
+					order_by: "released_at",
+					sort: "desc",
+				},
 				// The 401-refresh await inside gitlabRequest is NOT cancelled by the
 				// fetch AbortSignal — bound it too. Math.max floor: a 401 can arrive
 				// after the budget ticked below MIN_FETCH_MS mid-page; the refresh
@@ -140,6 +148,13 @@ export async function fetchGitLabReleases(args: {
 			);
 			const hasNext = Boolean(headers.get("x-next-page"));
 			if (!hasNext) {
+				break;
+			}
+			const oldestReleased = body?.at(-1)?.released_at;
+			if (
+				oldestReleased &&
+				new Date(oldestReleased).getTime() < args.windowStart.getTime()
+			) {
 				break;
 			}
 			if (page === MAX_RELEASE_PAGES) {

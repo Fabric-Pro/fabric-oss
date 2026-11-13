@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DeploymentItem } from "@repo/database";
 import { describe, expect, it, vi } from "vitest";
-import { selectNewsletterReleases } from "../../src/workflows/newsletter-release-select";
+import {
+	formatIncompleteScanReason,
+	selectNewsletterReleases,
+} from "../../src/workflows/newsletter-release-select";
 
 const SRC = readFileSync(
 	join(__dirname, "../../src/workflows/generate-and-send-newsletter.ts"),
@@ -34,15 +37,19 @@ describe("generate-and-send-newsletter wiring (static scan)", () => {
 		expect(SRC).toContain('skipReason: "INCOMPLETE_SCAN"');
 		expect(SRC).toContain('skipReason: "NO_SUBSCRIBERS"');
 		expect(SRC).toContain("skipReason: noContentReason");
-		// Replay safety: exactly FIVE real patch CALLS with id strings exist (the
+		// Replay safety: exactly SIX real patch CALLS with id strings exist (the
 		// release-based collection marker + the destination-aware delivery marker +
 		// the Fizzy 1869 approval-gate marker + the Fizzy 2172 reviewer-email
-		// marker + the Fizzy 2203 reviewer-chat marker) — no OTHER patch id was
-		// introduced. Matches only `patched("…")`/`patched('…')`, never the
-		// `patched()` mentions in surrounding comments, so the count tracks
-		// calls, not prose.
+		// marker + the Fizzy 2203 reviewer-chat marker + the item-cap marker) —
+		// no OTHER patch id was introduced. Matches only `patched("…")`/
+		// `patched('…')`, never the `patched()` mentions in surrounding comments,
+		// so the count tracks calls, not prose.
 		const patchCalls = SRC.match(/patched\(\s*["']/g) ?? [];
-		expect(patchCalls.length).toBe(5);
+		expect(patchCalls.length).toBe(6);
+		expect(SRC).toMatch(
+			/patched\(\s*"newsletter-cap-truncation-sends-2026-11-11"/,
+		);
+		expect(SRC).toContain("productionTagsOnly: true");
 		expect(SRC).toContain(
 			'patched("newsletter-release-based-collection-2026-06-15")',
 		);
@@ -52,6 +59,11 @@ describe("generate-and-send-newsletter wiring (static scan)", () => {
 			'patched("newsletter-approval-email-2026-08-10")',
 		);
 		expect(SRC).toContain('patched("newsletter-approval-chat-2026-08-20")');
+	});
+	it("records why an incomplete-scan send was skipped", () => {
+		expect(SRC).toMatch(
+			/skipReason: "INCOMPLETE_SCAN",\s*errorMessage: formatIncompleteScanReason\(\s*sel\.incompleteFailures,?\s*\)/,
+		);
 	});
 });
 
@@ -83,6 +95,7 @@ interface Deps {
 	finalize: (a: {
 		status: string;
 		skipReason?: string;
+		errorMessage?: string | null;
 		advanceLastSentAt?: boolean;
 	}) => Promise<void>;
 	windowStart: string;
@@ -97,6 +110,7 @@ async function runNewBranchMirror(d: Deps) {
 		await d.finalize({
 			status: "SKIPPED_EMPTY",
 			skipReason: "INCOMPLETE_SCAN",
+			errorMessage: formatIncompleteScanReason(sel.incompleteFailures),
 		});
 		return { status: "SKIPPED_EMPTY", sentCount: 0 };
 	}
@@ -220,6 +234,37 @@ describe("new-branch decision (mirror)", () => {
 		);
 		expect(finalize).toHaveBeenCalledWith(
 			expect.objectContaining({ skipReason: "INCOMPLETE_SCAN" }),
+		);
+	});
+
+	it("incomplete → records the failing repositories, not the benign failures", async () => {
+		const finalize = vi.fn().mockResolvedValue(undefined);
+		await runNewBranchMirror(
+			base({
+				collect: vi.fn().mockResolvedValue({
+					items: [rel()],
+					failures: [
+						{
+							repoFullName: "example-org/example-repo",
+							reason: "GitHub API error: Not Found",
+						},
+						{
+							repoFullName: "example-org/other-repo",
+							reason: "latest: HTTP 502",
+						},
+					],
+					activeRepoCount: 2,
+				}),
+				curate: vi.fn(),
+				finalize,
+			}),
+		);
+		expect(finalize).toHaveBeenCalledWith(
+			expect.objectContaining({
+				skipReason: "INCOMPLETE_SCAN",
+				errorMessage:
+					"example-org/example-repo: GitHub API error: Not Found",
+			}),
 		);
 	});
 

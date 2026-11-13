@@ -702,7 +702,7 @@ export function NotionPageSelector({
 						</div>
 					) : !hasRequiredTools ? (
 						<div className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-4">
-							<div className="flex items-start gap-2 text-highlight/80">
+							<div className="flex items-start gap-2 text-highlight">
 								<AlertCircleIcon className="size-5 mt-0.5" />
 								<div>
 									<p className="font-medium">
@@ -1136,12 +1136,12 @@ function PageList({
 									{page.title || "Untitled"}
 								</div>
 								{page.url ? (
-									<div className="mt-1 text-[11px] opacity-80 break-all">
+									<div className="mt-1 text-[11px] break-all">
 										{page.url}
 									</div>
 								) : null}
 								{page.type || page.lastEdited ? (
-									<div className="mt-1 flex items-center gap-2 text-[11px] opacity-70">
+									<div className="mt-1 flex items-center gap-2 text-[11px]">
 										{page.type && (
 											<span className="capitalize">
 												{page.type}

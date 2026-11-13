@@ -45,8 +45,42 @@ vi.mock("../prisma/client", () => {
 		});
 	}
 	const table = (rows: Row[]) => ({
-		findMany: vi.fn(async ({ where }: { where: Row }) =>
-			rows.filter((row) => matches(row, where)),
+		findMany: vi.fn(
+			async ({
+				where,
+				orderBy = [],
+			}: {
+				where: Row;
+				orderBy?: Row | Row[];
+			}) => {
+				const ordering = Array.isArray(orderBy) ? orderBy : [orderBy];
+				return rows
+					.filter((row) => matches(row, where))
+					.sort((left, right) => {
+						for (const clause of ordering) {
+							const [field, direction] =
+								Object.entries(clause)[0] ?? [];
+							if (!field || left[field] === right[field]) {
+								continue;
+							}
+							const comparison =
+								left[field] instanceof Date &&
+								right[field] instanceof Date
+									? left[field].getTime() -
+										right[field].getTime()
+									: String(left[field]).localeCompare(
+											String(right[field]),
+										);
+							if (comparison === 0) {
+								continue;
+							}
+							return direction === "desc"
+								? -comparison
+								: comparison;
+						}
+						return 0;
+					});
+			},
 		),
 		deleteMany: vi.fn(async ({ where }: { where: Row }) => {
 			const before = rows.length;
@@ -109,6 +143,45 @@ describe("API model preference readers", () => {
 
 		expect(rows.map((row) => row.provider)).toEqual([
 			"OPENAI_CHATGPT_PLAN",
+		]);
+	});
+
+	it("puts the latest IMAGE choice first with a stable id tie-break", async () => {
+		orgRows.push(
+			{
+				id: "image-z-vercel-old",
+				organizationId: ORG,
+				taskType: "IMAGE",
+				provider: "VERCEL_GATEWAY",
+				modelId: "image-model-vercel-old",
+				updatedAt: new Date("2026-10-20T00:00:00.000Z"),
+			},
+			{
+				id: "image-a-vercel-latest",
+				organizationId: ORG,
+				taskType: "IMAGE",
+				provider: "VERCEL_GATEWAY",
+				modelId: "image-model-vercel-latest",
+				updatedAt: new Date("2026-10-21T00:00:00.000Z"),
+			},
+			{
+				id: "image-z-openai-latest",
+				organizationId: ORG,
+				taskType: "IMAGE",
+				provider: "OPENAI_DIRECT",
+				modelId: "image-model-openai-latest",
+				updatedAt: new Date("2026-10-21T00:00:00.000Z"),
+			},
+		);
+
+		const rows = await getOrgModelPreferences(ORG);
+
+		expect(
+			rows.filter((row) => row.taskType === "IMAGE").map((row) => row.id),
+		).toEqual([
+			"image-z-openai-latest",
+			"image-a-vercel-latest",
+			"image-z-vercel-old",
 		]);
 	});
 });

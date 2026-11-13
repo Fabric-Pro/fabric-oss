@@ -337,7 +337,7 @@ export function AuditLogMetadataDrawer({
 									"inline-flex items-center gap-1.5",
 									isFailure
 										? "text-destructive"
-										: "text-secondary",
+										: "text-success",
 								)}
 							>
 								{isFailure ? (

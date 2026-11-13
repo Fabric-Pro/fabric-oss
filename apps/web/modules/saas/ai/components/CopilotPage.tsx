@@ -788,11 +788,11 @@ function AgentDetailSheet({
 							</SheetTitle>
 							<div className="mt-1.5">
 								{isModelAgent ? (
-									<span className="inline-flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:text-blue-400">
+									<span className="inline-flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:text-blue-400">
 										Model
 									</span>
 								) : isSystemAgent ? (
-									<span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+									<span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary-active">
 										System Agent
 									</span>
 								) : (
@@ -851,7 +851,7 @@ function AgentDetailSheet({
 					{/* System prompt / instructions */}
 					{!isModelAgent && systemPrompt && (
 						<div>
-							<p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+							<p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
 								Instructions
 							</p>
 							<div className="rounded-lg border border-border/60 bg-muted/30 p-3 max-h-48 overflow-y-auto">
@@ -871,7 +871,7 @@ function AgentDetailSheet({
 					{/* Framework / scope for registered agents */}
 					{!isModelAgent && agent.framework && (
 						<div>
-							<p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+							<p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
 								Framework
 							</p>
 							<p className="text-sm text-foreground">
@@ -1158,7 +1158,7 @@ export function AgentBrowserSection({
 							sideOffset={6}
 							className="w-56 p-2 shadow-lg"
 						>
-							<p className="px-3 pt-1 pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/50">
+							<p className="px-3 pt-1 pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
 								Agents
 							</p>
 							<a
@@ -1180,7 +1180,7 @@ export function AgentBrowserSection({
 								agent from template
 							</a>
 							<div className="my-1.5 h-px bg-border/60" />
-							<p className="px-3 pt-0.5 pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/50">
+							<p className="px-3 pt-0.5 pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
 								Skills
 							</p>
 							<a
@@ -1333,7 +1333,10 @@ export function AgentBrowserSection({
 									}}
 									className="absolute right-2 top-2 flex size-6 items-center justify-center rounded-md text-muted-foreground/40 opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover/card:opacity-100"
 								>
-									<MoreHorizontalIcon className="size-3.5" />
+									<MoreHorizontalIcon
+										strokeWidth={2.5}
+										className="size-3.5"
+									/>
 								</button>
 							</div>
 						);
@@ -1431,7 +1434,10 @@ export function AgentBrowserSection({
 									}}
 									className="absolute right-2 top-2 flex size-6 items-center justify-center rounded-md text-muted-foreground/40 opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover/card:opacity-100"
 								>
-									<MoreHorizontalIcon className="size-3.5" />
+									<MoreHorizontalIcon
+										strokeWidth={2.5}
+										className="size-3.5"
+									/>
 								</button>
 								{!agent.isTemplateInstance && agent.id && (
 									<button
@@ -2015,7 +2021,7 @@ export function ComposeInput({
 								"inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
 								getInactiveNote(agent)
 									? "bg-muted text-muted-foreground"
-									: "bg-primary/10 text-primary",
+									: "bg-primary/10 text-primary-active",
 							)}
 						>
 							{isModelSelectionId(agent.agentId) &&
@@ -2550,7 +2556,7 @@ function CapabilitiesList({
 					</p>
 				</div>
 				{cap.isConfigureLink && (
-					<span className="shrink-0 flex items-center gap-1 text-[10px] font-medium text-primary bg-primary/8 border border-primary/20 rounded-md px-1.5 py-0.5">
+					<span className="shrink-0 flex items-center gap-1 text-[10px] font-medium text-primary-active bg-primary/8 border border-primary/20 rounded-md px-1.5 py-0.5">
 						<Settings2Icon className="size-3" />
 						Configure
 					</span>
@@ -2628,7 +2634,7 @@ function CapabilitiesList({
 			{builtInFiltered.length > 0 && (
 				<>
 					{!search && (
-						<p className="px-3 pt-2 pb-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground/60">
+						<p className="px-3 pt-2 pb-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
 							Built-in
 						</p>
 					)}
@@ -2638,7 +2644,7 @@ function CapabilitiesList({
 			{integrationFiltered.length > 0 && (
 				<>
 					{!search && (
-						<p className="px-3 pt-3 pb-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground/60 border-t border-border/40 mt-1">
+						<p className="px-3 pt-3 pb-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground border-t border-border/40 mt-1">
 							Integrations
 						</p>
 					)}
@@ -2785,7 +2791,7 @@ function TurnBlock({
 					{turn.userMessage}
 				</div>
 				{captionNames.length > 0 && (
-					<div className="flex flex-wrap justify-end gap-x-3 gap-y-0.5 px-1 text-[11px] text-muted-foreground/70">
+					<div className="flex flex-wrap justify-end gap-x-3 gap-y-0.5 px-1 text-[11px] text-muted-foreground">
 						{captionNames.map((name) => (
 							<span
 								key={name}
@@ -2925,7 +2931,7 @@ function ConversationView({
 						</>
 					)}
 					{isLoading && (
-						<span className="text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground/60 ml-1">
+						<span className="text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground ml-1">
 							thinking
 						</span>
 					)}

@@ -144,7 +144,7 @@ export function MessageAttachmentList({ attachments, align = "end" }: Props) {
 			) : null}
 			{files.length > 0 ? (
 				<div
-					className={`flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground/80 ${chipAlign}`}
+					className={`flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground ${chipAlign}`}
 				>
 					{files.map((att, idx) => {
 						const label = att.name ?? "Attached file";

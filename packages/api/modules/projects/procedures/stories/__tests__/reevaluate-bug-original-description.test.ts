@@ -55,8 +55,7 @@ vi.mock("@repo/storage", () => ({
 }));
 
 vi.mock("@repo/rag", () => ({
-	retrieveProjectContexts: vi.fn(),
-	formatContextsForPrompt: vi.fn(),
+	retrieveRankedPassages: vi.fn(),
 }));
 
 vi.mock("@repo/rag/lib/project-contexts/live-integration-context", () => ({

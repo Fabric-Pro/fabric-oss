@@ -37,7 +37,11 @@ vi.mock("../../../../orpc/procedures", () => {
 	return {
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => () => undefined,
-		resolveOrganizationId: (id: string | null | undefined) => id ?? null,
+		resolveOrganizationIdForCaller: async (
+			id: string | null | undefined,
+			session: { activeOrganizationId?: string },
+		) =>
+			(id === undefined ? session.activeOrganizationId : id) ?? undefined,
 		tenantProtectedProcedure: passthrough,
 	};
 });
@@ -66,7 +70,10 @@ describe("listNotificationsProcedure — existing rows survive a category opt-ou
 
 		const result = await (listNotificationsProcedure as any)({
 			input: { status: "all", limit: 20 },
-			context: { user: { id: "u1" }, session: {} },
+			context: {
+				user: { id: "u1" },
+				session: { activeOrganizationId: "example-org" },
+			},
 		});
 
 		expect(result.items).toHaveLength(2);
@@ -83,7 +90,10 @@ describe("listNotificationsProcedure — existing rows survive a category opt-ou
 
 		await (listNotificationsProcedure as any)({
 			input: { status: "all", limit: 20 },
-			context: { user: { id: "u1" }, session: {} },
+			context: {
+				user: { id: "u1" },
+				session: { activeOrganizationId: "example-org" },
+			},
 		});
 
 		const where = (db.notification.findMany as any).mock.calls[0][0].where;
@@ -121,7 +131,10 @@ describe("listNotificationsProcedure — existing rows survive a category opt-ou
 
 		const result = await (listNotificationsProcedure as any)({
 			input: { status: "all", limit: 20, category: "MENTION" },
-			context: { user: { id: "u1" }, session: {} },
+			context: {
+				user: { id: "u1" },
+				session: { activeOrganizationId: "example-org" },
+			},
 		});
 
 		// Asking for the MENTION category still yields the stored row; the read

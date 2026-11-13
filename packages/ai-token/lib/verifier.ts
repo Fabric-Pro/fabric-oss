@@ -106,6 +106,13 @@ export async function verifyAIToken(
 			...(typeof payload.jt === "string" &&
 				payload.jt.length > 0 && { jt: payload.jt }),
 			...(payload.af === true && { af: true as const }),
+			...(payload.wr === true && { wr: true as const }),
+			...(payload.wr === true &&
+				typeof payload.wrp === "string" &&
+				payload.wrp.length > 0 && { wrp: payload.wrp }),
+			...(payload.wr === true &&
+				typeof payload.wrg === "string" &&
+				payload.wrg.length > 0 && { wrg: payload.wrg }),
 		};
 
 		return {
@@ -189,6 +196,59 @@ export function decodeTokenClaims(
 			org: payload.org,
 			src: payload.src,
 		};
+	} catch {
+		return null;
+	}
+}
+
+/** The longest research grant id carried from one token to the next. */
+const MAX_RESEARCH_GRANT_ID_LENGTH = 128;
+const RESEARCH_GRANT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+function isResearchGrantId(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		value.length <= MAX_RESEARCH_GRANT_ID_LENGTH &&
+		RESEARCH_GRANT_ID_PATTERN.test(value)
+	);
+}
+
+/**
+ * The research grant a token belongs to, read WITHOUT verifying it: its `wrg`
+ * claim, or for a token from before grant ids existed its own `jti`. A value
+ * that is not 1 to 128 letters, digits, `-` or `_` is ignored; `undefined`
+ * when neither claim qualifies or the token is malformed.
+ *
+ * Only for carrying a grant's call budget over to a token re-minted for the
+ * same action. It is NOT for authorization: the payload is unverified, so no
+ * permission, project or organization may be taken from it.
+ */
+export function readResearchGrantId(token: string): string | undefined {
+	const claims = decodeUnverifiedPayload(token);
+	if (!claims) {
+		return undefined;
+	}
+	if (isResearchGrantId(claims.wrg)) {
+		return claims.wrg;
+	}
+	return isResearchGrantId(claims.jti) ? claims.jti : undefined;
+}
+
+function decodeUnverifiedPayload(
+	token: string,
+): Record<string, unknown> | null {
+	try {
+		const parts = token.split(".");
+		if (parts.length !== 3) {
+			return null;
+		}
+		const payload: unknown = JSON.parse(
+			Buffer.from(parts[1], "base64url").toString("utf-8"),
+		);
+		return typeof payload === "object" && payload !== null
+			? (payload as Record<string, unknown>)
+			: null;
 	} catch {
 		return null;
 	}

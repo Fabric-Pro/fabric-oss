@@ -368,7 +368,7 @@ export function MemoryPanel({
 									<p className="text-sm font-medium text-muted-foreground mb-1">
 										No patterns learned yet
 									</p>
-									<p className="text-xs text-muted-foreground/80 mb-3">
+									<p className="text-xs text-muted-foreground mb-3">
 										Teach me your preferences by adding
 										phrases to your messages
 									</p>
@@ -376,7 +376,7 @@ export function MemoryPanel({
 										<p className="text-[11px] font-medium text-muted-foreground">
 											Try saying:
 										</p>
-										<ul className="text-[11px] text-muted-foreground/80 space-y-1">
+										<ul className="text-[11px] text-muted-foreground space-y-1">
 											<li className="flex items-start gap-2">
 												<span className="text-highlight">
 													✦
@@ -656,7 +656,7 @@ export function MemoryPanelTrigger({
 										</span>
 									</div>
 								)}
-								<p className="text-muted-foreground/70 text-[10px] pt-1 border-t">
+								<p className="text-muted-foreground text-[10px] pt-1 border-t">
 									Click to view and manage memories
 								</p>
 							</div>
@@ -665,7 +665,7 @@ export function MemoryPanelTrigger({
 								<p className="text-muted-foreground">
 									Fabric AI learns from your conversations
 								</p>
-								<div className="text-muted-foreground/80 space-y-0.5">
+								<div className="text-muted-foreground space-y-0.5">
 									<p className="text-[10px]">
 										Teach patterns by saying:
 									</p>

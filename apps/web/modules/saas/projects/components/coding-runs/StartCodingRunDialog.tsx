@@ -230,7 +230,7 @@ export function StartCodingRunDialog({
 							<div className="flex flex-wrap items-center gap-2">
 								<Badge
 									variant="outline"
-									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary"
+									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary-active"
 								>
 									{getExecutionProviderLabel(
 										"BACKGROUND_AGENTS",
@@ -383,7 +383,7 @@ export function StartCodingRunDialog({
 										}
 										className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
 											isSelected
-												? "border-primary bg-primary/10 text-primary"
+												? "border-primary bg-primary/10 text-primary-active"
 												: "border-border/70 bg-muted/20 text-foreground/80 hover:border-border hover:bg-muted/40"
 										}`}
 									>
@@ -476,7 +476,7 @@ export function StartCodingRunDialog({
 							</div>
 							<Badge
 								variant="outline"
-								className="rounded-full border-primary/25 bg-primary/5 px-2 py-0.5 text-[10px] text-primary"
+								className="rounded-full border-primary/25 bg-primary/5 px-2 py-0.5 text-[10px] text-primary-active"
 							>
 								Saved preference only
 							</Badge>
@@ -601,7 +601,7 @@ export function StartCodingRunDialog({
 														: "border-border/50 bg-muted/20 hover:bg-muted/40"
 												}`}
 											>
-												<span className="mt-0.5 rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] text-primary">
+												<span className="mt-0.5 rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] text-primary-active">
 													{task.identifier}
 												</span>
 												<div className="min-w-0 flex-1">
@@ -612,7 +612,7 @@ export function StartCodingRunDialog({
 														{isPrimary ? (
 															<Badge
 																variant="outline"
-																className="shrink-0 rounded-full border-primary/25 bg-primary/5 px-2 py-0 text-[10px] text-primary"
+																className="shrink-0 rounded-full border-primary/25 bg-primary/5 px-2 py-0 text-[10px] text-primary-active"
 															>
 																Primary task
 															</Badge>

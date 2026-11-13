@@ -196,7 +196,7 @@ error naming the scope, and the `codingInstructions` field on `fabric_list_proje
 
 | Tool | Scope | Kind | Purpose |
 |---|---|---|---|
-| `fabric_list_project_instructions` | `instructions:read` | read | Browse or search the published files, or ask what changed since a `sinceDigest` |
+| `fabric_list_project_instructions` | `instructions:read` | read | Browse or search the published files, or ask what changed since a `sinceDigest`; `set` narrows the list to one instruction set's folder |
 | `fabric_get_project_instruction` | `instructions:read` | read | Read one published file by path, paged for large files |
 | `fabric_get_project_instruction_bundle` | `instructions:read` | read | Install the whole published tree as one zip |
 | `fabric_instruction_checks` | `instructions:read` | read | Report whether the session is set up the way the instructions expect |
@@ -204,6 +204,10 @@ error naming the scope, and the `codingInstructions` field on `fabric_list_proje
 | `fabric_add_instruction_lesson` | `instructions:write` | write | Record a lesson as a new file under `Lessons/`; held for review |
 | `fabric_change_instructions` | `instructions:write` | write | Change the instructions; held for review, committed only when the sign-in also carries `instructions:publish` |
 | `fabric_list_code_repositories` | `instructions:read` | read | List the project's code repositories with clone URLs and `repos/<folder>` paths; the agent clones them with git |
+| `fabric_list_instruction_sets` | `instructions:read` | read | List the project's Coding Instructions sets, the default first, with each set's folder and the code repositories it applies to |
+| `fabric_create_instruction_set` | `projects:write` | write | Create a named set for chosen code repositories; needs edit rights on Coding Instructions |
+| `fabric_update_instruction_set` | `projects:write` | write | Rename a set or replace its code repositories; needs edit rights on Coding Instructions |
+| `fabric_delete_instruction_set` | `projects:write` | write | Delete a set from Fabric (not the default set); its files stay in git |
 | `fabric_semantic_search` | `projects:read` | read | Semantic (RAG) search over the project's Context; ranked passages. Not the code index |
 
 `instructions:write` reaches only the proposal path, which is what a project reader can
@@ -211,8 +215,11 @@ already do in the Coding Instructions tab. No argument publishes from the gatewa
 is approved by a person who can edit the instructions, and on a project that syncs from a
 repository it becomes a commit on the proposer's own branch and a pull request there.
 
-A sign-in grants `mcp:read instructions:read instructions:write` (the `scope` in the `401`
-challenge above). `instructions:publish` is a separate authority that only an organization
+A coding tool's sign-in grants `mcp:read instructions:read instructions:write` (the `scope` in
+the `401` challenge above). The Fabric CLI's sign-in and the API key that the project's
+**Connect** dialog creates also carry `memory:write` (see
+[Living Memory writes](#living-memory-writes)). Neither carries `instructions:publish`. That is
+a separate authority that only an organization
 API key created for it carries. The gateway honours it in one place only:
 `fabric_change_instructions` commits instead of proposing when the key carries it and its
 owner may edit the instructions.
@@ -402,7 +409,7 @@ The gateway advertises the standard `resources` capability, attaches `_meta.ui.r
 | Resource URI | Companion Tools | Purpose |
 |---|---|---|
 | `ui://fabric/project-dashboard` | `fabric_list_projects`, `fabric_get_project`, `fabric_list_frames`, `fabric_get_frame`, `fabric_list_workspaces`, `fabric_get_workspace`, `fabric_list_artifacts`, `fabric_get_artifact`, `fabric_get_identity` | Interactive **Fabric Projects** and **Fabric Artifacts & Workspaces** cards with 1-click portal and Fabric Desktop launch actions |
-| `ui://fabric/agent-delegation` | `fabric_list_features` (`assignedToMe: true`), `fabric_get_feature`, `fabric_list_project_pm_assigned_items`, `fabric_list_tickets`, `fabric_delegate_agent` | Interactive **Fabric Tickets & Backlog** (`Tickets Assigned to You`) and **Agent Delegation** cards with 1-click **Start Ticket in Fabric Desktop** and **Delegate Ticket to Remote Server** actions |
+| `ui://fabric/agent-delegation` | `fabric_list_features` (`assignedToMe: true`), `fabric_get_feature`, `fabric_list_project_pm_assigned_items` | Interactive **Fabric Tickets & Backlog** (`Tickets Assigned to You`) and **Agent Delegation** cards. **Start Ticket in Fabric Desktop** and **Open in Fabric Desktop** open a new Fabric Agents chat with the task filled in; **Delegate to Remote Server** asks your assistant to hand the task to a Remote Fabric Agents Server. The gateway does not dispatch tasks itself |
 | `ui://fabric/workflow-visualizer` | `fabric_list_workflows`, `fabric_get_workflow`, `fabric_execute_workflow` | Visual DAG inspector for workflow results |
 | `ui://fabric/genie-insights` | `fabric_query_workspace`, `fabric_search_knowledge`, `fabric_list_documents`, `fabric_get_document` | Databricks Genie Agents and Lakebase hybrid RAG insight card |
 | `ui://fabric/visualize` | `fabric_visualize` | Declarative A2UI v0.9.1 multi-component canvas (`KpiGrid`, `BarChart`, `LineChart`, `DataTable`, `BadgeList`, `Timeline`) |

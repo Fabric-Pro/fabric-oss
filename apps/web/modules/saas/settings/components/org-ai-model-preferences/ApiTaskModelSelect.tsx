@@ -210,7 +210,7 @@ function AudioTaskModelSelect({
 											<SelectLabel className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground py-1 pl-6">
 												<NetworkIcon className="size-3" />
 												{provider.providerDisplayName}
-												<span className="text-muted-foreground/60">
+												<span className="text-muted-foreground">
 													({provider.models.length})
 												</span>
 											</SelectLabel>
@@ -241,7 +241,7 @@ function AudioTaskModelSelect({
 																)}
 																{model.qualityTier ===
 																	"PREMIUM" && (
-																	<SparklesIcon className="size-3 text-secondary" />
+																	<SparklesIcon className="size-3 text-success" />
 																)}
 															</div>
 															<span className="text-xs text-muted-foreground font-mono">
@@ -322,9 +322,9 @@ function TaskModelLabel({
 	return (
 		<span
 			id={id}
-			className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-left"
+			className="flex min-w-0 flex-col items-start gap-1 text-left"
 		>
-			<span className="truncate">
+			<span className="max-w-full truncate">
 				{view.noDefaultProvider && !hasNoProviders
 					? t("emptyModelPlaceholder")
 					: view.isDisabledChoice
@@ -347,12 +347,19 @@ function TaskModelLabel({
 									: t("selectModel")}
 			</span>
 			{view.currentGateway &&
-				!TEXT_TASK_IDS.some((task) => task === view.taskType) && (
-					<Badge variant="outline" className="shrink-0 text-xs">
+				(!TEXT_TASK_IDS.some((task) => task === view.taskType) ||
+					new Set(
+						view.hierarchicalModels
+							.filter((g) =>
+								g.providers.some((p) => p.models.length > 0),
+							)
+							.map((g) => g.gateway),
+					).size > 1) && (
+					<span className="max-w-full truncate text-xs text-muted-foreground">
 						via{" "}
 						{PROVIDER_DISPLAY_NAMES[view.currentGateway] ||
 							view.currentGateway}
-					</Badge>
+					</span>
 				)}
 		</span>
 	);
@@ -368,7 +375,28 @@ function ReadOnlyTaskModel(props: ApiTaskModelSelectProps) {
 	);
 }
 
+const CONNECTIONS: Record<string, { name: string; note: string }> = {
+	VERCEL_GATEWAY: {
+		name: "Vercel AI Gateway",
+		note: "Vercel key · Vercel billing",
+	},
+	OPENAI_DIRECT: {
+		name: "OpenAI (direct)",
+		note: "OpenAI key · OpenAI billing",
+	},
+	DATABRICKS: {
+		name: "Databricks",
+		note: "Databricks workspace · Databricks billing",
+	},
+};
+
+function connectionRank(connection: string) {
+	const rank = Object.keys(CONNECTIONS).indexOf(connection);
+	return rank < 0 ? Object.keys(CONNECTIONS).length : rank;
+}
+
 type PickerModel = {
+	connection: string;
 	capabilities?: string[];
 	suitableForTasks?: string[];
 	value: string;
@@ -456,6 +484,7 @@ function SearchableTaskModelSelect({
 				catalog.push({
 					...model,
 					value,
+					connection: gateway.gateway,
 					maker: prefix
 						? makerName(prefix)
 						: provider.providerDisplayName,
@@ -463,33 +492,50 @@ function SearchableTaskModelSelect({
 			}
 		}
 	}
+	const byConnection =
+		new Set(catalog.map((model) => model.connection)).size > 1;
+	const makers = new Map<string, PickerModel[]>();
+	for (const model of catalog) {
+		const entries = makers.get(model.maker) ?? [];
+		entries.push(model);
+		makers.set(model.maker, entries);
+	}
 	const groups = new Map<string, PickerModel[]>();
 	for (const model of catalog) {
-		const group = groups.get(model.maker) ?? [];
+		const group =
+			groups.get(byConnection ? model.connection : model.maker) ?? [];
 		group.push(model);
-		groups.set(model.maker, group);
+		groups.set(byConnection ? model.connection : model.maker, group);
 	}
 	const showMakerFilters =
 		view.hierarchicalModels.some((g) => GATEWAYS.has(g.gateway)) &&
-		groups.size > 1;
+		makers.size > 1;
 	const showHeadings = groups.size > 1;
 	const current =
 		catalog.find((model) => model.value === view.currentValue) ??
 		(view.currentModel
-			? { ...view.currentModel, value: view.currentValue, maker: "" }
+			? {
+					...view.currentModel,
+					value: view.currentValue,
+					maker: "",
+					connection: view.currentGateway ?? "",
+				}
 			: null);
 	const search = query.trim().toLowerCase();
 	const matches = (name: string, id = "") =>
 		`${name} ${id}`.toLowerCase().includes(search);
 	const visibleGroups = [...groups]
+		.sort(([a], [b]) =>
+			byConnection ? connectionRank(a) - connectionRank(b) : 0,
+		)
 		.map(
 			([name, models]) =>
 				[
 					name,
 					models.filter(
 						(model) =>
-							model.value !== current?.value &&
-							(maker === null || maker === name) &&
+							(byConnection || model.value !== current?.value) &&
+							(maker === null || maker === model.maker) &&
 							matches(model.displayName, model.providerModelId),
 					),
 				] as const,
@@ -557,10 +603,15 @@ function SearchableTaskModelSelect({
 							<SparklesIcon
 								role="img"
 								aria-label={t("premiumModel")}
-								className="text-secondary"
+								className="text-success"
 							>
 								<title>{t("premiumModel")}</title>
 							</SparklesIcon>
+						)}
+						{byConnection && (
+							<span className="ml-auto text-xs text-muted-foreground">
+								{model.maker}
+							</span>
 						)}
 					</div>
 					{model.providerModelId && (
@@ -657,7 +708,7 @@ function SearchableTaskModelSelect({
 								aria-label={t("modelMakerFilters")}
 								className="order-2 flex min-w-0 flex-wrap gap-1 border-y border-border p-2"
 							>
-								{[null, ...groups.keys()].map((name) => (
+								{[null, ...makers.keys()].map((name) => (
 									<Button
 										key={name ?? "all"}
 										type="button"
@@ -684,7 +735,7 @@ function SearchableTaskModelSelect({
 									>
 										{name === null
 											? t("allMakers")
-											: `${name} (${groups.get(name)?.length ?? 0})`}
+											: `${name} (${makers.get(name)?.length ?? 0})`}
 									</Button>
 								))}
 							</fieldset>
@@ -698,7 +749,8 @@ function SearchableTaskModelSelect({
 								aria-label={t("pinnedChoices")}
 								className="order-1"
 							>
-								{current &&
+								{!byConnection &&
+									current &&
 									matches(
 										current.displayName,
 										"providerModelId" in current
@@ -764,12 +816,42 @@ function SearchableTaskModelSelect({
 									<CommandGroup
 										key={name}
 										heading={
-											showHeadings ? name : undefined
+											byConnection &&
+											CONNECTIONS[name] ? (
+												<span className="flex items-center justify-between gap-2">
+													<span>
+														{CONNECTIONS[name]
+															?.name ??
+															PROVIDER_DISPLAY_NAMES[
+																name
+															] ??
+															name}
+													</span>
+													{CONNECTIONS[name]
+														?.note && (
+														<span className="text-xs font-normal">
+															{
+																CONNECTIONS[
+																	name
+																]?.note
+															}
+														</span>
+													)}
+												</span>
+											) : showHeadings ? (
+												(PROVIDER_DISPLAY_NAMES[name] ??
+												name)
+											) : undefined
 										}
 										className="overflow-visible [&_[cmdk-group-heading]]:sticky [&_[cmdk-group-heading]]:top-0 [&_[cmdk-group-heading]]:z-10 [&_[cmdk-group-heading]]:bg-popover"
 									>
 										{models.map((model) =>
-											renderModel(model),
+											renderModel(
+												model,
+												byConnection &&
+													model.value ===
+														current?.value,
+											),
 										)}
 									</CommandGroup>
 								))}

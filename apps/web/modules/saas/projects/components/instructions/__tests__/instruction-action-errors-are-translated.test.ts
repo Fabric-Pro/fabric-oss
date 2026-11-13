@@ -88,6 +88,7 @@ describe("Coding Instructions action errors", () => {
 			"InstructionsPublishedView.tsx",
 			"InstructionsSettingsDialog.tsx",
 			"MoveInstructionsDialog.tsx",
+			"OrganizationTemplate.tsx",
 			"ProposalRebaseAction.tsx",
 			"RemoveCodingInstructions.tsx",
 			"RenameInstructionFileDialog.tsx",

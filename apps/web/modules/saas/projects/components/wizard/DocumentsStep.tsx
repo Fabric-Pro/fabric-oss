@@ -74,7 +74,7 @@ const DOCUMENT_TYPES = [
 		description:
 			"Decision ask, options considered, recommendation, value, and risks",
 		icon: FileTextIcon,
-		color: "text-amber-600 dark:text-amber-400",
+		color: "text-amber-700 dark:text-amber-400",
 		bgColor: "bg-amber-100 dark:bg-amber-900/20",
 	},
 	{
@@ -83,7 +83,7 @@ const DOCUMENT_TYPES = [
 		description:
 			"Tokens, components, accessibility, responsive behavior, and implementation guidance",
 		icon: SwatchBookIcon,
-		color: "text-fuchsia-600 dark:text-fuchsia-400",
+		color: "text-fuchsia-700 dark:text-fuchsia-400",
 		bgColor: "bg-fuchsia-100 dark:bg-fuchsia-900/20",
 	},
 	{
@@ -109,7 +109,7 @@ const DOCUMENT_TYPES = [
 		description:
 			"REST/GraphQL endpoints, request/response schemas, and authentication",
 		icon: ServerIcon,
-		color: "text-rose-600 dark:text-rose-400",
+		color: "text-rose-700 dark:text-rose-400",
 		bgColor: "bg-rose-100 dark:bg-rose-900/20",
 	},
 ];
@@ -240,7 +240,7 @@ export function DocumentsStep({
 				<div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
 					<div className="flex items-center gap-2 mb-1">
 						<CheckCircle2Icon className="h-4 w-4 text-success" />
-						<p className="text-sm font-medium text-green-700 dark:text-green-300">
+						<p className="text-sm font-medium text-green-800 dark:text-green-300">
 							{importedCount} document
 							{importedCount !== 1 ? "s" : ""} imported from
 							uploads

@@ -22,6 +22,11 @@
 
 import { db, loadProjectDatabricksKnowledgeBinding } from "@repo/database";
 import type { AccountDefinition } from "@repo/mcp-registry";
+import type { StoredResultEntry } from "../../../workflows/orchestrator/advisor-result-reuse";
+import {
+	type AdvisorResultReuseScope,
+	loadAdvisorStoredResults,
+} from "../../advisor-result-reuse";
 import {
 	buildDatabricksKnowledgeToolDefinition,
 	databricksKnowledgeToolName,
@@ -33,6 +38,7 @@ import {
  * Preloaded resources structure
  */
 export interface PreloadedResources {
+	advisorStoredResults?: StoredResultEntry[];
 	userPreferences: {
 		enabledMcpConfigIds: string[];
 		enabledAgentIds: string[];
@@ -98,6 +104,10 @@ interface PreloadedCompanyContext {
 }
 
 export interface PreloadResourcesInput {
+	advisorResultReuse?: Pick<
+		AdvisorResultReuseScope,
+		"conversationId" | "turnId"
+	>;
 	userId: string;
 	organizationId?: string;
 	enabledMcpConfigIds?: string[];
@@ -139,6 +149,7 @@ export async function preloadResourcesActivity(
 		agentDatabricksBindings,
 		projectDatabricksBinding,
 		companyContext,
+		advisorStoredResults,
 	] = await Promise.all([
 		loadUserPreferences(input.userId, input.organizationId),
 		loadMcpTools(
@@ -169,6 +180,13 @@ export async function preloadResourcesActivity(
 			: Promise.resolve(null),
 		input.companyContextAdvisor === true
 			? loadCompanyContext(input)
+			: Promise.resolve(undefined),
+		input.advisorResultReuse
+			? loadAdvisorStoredResults({
+					...input.advisorResultReuse,
+					userId: input.userId,
+					organizationId: input.organizationId,
+				})
 			: Promise.resolve(undefined),
 	]);
 
@@ -243,6 +261,7 @@ export async function preloadResourcesActivity(
 		// Left out rather than set to undefined, so a turn without company
 		// context returns exactly the shape it did before.
 		...(companyContext ? { companyContext } : {}),
+		...(advisorStoredResults ? { advisorStoredResults } : {}),
 	};
 }
 

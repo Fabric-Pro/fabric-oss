@@ -68,6 +68,8 @@ const state = vi.hoisted(() => ({
 	publishedFails: false,
 	/** How many `onChanged` promises the published-view stub saw resolve. */
 	changedSettled: 0,
+	/** The last `enabled` the tab passed to the organization template hook. */
+	templateEnabled: null as boolean | null,
 }));
 
 /**
@@ -206,8 +208,18 @@ vi.mock("sonner", () => ({
 // Reads its own queries; covered by its own tests.
 vi.mock("../ConsolidationPanel", () => ({ ConsolidationPanel: () => null }));
 vi.mock("../PluginNameSetting", () => ({ PluginNameSetting: () => null }));
+vi.mock("../InstructionSetsPanel", () => ({
+	InstructionSetsPanel: () => null,
+}));
 vi.mock("../PluginAccessPanel", () => ({ PluginAccessPanel: () => null }));
 vi.mock("../RulesHealthPanel", () => ({ RulesHealthPanel: () => null }));
+// Reads its own query; what the tab decides is whether to ask at all.
+vi.mock("../OrganizationTemplate", () => ({
+	useOrganizationTemplate: ({ enabled }: { enabled: boolean }) => {
+		state.templateEnabled = enabled;
+		return { action: undefined, dialog: null };
+	},
+}));
 vi.mock("../InstructionsDigestPanel", () => ({
 	InstructionsDigestPanel: () => null,
 }));
@@ -419,6 +431,7 @@ beforeEach(() => {
 	state.listFails = false;
 	state.publishedFails = false;
 	state.changedSettled = 0;
+	state.templateEnabled = null;
 });
 
 afterEach(() => {
@@ -1435,5 +1448,51 @@ describe("CodingInstructionsTab loading and failed reads", () => {
 		expect(copy.errorTitle).toBeTruthy();
 		expect(copy.errorBody).toBeTruthy();
 		expect(copy.retry).toBeTruthy();
+	});
+});
+
+// The template is offered where a folder upload is: to someone who may
+// upload, once the settings say the files are uploaded to Fabric.
+describe("CodingInstructionsTab organization template", () => {
+	it("asks about the template for an editor once the settings load", async () => {
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+				canEdit
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+
+		expect(state.templateEnabled).toBe(true);
+	});
+
+	it("does not ask for a viewer who cannot upload", async () => {
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+
+		expect(state.templateEnabled).toBe(false);
+	});
+
+	it("does not ask while the settings are still loading", async () => {
+		state.settingsPending = true;
+		render(
+			<CodingInstructionsTab
+				projectId="p"
+				projectName="Checkout Rewrite"
+				canEdit
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await tick(0);
+
+		expect(state.templateEnabled).toBe(false);
 	});
 });

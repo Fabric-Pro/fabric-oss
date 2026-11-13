@@ -305,7 +305,7 @@ export function SmartParameterInput({
 					{hasValue ? (
 						<span className="text-foreground">{value}</span>
 					) : (
-						<span className="text-amber-600 dark:text-amber-400">{`{{${name}}}`}</span>
+						<span className="text-amber-700 dark:text-amber-400">{`{{${name}}}`}</span>
 					)}
 				</p>
 			)}

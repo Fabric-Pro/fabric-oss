@@ -216,7 +216,8 @@ describe("IntegrationStatusRow — pipeline sync health", () => {
 		expect(screen.queryByText(/pipeline sync/i)).toBeNull();
 	});
 
-	it("shows the failure sentence and a Reconnect button for a rejected credential (GitHub)", () => {
+	it("shows the failure line, its details on click, and a Reconnect button for a rejected credential (GitHub)", async () => {
+		const user = userEvent.setup();
 		renderRow({
 			syncHealth: {
 				lastFetchedAt: null,
@@ -226,12 +227,17 @@ describe("IntegrationStatusRow — pipeline sync health", () => {
 				lastErrorKind: "CREDENTIAL_REJECTED",
 			},
 		});
+		await user.click(
+			screen.getByRole("button", {
+				name: /CI results not read: the credential needs reconnecting/i,
+			}),
+		);
 		expect(screen.getByText(/pipeline sync failing/i)).toBeInTheDocument();
 		expect(
 			screen.getByText(/rejected the credential as invalid or expired/i),
 		).toBeInTheDocument();
 		expect(
-			screen.getByRole("button", { name: /reconnect/i }),
+			screen.getByRole("button", { name: /^reconnect$/i }),
 		).toBeInTheDocument();
 	});
 
@@ -245,8 +251,17 @@ describe("IntegrationStatusRow — pipeline sync health", () => {
 				lastErrorKind: "PERMISSION_MISSING",
 			},
 		});
-		expect(screen.getByText(/pipeline sync failing/i)).toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: /reconnect/i })).toBeNull();
+		expect(
+			screen.getByRole("button", {
+				name: /CI results not read: the credential lacks Actions access/i,
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /choose credential/i }),
+		).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: /^reconnect$/i }),
+		).toBeNull();
 	});
 
 	it("shows no Reconnect button for a rejected credential on Azure DevOps (no in-app reconnect flow)", () => {
@@ -261,8 +276,12 @@ describe("IntegrationStatusRow — pipeline sync health", () => {
 				lastErrorKind: "CREDENTIAL_REJECTED",
 			},
 		});
-		expect(screen.getByText(/pipeline sync failing/i)).toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: /reconnect/i })).toBeNull();
+		expect(
+			screen.getByRole("button", { name: /CI results not read/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /^reconnect$/i }),
+		).toBeNull();
 	});
 
 	it("invokes onReconnect when the sync-health Reconnect button is clicked", async () => {
@@ -275,7 +294,7 @@ describe("IntegrationStatusRow — pipeline sync health", () => {
 				lastErrorKind: "CREDENTIAL_REJECTED",
 			},
 		});
-		await user.click(screen.getByRole("button", { name: /reconnect/i }));
+		await user.click(screen.getByRole("button", { name: /^reconnect$/i }));
 		expect(onReconnect).toHaveBeenCalledTimes(1);
 	});
 
@@ -298,7 +317,8 @@ describe("IntegrationStatusRow — pipeline sync health", () => {
 	// TEST_CASE_READ, a viewer-tier permission — but cannot perform a
 	// reconnect. Offering them a button that walks an OAuth round trip and
 	// ends at a mutation they cannot authorise is worse than offering none.
-	it("shows the failure sentence but NO Reconnect button for a viewer who cannot manage integrations", () => {
+	it("shows the failure sentence but NO Reconnect button for a viewer who cannot manage integrations", async () => {
+		const user = userEvent.setup();
 		renderRow({
 			canManageIntegrations: false,
 			syncHealth: {
@@ -310,12 +330,17 @@ describe("IntegrationStatusRow — pipeline sync health", () => {
 		});
 		// The diagnosis still renders — knowing the sync is broken is exactly
 		// what a viewer should be able to see.
+		await user.click(
+			screen.getByRole("button", { name: /CI results not read/i }),
+		);
 		expect(screen.getByText(/pipeline sync failing/i)).toBeInTheDocument();
 		expect(
 			screen.getByText(/rejected the credential/i),
 		).toBeInTheDocument();
 		// Only the action is suppressed.
-		expect(screen.queryByRole("button", { name: /reconnect/i })).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: /^reconnect$/i }),
+		).toBeNull();
 	});
 
 	it("renders nothing when the sync has never succeeded or failed (lastFetchedAt null, status null)", () => {

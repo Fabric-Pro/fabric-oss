@@ -11,6 +11,7 @@
 import { useSession } from "@saas/auth/hooks/use-session";
 import { LINKED_MEETINGS_QUERY_KEY } from "@saas/meeting-digest/hooks/use-linked-meeting-join-urls";
 import { LinkedMeetingSelector } from "@saas/meetings/components";
+import { TranscriptFolderSettings } from "@saas/projects/components/meeting-sources/TranscriptFolderSettings";
 import { TranscriptFileUpload } from "@saas/projects/components/TranscriptFileUpload";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -92,6 +93,12 @@ type Props = {
 		meetingTranscriptSyncLastRun?: Date | string | null;
 		meetingTranscriptAutoAnalyzeEnabled?: boolean;
 	};
+	/**
+	 * Show the OneDrive transcript folders (Fizzy #3507). Off by default, so the
+	 * setup wizard keeps its shorter card; Settings → Knowledge and the meeting
+	 * series dialog turn it on.
+	 */
+	transcriptFolders?: boolean;
 };
 
 type LinkedMeeting = {
@@ -202,7 +209,7 @@ function TranscriptScanStatusPill({
 	if (status === "SCANNED") {
 		return (
 			<span
-				className={`${SCAN_STATUS_PILL_BASE} border-secondary/30 bg-secondary/10 text-secondary`}
+				className={`${SCAN_STATUS_PILL_BASE} border-success/30 bg-success/10 text-success`}
 			>
 				<CheckCircle2Icon className="size-3" aria-hidden="true" />
 				Scanned
@@ -290,6 +297,7 @@ export function MeetingTranscriptSyncSettings({
 	organizationId,
 	canEdit = true,
 	project,
+	transcriptFolders = false,
 }: Props) {
 	const queryClient = useQueryClient();
 	const t = useTranslations("tooltips.projectSettings");
@@ -420,9 +428,15 @@ export function MeetingTranscriptSyncSettings({
 	// Since #2354 a project reads one calendar per linker, so a failure is
 	// rarely the whole project any more — it is one person's connection, and
 	// saying whose is the only way anyone can act on it.
+	//
+	// A stopped meeting keeps the failure count it had when it was stopped, but
+	// it is not syncing by choice: counting it reported "2 of 1 meetings are not
+	// syncing" and offered to take over meetings nobody wants synced.
 	const syncFailure = useMemo(() => {
 		const failing = (linkedMeetings ?? []).filter(
-			(m) => (m.consecutiveFailures ?? 0) >= MEETING_FAILURE_THRESHOLD,
+			(m) =>
+				!m.deactivatedAt &&
+				(m.consecutiveFailures ?? 0) >= MEETING_FAILURE_THRESHOLD,
 		);
 		const first = failing[0];
 		if (!first) {
@@ -1306,7 +1320,7 @@ export function MeetingTranscriptSyncSettings({
 																			meeting.id,
 																		)
 																	}
-																	className="flex items-center gap-1.5 rounded-full border border-secondary/30 bg-secondary/10 px-2.5 py-1 text-xs font-medium text-secondary transition-colors hover:bg-secondary/20"
+																	className="flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-1 text-xs font-medium text-success transition-colors hover:bg-success/20"
 																	aria-label={`${isExpanded ? "Collapse" : "Expand"} transcripts for ${meeting.subject ?? "meeting"}`}
 																>
 																	<FileTextIcon className="size-3.5" />
@@ -1352,7 +1366,12 @@ export function MeetingTranscriptSyncSettings({
 																	}
 																	aria-label={`Options for ${meeting.subject ?? "meeting"}`}
 																>
-																	<MoreVerticalIcon className="size-4 text-muted-foreground" />
+																	<MoreVerticalIcon
+																		strokeWidth={
+																			2.5
+																		}
+																		className="size-4 text-muted-foreground"
+																	/>
 																</Button>
 															</DropdownMenuTrigger>
 															<DropdownMenuContent align="end">
@@ -1596,7 +1615,7 @@ export function MeetingTranscriptSyncSettings({
 											{totalTranscripts > 0 && (
 												<span className="flex items-center gap-1.5">
 													<span
-														className="size-1.5 rounded-full bg-secondary"
+														className="size-1.5 rounded-full bg-success"
 														aria-hidden
 													/>
 													{totalTranscripts}{" "}
@@ -1678,7 +1697,7 @@ export function MeetingTranscriptSyncSettings({
 							</div>
 
 							{/* Footer note */}
-							<p className="flex items-center gap-1.5 text-xs text-muted-foreground/80">
+							<p className="flex items-center gap-1.5 text-xs text-muted-foreground">
 								<InfoIcon className="size-3.5 shrink-0" />
 								Syncs transcripts from the last 30 days for each
 								linked meeting
@@ -1768,6 +1787,13 @@ export function MeetingTranscriptSyncSettings({
 					organizationId={organizationId}
 					canEdit={canEdit}
 				/>
+				{transcriptFolders && (
+					<TranscriptFolderSettings
+						projectId={projectId}
+						organizationId={organizationId}
+						canEdit={canEdit}
+					/>
+				)}
 			</Card>
 
 			<LinkedMeetingSelector

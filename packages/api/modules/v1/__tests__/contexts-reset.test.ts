@@ -10,7 +10,9 @@
  *    for a wildcard `*` key, refused with the nested `{ error: { message } }`;
  *  - visibility and the hosting organization, as the other context routes;
  *  - the shared function's answers: 200 `{ data: { deleted } }`, and 409
- *    `REPOSITORY_SYNC_ACTIVE` with its own body.
+ *    `REPOSITORY_SYNC_ACTIVE` with its own body;
+ *  - the optional `{ folder }` body: passed through when present, absent for
+ *    no body or `{}`, and a malformed one refused with 400 before any lookup.
  *
  * The shared `resetSyncedContexts` is mocked; its refusal body helper is the
  * real one.
@@ -122,8 +124,13 @@ function buildApp() {
 	return app;
 }
 
-function post(query = "") {
-	return new Request(`http://localhost${PATH}${query}`, { method: "POST" });
+function post(query = "", body?: string) {
+	return new Request(`http://localhost${PATH}${query}`, {
+		method: "POST",
+		...(body === undefined
+			? {}
+			: { body, headers: { "content-type": "application/json" } }),
+	});
 }
 
 beforeEach(() => {
@@ -258,5 +265,82 @@ describe("POST /projects/:projectId/contexts/reset — outcomes", () => {
 		const res = await buildApp().fetch(post());
 
 		expect(res.status).toBe(403);
+	});
+});
+
+describe("POST /projects/:projectId/contexts/reset — one folder", () => {
+	it("passes the body's folder to the shared function", async () => {
+		const res = await buildApp().fetch(
+			post("", JSON.stringify({ folder: "docs/guides" })),
+		);
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ data: { deleted: 4 } });
+		expect(mocks.resetSyncedContexts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: PROJECT,
+				organizationId: ORG,
+				folder: "docs/guides",
+				via: "v1-api",
+			}),
+		);
+	});
+
+	it.each([
+		["no body", undefined],
+		["an empty object", "{}"],
+		["a null folder", JSON.stringify({ folder: null })],
+	])("resets every synced file for %s", async (_label, body) => {
+		const res = await buildApp().fetch(post("", body));
+
+		expect(res.status).toBe(200);
+		expect(mocks.resetSyncedContexts.mock.calls[0]?.[0]).not.toHaveProperty(
+			"folder",
+		);
+	});
+
+	it.each([
+		["an empty folder", JSON.stringify({ folder: "" })],
+		["a folder that is not a string", JSON.stringify({ folder: 3 })],
+		["a body that is not an object", JSON.stringify(["docs"])],
+		["invalid JSON", "{folder"],
+	])("answers 400 for %s before any lookup", async (_label, body) => {
+		const res = await buildApp().fetch(post("", body));
+
+		expect(res.status).toBe(400);
+		expect(mocks.resolveEffectiveProjectPermissions).not.toHaveBeenCalled();
+		expect(mocks.resetSyncedContexts).not.toHaveBeenCalled();
+	});
+
+	it("maps the shared function's BAD_REQUEST for a refused folder to 400", async () => {
+		mocks.resetSyncedContexts.mockRejectedValue(
+			new ORPCError("BAD_REQUEST", {
+				message:
+					"sourcePathPrefix may not contain '.' or '..' segments; pass a folder's relative path inside the project's working tree",
+			}),
+		);
+
+		const res = await buildApp().fetch(
+			post("", JSON.stringify({ folder: "docs/../other" })),
+		);
+
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: { message: string } };
+		expect(body.error.message).toMatch(/segments/);
+	});
+
+	it("still requires CONTEXT_DELETE for a folder", async () => {
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: ["context:read", "context:create"],
+			source: "project-member",
+			organizationId: ORG,
+		});
+
+		const res = await buildApp().fetch(
+			post("", JSON.stringify({ folder: "docs" })),
+		);
+
+		expect(res.status).toBe(403);
+		expect(mocks.resetSyncedContexts).not.toHaveBeenCalled();
 	});
 });

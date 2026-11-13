@@ -277,7 +277,10 @@ function InstanceTableRow({
 							aria-label={`Actions for ${instance.name}`}
 							className="h-7 w-7"
 						>
-							<MoreVerticalIcon className="h-3.5 w-3.5" />
+							<MoreVerticalIcon
+								strokeWidth={2.5}
+								className="h-3.5 w-3.5"
+							/>
 						</Button>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end">

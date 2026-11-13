@@ -107,7 +107,7 @@ const OVERALL_COPY: Record<HealthStatus, { title: string; body: string }> = {
 };
 
 const BANNER_TONE: Record<HealthStatus, string> = {
-	OPERATIONAL: "border-secondary/30 bg-secondary/5",
+	OPERATIONAL: "border-success/30 bg-success/5",
 	DEGRADED: "border-highlight/30 bg-highlight/5",
 	PARTIAL_OUTAGE: "border-highlight/30 bg-highlight/5",
 	MAJOR_OUTAGE: "border-destructive/30 bg-destructive/5",

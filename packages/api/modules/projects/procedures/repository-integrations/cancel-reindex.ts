@@ -9,6 +9,7 @@
 
 import { ORPCError } from "@orpc/client";
 import {
+	CODE_INDEX_CANCELLED_ERROR,
 	getProjectCodeIndexes,
 	getProjectRepoIntegration,
 	updateCodeIndexStatus,
@@ -66,7 +67,7 @@ export const cancelReindexRepoIntegrationProcedure = tenantProtectedProcedure
 					branch: row.branch,
 				},
 				"FAILED",
-				"Cancelled by user",
+				CODE_INDEX_CANCELLED_ERROR,
 			);
 		}
 

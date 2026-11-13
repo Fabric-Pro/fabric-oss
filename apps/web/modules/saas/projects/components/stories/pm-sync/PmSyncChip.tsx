@@ -336,7 +336,7 @@ export function PmSyncChip({
 		synced: {
 			label: "Synced",
 			icon: CloudIcon,
-			cls: "text-secondary border-secondary/30 bg-secondary/10 hover:bg-secondary/15",
+			cls: "text-success border-success/30 bg-success/10 hover:bg-success/15",
 		},
 		notsynced: {
 			label: "Not synced",
@@ -436,7 +436,7 @@ export function PmSyncChip({
 									{meta.label}
 								</span>
 								{ref && showCardLink ? (
-									<span className="sr-only sm:not-sr-only font-normal normal-case opacity-70 tabular-nums">
+									<span className="sr-only sm:not-sr-only font-normal normal-case tabular-nums">
 										· {ref}
 									</span>
 								) : null}

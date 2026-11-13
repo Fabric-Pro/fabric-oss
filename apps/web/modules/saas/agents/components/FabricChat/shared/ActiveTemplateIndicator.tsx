@@ -29,7 +29,7 @@ export function ActiveTemplateIndicator({
 			{templates.map((template) => (
 				<span
 					key={template.id}
-					className="inline-flex items-center gap-1 px-2 py-1 bg-primary/10 text-primary rounded-full text-xs font-medium"
+					className="inline-flex items-center gap-1 px-2 py-1 bg-primary/10 text-primary-active rounded-full text-xs font-medium"
 				>
 					<span>{template.heroEmojis?.[0] || "🤖"}</span>
 					<span className="max-w-[120px] truncate">

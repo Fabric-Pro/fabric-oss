@@ -1,5 +1,5 @@
-import { listTemplateSkills } from "@repo/database";
-import { db } from "@repo/database/prisma/client";
+import { ORPCError } from "@orpc/server";
+import { getAgentTemplate, listTemplateSkills } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -17,12 +17,15 @@ export const listTemplateSkillsProcedure = tenantProtectedProcedure
 	.input(listTemplateSkillsInputSchema)
 	.handler(async ({ input, context }) => {
 		// Verify template exists and caller has access
-		const template = await db.agentTemplate.findUnique({
-			where: { id: input.templateId },
+		const template = await getAgentTemplate(input.templateId, {
+			userId: context.user.id,
+			organizationId: context.session.activeOrganizationId,
 		});
 
 		if (!template) {
-			throw new Error("Template not found");
+			throw new ORPCError("NOT_FOUND", {
+				message: "Template not found",
+			});
 		}
 
 		// Authorize template access (matches update/delete pattern for ORG)

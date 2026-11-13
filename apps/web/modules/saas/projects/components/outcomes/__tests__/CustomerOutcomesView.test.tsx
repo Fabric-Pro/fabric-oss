@@ -99,7 +99,7 @@ describe("CustomerOutcomesView", () => {
 		// Activation UP 38→41 = up (good); tickets DOWN 9→12 = up (bad)
 		const trends = screen.getAllByText("up");
 		expect(trends).toHaveLength(2);
-		expect(trends[0]).toHaveClass("text-secondary");
+		expect(trends[0]).toHaveClass("text-success");
 		expect(trends[1]).toHaveClass("text-destructive");
 	});
 

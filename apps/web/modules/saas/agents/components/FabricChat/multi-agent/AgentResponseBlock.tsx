@@ -609,7 +609,7 @@ export function AgentResponseBlock({
 										className="mt-2 flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md bg-muted text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity hover:text-foreground"
 									>
 										{copied ? (
-											<CheckCircle2Icon className="size-3 text-secondary" />
+											<CheckCircle2Icon className="size-3 text-success" />
 										) : (
 											<CopyIcon className="size-3" />
 										)}
@@ -689,7 +689,7 @@ function StepExecutionPanel({
 				) : hasError ? (
 					<XCircleIcon className="size-3 text-destructive shrink-0" />
 				) : (
-					<CheckCircle2Icon className="size-3 text-secondary shrink-0" />
+					<CheckCircle2Icon className="size-3 text-success shrink-0" />
 				)}
 				<span className="font-medium">
 					{hasRunning && runningLabel ? (
@@ -697,7 +697,7 @@ function StepExecutionPanel({
 							<span className="text-foreground">
 								{runningLabel}
 							</span>
-							<span className="text-muted-foreground/70">
+							<span className="text-muted-foreground">
 								{" "}
 								· {toolCalls.length} step
 								{toolCalls.length !== 1 ? "s" : ""}
@@ -751,7 +751,7 @@ function ToolCallRow({ toolCall }: { toolCall: ToolCallDisplayItem }) {
 				) : isError ? (
 					<XCircleIcon className="size-3 text-destructive shrink-0" />
 				) : isDone ? (
-					<CheckCircle2Icon className="size-3 text-secondary shrink-0" />
+					<CheckCircle2Icon className="size-3 text-success shrink-0" />
 				) : (
 					<CheckCircle2Icon className="size-3 text-muted-foreground/40 shrink-0" />
 				)}
@@ -759,12 +759,12 @@ function ToolCallRow({ toolCall }: { toolCall: ToolCallDisplayItem }) {
 					{shortName}
 				</span>
 				{toolCall.serverName && (
-					<span className="text-[10px] text-muted-foreground/60 shrink-0">
+					<span className="text-[10px] text-muted-foreground shrink-0">
 						{toolCall.serverName}
 					</span>
 				)}
 				{toolCall.durationMs !== undefined && !isRunning && (
-					<span className="text-[10px] text-muted-foreground/50 ml-auto shrink-0">
+					<span className="text-[10px] text-muted-foreground ml-auto shrink-0">
 						{toolCall.durationMs < 1000
 							? `${toolCall.durationMs}ms`
 							: `${(toolCall.durationMs / 1000).toFixed(1)}s`}
@@ -785,7 +785,7 @@ function ToolCallRow({ toolCall }: { toolCall: ToolCallDisplayItem }) {
 			</div>
 			{showArgs && toolCall.args !== undefined && (
 				<div className="mt-1.5">
-					<p className="text-[10px] font-medium text-muted-foreground/60 mb-0.5 uppercase tracking-wide">
+					<p className="text-[10px] font-medium text-muted-foreground mb-0.5 uppercase tracking-wide">
 						Input
 					</p>
 					<pre className="text-[10px] bg-card rounded-md p-2 overflow-auto max-h-32 text-muted-foreground border border-border/40">
@@ -795,7 +795,7 @@ function ToolCallRow({ toolCall }: { toolCall: ToolCallDisplayItem }) {
 			)}
 			{showArgs && toolCall.result !== undefined && (
 				<div className="mt-1.5">
-					<p className="text-[10px] font-medium text-muted-foreground/60 mb-0.5 uppercase tracking-wide">
+					<p className="text-[10px] font-medium text-muted-foreground mb-0.5 uppercase tracking-wide">
 						Result
 					</p>
 					<pre className="text-[10px] bg-card rounded-md p-2 overflow-auto max-h-32 text-muted-foreground border border-border/40">

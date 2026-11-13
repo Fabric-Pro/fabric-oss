@@ -16,7 +16,6 @@ vi.mock("@aws-sdk/client-s3", async (importOriginal) => {
 		},
 	};
 });
-vi.mock("@repo/observability", () => import("@repo/observability/breakers"));
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn() },
 }));

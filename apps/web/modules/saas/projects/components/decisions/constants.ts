@@ -47,7 +47,7 @@ export const STATUS_CONFIG: Record<
 	DEPRECATED: {
 		label: "Deprecated",
 		badgeClassName:
-			"border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+			"border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300",
 		dotClassName: "bg-amber-500",
 		description: "Still in place but discouraged for new work.",
 	},
@@ -128,7 +128,7 @@ export const DOMAIN_CONFIG: Record<
 	frontend: {
 		label: "Frontend",
 		tagClassName:
-			"border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+			"border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300",
 		dotClassName: "bg-amber-500",
 		description: "UI architecture, client state, and rendering.",
 	},

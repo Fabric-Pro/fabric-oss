@@ -4456,7 +4456,7 @@ export const FabricDirectChat = forwardRef<
 																				isCreatingTasks
 																			}
 																			variant="outline"
-																			className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
+																			className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950 dark:hover:text-red-300"
 																		>
 																			<XCircle className="mr-2 h-4 w-4" />
 																			Cancel
@@ -4529,7 +4529,7 @@ export const FabricDirectChat = forwardRef<
 																				isSavingProjectUpdateDraft
 																			}
 																			variant="outline"
-																			className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
+																			className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950 dark:hover:text-red-300"
 																		>
 																			<XCircle className="mr-2 h-4 w-4" />
 																			Cancel
@@ -4624,7 +4624,7 @@ export const FabricDirectChat = forwardRef<
 																				isStartingImplementationSession
 																			}
 																			variant="outline"
-																			className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
+																			className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950 dark:hover:text-red-300"
 																		>
 																			<XCircle className="mr-2 h-4 w-4" />
 																			Cancel
@@ -4747,7 +4747,7 @@ export const FabricDirectChat = forwardRef<
 																				isSavingSkillDraft
 																			}
 																			variant="outline"
-																			className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
+																			className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950 dark:hover:text-red-300"
 																		>
 																			<XCircle className="mr-2 h-4 w-4" />
 																			Cancel
@@ -4893,7 +4893,7 @@ export const FabricDirectChat = forwardRef<
 													</MessageContent>
 												</Message>
 												{captionNames.length > 0 && (
-													<div className="-mt-1 mb-2 flex flex-wrap justify-end gap-x-3 gap-y-0.5 px-1 text-[11px] text-muted-foreground/70">
+													<div className="-mt-1 mb-2 flex flex-wrap justify-end gap-x-3 gap-y-0.5 px-1 text-[11px] text-muted-foreground">
 														{captionNames.map(
 															(name) => (
 																<span

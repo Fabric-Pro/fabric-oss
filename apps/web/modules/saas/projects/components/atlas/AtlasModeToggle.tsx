@@ -146,7 +146,7 @@ export function AtlasModeToggle({
 					<button
 						type="button"
 						aria-label={t("infoLabel")}
-						className="cursor-help rounded-full p-1 text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+						className="cursor-help rounded-full p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 					>
 						<InfoIcon aria-hidden="true" className="size-4" />
 					</button>

@@ -1,5 +1,14 @@
 # @fabricorg/sdk-mcp
 
+## 0.2.3
+
+### Patch Changes
+
+- c283fae: The Fabric MCP App cards' **Open in Fabric Desktop** buttons now open a new Fabric Agents chat with the task filled in, **Delegate to Remote Server** asks your assistant to hand the task to a Remote Fabric Agents Server, and a card button whose request fails now says why instead of doing nothing.
+- Updated dependencies [c283fae]
+- Updated dependencies [c283fae]
+  - @fabricorg/sdk@0.8.2
+
 ## 0.2.2
 
 ### Patch Changes

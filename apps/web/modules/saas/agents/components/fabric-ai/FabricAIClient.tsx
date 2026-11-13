@@ -87,6 +87,7 @@ import {
 	WorkspacePanel,
 } from "@saas/agents/components/WorkspacePanel";
 import { useConversationHistory } from "@saas/agents/hooks/useConversationHistory";
+import { useLoomModePersistence } from "@saas/agents/hooks/useLoomModePersistence";
 import { useMultiAgentOffered } from "@saas/agents/hooks/useMultiAgentChat";
 import { useResearchRunStream } from "@saas/agents/hooks/useResearchRunStream";
 import { useSavedAgentUnavailableNotice } from "@saas/agents/hooks/useSavedAgentUnavailableNotice";
@@ -863,47 +864,22 @@ export default function FabricAIPage({
 		},
 		[],
 	);
-	useEffect(() => {
-		if (!loomPrefsHydratedRef.current) {
-			return;
-		}
-		if (isInstanceBackedChat) {
-			return;
-		}
-		const chatMode: "direct" | "orchestrator" | "research" =
-			deepResearchEnabled
-				? "research"
-				: useOrchestrator
-					? "orchestrator"
-					: "direct";
-		if (lastPersistedChatModeRef.current === chatMode) {
-			return;
-		}
-		lastPersistedChatModeRef.current = chatMode;
-		userTouchedLoomPrefsRef.current = true;
-		persistLoomPrefsMutation.mutate({ chatMode });
-		// Mutation reference is stable from useMutation; including it in
-		// deps would cause unnecessary re-runs on render. eslint-disable
-		// is intentional here and matches the same pattern used for the
-		// `useDirectStream` reset effect elsewhere in this file.
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [useOrchestrator, deepResearchEnabled, isInstanceBackedChat]);
-
-	useEffect(() => {
-		if (!loomPrefsHydratedRef.current) {
-			return;
-		}
-		if (isInstanceBackedChat) {
-			return;
-		}
-		if (lastPersistedReasoningModeRef.current === reasoningMode) {
-			return;
-		}
-		lastPersistedReasoningModeRef.current = reasoningMode;
-		userTouchedLoomPrefsRef.current = true;
-		persistLoomPrefsMutation.mutate({ reasoningMode });
-		// eslint-disable-next-line react-hooks/exhaustive-deps -- see above
-	}, [reasoningMode, isInstanceBackedChat]);
+	useLoomModePersistence({
+		hydrated: loomPrefsHydrated,
+		disabled: isInstanceBackedChat,
+		chatMode: deepResearchEnabled
+			? "research"
+			: useOrchestrator
+				? "orchestrator"
+				: "direct",
+		reasoningMode,
+		lastPersistedChatModeRef,
+		lastPersistedReasoningModeRef,
+		onPersist: (input) => {
+			userTouchedLoomPrefsRef.current = true;
+			persistLoomPrefsMutation.mutate(input);
+		},
+	});
 
 	// "New run" reset → snap mode + reasoning back to the user's persistent
 	// default. Without this, clicking New after viewing an existing
@@ -1002,7 +978,7 @@ export default function FabricAIPage({
 				<div className="flex items-center gap-2">
 					<Badge
 						variant="secondary"
-						className="bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+						className="bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
 					>
 						Active
 					</Badge>
@@ -2276,8 +2252,8 @@ function FabricChatContent({
 		planner: {
 			label: "Planner",
 			icon: Layers,
-			color: "text-secondary",
-			bgColor: "bg-secondary/10",
+			color: "text-success",
+			bgColor: "bg-success/10",
 		},
 	};
 
@@ -2688,7 +2664,7 @@ function FabricChatContent({
 										className={cn(
 											"h-8 w-8 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground",
 											activeTab === tab.id &&
-												"bg-primary/[0.12] text-primary",
+												"bg-primary/[0.12] text-primary-active",
 										)}
 										title={tab.label}
 										aria-label={tab.label}

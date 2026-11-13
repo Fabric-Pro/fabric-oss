@@ -464,7 +464,7 @@ function PreviewRow({
 								(empty)
 							</span>
 						) : (
-							<span className="shrink-0 font-medium text-secondary text-xs">
+							<span className="shrink-0 font-medium text-success text-xs">
 								has content
 							</span>
 						)}

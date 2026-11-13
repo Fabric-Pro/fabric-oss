@@ -10,7 +10,7 @@ import { useState } from "react";
 export const suggestionStateStyles = {
 	pending:
 		"border-primary/30 bg-card hover:border-primary/50 transition-colors duration-150",
-	approved: "border-secondary/40 bg-secondary/5",
+	approved: "border-success/40 bg-success/5",
 	rejected: "border-destructive/30 bg-destructive/5 opacity-60",
 	outdated: "border-muted bg-muted/50 opacity-50",
 } as const;
@@ -42,7 +42,7 @@ export function SuggestionActionButtons({
 			<Button
 				size="sm"
 				variant="ghost"
-				className="h-7 w-7 p-0 text-secondary hover:bg-secondary/10 hover:text-secondary"
+				className="h-7 w-7 p-0 text-success hover:bg-success/10 hover:text-success"
 				onClick={() => void submit(onAccept)}
 				disabled={busy}
 				aria-busy={busy}

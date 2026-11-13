@@ -75,9 +75,9 @@ const ACTIVITY_ICON: Record<
 	{ Icon: LucideIcon; className: string }
 > = {
 	SCAN_STARTED: { Icon: ShieldAlertIcon, className: "text-muted-foreground" },
-	SCAN_COMPLETED: { Icon: ShieldCheckIcon, className: "text-secondary" },
+	SCAN_COMPLETED: { Icon: ShieldCheckIcon, className: "text-success" },
 	SCAN_FAILED: { Icon: ShieldXIcon, className: "text-destructive" },
-	FINDING_RESOLVED: { Icon: CheckCircle2Icon, className: "text-secondary" },
+	FINDING_RESOLVED: { Icon: CheckCircle2Icon, className: "text-success" },
 	FINDING_DISMISSED: {
 		Icon: XCircleIcon,
 		className: "text-muted-foreground",

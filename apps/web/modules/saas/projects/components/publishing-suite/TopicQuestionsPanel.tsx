@@ -737,7 +737,7 @@ export function TopicQuestionsPanel({
 							aria-hidden="true"
 						/>
 						<h3 className="publishing-label">Answered</h3>
-						<span className="text-[11px] text-muted-foreground/70">
+						<span className="text-[11px] text-muted-foreground">
 							{resolved.length}
 						</span>
 					</button>
@@ -780,7 +780,7 @@ export function TopicQuestionsPanel({
 							aria-hidden="true"
 						/>
 						<h3 className="publishing-label">Possibly resolved</h3>
-						<span className="text-[11px] text-muted-foreground/70">
+						<span className="text-[11px] text-muted-foreground">
 							{possiblyResolved.length}
 						</span>
 					</button>

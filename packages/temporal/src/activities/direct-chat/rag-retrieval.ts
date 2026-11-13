@@ -15,10 +15,15 @@ import {
 } from "@repo/database";
 import { withDefaultFeature } from "@repo/rag/lib/embedding/usage";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import { ragToolResultText } from "../../lib/rag-tool-result";
 import {
 	type SecondaryUsageInput,
 	secondaryUsageFields,
 } from "../../workflows/orchestrator/usage-attribution";
+import {
+	type AdvisorResultStoreContext,
+	storeAdvisorResult,
+} from "../advisor-result-store";
 import {
 	runWithTurnDispatch,
 	startTurnHeartbeat,
@@ -308,6 +313,7 @@ export async function retrieveWorkspaceDocumentsActivity(
 	topKOverride?: number,
 	minSimilarityOverride?: number,
 	options?: SecondaryUsageInput & {
+		advisorResultStore?: AdvisorResultStoreContext;
 		turnScope?: TurnScope;
 	},
 ): Promise<{
@@ -317,8 +323,9 @@ export async function retrieveWorkspaceDocumentsActivity(
 }> {
 	const turnScope = options?.turnScope;
 	const stopHeartbeat = startTurnHeartbeat(turnScope);
+	let readSucceeded = true;
 	try {
-		return await runWithTurnDispatch(turnScope, () =>
+		const result = await runWithTurnDispatch(turnScope, () =>
 			runWithAiCallPurpose(
 				AI_CALL_PURPOSES.workspaceRetrievalEmbedding,
 				() =>
@@ -331,9 +338,25 @@ export async function retrieveWorkspaceDocumentsActivity(
 						topKOverride,
 						minSimilarityOverride,
 						options,
+						() => {
+							readSucceeded = false;
+						},
 					),
 			),
 		);
+		if (readSucceeded) {
+			await storeAdvisorResult({
+				userId,
+				organizationId,
+				advisorResultStore: options?.advisorResultStore,
+				toolName:
+					options?.advisorResultStore?.toolName ??
+					"workspace_rag_query",
+				route: "built-in",
+				result: ragToolResultText("workspace", message, result),
+			});
+		}
+		return result;
 	} finally {
 		stopHeartbeat();
 	}
@@ -347,13 +370,15 @@ async function retrieveWorkspaceDocuments(
 	documentIds: string[] | undefined,
 	topKOverride: number | undefined,
 	minSimilarityOverride: number | undefined,
-	usage?: SecondaryUsageInput,
+	usage: SecondaryUsageInput | undefined,
+	onReadFailed: () => void,
 ): Promise<{
 	context: string;
 	chunkCount: number;
 	sources?: RagSource[];
 }> {
 	if (!requestedWorkspaceIds || requestedWorkspaceIds.length === 0) {
+		onReadFailed();
 		logger.info(
 			"No workspaces attached, skipping workspace document retrieval",
 		);
@@ -377,6 +402,7 @@ async function retrieveWorkspaceDocuments(
 		);
 	}
 	if (workspaceIds.length === 0) {
+		onReadFailed();
 		return { context: "", chunkCount: 0 };
 	}
 
@@ -401,6 +427,7 @@ async function retrieveWorkspaceDocuments(
 					minSimilarityOverride ?? ragSettings.similarityThreshold,
 			});
 		} catch (error) {
+			onReadFailed();
 			logger.warn(
 				"[WorkspaceRAG] Failed to load workspace RAG settings",
 				{
@@ -688,6 +715,7 @@ async function retrieveWorkspaceDocuments(
 		// Inside a chat turn's dispatch guard a stop is not a retrieval error.
 		rethrowIfDispatchStopped(error);
 		logger.error("Failed to retrieve workspace RAG context", error);
+		onReadFailed();
 		return {
 			context: `\n\n## Workspace Document Error:\nFailed to retrieve content from workspace documents. Error: ${error instanceof Error ? error.message : "Unknown error"}`,
 			chunkCount: 0,

@@ -130,7 +130,7 @@ function ResultView({ result }: { result: TestResult | null }) {
 					</div>
 					{result.error && (
 						<div className="p-3 bg-destructive/5 border border-destructive/20 rounded-md">
-							<p className="text-sm text-destructive/80">
+							<p className="text-sm text-destructive">
 								{result.error}
 							</p>
 						</div>

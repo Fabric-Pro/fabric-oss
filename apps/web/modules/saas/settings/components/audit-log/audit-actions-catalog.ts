@@ -1139,6 +1139,27 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"Changed the project's coding-instructions ignore-glob override, which governs what the next upload silently excludes. `metadata.ignoreGlobCount` carries the new override's size — zero clears it back to the defaults.",
 	},
 	{
+		key: "project.instructions.set_created",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.instructions.set_created",
+		description:
+			"Created a Coding Instructions set: a named group of instructions that applies to the code repositories chosen for it. `resource.name` is the set's name; `metadata.slug` its slug and `metadata.repositoryCount` how many code repositories it covers.",
+	},
+	{
+		key: "project.instructions.set_updated",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.instructions.set_updated",
+		description:
+			"Renamed a Coding Instructions set or changed which code repositories it applies to. `metadata.renamed` says whether the name changed; `metadata.repositoryCount` and `metadata.previousRepositoryCount` carry the coverage after and before.",
+	},
+	{
+		key: "project.instructions.set_deleted",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.instructions.set_deleted",
+		description:
+			"Deleted a Coding Instructions set from Fabric. Its files stay in the instructions repository and its history is kept; its code repositories no longer get its instructions. `metadata.slug` carries the set's slug.",
+	},
+	{
 		key: "project.import.started",
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.project.import.started",
@@ -1496,6 +1517,13 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		description:
 			"A platform administrator deleted a system prompt. Every prompt row carrying the same key goes together, along with the bindings that hung off their versions in any organization or personal library. `metadata` carries what was actually removed \u2014 not the preview shown beforehand \u2014 and whether the key was recorded as retired, which is what stops a later catalogue seed recreating the prompt.",
 	},
+	{
+		key: "time.report_exported",
+		categoryId: "audit",
+		labelKey: "settings.auditLog.actions.time.report_exported",
+		description:
+			"Someone downloaded a project or organization time report as a CSV file, which holds the logged time of every member in it. `metadata` carries the scope, the project for a project report, the date range, the filters and how many entries the file had — never the entries themselves.",
+	},
 	// ---- Admin / staff --------------------------------------------------
 	{
 		key: "admin.auditLog.viaApiKey",
@@ -1627,6 +1655,37 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"settings.auditLog.actions.newsletter.approval.required_changed",
 		description:
 			"A project OWNER turned the release-notes approval gate on or off. When on, every send is held for reviewer sign-off before delivery.",
+	},
+	{
+		key: "newsletter.screenshots.changed",
+		categoryId: "newsletter",
+		labelKey: "settings.auditLog.actions.newsletter.screenshots.changed",
+		description:
+			"Someone turned release-notes images on or off. When on, reviewers can attach images to a held send, and approved images are published under public links in the email.",
+	},
+	{
+		key: "newsletter.screenshots.environment_changed",
+		categoryId: "newsletter",
+		labelKey:
+			"settings.auditLog.actions.newsletter.screenshots.environment_changed",
+		description:
+			"Someone chose or cleared the environment release-notes screenshots are captured from. Choosing one records their confirmation that it shows sample data only, and lets Fabric sign in there with its stored credential.",
+	},
+	{
+		key: "newsletter.screenshots.capture_started",
+		categoryId: "newsletter",
+		labelKey:
+			"settings.auditLog.actions.newsletter.screenshots.capture_started",
+		description:
+			"A reviewer started a screenshot capture for a held newsletter, new or again. Fabric signs in to the capture environment and drives a browser there; each newsletter allows a limited number of captures.",
+	},
+	{
+		key: "newsletter.screenshots.unpublished",
+		categoryId: "newsletter",
+		labelKey:
+			"settings.auditLog.actions.newsletter.screenshots.unpublished",
+		description:
+			"Someone removed the published images of a sent newsletter. The images disappear from emails already delivered and from the archive.",
 	},
 	{
 		key: "newsletter.organization_distribution.changed",

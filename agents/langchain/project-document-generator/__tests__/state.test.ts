@@ -61,6 +61,45 @@ describe("State Module", () => {
 	});
 });
 
+describe("AgentStateAnnotation — web research", () => {
+	it("starts with research off", () => {
+		expect(
+			AgentStateAnnotation.spec.allowWebResearch.initialValueFactory?.(),
+		).toBe(false);
+	});
+
+	it("starts with no research choice offered", () => {
+		expect(
+			AgentStateAnnotation.spec.webResearchChoiceOffered.initialValueFactory?.(),
+		).toBe(false);
+	});
+
+	it("starts with an unauthorized, empty outcome and no searched URLs", () => {
+		expect(
+			AgentStateAnnotation.spec.webResearchOutcome.initialValueFactory?.(),
+		).toEqual({
+			authorized: false,
+			searches: 0,
+			searchFailures: 0,
+			reads: 0,
+			readFailures: 0,
+			limitReached: false,
+			grantLimitReached: false,
+			sources: [],
+			withheldSources: 0,
+		});
+		expect(
+			AgentStateAnnotation.spec.webResearchSearchedUrls.initialValueFactory?.(),
+		).toEqual([]);
+	});
+
+	it("gives each run its own default outcome object", () => {
+		const factory =
+			AgentStateAnnotation.spec.webResearchOutcome.initialValueFactory;
+		expect(factory?.()).not.toBe(factory?.());
+	});
+});
+
 describe("AgentStateAnnotation — reasoningByTurn", () => {
 	// LangGraph 1.x exposes a Reducer-shaped Annotation as a BinaryOperatorAggregate
 	// channel whose runtime fields are `operator` (the reducer fn) and

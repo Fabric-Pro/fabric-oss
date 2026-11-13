@@ -114,7 +114,7 @@ function ReadOnlyMessageTimestamp({
 	const alignClass = align === "end" ? "justify-end" : "justify-start";
 	return (
 		<div
-			className={`mt-0.5 flex ${alignClass} px-1 text-[10px] text-muted-foreground/60`}
+			className={`mt-0.5 flex ${alignClass} px-1 text-[10px] text-muted-foreground`}
 		>
 			<time dateTime={formatted.iso} title={formatted.tooltip}>
 				{formatted.label}
@@ -162,7 +162,7 @@ function AttachmentCaption({ names }: { names: string[] }) {
 		return null;
 	}
 	return (
-		<div className="mt-1 flex flex-wrap justify-end gap-x-3 gap-y-0.5 px-1 text-[11px] text-muted-foreground/70">
+		<div className="mt-1 flex flex-wrap justify-end gap-x-3 gap-y-0.5 px-1 text-[11px] text-muted-foreground">
 			{names.map((name) => (
 				<span key={name} className="inline-flex items-center gap-1">
 					<Paperclip className="size-2.5" aria-hidden="true" />

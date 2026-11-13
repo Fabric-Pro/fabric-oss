@@ -2,13 +2,17 @@ import { db } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
 export const checkProjectNameProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.PROJECT_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.PROJECT_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/projects/check-name",

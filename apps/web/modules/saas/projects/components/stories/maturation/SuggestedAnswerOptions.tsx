@@ -36,7 +36,7 @@ export interface SuggestedAnswerOptionsLabels {
  * question, and until now each drew them its own way: an outline `Button` whose
  * whole face accepts with the pencil painted into its corner (Maturation),
  * versus a bordered `div` holding a bare `button` with the pencil as a sibling
- * (Publishing) — under a heading that was `text-secondary` on one surface and
+ * (Publishing) — under a heading in the grey secondary tone on one surface and
  * `text-muted-foreground` on the other. Two surfaces answering the same
  * question with the same controls should not read as two features, which is
  * design-QA finding #6 ("question card dialect ≠ FMv2") and its proposal 1.

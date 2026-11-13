@@ -9,7 +9,10 @@ import {
 	isAiRefreshAuthor,
 	resolveDocumentVersionAuthor,
 } from "@repo/utils/document-version-author";
-import { restoredVersionDescription } from "@repo/utils/document-version-change";
+import {
+	documentVersionMaker,
+	restoredVersionDescription,
+} from "@repo/utils/document-version-change";
 import { countDocumentWords } from "@repo/utils/document-word-count";
 import {
 	isGenerationRunStillWriting,
@@ -941,17 +944,22 @@ export async function deleteDocument(documentId: string) {
  * The user lookup is ONE batched `findMany` over the page's distinct non-sentinel
  * ids, not one query per version — a 20-version page by 3 authors issues 1 query,
  * not 20.
+ *
+ * Each version also carries `madeBy`, the change that made its body (Fizzy
+ * #2946). A row's own `changeDescription` and `createdAt` mostly belong to the
+ * change that replaced its body, so the maker is read from the row before it
+ * (`documentVersionMaker`); one row past the page is loaded for the oldest.
  */
 export async function getDocumentVersions(
 	documentId: string,
 	limit = 20,
 	offset = 0,
 ) {
-	const [versions, total] = await Promise.all([
+	const [rows, total] = await Promise.all([
 		db.documentVersion.findMany({
 			where: { documentId },
 			orderBy: { version: "desc" },
-			take: limit,
+			take: limit + 1,
 			skip: offset,
 			include: {
 				promptVersion: {
@@ -972,6 +980,8 @@ export async function getDocumentVersions(
 		db.documentVersion.count({ where: { documentId } }),
 	]);
 
+	const versions = rows.slice(0, limit);
+	const rowsByVersion = new Map(rows.map((row) => [row.version, row]));
 	const authorsById = await resolveVersionAuthors(versions);
 
 	return {
@@ -981,6 +991,7 @@ export async function getDocumentVersions(
 				version.changedBy,
 				version.changedBy ? authorsById.get(version.changedBy) : null,
 			),
+			madeBy: documentVersionMaker(version.version, rowsByVersion),
 		})),
 		total,
 		hasMore: offset + limit < total,

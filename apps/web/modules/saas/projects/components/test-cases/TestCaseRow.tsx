@@ -465,7 +465,7 @@ export function TestCaseRow({
 				/>
 			</span>
 
-			{/* Last run — the first column the grid drops, below 940px. */}
+			{/* Last run — the first column the grid drops, below 952px. */}
 			<span
 				className={cn(
 					"min-w-0 items-center truncate text-muted-foreground text-xs",
@@ -497,6 +497,7 @@ export function TestCaseRow({
 								})}
 							>
 								<MoreVerticalIcon
+									strokeWidth={2.5}
 									className="size-4"
 									aria-hidden="true"
 								/>
@@ -666,7 +667,7 @@ function CoverageLink({
 				</span>
 			</Link>
 			{extraLinks > 0 && (
-				<span className="shrink-0 text-muted-foreground/70 tabular-nums">
+				<span className="shrink-0 text-muted-foreground tabular-nums">
 					{t("row.coversMore", { count: extraLinks })}
 				</span>
 			)}

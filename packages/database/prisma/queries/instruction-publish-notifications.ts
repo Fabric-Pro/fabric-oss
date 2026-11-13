@@ -3,9 +3,11 @@
  *
  * Lives in `@repo/database` because every path that moves the published
  * pointer must emit it and one of them is the Temporal publish activity,
- * which cannot import `@repo/api`. The oRPC paths (manual publish, proposal
- * approval) call the same writer and then start external delivery
- * (email/webhook) for the rows it returns; the Temporal path is in-app only.
+ * which cannot import `@repo/api`. Every path calls this writer and then
+ * starts external delivery (email/webhook) for the rows it returns, by one
+ * channel rule (`@repo/utils/notification-delivery-channels`): the oRPC paths
+ * (manual publish, proposal approval) through the API's dispatcher, the
+ * Temporal automatic publish through `startExternalNotificationDelivery`.
  *
  * At most once per snapshot: the fan-out first claims
  * `ProjectInstructionSnapshot.publishNotifiedAt` with
@@ -73,7 +75,7 @@ export function instructionSyncCommand(projectId: string): string {
 
 /**
  * Claims the snapshot's announcement and writes one in-app notification per
- * recipient. Returns the rows written, so an oRPC caller can start external
+ * recipient. Returns the rows written, so the caller can start external
  * delivery for them; empty when the claim was already taken, nobody is left
  * to tell, or anything failed.
  */

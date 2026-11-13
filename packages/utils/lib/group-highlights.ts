@@ -7,6 +7,27 @@ export interface ReleaseHighlight {
 	prUrl?: string;
 	releaseTag?: string;
 	repoFullName?: string;
+	images?: ReleaseHighlightImage[];
+}
+
+/** A published image under its highlight; mirrors NewsletterHighlightImage. */
+export interface ReleaseHighlightImage {
+	url: string;
+	alt: string;
+	width?: number;
+	height?: number;
+	/** Absent means below the description. */
+	placement?: "ABOVE" | "BELOW";
+}
+
+/** A highlight's images shown above its description, or the rest. */
+export function highlightImagesAt(
+	images: readonly ReleaseHighlightImage[] | undefined,
+	placement: "ABOVE" | "BELOW",
+): ReleaseHighlightImage[] {
+	return (images ?? []).filter(
+		(image) => (image.placement === "ABOVE") === (placement === "ABOVE"),
+	);
 }
 
 export interface ReleaseGroup {

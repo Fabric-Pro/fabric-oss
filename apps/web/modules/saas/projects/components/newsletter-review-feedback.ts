@@ -74,18 +74,27 @@ export function describeReviewSuccess(
 	};
 }
 
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message.trim() : "";
+}
+
+/** The neutral notice for a send that left review under the reviewer. */
+function describeReviewConflict(error: unknown): ReviewFeedback {
+	return {
+		level: "info",
+		message: errorMessage(error) || GENERIC_CONFLICT,
+		refresh: true,
+	};
+}
+
 export function describeReviewFailure(
 	action: NewsletterReviewAction,
 	error: unknown,
 ): ReviewFeedback {
-	const message = error instanceof Error ? error.message.trim() : "";
+	const message = errorMessage(error);
 
 	if (getOrpcCode(error) === "CONFLICT") {
-		return {
-			level: "info",
-			message: message || GENERIC_CONFLICT,
-			refresh: true,
-		};
+		return describeReviewConflict(error);
 	}
 
 	// A real failure. Deliberately does NOT refresh: the row is still awaiting
@@ -94,6 +103,73 @@ export function describeReviewFailure(
 	return {
 		level: "error",
 		message: `${FAILURE_PREFIX[action]}: ${message || "Unknown error"}`,
+		refresh: false,
+	};
+}
+
+/** Why an image was refused, from the server's `data.code` or the browser's own check. */
+export type NewsletterImageRefusalCode =
+	| "too_large"
+	| "unsupported"
+	| "highlight_full"
+	| "capture_in_progress"
+	| "capture_limit"
+	| "no_capture_environment";
+
+const IMAGE_REFUSAL_COPY: Record<NewsletterImageRefusalCode, string> = {
+	too_large:
+		"That image is too large even after shrinking. Try a smaller one.",
+	unsupported: "Use a PNG or JPEG image.",
+	highlight_full: "This highlight already has two images.",
+	capture_in_progress: "This screenshot is already being captured.",
+	capture_limit:
+		"This newsletter has reached its limit of screenshot captures. Upload an image instead.",
+	no_capture_environment:
+		"Choose an environment to capture from in the release notes settings first.",
+};
+
+const IMAGE_FAILURE_FALLBACK = "Could not save the image. Try again.";
+
+function isImageRefusalCode(
+	value: unknown,
+): value is NewsletterImageRefusalCode {
+	return (
+		typeof value === "string" && Object.hasOwn(IMAGE_REFUSAL_COPY, value)
+	);
+}
+
+function readDataCode(error: unknown): unknown {
+	if (typeof error !== "object" || error === null || !("data" in error)) {
+		return undefined;
+	}
+	const { data } = error;
+	if (typeof data !== "object" || data === null || !("code" in data)) {
+		return undefined;
+	}
+	return data.code;
+}
+
+export function describeImageRefusal(code: NewsletterImageRefusalCode): string {
+	return IMAGE_REFUSAL_COPY[code];
+}
+
+/**
+ * The toast for a failed image write. A CONFLICT means the send left review
+ * under the reviewer: the same neutral notice as approve/reject, and the panel
+ * refreshes (and closes). A capture still running is also a CONFLICT, but
+ * carries its own code and leaves the panel open. Nothing else refreshes, so
+ * the reviewer's unsaved ticks and order survive.
+ */
+export function describeImageFailure(error: unknown): ReviewFeedback {
+	const code = readDataCode(error);
+	if (getOrpcCode(error) === "CONFLICT" && code !== "capture_in_progress") {
+		return describeReviewConflict(error);
+	}
+	return {
+		level: "error",
+		message: isImageRefusalCode(code)
+			? IMAGE_REFUSAL_COPY[code]
+			: IMAGE_FAILURE_FALLBACK,
 		refresh: false,
 	};
 }

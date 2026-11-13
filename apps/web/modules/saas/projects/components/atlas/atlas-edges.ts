@@ -7,7 +7,7 @@
  * "Design system"). The solo and System map share ONE colour vocabulary here so
  * the connections list / edge panel read identically in both hosts.
  */
-import type { SystemCrossEdgeKind, AtlasEdgeKind } from "@repo/atlas/types";
+import type { AtlasEdgeKind, SystemCrossEdgeKind } from "@repo/atlas/types";
 
 /**
  * The four cross-repo relationship kinds (System map). Mirrors
@@ -17,7 +17,7 @@ import type { SystemCrossEdgeKind, AtlasEdgeKind } from "@repo/atlas/types";
 const SYSTEM_EDGE_KIND_COLOR: Record<SystemCrossEdgeKind, string> = {
 	CALLS_API: "var(--primary)",
 	DEPENDS_ON: "var(--highlight)",
-	SHARES_LIBRARY: "var(--secondary)",
+	SHARES_LIBRARY: "var(--success)",
 	RELATES_TO: "var(--muted-foreground)",
 };
 
@@ -52,7 +52,7 @@ export const SOLO_EDGE_KINDS: AtlasEdgeKind[] = [
  */
 const SOLO_EDGE_KIND_COLOR: Record<AtlasEdgeKind, string> = {
 	CONTAINS: "var(--muted-foreground)",
-	IMPORTS: "var(--secondary)",
+	IMPORTS: "var(--success)",
 	DEPENDS_ON: "var(--highlight)",
 	COVERS: "var(--primary)",
 	RELATES_TO: "var(--muted-foreground)",

@@ -355,6 +355,7 @@ describe("saveProjectDocument — slot-free save is unchanged", () => {
 			status: "GENERATING",
 			content: "# Old",
 			version: 3,
+			lastEditedBy: "user-0",
 		});
 
 		await saveProjectDocument("doc-1", "# New", "user-1");
@@ -366,6 +367,7 @@ describe("saveProjectDocument — slot-free save is unchanged", () => {
 				status: true,
 				content: true,
 				version: true,
+				lastEditedBy: true,
 				projectId: true,
 				type: true,
 			},
@@ -379,7 +381,9 @@ describe("saveProjectDocument — slot-free save is unchanged", () => {
 				version: 3,
 				content: "# Old",
 				changeDescription: "Pre-regeneration snapshot (auto)",
-				changedBy: "user-1",
+				// Whoever wrote the replaced body, not the regenerating user
+				// (Fizzy #2946).
+				changedBy: "user-0",
 			},
 		});
 		expect(mocks.projectDocument.update).toHaveBeenCalledTimes(1);
@@ -464,6 +468,7 @@ describe("saveProjectDocument — guarded by the generation baseline", () => {
 			status: "GENERATING",
 			content: SLOTTED,
 			version: 3,
+			lastEditedBy: "user-0",
 		});
 
 		await saveAgainst(3);
@@ -475,7 +480,7 @@ describe("saveProjectDocument — guarded by the generation baseline", () => {
 				version: 3,
 				content: SLOTTED,
 				changeDescription: "Pre-regeneration snapshot (auto)",
-				changedBy: "user-1",
+				changedBy: "user-0",
 			},
 		});
 		expect(mocks.tx.projectDocument.updateMany).toHaveBeenCalledWith({

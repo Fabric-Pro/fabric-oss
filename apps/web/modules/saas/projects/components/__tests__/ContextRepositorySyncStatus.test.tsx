@@ -54,6 +54,19 @@ const { syncNowMock, disableMock, configureMock } = vi.hoisted(() => ({
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
+			repositoryIntegrations: {
+				branches: {
+					queryOptions: (options: Record<string, unknown>) => ({
+						...options,
+						queryKey: ["branches", options.input],
+						queryFn: () => ({
+							defaultBranch: null,
+							branches: [],
+							truncated: false,
+						}),
+					}),
+				},
+			},
 			members: {
 				list: {
 					queryOptions: (options: Record<string, unknown>) => ({

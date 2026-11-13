@@ -422,7 +422,7 @@ export function StoryWorkspacePage({
 							</p>
 							<Link
 								href={`${basePath}/settings/ai-providers`}
-								className="inline-flex items-center gap-2 mt-2 text-sm font-medium text-primary hover:text-primary/80"
+								className="inline-flex items-center gap-2 mt-2 text-sm font-medium text-primary hover:text-primary-hover"
 							>
 								{tRemote("configurePortalAi")}
 								<ExternalLink className="h-3.5 w-3.5" />

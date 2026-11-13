@@ -99,7 +99,9 @@ function CommentRow({
 				)}
 				<AvatarFallback
 					className={
-						isAgent ? "bg-primary/10 text-primary" : undefined
+						isAgent
+							? "bg-primary/10 text-primary-active"
+							: undefined
 					}
 				>
 					{isAgent ? (
@@ -326,7 +328,7 @@ export function CommentsPanel({
 				)}
 
 				{pendingFabricCommentIds.length > 0 && (
-					<div className="flex items-center gap-2 rounded-lg bg-primary/5 px-3 py-2 text-primary text-sm">
+					<div className="flex items-center gap-2 rounded-lg bg-primary/5 px-3 py-2 text-primary-active text-sm">
 						<Loader2Icon className="size-4 animate-spin" />
 						Fabric Agent is drafting a reply…
 					</div>

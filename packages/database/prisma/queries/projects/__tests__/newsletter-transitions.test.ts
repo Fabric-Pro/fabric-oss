@@ -134,7 +134,10 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					audit: auditActor(project),
 				});
 
-				expect(result).toEqual({ approved: true });
+				expect(result).toEqual({
+					approved: true,
+					embeddedImageIds: [],
+				});
 				const persisted = await db.newsletterSend.findUniqueOrThrow({
 					where: { id: send.id },
 				});
@@ -174,7 +177,10 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					audit: auditActor(project),
 				});
 
-				expect(result).toEqual({ approved: false });
+				expect(result).toEqual({
+					approved: false,
+					embeddedImageIds: [],
+				});
 				const persisted = await db.newsletterSend.findUniqueOrThrow({
 					where: { id: send.id },
 				});

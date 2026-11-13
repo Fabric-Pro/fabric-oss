@@ -120,7 +120,9 @@ export function ReportArtifactContent({
 						<li className="leading-relaxed">{children}</li>
 					),
 					blockquote: ({ children }) => (
-						<blockquote className="border-l-4 border-muted-foreground/30 pl-4 italic text-muted-foreground my-4">
+						// A report's blockquote is a callout: `not-prose` stops
+						// the typography plugin adding quotation marks.
+						<blockquote className="not-prose border-l-4 border-muted-foreground/30 pl-4 italic text-muted-foreground my-4">
 							{children}
 						</blockquote>
 					),

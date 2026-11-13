@@ -12,6 +12,7 @@ import { ORPCError } from "@orpc/server";
 import { z } from "zod";
 import {
 	Permissions,
+	requireInputOrgPermission,
 	requirePermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
@@ -82,7 +83,11 @@ const ApprovalTemplateSchema = z.object({
 // =============================================================================
 
 export const listApprovalTemplates = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/orchestrator/approval-templates",
@@ -217,7 +222,11 @@ export const getApprovalTemplate = tenantProtectedProcedure
 // =============================================================================
 
 export const createApprovalTemplate = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/orchestrator/approval-templates",
@@ -439,7 +448,11 @@ export const deleteApprovalTemplate = tenantProtectedProcedure
 // =============================================================================
 
 export const testApprovalTemplateMatch = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/orchestrator/approval-templates/test",

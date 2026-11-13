@@ -99,7 +99,7 @@ export function PipelineRunRow({
 					onClick={(e) => e.stopPropagation()}
 					aria-label={t("openRun")}
 					title={t("openRun")}
-					className="shrink-0 rounded p-2 text-muted-foreground/70 motion-safe:transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+					className="shrink-0 rounded p-2 text-muted-foreground motion-safe:transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 				>
 					<ExternalLinkIcon className="size-4" aria-hidden="true" />
 				</a>

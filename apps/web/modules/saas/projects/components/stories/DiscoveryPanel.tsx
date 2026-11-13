@@ -289,7 +289,7 @@ export function DiscoveryPanel({
 							className={cn(
 								"inline-flex items-center gap-1.5 font-medium",
 								contractComplete
-									? "text-secondary"
+									? "text-success"
 									: latest.status === "FAILED"
 										? "text-destructive"
 										: "text-foreground",

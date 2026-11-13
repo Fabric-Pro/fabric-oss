@@ -313,7 +313,11 @@ export async function createUploadedTranscript(params: {
 	contextId: string;
 	contentSha256: string;
 	meetingSubject: string;
-	meetingDate: Date;
+	/**
+	 * Null when the date of the meeting is not known. A folder import never
+	 * stands in the day it was imported for the day it was held (#3507).
+	 */
+	meetingDate: Date | null;
 	content: string;
 	contentHash: string | null;
 	sourceTitle: string;

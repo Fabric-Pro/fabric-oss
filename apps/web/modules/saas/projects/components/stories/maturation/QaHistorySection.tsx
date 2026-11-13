@@ -338,7 +338,7 @@ function DraftRunStatusBadge({ status }: { status: DraftRunStatus }) {
 		return (
 			<span className="inline-flex items-center gap-1 text-foreground text-xs">
 				<CheckCircle2Icon
-					className="size-3.5 text-secondary"
+					className="size-3.5 text-success"
 					aria-hidden="true"
 				/>
 				{t("history.status.succeeded")}

@@ -28,6 +28,11 @@ const TEXT_TASK_TYPES = [
 	"EVAL",
 ];
 
+const IMAGE_RUNTIME_PROVIDERS = [
+	"VERCEL_GATEWAY",
+	"OPENAI_DIRECT",
+] as const satisfies readonly AIProvider[];
+
 const AiTaskTypeEnum = z.enum([
 	"SIMPLE",
 	"COMPLEX",
@@ -138,9 +143,13 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 			});
 		}
 
-		if (taskType === "IMAGE" && provider !== "VERCEL_GATEWAY") {
+		if (
+			taskType === "IMAGE" &&
+			!IMAGE_RUNTIME_PROVIDERS.some((candidate) => candidate === provider)
+		) {
 			throw new ORPCError("BAD_REQUEST", {
-				message: "Image tasks require Vercel AI Gateway.",
+				message:
+					"Image tasks require an OpenAI or Vercel AI Gateway connection.",
 			});
 		}
 		if (taskType === "DECISION") {
@@ -185,19 +194,22 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 				provider = "VERCEL_GATEWAY";
 			}
 		} else if (taskType === "IMAGE") {
-			const gateway = await getAiProviderApiKeyByProvider({
+			const imageProvider = await getAiProviderApiKeyByProvider({
 				userId: context.user.id,
 				organizationId,
-				provider: "VERCEL_GATEWAY",
+				provider,
 			});
 			if (
-				gateway?.provider !== "VERCEL_GATEWAY" ||
-				gateway.source !== "organization" ||
-				!gateway.apiKey
+				imageProvider?.provider !== provider ||
+				imageProvider.source !== "organization" ||
+				!imageProvider.apiKey
 			) {
+				const providerName =
+					provider === "OPENAI_DIRECT"
+						? "OpenAI"
+						: "Vercel AI Gateway";
 				throw new ORPCError("PRECONDITION_FAILED", {
-					message:
-						"Image models require an organization Vercel AI Gateway configuration",
+					message: `Image models require an organization ${providerName} configuration`,
 				});
 			}
 		}
@@ -255,6 +267,12 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 			throw new ORPCError("BAD_REQUEST", {
 				message:
 					"Evaluation models can only be configured for DECISION tasks.",
+			});
+		}
+
+		if (taskType === "IMAGE" && !model.capabilities.includes("IMAGE")) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "Image tasks require an image-capable model.",
 			});
 		}
 

@@ -9,6 +9,7 @@ import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertP
 import type { ClarifyingQuestionFrequency } from "@saas/shared/components/copilot/useClarifyingQuestions";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { isMonitoringFeatureEnabled } from "@saas/shared/lib/feature-flags";
+import { ProjectTimeTrackingSettings } from "@saas/time-tracking/components/ProjectTimeTrackingSettings";
 import { GoogleDriveIcon } from "@saas/workflows/lib/plugins/google-drive/icon";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation } from "@tanstack/react-query";
@@ -21,7 +22,7 @@ import {
 import { AlertTriangleIcon } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
 	type ProjectTabMeta,
@@ -60,7 +61,10 @@ import {
 	PM_SETTINGS_ANCHOR_ID,
 	scrollToWhenRendered,
 } from "./settings-tab-navigation";
-import { resolveStoredSettingsTab } from "./settings-tab-storage";
+import {
+	resolveStoredSettingsTab,
+	type SettingsTabGates,
+} from "./settings-tab-storage";
 import { TeamsChannelMonitorSettings } from "./TeamsChannelMonitorSettings";
 import { TeamsChatMonitorSettings } from "./TeamsChatMonitorSettings";
 
@@ -185,13 +189,13 @@ const DEEP_LINKABLE_SETTINGS_TABS: SettingsTab[] = [
 	"testing",
 	"newsletter",
 	"publishing",
+	"time-tracking",
 ];
 
 function resolveRequestedSettingsTab(
 	requested: string | null,
 	anchorId: string | null | undefined,
-	pmFieldMappingEnabled: boolean,
-	publishingEnabled: boolean,
+	gates: SettingsTabGates,
 ): SettingsTab | null {
 	if (!requested) {
 		return null;
@@ -199,14 +203,10 @@ function resolveRequestedSettingsTab(
 	const effective =
 		requested === "development" &&
 		anchorId === PM_SETTINGS_ANCHOR_ID &&
-		pmFieldMappingEnabled
+		gates.pmFieldMappingEnabled
 			? "project-management"
 			: requested;
-	return resolveStoredSettingsTab(effective, {
-		pmFieldMappingEnabled,
-		qaEnabled: QA_SETTINGS_ENABLED,
-		publishingEnabled,
-	});
+	return resolveStoredSettingsTab(effective, gates);
 }
 
 // The QA project tab is gated on this flag (`ProjectDetails.tsx`), and both QA
@@ -222,11 +222,7 @@ const QA_SETTINGS_ENABLED =
 // is read inside the component from the nearest FeatureFlagProvider, which the
 // organization layout mounts resolved for that organization.
 
-function useSettingsTab(
-	projectId: string,
-	pmFieldMappingEnabled: boolean,
-	publishingEnabled: boolean,
-) {
+function useSettingsTab(projectId: string, gates: SettingsTabGates) {
 	const [tab, setTabState] = useState<SettingsTab>(() => {
 		if (typeof window === "undefined") {
 			return "general";
@@ -235,13 +231,7 @@ function useSettingsTab(
 			const stored = sessionStorage.getItem(
 				`${STORAGE_KEY_PREFIX}${projectId}`,
 			);
-			return (
-				resolveStoredSettingsTab(stored, {
-					pmFieldMappingEnabled,
-					qaEnabled: QA_SETTINGS_ENABLED,
-					publishingEnabled,
-				}) ?? "general"
-			);
+			return resolveStoredSettingsTab(stored, gates) ?? "general";
 		} catch {
 			// ignore
 		}
@@ -285,8 +275,7 @@ function useSettingsTab(
 			const resolved = resolveRequestedSettingsTab(
 				detail.settingsTab,
 				undefined,
-				pmFieldMappingEnabled,
-				publishingEnabled,
+				gates,
 			);
 			// `null` means the requested tab is gated off for this viewer —
 			// leave them where they are rather than bouncing them to General.
@@ -300,7 +289,7 @@ function useSettingsTab(
 				NAVIGATE_TO_SETTINGS_TAB_EVENT,
 				onNavigate,
 			);
-	}, [projectId, pmFieldMappingEnabled, publishingEnabled, setTab]);
+	}, [projectId, gates, setTab]);
 
 	return [tab, setTab] as const;
 }
@@ -316,11 +305,18 @@ export function ProjectSettings({
 	});
 	const pmFieldMappingEnabled = project.pmFieldMappingEnabled ?? false;
 	const publishingSuiteEnabled = useFeatureFlag("PUBLISHING_SUITE");
-	const [settingsTab, setSettingsTab] = useSettingsTab(
-		project.id,
-		pmFieldMappingEnabled,
-		publishingSuiteEnabled,
+	// Time is tracked on an organization's projects only.
+	const timeTrackingEnabled = Boolean(project.organizationId);
+	const gates = useMemo<SettingsTabGates>(
+		() => ({
+			pmFieldMappingEnabled,
+			qaEnabled: QA_SETTINGS_ENABLED,
+			publishingEnabled: publishingSuiteEnabled,
+			timeTrackingEnabled,
+		}),
+		[pmFieldMappingEnabled, publishingSuiteEnabled, timeTrackingEnabled],
 	);
+	const [settingsTab, setSettingsTab] = useSettingsTab(project.id, gates);
 	// Honor a `?settingsTab=<id>` (and optional `?settingsAnchor=<id>`) deep link
 	// so notifications and Readiness CTAs land directly on the target sub-tab and
 	// scroll to the matching card. Wait until `?tab=` has been stripped by
@@ -343,8 +339,7 @@ export function ProjectSettings({
 			const resolved = resolveRequestedSettingsTab(
 				requested,
 				requestedAnchor,
-				pmFieldMappingEnabled,
-				publishingSuiteEnabled,
+				gates,
 			);
 			if (resolved) {
 				setSettingsTab(resolved);
@@ -372,13 +367,7 @@ export function ProjectSettings({
 				);
 			}
 		}
-	}, [
-		settingsSearch,
-		router,
-		pmFieldMappingEnabled,
-		publishingSuiteEnabled,
-		setSettingsTab,
-	]);
+	}, [settingsSearch, router, gates, setSettingsTab]);
 	// Chat channels are LINKED on the Knowledge tab, but SELECTED on the
 	// Newsletter and Publishing cards. Switching the tab is not enough: the
 	// monitor cards sit well below the fold of a long tab, so a reader who
@@ -494,6 +483,7 @@ export function ProjectSettings({
 				showProjectManagement={pmFieldMappingEnabled}
 				showQa={QA_SETTINGS_ENABLED}
 				showPublishing={publishingSuiteEnabled}
+				showTimeTracking={timeTrackingEnabled}
 			/>
 
 			<div
@@ -611,6 +601,7 @@ export function ProjectSettings({
 									}
 									canEdit={canEditSettings}
 									project={project}
+									transcriptFolders
 								/>
 							</div>
 							{/* One anchor around all three: the readiness item is
@@ -779,6 +770,14 @@ export function ProjectSettings({
 							organizationId={project.organizationId}
 						/>
 					</div>
+				)}
+
+				{settingsTab === "time-tracking" && timeTrackingEnabled && (
+					<ProjectTimeTrackingSettings
+						projectId={project.id}
+						canEdit={canEditSettings}
+						reportHref={`${basePath}/projects/${project.id}/time-report`}
+					/>
 				)}
 
 				{settingsTab === "retrieval" && (

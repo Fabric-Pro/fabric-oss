@@ -27,10 +27,7 @@
 import { db, Prisma } from "@repo/database";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { filterByCurrentAccess } from "../../notifications/lib/access-filter";
-import {
-	INCIDENT_NOTIFICATION_TYPES,
-	WEEKLY_DIGEST_DEDUPE_PREFIX,
-} from "../../notifications/lib/incident-notification-types";
+import { bellVisibleWhere } from "../../notifications/lib/bell-visible-where";
 import { hasReachableDatabaseUrl } from "../../prompts/__tests__/_helpers/db-availability";
 import { notifyDecisionOwner } from "../lib/decision-owner";
 
@@ -62,23 +59,18 @@ const rowsFor = (userId: string) =>
  * What the recipient's bell actually returns, not what the table contains.
  *
  * A written row and a visible notification are different claims: the bell
- * matches `organizationId` exactly, hides incident types, hides archived and
- * (on the unread tab) read rows, and then re-checks project access at read
- * time. A notification can satisfy every assertion about its own columns and
- * still reach nobody. This mirrors the where-clause and the access filter in
- * `modules/notifications/procedures/list.ts` so a change there that strands
- * decision-owner rows fails here instead of in someone's empty bell.
+ * admits rows in the resolved organization plus the caller's account-global
+ * weekly digest, hides other incident types and archived rows, and then
+ * re-checks project access at read time. A notification can satisfy every
+ * assertion about its own columns and still reach nobody. This uses the same
+ * predicate and access filter as `modules/notifications/procedures/list.ts` so
+ * a change there cannot silently strand decision-owner rows.
  */
-const bellFor = async (userId: string, organizationId: string | null) => {
+const bellFor = async (userId: string, organizationId: string) => {
 	const rows = await db.notification.findMany({
 		where: {
-			userId,
-			organizationId,
+			...bellVisibleWhere({ userId, organizationId }),
 			archivedAt: null,
-			OR: [
-				{ type: { notIn: INCIDENT_NOTIFICATION_TYPES } },
-				{ dedupeKey: { startsWith: WEEKLY_DIGEST_DEDUPE_PREFIX } },
-			],
 		},
 		orderBy: { createdAt: "desc" },
 	});
@@ -214,13 +206,18 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			expect(rows[0].projectId).toBe(PROJECT);
 		});
 
-		// The bell matches organizationId exactly. A row written against the
-		// wrong tenant is invisible in the one the owner is actually browsing,
-		// which is the failure this assertion exists to catch.
+		// Outside the caller's own weekly digest, the bell only shows rows of the
+		// organization being browsed. A row written against the wrong tenant is
+		// invisible in the one the owner is actually browsing, which is the
+		// failure this assertion exists to catch.
 		it("is invisible from a different organization's bell", async () => {
 			await notifyDecisionOwner(decision(OWNER), actor, ORG, true);
 
-			expect(await bellFor(OWNER, null)).toHaveLength(0);
+			expect(await bellFor(OWNER, `do-other-org-${RUN}`)).toHaveLength(0);
+			const own = await bellFor(OWNER, ORG);
+			expect(
+				own.filter((n) => n.type.startsWith("DECISION_OWNER_")),
+			).toHaveLength(1);
 		});
 	},
 );

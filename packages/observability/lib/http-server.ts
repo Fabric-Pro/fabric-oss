@@ -44,6 +44,7 @@ export async function shutdownHttpServer(
 export function registerHttpServerShutdown(
 	server: HttpServer,
 	cleanup?: () => Promise<void>,
+	{ deadlineMs = 15_000 }: { deadlineMs?: number } = {},
 ): void {
 	let stopping = false;
 	const shutdown = () => {
@@ -52,7 +53,7 @@ export function registerHttpServerShutdown(
 		}
 		stopping = true;
 		// Streaming requests must not hold a terminating replica indefinitely.
-		const deadline = setTimeout(() => process.exit(1), 15_000);
+		const deadline = setTimeout(() => process.exit(1), deadlineMs);
 		deadline.unref();
 		void shutdownHttpServer(server, cleanup).then(
 			() => {

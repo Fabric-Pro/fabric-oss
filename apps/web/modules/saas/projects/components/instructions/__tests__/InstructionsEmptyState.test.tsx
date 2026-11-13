@@ -732,3 +732,80 @@ describe("InstructionsEmptyState — copy", () => {
 		expect(screen.getByTestId("tab-notice")).toBeInTheDocument();
 	});
 });
+
+describe("InstructionsEmptyState — the organization template", () => {
+	it("offers to start from the template beside Upload, and runs it", async () => {
+		const user = userEvent.setup();
+		const onApply = vi.fn();
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				template={{ pending: false, onApply }}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", { name: "Upload folder" }),
+		).toBeInTheDocument();
+		await user.click(
+			screen.getByRole("button", {
+				name: "Start from the organization template",
+			}),
+		);
+
+		expect(onApply).toHaveBeenCalledTimes(1);
+	});
+
+	it("disables the button while the template is being added", () => {
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				template={{ pending: true, onApply: vi.fn() }}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", {
+				name: "Start from the organization template",
+			}),
+		).toBeDisabled();
+	});
+
+	it("is not offered to someone who cannot upload, even with a template", () => {
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+				canUpload={false}
+				template={{ pending: false, onApply: vi.fn() }}
+			/>,
+		);
+
+		expect(
+			screen.queryByRole("button", {
+				name: "Start from the organization template",
+			}),
+		).not.toBeInTheDocument();
+	});
+
+	it("is not offered when the organization has no template to add", () => {
+		render(
+			<InstructionsEmptyState
+				projectId="p"
+				projectName="Checkout Rewrite"
+				onUploadClick={() => undefined}
+			/>,
+		);
+
+		expect(
+			screen.queryByRole("button", {
+				name: "Start from the organization template",
+			}),
+		).not.toBeInTheDocument();
+	});
+});

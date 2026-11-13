@@ -93,7 +93,7 @@ export function ValidationErrorsPanel({
 					) : (
 						<>
 							<AlertTriangle className="h-4 w-4 text-highlight" />
-							<span className="text-yellow-700 dark:text-yellow-400">
+							<span className="text-yellow-800 dark:text-yellow-400">
 								Validation Warnings (
 								{validation.warnings.length})
 							</span>

@@ -71,9 +71,10 @@ export async function register() {
 		// Forward warn/error/fatal logs to App Insights independently of OTel.
 		// Vercel runtime logs are otherwise the web app's only backend log sink.
 		// The client is not built here: this also runs in the proxy function,
-		// which never logs and would pay the init on every new instance. Page
-		// and API functions start it eagerly (see `startWebAppInsights`); any
-		// other function starts it with its first warn/error record.
+		// which never logs and would pay the init on every new instance. Pages
+		// start it after their first response and the API route eagerly (see
+		// `startWebAppInsights`); any function starts it with its first
+		// warn/error record.
 		const { startWebAppInsights } = await import(
 			"@shared/lib/web-app-insights"
 		);

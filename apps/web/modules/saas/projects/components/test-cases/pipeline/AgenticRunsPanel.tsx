@@ -123,7 +123,7 @@ const MAX_CASES_PER_RUN = 500;
 const STATUS_TONE: Record<string, string> = {
 	QUEUED: "text-muted-foreground",
 	RUNNING: "text-highlight",
-	PASSED: "text-secondary",
+	PASSED: "text-success",
 	FAILED: "text-destructive",
 	// Amber, matching the step-level BLOCKED below: the run finished but could
 	// not test everything it was asked to. Deliberately not green (nothing was
@@ -140,7 +140,7 @@ const STATUS_TONE: Record<string, string> = {
 };
 
 const STEP_TONE: Record<string, string> = {
-	PASSED: "text-secondary",
+	PASSED: "text-success",
 	FAILED: "text-destructive",
 	BLOCKED: "text-highlight",
 	NEEDS_REVIEW: "text-highlight",

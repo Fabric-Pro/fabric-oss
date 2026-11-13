@@ -345,9 +345,7 @@ export function LensAccuracy({
 					)}{" "}
 					<span
 						className={
-							l.meetsTarget
-								? "text-secondary"
-								: "text-destructive"
+							l.meetsTarget ? "text-success" : "text-destructive"
 						}
 					>
 						{targetLabel(Math.round(target * 100))}

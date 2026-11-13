@@ -48,7 +48,7 @@ export function AgendaStatusIndicator({
 				return {
 					Icon: CheckSquareIcon,
 					label: "Agenda ready",
-					className: "text-emerald-600 dark:text-emerald-400",
+					className: "text-emerald-700 dark:text-emerald-400",
 				};
 			case "GENERATING":
 				return {

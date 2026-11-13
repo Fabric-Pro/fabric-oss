@@ -1,9 +1,11 @@
+import { ORPCError } from "@orpc/server";
 import { deleteAgentTemplate, getAgentTemplate } from "@repo/database";
 import { z } from "zod";
 import {
 	adminProcedure,
 	Permissions,
 	requirePermission,
+	resolveOrganizationIdForCaller,
 } from "../../../../orpc/procedures";
 import { requireOrgMembership } from "../../../organizations/lib/membership";
 
@@ -15,10 +17,20 @@ export const deleteTemplateProcedure = adminProcedure
 	.use(requirePermission(Permissions.AGENT_TEMPLATE_MANAGE))
 	.input(deleteInputSchema)
 	.handler(async ({ input, context }) => {
+		const organizationId = await resolveOrganizationIdForCaller(
+			undefined,
+			context.session,
+			context.user.id,
+		);
 		// Verify ownership
-		const existing = await getAgentTemplate(input.id);
+		const existing = await getAgentTemplate(input.id, {
+			userId: context.user.id,
+			organizationId,
+		});
 		if (!existing) {
-			throw new Error("Template not found");
+			throw new ORPCError("NOT_FOUND", {
+				message: "Template not found",
+			});
 		}
 
 		// System templates are admin-managed and may be deleted here.

@@ -22,8 +22,10 @@ import {
 } from "@saas/organizations/hooks/use-organization-context";
 import { useProjectShortcuts } from "@saas/projects/hooks/use-project-shortcuts";
 import { ColorModeToggle } from "@saas/shared/components/ColorModeToggle";
+import { useContrastPreference } from "@saas/shared/components/ContrastPreferenceProvider";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
+import { HighContrastToggle } from "@saas/shared/components/HighContrastToggle";
 import { IncidentRailIndicator } from "@saas/shared/components/IncidentRailIndicator";
 import { CloudArrowLeftRightIcon } from "@saas/shared/components/icons/CloudArrowLeftRightIcon";
 import { FolderOpenIcon as SparkFolderOpenIcon } from "@saas/shared/components/icons/FolderOpenIcon";
@@ -38,6 +40,7 @@ import { UserMenu } from "@saas/shared/components/UserMenu";
 import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
 import { useSidebarCollapse } from "@saas/shared/contexts/SidebarCollapseContext";
 import { isMonitoringFeatureEnabled } from "@saas/shared/lib/feature-flags";
+import { useTimerNavIndicator } from "@saas/time-tracking/components/TimerDot";
 import { Logo } from "@shared/components/Logo";
 import { TruncatedText } from "@shared/components/TruncatedText";
 
@@ -53,6 +56,7 @@ import {
 	Building2Icon,
 	ChevronRightIcon,
 	ClipboardListIcon,
+	ClockIcon,
 	CompassIcon,
 	FileTextIcon,
 	FolderIcon,
@@ -99,6 +103,12 @@ type BaseNavItem = {
 	 * not, and two clipped names can read identically.
 	 */
 	truncateLabel?: boolean;
+	/**
+	 * A state marker layered over the icon (the running timer's dot), with
+	 * the words it stands for: `sr-only` when expanded, folded into the
+	 * `aria-label` when collapsed, where that label replaces the contents.
+	 */
+	indicator?: { node: ReactNode; label: string };
 };
 
 type SubNavItem = BaseNavItem;
@@ -168,7 +178,7 @@ export function NavBar({
 	const t = useTranslations();
 	const pathname = usePathname();
 	const { user } = useSession();
-	const { basePath, isOrgContext } = useOrganizationContext();
+	const { basePath, isOrgContext, organizationId } = useOrganizationContext();
 	// Rollback lever for the agent-surface consolidation (#2040). Read here so
 	// the nav destination moves with the route redirect rather than stranding
 	// users on a surface the flag is meant to have turned off.
@@ -188,6 +198,12 @@ export function NavBar({
 	const settingsPath = useContextPath("settings/general");
 	const accountSettingsPath = useAccountPath("settings/account/profile");
 	const isGuest = useIsGuestInOrg();
+	// The running timer's dot on My time, shown whatever the widget
+	// preference so a hidden widget never hides a running timer. A guest's
+	// My time is in their own organization, not the one they are visiting.
+	const timerIndicator = useTimerNavIndicator(
+		isOrgContext && !isGuest ? organizationId : null,
+	);
 	const { isCollapsed, toggleCollapsed } = useSidebarCollapse();
 	const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 	// Fullscreen pages render the sidebar force-collapsed with no persistent
@@ -447,6 +463,16 @@ export function NavBar({
 							},
 						]
 					: []),
+				{
+					label: t("app.menu.time"),
+					href: `${effectiveBasePath}/time`,
+					icon: ClockIcon,
+					// Literal for the same reason as the To Do entry above: the
+					// drift guard scans this file for the quoted id.
+					onboardingId: "nav-time",
+					isActive: pathname === `${effectiveBasePath}/time`,
+					indicator: timerIndicator,
+				},
 				{
 					label: "Workspaces",
 					href: `${effectiveBasePath}/workspaces`,
@@ -1014,6 +1040,10 @@ function RailTooltip({
 }
 
 function SidebarControlsFooter({ collapsed }: { collapsed: boolean }) {
+	const t = useTranslations();
+	// The high-contrast control only exists inside the authenticated app's
+	// provider; without it the rail must not keep an empty tooltip slot.
+	const contrastAvailable = useContrastPreference() !== null;
 	const inner = (
 		<div
 			className={cn(
@@ -1054,11 +1084,24 @@ function SidebarControlsFooter({ collapsed }: { collapsed: boolean }) {
 				)}
 			>
 				{collapsed ? (
-					<RailTooltip label="Toggle theme">
-						<ThemeToggle variant="inline" className="size-9" />
-					</RailTooltip>
+					<>
+						<RailTooltip label="Toggle theme">
+							<ThemeToggle variant="inline" className="size-9" />
+						</RailTooltip>
+						{contrastAvailable && (
+							<RailTooltip label={t("app.userMenu.highContrast")}>
+								<HighContrastToggle
+									variant="rail"
+									className="size-9"
+								/>
+							</RailTooltip>
+						)}
+					</>
 				) : (
-					<ColorModeToggle />
+					<>
+						<ColorModeToggle />
+						<HighContrastToggle className="ml-1" />
+					</>
 				)}
 			</div>
 		</div>
@@ -1115,10 +1158,14 @@ function SidebarUtilityItem({
 		// <button> (an <a> stretches on its own, a <button> doesn't), otherwise
 		// it renders fit-content and lands a few px left of the column center.
 		collapsed ? "w-full justify-center px-2 py-1" : "gap-2.5 px-2.5 py-1",
+		// The active item's label is text on an orange wash, where --primary
+		// measured 4.29:1 — under WCAG AA. --primary-active is the same hue one
+		// step deeper (about 7:1 light, 8:1 dark), and the token's own job:
+		// the active state (Fizzy #1444).
 		destructive
 			? "text-destructive hover:bg-destructive/10"
 			: isActive
-				? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary"
+				? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary-active"
 				: "text-foreground hover:bg-foreground/[0.06]",
 	);
 
@@ -1134,7 +1181,7 @@ function SidebarUtilityItem({
 						destructive
 							? "text-destructive"
 							: isActive
-								? "text-primary"
+								? "text-primary-active"
 								: "text-foreground",
 					)}
 					aria-hidden="true"
@@ -1229,14 +1276,14 @@ function SidebarNavItem({
 	onNavigate?: () => void;
 }) {
 	const router = useRouter();
-	const { srSuffix, truncateLabel } = item;
+	const { srSuffix, truncateLabel, indicator } = item;
 
 	if (item.disabled) {
 		const content = (
 			<div
 				className={cn(
 					"flex min-h-[36px] items-center rounded-md px-2.5 py-1.5 text-sm cursor-not-allowed select-none",
-					"text-muted-foreground/35",
+					"text-muted-foreground",
 					collapsed ? "justify-center" : "justify-between gap-2",
 					isChild && "min-h-[32px] py-1 text-xs",
 				)}
@@ -1261,7 +1308,7 @@ function SidebarNavItem({
 							<item.icon className="size-[19px] shrink-0 opacity-40" />
 							<span className="truncate">{item.label}</span>
 						</span>
-						<span className="flex items-center gap-1 rounded-full bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground/40 shrink-0">
+						<span className="flex items-center gap-1 rounded-full bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground shrink-0">
 							<LockIcon className="size-2.5" />
 							Soon
 						</span>
@@ -1298,21 +1345,30 @@ function SidebarNavItem({
 				"group relative flex min-h-[28px] items-center rounded-md px-2.5 py-1 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 				collapsed ? "justify-center" : "gap-2.5",
 				item.isActive
-					? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary"
+					? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary-active"
 					: "text-foreground hover:bg-foreground/[0.06]",
 				isChild && "min-h-[26px] py-1",
 			)}
-			aria-label={collapsed ? item.label : undefined}
+			aria-label={
+				collapsed
+					? [item.label, indicator?.label].filter(Boolean).join(". ")
+					: undefined
+			}
 			aria-current={item.isActive ? "page" : undefined}
 			data-onboarding-target={item.onboardingId}
 		>
-			<item.icon
-				className={cn(
-					"size-4 shrink-0 transition-colors",
-					item.isActive ? "text-primary" : "text-foreground",
-				)}
-				aria-hidden="true"
-			/>
+			<span className="relative flex shrink-0">
+				<item.icon
+					className={cn(
+						"size-4 shrink-0 transition-colors",
+						item.isActive
+							? "text-primary-active"
+							: "text-foreground",
+					)}
+					aria-hidden="true"
+				/>
+				{indicator?.node}
+			</span>
 			{!collapsed &&
 				(truncateLabel ? (
 					// Measures real overflow, so short names get no tooltip.
@@ -1321,6 +1377,9 @@ function SidebarNavItem({
 					<span className="truncate">{item.label}</span>
 				))}
 			{srSuffix && <span className="sr-only">{srSuffix}</span>}
+			{!collapsed && indicator && (
+				<span className="sr-only">{indicator.label}</span>
+			)}
 		</Link>
 	);
 

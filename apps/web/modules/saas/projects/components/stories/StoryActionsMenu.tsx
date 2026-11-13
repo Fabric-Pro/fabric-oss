@@ -269,7 +269,10 @@ export function StoryActionsMenu({
 								}}
 								aria-label="Story actions"
 							>
-								<MoreHorizontalIcon className="size-3.5" />
+								<MoreHorizontalIcon
+									strokeWidth={2.5}
+									className="size-3.5"
+								/>
 							</Button>
 						</DropdownMenuTrigger>
 					</TooltipTrigger>
@@ -353,7 +356,7 @@ export function StoryActionsMenu({
 											});
 										}}
 									>
-										<SparklesIcon className="mr-2 size-4 text-secondary" />
+										<SparklesIcon className="mr-2 size-4 text-success" />
 										<span>Re-assess priority with AI</span>
 									</DropdownMenuItem>
 								</>

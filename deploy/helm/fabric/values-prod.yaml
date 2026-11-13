@@ -47,6 +47,7 @@ web:
     limits:   { cpu: 2000m, memory: 2Gi }
 
 temporalWorker:
+  bypassRlsRole: true
   replicas: 2
   resources:
     requests: { cpu: 500m, memory: 1Gi }

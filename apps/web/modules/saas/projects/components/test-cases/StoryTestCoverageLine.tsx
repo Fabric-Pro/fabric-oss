@@ -89,7 +89,7 @@ export function StoryTestCoverageLine({
 							type="button"
 							aria-label={t("coverage", { count })}
 							className={cn(
-								"inline-flex items-center gap-1 rounded-full border border-secondary/30 bg-secondary/10 px-1.5 py-0.5 text-muted-foreground text-xs tabular-nums transition-colors hover:bg-secondary/20 hover:text-foreground",
+								"inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-1.5 py-0.5 text-muted-foreground text-xs tabular-nums transition-colors hover:bg-success/20 hover:text-foreground",
 								className,
 							)}
 						>

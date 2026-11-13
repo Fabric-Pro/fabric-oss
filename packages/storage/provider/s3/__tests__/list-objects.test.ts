@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // withProviderBreaker just wraps the call; pass it through so the spy on
 // S3Client.send is what we assert against. logger is silenced.
-vi.mock("@repo/observability", () => ({
+vi.mock("@repo/observability/breakers", () => ({
 	withProviderBreaker: (_service: string, _op: string, fn: () => unknown) =>
 		fn(),
 }));

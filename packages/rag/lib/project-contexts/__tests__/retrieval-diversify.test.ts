@@ -430,3 +430,28 @@ it.each([1, 2])("keeps the summary plus %i selected sources", async (limit) => {
 	]);
 	expect(result).toHaveLength(limit + 1);
 });
+
+it("orders positioned passages before stable unpositioned matches", async () => {
+	vi.mocked(searchSimilarProjectContexts).mockResolvedValue(
+		[undefined, 5, 1, 3, undefined].map((chunkIndex, i) => ({
+			contextId: "ctx-prd",
+			projectId: "p1",
+			type: "FILE",
+			score: 1 - i / 10,
+			content: `passage-${i}`,
+			chunkIndex,
+		})),
+	);
+	const result = await retrieveProjectContexts({
+		...baseOptions,
+		includeMatchedPassages: true,
+		skipRerank: true,
+	});
+	expect(result[0].matchedPassages?.map((p) => p.content)).toEqual([
+		"passage-2",
+		"passage-3",
+		"passage-1",
+		"passage-0",
+		"passage-4",
+	]);
+});

@@ -7,7 +7,6 @@
  */
 import { randomUUID } from "node:crypto";
 import { config } from "@repo/config";
-import { uploadFile } from "@repo/storage";
 import { sanitizeAttachmentFilename } from "@repo/utils/attachment";
 import { db } from "../../client";
 
@@ -94,6 +93,9 @@ export async function importPulledStoryAttachment(input: {
 
 	const safeName = sanitizeAttachmentFilename(input.filename);
 	const storageKey = `${FINAL_PREFIX}${input.projectId}/${input.storyId}/${randomUUID()}-${safeName}`;
+	// Loaded on use: this module sits behind the `@repo/database` barrel that
+	// every page imports, and a static import would load the AWS S3 SDK there.
+	const { uploadFile } = await import("@repo/storage");
 	await uploadFile(storageKey, input.data, {
 		bucket: config.storage.bucketNames.projectContexts,
 		contentType: input.mimeType,

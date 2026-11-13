@@ -99,7 +99,11 @@ function RowMenu({
 					aria-label={`More actions for ${title}`}
 					onClick={(event) => event.stopPropagation()}
 				>
-					<MoreHorizontalIcon className="h-3.5 w-3.5" aria-hidden />
+					<MoreHorizontalIcon
+						strokeWidth={2.5}
+						className="h-3.5 w-3.5"
+						aria-hidden
+					/>
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent

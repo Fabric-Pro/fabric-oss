@@ -20,6 +20,7 @@ import {
 	updateHookConfig,
 } from "../instructions/hook.js";
 import { isIdentifier } from "../instructions/identifiers.js";
+import { isSetSlug, pluginSetSlug } from "../plugin/instruction-sets.js";
 
 type Event = "SessionStart" | "Stop";
 
@@ -114,8 +115,15 @@ export function desiredHooks(input: {
 	launcher: string;
 	baseUrl?: string;
 	org?: string;
+	/** A non-default Coding Instructions set: the plugin render and rules hooks keep it. */
+	set?: string | null;
 }): Entry[] {
 	const binding = { baseUrl: input.baseUrl, org: input.org };
+	const slug = pluginSetSlug(input.set);
+	if (slug !== null && !isSetSlug(slug)) {
+		throw new Error("A set in a hook command must be a set slug");
+	}
+	const set = slug === null ? "" : ` --set ${slug}`;
 	if (input.tool === "codex") {
 		return [
 			{
@@ -126,7 +134,7 @@ export function desiredHooks(input: {
 					"instructions render",
 					input.projectId,
 					binding,
-					" --target codex",
+					`${set} --target codex`,
 				),
 				timeout: RENDER_HOOK_TIMEOUT_SECONDS,
 			},
@@ -153,7 +161,7 @@ export function desiredHooks(input: {
 				"instructions rules",
 				input.projectId,
 				binding,
-				"",
+				set,
 			),
 			timeout: RENDER_HOOK_TIMEOUT_SECONDS,
 		},
@@ -252,6 +260,7 @@ export async function installPluginHooks(input: {
 	launcher: string;
 	baseUrl?: string;
 	org?: string;
+	set?: string | null;
 }) {
 	const wanted = desiredHooks(input);
 	const allKinds: Kind[] = [

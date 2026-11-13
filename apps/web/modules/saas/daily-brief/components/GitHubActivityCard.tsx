@@ -27,7 +27,7 @@ const KIND_LABEL: Record<GithubItem["kind"], string> = {
 
 const KIND_CHIP: Record<GithubItem["kind"], string> = {
 	pr_opened: "bg-muted text-muted-foreground border-border",
-	pr_merged: "bg-secondary/10 text-secondary border-secondary/30",
+	pr_merged: "bg-success/10 text-success border-success/30",
 	pr_awaiting_review:
 		"bg-highlight/10 text-highlight-ink border-highlight/40",
 	pr_closed: "bg-muted text-muted-foreground border-border",
@@ -157,7 +157,7 @@ function EnvFilterPills({
 								"font-mono text-[10px]",
 								isActive
 									? "text-muted-foreground"
-									: "text-muted-foreground/70",
+									: "text-muted-foreground",
 							)}
 						>
 							{opt.count}

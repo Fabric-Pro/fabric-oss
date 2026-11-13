@@ -83,3 +83,26 @@ it("reuses room freed by completing a later result", () => {
 	expect(output).toContain("y".repeat(810));
 	expect(JSON.stringify(output).length).toBe(4000);
 });
+
+it("reserves the highest scoring opening and renders in array order", () => {
+	const low = { content: "L".repeat(2000), score: 0.1 };
+	const high = { content: "H".repeat(2000), score: 1 };
+	const render = (passages: (typeof low)[]) =>
+		packPassageBlocks([{ header: "", matched: true, passages }], options);
+	expect(render([low, high])).toBe(`${"H".repeat(93)}[cut]`);
+	expect(render([high, low])).toBe(`${"H".repeat(93)}[cut]`);
+	const full = packPassageBlocks(
+		[
+			{
+				header: "",
+				matched: true,
+				passages: [
+					{ content: "early", score: 0.1 },
+					{ content: "late", score: 1 },
+				],
+			},
+		],
+		options,
+	);
+	expect(full).toBe("early\n\nlate");
+});

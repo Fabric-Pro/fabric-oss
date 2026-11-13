@@ -89,7 +89,7 @@ function EditButton({
 			type="button"
 			onClick={onClick}
 			aria-label={label}
-			className="-m-1 rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+			className="-m-1 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
 		>
 			<PencilIcon className="size-3.5" />
 		</button>
@@ -136,7 +136,7 @@ function Chips({
 }) {
 	const [expanded, setExpanded] = useState(false);
 	if (items.length === 0) {
-		return <p className="text-sm text-muted-foreground/70">{empty}</p>;
+		return <p className="text-sm text-muted-foreground">{empty}</p>;
 	}
 	const shown = expanded ? items : items.slice(0, limit);
 	const hidden = items.length - shown.length;
@@ -549,8 +549,7 @@ export function ProjectOverview({
 							className={cn(
 								"text-sm leading-6 text-foreground/85",
 								!aboutOpen && "line-clamp-1",
-								!project.description &&
-									"text-muted-foreground/70",
+								!project.description && "text-muted-foreground",
 							)}
 						>
 							{project.description || "No description yet."}
@@ -584,7 +583,7 @@ export function ProjectOverview({
 						</button>
 						<span
 							aria-hidden="true"
-							className="text-muted-foreground/50"
+							className="text-muted-foreground"
 						>
 							·
 						</span>
@@ -600,7 +599,7 @@ export function ProjectOverview({
 							<>
 								<span
 									aria-hidden="true"
-									className="text-muted-foreground/50"
+									className="text-muted-foreground"
 								>
 									·
 								</span>

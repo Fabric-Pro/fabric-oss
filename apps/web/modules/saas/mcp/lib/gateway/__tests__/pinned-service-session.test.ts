@@ -192,8 +192,9 @@ describe("which gateway tools Parlume gets", () => {
 			"fabric_cancel_context_quality_run",
 			"fabric_compare_context_quality_runs",
 		];
+		// Plus the four Coding Instructions set-management tools.
 		expect(FABRIC_PORTAL_TOOL_NAMES).toHaveLength(
-			41 + savedEvaluationTools.length + 2,
+			41 + savedEvaluationTools.length + 2 + 4,
 		);
 		expect(
 			FABRIC_PORTAL_TOOL_NAMES.filter((name) =>
@@ -524,7 +525,8 @@ describe("the tools a pinned session is offered", () => {
 
 		expect(offered).toHaveLength(FABRIC_PORTAL_TOOL_NAMES.length);
 		expect(characters).toBeGreaterThan(20_000);
-		// Two source-authorized linked-document reads intentionally extend this catalog.
-		expect(characters).toBeLessThan(34_000);
+		// Two source-authorized linked-document reads intentionally extend this
+		// catalog, and the four Coding Instructions set tools (about 1,000).
+		expect(characters).toBeLessThan(35_100);
 	});
 });

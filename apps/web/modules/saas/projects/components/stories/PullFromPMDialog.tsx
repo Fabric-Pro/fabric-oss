@@ -393,7 +393,7 @@ export function PullFromPMDialog({
 						</span>
 						{data.alreadySynced > 0 && (
 							<>
-								<span className="text-xs text-muted-foreground/40">
+								<span className="text-xs text-muted-foreground">
 									·
 								</span>
 								<span className="text-xs text-muted-foreground">
@@ -404,9 +404,7 @@ export function PullFromPMDialog({
 								</span>
 							</>
 						)}
-						<span className="text-xs text-muted-foreground/40">
-							·
-						</span>
+						<span className="text-xs text-muted-foreground">·</span>
 						<span className="text-xs font-medium text-primary">
 							{data.total} ready to import
 						</span>
@@ -497,7 +495,7 @@ export function PullFromPMDialog({
 						<output className="flex flex-col items-center justify-center h-full gap-2 px-4 py-6 text-center">
 							<CheckCircle2Icon
 								aria-hidden
-								className="size-5 text-secondary"
+								className="size-5 text-success"
 							/>
 							<span className="font-medium text-foreground text-sm">
 								{tNothingNew("title")}

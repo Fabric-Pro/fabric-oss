@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordUpgradeNotice } from "../src/lib/user-agent.js";
 import { useEmptyMachine } from "./helpers/empty-machine.js";
 import {
+	hookMessageStdout,
 	makeTree,
 	manifestEntry,
 	resetInstructionsMocks,
@@ -208,7 +209,7 @@ describe("a failed request, by hand", () => {
 });
 
 describe("a failed request, under a hook", () => {
-	it("is a fixed sentence on stderr, and stdout stays empty", async () => {
+	it("is a fixed sentence shown to the developer as the hook's message, and stderr stays empty", async () => {
 		const dest = await makeTree();
 		mocks.getPublished.mockRejectedValue(
 			requestError("secret-tenant-name", 503),
@@ -225,8 +226,10 @@ describe("a failed request, under a hook", () => {
 
 		expect(result).toEqual({
 			code: 0,
-			stdout: "",
-			stderr: "fabric: coding instructions sync skipped: https://fabric.pro had a problem answering. Try again in a moment.\n",
+			stdout: hookMessageStdout([
+				"fabric: coding instructions sync skipped: https://fabric.pro had a problem answering. Try again in a moment.",
+			]),
+			stderr: "",
 		});
 	});
 });

@@ -4,6 +4,7 @@ import {
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
+import { stageInkStyle } from "../../lib/stories/stage-ink";
 import {
 	DRAFTING_STAGE_META,
 	type FeatureDraftingStage,
@@ -77,12 +78,15 @@ export function StageProgress({
 						})}
 					</span>
 					<span
-						className="truncate text-[10px] font-medium"
-						style={{
-							color: isClosing
-								? "var(--muted-foreground)"
-								: effective.color,
-						}}
+						className={cn(
+							"truncate text-[10px] font-medium",
+							isClosing ? "text-muted-foreground" : "stage-ink",
+						)}
+						style={
+							isClosing
+								? undefined
+								: stageInkStyle(effective.color)
+						}
 					>
 						{effective.label}
 					</span>

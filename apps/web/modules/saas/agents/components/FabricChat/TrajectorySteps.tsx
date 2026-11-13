@@ -94,7 +94,7 @@ interface TrajectoryStepsProps {
 
 // Risk level styling
 const RISK_STYLE: Record<string, string> = {
-	low: "bg-green-100 text-green-700",
+	low: "bg-green-100 text-green-800",
 	medium: "bg-amber-100 text-amber-700",
 	high: "bg-orange-100 text-orange-700",
 	critical: "bg-red-100 text-red-700",
@@ -348,7 +348,7 @@ function StepItem({
 								) : null}
 								{step.metadata?.error && (
 									<div className="text-destructive">
-										<span className="text-red-400">
+										<span className="text-red-700 dark:text-red-400">
 											Error:{" "}
 										</span>
 										{step.metadata.error}

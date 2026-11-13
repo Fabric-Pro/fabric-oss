@@ -119,6 +119,10 @@ vi.mock("@saas/notifications/components/NotificationBell", () => ({
 	NotificationBell: () => null,
 }));
 
+vi.mock("@saas/time-tracking/components/TimerDot", () => ({
+	useTimerNavIndicator: () => undefined,
+}));
+
 vi.mock("@saas/shared/components/ColorModeToggle", () => ({
 	ColorModeToggle: () => null,
 }));

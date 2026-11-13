@@ -9,8 +9,10 @@
  * the disagreement would show up as a browser edit and a CLI push producing
  * different snapshots from the same bytes.
  *
- * What lives here is everything that needs `@repo/instructions` and nothing
- * from the base's rows. The base-shaped refusals stay inside
+ * What lives here is everything that needs `@repo/instructions` and, at
+ * most, the paths the caller already read from the base: the organization
+ * template's planner takes them as plain input to decide which files are
+ * missing. The base-shaped refusals stay inside
  * `createDerivedInstructionSnapshot`'s transaction, because a read taken out
  * here would answer about a moment that has already passed.
  */
@@ -23,6 +25,7 @@ import {
 	buildIgnoreMatcher,
 	classifyPath,
 	collisionKey,
+	createTreeCollisionGuard,
 	describePortableNameRefusal,
 	FABRIC_IGNORE_FILE,
 	fileTypingFor,
@@ -270,4 +273,129 @@ export function validateInstructionChanges(input: {
 		putCount++;
 	}
 	return { changes, putCount, deleteCount };
+}
+
+/** Why a file of the organization template was not added to a project. */
+export type TemplateSkipReason =
+	/** The project already has a file with that name: the project's own file wins. */
+	| "exists"
+	/** The name is a file on one side and a folder on the other. */
+	| "tree_conflict"
+	/** The project's ignore rules leave the path out. */
+	| "excluded"
+	/** The template's `.fabricignore`: the project's own rules decide what it excludes. */
+	| "ignore_file"
+	| "secret_name"
+	| "invalid_path"
+	| "non_portable"
+	| "too_large";
+
+type TemplateSkip = {
+	path: string;
+	reason: TemplateSkipReason;
+	/** The ignore rule that matched, for `excluded` only. */
+	rule?: string;
+};
+
+type TemplatePut = Extract<DerivedInstructionChange, { op: "put" }>;
+
+/**
+ * Which files of the organization template can be added to a project, as the
+ * `put` rows a new version takes, and why each of the others was left out.
+ *
+ * The same payload checks `validateInstructionChanges` makes, with one
+ * difference: a file that fails one is SKIPPED with its reason instead of
+ * refusing the whole change. The template is a set of files offered to the
+ * project, not a change the caller wrote, so one file the project's rules
+ * leave out must not keep the rest from being added.
+ *
+ * The project wins every clash: a template path that is already one of
+ * `existingPaths`, or that would be a file where the project has a folder (or
+ * the reverse), is skipped. Existing paths are recorded in the tree guard
+ * before any template file and their own collisions are ignored, because a
+ * version admitted before these rules existed may hold such a pair and it is
+ * not the template's to repair. The tree check runs last, so a file skipped
+ * for another reason never reserves its name.
+ *
+ * `ignore` is the rule set the new version is admitted under: the base's
+ * frozen rules when it derives from the published version, the project's live
+ * rules when it is the project's first.
+ */
+export function planTemplateAdditions<
+	T extends { path: string; size: number; sha256: string },
+>(input: {
+	projectId: string;
+	files: readonly T[];
+	existingPaths: readonly string[];
+	ignore: { globs: string[]; layer: "fabricignore" | "project" | "default" };
+}): {
+	additions: Array<{ change: TemplatePut; source: T }>;
+	skipped: TemplateSkip[];
+} {
+	const isIgnored = buildIgnoreMatcher(input.ignore);
+	const tree = createTreeCollisionGuard();
+	for (const path of input.existingPaths) {
+		tree.add(path);
+	}
+	const additions: Array<{ change: TemplatePut; source: T }> = [];
+	const skipped: TemplateSkip[] = [];
+	for (const file of input.files) {
+		const v = validateRelativePath(file.path);
+		if (!v.ok) {
+			skipped.push({ path: file.path, reason: "invalid_path" });
+			continue;
+		}
+		if (v.path === FABRIC_IGNORE_FILE) {
+			skipped.push({ path: v.path, reason: "ignore_file" });
+			continue;
+		}
+		if (isSecretFileName(v.path)) {
+			skipped.push({ path: v.path, reason: "secret_name" });
+			continue;
+		}
+		const excluded = isIgnored(v.path);
+		if (excluded) {
+			skipped.push({
+				path: v.path,
+				reason: "excluded",
+				rule: excluded.rule,
+			});
+			continue;
+		}
+		if (!validatePortableName(v.path).ok) {
+			skipped.push({ path: v.path, reason: "non_portable" });
+			continue;
+		}
+		if (file.size > SNAPSHOT_LIMITS.maxFileBytes) {
+			skipped.push({ path: v.path, reason: "too_large" });
+			continue;
+		}
+		const collision = tree.add(v.path);
+		if (collision) {
+			skipped.push({
+				path: v.path,
+				reason:
+					collision.kind === "duplicate" ? "exists" : "tree_conflict",
+			});
+			continue;
+		}
+		additions.push({
+			change: {
+				op: "put",
+				path: v.path,
+				size: file.size,
+				sha256: file.sha256,
+				...fileTypingFor(v.path),
+				kind: classifyPath(v.path),
+				// Provisional, as in `validateInstructionChanges`.
+				storageKey: stagingKey(
+					input.projectId,
+					"pending",
+					String(additions.length),
+				),
+			},
+			source: file,
+		});
+	}
+	return { additions, skipped };
 }

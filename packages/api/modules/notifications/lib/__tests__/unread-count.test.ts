@@ -2,13 +2,12 @@
  * Unread-count procedure.
  *
  * The handler must:
- *  - Consult the Redis unread-count cache first; on a hit (cached !== null)
- *    return `{ count: cached }` WITHOUT touching the database.
- *  - On a miss query `db.notification.count` scoped to the caller's
- *    `userId`/`organizationId`, excluding read + archived rows, and excluding
- *    per-incident alert types EXCEPT the weekly digest (matched by dedupe-key
- *    prefix).
- *  - Persist the freshly computed count back into the cache before returning.
+ *  - Cache only the resolved organization's unread component.
+ *  - Query the caller's null-organization weekly digest component live on
+ *    both cache hits and misses, so digest writes and reads need no cross-org
+ *    cache invalidation.
+ *  - Exclude read, archived, and per-incident alert rows from both components.
+ *  - Persist only the freshly computed organization count in the cache.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -52,7 +51,11 @@ vi.mock("../../../../orpc/procedures", () => {
 	return {
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => () => undefined,
-		resolveOrganizationId: (id: string | null | undefined) => id ?? null,
+		resolveOrganizationIdForCaller: async (
+			id: string | null | undefined,
+			session: { activeOrganizationId?: string },
+		) =>
+			(id === undefined ? session.activeOrganizationId : id) ?? undefined,
 		get tenantProtectedProcedure() {
 			return makeChain();
 		},
@@ -62,36 +65,68 @@ vi.mock("../../../../orpc/procedures", () => {
 import { unreadCountNotificationsProcedure } from "../../procedures/unread-count";
 
 describe("unreadCount procedure", () => {
-	it("returns the cached count without querying the database on a cache hit", async () => {
+	it("adds the live global digest count to the cached organization count", async () => {
 		count.mockReset();
 		getCachedUnreadCount.mockReset();
 		setCachedUnreadCount.mockReset();
 		getCachedUnreadCount.mockResolvedValue(7);
+		count.mockResolvedValue(2);
 
 		const result = await (unreadCountNotificationsProcedure as any)({
-			input: { organizationId: null },
-			context: { user: { id: "u1" }, session: {} },
+			input: { organizationId: "example-org" },
+			context: {
+				user: { id: "u1" },
+				session: { activeOrganizationId: "example-org" },
+			},
 		});
 
-		expect(getCachedUnreadCount).toHaveBeenCalledWith("u1", null);
-		expect(result).toEqual({ count: 7 });
-		expect(count).not.toHaveBeenCalled();
+		expect(getCachedUnreadCount).toHaveBeenCalledWith("u1", "example-org");
+		expect(result).toEqual({ count: 9 });
+		expect(count).toHaveBeenCalledWith({
+			where: {
+				userId: "u1",
+				OR: [
+					{
+						organizationId: "example-org",
+						type: { notIn: INCIDENT_NOTIFICATION_TYPES },
+					},
+					{
+						organizationId: "example-org",
+						dedupeKey: {
+							startsWith: WEEKLY_DIGEST_DEDUPE_PREFIX,
+						},
+					},
+					{
+						organizationId: null,
+						dedupeKey: {
+							startsWith: WEEKLY_DIGEST_DEDUPE_PREFIX,
+						},
+					},
+				],
+				organizationId: null,
+				readAt: null,
+				archivedAt: null,
+			},
+		});
 		expect(setCachedUnreadCount).not.toHaveBeenCalled();
 	});
 
-	it("counts unread, non-archived, non-incident notifications on a cache miss and primes the cache", async () => {
+	it("caches the organization count and adds the live global digest count on a cache miss", async () => {
 		count.mockReset();
 		getCachedUnreadCount.mockReset();
 		setCachedUnreadCount.mockReset();
 		getCachedUnreadCount.mockResolvedValue(null);
-		count.mockResolvedValue(3);
+		count.mockResolvedValueOnce(3).mockResolvedValueOnce(2);
 
 		const result = await (unreadCountNotificationsProcedure as any)({
 			input: { organizationId: "org-a" },
-			context: { user: { id: "u1" }, session: {} },
+			context: {
+				user: { id: "u1" },
+				session: { activeOrganizationId: "example-org" },
+			},
 		});
 
-		expect(count).toHaveBeenCalledTimes(1);
+		expect(count).toHaveBeenCalledTimes(2);
 		const where = count.mock.calls[0][0].where;
 		expect(where.userId).toBe("u1");
 		expect(where.organizationId).toBe("org-a");
@@ -99,11 +134,25 @@ describe("unreadCount procedure", () => {
 		expect(where.archivedAt).toBeNull();
 		// Incident-exclusion OR: drop incident types, but keep the weekly digest.
 		expect(where.OR).toEqual([
-			{ type: { notIn: INCIDENT_NOTIFICATION_TYPES } },
-			{ dedupeKey: { startsWith: WEEKLY_DIGEST_DEDUPE_PREFIX } },
+			{
+				organizationId: "org-a",
+				type: { notIn: INCIDENT_NOTIFICATION_TYPES },
+			},
+			{
+				organizationId: "org-a",
+				dedupeKey: { startsWith: WEEKLY_DIGEST_DEDUPE_PREFIX },
+			},
+			{
+				organizationId: null,
+				dedupeKey: { startsWith: WEEKLY_DIGEST_DEDUPE_PREFIX },
+			},
 		]);
+		expect(count.mock.calls[1][0].where).toEqual({
+			...where,
+			organizationId: null,
+		});
 
-		expect(result).toEqual({ count: 3 });
+		expect(result).toEqual({ count: 5 });
 		expect(setCachedUnreadCount).toHaveBeenCalledWith("u1", "org-a", 3);
 	});
 });

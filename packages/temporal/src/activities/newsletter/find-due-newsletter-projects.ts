@@ -29,6 +29,12 @@ export interface DueNewsletterProject {
 	deliveryDestination: NewsletterDeliveryDestination;
 	chatChannels: NewsletterChatChannel[];
 	requireApproval: boolean;
+	// Optional: a scheduler run recorded before this field existed replays an
+	// activity result without it, and the send then freezes `false`.
+	screenshotsEnabled?: boolean;
+	// Optional for the same reason: the environment automatic screenshots are
+	// captured from, frozen onto the send.
+	screenshotEnvironmentId?: string | null;
 }
 export interface FindDueNewsletterProjectsOutput {
 	due: DueNewsletterProject[];
@@ -87,6 +93,8 @@ export async function findDueNewsletterProjectsActivity(): Promise<FindDueNewsle
 			),
 			chatChannels: (s.chatChannels ?? []) as NewsletterChatChannel[],
 			requireApproval: s.requireApproval,
+			screenshotsEnabled: s.screenshotsEnabled,
+			screenshotEnvironmentId: s.screenshotEnvironmentId,
 		});
 	}
 	return { due };

@@ -178,12 +178,12 @@ export function WeaveDashboard({
 							{planStats.total !== 1 ? "s" : ""}
 						</div>
 						{planStats.pendingApproval > 0 && (
-							<div className="rounded-full border border-yellow-500/30 bg-yellow-500/10 px-3 py-1.5 text-xs uppercase tracking-wide text-yellow-600">
+							<div className="rounded-full border border-yellow-500/30 bg-yellow-500/10 px-3 py-1.5 text-xs uppercase tracking-wide text-yellow-800 dark:text-yellow-500">
 								{planStats.pendingApproval} awaiting review
 							</div>
 						)}
 						{planStats.running > 0 && (
-							<div className="rounded-full border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs uppercase tracking-wide text-purple-600">
+							<div className="rounded-full border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs uppercase tracking-wide text-purple-600 dark:text-purple-400">
 								{planStats.running} running
 							</div>
 						)}
@@ -213,7 +213,7 @@ export function WeaveDashboard({
 									</p>
 								</div>
 								<div className="rounded-lg border border-border/60 bg-background/50 p-3 text-center">
-									<p className="text-2xl font-semibold tabular-nums text-yellow-600">
+									<p className="text-2xl font-semibold tabular-nums text-yellow-700 dark:text-yellow-600">
 										{planStats.pendingApproval}
 									</p>
 									<p className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -256,7 +256,7 @@ export function WeaveDashboard({
 						<ListTodoIcon className="size-4" />
 						Plans
 						{planStats.pendingApproval > 0 && (
-							<span className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-yellow-500/20 text-[10px] font-medium text-yellow-600">
+							<span className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-yellow-500/20 text-[10px] font-medium text-yellow-800 dark:text-yellow-500">
 								{planStats.pendingApproval}
 							</span>
 						)}

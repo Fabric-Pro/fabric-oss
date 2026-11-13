@@ -7,6 +7,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { discardNewsletterSendImages } from "../lib/review-images";
 import { classifyReviewOutcome } from "../lib/review-outcome";
 
 /** Mirrors the approve path: name the state the row is actually in (#2172). */
@@ -31,7 +32,7 @@ export const rejectSendProcedure = tenantProtectedProcedure
 		// `input.organizationId` is a guard, never a scoping key.
 		const project = await db.project.findUnique({
 			where: { id: input.projectId },
-			select: { id: true, organizationId: true },
+			select: { id: true, organizationId: true, userId: true },
 		});
 		if (!project) {
 			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
@@ -98,6 +99,8 @@ export const rejectSendProcedure = tenantProtectedProcedure
 				current?.status ?? null,
 			);
 		}
+		// The draft will never go out, so neither will its review images.
+		await discardNewsletterSendImages(project, input.sendId);
 		return {
 			sendId: input.sendId,
 			rejected: true,

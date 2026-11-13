@@ -32,8 +32,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		getAIModelWithMetadata: vi.fn(),
 		generateObject: vi.fn(),
 		logModelUsageAsync: vi.fn(),
-		retrieveProjectContexts: vi.fn(),
-		formatContextsForPrompt: vi.fn(),
+		retrieveRankedPassages: vi.fn(),
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		gatherLiveUrlSources: vi.fn(),
@@ -89,8 +88,7 @@ vi.mock("@repo/ai/lib/function-tag-context", () => ({
 }));
 
 vi.mock("@repo/rag", () => ({
-	retrieveProjectContexts: mocks.retrieveProjectContexts,
-	formatContextsForPrompt: mocks.formatContextsForPrompt,
+	retrieveRankedPassages: mocks.retrieveRankedPassages,
 }));
 
 vi.mock("@repo/rag/lib/project-contexts/live-integration-context", () => ({
@@ -198,8 +196,7 @@ beforeEach(() => {
 		description: "Test project description",
 		techStack: ["Node", "TypeScript"],
 	});
-	mocks.retrieveProjectContexts.mockResolvedValue([]);
-	mocks.formatContextsForPrompt.mockReturnValue("");
+	mocks.retrieveRankedPassages.mockResolvedValue("");
 	mocks.fetchLiveIntegrationContext.mockResolvedValue({});
 	mocks.formatLiveContextForPrompt.mockReturnValue(null);
 	mocks.gatherLiveUrlSources.mockResolvedValue([]);

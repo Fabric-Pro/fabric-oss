@@ -122,21 +122,21 @@ function getFileIcon(file: WorkspaceFile) {
 function getFileTypeColor(fileType?: string) {
 	switch (fileType) {
 		case "DOCUMENT":
-			return "text-blue-500";
+			return "text-blue-600 dark:text-blue-400";
 		case "CODE":
 			return "text-success";
 		case "DATA":
 			return "text-highlight";
 		case "CONFIG":
-			return "text-purple-500";
+			return "text-purple-600 dark:text-purple-400";
 		case "OUTPUT":
-			return "text-teal-500";
+			return "text-teal-700 dark:text-teal-500";
 		case "ARTIFACT":
-			return "text-pink-500";
+			return "text-pink-700 dark:text-pink-400";
 		case "FRAME":
-			return "text-violet-500";
+			return "text-violet-600 dark:text-violet-400";
 		case "SLIDESHOW":
-			return "text-fuchsia-500";
+			return "text-fuchsia-700 dark:text-fuchsia-400";
 		default:
 			return "text-muted-foreground";
 	}
@@ -256,7 +256,10 @@ function FileTreeNode({
 							size="icon-sm"
 							className="h-5 w-5 opacity-0 group-hover:opacity-100"
 						>
-							<MoreVertical className="h-3 w-3" />
+							<MoreVertical
+								strokeWidth={2.5}
+								className="h-3 w-3"
+							/>
 						</Button>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end" className="w-40">

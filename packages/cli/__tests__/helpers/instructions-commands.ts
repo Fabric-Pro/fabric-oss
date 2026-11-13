@@ -217,6 +217,62 @@ export async function runCli(
 	return { code, stdout, stderr };
 }
 
+/**
+ * What a `check --hook` or `sync --hook` run prints on stdout when it has a
+ * line for the developer: one JSON object on one line, the developer's lines
+ * as `systemMessage` and the agent's, if any, as SessionStart context.
+ */
+export function hookMessageStdout(
+	messages: readonly string[],
+	context: readonly string[] = [],
+): string {
+	return `${JSON.stringify({
+		systemMessage: messages.join("\n"),
+		...(context.length === 0
+			? {}
+			: {
+					hookSpecificOutput: {
+						hookEventName: "SessionStart",
+						additionalContext: context.join("\n"),
+					},
+				}),
+	})}\n`;
+}
+
+/** The `systemMessage` of a hook run's stdout, or `null` when it printed none. */
+export function hookSystemMessage(stdout: string): string | null {
+	if (!stdout.startsWith("{")) {
+		return null;
+	}
+	const parsed: unknown = JSON.parse(stdout);
+	return typeof parsed === "object" &&
+		parsed !== null &&
+		"systemMessage" in parsed &&
+		typeof parsed.systemMessage === "string"
+		? parsed.systemMessage
+		: null;
+}
+
+/** The agent's context a hook run printed: plain stdout, or the JSON's. */
+export function hookContext(stdout: string): string {
+	if (!stdout.startsWith("{")) {
+		return stdout;
+	}
+	const parsed: unknown = JSON.parse(stdout);
+	if (
+		typeof parsed === "object" &&
+		parsed !== null &&
+		"hookSpecificOutput" in parsed &&
+		typeof parsed.hookSpecificOutput === "object" &&
+		parsed.hookSpecificOutput !== null &&
+		"additionalContext" in parsed.hookSpecificOutput &&
+		typeof parsed.hookSpecificOutput.additionalContext === "string"
+	) {
+		return `${parsed.hookSpecificOutput.additionalContext}\n`;
+	}
+	return "";
+}
+
 export function sha256(text: string): string {
 	return createHash("sha256").update(Buffer.from(text)).digest("hex");
 }

@@ -139,3 +139,40 @@ describe("VersionDiffViewer — word counts (Fizzy #2946)", () => {
 		expect(screen.getByText(`${versionWords} words`)).toBeInTheDocument();
 	});
 });
+
+describe("VersionDiffViewer — when the version was made (Fizzy #2946)", () => {
+	it("gives the date beside the version number, and leaves it out when nothing recorded it", () => {
+		const { unmount } = render(
+			<VersionDiffViewer
+				open
+				onOpenChange={vi.fn()}
+				selectedVersion={{
+					id: "ver-2",
+					version: 2,
+					content: "An earlier body.",
+					changeDescription: "Edited",
+					createdAt: "2026-07-01T00:00:00.000Z",
+				}}
+				currentContent="The current body."
+				currentVersion={3}
+				onRestore={vi.fn()}
+				isRestoring={false}
+			/>,
+		);
+		expect(document.body.textContent).toMatch(/v2 · \S/);
+		unmount();
+
+		renderViewer({
+			selectedVersion: {
+				id: "ver-2",
+				version: 2,
+				content: "An earlier body.",
+				changeDescription: "Edited",
+				createdAt: null,
+			},
+		});
+		expect(document.body.textContent).toContain("v2");
+		expect(document.body.textContent).not.toMatch(/v2 ·/);
+		expect(screen.getByText("Edited")).toBeInTheDocument();
+	});
+});

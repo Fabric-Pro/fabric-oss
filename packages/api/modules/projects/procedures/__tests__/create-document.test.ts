@@ -1212,3 +1212,112 @@ describe("createDocumentProcedure — real-time events", () => {
 		expect(mocks.emitActivity).toHaveBeenCalledTimes(1);
 	});
 });
+
+/**
+ * Web research is allowed per action, by a person ticking it, and only a run
+ * started here can use it. The routes that start nothing must neither dispatch
+ * nor keep the flag anywhere.
+ */
+describe("createDocumentProcedure — web research permission", () => {
+	const parse = (allowWebResearch: unknown) =>
+		(
+			captured.inputSchema as {
+				safeParse: (v: unknown) => {
+					success: boolean;
+					data?: Record<string, unknown>;
+				};
+			}
+		).safeParse({
+			projectId: PROJECT_ID,
+			type: "PRD",
+			title: "Product Requirements Document",
+			allowWebResearch,
+		});
+
+	it.each([true, false])(
+		"accepts %s at the schema boundary and keeps it",
+		(value) => {
+			const parsed = parse(value);
+
+			expect(parsed.success).toBe(true);
+			expect(parsed.data?.allowWebResearch).toBe(value);
+		},
+	);
+
+	it.each([["true"], [1], [null]])(
+		"refuses %j at the schema boundary",
+		(value) => {
+			expect(parse(value).success).toBe(false);
+		},
+	);
+
+	it("hands the permission to the dispatch on the generation route", async () => {
+		await handler({
+			input: input({ generateWithAi: true, allowWebResearch: true }),
+			context: ctx,
+		});
+
+		expect(mocks.dispatchDocumentGeneration).toHaveBeenCalledTimes(1);
+		expect(
+			mocks.dispatchDocumentGeneration.mock.calls[0]?.[0]
+				.allowWebResearch,
+		).toBe(true);
+	});
+
+	it("hands the dispatch no permission when the request does not carry one", async () => {
+		await handler({
+			input: input({ generateWithAi: true }),
+			context: ctx,
+		});
+
+		expect(
+			mocks.dispatchDocumentGeneration.mock.calls[0]?.[0]
+				.allowWebResearch,
+		).not.toBe(true);
+	});
+
+	it("neither dispatches nor stores it for a row awaiting its source file", async () => {
+		mocks.documentCreate.mockResolvedValue({
+			id: DOCUMENT_ID,
+			type: "PRD",
+			title: "Product Requirements Document",
+			status: "GENERATING",
+			content: "",
+		});
+
+		await handler({
+			input: {
+				projectId: PROJECT_ID,
+				type: "PRD",
+				title: "Product Requirements Document",
+				awaitingSourceFile: true,
+				allowWebResearch: true,
+			},
+			context: ctx,
+		});
+
+		expect(mocks.dispatchDocumentGeneration).not.toHaveBeenCalled();
+		expect(mocks.documentCreate).toHaveBeenCalledTimes(1);
+		expect(JSON.stringify(mocks.documentCreate.mock.calls)).not.toMatch(
+			/webResearch/i,
+		);
+		expect(mocks.createDocumentWithContent).not.toHaveBeenCalled();
+	});
+
+	it("dispatches nothing for Use As-Is, even with generation and research both asked for", async () => {
+		await handler({
+			input: input({
+				sourceText: "The user's own words.",
+				sourceUsage: "AS_IS",
+				generateWithAi: true,
+				allowWebResearch: true,
+			}),
+			context: ctx,
+		});
+
+		expect(mocks.dispatchDocumentGeneration).not.toHaveBeenCalled();
+		expect(
+			JSON.stringify(mocks.createDocumentWithContent.mock.calls),
+		).not.toMatch(/webResearch/i);
+	});
+});

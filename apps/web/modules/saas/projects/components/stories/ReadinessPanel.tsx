@@ -125,7 +125,7 @@ export function ReadinessPanel({
 				<span
 					className={cn(
 						"inline-flex items-center gap-1.5 font-medium",
-						data.ready ? "text-secondary" : "text-foreground",
+						data.ready ? "text-success" : "text-foreground",
 					)}
 				>
 					{data.ready ? (

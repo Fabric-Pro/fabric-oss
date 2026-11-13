@@ -65,6 +65,7 @@ import { useOrganizationContext } from "@saas/organizations/hooks/use-organizati
 import { useRegisterTiptapEditor } from "@saas/projects/components/excalidraw-auto-insert/TiptapEditorRegistry";
 import { usePickerIntentConsumer } from "@saas/projects/components/excalidraw-auto-insert/usePickerIntentConsumer";
 import { getOrpcCode } from "@saas/projects/components/field-mapping/orpc-error";
+import { StoryTimeSection } from "@saas/time-tracking/components/StoryTimeSection";
 import { useIsOverflowing } from "@shared/hooks/use-is-overflowing";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -179,6 +180,7 @@ import {
 	buildProjectSettingsRoute,
 	STORY_TAB_PARAM,
 } from "../../lib/stories/routes";
+import { stageInkStyle } from "../../lib/stories/stage-ink";
 import type {
 	FeatureDraftingStage,
 	MaturationStatus,
@@ -1135,8 +1137,8 @@ export function StoryWorkspace({
 			return {
 				level: "weeks" as const,
 				buttonClass:
-					"border-orange-500 bg-orange-500/10 text-orange-600 hover:bg-orange-500/20 dark:text-orange-400",
-				labelClass: "text-orange-600 dark:text-orange-400",
+					"border-orange-500 bg-orange-500/10 text-orange-800 hover:bg-orange-500/20 dark:text-orange-400",
+				labelClass: "text-orange-700 dark:text-orange-400",
 				relative,
 				attention: true,
 			};
@@ -1145,8 +1147,8 @@ export function StoryWorkspace({
 			return {
 				level: "week" as const,
 				buttonClass:
-					"border-yellow-500 bg-yellow-500/10 text-yellow-700 hover:bg-yellow-500/20 dark:text-yellow-400",
-				labelClass: "text-yellow-700 dark:text-yellow-400",
+					"border-yellow-500 bg-yellow-500/10 text-yellow-800 hover:bg-yellow-500/20 dark:text-yellow-400",
+				labelClass: "text-yellow-800 dark:text-yellow-400",
 				relative,
 				attention: false,
 			};
@@ -6532,12 +6534,19 @@ export function StoryWorkspace({
 																}}
 															/>
 															<span
-																className="text-xs font-medium"
-																style={{
-																	color: isClosed
-																		? "var(--muted-foreground)"
-																		: currentMeta.color,
-																}}
+																className={cn(
+																	"text-xs font-medium",
+																	isClosed
+																		? "text-muted-foreground"
+																		: "stage-ink",
+																)}
+																style={
+																	isClosed
+																		? undefined
+																		: stageInkStyle(
+																				currentMeta.color,
+																			)
+																}
 															>
 																{isClosed
 																	? "Hidden"
@@ -6699,12 +6708,19 @@ export function StoryWorkspace({
 																			)}
 																		</div>
 																		<span
-																			className="text-xs font-medium"
-																			style={{
-																				color: isClosing
-																					? "var(--muted-foreground)"
-																					: effectiveMeta.color,
-																			}}
+																			className={cn(
+																				"text-xs font-medium",
+																				isClosing
+																					? "text-muted-foreground"
+																					: "stage-ink",
+																			)}
+																			style={
+																				isClosing
+																					? undefined
+																					: stageInkStyle(
+																							effectiveMeta.color,
+																						)
+																			}
 																		>
 																			{
 																				effectiveMeta.label
@@ -8136,6 +8152,14 @@ export function StoryWorkspace({
 														</Button>
 													</div>
 												</div>
+
+												<StoryTimeSection
+													organizationId={
+														organizationId
+													}
+													projectId={projectId}
+													story={story}
+												/>
 											</div>
 										</div>
 									</div>
@@ -8893,7 +8917,7 @@ function TaskItem({
 							label: "DONE",
 							icon: <CheckCircle2Icon className="size-3" />,
 							className:
-								"bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+								"bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
 						},
 						failed: {
 							label: "FAILED",

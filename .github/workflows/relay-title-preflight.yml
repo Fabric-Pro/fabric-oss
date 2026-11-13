@@ -53,8 +53,12 @@ jobs:
     if: >-
       github.repository == 'Fabric-Pro/fabric-dev' &&
       (github.event.action != 'edited' || github.event.changes.title != null)
-    # arm64: checkout plus one bash/grep script -- architecture-neutral.
-    runs-on: ubuntu-24.04-arm
+    # Architecture-neutral steps; private PRs use Namespace amd64,
+    # while other events retain the GitHub arm64 label.
+    # Only private pull requests use Namespace, by event allowlist. Pushes and
+    # other events retain GitHub runners: their caches can be restored by other
+    # branches, including secret-holding jobs. See unit-tests.yml vitest.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

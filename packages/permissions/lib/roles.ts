@@ -77,6 +77,11 @@ const VIEWER_ORG_PERMISSIONS: readonly Permission[] = [
 	P.USER_READ_SELF,
 	P.USER_UPDATE_SELF,
 	P.NOTIFICATIONS_READ,
+	// Notification writes are limited to archive/restore, whose handlers pin
+	// every update to the caller's userId and bell-visible rows. Each role may
+	// therefore manage its own notification state without gaining access to
+	// another recipient's rows or to any other writable resource.
+	P.NOTIFICATIONS_WRITE,
 	P.ARCHITECTURE_DECISION_READ,
 	P.PROBLEM_LOG_READ,
 	P.TEST_CASE_READ,
@@ -153,6 +158,7 @@ const MEMBER_ORG_PERMISSIONS: readonly Permission[] = [
 	P.TEST_CASE_UPDATE,
 	P.PUBLISHING_TOPIC_CREATE,
 	P.PUBLISHING_TOPIC_UPDATE,
+	P.TIME_LOG,
 	// `ORG_API_KEYS_CREATE`/`_DELETE` are inherited from the viewer set above,
 	// which is where they now live. A member's key is not clamped to read-only
 	// scopes; the clamp in the create procedure applies to viewers alone.
@@ -196,6 +202,7 @@ const ADMIN_ORG_PERMISSIONS: readonly Permission[] = [
 	P.PROBLEM_LOG_MANAGE,
 	P.TEST_CASE_DELETE,
 	P.PUBLISHING_TOPIC_DELETE,
+	P.TIME_REPORT_VIEW,
 ];
 
 const OWNER_ORG_PERMISSIONS: readonly Permission[] = [
@@ -267,6 +274,7 @@ const EDITOR_PROJECT_PERMISSIONS: readonly Permission[] = [
 	P.TEST_CASE_UPDATE,
 	P.PUBLISHING_TOPIC_CREATE,
 	P.PUBLISHING_TOPIC_UPDATE,
+	P.TIME_LOG,
 ];
 
 const PROJECT_ADMIN_PROJECT_PERMISSIONS: readonly Permission[] = [
@@ -285,6 +293,7 @@ const PROJECT_ADMIN_PROJECT_PERMISSIONS: readonly Permission[] = [
 	P.PROBLEM_LOG_MANAGE,
 	P.TEST_CASE_DELETE,
 	P.PUBLISHING_TOPIC_DELETE,
+	P.TIME_REPORT_VIEW,
 ];
 
 const OWNER_PROJECT_PERMISSIONS: readonly Permission[] = [

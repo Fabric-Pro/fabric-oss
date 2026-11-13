@@ -193,7 +193,7 @@ export function TodoNewContactDialog({
 										<strong className="block truncate">
 											{duplicate.name}
 										</strong>
-										<small className="block truncate text-foreground/60">
+										<small className="block truncate text-muted-foreground">
 											{duplicate.email?.trim() ||
 												duplicate.company?.trim() ||
 												t(

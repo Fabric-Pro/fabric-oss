@@ -159,7 +159,7 @@
 		--destructive-foreground: #ffffff;
 		--destructive-hover: #9e102c;
 		--destructive-active: #630316;
-		--success: #277c43;
+		--success: #24773f;
 		--success-foreground: #ffffff;
 		--muted: #f1f3f6;
 		--muted-foreground: #4f6170;
@@ -187,7 +187,7 @@
 		--fab-composer-shadow: 0 0 0 1px rgba(17, 23, 28, 0.06), 0 2px 12px rgba(17, 23, 28, 0.06);
 		--fab-warn: #8a5a00;
 		--fab-bad: #b8223b;
-		--fab-good: #277c43;
+		--fab-good: #24773f;
 
 		/* fumadocs */
 		--fd-banner-height: 4.5rem;
@@ -246,6 +246,115 @@
 
 		--bg-texture: none;
 		--bg-gradient: none;
+	}
+
+	/*
+	 * High contrast (Fizzy #1444). A modifier on the colour mode, not a third
+	 * mode: `.high-contrast` alone is the light high-contrast palette and
+	 * `.dark.high-contrast` the dark one, so the light/dark choice keeps working
+	 * while it is on. The class is set on <html> from the person's account
+	 * preference (see ContrastPreferenceProvider).
+	 *
+	 * Measured against the ordinary palettes above, high contrast:
+	 *   - puts ink on pure white / pure black surfaces (21:1 for body text);
+	 *   - holds secondary text at >= 7:1 on every surface, not just 4.5:1;
+	 *   - draws structural borders at >= 4.5:1, so card, table and section edges
+	 *     are visible rather than hinted at, and control borders darker still;
+	 *   - keeps the light tinted surfaces (--muted, --secondary, --sidebar) at
+	 *     the ordinary palette's values: surfaces are told apart by those
+	 *     borders, and a darker grey would pull coloured status text (amber,
+	 *     green labels) under 4.5:1 where the ordinary palette passes;
+	 *   - deepens the brand and status inks so they read as text at >= 7:1 on
+	 *     every surface, the hover wash included.
+	 * Every value is guarded by apps/web/__tests__/theme-token-contrast.test.ts.
+	 *
+	 * `!important` on --ring and the --fab-accent pair only: an organization's
+	 * brand colour is written to those as inline styles on <html>
+	 * (OrganizationThemeProvider), and a brand hue is not a contrast guarantee.
+	 * An important declaration in a layer outranks a normal inline one, so high
+	 * contrast keeps its own focus ring and accent whatever the brand. The
+	 * brand-aware --primary-ink is overridden by value for the same reason.
+	 */
+	.high-contrast {
+		--border: #5d6b78;
+		--input: #26313b;
+		--ring: #7d2604 !important;
+		--background: #ffffff;
+		--foreground: #000000;
+		--primary: #7d2604;
+		--primary-foreground: #ffffff;
+		--primary-hover: #631e03;
+		--primary-active: #4a1702;
+		--primary-ink: #7d2604;
+		--secondary: #f1f3f6;
+		--secondary-foreground: #000000;
+		--destructive: #8c0f25;
+		--destructive-foreground: #ffffff;
+		--destructive-hover: #6f0a1d;
+		--destructive-active: #4f0614;
+		--success: #134d27;
+		--success-foreground: #ffffff;
+		--muted: #f1f3f6;
+		--muted-foreground: #26313b;
+		--accent: #dde3ea;
+		--accent-foreground: #000000;
+		--popover: #ffffff;
+		--popover-foreground: #000000;
+		--card: #ffffff;
+		--card-foreground: #000000;
+		--highlight: #634000;
+		--highlight-foreground: #ffffff;
+		--highlight-ink: #634000;
+		--sidebar: #f6f7f9;
+
+		--fab-accent: #7d2604 !important;
+		--fab-accent-fill: #a33307 !important;
+		--fab-accent-wash: rgba(125, 38, 4, 0.1);
+		--fab-composer-shadow: 0 0 0 1px #26313b;
+		--fab-warn: #634000;
+		--fab-bad: #8c0f25;
+		--fab-good: #134d27;
+	}
+
+	.dark.high-contrast {
+		--border: #8b9aa8;
+		--input: #b8c4cf;
+		--ring: #ffa36e !important;
+		--background: #000000;
+		--foreground: #ffffff;
+		--primary: #ffa36e;
+		--primary-foreground: #000000;
+		--primary-hover: #ffb68c;
+		--primary-active: #ffc9a9;
+		--primary-ink: #ffa36e;
+		--secondary: #1a2128;
+		--secondary-foreground: #ffffff;
+		--destructive: #ffa3ab;
+		--destructive-foreground: #000000;
+		--destructive-hover: #ffb8be;
+		--destructive-active: #ffcdd1;
+		--success: #6fe08f;
+		--success-foreground: #000000;
+		--muted: #12171c;
+		--muted-foreground: #d5dde5;
+		--accent: #222c35;
+		--accent-foreground: #ffffff;
+		--popover: #101418;
+		--popover-foreground: #ffffff;
+		--card: #0a0d10;
+		--card-foreground: #ffffff;
+		--highlight: #ffc94d;
+		--highlight-foreground: #000000;
+		--highlight-ink: #ffc94d;
+		--sidebar: #000000;
+
+		--fab-accent: #ffa36e !important;
+		--fab-accent-fill: #ff8547 !important;
+		--fab-accent-wash: rgba(255, 163, 110, 0.14);
+		--fab-composer-shadow: 0 0 0 1px #b8c4cf;
+		--fab-warn: #ffc94d;
+		--fab-bad: #ffa3ab;
+		--fab-good: #6fe08f;
 	}
 
 	*,

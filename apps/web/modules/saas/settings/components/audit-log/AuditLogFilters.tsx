@@ -124,7 +124,7 @@ const OUTCOME_ICONS: Record<
 	(typeof OUTCOME_OPTIONS)[number],
 	{ icon: LucideIcon; toneClass: string }
 > = {
-	success: { icon: CheckCircle2, toneClass: "text-secondary" },
+	success: { icon: CheckCircle2, toneClass: "text-success" },
 	failure: { icon: XCircle, toneClass: "text-destructive" },
 };
 
@@ -612,7 +612,7 @@ function DateRangeChip({
 							data-testid="audit-date-to-input"
 						/>
 					</div>
-					<p className="text-[10px] text-muted-foreground/80">
+					<p className="text-[10px] text-muted-foreground">
 						{t("settings.auditLog.filters.dateRange.timezoneHint")}
 					</p>
 				</div>

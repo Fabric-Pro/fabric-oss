@@ -12,6 +12,28 @@ export const TRANSCRIPT_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 /** `metadata.provider` on the context row of an uploaded transcript. */
 export const UPLOADED_TRANSCRIPT_PROVIDER = "file-upload";
 
+/**
+ * `metadata.provider` on the context row of a transcript imported from a
+ * connected OneDrive folder (Fizzy #3507). The file is read the way an upload
+ * is, so the same limits and formats apply.
+ */
+export const ONEDRIVE_TRANSCRIPT_PROVIDER = "onedrive-folder";
+
+/**
+ * A transcript context whose file goes through the upload's ingest, whichever
+ * way the file arrived. A retry must send both kinds back there.
+ */
+export function isTranscriptFileProvider(provider: unknown): boolean {
+	return (
+		provider === UPLOADED_TRANSCRIPT_PROVIDER ||
+		provider === ONEDRIVE_TRANSCRIPT_PROVIDER
+	);
+}
+
+/** Shown before a folder connection completes, in the card's own words. */
+export const TRANSCRIPT_FOLDER_IMPORT_DISCLOSURE =
+	"Existing and future supported transcripts in these folders will be imported.";
+
 export const TRANSCRIPT_UPLOAD_FORMATS = {
 	txt: "text/plain",
 	vtt: "text/vtt",

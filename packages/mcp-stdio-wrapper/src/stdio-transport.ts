@@ -72,6 +72,30 @@ function redactStderrLine(line: string): string {
 		: line.slice(0, STDERR_LINE_MAX_CHARS);
 }
 
+/** Console level for a child's stderr line: a JSON `level` is honoured, anything else stays an error. */
+export function stderrLogLevel(line: string): "info" | "warn" | "error" {
+	if (!line.startsWith("{")) {
+		return "error";
+	}
+	try {
+		const { level } = JSON.parse(line);
+		if (typeof level === "number") {
+			// pino/bunyan: 40 = warn, 50+ = error/fatal
+			return level >= 50 ? "error" : level >= 40 ? "warn" : "info";
+		}
+		const name = String(level ?? "").toLowerCase();
+		if (["warn", "warning"].includes(name)) {
+			return "warn";
+		}
+		if (["info", "debug", "trace", "notice"].includes(name)) {
+			return "info";
+		}
+	} catch {
+		// Not JSON after all.
+	}
+	return "error";
+}
+
 /**
  * What an npm (or npx) run that failed says went wrong, read from its
  * stderr: the `npm error code` and the first `npm error` line that is not
@@ -228,7 +252,10 @@ export class StdioTransport {
 						if (/^npm (?:error|ERR!)/.test(line)) {
 							continue;
 						}
-						console.error("[StdioTransport] stderr:", safe);
+						console[stderrLogLevel(line)](
+							"[StdioTransport] stderr:",
+							safe,
+						);
 					}
 				});
 

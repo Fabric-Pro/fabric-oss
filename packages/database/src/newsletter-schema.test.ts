@@ -12,6 +12,7 @@ import {
 	newsletterChatChannelSchema,
 	newsletterContentSchema,
 	newsletterHighlightSchema,
+	withoutPublishedImages,
 } from "./newsletter-schema";
 
 describe("newsletterContentSchema", () => {
@@ -161,5 +162,95 @@ describe("newsletterChatChannelSchema", () => {
 				channelId: "c1",
 			}),
 		).toThrow();
+	});
+});
+
+describe("newsletterHighlightSchema images", () => {
+	const highlight = { title: "New dashboard", description: "Shipped." };
+	const image = (n: number) => ({
+		url: `https://example.com/image-proxy/b/newsletter-public/${n}.png`,
+		alt: `Image ${n}`,
+	});
+
+	it("stays valid without images (every send before review images)", () => {
+		expect(newsletterHighlightSchema.parse(highlight)).toEqual(highlight);
+	});
+
+	it("keeps up to two images with optional dimensions", () => {
+		const parsed = newsletterHighlightSchema.parse({
+			...highlight,
+			images: [{ ...image(1), width: 800, height: 450 }, image(2)],
+		});
+		expect(parsed.images).toEqual([
+			{ ...image(1), width: 800, height: 450 },
+			image(2),
+		]);
+	});
+
+	it("keeps an image's placement and reads an old image without one", () => {
+		const parsed = newsletterHighlightSchema.parse({
+			...highlight,
+			images: [{ ...image(1), placement: "ABOVE" }, image(2)],
+		});
+		expect(parsed.images).toEqual([
+			{ ...image(1), placement: "ABOVE" },
+			image(2),
+		]);
+		expect(parsed.images?.[1]?.placement).toBeUndefined();
+	});
+
+	it("rejects an unknown placement", () => {
+		expect(
+			newsletterHighlightSchema.safeParse({
+				...highlight,
+				images: [{ ...image(1), placement: "BESIDE" }],
+			}).success,
+		).toBe(false);
+	});
+
+	it("rejects a third image", () => {
+		expect(
+			newsletterHighlightSchema.safeParse({
+				...highlight,
+				images: [image(1), image(2), image(3)],
+			}).success,
+		).toBe(false);
+	});
+});
+
+describe("withoutPublishedImages", () => {
+	const image = (n: number) => ({
+		url: `https://example.com/image-proxy/b/newsletter-public/${n}.png`,
+		alt: `Image ${n}`,
+	});
+	const content = {
+		schemaVersion: 1 as const,
+		headline: "h",
+		intro: "i",
+		hasMajorFeatures: true,
+		highlights: [
+			{ title: "a", description: "da", images: [image(1), image(2)] },
+			{ title: "b", description: "db", images: [image(3)] },
+			{ title: "c", description: "dc" },
+		],
+	};
+
+	it("drops the taken-down images and the key of a highlight left empty", () => {
+		const result = withoutPublishedImages(content, [
+			"newsletter-public/1.png",
+			"newsletter-public/3.png",
+		]);
+
+		expect(result.highlights).toEqual([
+			{ title: "a", description: "da", images: [image(2)] },
+			{ title: "b", description: "db" },
+			{ title: "c", description: "dc" },
+		]);
+	});
+
+	it("leaves content without those images unchanged", () => {
+		expect(
+			withoutPublishedImages(content, ["newsletter-public/9.png"]),
+		).toEqual(content);
 	});
 });

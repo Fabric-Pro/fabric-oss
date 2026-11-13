@@ -15,7 +15,7 @@ vi.mock("resend", () => ({
 		emails = { send: sendMock };
 	},
 }));
-vi.mock("@repo/observability", () => ({
+vi.mock("@repo/observability/breakers", () => ({
 	withProviderBreaker: (
 		_provider: string,
 		_operation: string,

@@ -22,6 +22,7 @@ vi.mock("@repo/logs", () => ({
 vi.mock("../../../orpc/procedures", () => {
 	const builder: Record<string, unknown> = {};
 	builder.use = () => builder;
+	builder.meta = () => builder;
 	builder.route = () => builder;
 	builder.input = () => builder;
 	builder.output = () => builder;

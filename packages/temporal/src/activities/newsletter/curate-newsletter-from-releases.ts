@@ -15,6 +15,7 @@ import {
 import {
 	type DeploymentItem,
 	isCurrentOrgMember,
+	NEWSLETTER_CAPTURE_BRIEF_MAX,
 	NEWSLETTER_SCHEMA_VERSION,
 	type NewsletterContent,
 	type NewsletterDetailLevel,
@@ -29,6 +30,10 @@ import { z } from "zod";
 import { RELEASE_NOTES_OMITTED_NOTICE } from "../daily-brief/collect-github-releases";
 import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
 import { getDetailLevelClause } from "./detail-level";
+import {
+	formatTargetingContext,
+	type NewsletterReleaseTargeting,
+} from "./screenshot-targeting-context";
 
 export interface CurateNewsletterFromReleasesInput {
 	projectId: string;
@@ -37,6 +42,12 @@ export interface CurateNewsletterFromReleasesInput {
 	projectName: string;
 	releases: DeploymentItem[];
 	detailLevel?: NewsletterDetailLevel;
+	/**
+	 * Present only when screenshots are captured automatically: curation then
+	 * also marks which highlights change the interface and where (see
+	 * `buildScreenshotTargetingClause`). Absent keeps the prompt unchanged.
+	 */
+	targeting?: NewsletterReleaseTargeting[];
 }
 export interface CurateNewsletterFromReleasesOutput {
 	content: NewsletterContent;
@@ -68,12 +79,45 @@ const LlmOutputSchema = z.object({
 					.string()
 					.optional()
 					.describe("The release URL this highlight came from."),
+				// Optional, and only asked for (and only kept) when screenshots
+				// are captured automatically; see buildScreenshotTargetingClause.
+				visualChange: z
+					.boolean()
+					.optional()
+					.describe(
+						"Only when asked: true when a user can see this change in the product's interface.",
+					),
+				captureBrief: z
+					.string()
+					.optional()
+					.describe(
+						"Only when asked and visualChange is true: one sentence naming the screen and the state that shows the change.",
+					),
 			}),
 		)
 		.describe(
 			"Major user-facing features ONLY. Empty if nothing qualifies.",
 		),
 });
+
+/** Exported for unit testing. The extra prompt lines when screenshots are captured. */
+export function buildScreenshotTargetingClause(
+	targeting: readonly NewsletterReleaseTargeting[],
+): string[] {
+	const context = formatTargetingContext(targeting);
+	return [
+		"",
+		"Screenshots of the product will be taken for some highlights. For each highlight you emit, also set:",
+		"- visualChange: true when a user can see the change in the product's interface; false for API, performance, security policy, infrastructure or other changes nobody can see on a screen.",
+		"- captureBrief (only when visualChange is true): one sentence naming the screen and the state that shows the change. For a small change, name the component; for a large one, the most representative screen. Say what to open (a tab, a menu, a dialog) when the change is not on the page as it loads.",
+		...(context
+			? [
+					"Use these work items, pull requests and changed files to find where each change lives in the product:",
+					context,
+				]
+			: []),
+	];
+}
 
 const PROMPT_RELEASE_LIMIT = 50; // == collector MAX_DEPLOYMENT_ITEMS — enumerate ALL it returns
 const PROMPT_BODY_CAP = 2000; // per-release body char cap
@@ -86,6 +130,7 @@ export function buildReleaseNewsletterPrompt(
 	projectName: string,
 	releases: DeploymentItem[],
 	detailLevel: NewsletterDetailLevel = "STANDARD",
+	targeting?: readonly NewsletterReleaseTargeting[],
 ): string {
 	const cleaned = releases.slice(0, PROMPT_RELEASE_LIMIT).map((r) => ({
 		tag: r.tagName,
@@ -148,7 +193,25 @@ export function buildReleaseNewsletterPrompt(
 		"",
 		"Published production releases in this period:",
 		...lines,
+		...(targeting ? buildScreenshotTargetingClause(targeting) : []),
 	].join("\n");
+}
+
+/** A highlight's capture hints, kept only when they were asked for. */
+function captureHints(
+	highlight: { visualChange?: boolean; captureBrief?: string },
+	asked: boolean,
+): Pick<NewsletterHighlight, "visualChange" | "captureBrief"> {
+	if (!asked || highlight.visualChange === undefined) {
+		return {};
+	}
+	const brief = highlight.captureBrief
+		?.trim()
+		.slice(0, NEWSLETTER_CAPTURE_BRIEF_MAX);
+	return {
+		visualChange: highlight.visualChange,
+		...(highlight.visualChange && brief ? { captureBrief: brief } : {}),
+	};
 }
 
 /** Exported for testing. Attaches canonical release metadata to a curated highlight
@@ -220,6 +283,7 @@ export async function curateNewsletterFromReleasesActivity(
 		projectName,
 		releases,
 		detailLevel,
+		input.targeting,
 	);
 	const start = Date.now();
 	logger.info("[Newsletter] curating release notes", {
@@ -285,6 +349,7 @@ export async function curateNewsletterFromReleasesActivity(
 			description: h.description,
 			...(h.prUrl ? { prUrl: h.prUrl } : {}),
 			...mapHighlightReleaseMeta(h, releases),
+			...captureHints(h, input.targeting !== undefined),
 		})),
 	};
 	const aiUsageTokens =

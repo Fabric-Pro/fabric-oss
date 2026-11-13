@@ -62,6 +62,8 @@ export interface ProjectContextSearchOptions {
  * Result from project context retrieval
  */
 export interface ProjectRetrievalResult {
+	/** Position within the source, decoded from a chunk ID when available. */
+	chunkIndex?: number;
 	contextId: string;
 	projectId: string;
 	score: number;

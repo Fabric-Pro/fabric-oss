@@ -104,8 +104,12 @@ export interface ProjectContextRetrievalOptions {
 }
 
 export interface RetrievedContext {
-	/** Matching chunks in search relevance order; absent unless requested. */
-	matchedPassages?: Array<{ content: string; score: number }>;
+	/** Matching chunks in source order, followed by unpositioned matches in relevance order; absent unless requested. */
+	matchedPassages?: Array<{
+		content: string;
+		score: number;
+		chunkIndex?: number;
+	}>;
 	id: string;
 	type: string;
 	content: string;
@@ -278,7 +282,7 @@ export async function retrieveProjectContexts(
 		});
 		const passagesById = new Map<
 			string,
-			Array<{ content: string; score: number }>
+			Array<{ content: string; score: number; chunkIndex?: number }>
 		>();
 		for (const result of searchResults) {
 			if (options.includeMatchedPassages && result.content?.trim()) {
@@ -287,10 +291,21 @@ export async function retrieveProjectContexts(
 					passages.push({
 						content: result.content,
 						score: result.score,
+						...(result.chunkIndex !== undefined
+							? { chunkIndex: result.chunkIndex }
+							: {}),
 					});
 				}
 				passagesById.set(result.contextId, passages);
 			}
+		}
+
+		for (const passages of passagesById.values()) {
+			passages.sort(
+				(a, b) =>
+					(a.chunkIndex ?? Number.POSITIVE_INFINITY) -
+					(b.chunkIndex ?? Number.POSITIVE_INFINITY),
+			);
 		}
 
 		const contexts: RetrievedContext[] = [];

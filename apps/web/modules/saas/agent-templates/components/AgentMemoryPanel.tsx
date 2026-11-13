@@ -99,11 +99,11 @@ const FILE_TYPE_ICONS: Record<string, React.ElementType> = {
 };
 
 const FILE_TYPE_COLORS: Record<string, string> = {
-	AGENTS_MD: "text-purple-500",
-	MCP_JSON: "text-blue-500",
+	AGENTS_MD: "text-purple-600 dark:text-purple-400",
+	MCP_JSON: "text-blue-600 dark:text-blue-400",
 	SKILL: "text-highlight",
 	KNOWLEDGE: "text-success",
-	CONVERSATION: "text-cyan-500",
+	CONVERSATION: "text-cyan-700 dark:text-cyan-500",
 };
 
 function getFileIcon(fileType: string, path: string) {
@@ -275,7 +275,7 @@ function FileTreeItem({
 			className={cn(
 				"flex w-full items-center gap-2 px-2 py-1.5 text-sm rounded-md transition-colors",
 				"text-left hover:bg-muted/50",
-				isSelected && "bg-primary/10 text-primary font-medium",
+				isSelected && "bg-primary/10 text-primary-active font-medium",
 			)}
 			style={{ paddingLeft: `${depth * 12 + 28}px` }}
 		>
@@ -284,7 +284,7 @@ function FileTreeItem({
 			{node.sourceSkillId && node.fileType === "SKILL" && (
 				<Badge
 					variant="outline"
-					className="text-xs text-amber-600 border-amber-300"
+					className="text-xs text-amber-700 border-amber-300 dark:text-amber-500"
 				>
 					Inherited
 				</Badge>
@@ -664,7 +664,7 @@ export function AgentMemoryPanel({
 													{hasChanges && (
 														<Badge
 															variant="outline"
-															className="text-amber-600"
+															className="text-amber-700 dark:text-amber-500"
 														>
 															Unsaved
 														</Badge>

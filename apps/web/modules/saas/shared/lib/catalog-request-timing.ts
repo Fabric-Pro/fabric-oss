@@ -1,5 +1,26 @@
+import { monitorEventLoopDelay } from "node:perf_hooks";
+import { parseProxyTiming } from "@shared/lib/proxy-timing";
 import { after } from "next/server";
 import { cache } from "react";
+
+// The phase timings are wall-clock: an awaited query cannot resume while the
+// process runs other code, so a slow phase may be waiting on the CPU, not the
+// database. The longest stall of the event loop during a request says which.
+const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+eventLoopDelay.enable();
+
+function cpuMsOf(usage: NodeJS.CpuUsage): number {
+	return Math.round((usage.user + usage.system) / 1000);
+}
+
+// When this module instance was evaluated, and how many app requests it has
+// rendered. A count that starts again at 1 in a process that has been up for
+// a while means the route loaded its own copy of the modules.
+const moduleEvaluatedAtMs = Math.round(performance.now());
+let appRequestsRendered = 0;
+
+// Fast repeat requests are not logged; their cost is already known.
+const SLOW_APP_REQUEST_MS = 1500;
 
 type CatalogRequestPhase =
 	| "root_locale"
@@ -70,6 +91,52 @@ export function logChatRequestTiming(route: "main" | "registered-agent"): void {
 			elapsedAtAfterMs: Math.round(performance.now() - timing.startedAt),
 			phases: timing.phases,
 			phaseOffsets: timing.phaseOffsets,
+		});
+	});
+}
+
+/**
+ * Logs where an app page request spent its time, for the first request this
+ * module instance renders and for any slow one. `proxyToRenderMs` runs from
+ * the proxy receiving the request to the root layout starting to render, so
+ * it holds the hop to the page function, its cold start and the loading of
+ * the route's modules. It compares clocks of two functions, so read it to
+ * tens of milliseconds, not exactly. `cpuMs` is the process's CPU time from
+ * this call to the end of the response, and `loopStallMaxMs` its longest
+ * event-loop stall in that time; other requests running alongside add to
+ * both. `processCpuMs` is the CPU time since the process started.
+ */
+export function logAppRequestTiming(proxyTimingHeader: string | null): void {
+	const timing = getCatalogRequestTiming();
+	const cpuAtStart = process.cpuUsage();
+	eventLoopDelay.reset();
+	appRequestsRendered += 1;
+	const moduleRequestIndex = appRequestsRendered;
+	const proxy = parseProxyTiming(proxyTimingHeader);
+	const renderStartedAt = performance.timeOrigin + timing.startedAt;
+	const proxyToRenderMs = proxy
+		? Math.round(renderStartedAt - proxy.receivedAt)
+		: undefined;
+
+	after(() => {
+		const responseMs = Math.round(performance.now() - timing.startedAt);
+		const totalMs = responseMs + (proxyToRenderMs ?? 0);
+		if (moduleRequestIndex > 1 && totalMs < SLOW_APP_REQUEST_MS) {
+			return;
+		}
+		console.info("App request timing", {
+			event: "app.request_timing",
+			moduleRequestIndex,
+			moduleEvaluatedAtMs,
+			processUptimeMs: Math.round(timing.startedAt),
+			proxyToRenderMs,
+			proxyUptimeMs: proxy?.uptimeMs,
+			proxyRequestIndex: proxy?.requestIndex,
+			responseMs,
+			cpuMs: cpuMsOf(process.cpuUsage(cpuAtStart)),
+			loopStallMaxMs: Math.round(eventLoopDelay.max / 1e6),
+			processCpuMs: cpuMsOf(process.cpuUsage()),
+			phases: timing.phases,
 		});
 	});
 }

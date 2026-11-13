@@ -85,7 +85,7 @@ export function DocumentDecisionPrecheckBanner({
 	const count = countDistinctDecisions(precheck.findings);
 
 	return (
-		<Alert className="mx-4 mt-2 w-auto border-amber-500/30 bg-amber-500/10 text-amber-700 [&>svg]:text-amber-700 dark:text-amber-400 dark:[&>svg]:text-amber-400">
+		<Alert className="mx-4 mt-2 w-auto border-amber-500/30 bg-amber-500/10 text-amber-800 [&>svg]:text-amber-800 dark:text-amber-400 dark:[&>svg]:text-amber-400">
 			<AlertTriangleIcon aria-hidden="true" />
 			<AlertTitle>{t("documentBannerTitle", { count })}</AlertTitle>
 			<AlertDescription className="text-amber-700 dark:text-amber-400">

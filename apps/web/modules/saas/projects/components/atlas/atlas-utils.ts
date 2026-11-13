@@ -25,7 +25,7 @@ export function languageColorVar(language: string | null): string {
 			return "var(--primary)";
 		case "python":
 		case "py":
-			return "var(--secondary)";
+			return "var(--success)";
 		case "go":
 		case "rust":
 		case "java":

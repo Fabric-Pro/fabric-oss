@@ -394,6 +394,29 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		},
 	);
 
+	it.each(["stream", "start", "weave"])(
+		"ignores the obsolete result-read input through %s",
+		async (route) => {
+			// Older clients may still send this unknown field; admission ignores it.
+			const body = newTurnBody({
+				resultReads: "enabled",
+				...(route === "weave" ? { executionMode: "weave" } : {}),
+			});
+			if (route === "start") {
+				const { POST } = await import(
+					"../../app/api/agents/fabric-ai/orchestrator-temporal/route"
+				);
+				expect((await POST(request(body))).status).toBe(200);
+			} else {
+				await readEvents(await post(body));
+			}
+			expect(m.start).toHaveBeenCalledTimes(1);
+			expect(m.start.mock.calls[0]?.[1].args[0]).not.toHaveProperty(
+				"resultReads",
+			);
+		},
+	);
+
 	it.each([true, false])(
 		"captures approval rollout for both chat starters: %s",
 		async (enabled) => {

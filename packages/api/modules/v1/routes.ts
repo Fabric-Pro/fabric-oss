@@ -42,6 +42,7 @@ import { registerDocumentRoutes } from "./documents";
 import { registerFeatureRoutes } from "./features";
 import { registerFrameRoutes } from "./frames";
 import { registerInstructionCheckoutRoutes } from "./instruction-checkouts";
+import { registerInstructionSetRoutes } from "./instruction-sets-routes";
 import { registerInstructionRoutes } from "./instructions";
 import { registerIntegrationRoutes } from "./integrations";
 import { registerKnowledgeRoutes } from "./knowledge";
@@ -459,6 +460,7 @@ export function createPublicV1Routes() {
 	registerMemoryWriteRoutes(app);
 	registerKnowledgeHubRoutes(app);
 	registerProjectCodeRepositoryRoutes(app);
+	registerInstructionSetRoutes(app);
 
 	return app;
 }

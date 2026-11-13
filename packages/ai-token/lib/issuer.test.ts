@@ -4,6 +4,7 @@
  * Tests for token issuance functionality.
  */
 
+import { decodeJwt } from "jose";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { issueAIToken, issueAITokenWithMetadata } from "./issuer";
 import { decodeTokenClaims, verifyAIToken } from "./verifier";
@@ -101,6 +102,128 @@ describe("AI Token Issuer", () => {
 			const result = await verifyAIToken(token);
 			expect(result.valid && "jt" in result.claims).toBe(false);
 		});
+	});
+
+	// The web-research endpoint trusts only this signed claim to decide whether
+	// one generation action may reach the public web.
+	describe("web research claim", () => {
+		it("signs wr when the user allowed web research for the action", async () => {
+			const token = await issueAIToken({
+				userId: "user-1",
+				organizationId: "org-1",
+				source: "document-generator",
+				impersonated: false,
+				webResearch: true,
+			});
+
+			expect(decodeJwt(token).wr).toBe(true);
+			const result = await verifyAIToken(token);
+			expect(result.valid).toBe(true);
+			if (result.valid) {
+				expect(result.claims.wr).toBe(true);
+			}
+		});
+
+		it("carries wr through issueAITokenWithMetadata", async () => {
+			const { token } = await issueAITokenWithMetadata({
+				userId: "user-1",
+				organizationId: "org-1",
+				source: "document-generator",
+				impersonated: false,
+				webResearch: true,
+			});
+
+			const result = await verifyAIToken(token);
+			expect(result.valid).toBe(true);
+			if (result.valid) {
+				expect(result.claims.wr).toBe(true);
+			}
+		});
+
+		it.each([
+			["unset", undefined],
+			["false", false],
+		])(
+			"writes no wr claim when web research is %s",
+			async (_label, webResearch) => {
+				const token = await issueAIToken({
+					userId: "user-1",
+					organizationId: "org-1",
+					source: "document-generator",
+					impersonated: false,
+					webResearch,
+				});
+
+				expect(decodeJwt(token)).not.toHaveProperty("wr");
+				const result = await verifyAIToken(token);
+				expect(result.valid).toBe(true);
+				if (result.valid) {
+					expect(result.claims).not.toHaveProperty("wr");
+				}
+			},
+		);
+
+		it("binds the permission to the project it was given for", async () => {
+			const token = await issueAIToken({
+				userId: "user-1",
+				organizationId: "org-1",
+				source: "document-generator",
+				impersonated: false,
+				webResearch: true,
+				webResearchProjectId: "project-1",
+			});
+
+			expect(decodeJwt(token).wrp).toBe("project-1");
+			const result = await verifyAIToken(token);
+			expect(result.valid && result.claims.wrp).toBe("project-1");
+		});
+
+		it("writes no project without the research permission", async () => {
+			const token = await issueAIToken({
+				userId: "user-1",
+				organizationId: "org-1",
+				source: "document-generator",
+				impersonated: false,
+				webResearch: false,
+				webResearchProjectId: "project-1",
+			});
+
+			expect(decodeJwt(token)).not.toHaveProperty("wrp");
+		});
+
+		it("carries the research grant id with the permission", async () => {
+			const token = await issueAIToken({
+				userId: "user-1",
+				organizationId: "org-1",
+				source: "document-generator",
+				impersonated: false,
+				webResearch: true,
+				webResearchGrantId: "grant-1",
+			});
+
+			expect(decodeJwt(token).wrg).toBe("grant-1");
+			const result = await verifyAIToken(token);
+			expect(result.valid && result.claims.wrg).toBe("grant-1");
+		});
+
+		it.each([
+			["unset", undefined],
+			["false", false],
+		])(
+			"writes no grant id when web research is %s",
+			async (_label, webResearch) => {
+				const token = await issueAIToken({
+					userId: "user-1",
+					organizationId: "org-1",
+					source: "document-generator",
+					impersonated: false,
+					webResearch,
+					webResearchGrantId: "grant-1",
+				});
+
+				expect(decodeJwt(token)).not.toHaveProperty("wrg");
+			},
+		);
 	});
 
 	describe("issueAIToken", () => {

@@ -14,10 +14,16 @@
  * Codex folder's `.mcp.json` holds the project's gateway URL. Only a different
  * project or deployment that is positively identified is a conflict; what
  * cannot be read is taken as free and gets the file on the next write.
+ *
+ * A non-default Coding Instructions set has a plugin of its own, and its
+ * binding names the set (`set`, a slug). A location bound to another set of
+ * the same project is a conflict like another project; the default set and
+ * "no set" are the same owner, the project's own plugin.
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { CliFailure } from "../command-boundary.js";
+import { pluginSetSlug } from "./instruction-sets.js";
 import { pluginNameFor } from "./layout.js";
 
 export const BINDING_FILE = ".fabric-binding.json";
@@ -26,6 +32,8 @@ export interface PluginBinding {
 	projectId: string;
 	/** The deployment's origin, or `null` when it is not known. */
 	origin: string | null;
+	/** A non-default Coding Instructions set's slug; absent or `null` for the project's own plugin. */
+	set?: string | null;
 }
 
 export type PluginLocation = "claude-marketplace" | "codex-plugin";
@@ -43,7 +51,16 @@ export function originOf(value: string): string | null {
 }
 
 export function bindingText(binding: PluginBinding): string {
-	return `${JSON.stringify(binding, null, 2)}\n`;
+	const set = pluginSetSlug(binding.set);
+	return `${JSON.stringify(
+		{
+			projectId: binding.projectId,
+			origin: binding.origin,
+			...(set === null ? {} : { set }),
+		},
+		null,
+		2,
+	)}\n`;
 }
 
 async function readJson(file: string): Promise<unknown> {
@@ -69,6 +86,7 @@ async function bindingFromSidecar(
 	return {
 		projectId: parsed.projectId,
 		origin: typeof parsed.origin === "string" ? parsed.origin : null,
+		set: typeof parsed.set === "string" ? parsed.set : null,
 	};
 }
 
@@ -94,6 +112,7 @@ async function legacyClaudeBinding(
 			return {
 				projectId,
 				origin: baseUrl === null ? null : originOf(baseUrl),
+				set: valueAfter(words, "--set"),
 			};
 		}
 	}
@@ -153,14 +172,25 @@ export async function assertLocationFree(input: {
 		existing.origin !== null &&
 		input.wanted.origin !== null &&
 		existing.origin !== input.wanted.origin;
-	if (!otherProject && !otherDeployment) {
+	const existingSet = pluginSetSlug(existing.set);
+	const wantedSet = pluginSetSlug(input.wanted.set);
+	const otherSet = !otherProject && existingSet !== wantedSet;
+	if (!otherProject && !otherDeployment && !otherSet) {
 		return;
 	}
-	const name = pluginNameFor(input.wanted.projectId);
+	const name = pluginNameFor(input.wanted.projectId, input.wanted.set);
 	const removal =
 		input.location === "claude-marketplace"
 			? `run \`claude plugin uninstall ${name}@${name} --scope local\` in the folders that use it, then delete ${input.directory}`
 			: `delete ${input.directory} and remove ${name} from the Codex marketplace file that lists it`;
+	const setOf = (set: string | null) =>
+		set === null ? "" : ` (Coding Instructions set ${set})`;
+	if (otherSet && !otherDeployment) {
+		throw new CliFailure(
+			`The plugin name ${name} is already taken by project ${existing.projectId}${setOf(existingSet)}, so it was not changed for ${wantedSet === null ? "the project's own plugin" : `its Coding Instructions set ${wantedSet}`}. Replacing it would repoint the folders already set up for that set. To use this one, remove the other setup first: ${removal}, then run this again.`,
+			7,
+		);
+	}
 	throw new CliFailure(
 		`The plugin name ${name} is already taken by project ${existing.projectId}${existing.origin === null ? "" : ` on ${existing.origin}`}, so it was not changed for project ${input.wanted.projectId}${input.wanted.origin === null ? "" : ` on ${input.wanted.origin}`}. Replacing it would repoint the folders already set up for that project. To use this one, remove the other setup first: ${removal}, then run this again.`,
 		7,

@@ -28,6 +28,8 @@ import {
  */
 export const reportProjectProcedure = tenantProtectedProcedure
 	.use(requireInputOrgPermission(Permissions.REPORT_READ))
+	// A read under the key `project`, which does not look like one.
+	.meta({ auditActivity: "never" })
 	.input(
 		z.object({
 			id: z.string().min(1).max(128),

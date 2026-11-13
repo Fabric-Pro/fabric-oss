@@ -5,7 +5,7 @@
 
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
-import { connectorErrorMessage } from "../connector-error";
+import { imageGenerationErrorMessage } from "../image-generation-error";
 import { interpolateTemplate } from "./utils";
 
 export async function executeFalGenerateImageStep(
@@ -76,11 +76,15 @@ export async function executeFalGenerateImageStep(
 		const result = await response.json();
 
 		if (!response.ok) {
+			console.error(
+				"[fal-generate-image] Image generation failed:",
+				result,
+			);
 			return {
 				success: false,
-				error: connectorErrorMessage(
-					result.detail || result.message,
-					`HTTP ${response.status}`,
+				error: imageGenerationErrorMessage(
+					{ statusCode: response.status },
+					"fal",
 				),
 			};
 		}
@@ -97,12 +101,10 @@ export async function executeFalGenerateImageStep(
 			},
 		};
 	} catch (error) {
+		console.error("[fal-generate-image] Image generation failed:", error);
 		return {
 			success: false,
-			error:
-				error instanceof Error
-					? error.message
-					: "fal.ai image generation failed",
+			error: imageGenerationErrorMessage(error, "fal"),
 		};
 	}
 }

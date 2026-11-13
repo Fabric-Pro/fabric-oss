@@ -8,6 +8,7 @@
  * - Version management
  */
 
+import { randomUUID } from "node:crypto";
 import { Client, type StreamMode } from "@langchain/langgraph-sdk";
 import {
 	type DocumentSection,
@@ -152,6 +153,7 @@ import { withHeartbeatTicker } from "./lib/activity-liveness";
 import { activityLogger } from "./lib/activity-logger";
 import { findPlanExhausted } from "./lib/chatgpt-plan-refusal";
 import { sharedPlansSpentError } from "./lib/chatgpt-plan-shared-spent";
+import { withFallbackResearchNotice } from "./lib/fallback-research-notice";
 import {
 	type BackgroundJobStepStatus,
 	JOB_STEPS,
@@ -170,6 +172,7 @@ import {
 	ProposalStreamLimits,
 	proposalAttemptBudget,
 } from "./lib/proposal-generation-bounds";
+import { ResearchProgressKeepalive } from "./lib/research-progress-keepalive";
 
 // =============================================================================
 // Agent Skills resolution
@@ -1545,8 +1548,21 @@ async function runBoundedFallback(input: {
 	heartbeat: typeof AGENT_FALLBACK_HEARTBEAT;
 	live: LiveSections | undefined;
 	attemptBudget: ProposalAttemptBudget | undefined;
+	/**
+	 * The run's web research answer: `true` allowed, `false` offered and not
+	 * allowed, absent when no choice was offered.
+	 */
+	allowWebResearch: boolean | undefined;
 }): Promise<string> {
 	const { live } = input;
+	// The agent writes the research notice itself. This stand-in has no tools
+	// and no research outcome, so it is told which notice applies; without it
+	// the notice would vanish exactly when the agent failed. A run that
+	// offered no choice keeps its system prompt exactly as it was.
+	const instructions = withFallbackResearchNotice(
+		input.systemPrompt,
+		input.allowWebResearch,
+	);
 	// Whole-document generation from a short prompt — maximal mode. Without
 	// an explicit budget Databricks/Anthropic-direct cap the document at
 	// their injected defaults (8,192 / 4,096) and silently truncate it.
@@ -1555,8 +1571,7 @@ async function runBoundedFallback(input: {
 	// for the agent, and a stand-in that asks for less output than the thing
 	// it replaces turns an outage into a truncated document (Fizzy #2210).
 	const maxOutputTokens = computeMaxOutputTokenBudget(input.modelMetadata, {
-		promptChars:
-			(input.systemPrompt?.length ?? 0) + input.fullPrompt.length,
+		promptChars: (instructions?.length ?? 0) + input.fullPrompt.length,
 		ceilingTokens: DOCUMENT_GENERATION_FALLBACK_CEILING,
 	});
 	const bound = live
@@ -1567,7 +1582,7 @@ async function runBoundedFallback(input: {
 		// and prevent idle timeout errors on long-running generations
 		const stream = streamText({
 			model: input.model,
-			instructions: input.systemPrompt,
+			instructions,
 			prompt: input.fullPrompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 			...(bound ? { abortSignal: bound.signal } : {}),
@@ -1639,6 +1654,145 @@ async function runBoundedFallback(input: {
 	}
 }
 
+/** The agent stream's limit when `AGENT_STREAM_TIMEOUT_MS` is unset. */
+const DEFAULT_AGENT_STREAM_TIMEOUT_MS = 300_000;
+
+// These mirror the agent's per-generation research limits (at most this many
+// searches and page reads) and the client abort it puts on each such call.
+const WEB_RESEARCH_MAX_SEARCHES = 5;
+const WEB_RESEARCH_MAX_READS = 8;
+const WEB_RESEARCH_CALL_MS = 25_000;
+
+/** Extra stream time a run with web research allowed may spend on it. */
+const WEB_RESEARCH_STREAM_ALLOWANCE_MS =
+	(WEB_RESEARCH_MAX_SEARCHES + WEB_RESEARCH_MAX_READS) * WEB_RESEARCH_CALL_MS;
+
+/**
+ * The progress a research run's keepalive writes: the value the child wrote
+ * just before this activity, so the bar never moves back; only the row's
+ * last write moves.
+ */
+const RESEARCH_RUN_PROGRESS = 35;
+
+/**
+ * The longest a research run's stream may take. Ten of the child's fifteen
+ * minutes per attempt, so a failed stream still leaves the gateway fallback
+ * time to write the document. With the default five-minute limit the plain
+ * sum (625 s) is past it, so by default a research run gets exactly this cap.
+ */
+const MAX_WEB_RESEARCH_STREAM_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * How long a non-artifact run waits on the agent stream. Without web research
+ * this is exactly the limit it always was; with it, research time is added on
+ * top, never past {@link MAX_WEB_RESEARCH_STREAM_TIMEOUT_MS} — and never below
+ * the plain limit, so an operator's longer `AGENT_STREAM_TIMEOUT_MS` does not
+ * cut short the runs that need more time, not less.
+ */
+export function agentStreamTimeoutMs(input: {
+	allowWebResearch?: boolean;
+	envValue?: string;
+}): number {
+	const base = Number(input.envValue ?? DEFAULT_AGENT_STREAM_TIMEOUT_MS);
+	if (input.allowWebResearch !== true) {
+		return base;
+	}
+	return Math.max(
+		base,
+		Math.min(
+			base + WEB_RESEARCH_STREAM_ALLOWANCE_MS,
+			MAX_WEB_RESEARCH_STREAM_TIMEOUT_MS,
+		),
+	);
+}
+
+/**
+ * How long a token re-issued for a retried research attempt stays valid: the
+ * attempt's fifteen-minute start-to-close with margin, the same window the
+ * child workflow mints for after a wait.
+ */
+const RESEARCH_RETRY_TOKEN_EXPIRY_SECONDS = 1800;
+
+/** This activity's attempt number, or undefined outside an activity. */
+function currentActivityAttempt(): number | undefined {
+	try {
+		return Context.current().info.attempt;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The agent token for this attempt of a research run.
+ *
+ * The first attempt uses the token it was handed. A retry starts after the
+ * earlier attempt's fifteen minutes, when the dispatch token may have
+ * expired, so it re-establishes that the requester may still generate the
+ * document and mints a fresh token with the same research permission, bound
+ * to the same project and the same research grant: the endpoint's call budget
+ * then spans every attempt of the action instead of starting over. A refusal
+ * is the same non-retryable failure the workflow's own re-check raises.
+ *
+ * Every other run, and a run with no document to re-authorize against, keeps
+ * the token it was handed.
+ */
+async function agentTokenForAttempt(input: {
+	aiToken: string;
+	allowWebResearch: boolean | undefined;
+	projectId: string;
+	documentId: string | undefined;
+	userId: string;
+	organizationId: string | undefined;
+	planEligible: boolean;
+}): Promise<string> {
+	if (input.allowWebResearch !== true) {
+		return input.aiToken;
+	}
+	const attempt = currentActivityAttempt();
+	if (attempt === undefined || attempt <= 1) {
+		return input.aiToken;
+	}
+	if (!input.documentId) {
+		activityLogger.warn(
+			"A retried research attempt has no document to re-authorize against; keeping its token",
+			{ projectId: input.projectId, attempt },
+		);
+		return input.aiToken;
+	}
+
+	await assertRequesterMayGenerate({
+		documentId: input.documentId,
+		userId: input.userId,
+		organizationId: input.organizationId,
+	});
+
+	// Only the grant id is carried over, so the action's call budget spans
+	// both tokens; it is read without verification, and every privilege of
+	// the minted token comes from this activity's input. A grant id the
+	// handed token does not carry in a usable form starts a fresh grant.
+	const { readResearchGrantId } = await import("@repo/ai-token");
+	const grantId = readResearchGrantId(input.aiToken) ?? randomUUID();
+
+	const { aiToken } = await issueGenerationToken({
+		userId: input.userId,
+		organizationId: input.organizationId,
+		expirySeconds: RESEARCH_RETRY_TOKEN_EXPIRY_SECONDS,
+		planEligible: input.planEligible,
+		webResearch: true,
+		webResearchProjectId: input.projectId,
+		webResearchGrantId: grantId,
+	});
+	activityLogger.info(
+		"Re-issued the agent token for a retried research attempt",
+		{
+			documentId: input.documentId,
+			projectId: input.projectId,
+			attempt,
+		},
+	);
+	return aiToken;
+}
+
 /**
  * Generate document using LangGraph agent
  */
@@ -1667,6 +1821,21 @@ export async function generateDocumentWithAgent(params: {
 	hasSlackIntegration?: boolean;
 	/** The clicking member's own ChatGPT plan may serve this run (Fizzy #2939). */
 	planEligible?: boolean;
+	/**
+	 * The person's web research answer for this one action: `true` allowed;
+	 * `false` offered and not allowed; absent when no choice was offered
+	 * (background, bulk and API runs). The agent reads it only from its input
+	 * and takes a boolean as "the choice was offered"; only `true` opens its
+	 * research tools, and a research run gets more stream time to use them.
+	 */
+	allowWebResearch?: boolean;
+	/**
+	 * The attempt's identity (ISO-8601 `generationStartedAt`), handed over
+	 * only for a run allowed to research. Its long agent stream then keeps the
+	 * row's last write recent with the same attempt-scoped progress write the
+	 * child makes, so the page does not take the run for stalled.
+	 */
+	generationStartedAt?: string;
 	/**
 	 * A bulk run that waits for a shared ChatGPT plan's reset (Fizzy #2770):
 	 * a failure while every shared plan is spent leaves as the plan's own
@@ -1706,13 +1875,15 @@ export async function generateDocumentWithAgent(params: {
 		contexts,
 		userId,
 		organizationId,
-		aiToken,
+		aiToken: handedAiToken,
 		promptId,
 		currentDocument,
 		hasRagContexts: explicitHasRagContexts,
 		hasTeamsIntegration = false,
 		hasSlackIntegration = false,
 		planEligible = false,
+		allowWebResearch: rawAllowWebResearch,
+		generationStartedAt,
 		waitForPlanReset = false,
 		artifact,
 	} = params;
@@ -1720,6 +1891,13 @@ export async function generateDocumentWithAgent(params: {
 	// Track the resolved prompt version ID for attribution. `null`, never
 	// undefined: the result must carry the key even when no prompt version ran.
 	let resolvedPromptVersionId: string | null = null;
+
+	// Only a boolean is an answer to an offered choice; anything else, from a
+	// caller that offered none, is no answer at all. Only `true` allows it.
+	const allowWebResearch =
+		typeof rawAllowWebResearch === "boolean"
+			? rawAllowWebResearch
+			: undefined;
 
 	// Normalize document type from database format (uppercase) to agent format (lowercase)
 	// Use direct function instead of import to avoid module resolution issues in Temporal worker
@@ -1744,6 +1922,18 @@ export async function generateDocumentWithAgent(params: {
 		hasCustomPrompt: !!promptId,
 		hasCurrentDocument: !!currentDocument,
 		isRegeneration,
+	});
+
+	// Before the try below: its catch may replace an error with a plan error,
+	// and a refused re-authorization must leave exactly as it was raised.
+	const aiToken = await agentTokenForAttempt({
+		aiToken: handedAiToken,
+		allowWebResearch,
+		projectId,
+		documentId,
+		userId,
+		organizationId,
+		planEligible,
 	});
 
 	try {
@@ -2672,6 +2862,26 @@ ${formattingRules}`;
 		let heartbeatLoop: ReturnType<typeof setInterval> | undefined;
 		// Artifact mode's stream limits; every other run keeps today's race.
 		let streamLimits: ProposalStreamLimits | undefined;
+		// A research run without live sections keeps the row's last write
+		// recent: its stream alone may outlast the page's silence ceiling.
+		// Only with the attempt's identity, so the write is the child's own
+		// attempt-scoped one; never the unscoped write a run without it makes.
+		const researchProgress =
+			!live &&
+			allowWebResearch === true &&
+			documentId &&
+			generationStartedAt
+				? new ResearchProgressKeepalive(
+						() =>
+							updateProjectDocumentStatus({
+								documentId,
+								status: "GENERATING",
+								progress: RESEARCH_RUN_PROGRESS,
+								generationStartedAt,
+							}),
+						{ projectId, documentId },
+					)
+				: undefined;
 		try {
 			// CRITICAL: Start background heartbeat loop BEFORE stream initialization.
 			// The stream call can take a long time for complex documents (architecture, tech specs)
@@ -2695,6 +2905,9 @@ ${formattingRules}`;
 						chunkCount,
 						documentLength: documentContent.length,
 					});
+					// At most once a minute; stops with this loop on every
+					// exit from the stream.
+					researchProgress?.tick();
 				}
 			}, HEARTBEAT_INTERVAL_MS);
 
@@ -2729,6 +2942,15 @@ ${formattingRules}`;
 						live.abort();
 					},
 					live.logIds(),
+					// A run allowed to research may do it before its first
+					// section, so its first chunk gets the research time on
+					// top. The wall cap still bounds the whole stream.
+					allowWebResearch === true
+						? {
+								extraFirstChunkMs:
+									WEB_RESEARCH_STREAM_ALLOWANCE_MS,
+							}
+						: undefined,
 				);
 			}
 
@@ -2770,6 +2992,13 @@ ${formattingRules}`;
 						isRegeneration, // Flag to indicate this is a regeneration request
 						// Teams integration state for server-side tool execution
 						hasTeamsIntegration,
+						// Only where a choice was offered: the agent opens its
+						// web research tools only on `true`, and writes the
+						// not-authorized notice only on `false`. A run that
+						// offered none sends no key, and no notice is written.
+						...(allowWebResearch !== undefined && {
+							allowWebResearch,
+						}),
 						hasSlackIntegration,
 						projectId,
 						documentId,
@@ -2857,9 +3086,12 @@ ${formattingRules}`;
 					streamLimits.dispose();
 				}
 			} else {
-				const timeoutMs = Number(
-					process.env.AGENT_STREAM_TIMEOUT_MS ?? 300000, // 5 minutes for longer documents
-				);
+				// 5 minutes for longer documents, plus research time when a
+				// person allowed it.
+				const timeoutMs = agentStreamTimeoutMs({
+					allowWebResearch,
+					envValue: process.env.AGENT_STREAM_TIMEOUT_MS,
+				});
 				const timedOut = new Promise<string>((resolve) =>
 					setTimeout(() => {
 						clearInterval(heartbeatLoop); // Clear heartbeat loop on timeout
@@ -3044,6 +3276,9 @@ ${formattingRules}`;
 			if (live?.cancelled) {
 				throw err;
 			}
+			// A research run's stream may have used most of the page's
+			// silence ceiling: the fallback starts from a fresh last write.
+			researchProgress?.writeNow();
 			documentContent = await runBoundedFallback({
 				model: fallbackModel,
 				modelMetadata,
@@ -3054,6 +3289,7 @@ ${formattingRules}`;
 				heartbeat: AGENT_FALLBACK_HEARTBEAT,
 				live,
 				attemptBudget,
+				allowWebResearch,
 			});
 		}
 
@@ -3080,6 +3316,7 @@ ${formattingRules}`;
 				);
 				await live.markStopped();
 			}
+			researchProgress?.writeNow();
 			documentContent = await runBoundedFallback({
 				model: fallbackModel,
 				modelMetadata,
@@ -3090,6 +3327,7 @@ ${formattingRules}`;
 				heartbeat: DIRECT_FALLBACK_HEARTBEAT,
 				live,
 				attemptBudget,
+				allowWebResearch,
 			});
 			if (!documentContent) {
 				throw new Error("Fallback generation produced empty content");
@@ -3768,7 +4006,6 @@ const SAVE_COMPLETES_STATUSES: ReadonlySet<string> = new Set([
 async function saveWithGuards(params: {
 	documentId: string;
 	content: string;
-	userId: string | undefined;
 	baselineVersion?: number;
 	liveRunId?: string;
 	baselineContentHash?: string;
@@ -3777,7 +4014,6 @@ async function saveWithGuards(params: {
 	const {
 		documentId,
 		content,
-		userId,
 		baselineVersion,
 		liveRunId,
 		baselineContentHash,
@@ -3796,6 +4032,7 @@ async function saveWithGuards(params: {
 				status: true,
 				content: true,
 				version: true,
+				lastEditedBy: true,
 				projectId: true,
 				type: true,
 				...(liveRunId !== undefined && {
@@ -3889,7 +4126,11 @@ async function saveWithGuards(params: {
 						version: currentDoc.version,
 						content: currentDoc.content,
 						changeDescription: "Pre-regeneration snapshot (auto)",
-						changedBy: userId,
+						// The snapshot holds the body being replaced, so its
+						// author is whoever wrote that body, as in
+						// `updateDocument`; the description names the
+						// regeneration replacing it (Fizzy #2946).
+						changedBy: currentDoc.lastEditedBy,
 					},
 				});
 			}
@@ -4023,7 +4264,10 @@ function contentAsSaved(rawContent: string): string {
 export async function saveProjectDocument(
 	documentId: string,
 	rawContent: string,
-	userId?: string,
+	// Kept in the activity's call shape, which running workflows pass by
+	// position. The regenerating user is no longer stored: the snapshot of
+	// the replaced body is credited to whoever wrote it (Fizzy #2946).
+	_userId?: string,
 	options?: {
 		baselineVersion?: number;
 		baselineContentHash?: string;
@@ -4049,7 +4293,6 @@ export async function saveProjectDocument(
 			const written = await saveWithGuards({
 				documentId,
 				content,
-				userId,
 				baselineVersion,
 				liveRunId,
 				baselineContentHash,
@@ -4083,6 +4326,7 @@ export async function saveProjectDocument(
 				status: true,
 				content: true,
 				version: true,
+				lastEditedBy: true,
 				projectId: true,
 				type: true,
 			},
@@ -4115,7 +4359,8 @@ export async function saveProjectDocument(
 							content: currentDoc.content,
 							changeDescription:
 								"Pre-regeneration snapshot (auto)",
-							changedBy: userId,
+							// The body's author, as in the guarded save.
+							changedBy: currentDoc.lastEditedBy,
 						},
 					});
 
@@ -5626,8 +5871,42 @@ export async function issueGenerationToken(params: {
 	expirySeconds?: number;
 	/** Carried over from the run, so a reissued token keeps its eligibility. */
 	planEligible?: boolean;
+	/**
+	 * Carried over from the run, so a reissued token keeps the same action's
+	 * web research permission. Anything but `true` leaves it off.
+	 */
+	webResearch?: boolean;
+	/**
+	 * The run's project, which the research permission is bound to. Read only
+	 * when `webResearch` is `true`, and required then: without it the token
+	 * is issued with no research at all.
+	 */
+	webResearchProjectId?: string;
+	/**
+	 * The research grant the token belongs to, written as `wrg` only when the
+	 * token carries research. The research endpoint counts its per-action
+	 * call budget by it, so a retry of the same attempt's action hands over
+	 * the grant it already had. Absent, a research token gets a fresh grant:
+	 * the workflow re-issues after a dependency wait or a plan reset that may
+	 * have lasted hours, and a fresh budget after such a wait is acceptable.
+	 */
+	webResearchGrantId?: string;
 }): Promise<{ aiToken: string }> {
 	const { issueAIToken } = await import("@repo/ai-token");
+	const projectBinding =
+		typeof params.webResearchProjectId === "string" &&
+		params.webResearchProjectId.length > 0
+			? params.webResearchProjectId
+			: undefined;
+	// No research rather than research bound to no project.
+	const webResearch =
+		params.webResearch === true && projectBinding !== undefined;
+	if (params.webResearch === true && !webResearch) {
+		activityLogger.warn(
+			"Web research was asked for a token with no project; issuing it without research",
+			{ userId: params.userId, organizationId: params.organizationId },
+		);
+	}
 	const aiToken = await issueAIToken({
 		userId: params.userId,
 		organizationId: params.organizationId,
@@ -5635,6 +5914,16 @@ export async function issueGenerationToken(params: {
 		source: "project-document-generation",
 		expirySeconds: params.expirySeconds,
 		planEligible: params.planEligible,
+		webResearch,
+		// The research endpoint refuses the token for any other project.
+		...(webResearch && { webResearchProjectId: projectBinding }),
+		...(webResearch && {
+			webResearchGrantId:
+				typeof params.webResearchGrantId === "string" &&
+				params.webResearchGrantId.length > 0
+					? params.webResearchGrantId
+					: randomUUID(),
+		}),
 		// A run started as a job (a batch generation) keeps it, so the
 		// reissued token still resolves on the shared plans.
 		jobType: currentAiJobType(),

@@ -76,15 +76,48 @@ function contrastRatio(a: Rgb, b: Rgb): number {
 	return ((lighter as number) + 0.05) / ((darker as number) + 0.05);
 }
 
-function readTokens(theme: "light" | "dark"): Map<string, string> {
+/**
+ * The four palettes that ship. High contrast (Fizzy #1444) is a class beside
+ * `.dark`, so each high-contrast palette is its base palette with the
+ * high-contrast block laid over it — which is also what the browser computes.
+ */
+const THEMES = ["light", "dark", "hc-light", "hc-dark"] as const;
+type Theme = (typeof THEMES)[number];
+
+const BLOCK_SELECTOR: Record<
+	"light" | "dark" | "high-contrast" | "dark-high-contrast",
+	string
+> = {
+	light: "\t:root {",
+	dark: "\t.dark {",
+	"high-contrast": "\t.high-contrast {",
+	"dark-high-contrast": "\t.dark.high-contrast {",
+};
+
+function readBlock(name: keyof typeof BLOCK_SELECTOR): string {
 	const css = readFileSync(THEME_CSS, "utf8");
-	const start = css.indexOf(theme === "light" ? "\t:root {" : "\t.dark {");
+	const start = css.indexOf(BLOCK_SELECTOR[name]);
 	if (start === -1) {
-		throw new Error(`theme block ${theme} not found`);
+		throw new Error(`theme block ${name} not found`);
 	}
 	const end = css.indexOf("\n\t}", start);
-	const block = css.slice(start, end === -1 ? undefined : end);
+	return css.slice(start, end === -1 ? undefined : end);
+}
 
+function readTokens(theme: Theme): Map<string, string> {
+	if (theme === "hc-light" || theme === "hc-dark") {
+		const base = readTokens(theme === "hc-light" ? "light" : "dark");
+		const overlay = parseTokens(
+			readBlock(
+				theme === "hc-light" ? "high-contrast" : "dark-high-contrast",
+			),
+		);
+		return new Map([...base, ...overlay]);
+	}
+	return parseTokens(readBlock(theme));
+}
+
+function parseTokens(block: string): Map<string, string> {
 	const tokens = new Map<string, string>();
 	// Two shapes, because a token that is themeable at runtime declares its own
 	// default rather than a bare hex: `--primary-ink: var(--primary-ink-light,
@@ -94,7 +127,7 @@ function readTokens(theme: "light" | "dark"): Map<string, string> {
 	// value that ships whenever an organization has set no theme of its own, so
 	// it is the one worth measuring.
 	for (const [, name, value] of block.matchAll(
-		/^\s*--([\w-]+):\s*(?:var\([^,)]+,\s*)?(#[0-9a-fA-F]{3,8})\s*\)?\s*;/gm,
+		/^\s*--([\w-]+):\s*(?:var\([^,)]+,\s*)?(#[0-9a-fA-F]{3,8})\s*\)?\s*(?:!important\s*)?;/gm,
 	)) {
 		if (name && value) {
 			tokens.set(name, value);
@@ -104,7 +137,7 @@ function readTokens(theme: "light" | "dark"): Map<string, string> {
 }
 
 interface Pair {
-	theme: "light" | "dark";
+	theme: Theme;
 	name: string;
 	fill: string;
 	foreground: string;
@@ -113,7 +146,7 @@ interface Pair {
 
 function allPairs(): Pair[] {
 	const pairs: Pair[] = [];
-	for (const theme of ["light", "dark"] as const) {
+	for (const theme of THEMES) {
 		const tokens = readTokens(theme);
 		for (const [name, fill] of tokens) {
 			if (name.endsWith("-foreground")) {
@@ -138,15 +171,15 @@ function allPairs(): Pair[] {
 const pairs = allPairs();
 
 describe("design-token fill / foreground contrast", () => {
-	it("found pairs in both themes", () => {
+	it("found pairs in every theme", () => {
 		// A parser that matched nothing would make every assertion below vacuously
 		// true — the failure mode that makes a green contrast guard worthless.
-		expect(pairs.filter((p) => p.theme === "light").length).toBeGreaterThan(
-			5,
-		);
-		expect(pairs.filter((p) => p.theme === "dark").length).toBeGreaterThan(
-			5,
-		);
+		for (const theme of THEMES) {
+			expect(
+				pairs.filter((p) => p.theme === theme).length,
+				theme,
+			).toBeGreaterThan(5);
+		}
 	});
 
 	for (const pair of pairs) {
@@ -191,7 +224,7 @@ describe("slider component contrast (WCAG 2.1 1.4.11)", () => {
 	// colour, so the border carries that case.
 	const NON_TEXT = 3;
 
-	for (const theme of ["light", "dark"] as const) {
+	for (const theme of THEMES) {
 		const tokens = readTokens(theme);
 
 		it(`${theme}: filled range clears 3:1 against the unfilled track`, () => {
@@ -232,7 +265,7 @@ describe("ink tokens on the neutral surfaces", () => {
 	 * that only knew about `--card` would have called a link on the page
 	 * background covered when nothing had measured it.
 	 */
-	for (const theme of ["light", "dark"] as const) {
+	for (const theme of THEMES) {
 		const tokens = readTokens(theme);
 		for (const surface of ["card", "background"] as const) {
 			const ground = tokens.get(surface);
@@ -283,7 +316,7 @@ describe("ink tokens on the neutral surfaces", () => {
 describe("control border, focus ring, and button interactive states", () => {
 	const NON_TEXT = 3;
 
-	for (const theme of ["light", "dark"] as const) {
+	for (const theme of THEMES) {
 		const tokens = readTokens(theme);
 
 		for (const surface of ["background", "card", "popover"] as const) {
@@ -360,5 +393,174 @@ describe("the destructive pair specifically", () => {
 				parseHex(light.get("destructive-foreground") as string),
 			),
 		).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+	});
+});
+
+describe("secondary and status text on every surface (Fizzy #1444, AC-13/16)", () => {
+	/**
+	 * The grey/secondary text the ticket was raised about is `--muted-foreground`,
+	 * and it sits on every surface the app paints — the hover wash and the
+	 * sidebar rail included, where it measured lowest. The status inks are read
+	 * as text too (`text-destructive`, `text-success`). Guarding the token on
+	 * every surface is what makes a component that uses it compliant by default,
+	 * instead of each instance being checked by hand.
+	 */
+	const SURFACES = [
+		"background",
+		"card",
+		"popover",
+		"muted",
+		"secondary",
+		"accent",
+		"sidebar",
+	] as const;
+	const INKS = [
+		"foreground",
+		"muted-foreground",
+		"primary",
+		"primary-ink",
+		"destructive",
+		"success",
+		"highlight-ink",
+		"fab-warn",
+		"fab-bad",
+		"fab-good",
+	] as const;
+
+	for (const theme of THEMES) {
+		const tokens = readTokens(theme);
+		for (const ink of INKS) {
+			for (const surface of SURFACES) {
+				it(`${theme}: --${ink} clears AA on --${surface}`, () => {
+					const value = tokens.get(ink);
+					const ground = tokens.get(surface);
+					expect(value, `--${ink}`).toBeDefined();
+					expect(ground, `--${surface}`).toBeDefined();
+					const ratio = contrastRatio(
+						parseHex(value as string),
+						parseHex(ground as string),
+					);
+					expect(
+						ratio,
+						`--${ink} ${value} on --${surface} ${ground} = ${ratio.toFixed(2)}:1`,
+					).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+				});
+			}
+		}
+	}
+});
+
+describe("high contrast is materially stronger than AA (Fizzy #1444)", () => {
+	/**
+	 * Clearing AA is the floor every palette meets; a high-contrast mode that
+	 * only met it too would be the default palette with a new name. These are
+	 * the margins the high-contrast block promises in its own comment.
+	 */
+	const ENHANCED_TEXT = 7;
+	const STRONG_BORDER = 4.5;
+
+	for (const theme of ["hc-light", "hc-dark"] as const) {
+		const tokens = readTokens(theme);
+
+		for (const ink of [
+			"foreground",
+			"muted-foreground",
+			"primary-ink",
+			"destructive",
+			"success",
+			"highlight-ink",
+		] as const) {
+			for (const surface of [
+				"background",
+				"card",
+				"popover",
+				"muted",
+				"secondary",
+				"accent",
+				"sidebar",
+			] as const) {
+				it(`${theme}: --${ink} reaches 7:1 on --${surface}`, () => {
+					const ratio = contrastRatio(
+						parseHex(tokens.get(ink) as string),
+						parseHex(tokens.get(surface) as string),
+					);
+					expect(ratio).toBeGreaterThanOrEqual(ENHANCED_TEXT);
+				});
+			}
+		}
+
+		for (const pair of [
+			["primary", "primary-foreground"],
+			["primary-hover", "primary-foreground"],
+			["primary-active", "primary-foreground"],
+			["destructive", "destructive-foreground"],
+			["success", "success-foreground"],
+			["highlight", "highlight-foreground"],
+		] as const) {
+			it(`${theme}: --${pair[1]} reaches 7:1 on --${pair[0]}`, () => {
+				const ratio = contrastRatio(
+					parseHex(tokens.get(pair[0]) as string),
+					parseHex(tokens.get(pair[1]) as string),
+				);
+				expect(ratio).toBeGreaterThanOrEqual(ENHANCED_TEXT);
+			});
+		}
+
+		for (const surface of ["background", "card", "popover"] as const) {
+			it(`${theme}: structural --border is visible (4.5:1) on --${surface}`, () => {
+				// The default palettes keep --border a hairline (1.3:1) and leave
+				// component boundaries to --input; high contrast draws them.
+				const ratio = contrastRatio(
+					parseHex(tokens.get("border") as string),
+					parseHex(tokens.get(surface) as string),
+				);
+				expect(ratio).toBeGreaterThanOrEqual(STRONG_BORDER);
+			});
+			for (const control of ["input", "ring"] as const) {
+				it(`${theme}: --${control} reaches 7:1 on --${surface}`, () => {
+					const ratio = contrastRatio(
+						parseHex(tokens.get(control) as string),
+						parseHex(tokens.get(surface) as string),
+					);
+					expect(ratio).toBeGreaterThanOrEqual(ENHANCED_TEXT);
+				});
+			}
+		}
+	}
+});
+
+describe("the high-contrast blocks themselves (Fizzy #1444)", () => {
+	const declared = (name: "high-contrast" | "dark-high-contrast") =>
+		[...readBlock(name).matchAll(/^\s*--([\w-]+):/gm)].map((m) => m[1]);
+
+	it("declare the same tokens, so the light block cannot leak into dark", () => {
+		// `.high-contrast` comes after `.dark` with equal specificity, so in dark
+		// mode any token it declares that `.dark.high-contrast` does not would
+		// resolve to the LIGHT high-contrast value.
+		expect(new Set(declared("dark-high-contrast"))).toEqual(
+			new Set(declared("high-contrast")),
+		);
+	});
+
+	it("cover every colour token the dark palette sets", () => {
+		const darkColours = [...readTokens("dark").keys()];
+		const hc = new Set(declared("high-contrast"));
+		expect(darkColours.filter((name) => !hc.has(name))).toEqual([]);
+	});
+
+	it("hold the focus ring and accent against an organization's brand", () => {
+		// OrganizationThemeProvider writes these as inline styles on <html>; only
+		// an important declaration outranks that.
+		for (const name of ["high-contrast", "dark-high-contrast"] as const) {
+			const block = readBlock(name);
+			for (const token of ["ring", "fab-accent", "fab-accent-fill"]) {
+				expect(block, `${name} --${token}`).toMatch(
+					new RegExp(`--${token}:\\s*#[0-9a-fA-F]{6}\\s*!important;`),
+				);
+			}
+			// And the brand-aware ink is set by value, not through the
+			// --primary-ink-light/-dark variables the provider writes.
+			expect(block).toMatch(/--primary-ink:\s*#[0-9a-fA-F]{6};/);
+		}
 	});
 });

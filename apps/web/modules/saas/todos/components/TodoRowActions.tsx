@@ -71,7 +71,11 @@ export function TodoRowActions({
 					data-testid="todo-row-menu"
 					className="size-8 shrink-0"
 				>
-					<MoreVerticalIcon aria-hidden="true" className="size-4" />
+					<MoreVerticalIcon
+						strokeWidth={2.5}
+						aria-hidden="true"
+						className="size-4"
+					/>
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end" className="w-56">

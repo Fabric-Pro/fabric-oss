@@ -64,7 +64,7 @@ export function SyncFailureBanner({
 				    broken. Without it the reader knows something failed and has no
 				    idea which thing. */}
 				{failure.sourceLabel && (
-					<p className="font-medium font-mono text-xs opacity-80">
+					<p className="font-medium font-mono text-xs">
 						{failure.sourceLabel}
 					</p>
 				)}

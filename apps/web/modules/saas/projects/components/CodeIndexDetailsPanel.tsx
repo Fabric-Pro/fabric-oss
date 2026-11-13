@@ -18,6 +18,7 @@ import { cn } from "@ui/lib";
 import {
 	AlertTriangleIcon,
 	CheckCircle2Icon,
+	CircleSlashIcon,
 	GitBranchIcon,
 	Loader2Icon,
 	type LucideIcon,
@@ -28,6 +29,8 @@ import {
 
 export interface CodeIndexDetails {
 	status: string;
+	/** FAILED because a user cancelled it, not because indexing broke. */
+	cancelled?: boolean;
 	branch?: string | null;
 	commitSha?: string | null;
 	indexedAt?: string | Date | null;
@@ -55,18 +58,28 @@ interface CodeIndexDetailsPanelProps {
 }
 
 /** Header meta per code-index status. Fails safe to a neutral "Not indexed". */
-function statusHeader(status?: string | null): {
+function statusHeader(
+	status?: string | null,
+	cancelled = false,
+): {
 	label: string;
 	icon: LucideIcon;
 	iconColor: string;
 	spin?: boolean;
 } {
+	if (status === "FAILED" && cancelled) {
+		return {
+			label: "Indexing cancelled",
+			icon: CircleSlashIcon,
+			iconColor: "text-muted-foreground",
+		};
+	}
 	switch (status) {
 		case "READY":
 			return {
 				label: "Indexed",
 				icon: CheckCircle2Icon,
-				iconColor: "text-secondary",
+				iconColor: "text-success",
 			};
 		case "INDEXING":
 			return {
@@ -224,7 +237,7 @@ function PendingChangesLine({
 	if (data.upToDate) {
 		return (
 			<DetailLine icon={CheckCircle2Icon}>
-				<span className="text-secondary">Up to date</span>
+				<span className="text-success">Up to date</span>
 			</DetailLine>
 		);
 	}
@@ -281,7 +294,7 @@ export function CodeIndexDetailsPanel({
 	isReindexing,
 	job,
 }: CodeIndexDetailsPanelProps) {
-	const header = statusHeader(codeIndex?.status);
+	const header = statusHeader(codeIndex?.status, codeIndex?.cancelled);
 	const HeaderIcon = header.icon;
 	const isIndexing =
 		codeIndex?.status === "INDEXING" || codeIndex?.status === "PENDING";

@@ -279,7 +279,7 @@ export function UserDashboard() {
 			value: stats?.tasks.total ?? 0,
 			subtitle: `${stats?.tasks.running ?? 0} running · ${stats?.tasks.completed ?? 0} done`,
 			icon: TrendingUpIcon,
-			iconClassName: "text-secondary",
+			iconClassName: "text-success",
 			onClick: () => router.push("/app/agents?tab=tasks"),
 		},
 		{

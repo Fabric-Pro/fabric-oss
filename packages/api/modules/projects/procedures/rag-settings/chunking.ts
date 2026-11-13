@@ -7,8 +7,10 @@
 import { ORPCError } from "@orpc/server";
 import {
 	countProjectChunkingSources,
+	findRunningChunkingAnalysis,
 	getLastProjectChunkingCheck,
 	getLatestProjectChunkingRuns,
+	hasCompletedChunkingMeasure,
 	hasProjectAccess,
 	isFeatureEnabled,
 } from "@repo/database";
@@ -246,6 +248,7 @@ export const startChunkingAnalysisProcedure = tenantProtectedProcedure
 			),
 			context.user.id,
 		);
+		await assertChunkingAnalysisCanStart(input.projectId, input.mode);
 		const { runId, plan } = await prepareChunkingAnalysisRun({
 			projectId: input.projectId,
 			organizationId,
@@ -254,6 +257,33 @@ export const startChunkingAnalysisProcedure = tenantProtectedProcedure
 		});
 		return { runId, estimate: plan.estimate, types: plan.types };
 	});
+
+/**
+ * One measure or tune at a time, and a suggestion only after a measure: the
+ * suggestion is weighed against the measured recall.
+ */
+async function assertChunkingAnalysisCanStart(
+	projectId: string,
+	mode: "MEASURE" | "TUNE",
+): Promise<void> {
+	const running = await findRunningChunkingAnalysis(projectId);
+	if (running) {
+		throw new ORPCError("CONFLICT", {
+			message:
+				running.kind === "TUNE"
+					? "Suggest settings is already running for this project"
+					: "A measure is already running for this project",
+			data: { code: "CHUNKING_ANALYSIS_RUNNING", runId: running.id },
+		});
+	}
+	if (mode === "TUNE" && !(await hasCompletedChunkingMeasure(projectId))) {
+		throw new ORPCError("BAD_REQUEST", {
+			message:
+				"Measure the project's chunking before asking for suggestions",
+			data: { code: "CHUNKING_MEASURE_REQUIRED" },
+		});
+	}
+}
 
 export const confirmChunkingAnalysisProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_READ))
@@ -275,6 +305,15 @@ export const confirmChunkingAnalysisProcedure = tenantProtectedProcedure
 			),
 			context.user.id,
 		);
+		// The confirm dialog may have stayed open while another run started.
+		const running = await findRunningChunkingAnalysis(input.projectId);
+		if (running && running.id !== input.runId) {
+			throw new ORPCError("CONFLICT", {
+				message:
+					"Another chunking analysis is already running for this project",
+				data: { code: "CHUNKING_ANALYSIS_RUNNING", runId: running.id },
+			});
+		}
 		const result = await confirmChunkingAnalysisRun(
 			{
 				runId: input.runId,

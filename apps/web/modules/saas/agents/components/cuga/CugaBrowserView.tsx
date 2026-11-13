@@ -123,7 +123,7 @@ export function CugaBrowserView({
 								browserAction.status === "executing" &&
 									"bg-blue-100 text-blue-700",
 								browserAction.status === "complete" &&
-									"bg-green-100 text-green-700",
+									"bg-green-100 text-green-800",
 								browserAction.status === "failed" &&
 									"bg-red-100 text-red-700",
 							)}
@@ -133,7 +133,7 @@ export function CugaBrowserView({
 								{ACTION_LABELS[browserAction.type]}
 							</span>
 							{browserAction.bid && (
-								<span className="ml-1 opacity-70">
+								<span className="ml-1">
 									#{browserAction.bid}
 								</span>
 							)}

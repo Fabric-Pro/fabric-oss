@@ -115,22 +115,14 @@ import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/client";
 import { config } from "@repo/config";
 import {
-	claimInstructionFileStagingKey,
 	createDerivedInstructionSnapshot,
 	type DuplicateInstructionProposal,
 	getInstructionSnapshot,
 	getInstructionSnapshotWithPublishedPointer,
 	getPublishedInstructionSnapshot,
 	type InstructionProposalStatus,
-	listInstructionFiles,
-	rejectAbandonedInstructionSnapshot,
 } from "@repo/database";
-import {
-	isStagingKey,
-	SNAPSHOT_LIMITS,
-	snapshotPrefix,
-	stagingKey,
-} from "@repo/instructions";
+import { SNAPSHOT_LIMITS, snapshotPrefix } from "@repo/instructions";
 import { getStorageProvider } from "@repo/storage";
 import {
 	type AuditRequestContext,
@@ -143,12 +135,7 @@ import {
 	validateInstructionChanges,
 } from "./change-set";
 import { startDirectCommitWorkflow } from "./direct-commit-workflow";
-import { finalizeInstructionSnapshot } from "./finalize";
 import { requireHostingOrganizationId } from "./hosting-organization";
-import {
-	isInstructionWorkflowNotStarted,
-	unwrapInstructionWorkflowError,
-} from "./instruction-workflow-start";
 import {
 	admitInstructionProposal,
 	repositoryDestination,
@@ -160,6 +147,7 @@ import {
 	readProposalPullRequest,
 	startAdmittedProposalPullRequest,
 } from "./proposal-pull-request";
+import { stageAndFinalizeInstructionSnapshot } from "./stage-and-finalize";
 import {
 	type NativeInstructionChangeResult,
 	submitGitIntentChange,
@@ -730,107 +718,87 @@ export async function submitInstructionChange(
 	}
 
 	// Everything from here to the VALIDATION workflow's start is COMPENSATED
-	// on failure. "The workflow" below means that one, which the finalizer
-	// starts; a repository proposal's pull-request workflow has already
-	// started above and is only waiting for readiness.
+	// on failure (`stageAndFinalizeInstructionSnapshot`). "The workflow" means
+	// that one, which the finalizer starts; a repository proposal's
+	// pull-request workflow has already started above and is only waiting for
+	// readiness.
 	//
-	// The snapshot row exists now, RECEIVING and — for a proposal — PENDING,
-	// and a proposal in that state counts against both admission caps (five
-	// per proposer, twenty-five per project). The tab's flow can leave such a
-	// row behind harmlessly: the browser owns the next step, the person can
-	// retry or cancel, and the six-hour reaper is the backstop for the ones
-	// nobody comes back to. Inline submission has no next step and no person
-	// at the keyboard — a storage outage in the loop below would leave an
-	// agent's failed push holding one of five slots for six hours, and five
-	// failed pushes would lock the proposer out of the feature entirely with
-	// nothing to cancel in the tab.
-	//
-	// So a failure BEFORE the validation workflow's start is closed out
-	// here, through the same conditional write the reaper uses: REJECTED,
-	// carrying the "staging pending" mark so the reaper's second phase still
-	// sweeps whatever bytes did land. The compare-and-set on `status:
-	// "RECEIVING"` is what makes it safe to do from here, and the row is
-	// always one THIS request created: a duplicate returned above never
-	// reaches this section. For a repository proposal the same transaction
-	// moves its operation to CANCELED (`rejectAbandonedInstructionSnapshot`),
-	// and the waiting pull-request workflow's next readiness check reads the
-	// REJECTED, CANCELED row and stops without pushing anything.
-	// Flipped immediately before the finalizer is called. Everything up to
-	// that line is this request's own work — an audit row, a staging claim, an
-	// object write — and none of it can have handed the snapshot to the
-	// validation workflow, the only one that takes it over; the pull-request
-	// workflow never moves a snapshot that is not READY.
-	// `startWasNeverAttempted` covers the one failure INSIDE the finalizer
-	// that is still on this side of the line; the flag covers everything
-	// before it, without depending on any error's shape.
-	let finalizerWasEntered = false;
-	let finalized: Awaited<ReturnType<typeof finalizeInstructionSnapshot>>;
-	try {
-		// The audit row goes out BEFORE the bytes are written and the workflow
-		// is started, exactly as `derive` records it before the browser
-		// uploads anything: what is being recorded is that this caller started
-		// an upload, and a later failure to store the bytes does not un-start
-		// it.
-		//
-		// One row per snapshot CREATED, which is what this request has just
-		// done: a duplicate returned above records nothing, because the
-		// request that wrote that row already recorded it. A REPOSITORY
-		// proposal's row was written by the create transaction itself.
-		if (!repository) {
-			recordAuditFromRequest(input.audit, {
-				action: "project.instructions.upload_started",
-				category: "project",
-				organizationId,
-				projectId: input.projectId,
-				resource: {
-					type: "project_instruction_snapshot",
-					id: created.id,
-					name: `v${created.version}`,
-				},
-				metadata: {
-					// The TAB's vocabulary, not this file's. `derive-snapshot.ts`
-					// records `"proposal"` or `"derived"` for the same two
-					// outcomes, and an audit reader looking for direct versions
-					// has to find the ones made from here as well; `via` is what
-					// says which surface each one came through. The publish
-					// itself is audited separately, as
-					// `project.instructions.published`, by the workflow activity
-					// that moves the pointer — the same row the tab produces,
-					// because it IS the same activity.
-					mode: commit ? "commit" : proposal ? "proposal" : "derived",
-					via: input.via,
-					baseSnapshotId: base.id,
-					baseVersion: base.version,
-					putCount,
-					deleteCount,
-					inheritedCount: created.inheritedCount,
-					keptCount: created.fileCount,
-				},
-			});
-		}
+	// Inline submission has no next step and no person at the keyboard — a
+	// storage outage while staging would otherwise leave an agent's failed
+	// push holding one of five proposal slots for six hours, and five failed
+	// pushes would lock the proposer out of the feature entirely with nothing
+	// to cancel in the tab. The row is always one THIS request created: a
+	// duplicate returned above never reaches this section.
+	const finalized = await stageAndFinalizeInstructionSnapshot({
+		snapshotId: created.id,
+		projectId: input.projectId,
+		organizationId,
+		userId: input.userId,
+		stagedFileIds: created.staged.map((f) => f.id),
+		compensationSource: "inline_submit_compensation",
+		// One object at a time: an inline change set is a few small files.
+		concurrency: 1,
+		beforeStaging: async () => {
+			// The audit row goes out BEFORE the bytes are written and the workflow
+			// is started, exactly as `derive` records it before the browser
+			// uploads anything: what is being recorded is that this caller started
+			// an upload, and a later failure to store the bytes does not un-start
+			// it.
+			//
+			// One row per snapshot CREATED, which is what this request has just
+			// done: a duplicate returned above records nothing, because the
+			// request that wrote that row already recorded it. A REPOSITORY
+			// proposal's row was written by the create transaction itself.
+			if (!repository) {
+				recordAuditFromRequest(input.audit, {
+					action: "project.instructions.upload_started",
+					category: "project",
+					organizationId,
+					projectId: input.projectId,
+					resource: {
+						type: "project_instruction_snapshot",
+						id: created.id,
+						name: `v${created.version}`,
+					},
+					metadata: {
+						// The TAB's vocabulary, not this file's. `derive-snapshot.ts`
+						// records `"proposal"` or `"derived"` for the same two
+						// outcomes, and an audit reader looking for direct versions
+						// has to find the ones made from here as well; `via` is what
+						// says which surface each one came through. The publish
+						// itself is audited separately, as
+						// `project.instructions.published`, by the workflow activity
+						// that moves the pointer — the same row the tab produces,
+						// because it IS the same activity.
+						mode: commit
+							? "commit"
+							: proposal
+								? "proposal"
+								: "derived",
+						via: input.via,
+						baseSnapshotId: base.id,
+						baseVersion: base.version,
+						putCount,
+						deleteCount,
+						inheritedCount: created.inheritedCount,
+						keptCount: created.fileCount,
+					},
+				});
+			}
 
-		// A direct commit's workflow starts BEFORE the bytes are written and
-		// the validation workflow exists, and inside this compensated section:
-		// a failed start closes the row out here, and a start that succeeded
-		// ahead of a later failure waits on a REJECTED row and stops. It owns
-		// no snapshot state: it waits for READY on its own timers.
-		if (commit) {
-			await startDirectCommitWorkflow({
-				snapshotId: created.id,
-				organizationId,
-			});
-		}
-
-		// The same rewrite `createUploadUrls` performs before it signs: the row's
-		// provisional `stagingKey(projectId, "pending", <index>)` becomes the real
-		// `(projectId, snapshotId, fileId)` key, under a compare-and-set that also
-		// checks the parent is still RECEIVING. Doing it the same way is what keeps
-		// the bytes where the verify activity looks for them.
-		const staged = new Set(created.staged.map((f) => f.id));
-		const rows = (
-			await listInstructionFiles(created.id, organizationId)
-		).filter((f) => staged.has(f.id));
-		for (const row of rows) {
+			// A direct commit's workflow starts BEFORE the bytes are written and
+			// the validation workflow exists, and inside this compensated section:
+			// a failed start closes the row out here, and a start that succeeded
+			// ahead of a later failure waits on a REJECTED row and stops. It owns
+			// no snapshot state: it waits for READY on its own timers.
+			if (commit) {
+				await startDirectCommitWorkflow({
+					snapshotId: created.id,
+					organizationId,
+				});
+			}
+		},
+		writeObject: async (row, key) => {
 			const bytes = contentByPath.get(row.path);
 			if (!bytes) {
 				// Unreachable: every staged row came from a `put` in this
@@ -839,86 +807,12 @@ export async function submitInstructionChange(
 					message: `No content was staged for ${row.path}`,
 				});
 			}
-			const key = stagingKey(input.projectId, created.id, row.id);
-			if (row.storageKey !== key) {
-				// A key outside staging is an IMMUTABLE snapshot key that promotion
-				// wrote, and nothing may point such a row back at writable storage.
-				// Not reachable for a row this call just created; checked because
-				// the invariant is what makes the write below safe.
-				if (!isStagingKey(row.storageKey)) {
-					throw new ORPCError("CONFLICT", {
-						message: "Upload not found or no longer receiving",
-					});
-				}
-				const { moved } = await claimInstructionFileStagingKey({
-					fileId: row.id,
-					snapshotId: created.id,
-					projectId: input.projectId,
-					organizationId,
-					from: row.storageKey,
-					to: key,
-				});
-				if (!moved) {
-					throw new ORPCError("CONFLICT", {
-						message: "Upload not found or no longer receiving",
-					});
-				}
-			}
 			await storage.uploadFile(key, bytes, {
 				bucket: SKILLS_BUCKET,
 				contentType: row.mimeType,
 			});
-		}
-		finalizerWasEntered = true;
-		// The finalizer is INSIDE the compensated section, and the boundary
-		// is drawn inside it rather than around it.
-		//
-		// `finalizeInstructionSnapshot` reaches Temporal before it starts
-		// anything, and reaching Temporal is the failure most likely to
-		// happen at all — a misconfigured deployment, an unreachable
-		// cluster. Nothing owns the row when that fails, so closing it out is
-		// safe; leaving the finalizer wholly outside the section would strand
-		// the row on exactly the common case.
-		//
-		// Once `workflow.start` has been CALLED, the outcome is ambiguous by
-		// construction: a start can succeed and its acknowledgement be lost,
-		// which is why the finalizer tolerates
-		// `WorkflowExecutionAlreadyStartedError` at all. Rejecting the row
-		// then would race a validation run that is already reading it, so
-		// that half is left to the reaper's stale-VALIDATING sweep, which
-		// asks Temporal about the workflow before deciding — the question
-		// this code cannot answer.
-		//
-		// The finalizer says which side it failed on by throwing
-		// `InstructionWorkflowNotStartedError`, and `startWasNeverAttempted`
-		// below is what reads it.
-		finalized = await finalizeInstructionSnapshot({
-			snapshot: { id: created.id, status: "RECEIVING" },
-			projectId: input.projectId,
-			organizationId,
-			userId: input.userId,
-		});
-	} catch (error) {
-		// Compensate unless the validation workflow's start was actually
-		// reached: either this failed before the finalizer was entered at
-		// all, or the finalizer says it never got as far as calling
-		// `workflow.start`. An already-started pull-request workflow does not
-		// change this; it stops once the row it waits on is closed out.
-		//
-		// Always a row THIS request created — a duplicate returned above
-		// never reaches here — so the RECEIVING compare-and-set inside it is
-		// the only fence it needs.
-		if (!finalizerWasEntered || isInstructionWorkflowNotStarted(error)) {
-			await releaseUnstartedSnapshot({
-				snapshotId: created.id,
-				projectId: input.projectId,
-				organizationId,
-			});
-		}
-		// The marker is transport for that verdict, not the failure itself:
-		// the caller sees the error that actually happened.
-		throw unwrapInstructionWorkflowError(error);
-	}
+		},
+	});
 
 	// What the ROW says, not what this request assumed when it wrote it.
 	//
@@ -988,43 +882,4 @@ export async function submitInstructionChange(
 		published,
 		pullRequest: await pullRequestOf(created.id),
 	};
-}
-/**
- * Close out a snapshot row that no validation workflow ever took ownership
- * of, through the same conditional write the reaper uses: REJECTED, carrying
- * the "staging pending" mark so the reaper's sweep phase still removes
- * whatever bytes did land.
- *
- * A repository proposal's pull-request workflow may already be running. It
- * does not own the row: it is waiting on readiness. The same transaction
- * cancels the proposal's operation, and that workflow's next readiness check
- * stops on the REJECTED, CANCELED row.
- *
- * What this buys is TIME, not an instant free slot. The row stays inside
- * `activeProposalFilter` until that sweep clears the marker, which is the
- * existing invariant and the thing that keeps a half-swept prefix
- * discoverable. Without this, the row would sit RECEIVING for the six-hour
- * abandonment window before the reaper would even consider it.
- *
- * Best effort, and deliberately unable to mask the real failure: the caller
- * must see WHY the push failed, not a secondary error from the cleanup. A
- * compensation that itself fails leaves exactly the row the reaper already
- * exists to close out.
- */
-async function releaseUnstartedSnapshot(input: {
-	snapshotId: string;
-	projectId: string;
-	organizationId: string;
-}): Promise<void> {
-	try {
-		await rejectAbandonedInstructionSnapshot({
-			...input,
-			source: "inline_submit_compensation",
-		});
-	} catch (error) {
-		console.error(
-			"[instructions] failed to close out an unstarted snapshot after an inline submit error",
-			error,
-		);
-	}
 }

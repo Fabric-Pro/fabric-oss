@@ -1,15 +1,21 @@
 /**
  * One page of a scan a member asked for: start decision extraction for the
- * files a repository's first sync did not read.
+ * synced files not read for decisions yet — those a repository's first sync
+ * skipped, and those whose current version was never read, such as files
+ * synced before decisions were read from Living Memory.
  *
  * A file leaves the list once its extraction has been handed over. A file whose
- * start failed keeps its mark, so "Scan them" still offers it, and the cursor
- * moves past it, so one bad file cannot hold the scan in a loop. Retrying a page
- * is safe: the extraction's own id and checks never read a version twice.
+ * start failed keeps its mark, so "Scan for decisions" still offers it, and the
+ * cursor moves past it, so one bad file cannot hold the scan in a loop.
+ * Retrying a page is safe: the extraction's own id and checks never read a
+ * version twice.
+ *
+ * `requestedByUserId` is the member who asked. Each extraction announces its
+ * candidates to the project's reviewers, leaving that member out.
  */
 import {
 	clearLivingMemoryDecisionScanSkip,
-	listLivingMemoryFilesSkippedAtFirstSync,
+	listLivingMemoryFilesAwaitingDecisionScan,
 } from "@repo/database";
 import { startLivingMemoryDecisionExtraction } from "../lib/living-memory-decision-start";
 
@@ -19,6 +25,8 @@ const SCAN_PAGE_SIZE = 20;
 export interface ScanLivingMemoryFirstSyncFilesInput {
 	projectId: string;
 	organizationId: string | null;
+	/** Absent from a scan started before scans notified reviewers. */
+	requestedByUserId?: string;
 	afterId?: string;
 }
 
@@ -32,7 +40,7 @@ interface ScanLivingMemoryFirstSyncFilesResult {
 export async function scanLivingMemoryFirstSyncFilesActivity(
 	input: ScanLivingMemoryFirstSyncFilesInput,
 ): Promise<ScanLivingMemoryFirstSyncFilesResult> {
-	const files = await listLivingMemoryFilesSkippedAtFirstSync({
+	const files = await listLivingMemoryFilesAwaitingDecisionScan({
 		projectId: input.projectId,
 		organizationId: input.organizationId,
 		afterId: input.afterId,
@@ -44,6 +52,9 @@ export async function scanLivingMemoryFirstSyncFilesActivity(
 		const outcome = await startLivingMemoryDecisionExtraction({
 			contextId: file.id,
 			scanRequested: true,
+			...(input.requestedByUserId
+				? { requestedByUserId: input.requestedByUserId }
+				: {}),
 		});
 		if (outcome === "failed") {
 			failed += 1;

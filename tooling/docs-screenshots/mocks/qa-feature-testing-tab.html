@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fabric feature Testing tab (docs mock)</title>
+<!-- Real Inter + IBM Plex Mono, the app's --font-sans / --font-mono (Document.tsx). -->
+<link rel="stylesheet" href="../.fonts/fonts.css">
+<style>
+/* Tokens copied verbatim from tooling/tailwind/theme.css :root (light). */
+:root{
+  --border: #dce0e5; --input: #7d90a0; --ring: #bc3e0b;
+  --background: #ffffff; --foreground: #11171c;
+  --primary: #bc3e0b; --primary-foreground: #ffffff;
+  --destructive: #b8223b; --success: #24773f;
+  --muted: #f1f3f6; --muted-foreground: #4f6170;
+  --accent: #e8edf2; --card: #ffffff;
+  --highlight: #8a5a00;
+  --fab-warn: #8a5a00;
+  --fab-accent-fill: #ea580c;
+  --radius: 0.25rem;
+  --font-sans: Inter, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--background);color:var(--foreground);font-family:var(--font-sans);
+  font-size:13px;line-height:20px;-webkit-font-smoothing:antialiased;padding:24px 0;width:1048px}
+#shot-feature-testing{width:1000px;padding:20px 24px 24px;background:var(--background);
+  display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:32px;align-items:start}
+svg.i{width:16px;height:16px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.5px;
+  stroke-linecap:round;stroke-linejoin:round}
+.s35{width:14px!important;height:14px!important}.s3{width:12px!important;height:12px!important}
+.s5{width:20px!important;height:20px!important}
+.mono{font-family:var(--font-mono)}
+.muted{color:var(--muted-foreground)}
+.xs{font-size:12px;line-height:16px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;
+  border-radius:var(--radius);font:500 13px/20px var(--font-sans);border:1px solid transparent;
+  background:transparent;color:var(--foreground)}
+.btn.sm{height:32px;padding:0 10px}
+.btn.xs7{height:28px;padding:0 8px;font-size:12px;line-height:16px}
+.btn.outline{border-color:var(--input);background:var(--background)}
+.btn.primary{background:var(--primary);color:var(--primary-foreground)}
+.btn.link{color:var(--primary);padding:0;height:auto;font-size:12px;line-height:16px}
+
+.main > * + *{margin-top:32px}
+.main > .tight{margin-top:16px}
+/* TestingVerdictCard, level "blocked" */
+.verdict{border:1px solid color-mix(in srgb,var(--destructive) 35%,transparent);
+  background:color-mix(in srgb,var(--destructive) 6%,transparent);border-radius:calc(var(--radius) + 2px);padding:16px}
+.verdict .row{display:flex;align-items:flex-start;gap:12px}
+.verdict .row > svg{margin-top:2px;color:var(--destructive)}
+.verdict h3{font-size:16px;line-height:24px;font-weight:600;letter-spacing:-0.01em}
+.verdict ul{list-style:none;margin-top:6px;font-size:13px;line-height:1.625;color:color-mix(in srgb,var(--foreground) 85%,transparent)}
+.verdict ul li + li{margin-top:2px}
+.verdict .acts{margin-top:12px;display:flex;gap:8px}
+.actions{display:flex;justify-content:flex-end;gap:8px}
+.notice{display:flex;align-items:flex-start;gap:8px;border:1px solid var(--border);background:var(--muted);
+  border-radius:calc(var(--radius) + 2px);padding:10px 16px;font-size:13px}
+.notice svg{margin-top:2px;color:var(--muted-foreground)}
+.notice p{color:color-mix(in srgb,var(--foreground) 90%,transparent)}
+.generated{text-align:right;font-size:12px;line-height:16px;color:var(--muted-foreground)}
+/* SectionHeading: 11px uppercase, which globals.css renders in sentence case. */
+.sh{font-size:11px;line-height:16px;font-weight:500;letter-spacing:.02em;color:var(--muted-foreground)}
+.shrow{display:flex;align-items:center;gap:8px}
+.shrow .info{display:inline-flex;color:var(--muted-foreground)}
+.hint{margin-top:4px;font-size:12px;line-height:16px;color:var(--muted-foreground)}
+.badge{display:inline-flex;align-items:center;justify-content:center;border:1px solid;border-radius:3px;
+  padding:2px 8px;font-family:var(--font-mono);font-size:10.5px;line-height:16px;white-space:nowrap}
+.badge.warn{border-color:color-mix(in srgb,var(--fab-warn) 35%,transparent);color:var(--fab-warn);
+  height:20px;min-width:20px;padding:0 6px;font-size:11px}
+.badge.success{border-color:color-mix(in srgb,var(--success) 35%,transparent);color:var(--success)}
+.badge.error{border-color:transparent;background:color-mix(in srgb,var(--destructive) 8%,transparent);color:var(--destructive)}
+.badge.outline{border-color:color-mix(in srgb,var(--border) 50%,transparent);color:var(--foreground);
+  height:20px;padding:0 6px;font-size:10px;letter-spacing:.02em}
+.warnings{list-style:none;margin-top:12px}
+.warnings li{display:flex;align-items:flex-start;gap:8px;border:1px solid color-mix(in srgb,var(--highlight) 40%,transparent);
+  background:color-mix(in srgb,var(--highlight) 10%,transparent);border-radius:calc(var(--radius) + 2px);padding:12px;font-size:13px}
+.warnings .ac{flex-shrink:0;font-family:var(--font-mono);font-size:12px;line-height:20px;color:var(--muted-foreground)}
+.card{margin-top:12px;border:1px solid var(--border);border-radius:calc(var(--radius) + 2px);background:var(--card)}
+/* CoverageMatrixTable */
+.matrix{list-style:none}
+.matrix > li{padding:12px}
+.matrix > li + li{border-top:1px solid var(--border)}
+.crit{display:flex;align-items:flex-start;gap:8px}
+.crit .ac{flex-shrink:0;font-family:var(--font-mono);font-size:12px;line-height:20px;color:var(--muted-foreground)}
+.crit .flag{margin-top:3px;color:var(--highlight)}
+.crit .t{font-size:13px}
+.covering{margin-top:4px;padding-left:24px}
+.case{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:4px 0;font-size:12px;line-height:16px}
+.case .cid{flex-shrink:0;font-family:var(--font-mono);color:var(--foreground)}
+.case .res{color:var(--muted-foreground)}
+.case .sel{display:flex;align-items:center;justify-content:space-between;gap:8px;height:24px;width:120px;
+  border:1px solid var(--input);border-radius:var(--radius);padding:0 8px;background:var(--background);color:var(--foreground)}
+.case .sel svg{width:16px;height:16px;opacity:.5}
+.case .path{max-width:16rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);color:var(--muted-foreground)}
+.case .sha{font-family:var(--font-mono);color:var(--muted-foreground)}
+.uncov{font-size:12px;line-height:16px;font-style:italic;color:var(--muted-foreground)}
+.unmapped{font-size:13px;font-style:italic;color:var(--muted-foreground)}
+/* Linked cases list */
+.cases{list-style:none}
+.cases li{display:flex;align-items:center;gap:8px;padding-right:12px}
+.cases li + li{border-top:1px solid var(--border)}
+.cases a{display:flex;min-width:0;flex:1;align-items:center;gap:12px;padding:12px;color:inherit;text-decoration:none}
+.cases .cid{flex-shrink:0;font-family:var(--font-mono);font-size:12px;line-height:16px;color:var(--muted-foreground)}
+.cases .t{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.cases .refs,.cases .res{flex-shrink:0;font-size:12px;line-height:16px;color:var(--muted-foreground)}
+/* TestCaseStatusChip = Badge outline + TONE_CLASSES pill; `secondary` success tone drawn in --success. */
+.state{gap:6px;font-weight:500;color:var(--foreground)}
+.state .d{width:6px;height:6px;border-radius:9999px;flex-shrink:0}
+.state.ready{border-color:color-mix(in srgb,var(--success) 30%,transparent);background:color-mix(in srgb,var(--success) 10%,transparent)}
+.state.ready .d{background:var(--success)}
+.state.draft{border-color:color-mix(in srgb,var(--highlight) 30%,transparent);background:color-mix(in srgb,var(--highlight) 10%,transparent)}
+.state.draft .d{background:var(--highlight)}
+.prose{padding:16px;font-size:14px;line-height:1.625;color:var(--foreground)}
+.prose p + ul,.prose p + ol{margin-top:8px}
+.prose ul,.prose ol{padding-left:22px}
+.prose li + li{margin-top:4px}
+.prose strong{font-weight:600}
+
+/* Right rail */
+.rail > * + *{margin-top:24px}
+.panel{border:1px solid var(--border);border-radius:calc(var(--radius) + 2px);background:var(--card);padding:16px}
+.label{display:inline-flex;align-items:center;gap:8px;font:600 12px/16px var(--font-sans);letter-spacing:.01em;color:var(--muted-foreground)}
+.label::before{content:"";display:block;width:6px;height:6px;border-radius:2px;background:var(--fab-accent-fill)}
+.cov{margin-top:12px;display:flex;align-items:center;gap:16px}
+.ring{width:44px;height:44px;flex-shrink:0;transform:rotate(-90deg)}
+.cov .big{font-size:18px;line-height:26px;font-weight:600;font-variant-numeric:tabular-nums}
+.cov .gap{font-size:12px;line-height:1.625;color:var(--muted-foreground)}
+.panel .foot{margin-top:12px;border-top:1px solid color-mix(in srgb,var(--border) 60%,transparent);padding-top:12px;
+  font-size:12px;line-height:1.625;color:var(--muted-foreground)}
+.pipe > * + *{margin-top:12px}
+.pipe .top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
+.pipe .top .info{display:inline-flex;color:var(--muted-foreground)}
+.pipe .btns{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
+.filters{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.runs{list-style:none;border:1px solid var(--border);border-radius:var(--radius)}
+.runs li{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.runs li + li{border-top:1px solid var(--border)}
+.runs .open{display:flex;min-width:0;flex:1;align-items:center;gap:12px;padding:10px 12px}
+.runs .gh{display:inline-flex;color:var(--foreground)}
+.runs .gh svg{width:16px;height:16px;fill:currentColor;stroke:none}
+.runs .lines > * + *{margin-top:4px}
+.runs .l1{display:flex;align-items:center;gap:8px}
+.runs .name{font-weight:500;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.runs .l2{display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;font-size:12px;line-height:16px;color:var(--muted-foreground)}
+.runs .ext{flex-shrink:0;padding:8px;color:var(--muted-foreground);display:inline-flex}
+.right{display:flex;justify-content:flex-end}
+.history > * + *{margin-top:16px}
+.hgrid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.hgrid > div > * + *{margin-top:8px}
+.hh{font-weight:500;font-size:12px;line-height:16px;letter-spacing:.02em;color:var(--muted-foreground)}
+.hlist{list-style:none}
+.hlist li{display:flex;flex-direction:column;gap:6px;border:1px solid var(--border);border-radius:calc(var(--radius) + 2px);
+  background:var(--card);padding:10px 12px}
+.hlist li + li{margin-top:6px}
+.hlist .a{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}
+.hlist .st{display:inline-flex;align-items:center;gap:4px;font-size:12px;line-height:16px}
+.hlist .n{font-size:13px}
+.hlist time,.hlist .by{font-size:12px;line-height:16px;color:var(--muted-foreground)}
+</style>
+</head>
+<body>
+<!-- lucide-react icon geometry, copied from the installed package. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-circle-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"/><path d="M20 2v4"/><path d="M22 4h-4"/><circle cx="4" cy="20" r="2"/></symbol>
+  <symbol id="i-flask-conical" viewBox="0 0 24 24"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+  <symbol id="i-triangle-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-git-pull-request" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" x2="6" y1="9" y2="21"/></symbol>
+  <symbol id="i-refresh-cw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+  <symbol id="i-external-link" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+  <symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol>
+  <!-- GitHubBrandIcon from data-connections/components/ProviderIcon.tsx (filled). -->
+  <symbol id="i-github" viewBox="0 0 24 24"><path d="M12 0C5.373 0 0 5.373 0 12c0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.565 21.797 24 17.3 24 12 24 5.373 18.627 0 12 0z"/></symbol>
+</svg>
+
+<!-- Synthetic data. Mirrors QaPanel at xl (main column + 300px rail):
+     TestingVerdictCard, the analysis and drafting buttons, the ordering notice,
+     the under-specified criteria, CoverageMatrixTable, the linked-cases list
+     with ReviseFromImplementationButton (compact), the analysis sections, then
+     CoverageSummary + CoverageRing, PipelineRunsPanel (feature scope, one CI
+     provider, no open findings) and QaHistorySection. -->
+<div id="shot-feature-testing">
+  <div class="main">
+    <section class="verdict" aria-labelledby="testing-verdict-heading">
+      <div class="row">
+        <svg class="i s5"><use href="#i-circle-x"/></svg>
+        <div>
+          <h3 id="testing-verdict-heading">Not ready to sign off</h3>
+          <ul>
+            <li>1 linked case is failing.</li>
+            <li>2 acceptance criteria have no case covering them.</li>
+            <li>1 criterion is too ambiguous to test reliably.</li>
+          </ul>
+          <div class="acts">
+            <button class="btn sm outline" type="button"><svg class="i s35"><use href="#i-sparkles"/></svg>Draft cases for the 2 gaps</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button class="btn sm outline" type="button"><svg class="i"><use href="#i-flask-conical"/></svg>Refresh QA analysis</button>
+      <button class="btn sm primary" type="button"><svg class="i"><use href="#i-sparkles"/></svg>Draft test cases with AI</button>
+    </div>
+
+    <div class="notice">
+      <svg class="i"><use href="#i-info"/></svg>
+      <p>Standard ordering: test cases are drafted after the feature is reviewed.</p>
+    </div>
+
+    <p class="generated tight">Analysis generated 11/5/2026, 9:14:00 AM</p>
+
+    <section aria-labelledby="qa-warnings-heading">
+      <div class="shrow">
+        <h2 class="sh" id="qa-warnings-heading">Under-specified criteria</h2>
+        <span class="badge warn">1</span>
+      </div>
+      <p class="hint">The AI flagged these criteria as too ambiguous to test reliably. Clarify them in the Full Specification before relying on the drafted cases.</p>
+      <ul class="warnings">
+        <li><span class="ac">AC 4</span><span>"Quickly" is not measurable, and the criterion does not say what the basket shows while the new total is being calculated.</span></li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="qa-matrix-heading">
+      <div class="shrow">
+        <h2 class="sh" id="qa-matrix-heading">Traceability</h2>
+        <span class="info"><svg class="i s35"><use href="#i-info"/></svg></span>
+        <span class="xs muted">6 test cases</span>
+        <button class="btn sm outline" type="button" style="margin-left:auto"><svg class="i s35"><use href="#i-play"/></svg>Run tests (4)</button>
+        <button class="btn sm" type="button"><svg class="i s35"><use href="#i-download"/></svg>Export</button>
+      </div>
+      <p class="hint">Each acceptance criterion and the test cases covering it. Case links open the project's Testing tab.</p>
+      <div class="card">
+        <ul class="matrix">
+          <li>
+            <div class="crit"><span class="ac">AC 1</span><span class="t">A valid promo code reduces the basket total by its stated amount.</span></div>
+            <div class="covering">
+              <div class="case"><span class="cid">TC-031</span><span class="res">Passed</span><span class="sel">E2E<svg class="i"><use href="#i-chevron-down"/></svg></span><span class="path">e2e/promo/apply-code.spec.ts</span><span class="sha">4f2a9c1</span></div>
+              <div class="case"><span class="cid">TC-032</span><span class="res">Passed</span><span class="sel">Integration<svg class="i"><use href="#i-chevron-down"/></svg></span><span class="path">api/promo/discount.test.ts</span><span class="sha">4f2a9c1</span></div>
+            </div>
+          </li>
+          <li>
+            <div class="crit"><span class="ac">AC 2</span><span class="t">An expired promo code is rejected with a message naming the expiry date.</span></div>
+            <div class="covering">
+              <div class="case"><span class="cid">TC-033</span><span class="res">Failed</span><span class="sel">E2E<svg class="i"><use href="#i-chevron-down"/></svg></span><span class="path">e2e/promo/expired-code.spec.ts</span><span class="sha">9be07d3</span></div>
+            </div>
+          </li>
+          <li>
+            <div class="crit"><span class="ac">AC 3</span><span class="t">Only one promo code may apply to a basket at a time.</span></div>
+            <div class="covering"><span class="uncov">Not covered</span></div>
+          </li>
+          <li>
+            <div class="crit"><span class="ac">AC 4</span><svg class="i s35 flag" role="img" aria-label="Flagged by the QA analysis"><use href="#i-triangle-alert"/></svg><span class="t">The basket should update quickly after a promo code is applied.</span></div>
+            <div class="covering"><span class="uncov">Not covered</span></div>
+          </li>
+          <li>
+            <div class="crit"><span class="ac">AC 5</span><span class="t">Removing a promo code restores the original total.</span></div>
+            <div class="covering">
+              <div class="case"><span class="cid">TC-034</span><span class="res">Passed</span><span class="sel">E2E<svg class="i"><use href="#i-chevron-down"/></svg></span><span class="path">e2e/promo/remove-code.spec.ts</span><span class="sha">4f2a9c1</span></div>
+              <div class="case"><span class="cid">TC-035</span><span class="res">Not run</span><span class="sel">—<svg class="i"><use href="#i-chevron-down"/></svg></span></div>
+            </div>
+          </li>
+          <li>
+            <span class="unmapped">Not mapped to a criterion</span>
+            <div class="covering">
+              <div class="case"><span class="cid">TC-036</span><span class="res">Not run</span><span class="sel">Manual<svg class="i"><use href="#i-chevron-down"/></svg></span></div>
+            </div>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section aria-labelledby="qa-cases-heading">
+      <div class="shrow">
+        <h2 class="sh" id="qa-cases-heading">Test cases</h2>
+        <span class="info"><svg class="i s35"><use href="#i-info"/></svg></span>
+      </div>
+      <div class="card">
+        <ul class="cases">
+          <li><a href="#"><span class="cid">TC-031</span><span class="t">Apply a valid promo code at checkout</span><span class="refs">AC 1</span><span class="badge state ready"><span class="d"></span>Ready</span><span class="res">Passed</span></a><button class="btn sm outline" type="button"><svg class="i"><use href="#i-git-pull-request"/></svg>Revise</button></li>
+          <li><a href="#"><span class="cid">TC-032</span><span class="t">Discount amount is applied once to the basket total</span><span class="refs">AC 1</span><span class="badge state ready"><span class="d"></span>Ready</span><span class="res">Passed</span></a><button class="btn sm outline" type="button"><svg class="i"><use href="#i-git-pull-request"/></svg>Revise</button></li>
+          <li><a href="#"><span class="cid">TC-033</span><span class="t">Expired promo code shows the expiry date</span><span class="refs">AC 2</span><span class="badge state ready"><span class="d"></span>Ready</span><span class="res">Failed</span></a><button class="btn sm outline" type="button"><svg class="i"><use href="#i-git-pull-request"/></svg>Revise</button></li>
+          <li><a href="#"><span class="cid">TC-034</span><span class="t">Removing a promo code restores the original total</span><span class="refs">AC 5</span><span class="badge state ready"><span class="d"></span>Ready</span><span class="res">Passed</span></a><button class="btn sm outline" type="button"><svg class="i"><use href="#i-git-pull-request"/></svg>Revise</button></li>
+          <li><a href="#"><span class="cid">TC-035</span><span class="t">Total is recalculated after the code is removed on mobile</span><span class="refs">AC 5</span><span class="badge state draft"><span class="d"></span>Draft</span></a><button class="btn sm outline" type="button"><svg class="i"><use href="#i-git-pull-request"/></svg>Revise</button></li>
+          <li><a href="#"><span class="cid">TC-036</span><span class="t">Promo field is reachable by keyboard</span><span class="badge state draft"><span class="d"></span>Draft</span></a><button class="btn sm outline" type="button"><svg class="i"><use href="#i-git-pull-request"/></svg>Revise</button></li>
+        </ul>
+      </div>
+    </section>
+
+    <section aria-labelledby="qa-integration-heading">
+      <h2 class="sh" id="qa-integration-heading">Integration test implications</h2>
+      <div class="card prose">
+        <p>The shared pricing module computes the discount, so the cart, the order summary and the confirmation email must show the same total.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="qa-e2e-heading">
+      <h2 class="sh" id="qa-e2e-heading">End-to-end scenarios</h2>
+      <div class="card prose">
+        <p><strong>Apply and pay.</strong> Add two items, apply a valid code, pay, and see the discounted total on the receipt.</p>
+      </div>
+    </section>
+  </div>
+
+  <aside class="rail">
+    <section class="panel" aria-labelledby="qa-coverage-summary">
+      <h3 class="label" id="qa-coverage-summary">Coverage</h3>
+      <div class="cov">
+        <svg class="ring" viewBox="0 0 36 36" role="img" aria-label="60% of acceptance criteria covered">
+          <circle cx="18" cy="18" r="15.9155" fill="none" stroke="var(--muted)" stroke-width="3.4"/>
+          <circle cx="18" cy="18" r="15.9155" fill="none" stroke="var(--primary)" stroke-width="3.4" stroke-linecap="round" pathLength="100" stroke-dasharray="60 40"/>
+        </svg>
+        <div>
+          <p class="big">3 of 5 criteria</p>
+          <p class="gap">2 criteria have no case covering them.</p>
+        </div>
+      </div>
+      <p class="foot">6 cases are linked to this feature.</p>
+    </section>
+
+    <section class="pipe" aria-labelledby="qa-pipeline-runs">
+      <div class="top">
+        <h2 class="sh" id="qa-pipeline-runs">Pipeline results</h2>
+        <span class="info"><svg class="i s35"><use href="#i-info"/></svg></span>
+        <div class="btns">
+          <button class="btn sm outline" type="button"><svg class="i"><use href="#i-play"/></svg>Run tests</button>
+          <button class="btn sm outline" type="button"><svg class="i"><use href="#i-refresh-cw"/></svg>Sync now</button>
+        </div>
+      </div>
+      <div class="filters">
+        <button class="btn xs7 outline" type="button" aria-pressed="false">Passed</button>
+        <button class="btn xs7 outline" type="button" aria-pressed="false">Failed</button>
+        <button class="btn xs7 outline" type="button" aria-pressed="false">Cancelled</button>
+      </div>
+      <p class="xs muted">Last synced 12m ago.</p>
+      <ul class="runs">
+        <li>
+          <span class="open"><span class="gh" role="img" aria-label="GitHub Actions"><svg><use href="#i-github"/></svg></span>
+            <span class="lines">
+              <span class="l1"><span class="badge error">41/42 passed</span><span class="name">CI</span></span>
+              <span class="l2"><span style="color:var(--destructive)">1 failing</span><span class="mono">main</span><span>by Example Developer</span><span>4m 12s</span><span>2h ago</span></span>
+            </span>
+          </span>
+          <span class="ext"><svg class="i"><use href="#i-external-link"/></svg></span>
+        </li>
+        <li>
+          <span class="open"><span class="gh" role="img" aria-label="GitHub Actions"><svg><use href="#i-github"/></svg></span>
+            <span class="lines">
+              <span class="l1"><span class="badge success">42/42 passed</span><span class="name">CI</span></span>
+              <span class="l2"><span class="mono">main</span><span>by Example Developer</span><span>4m 05s</span><span>1d ago</span></span>
+            </span>
+          </span>
+          <span class="ext"><svg class="i"><use href="#i-external-link"/></svg></span>
+        </li>
+        <li>
+          <span class="open"><span class="gh" role="img" aria-label="GitHub Actions"><svg><use href="#i-github"/></svg></span>
+            <span class="lines">
+              <span class="l1"><span class="badge success">40/40 passed</span><span class="name">Release</span></span>
+              <span class="l2"><span class="mono">release/2026.11</span><span>6m 30s</span><span>3d ago</span></span>
+            </span>
+          </span>
+          <span class="ext"><svg class="i"><use href="#i-external-link"/></svg></span>
+        </li>
+      </ul>
+      <div class="right"><button class="btn link" type="button">View all runs</button></div>
+    </section>
+
+    <section class="history" aria-labelledby="qa-history-heading">
+      <h2 class="sh" id="qa-history-heading">History</h2>
+      <div class="hgrid">
+        <div>
+          <p class="hh">Drafting runs</p>
+          <ul class="hlist">
+            <li>
+              <div class="a"><span class="st"><svg class="i s35" style="color:var(--success)"><use href="#i-circle-check"/></svg>Succeeded</span><span class="n">4 cases</span><time>2 days ago</time></div>
+              <div class="by">by Example Developer</div>
+            </li>
+          </ul>
+        </div>
+        <div>
+          <p class="hh">QA analyses</p>
+          <ul class="hlist">
+            <li>
+              <div class="a"><span class="n" style="display:inline-flex;align-items:center;gap:4px"><svg class="i s35 muted"><use href="#i-flask-conical"/></svg>Analysis generated</span><span class="badge outline">STANDARD</span><time>2 days ago</time></div>
+              <div class="by">by Example Developer</div>
+            </li>
+            <li>
+              <div class="a"><span class="n" style="display:inline-flex;align-items:center;gap:4px"><svg class="i s35 muted"><use href="#i-flask-conical"/></svg>Analysis generated</span><span class="badge outline">STANDARD</span><time>1 week ago</time></div>
+              <div class="by">by Example Developer</div>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </aside>
+</div>
+</body>
+</html>

@@ -126,7 +126,8 @@ export class ExaSearchProvider extends BaseSearchProvider {
 			excludeDomains,
 		} = options;
 
-		logger.info(`[ExaSearchProvider] Searching for: "${query}"`, {
+		logger.info("[ExaSearchProvider] Searching", {
+			queryLength: query.length,
 			maxResults,
 			category,
 			timeRange,
@@ -251,7 +252,9 @@ export class ExaSearchProvider extends BaseSearchProvider {
 		} catch (error) {
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
-			logger.error(`[ExaSearchProvider] Search failed: ${errorMessage}`);
+			logger.error("[ExaSearchProvider] Search failed", {
+				errorKind: error instanceof Error ? error.name : typeof error,
+			});
 			throw new Error(`Exa search failed: ${errorMessage}`);
 		}
 	}

@@ -22,3 +22,4 @@ export { proposeActionItemProcedure } from "./propose-action-item";
 export { setActionItemCompletedProcedure } from "./set-action-item-completed";
 export { setIncludedProcedure } from "./set-included";
 export { setParlumeAutoJoinProcedure } from "./set-parlume-auto-join";
+export { updateMeetingDetailsProcedure } from "./update-meeting-details";

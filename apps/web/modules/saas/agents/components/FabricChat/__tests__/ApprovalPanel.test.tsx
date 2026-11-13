@@ -90,3 +90,18 @@ it("uses the same bound decision on the Research card", async () => {
 	});
 	expect(screen.queryByText(/workflow stopped/i)).not.toBeInTheDocument();
 });
+
+it.each([
+	{ reason: "Review this action", riskLevel: "high" as const },
+	{ reason: "HIGH RISK: Review this action" },
+	{ reason: "LOW RISK: Review this action", riskLevel: "high" as const },
+])("shows the field or legacy prefix: %j", (details) => {
+	render(
+		<ApprovalPanel
+			pending={{ ...pending, ...details }}
+			plan={null}
+			onDecision={vi.fn()}
+		/>,
+	);
+	expect(screen.getByText("HIGH RISK")).toBeInTheDocument();
+});

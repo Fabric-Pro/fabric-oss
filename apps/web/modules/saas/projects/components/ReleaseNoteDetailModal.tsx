@@ -1,7 +1,11 @@
 "use client";
 
 import type { NewsletterContent } from "@repo/database";
-import { groupHighlightsByRelease } from "@repo/utils/group-highlights";
+import {
+	groupHighlightsByRelease,
+	highlightImagesAt,
+	type ReleaseHighlightImage,
+} from "@repo/utils/group-highlights";
 import {
 	Dialog,
 	DialogContent,
@@ -9,6 +13,21 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@ui/components/dialog";
+
+/** A highlight's images, above or below its text as the email shows them. */
+function HighlightImages({ images }: { images: ReleaseHighlightImage[] }) {
+	return images.map((image) => (
+		<img
+			key={image.url}
+			src={image.url}
+			alt={image.alt}
+			width={image.width}
+			height={image.height}
+			loading="lazy"
+			className="mt-2 h-auto max-w-full rounded-md border border-border"
+		/>
+	));
+}
 
 type Props = {
 	open: boolean;
@@ -104,9 +123,21 @@ export function ReleaseNoteDetailModal({
 											<p className="text-sm font-semibold text-foreground">
 												{item.title}
 											</p>
+											<HighlightImages
+												images={highlightImagesAt(
+													item.images,
+													"ABOVE",
+												)}
+											/>
 											<p className="text-sm leading-relaxed text-muted-foreground">
 												{item.description}
 											</p>
+											<HighlightImages
+												images={highlightImagesAt(
+													item.images,
+													"BELOW",
+												)}
+											/>
 										</div>
 									))}
 								</div>

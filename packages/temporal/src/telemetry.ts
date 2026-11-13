@@ -38,6 +38,7 @@ import {
 	type RuntimeOptions,
 	type WorkerOptions,
 } from "@temporalio/worker";
+import { CancellationTolerantSpanExporter } from "./lib/cancellation-span-exporter";
 
 const OTEL_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME || "temporal-worker";
@@ -65,7 +66,7 @@ export const OTEL_WORKFLOW_INTERCEPTOR_MODULE = require.resolve(
 );
 
 let sdk: NodeSDK | null = null;
-let traceExporter: OTLPTraceExporter | null = null;
+let traceExporter: CancellationTolerantSpanExporter | null = null;
 let resource: Resource | undefined;
 let loggerProvider: LoggerProvider | null = null;
 let workflowSpanProcessor: BatchSpanProcessor | null = null;
@@ -109,9 +110,11 @@ export function initTelemetry(): void {
 	});
 
 	// gRPC exporters use the base URL without path suffixes
-	traceExporter = new OTLPTraceExporter({
-		url: OTEL_ENDPOINT,
-	});
+	traceExporter = new CancellationTolerantSpanExporter(
+		new OTLPTraceExporter({
+			url: OTEL_ENDPOINT,
+		}),
+	);
 
 	const metricExporter = new OTLPMetricExporter({
 		url: OTEL_ENDPOINT,
@@ -238,11 +241,7 @@ function setupConsoleInterception(): void {
 			original(...args);
 
 			// Also emit to OTLP for Aspire Dashboard
-			const body = args
-				.map((arg) =>
-					typeof arg === "object" ? JSON.stringify(arg) : String(arg),
-				)
-				.join(" ");
+			const body = formatLogArgs(args);
 
 			logger.emit({
 				severityNumber: severity,
@@ -252,6 +251,62 @@ function setupConsoleInterception(): void {
 			});
 		};
 	}
+}
+
+/**
+ * The OTLP log body for a console call's arguments. A plain object the caller
+ * passes is still written as JSON in full, as before. An `Error`, at the top
+ * level or nested in such an object, is described instead, because
+ * `JSON.stringify` on one is "{}" — a logged failure reached App Insights with
+ * no detail (Fizzy #3519). Never throws: a console call must not fail its
+ * caller over an unserializable argument.
+ */
+export function formatLogArgs(args: unknown[]): string {
+	return args.map(formatLogArg).join(" ");
+}
+
+function formatLogArg(arg: unknown): string {
+	if (arg instanceof Error) {
+		return describeLoggedError(arg);
+	}
+	if (typeof arg !== "object" || arg === null) {
+		return String(arg);
+	}
+	try {
+		return JSON.stringify(arg, (_key, value) =>
+			value instanceof Error ? describeLoggedError(value) : value,
+		);
+	} catch {
+		// Circular structure or BigInt.
+		return String(arg);
+	}
+}
+
+/**
+ * Class, message, status/code and cause chain only. Other own properties stay
+ * out: an AI SDK error carries the request body and headers, and the body
+ * repeats the prompt. An object cause that is not an `Error` is written as
+ * "[object]", not serialized, for the same reason: a response can carry headers.
+ */
+function describeLoggedError(error: Error, depth = 0): string {
+	const fields = error as Error & Record<string, unknown>;
+	let text = error.message ? `${error.name}: ${error.message}` : error.name;
+	for (const key of ["statusCode", "status", "code"]) {
+		const value = fields[key];
+		if (typeof value === "string" || typeof value === "number") {
+			text += ` [${key}=${value}]`;
+		}
+	}
+	if (error.cause !== undefined && depth < 3) {
+		const cause =
+			error.cause instanceof Error
+				? describeLoggedError(error.cause, depth + 1)
+				: typeof error.cause === "object" && error.cause !== null
+					? "[object]"
+					: String(error.cause);
+		text += ` [cause: ${cause}]`;
+	}
+	return text;
 }
 
 /**
@@ -323,7 +378,9 @@ export function getTelemetryInterceptors(): Partial<WorkerOptions> {
 	// than losing traces.
 	if (!workflowSpanProcessor) {
 		workflowSpanProcessor = new BatchSpanProcessor(
-			new OTLPTraceExporter({ url: OTEL_ENDPOINT }),
+			new CancellationTolerantSpanExporter(
+				new OTLPTraceExporter({ url: OTEL_ENDPOINT }),
+			),
 			{ maxQueueSize: 8192 },
 		);
 	}

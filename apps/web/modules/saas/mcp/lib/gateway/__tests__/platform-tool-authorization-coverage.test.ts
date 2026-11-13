@@ -167,6 +167,7 @@ const SOURCES = [
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "knowledge-tools.ts"),
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "rules-tools.ts"),
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "code-repositories-tools.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "instruction-set-tools.ts"),
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "project-rag-tools.ts"),
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/frame-tools.ts"),
 	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/frame-version-tools.ts"),
@@ -238,6 +239,7 @@ const WRITE_PREFIXES = [
 	// `handleMemoryTargets` and `handleMemoryWriteStatus` match the prefix too
 	// and are held to the stricter list, which their live CONTEXT_READ check meets.
 	"handleMemoryWrite",
+	"handleDeleteInstructionSet",
 ] as const;
 
 /**

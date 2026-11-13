@@ -3,6 +3,7 @@
  *
  * Generates images using multiple providers:
  * - Gateway: Vercel AI Gateway with Nano Banana models (Google Gemini image gen)
+ * - OpenAI: Uses the organization's direct OpenAI connection
  * - FAL: Uses FLUX models via REST API, returns hosted image URLs
  * - Gemini: Uses @google/genai SDK directly, uploads base64 result to S3/R2
  *
@@ -42,6 +43,10 @@ import {
 	uploadRecordedChatMedia,
 } from "./chat-media";
 import {
+	imageCredentialErrorMessage,
+	imageGenerationErrorMessage,
+} from "./lib/image-generation-error";
+import {
 	activityAbortSignal,
 	assertTurnDispatchable,
 	guardTurnImageModel,
@@ -61,7 +66,7 @@ export interface ImageGenerationParams extends SecondaryUsageInput {
 	organizationId?: string;
 	/** S3 storage path of an input image to modify/edit (for image editing workflows) */
 	inputImagePath?: string;
-	/** Gateway model ID (e.g., "google/gemini-3.1-flash-image-preview") */
+	/** Gateway model ID (e.g., "google/gemini-3.1-flash-image") */
 	gatewayModel?: string;
 	/**
 	 * The Advisor chat turn this image belongs to. When set, every provider
@@ -81,7 +86,7 @@ export interface ImageGenerationResult {
 	storagePath?: string;
 	width?: number;
 	height?: number;
-	provider: string;
+	provider: "gateway" | "openai" | "fal" | "gemini" | "local";
 	model: string;
 	error?: string;
 	durationMs: number;
@@ -108,12 +113,19 @@ const FAL_QUALITY_STEPS: Record<string, number> = {
 };
 
 const DEFAULT_FAL_MODEL = "fal-ai/flux-pro/v1.1";
-const DEFAULT_GEMINI_MODEL = "gemini-2.0-flash-preview-image-generation";
-const DEFAULT_GATEWAY_MODEL = "google/gemini-3.1-flash-image-preview";
+const DEFAULT_GEMINI_MODEL = "gemini-nano-banana-2.1";
+const DEFAULT_GATEWAY_MODEL = "google/gemini-nano-banana-2.1";
 const GENERATED_IMAGES_BUCKET =
 	process.env.NEXT_PUBLIC_CHAT_DOCUMENTS_BUCKET_NAME || "chat-documents";
 
 const ASPECT_RATIO_PATTERN = /^\d+:\d+$/;
+
+type OpenAiImageSize =
+	| "1024x1024"
+	| "1536x1024"
+	| "1024x1536"
+	| "1792x1024"
+	| "1024x1792";
 
 function parseAspectRatio(
 	input: string | undefined,
@@ -129,6 +141,45 @@ function parseAspectRatio(
 		return undefined;
 	}
 	return trimmed as `${number}:${number}`;
+}
+
+function getOpenAiImageSize(
+	model: string,
+	aspectRatio: string | undefined,
+): OpenAiImageSize | undefined {
+	const validatedAspectRatio = parseAspectRatio(aspectRatio);
+	if (!validatedAspectRatio) {
+		return undefined;
+	}
+	const [width, height] = validatedAspectRatio.split(":").map(Number);
+	const orientation =
+		width === height ? "square" : width > height ? "landscape" : "portrait";
+	const modelId = model.split("/").at(-1) ?? model;
+
+	if (modelId === "dall-e-2") {
+		return "1024x1024";
+	}
+	if (modelId === "dall-e-3") {
+		return {
+			square: "1024x1024",
+			landscape: "1792x1024",
+			portrait: "1024x1792",
+		}[orientation] as OpenAiImageSize;
+	}
+	if (
+		modelId.startsWith("gpt-image-") ||
+		modelId === "chatgpt-image-latest"
+	) {
+		return {
+			square: "1024x1024",
+			landscape: "1536x1024",
+			portrait: "1024x1536",
+		}[orientation] as OpenAiImageSize;
+	}
+
+	// An unknown model may reject every known OpenAI size, so preserve its
+	// provider default instead of guessing.
+	return undefined;
 }
 
 export function generateImageActivity(
@@ -167,15 +218,67 @@ async function generateImageActivityInternal(
 		};
 	}
 
-	// Local development only: a local image server draws every image, whatever
-	// provider the tool asked for (packages/ai/lib/local-models.ts). Null
-	// outside NODE_ENV=development.
+	// A local image server can serve development requests without an OpenAI choice.
 	const { getLocalModelConfig } = await import("@repo/ai/local-models");
 	const localImages = getLocalModelConfig("IMAGE");
 
 	let result: ImageGenerationResult;
+	let usedLocal = false;
 	try {
-		if (localImages) {
+		let choice:
+			| {
+					provider: "VERCEL_GATEWAY" | "OPENAI_DIRECT";
+					providerModelId: string;
+			  }
+			| undefined;
+		try {
+			const { resolveImageModelChoice } = await import("@repo/database");
+			choice = await resolveImageModelChoice({
+				userId,
+				organizationId,
+			});
+		} catch (error) {
+			console.error(
+				"[ImageGeneration] Failed to resolve the configured image model:",
+				error,
+			);
+			result = {
+				success: false,
+				provider: "gateway",
+				model: DEFAULT_GATEWAY_MODEL,
+				error: "Unable to resolve the configured image model. Please try again or review Settings > AI Models.",
+				durationMs: Date.now() - startTime,
+			};
+			logImageGenerationUsage(
+				result,
+				userId,
+				organizationId,
+				params.usageConversationId,
+				params.usageOrigin,
+			);
+			return result;
+		}
+		// A saved OpenAI choice wins; gatewayModel overrides only gateway choices.
+		if (choice?.provider === "OPENAI_DIRECT") {
+			if (gatewayModel) {
+				console.info(
+					"[ImageGeneration] Ignored gateway model:",
+					gatewayModel,
+				);
+			}
+			result = await generateWithOpenAi({
+				prompt,
+				inputImagePath,
+				aspectRatio,
+				model: choice.providerModelId,
+				userId,
+				organizationId,
+				startTime,
+				turnScope,
+				usageConversationId,
+			});
+		} else if (localImages) {
+			usedLocal = true;
 			result = await generateWithLocalServer({
 				config: localImages,
 				prompt,
@@ -188,12 +291,35 @@ async function generateImageActivityInternal(
 				usageConversationId,
 			});
 		} else {
+			if (
+				inputImagePath &&
+				// Matches the switch below: every provider but the gateway
+				// runs a path that never receives the input image.
+				provider !== "gateway"
+			) {
+				result = {
+					success: false,
+					provider,
+					model: model || getDefaultModel(provider, gatewayModel),
+					error: "Image editing isn't available with this provider. Use a Nano Banana or GPT Image model.",
+					durationMs: Date.now() - startTime,
+				};
+				logImageGenerationUsage(
+					result,
+					userId,
+					organizationId,
+					params.usageConversationId,
+					params.usageOrigin,
+				);
+				return result;
+			}
 			switch (provider) {
 				case "gateway":
 					result = await generateWithGateway({
 						prompt,
 						inputImagePath,
 						gatewayModel,
+						choice,
 						aspectRatio,
 						userId,
 						organizationId,
@@ -241,17 +367,19 @@ async function generateImageActivityInternal(
 		}
 		// Called inside a turn's guard without a scope: its stop likewise.
 		rethrowIfDispatchStopped(error);
-		const errorMessage =
-			error instanceof Error ? error.message : String(error);
+		const errorMessage = imageGenerationErrorMessage(
+			error,
+			usedLocal ? "local" : provider,
+		);
 		console.error(
 			`[ImageGeneration] ${provider} generation failed:`,
 			error,
 		);
 		result = {
 			success: false,
-			provider: localImages ? "local" : provider,
+			provider: usedLocal ? "local" : provider,
 			model:
-				localImages?.model ||
+				(usedLocal ? localImages?.model : undefined) ||
 				model ||
 				getDefaultModel(provider, gatewayModel),
 			error: errorMessage,
@@ -307,7 +435,11 @@ function logImageGenerationUsage(
 			// image APIs; their model string carries the real identity, so they
 			// land under CUSTOM rather than a misattributed provider.
 			provider:
-				result.provider === "gateway" ? "VERCEL_GATEWAY" : "CUSTOM",
+				result.provider === "gateway"
+					? "VERCEL_GATEWAY"
+					: result.provider === "openai"
+						? "OPENAI_DIRECT"
+						: "CUSTOM",
 			providerModelId: result.model,
 			taskType: "IMAGE",
 			jobType: "image-generation",
@@ -327,10 +459,63 @@ function logImageGenerationUsage(
 // Gateway Provider (Vercel AI Gateway + Nano Banana)
 // =============================================================================
 
+export function supportsInputImageEdits(model: string): boolean {
+	return /^(?:openai\/)?gpt-image-[\w.-]+$/.test(model);
+}
+
+async function loadInputImage(params: {
+	inputImagePath: string;
+	userId: string;
+	organizationId?: string;
+	turnScope?: TurnScope;
+}): Promise<
+	| { data: Uint8Array; mediaType: string; error?: undefined }
+	| { error: string }
+> {
+	const { inputImagePath, userId, organizationId, turnScope } = params;
+	if (
+		!(await canUseChatMedia({
+			storageKey: inputImagePath,
+			userId,
+			organizationId,
+		}))
+	) {
+		return { error: "Input image is not available to the current user" };
+	}
+	try {
+		const { data, contentType } = await downloadFile(inputImagePath, {
+			bucket: GENERATED_IMAGES_BUCKET,
+		});
+		return {
+			data: new Uint8Array(data),
+			mediaType: contentType || "image/png",
+		};
+	} catch (downloadError) {
+		if (downloadError instanceof ChatMediaPersistenceError) {
+			throw downloadError;
+		}
+		if (turnScope) {
+			rethrowIfTurnStopped(downloadError);
+		}
+		rethrowIfDispatchStopped(downloadError);
+		console.error(
+			`[ImageGeneration] Failed to download input image from S3: ${inputImagePath}`,
+			downloadError,
+		);
+		return {
+			error: `Failed to download input image from storage: ${inputImagePath}`,
+		};
+	}
+}
+
 async function generateWithGateway(params: {
 	prompt: string;
 	inputImagePath?: string;
 	gatewayModel?: string;
+	choice?: {
+		provider: "VERCEL_GATEWAY" | "OPENAI_DIRECT";
+		providerModelId: string;
+	};
 	aspectRatio?: string;
 	userId: string;
 	organizationId?: string;
@@ -351,24 +536,10 @@ async function generateWithGateway(params: {
 		startTime,
 		usageConversationId,
 	} = params;
-	// If no explicit gatewayModel, resolve from user's IMAGE model preference
-	let model: string;
-	if (params.gatewayModel) {
-		model = params.gatewayModel;
-	} else {
-		try {
-			const { resolveModel } = await import("@repo/database");
-			const resolved = await resolveModel({
-				userId,
-				organizationId,
-				taskType: "IMAGE",
-				provider: "VERCEL_GATEWAY",
-			});
-			model = resolved.providerModelId;
-		} catch {
-			model = DEFAULT_GATEWAY_MODEL;
-		}
-	}
+	const model =
+		params.gatewayModel ??
+		params.choice?.providerModelId ??
+		DEFAULT_GATEWAY_MODEL;
 
 	// TENANT resolver, not the system one. Every caller of this activity has a
 	// person waiting on it — direct chat's image tool, the agent executor, an
@@ -377,15 +548,37 @@ async function generateWithGateway(params: {
 	// ingestion). Image generation is also the most expensive call the product
 	// makes, so serving it on the deployment's key is the single largest hole
 	// a "runs on the tenant's own provider" claim could carry.
-	const { getRAGProviderConfig, isVercelGatewayKey } = await import(
-		"@repo/ai"
+	const { isVercelGatewayKey } = await import("@repo/ai");
+	const { resolveImageGatewayProviderConfig } = await import(
+		"./lib/image-gateway-provider"
 	);
-	const providerConfig = await getRAGProviderConfig({
-		userId,
-		organizationId,
-	});
+	let providerConfig: Awaited<
+		ReturnType<typeof resolveImageGatewayProviderConfig>
+	>;
+	try {
+		providerConfig = await resolveImageGatewayProviderConfig({
+			userId,
+			organizationId,
+		});
+	} catch (error) {
+		if (error instanceof ChatMediaPersistenceError) {
+			throw error;
+		}
+		if (turnScope) {
+			rethrowIfTurnStopped(error);
+		}
+		rethrowIfDispatchStopped(error);
+		console.error("[ImageGeneration] Credential resolution failed:", error);
+		return {
+			success: false,
+			provider: "gateway",
+			model,
+			error: imageCredentialErrorMessage(error),
+			durationMs: Date.now() - startTime,
+		};
+	}
 
-	if (!providerConfig.apiKey) {
+	if (!providerConfig?.apiKey) {
 		return {
 			success: false,
 			provider: "gateway",
@@ -399,9 +592,13 @@ async function generateWithGateway(params: {
 		providerConfig.provider !== "VERCEL_GATEWAY" &&
 		!isVercelGatewayKey(providerConfig.apiKey)
 	) {
-		throw new Error(
-			"This image generation path requires a VERCEL_GATEWAY connection or a Vercel gateway key. Configure one in Settings → AI Providers.",
-		);
+		return {
+			success: false,
+			provider: "gateway",
+			model,
+			error: "This image generation path requires a VERCEL_GATEWAY connection or a Vercel gateway key. Configure one in Settings → AI Providers.",
+			durationMs: Date.now() - startTime,
+		};
 	}
 
 	const { createGateway, generateImage, generateText } = await import(
@@ -413,7 +610,10 @@ async function generateWithGateway(params: {
 	// completions API with responseModalities=[TEXT,IMAGE] and support image
 	// editing via input-image content parts. Pure image models (OpenAI gpt-image,
 	// DALL-E, Google Imagen, etc.) must go through the dedicated image API.
-	const isNanoBanana = /^google\/gemini[\w.-]*image/i.test(model);
+	const isNanoBanana =
+		/^google\/gemini-(?:[\w.-]+-image(?:-preview)?|nano-banana-[\d.]+)$/i.test(
+			model,
+		);
 
 	if (isNanoBanana) {
 		const contentParts: Array<
@@ -422,49 +622,27 @@ async function generateWithGateway(params: {
 			| { type: "file"; data: Uint8Array; mediaType: string }
 		> = [];
 
-		// Download input image from S3 storage (for editing workflows)
-		// SECURITY: Images are resolved from S3 storage paths, never from arbitrary URLs.
-		// The ownership record and any conversation share are evaluated live.
 		if (inputImagePath) {
-			if (
-				!(await canUseChatMedia({
-					storageKey: inputImagePath,
-					userId,
-					organizationId,
-				}))
-			) {
+			const image = await loadInputImage({
+				turnScope,
+				inputImagePath,
+				userId,
+				organizationId,
+			});
+			if (image.error !== undefined) {
 				return {
 					success: false,
 					provider: "gateway",
 					model,
-					error: "Input image is not available to the current user",
+					error: image.error,
 					durationMs: Date.now() - startTime,
 				};
 			}
-
-			try {
-				const { data: imageBuffer, contentType } = await downloadFile(
-					inputImagePath,
-					{ bucket: GENERATED_IMAGES_BUCKET },
-				);
-				contentParts.push({
-					type: "file",
-					data: new Uint8Array(imageBuffer),
-					mediaType: contentType || "image/png",
-				});
-			} catch (downloadError) {
-				console.error(
-					`[ImageGeneration] Failed to download input image from S3: ${inputImagePath}`,
-					downloadError,
-				);
-				return {
-					success: false,
-					provider: "gateway",
-					model,
-					error: `Failed to download input image from storage: ${inputImagePath}`,
-					durationMs: Date.now() - startTime,
-				};
-			}
+			contentParts.push({
+				type: "file",
+				data: image.data,
+				mediaType: image.mediaType,
+			});
 		}
 
 		const aspectHint = aspectRatio
@@ -514,9 +692,10 @@ async function generateWithGateway(params: {
 		}
 
 		const imageFile = imageFiles[0];
-		return await uploadGatewayImage({
+		return await uploadGeneratedImage({
 			buffer: Buffer.from(imageFile.uint8Array),
 			mediaType: imageFile.mediaType || "image/png",
+			provider: "gateway",
 			model,
 			userId,
 			organizationId,
@@ -529,12 +708,30 @@ async function generateWithGateway(params: {
 
 	// Pure image models (OpenAI gpt-image-*, DALL-E, Imagen, etc.):
 	// route through the dedicated image generation API.
-	if (inputImagePath) {
+	if (inputImagePath && !supportsInputImageEdits(model)) {
 		return {
 			success: false,
 			provider: "gateway",
 			model,
-			error: `Model '${model}' does not support input-image editing via the gateway image API. Use a Nano Banana model (e.g., google/gemini-3.1-flash-image-preview) for image editing.`,
+			error: "Image editing is available with Nano Banana and GPT Image models.",
+			durationMs: Date.now() - startTime,
+		};
+	}
+
+	const inputImage = inputImagePath
+		? await loadInputImage({
+				inputImagePath,
+				userId,
+				organizationId,
+				turnScope,
+			})
+		: undefined;
+	if (inputImage?.error !== undefined) {
+		return {
+			success: false,
+			provider: "gateway",
+			model,
+			error: inputImage.error,
 			durationMs: Date.now() - startTime,
 		};
 	}
@@ -550,7 +747,9 @@ async function generateWithGateway(params: {
 			? guardTurnImageModel(gateway.imageModel(model), turnScope)
 			: gateway.imageModel(model),
 		...(abortSignal ? { abortSignal } : {}),
-		prompt,
+		prompt: inputImage
+			? { images: [inputImage.data], text: prompt }
+			: prompt,
 		...(validatedAspectRatio ? { aspectRatio: validatedAspectRatio } : {}),
 	});
 
@@ -564,9 +763,10 @@ async function generateWithGateway(params: {
 		};
 	}
 
-	return await uploadGatewayImage({
+	return await uploadGeneratedImage({
 		buffer: Buffer.from(imageResult.image.uint8Array),
 		mediaType: imageResult.image.mediaType || "image/png",
+		provider: "gateway",
 		model,
 		userId,
 		organizationId,
@@ -574,6 +774,154 @@ async function generateWithGateway(params: {
 		turnScope,
 		usageConversationId,
 	});
+}
+
+// =============================================================================
+// Direct OpenAI Provider
+// =============================================================================
+
+async function generateWithOpenAi(params: {
+	prompt: string;
+	inputImagePath?: string;
+	aspectRatio?: string;
+	model: string;
+	userId: string;
+	organizationId?: string;
+	startTime: number;
+	turnScope?: TurnScope;
+	usageConversationId?: string;
+}): Promise<ImageGenerationResult> {
+	const {
+		prompt,
+		inputImagePath,
+		aspectRatio,
+		model,
+		userId,
+		organizationId,
+		startTime,
+		turnScope,
+		usageConversationId,
+	} = params;
+
+	if (inputImagePath && !supportsInputImageEdits(model)) {
+		return {
+			success: false,
+			provider: "openai",
+			model,
+			error: "Image editing requires a GPT Image model.",
+			durationMs: Date.now() - startTime,
+		};
+	}
+
+	const { generateImage, getImageModel, resolveOpenAiApiKey } = await import(
+		"@repo/ai"
+	);
+	let apiKey: string;
+	try {
+		apiKey = await resolveOpenAiApiKey({ userId, organizationId });
+	} catch (error) {
+		if (error instanceof ChatMediaPersistenceError) {
+			throw error;
+		}
+		if (turnScope) {
+			rethrowIfTurnStopped(error);
+		}
+		rethrowIfDispatchStopped(error);
+		console.error("[ImageGeneration] Credential resolution failed:", error);
+		return {
+			success: false,
+			provider: "openai",
+			model,
+			error: imageCredentialErrorMessage(error),
+			durationMs: Date.now() - startTime,
+		};
+	}
+
+	try {
+		if (!apiKey) {
+			return {
+				success: false,
+				provider: "openai",
+				model,
+				error: "OpenAI API key not configured. Configure OpenAI in Settings → AI Providers.",
+				durationMs: Date.now() - startTime,
+			};
+		}
+
+		const inputImage = inputImagePath
+			? await loadInputImage({
+					inputImagePath,
+					userId,
+					organizationId,
+					turnScope,
+				})
+			: undefined;
+		if (inputImage?.error !== undefined) {
+			return {
+				success: false,
+				provider: "openai",
+				model,
+				error: inputImage.error,
+				durationMs: Date.now() - startTime,
+			};
+		}
+
+		const imageModel = getImageModel(model, {
+			apiKey,
+			provider: "OPENAI_DIRECT",
+			userId,
+			organizationId,
+		});
+		const abortSignal = turnScope ? activityAbortSignal() : undefined;
+		const size = getOpenAiImageSize(model, aspectRatio);
+		const imageResult = await generateImage({
+			model: turnScope
+				? guardTurnImageModel(imageModel, turnScope)
+				: imageModel,
+			...(abortSignal ? { abortSignal } : {}),
+			...(size ? { size } : {}),
+			prompt: inputImage
+				? { images: [inputImage.data], text: prompt }
+				: prompt,
+		});
+		if (!imageResult.image) {
+			return {
+				success: false,
+				provider: "openai",
+				model,
+				error: "OpenAI image API returned no image data",
+				durationMs: Date.now() - startTime,
+			};
+		}
+
+		return await uploadGeneratedImage({
+			buffer: Buffer.from(imageResult.image.uint8Array),
+			mediaType: imageResult.image.mediaType || "image/png",
+			provider: "openai",
+			model,
+			userId,
+			organizationId,
+			startTime,
+			turnScope,
+			usageConversationId,
+		});
+	} catch (error) {
+		if (error instanceof ChatMediaPersistenceError) {
+			throw error;
+		}
+		if (turnScope) {
+			rethrowIfTurnStopped(error);
+		}
+		rethrowIfDispatchStopped(error);
+		console.error("[ImageGeneration] OpenAI generation failed:", error);
+		return {
+			success: false,
+			provider: "openai",
+			model,
+			error: imageGenerationErrorMessage(error, "openai"),
+			durationMs: Date.now() - startTime,
+		};
+	}
 }
 
 /**
@@ -635,9 +983,10 @@ async function generateWithLocalServer(params: {
 			durationMs: Date.now() - startTime,
 		};
 	}
-	const stored = await uploadGatewayImage({
+	const stored = await uploadGeneratedImage({
 		buffer: Buffer.from(imageResult.image.uint8Array),
 		mediaType: imageResult.image.mediaType || "image/png",
+		provider: "local",
 		model: config.model,
 		userId,
 		organizationId,
@@ -645,12 +994,13 @@ async function generateWithLocalServer(params: {
 		turnScope,
 		usageConversationId,
 	});
-	return { ...stored, provider: "local" };
+	return stored;
 }
 
-async function uploadGatewayImage(params: {
+async function uploadGeneratedImage(params: {
 	buffer: Buffer;
 	mediaType: string;
+	provider: "gateway" | "openai" | "local";
 	model: string;
 	userId: string;
 	organizationId?: string;
@@ -662,6 +1012,7 @@ async function uploadGatewayImage(params: {
 	const {
 		buffer,
 		mediaType,
+		provider,
 		model,
 		userId,
 		organizationId,
@@ -698,7 +1049,7 @@ async function uploadGatewayImage(params: {
 		success: true,
 		imageUrl,
 		storagePath,
-		provider: "gateway",
+		provider,
 		model,
 		text,
 		durationMs: Date.now() - startTime,
@@ -785,14 +1136,15 @@ async function generateWithFal(params: {
 	const result = await response.json();
 
 	if (!response.ok) {
+		console.error("[ImageGeneration] FAL generation failed:", result);
 		return {
 			success: false,
 			provider: "fal",
 			model: falModel,
-			error:
-				result.detail ||
-				result.message ||
-				`FAL API error: HTTP ${response.status}`,
+			error: imageGenerationErrorMessage(
+				{ statusCode: response.status },
+				"fal",
+			),
 			durationMs: Date.now() - startTime,
 		};
 	}
@@ -951,7 +1303,7 @@ async function generateWithGemini(params: {
 	const mimeType = imagePart.inlineData.mimeType || "image/png";
 	const extension = mimeType.split("/")[1] || "png";
 
-	// Immediately before the upload (see uploadGatewayImage).
+	// Immediately before the upload (see uploadGeneratedImage).
 	if (turnScope) {
 		throwIfTurnStopped();
 	}

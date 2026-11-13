@@ -106,7 +106,7 @@ function InvitationCard({
 		expiresAt.getTime() - Date.now() < 24 * 60 * 60 * 1000; // Less than 24 hours
 
 	const roleColors: Record<string, string> = {
-		OWNER: "bg-primary/10 text-primary dark:bg-primary/20 dark:text-primary",
+		OWNER: "bg-primary/10 text-primary-active dark:bg-primary/20 dark:text-primary",
 		EDITOR: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
 		VIEWER: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
 	};
@@ -165,7 +165,7 @@ function InvitationCard({
 						})}
 					</span>
 					<span
-						className={`flex items-center gap-1 ${isExpiringSoon ? "text-orange-500" : ""}`}
+						className={`flex items-center gap-1 ${isExpiringSoon ? "text-orange-700 dark:text-orange-500" : ""}`}
 					>
 						<ClockIcon className="h-3 w-3" />
 						Expires{" "}

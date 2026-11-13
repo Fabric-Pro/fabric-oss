@@ -130,7 +130,7 @@ function McpServerListItem({
 			if (oauthStatus) {
 				if (oauthStatus.authenticated && !oauthStatus.tokenExpired) {
 					return (
-						<Badge className="bg-green-500/10 text-green-700 dark:bg-green-500/20 dark:text-green-400 border-0">
+						<Badge className="bg-green-500/10 text-green-800 dark:bg-green-500/20 dark:text-green-400 border-0">
 							<CheckCircleIcon className="mr-1 size-3" />
 							Connected
 						</Badge>
@@ -138,7 +138,7 @@ function McpServerListItem({
 				}
 				if (oauthStatus.needsReauth) {
 					return (
-						<Badge className="bg-yellow-500/10 text-yellow-700 dark:bg-yellow-500/20 dark:text-yellow-400 border-0">
+						<Badge className="bg-yellow-500/10 text-yellow-800 dark:bg-yellow-500/20 dark:text-yellow-400 border-0">
 							<RefreshCwIcon className="mr-1 size-3" />
 							Reconnect needed
 						</Badge>
@@ -146,14 +146,14 @@ function McpServerListItem({
 				}
 				if (oauthStatus.tokenExpired) {
 					return (
-						<Badge className="bg-yellow-500/10 text-yellow-700 dark:bg-yellow-500/20 dark:text-yellow-400 border-0">
+						<Badge className="bg-yellow-500/10 text-yellow-800 dark:bg-yellow-500/20 dark:text-yellow-400 border-0">
 							<RefreshCwIcon className="mr-1 size-3" />
 							Token Expired
 						</Badge>
 					);
 				}
 				return (
-					<Badge className="bg-red-500/10 text-red-700 dark:bg-red-500/20 dark:text-red-400 border-0">
+					<Badge className="bg-red-500/10 text-red-700 dark:bg-red-500/20 dark:text-red-300 border-0">
 						Not Connected
 					</Badge>
 				);
@@ -170,7 +170,7 @@ function McpServerListItem({
 		const status = config.status;
 		if (status === "HEALTHY") {
 			return (
-				<Badge className="bg-green-500/10 text-green-700 dark:bg-green-500/20 dark:text-green-400 border-0">
+				<Badge className="bg-green-500/10 text-green-800 dark:bg-green-500/20 dark:text-green-400 border-0">
 					<CheckCircleIcon className="mr-1 size-3" />
 					Connected
 				</Badge>
@@ -178,7 +178,7 @@ function McpServerListItem({
 		}
 		if (status === "DEGRADED") {
 			return (
-				<Badge className="bg-yellow-500/10 text-yellow-700 dark:bg-yellow-500/20 dark:text-yellow-400 border-0">
+				<Badge className="bg-yellow-500/10 text-yellow-800 dark:bg-yellow-500/20 dark:text-yellow-400 border-0">
 					Degraded
 				</Badge>
 			);

@@ -97,7 +97,7 @@ export function PriorityHistoryDialog({
 										aria-hidden
 										className={
 											entry.source === "AI"
-												? "mt-1.5 size-1.5 shrink-0 rounded-full bg-secondary"
+												? "mt-1.5 size-1.5 shrink-0 rounded-full bg-success"
 												: "mt-1.5 size-1.5 shrink-0 rounded-full bg-primary"
 										}
 									/>

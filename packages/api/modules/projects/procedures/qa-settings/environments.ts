@@ -14,8 +14,12 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { releaseScreenshotEnvironment } from "../../../newsletter/lib/screenshot-environment";
 
 const environmentTypeSchema = z.enum(["STAGING", "QA", "PRODUCTION"]);
+
+/** What a release-notes screenshot environment was confirmed as. */
+const SCREENSHOT_ATTESTED_FIELDS = ["baseUrl", "signInUrl", "type"] as const;
 
 /**
  * Base URLs are fetched by automation, so only http(s) is accepted — a
@@ -207,6 +211,22 @@ export const updateProjectEnvironmentProcedure = tenantProtectedProcedure
 				),
 			},
 		});
+		// Release-notes screenshots were confirmed against the environment as
+		// it was; where it points or what it is changed, so that no longer holds.
+		const changed: string[] = [];
+		for (const field of SCREENSHOT_ATTESTED_FIELDS) {
+			if (updated[field] !== current[field]) {
+				changed.push(field);
+			}
+		}
+		if (changed.length > 0) {
+			await releaseScreenshotEnvironment({
+				projectId: input.projectId,
+				environmentId: input.environmentId,
+				user: context.user,
+				changed,
+			});
+		}
 		return updated;
 	});
 

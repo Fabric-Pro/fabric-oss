@@ -40,6 +40,7 @@ import {
 	instructionAccessSkill,
 	instructionCatalog,
 } from "./instruction-access.js";
+import { pluginSetSlug, REPOSITORIES_FILE } from "./instruction-sets.js";
 import {
 	KNOWLEDGE_SKILL,
 	type KnowledgeTypes,
@@ -127,10 +128,14 @@ export function codexPluginVersion(pin: string): string {
 
 /**
  * The project's plugin name on this machine: the readable name chosen at
- * set-up (`plugin-names.ts`), else the id-based one.
+ * set-up (`plugin-names.ts`), else the id-based one. A non-default Coding
+ * Instructions set has a plugin of its own, `<name>-<slug>`; the default set
+ * keeps the project's name, so a plugin installed before sets keeps working.
  */
-export function pluginNameFor(projectId: string): string {
-	return assignedPluginName(projectId) ?? idPluginName(projectId);
+export function pluginNameFor(projectId: string, set?: string | null): string {
+	const base = assignedPluginName(projectId) ?? idPluginName(projectId);
+	const slug = pluginSetSlug(set);
+	return slug === null ? base : `${base}-${slug}`;
 }
 
 /** The id-based name every plugin had before readable names: `fabric-<id tail>`. */
@@ -327,6 +332,14 @@ export interface PluginInputs {
 		listed: readonly InstructionCatalogEntry[];
 		source: InstructionSourceIdentity;
 	};
+	/** The Coding Instructions set the plugin carries; absent for a project without sets. */
+	set?: {
+		slug: string;
+		/** The set's folder in the source (`""` for the default set). */
+		folder: string;
+		/** `REPOSITORIES.md`: the code repositories the set applies to. */
+		repositories: string;
+	};
 }
 
 /**
@@ -334,7 +347,8 @@ export interface PluginInputs {
  * files and rules keep whole passive copies alongside native plugin files.
  */
 export function buildPlugin(inputs: PluginInputs): PluginFile[] {
-	const name = pluginNameFor(inputs.projectId);
+	const name = pluginNameFor(inputs.projectId, inputs.set?.slug);
+	const guidanceOptions = setGuidanceOf(inputs.set);
 	const out = new Map<string, PluginFile>();
 	const put = (path: string, bytes: Uint8Array, mode = 0o644) => {
 		out.set(path, { path, bytes, mode });
@@ -382,8 +396,18 @@ export function buildPlugin(inputs: PluginInputs): PluginFile[] {
 	);
 	put(
 		`skills/${CHANGE_INSTRUCTIONS_SKILL}/SKILL.md`,
-		bytesOf(changeInstructionsSkill(inputs.tool, inputs.projectId)),
+		bytesOf(
+			changeInstructionsSkill(
+				inputs.tool,
+				inputs.projectId,
+				guidanceOptions.setFolder,
+			),
+		),
 	);
+	if (inputs.set !== undefined) {
+		// Generated, so it wins over a source file at the same path.
+		put(REPOSITORIES_FILE, bytesOf(inputs.set.repositories));
+	}
 	put(
 		`skills/${KNOWLEDGE_SKILL}/SKILL.md`,
 		bytesOf(
@@ -437,7 +461,11 @@ export function buildPlugin(inputs: PluginInputs): PluginFile[] {
 			),
 		);
 		const always = alwaysOnFile(inputs.files);
-		const guidance = instructionAccessBootstrap(name, inputs.tool);
+		const guidance = instructionAccessBootstrap(
+			name,
+			inputs.tool,
+			guidanceOptions,
+		);
 		put(
 			"hooks/session-context.json",
 			json({
@@ -494,6 +522,20 @@ export function buildPlugin(inputs: PluginInputs): PluginFile[] {
 	return [...out.values()].sort((a, b) =>
 		a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
 	);
+}
+
+/** What the session guidance says about the set a plugin carries. */
+export function setGuidanceOf(set: PluginInputs["set"]): {
+	repositoriesFile?: string;
+	setFolder?: string;
+} {
+	if (set === undefined) {
+		return {};
+	}
+	return {
+		repositoriesFile: REPOSITORIES_FILE,
+		...(set.folder === "" ? {} : { setFolder: set.folder }),
+	};
 }
 
 const AGENTS_BEGIN = "<!-- fabric-instructions:begin -->";

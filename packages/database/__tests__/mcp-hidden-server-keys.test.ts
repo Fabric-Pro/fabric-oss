@@ -18,6 +18,8 @@ import { RETIRED_SYSTEM_MCP_SERVER_KEYS } from "../prisma/curated-mcp-server-key
 import {
 	HIDDEN_SYSTEM_MCP_SERVER_KEYS,
 	isHiddenSystemMcpServerKey,
+	isUnrunnableSystemMcpServer,
+	UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS,
 	withoutHiddenSystemMcpServers,
 } from "../prisma/hidden-mcp-server-keys";
 import {
@@ -222,5 +224,58 @@ describe("MCP Hidden Server Keys & Config Resolution", () => {
 			];
 			expect(withoutHiddenSystemMcpServers(servers)).toEqual(servers);
 		});
+	});
+});
+
+describe("isUnrunnableSystemMcpServer (#3531)", () => {
+	it.each([
+		"fetch",
+		"time",
+		"sqlite",
+		"raycast",
+		"notion",
+		"vercel",
+		"turso",
+		"asana",
+		"browserbase",
+	])(
+		"refuses the retired system %s server, whose command cannot start",
+		(key) => {
+			expect(
+				isUnrunnableSystemMcpServer({ key, isSystemProvided: true }),
+			).toBe(true);
+		},
+	);
+
+	it("leaves a tenant's own server with that key alone", () => {
+		expect(
+			isUnrunnableSystemMcpServer({
+				key: "fetch",
+				isSystemProvided: false,
+			}),
+		).toBe(false);
+	});
+
+	it("leaves retired servers that still start alone", () => {
+		expect(
+			isUnrunnableSystemMcpServer({
+				key: "puppeteer",
+				isSystemProvided: true,
+			}),
+		).toBe(false);
+	});
+
+	it("is false with no server", () => {
+		expect(isUnrunnableSystemMcpServer(null)).toBe(false);
+		expect(isUnrunnableSystemMcpServer(undefined)).toBe(false);
+	});
+
+	it("names only servers that are already retired", () => {
+		// Retired, not merely hidden: the hidden list also holds servers that
+		// still run, such as memory, and none of those may be refused.
+		const retired: readonly string[] = RETIRED_SYSTEM_MCP_SERVER_KEYS;
+		for (const key of UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS) {
+			expect(retired).toContain(key);
+		}
 	});
 });

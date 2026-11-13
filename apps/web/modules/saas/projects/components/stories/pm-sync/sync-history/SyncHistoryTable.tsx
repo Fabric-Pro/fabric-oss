@@ -210,7 +210,7 @@ export function SyncHistoryTable({
 												/>
 											</a>
 										) : (
-											<span className="text-muted-foreground/60">
+											<span className="text-muted-foreground">
 												—
 											</span>
 										)}

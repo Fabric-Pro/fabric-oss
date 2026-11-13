@@ -4,9 +4,10 @@ import { invalidateUnreadCount } from "../../../lib/notification-cache";
 import {
 	Permissions,
 	requirePermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { bellVisibleWhere } from "../lib/bell-visible-where";
+import { resolveNotificationOrganization } from "../lib/resolve-notification-organization";
 
 const inputSchema = z.object({
 	organizationId: z.string().nullable().optional(),
@@ -14,9 +15,10 @@ const inputSchema = z.object({
 });
 
 /**
- * Archive notifications by id. The `(userId, organizationId)` filter on
+ * Archive notifications by id. The shared bell-visibility filter on
  * `updateMany` guarantees a user cannot archive notifications they do not
- * own, even when guessing ids belonging to a different recipient or tenant.
+ * own or cannot see, even when guessing ids belonging to a different
+ * recipient or tenant.
  *
  * Targeting only currently-unarchived rows (`archivedAt: null`) makes the
  * operation idempotent and gives an accurate `archived` count to the client.
@@ -35,15 +37,18 @@ export const archiveNotificationsProcedure = tenantProtectedProcedure
 	})
 	.input(inputSchema)
 	.handler(async ({ input, context }) => {
-		const organizationId =
-			resolveOrganizationId(input.organizationId, context.session) ??
-			null;
+		const organizationId = await resolveNotificationOrganization(
+			input.organizationId,
+			context,
+		);
 
 		const result = await db.notification.updateMany({
 			where: {
+				...bellVisibleWhere({
+					userId: context.user.id,
+					organizationId,
+				}),
 				id: { in: input.ids },
-				userId: context.user.id,
-				organizationId,
 				archivedAt: null,
 			},
 			data: { archivedAt: new Date() },

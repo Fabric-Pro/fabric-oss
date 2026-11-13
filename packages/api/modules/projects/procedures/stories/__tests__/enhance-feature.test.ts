@@ -35,8 +35,7 @@ const { handlers, mocks, generateObjectCalls } = vi.hoisted(() => {
 		getAIModelWithMetadata: vi.fn(),
 		generateObject: vi.fn(),
 		logModelUsageAsync: vi.fn(),
-		retrieveProjectContexts: vi.fn(),
-		formatContextsForPrompt: vi.fn(),
+		retrieveRankedPassages: vi.fn(),
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		gatherLiveUrlSources: vi.fn(),
@@ -105,8 +104,7 @@ vi.mock("@repo/ai/lib/function-tag-context", () => ({
 }));
 
 vi.mock("@repo/rag", () => ({
-	retrieveProjectContexts: mocks.retrieveProjectContexts,
-	formatContextsForPrompt: mocks.formatContextsForPrompt,
+	retrieveRankedPassages: mocks.retrieveRankedPassages,
 }));
 
 vi.mock("@repo/rag/lib/project-contexts/live-integration-context", () => ({
@@ -163,6 +161,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 		tenantProtectedProcedure: chainable,
 		Permissions,
 		requireProjectPermission: () => (c: unknown) => c,
+		requireOrganizationMembership: vi.fn(),
 		resolveOrganizationId: (organizationId: string | null | undefined) =>
 			organizationId ?? null,
 	};
@@ -211,8 +210,7 @@ beforeEach(() => {
 		description: "Test project description",
 		techStack: ["Node", "TypeScript"],
 	});
-	mocks.retrieveProjectContexts.mockResolvedValue([]);
-	mocks.formatContextsForPrompt.mockReturnValue("");
+	mocks.retrieveRankedPassages.mockResolvedValue("");
 	mocks.fetchLiveIntegrationContext.mockResolvedValue({});
 	mocks.formatLiveContextForPrompt.mockReturnValue(null);
 	mocks.gatherLiveUrlSources.mockResolvedValue([]);
@@ -487,8 +485,7 @@ describe("context-only attachment delivery (U3)", () => {
 		mocks.resolveStoryAttachmentAiContexts.mockResolvedValue([
 			"ATTACHMENT_MARKER",
 		]);
-		mocks.formatContextsForPrompt.mockReturnValue("RETRIEVED_MARKER");
-		mocks.retrieveProjectContexts.mockResolvedValue([{ id: "c1" }]);
+		mocks.retrieveRankedPassages.mockResolvedValue("RETRIEVED_MARKER");
 
 		await handlers.enhance({ input: enhanceInput, context: ctx });
 
@@ -674,13 +671,14 @@ it.each([true, false])(
 			input: {
 				projectId: "project-1",
 				storyId: "story-sb",
-				organizationId: null,
+				organizationId: "example-org",
 				targetStage: "PASSIVE_ANALYSIS",
 			},
 			context: ctx,
 		});
-		expect(mocks.retrieveProjectContexts).toHaveBeenCalledWith(
+		expect(mocks.retrieveRankedPassages).toHaveBeenCalledWith(
 			expect.objectContaining({
+				organizationId: "example-org",
 				query: optional ? "Title Criteria Body" : "Title Body",
 			}),
 		);

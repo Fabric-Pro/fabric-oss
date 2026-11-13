@@ -39,12 +39,12 @@ const RISK_CONFIG = {
 	},
 	medium: {
 		icon: <HelpCircle className="h-5 w-5" />,
-		color: "text-yellow-500",
+		color: "text-yellow-800 dark:text-yellow-500",
 		bg: "bg-yellow-50 dark:bg-yellow-900/20",
 	},
 	high: {
 		icon: <AlertTriangle className="h-5 w-5" />,
-		color: "text-orange-500",
+		color: "text-orange-700 dark:text-orange-500",
 		bg: "bg-orange-50 dark:bg-orange-900/20",
 	},
 	critical: {

@@ -37,6 +37,7 @@ const { handlers, dbMock, recordAuditMock } = vi.hoisted(() => ({
 		},
 		projectMember: {
 			findUnique: vi.fn(),
+			findFirst: vi.fn(),
 			deleteMany: vi.fn(),
 			updateMany: vi.fn(),
 		},
@@ -683,6 +684,83 @@ describe("project.member.removed emission", () => {
 		expect(
 			(payload.metadata as { previousRole: string }).previousRole,
 		).toBe("EDITOR");
+		// The owner guard reads the caller's standing only for an owner target.
+		expect(dbMock.projectMember.findFirst).not.toHaveBeenCalled();
+		expect(dbMock.project.findUnique).not.toHaveBeenCalled();
+	});
+
+	// Values are set with *Once: clearAllMocks keeps implementations, and an
+	// earlier test leaves project.findUnique answering the caller as creator.
+	function ownerTarget() {
+		dbMock.projectMember.findUnique.mockResolvedValueOnce({
+			role: "OWNER",
+			userId: "user-2",
+		});
+		dbMock.user.findUnique.mockResolvedValueOnce({
+			email: "bob@example.com",
+		});
+		dbMock.projectMember.deleteMany.mockResolvedValueOnce({ count: 1 });
+	}
+
+	const removeOwner = () =>
+		handlers.removeMember({
+			input: {
+				projectId: "proj-1",
+				userId: "user-2",
+				organizationId: "org-1",
+			},
+			context: baseCtx,
+		});
+
+	it("refuses a caller who is not an owner removing an owner, before any delete or audit row", async () => {
+		ownerTarget();
+		dbMock.project.findUnique.mockResolvedValueOnce({
+			userId: "creator-1",
+		});
+		dbMock.projectMember.findFirst.mockResolvedValueOnce(null);
+
+		await expect(removeOwner()).rejects.toMatchObject({
+			code: "FORBIDDEN",
+		});
+
+		expect(dbMock.projectMember.findFirst).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					projectId: "proj-1",
+					userId: "user-1",
+					role: "OWNER",
+					acceptedAt: { not: null },
+				}),
+			}),
+		);
+		expect(dbMock.projectMember.deleteMany).not.toHaveBeenCalled();
+		expect(recordAuditMock).not.toHaveBeenCalled();
+	});
+
+	it("lets an owner by membership remove another owner, even one invited from outside the organization", async () => {
+		ownerTarget();
+		dbMock.project.findUnique.mockResolvedValueOnce({
+			userId: "creator-1",
+		});
+		dbMock.projectMember.findFirst.mockResolvedValueOnce({
+			userId: "user-1",
+		});
+
+		await removeOwner();
+
+		expect(dbMock.projectMember.deleteMany).toHaveBeenCalledTimes(1);
+		expect(recordAuditMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("lets the project creator remove another owner", async () => {
+		ownerTarget();
+		dbMock.project.findUnique.mockResolvedValueOnce({ userId: "user-1" });
+		dbMock.projectMember.findFirst.mockResolvedValueOnce(null);
+
+		await removeOwner();
+
+		expect(dbMock.projectMember.deleteMany).toHaveBeenCalledTimes(1);
+		expect(recordAuditMock).toHaveBeenCalledTimes(1);
 	});
 });
 

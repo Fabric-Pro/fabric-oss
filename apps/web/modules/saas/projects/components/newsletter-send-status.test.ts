@@ -1,10 +1,37 @@
 import { describe, expect, it } from "vitest";
 import {
+	describeSendRecipients,
 	formatChatDeliveryStatus,
 	formatNewsletterSendStatus,
 	hasExpiredRepoIntegrations,
 	isSendsListKeyForProject,
 } from "./newsletter-send-status";
+
+describe("describeSendRecipients", () => {
+	it("covers loading, failure, zero, one and many", () => {
+		expect(describeSendRecipients(undefined)).toBe("Counting recipients…");
+		expect(describeSendRecipients(null)).toBe(
+			"Couldn't count the recipients.",
+		);
+		expect(describeSendRecipients(0)).toBe(
+			"Nobody will be emailed: this newsletter has no active subscribers.",
+		);
+		expect(describeSendRecipients(1)).toBe("Will email 1 person.");
+		expect(describeSendRecipients(12)).toBe("Will email 12 people.");
+	});
+
+	it("says a send held for review emails nobody until approved", () => {
+		expect(describeSendRecipients(1, true)).toBe(
+			"Held for review first. Approving it emails 1 person.",
+		);
+		expect(describeSendRecipients(4, true)).toBe(
+			"Held for review first. Approving it emails 4 people.",
+		);
+		expect(describeSendRecipients(0, true)).toBe(
+			"Nobody will be emailed: this newsletter has no active subscribers.",
+		);
+	});
+});
 
 describe("formatNewsletterSendStatus", () => {
 	it("maps terminal statuses", () => {

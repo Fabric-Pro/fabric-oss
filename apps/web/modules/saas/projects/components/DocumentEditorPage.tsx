@@ -97,6 +97,8 @@ import {
 import type { ApplyRecommendationRequest } from "./proposal-artifact/FindingResponseControls";
 import {
 	describeGenerationRefusal,
+	isRegenerateToastWarning,
+	readSameRequest,
 	resolveRegenerateToastKey,
 } from "./proposal-artifact/generation-feedback";
 import { ProposalAnalysisPanel } from "./proposal-artifact/ProposalAnalysisPanel";
@@ -118,6 +120,11 @@ import {
 	type SectionRevisionOutcome,
 	sectionRevisionReasonKey,
 } from "./proposal-artifact/useSectionRevision";
+import {
+	useWebResearchAvailability,
+	webResearchToSend,
+} from "./web-research/use-web-research-availability";
+import { WebResearchOption } from "./web-research/WebResearchOption";
 
 // Error boundary to catch CopilotKit initialization failures. The fallback
 // must not mount anything that calls a CopilotKit hook — `<DocumentEditor>`
@@ -309,6 +316,9 @@ function LibraryPromptLabel() {
  * state could not be confirmed, rather than seeming to do nothing. A refusal
  * the server explains with a code is told in the reader's locale, with the
  * link that resolves it.
+ *
+ * Beside each Retry sits an unticked "Allow web research" option that
+ * applies to that Retry alone.
  */
 function ProposalLiveMain({
 	projectId,
@@ -346,17 +356,20 @@ function ProposalLiveMain({
 	const queryClient = useQueryClient();
 	const retry = useMutation(
 		orpc.projects.documents.generate.mutationOptions({
-			onSuccess: (result) => {
+			onSuccess: (result, variables) => {
 				// The run already under way decides between "already queued"
 				// and "already running"; a live run the server could not
-				// confirm asks for another try. A new run needs no word, and
-				// neither does this request's own ambiguous start, which the
-				// server has already queued.
+				// confirm asks for another try, and a ticked web research the
+				// joined run will not do is said too. A new run needs no word,
+				// and neither does this request's own ambiguous start, which
+				// the server has already queued.
 				const toastKey = resolveRegenerateToastKey({
 					outcome: result?.outcome,
 					documentStatus: document.status ?? null,
+					requestedWebResearch: variables.allowWebResearch === true,
+					sameRequest: readSameRequest(result),
 				});
-				if (toastKey === "liveRunUnknown") {
+				if (isRegenerateToastWarning(toastKey)) {
 					toast.warning(tRegenerateToast(toastKey));
 				} else if (toastKey !== "started") {
 					toast.info(tRegenerateToast(toastKey));
@@ -385,6 +398,37 @@ function ProposalLiveMain({
 			},
 		}),
 	);
+	// Consent for one Retry only: unticked whenever this view mounts, after
+	// each Retry, and whenever the run writes or a new attempt starts. A
+	// stalled run does not write, so a tick lasts exactly as long as the
+	// stall it was given in and never reappears beside a later one.
+	const [allowWebResearch, setAllowWebResearch] = useState(false);
+	const runSnapshot = [document.generationStartedAt, document.updatedAt]
+		.map((at) => (at ? new Date(at).getTime() : ""))
+		.join("|");
+	const [tickedInSnapshot, setTickedInSnapshot] = useState(runSnapshot);
+	if (tickedInSnapshot !== runSnapshot) {
+		setTickedInSnapshot(runSnapshot);
+		setAllowWebResearch(false);
+	}
+	const webResearchAvailability = useWebResearchAvailability({
+		projectId,
+		enabled: canRetry,
+	});
+
+	// Wired only when `canRetry`, and the live pane shows the option beside
+	// every Retry it shows, so a Retry always comes with the choice offered:
+	// the request says what was chosen, `false` included.
+	const handleRetry = () => {
+		retry.mutate({
+			id: documentId,
+			allowWebResearch: webResearchToSend(
+				allowWebResearch,
+				webResearchAvailability,
+			),
+		});
+		setAllowWebResearch(false);
+	};
 
 	return (
 		<ProposalLiveSections
@@ -396,10 +440,18 @@ function ProposalLiveMain({
 			generationError={document.generationError}
 			generationStartedAt={document.generationStartedAt}
 			updatedAt={document.updatedAt}
-			onRetry={
-				canRetry ? () => retry.mutate({ id: documentId }) : undefined
-			}
+			onRetry={canRetry ? handleRetry : undefined}
 			isRetrying={retry.isPending}
+			retryOption={
+				canRetry ? (
+					<WebResearchOption
+						variant="compact"
+						checked={allowWebResearch}
+						onCheckedChange={setAllowWebResearch}
+						availability={webResearchAvailability}
+					/>
+				) : undefined
+			}
 			themeRootProps={themeRootProps}
 		/>
 	);

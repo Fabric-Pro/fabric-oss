@@ -1044,7 +1044,7 @@ export function SlackChannelMonitorSettings({
 											linked channels as AI Updates
 											context.
 										</p>
-										<p className="mt-1 text-xs text-muted-foreground/80">
+										<p className="mt-1 text-xs text-muted-foreground">
 											Requires Slack AI notes (a paid
 											Slack feature) enabled for the
 											huddle.

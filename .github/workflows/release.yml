@@ -54,7 +54,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "24"
           check-latest: true
           cache: "pnpm"
 
@@ -68,8 +68,8 @@ jobs:
       #   - `release.yml` can never be RENAMED without repointing the trusted
       #     publisher config on all @fabricorg packages.
       #   - The chain is: changesets → `pnpm publish` → which shells out to
-      #     `npm publish`. Node 22 bundles npm 10.x, but the OIDC exchange
-      #     needs npm >= 11.5.1 — hence this upgrade step.
+      #     `npm publish`. The OIDC exchange needs npm >= 11.5.1;
+      #     explicitly install npm 11 for trusted publishing.
       - name: Upgrade npm for trusted publishing
         run: |
           npm install -g npm@^11

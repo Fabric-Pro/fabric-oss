@@ -157,7 +157,7 @@ export function AtlasTourPanel({
 							<button
 								type="button"
 								onClick={handleFocusCurrent}
-								className="inline-flex items-center gap-1.5 rounded text-xs font-medium text-primary transition-colors hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+								className="inline-flex items-center gap-1.5 rounded text-xs font-medium text-primary transition-colors hover:text-primary-hover focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 							>
 								<FocusIcon
 									aria-hidden="true"

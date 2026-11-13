@@ -605,7 +605,7 @@ function TimelineEntryCard({
 								</time>
 							</span>
 							{entry.resolvedAt ? (
-								<span className="text-secondary">
+								<span className="text-success">
 									hidden {formatRelative(entry.resolvedAt)}
 								</span>
 							) : (
@@ -787,8 +787,8 @@ function describeEventType(type: string): {
 			return {
 				label: "Hidden",
 				icon: <XCircleIcon className="size-3.5" />,
-				dotClass: "bg-secondary",
-				labelClass: "text-secondary",
+				dotClass: "bg-success",
+				labelClass: "text-success",
 			};
 		case "COMMENT":
 			return {

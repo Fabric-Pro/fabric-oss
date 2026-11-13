@@ -24,12 +24,23 @@ export const PRODUCTION_TAG_PATTERN = /^v\d+(?:\.\d+)*$/;
 const BENIGN_FAILURE =
 	/^latest:|latest-release lookups|release-note (?:body|bodies) omitted/i;
 
+// The collector's item cap: it kept the NEWEST releases and dropped older ones.
+// Retrying cannot clear it — the skip keeps `lastSentAt`, so the next window
+// only grows — so treating it as incomplete stops the newsletter for good once a
+// backlog exceeds the cap. With `capTruncationSends`, the newest set is sent.
+const CAP_TRUNCATION = /^Deployments list truncated to \d+ most recent/;
+
 const occurredMs = (d: Date | string): number =>
 	d instanceof Date ? d.getTime() : new Date(d).getTime();
 
+export interface NewsletterScanFailure {
+	repoFullName: string;
+	reason: string;
+}
+
 export interface SelectNewsletterReleasesInput {
 	items: DeploymentItem[];
-	failures: { repoFullName: string; reason: string }[];
+	failures: NewsletterScanFailure[];
 }
 
 /**
@@ -39,6 +50,8 @@ export interface SelectNewsletterReleasesInput {
  *  - `incomplete` = true iff a COMPLETENESS-AFFECTING failure occurred (any
  *    failure except the benign latest-phase / body-omission ones). The caller
  *    SKIPS the send on incomplete — it must not email a partial set.
+ *    `incompleteFailures` lists exactly those failures, so the skip can record
+ *    why (`formatIncompleteScanReason`).
  *
  * NOTE on the window: when lookbackDays is set,
  * resolveWindow's start = (now - N days), which is LATER than lastSentAt, so the
@@ -51,7 +64,12 @@ export interface SelectNewsletterReleasesInput {
 export function selectNewsletterReleases(
 	input: SelectNewsletterReleasesInput,
 	windowStartIso: string,
-): { releases: DeploymentItem[]; incomplete: boolean } {
+	options: { capTruncationSends?: boolean } = {},
+): {
+	releases: DeploymentItem[];
+	incomplete: boolean;
+	incompleteFailures: NewsletterScanFailure[];
+} {
 	const startMs = new Date(windowStartIso).getTime();
 	const releases = input.items.filter((r) => {
 		const ms = occurredMs(r.occurredAt);
@@ -69,8 +87,66 @@ export function selectNewsletterReleases(
 	// fixed instead of silently dropping that repo's releases. (Follow-up: have
 	// the collector emit structured failure kinds so config-vs-completeness can be
 	// distinguished without prose matching.)
-	const incomplete = input.failures.some(
-		(f) => !BENIGN_FAILURE.test(f.reason),
+	const incompleteFailures = input.failures.filter(
+		(f) =>
+			!BENIGN_FAILURE.test(f.reason) &&
+			!(options.capTruncationSends && CAP_TRUNCATION.test(f.reason)),
 	);
-	return { releases, incomplete };
+	return {
+		releases,
+		incomplete: incompleteFailures.length > 0,
+		incompleteFailures,
+	};
+}
+
+const MAX_LISTED_REPOS = 5;
+const MAX_LINE_CHARS = 200;
+
+function truncateLine(line: string): string {
+	return line.length > MAX_LINE_CHARS
+		? `${line.slice(0, MAX_LINE_CHARS - 1)}…`
+		: line;
+}
+
+/**
+ * The reason an incomplete-scan send records: one line per repository, e.g.
+ * `example-org/example-repo: GitHub API error: Not Found`. Section-level notes
+ * (`repoFullName === "*"`) carry no repository prefix. At most
+ * MAX_LISTED_REPOS lines of MAX_LINE_CHARS each, then an "and N more" line, so
+ * the stored text stays short however many repositories failed. Null when
+ * there is nothing to report.
+ *
+ * The reasons are the collector's own failure strings — the same text the
+ * daily brief already shows as `deploymentsError`.
+ */
+export function formatIncompleteScanReason(
+	failures: NewsletterScanFailure[],
+): string | null {
+	const reasonsByRepo = new Map<string, string[]>();
+	for (const { repoFullName, reason } of failures) {
+		const reasons = reasonsByRepo.get(repoFullName);
+		if (!reasons) {
+			reasonsByRepo.set(repoFullName, [reason]);
+		} else if (!reasons.includes(reason)) {
+			reasons.push(reason);
+		}
+	}
+	if (reasonsByRepo.size === 0) {
+		return null;
+	}
+	const lines = [...reasonsByRepo].map(([repoFullName, reasons]) =>
+		truncateLine(
+			repoFullName === "*"
+				? reasons.join("; ")
+				: `${repoFullName}: ${reasons.join("; ")}`,
+		),
+	);
+	const listed = lines.slice(0, MAX_LISTED_REPOS);
+	const more = lines.length - listed.length;
+	if (more > 0) {
+		listed.push(
+			`and ${more} more ${more === 1 ? "repository" : "repositories"}`,
+		);
+	}
+	return listed.join("\n");
 }

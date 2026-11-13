@@ -17,6 +17,7 @@
 import { getDeliveryPreferences } from "@repo/database";
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal/client";
+import { notificationDeliveryChannels } from "@repo/utils/notification-delivery-channels";
 import { withCorrelationMemo } from "./temporal-correlation";
 
 /** Minimal shape needed to dispatch — satisfied by a `Notification` row. */
@@ -28,11 +29,9 @@ type DeliverableNotification = {
 export async function dispatchExternalDelivery(
 	notification: DeliverableNotification,
 ): Promise<void> {
-	const prefs = await getDeliveryPreferences(notification.userId);
-
-	const email = prefs.emailEnabled;
-	// A webhook channel with no endpoint can't deliver — treat as off.
-	const webhook = prefs.webhookEnabled && !!prefs.encryptedWebhookUrl;
+	const { email, webhook } = notificationDeliveryChannels(
+		await getDeliveryPreferences(notification.userId),
+	);
 
 	// Fast path: in-app only. No external channels → nothing to dispatch.
 	if (!email && !webhook) {

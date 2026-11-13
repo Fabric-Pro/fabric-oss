@@ -57,9 +57,13 @@ export function formatProjectContext(ctx: ProjectContext): string {
 			ctx.repositoryOwner && ctx.repositoryName
 				? `${ctx.repositoryOwner}/${ctx.repositoryName}`
 				: ctx.repositoryUrl;
-		const branch = ctx.defaultBranch || "main";
+		// The branch only when known: telling the model "main" for a repository
+		// on another default branch sends it to a branch that does not exist.
+		const branch = ctx.defaultBranch
+			? ` (branch: ${ctx.defaultBranch})`
+			: "";
 		sections.push(
-			`**Repository:** ${repoInfo} (branch: ${branch})\n**Repository URL:** ${ctx.repositoryUrl}`,
+			`**Repository:** ${repoInfo}${branch}\n**Repository URL:** ${ctx.repositoryUrl}`,
 		);
 	}
 
@@ -104,7 +108,11 @@ export function formatProjectContextCompact(ctx: ProjectContext): string {
 			ctx.repositoryOwner && ctx.repositoryName
 				? `${ctx.repositoryOwner}/${ctx.repositoryName}`
 				: ctx.repositoryUrl;
-		parts.push(`Repository: ${repoInfo} (${ctx.defaultBranch || "main"})`);
+		parts.push(
+			ctx.defaultBranch
+				? `Repository: ${repoInfo} (${ctx.defaultBranch})`
+				: `Repository: ${repoInfo}`,
+		);
 	}
 
 	return parts.join("\n");

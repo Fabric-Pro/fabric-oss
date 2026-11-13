@@ -34,8 +34,7 @@ const { mocks } = vi.hoisted(() => ({
 		getPromptById: vi.fn(),
 		createStory: vi.fn(),
 		createFeatureVersion: vi.fn(),
-		retrieveProjectContexts: vi.fn(),
-		formatContextsForPrompt: vi.fn(),
+		retrieveRankedPassages: vi.fn(),
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		renderTemplate: vi.fn(),
@@ -76,8 +75,7 @@ vi.mock("@repo/logs", () => ({
 }));
 
 vi.mock("@repo/rag", () => ({
-	formatContextsForPrompt: mocks.formatContextsForPrompt,
-	retrieveProjectContexts: mocks.retrieveProjectContexts,
+	retrieveRankedPassages: mocks.retrieveRankedPassages,
 }));
 
 vi.mock("@repo/rag/lib/project-contexts/live-integration-context", () => ({
@@ -137,7 +135,7 @@ function mockSuccessfulDraftFlow(kind: "FEATURE" | "BUG") {
 		name: "Example Project",
 		description: null,
 	});
-	mocks.retrieveProjectContexts.mockResolvedValue([]);
+	mocks.retrieveRankedPassages.mockResolvedValue("");
 	mocks.fetchLiveIntegrationContext.mockResolvedValue({});
 	mocks.formatLiveContextForPrompt.mockReturnValue(null);
 	mocks.getAIModelWithMetadata.mockResolvedValue({

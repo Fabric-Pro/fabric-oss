@@ -463,7 +463,7 @@ function SuggestionLine({
 			<p className="flex items-center gap-1.5 text-muted-foreground text-xs">
 				<ShieldCheckIcon
 					aria-hidden="true"
-					className="size-3 text-secondary"
+					className="size-3 text-success"
 				/>
 				Looks like a real finding — no change suggested.
 			</p>

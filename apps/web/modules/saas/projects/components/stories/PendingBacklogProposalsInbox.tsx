@@ -397,7 +397,7 @@ function statusPillClasses(status: ProposalStatus): string {
 			return "bg-highlight/15 text-highlight border-highlight/30";
 		case "APPROVED":
 		case "APPLYING":
-			return "bg-secondary/10 text-secondary border-secondary/30";
+			return "bg-success/10 text-success border-success/30";
 		default:
 			return "bg-muted text-muted-foreground border-foreground/10";
 	}
@@ -1631,7 +1631,7 @@ export function PendingBacklogProposalsInbox({
 				)}
 
 				{isInFlight && (
-					<div className="flex items-center gap-2 rounded-lg border border-secondary/30 bg-secondary/10 p-3 text-sm text-secondary">
+					<div className="flex items-center gap-2 rounded-lg border border-success/30 bg-success/10 p-3 text-sm text-success">
 						<Loader2Icon className="size-4 motion-safe:animate-spin" />
 						This proposal is being applied. Changes will appear on
 						the roadmap when it finishes.
@@ -1735,10 +1735,10 @@ export function PendingBacklogProposalsInbox({
 						</div>
 						{(detail.errorMessage || detail.applyError) && (
 							<details className="text-xs">
-								<summary className="cursor-pointer text-destructive/80 hover:text-destructive">
+								<summary className="cursor-pointer text-destructive hover:text-destructive">
 									Show details
 								</summary>
-								<pre className="mt-2 whitespace-pre-wrap text-destructive/80">
+								<pre className="mt-2 whitespace-pre-wrap text-destructive">
 									{detail.errorMessage ?? detail.applyError}
 								</pre>
 							</details>
@@ -2113,10 +2113,10 @@ function FailedProposalRow({
 
 			{rawError && (
 				<details className="mt-2 text-xs">
-					<summary className="cursor-pointer text-destructive/80 hover:text-destructive">
+					<summary className="cursor-pointer text-destructive hover:text-destructive">
 						Show details
 					</summary>
-					<pre className="mt-2 whitespace-pre-wrap text-destructive/80">
+					<pre className="mt-2 whitespace-pre-wrap text-destructive">
 						{rawError}
 					</pre>
 				</details>

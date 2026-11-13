@@ -390,6 +390,7 @@ export function PluginAccessPanel({
 													/>
 												) : (
 													<MoreHorizontalIcon
+														strokeWidth={2.5}
 														className="size-4"
 														aria-hidden="true"
 													/>

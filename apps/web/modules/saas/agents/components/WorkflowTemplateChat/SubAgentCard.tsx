@@ -135,7 +135,7 @@ export function SubAgentCard({ result, index }: SubAgentCardProps) {
 								<h4 className="text-xs font-medium text-destructive mb-1">
 									Error
 								</h4>
-								<p className="text-sm text-destructive/80">
+								<p className="text-sm text-destructive">
 									{result.error}
 								</p>
 							</div>

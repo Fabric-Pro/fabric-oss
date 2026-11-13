@@ -151,7 +151,7 @@ export function WeaveExecutionSummary({
 		<Card
 			className={cn(
 				"p-5 space-y-4",
-				isSuccess && "border-secondary/30",
+				isSuccess && "border-success/30",
 				isFailed && "border-destructive/30",
 			)}
 		>
@@ -161,7 +161,7 @@ export function WeaveExecutionSummary({
 					<div
 						className={cn(
 							"size-10 rounded-full flex items-center justify-center",
-							isSuccess && "bg-secondary/10 text-secondary",
+							isSuccess && "bg-success/10 text-success",
 							isFailed && "bg-destructive/10 text-destructive",
 							!isSuccess &&
 								!isFailed &&
@@ -205,10 +205,10 @@ export function WeaveExecutionSummary({
 					href={prUrl}
 					target="_blank"
 					rel="noopener noreferrer"
-					className="flex items-center gap-3 rounded-lg border border-secondary/30 bg-secondary/5 px-4 py-3 transition-colors hover:bg-secondary/10"
+					className="flex items-center gap-3 rounded-lg border border-success/30 bg-success/5 px-4 py-3 transition-colors hover:bg-success/10"
 				>
-					<div className="flex size-9 items-center justify-center rounded-full bg-secondary/10">
-						<GitPullRequestIcon className="size-4 text-secondary" />
+					<div className="flex size-9 items-center justify-center rounded-full bg-success/10">
+						<GitPullRequestIcon className="size-4 text-success" />
 					</div>
 					<div className="flex-1 min-w-0">
 						<p className="font-medium text-sm text-foreground">

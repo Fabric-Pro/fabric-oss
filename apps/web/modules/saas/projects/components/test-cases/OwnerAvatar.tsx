@@ -50,7 +50,7 @@ export function OwnerAvatar({ name, assigned, label, className }: Props) {
 					<span
 						className={cn(
 							base,
-							"border border-primary/20 bg-primary/10 text-primary",
+							"border border-primary/20 bg-primary/10 text-primary-active",
 							className,
 						)}
 						role="img"
@@ -102,7 +102,7 @@ export function OwnerAvatar({ name, assigned, label, className }: Props) {
 				<span
 					className={cn(
 						base,
-						"border border-border/70 border-dashed text-muted-foreground/70",
+						"border border-border/70 border-dashed text-muted-foreground",
 						className,
 					)}
 					role="img"

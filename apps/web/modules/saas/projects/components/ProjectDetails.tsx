@@ -137,6 +137,24 @@ const ProjectContextsList = dynamic(
 	{ loading: () => <TabContentSkeleton />, ssr: false },
 );
 
+// Fizzy #3507. Loaded with the Context tab rather than with every project
+// page, since the actions carry the meeting settings cards with them.
+const ContextMeetingActions = dynamic(
+	() =>
+		import("./meeting-sources/ContextMeetingSources").then(
+			(m) => m.ContextMeetingActions,
+		),
+	{ loading: () => null, ssr: false },
+);
+
+const ContextMeetingPlaceholders = dynamic(
+	() =>
+		import("./meeting-sources/ContextMeetingSources").then(
+			(m) => m.ContextMeetingPlaceholders,
+		),
+	{ loading: () => null, ssr: false },
+);
+
 const DiagramsList = dynamic(
 	() => import("./DiagramsList").then((m) => m.DiagramsList),
 	{ loading: () => <TabContentSkeleton />, ssr: false },
@@ -800,6 +818,12 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 	// Same gate as Settings → Repositories' Add Repository button.
 	const canConnectRepositories =
 		project?.canEditSettings ?? project?.userRole === "owner";
+	// Same gate as Settings → Knowledge, whose meeting cards the "Add meeting"
+	// actions open (Fizzy #3507), so no entry point offers more than that page.
+	const canManageMeetingSources =
+		project?.canEditSettings ??
+		(project?.userRole === "owner" ||
+			project?.userRole === "project_admin");
 
 	// Profile-dependent landing tab (plan Slice 6): once the project is known
 	// and the user made no explicit choice, EXPLORE opens on the backlog chat.
@@ -1017,7 +1041,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 					<p className="mb-2 font-medium text-foreground/70">
 						Project not found
 					</p>
-					<p className="mb-6 text-foreground/50 text-sm">
+					<p className="mb-6 text-muted-foreground text-sm">
 						The project you're looking for doesn't exist or you
 						don't have access.
 					</p>
@@ -1065,7 +1089,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 						This project is in the trash
 					</p>
 
-					<p className="mb-4 text-foreground/50 text-sm text-center max-w-md">
+					<p className="mb-4 text-muted-foreground text-sm text-center max-w-md">
 						{canDeleteProject
 							? "This project was deleted and is scheduled for permanent removal. You can restore it to continue working on it, or delete it permanently."
 							: "This project was deleted and is scheduled for permanent removal."}
@@ -1120,7 +1144,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 					<Button
 						variant="ghost"
 						onClick={() => router.push(projectsUrl)}
-						className="mt-6 text-foreground/50"
+						className="mt-6 text-muted-foreground"
 					>
 						Back to Projects
 					</Button>
@@ -1337,7 +1361,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 									<PopoverContent
 										align="end"
 										sideOffset={6}
-										className="w-60 rounded-lg p-1.5"
+										className="max-h-[var(--radix-popover-content-available-height)] w-60 overflow-y-auto rounded-lg p-1.5"
 									>
 										<div
 											role="menu"
@@ -1502,12 +1526,23 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 								// "add this to the project" is never a question
 								// about which project.
 								projectName={project.name}
-								canEdit={[
-									"owner",
-									"admin",
-									"project_admin",
-									"PROJECT_ADMIN",
-								].includes(project.userRole as string)}
+								// An organization admin with no ProjectMember row
+								// has `canEditSettings` and no role string, and
+								// manages the same meetings from the Context tab.
+								canEdit={
+									canManageMeetingSources ||
+									[
+										"owner",
+										"admin",
+										"project_admin",
+										"PROJECT_ADMIN",
+									].includes(project.userRole as string)
+								}
+								meetingSources={
+									canManageMeetingSources
+										? project
+										: undefined
+								}
 							/>
 						)}
 						{activeTab === "release-notes" && (
@@ -1590,6 +1625,23 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 									user?.id && canConnectRepositories
 										? () => setConnectRepositoryOpen(true)
 										: undefined
+								}
+								meetingActions={
+									canManageMeetingSources ? (
+										<ContextMeetingActions
+											projectId={projectId}
+											organizationId={
+												organizationId ?? null
+											}
+											project={project}
+										/>
+									) : undefined
+								}
+								meetingPlaceholders={
+									<ContextMeetingPlaceholders
+										projectId={projectId}
+										organizationId={organizationId ?? null}
+									/>
 								}
 							/>
 						)}

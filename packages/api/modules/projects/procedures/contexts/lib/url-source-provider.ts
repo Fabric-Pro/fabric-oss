@@ -56,6 +56,17 @@ const CRAWL_CAPABLE: ReadonlySet<UrlSourceProviderName> = new Set([
 ]);
 
 /**
+ * Whether a provider name can scrape a page. A name check only: it reads no
+ * row and decrypts nothing, so a caller that only needs to know whether
+ * reading is possible never touches a key.
+ */
+export function isScrapeCapableUrlSourceProvider(
+	providerName: string,
+): boolean {
+	return SCRAPE_CAPABLE.has(providerName as UrlSourceProviderName);
+}
+
+/**
  * Subset of the OrganizationSearchProvider / UserSearchProvider row shape we
  * need. Both Prisma models share these fields verbatim.
  */
@@ -117,7 +128,7 @@ function pickEnabledProvider(
 ): SearchProviderRow | null {
 	const filter = requireCrawl
 		? (n: string) => CRAWL_CAPABLE.has(n as UrlSourceProviderName)
-		: (n: string) => SCRAPE_CAPABLE.has(n as UrlSourceProviderName);
+		: isScrapeCapableUrlSourceProvider;
 	for (const provider of providers) {
 		if (!provider.enabled || !provider.encryptedApiKey) {
 			continue;

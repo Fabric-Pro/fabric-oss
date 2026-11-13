@@ -11,6 +11,11 @@
 @source not "../modules/**/__tests__";
 
 @variant dark (&:where(.dark, .dark *));
+/* High contrast (Fizzy #1444) is a class beside `.dark`, never instead of it, so
+   `hc:` composes with `dark:` (`dark:hc:…`) for the rare component that needs a
+   high-contrast-only treatment. Prefer a token: the palettes in theme.css cover
+   everything that reads a token, which is almost everything. */
+@custom-variant hc (&:where(.high-contrast, .high-contrast *));
 
 /* Reserve the scrollbar gutter so the page doesn't shift when Radix
  * Popover/Dialog/Select locks body scroll on open. Radix sets
@@ -1634,3 +1639,61 @@ html:root .copilotKitHeader {
 html .text-secondary {
 	color: var(--muted-foreground);
 }
+
+/*
+ * Readable text in a data-driven stage or status colour (Fizzy #1444). The
+ * stage colours are mid-tone fills, too light to read as text on light
+ * surfaces and too dark on dark ones; this mixes the colour (set as
+ * --stage-color, see stageInkStyle) toward black or white in OKLab. The 60%
+ * ratios are STAGE_INK_MIX in modules/saas/projects/lib/stories/stage-ink.ts;
+ * stage-ink-contrast.test.ts holds the two in step and measures the result.
+ */
+@utility stage-ink {
+	color: color-mix(in oklab, var(--stage-color) 60%, black);
+
+	&:where(.dark, .dark *) {
+		color: color-mix(in oklab, var(--stage-color) 60%, white);
+	}
+}
+
+/* ============================================================================
+   HIGH CONTRAST — what tokens alone cannot reach (Fizzy #1444)
+   ============================================================================ */
+
+/*
+ * A focus indicator that cannot be missed. Controls hide the browser outline
+ * with `outline-hidden`, which in Tailwind v4 is a 2px TRANSPARENT outline at a
+ * 2px offset (kept so forced-colors mode can show it), and draw their own ring.
+ * High contrast gives that outline the ring colour instead, so every control —
+ * including the ones whose own ring is subtle or missing — shows a solid 2px
+ * outline in the high-contrast --ring. Colour only: an element that removes
+ * its outline outright (`outline-none`) keeps doing so.
+ *
+ * Unlayered on purpose, against this file's usual rule: the utility that sets
+ * the transparent outline lives in a layer, and only an unlayered rule outranks
+ * it without `!important`. It is scoped to `.high-contrast`, so the ordinary
+ * palettes are untouched.
+ */
+html.high-contrast :focus-visible {
+	outline-color: var(--ring);
+}
+
+/* Placeholders read as text, so in high contrast they get the secondary ink at
+   full strength rather than whatever fade a component chose. */
+html.high-contrast ::placeholder {
+	color: var(--muted-foreground);
+	opacity: 1;
+}
+
+/* Links inside running text are told apart by more than colour. */
+html.high-contrast :where(.prose, .tiptap, .ProseMirror) a {
+	text-decoration-line: underline;
+	text-underline-offset: 2px;
+}
+
+/* Text selection keeps the ink and swaps in an opaque, high-contrast band. */
+html.high-contrast ::selection {
+	background-color: var(--foreground);
+	color: var(--background);
+}
+

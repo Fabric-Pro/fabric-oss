@@ -142,7 +142,7 @@ export function ExecutionTimeline({
 											{index + 1}.
 										</span>
 										{step.status === "completed" ? (
-											<CheckCircleIcon className="size-3.5 text-secondary" />
+											<CheckCircleIcon className="size-3.5 text-success" />
 										) : step.status === "in_progress" ? (
 											<Loader2Icon className="size-3.5 animate-spin text-primary" />
 										) : step.status === "failed" ? (

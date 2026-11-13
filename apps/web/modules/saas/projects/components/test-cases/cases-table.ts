@@ -33,7 +33,7 @@
  */
 
 /** Container width at which every column fits. */
-export const CASES_FULL_COLS = 940;
+export const CASES_FULL_COLS = 952;
 /** Below this, "Last run" is dropped. */
 export const CASES_NO_LASTRUN_COLS = 820;
 /** Below this, "Covers" is dropped too; below `@[670px]` the row stacks. */
@@ -45,14 +45,20 @@ export const CASES_NO_COVERS_COLS = 670;
  * remaining cells land on the remaining tracks in order — which is why the cell
  * count and the track count stay in step without any runtime branching.
  *
- *  - 8 cols  ≥670: select+id+title+result+state+pri+owner+actions ≈ 638px
- *  - 9 cols  ≥820: + covers                                      ≈ 786px
- *  - 10 cols ≥940: + last run                                    ≈ 918px
+ * Each total below counts the tracks, the `gap-x-2` gaps and the row's own
+ * `px-3`, which sits inside the container the breakpoint measures:
+ *
+ *  - 8 cols  ≥670: select+id+title+result+state+pri+owner+actions = 670px
+ *  - 9 cols  ≥820: + covers                                      = 818px
+ *  - 10 cols ≥952: + last run                                    = 950px
+ *
+ * State is 104px because its widest chip, "Proposed" with the edit chevron,
+ * measures 103px; at 92px it ran into the priority column.
  */
 export const CASES_GRID_COLS = [
-	"@[670px]:grid-cols-[52px_68px_minmax(150px,1fr)_104px_92px_52px_36px_36px]",
-	"@[820px]:grid-cols-[52px_68px_minmax(150px,1fr)_140px_104px_92px_52px_36px_36px]",
-	"@[940px]:grid-cols-[52px_68px_minmax(150px,1fr)_140px_104px_92px_52px_36px_124px_36px]",
+	"@[670px]:grid-cols-[52px_68px_minmax(138px,1fr)_104px_104px_52px_36px_36px]",
+	"@[820px]:grid-cols-[52px_68px_minmax(138px,1fr)_140px_104px_104px_52px_36px_36px]",
+	"@[952px]:grid-cols-[52px_68px_minmax(138px,1fr)_140px_104px_104px_52px_36px_124px_36px]",
 ].join(" ");
 
 /**
@@ -82,7 +88,7 @@ export const CASES_ROW_HEIGHT_COMPACT = "@[670px]:h-[34px]";
  * gain — it is only the fixed-track grid that has to ration width.
  */
 export const CASES_COL_COVERS = "flex @[670px]:hidden @[820px]:flex";
-export const CASES_COL_LASTRUN = "flex @[670px]:hidden @[940px]:flex";
+export const CASES_COL_LASTRUN = "flex @[670px]:hidden @[952px]:flex";
 
 /** Total pages for a result count, never below 1 so the footer always reads. */
 export function pageCount(total: number, pageSize: number): number {

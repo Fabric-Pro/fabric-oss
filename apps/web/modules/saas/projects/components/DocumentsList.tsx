@@ -81,8 +81,15 @@ import { DeprecatedDocumentTypeBadge } from "./FeaturesDeprecationNotice";
 import { ProjectSectionHero } from "./ProjectSectionHero";
 import {
 	describeGenerationRefusal,
+	isRegenerateToastWarning,
+	readSameRequest,
 	resolveRegenerateToastKey,
 } from "./proposal-artifact/generation-feedback";
+import {
+	useWebResearchAvailability,
+	webResearchToSend,
+} from "./web-research/use-web-research-availability";
+import { WebResearchOption } from "./web-research/WebResearchOption";
 
 export { resolveRegenerateToastKey };
 
@@ -122,7 +129,7 @@ const documentTypeStyles: Record<
 	PRD: {
 		icon: ClipboardListIcon,
 		iconClassName:
-			"border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-300",
+			"border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300",
 		panelClassName:
 			"border-sky-500/20 bg-sky-500/[0.06] dark:border-sky-500/15 dark:bg-sky-500/[0.04]",
 		haloClassName: "from-sky-500/10 via-sky-500/5 to-transparent",
@@ -138,7 +145,7 @@ const documentTypeStyles: Record<
 	ARCHITECTURE: {
 		icon: CodeIcon,
 		iconClassName:
-			"border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300",
+			"border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
 		panelClassName:
 			"border-emerald-500/20 bg-emerald-500/[0.06] dark:border-emerald-500/15 dark:bg-emerald-500/[0.04]",
 		haloClassName: "from-emerald-500/10 via-emerald-500/5 to-transparent",
@@ -146,7 +153,7 @@ const documentTypeStyles: Record<
 	TECHNICAL_SPEC: {
 		icon: WrenchIcon,
 		iconClassName:
-			"border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300",
+			"border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300",
 		panelClassName:
 			"border-amber-500/20 bg-amber-500/[0.06] dark:border-amber-500/15 dark:bg-amber-500/[0.04]",
 		haloClassName: "from-amber-500/10 via-amber-500/5 to-transparent",
@@ -154,7 +161,7 @@ const documentTypeStyles: Record<
 	USER_STORY: {
 		icon: UsersIcon,
 		iconClassName:
-			"border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-300",
+			"border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
 		panelClassName:
 			"border-rose-500/20 bg-rose-500/[0.06] dark:border-rose-500/15 dark:bg-rose-500/[0.04]",
 		haloClassName: "from-rose-500/10 via-rose-500/5 to-transparent",
@@ -162,7 +169,7 @@ const documentTypeStyles: Record<
 	API_SPEC: {
 		icon: CodeIcon,
 		iconClassName:
-			"border-cyan-500/30 bg-cyan-500/10 text-cyan-600 dark:text-cyan-300",
+			"border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
 		panelClassName:
 			"border-cyan-500/20 bg-cyan-500/[0.06] dark:border-cyan-500/15 dark:bg-cyan-500/[0.04]",
 		haloClassName: "from-cyan-500/10 via-cyan-500/5 to-transparent",
@@ -170,7 +177,7 @@ const documentTypeStyles: Record<
 	BUSINESS_CASE: {
 		icon: ClipboardListIcon,
 		iconClassName:
-			"border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-600 dark:text-fuchsia-300",
+			"border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-300",
 		panelClassName:
 			"border-fuchsia-500/20 bg-fuchsia-500/[0.06] dark:border-fuchsia-500/15 dark:bg-fuchsia-500/[0.04]",
 		haloClassName: "from-fuchsia-500/10 via-fuchsia-500/5 to-transparent",
@@ -186,7 +193,7 @@ const documentTypeStyles: Record<
 	TEST_PLAN: {
 		icon: WrenchIcon,
 		iconClassName:
-			"border-teal-500/30 bg-teal-500/10 text-teal-600 dark:text-teal-300",
+			"border-teal-500/30 bg-teal-500/10 text-teal-700 dark:text-teal-300",
 		panelClassName:
 			"border-teal-500/20 bg-teal-500/[0.06] dark:border-teal-500/15 dark:bg-teal-500/[0.04]",
 		haloClassName: "from-teal-500/10 via-teal-500/5 to-transparent",
@@ -194,7 +201,7 @@ const documentTypeStyles: Record<
 	TEST_REPORT: {
 		icon: WrenchIcon,
 		iconClassName:
-			"border-teal-500/30 bg-teal-500/10 text-teal-600 dark:text-teal-300",
+			"border-teal-500/30 bg-teal-500/10 text-teal-700 dark:text-teal-300",
 		panelClassName:
 			"border-teal-500/20 bg-teal-500/[0.06] dark:border-teal-500/15 dark:bg-teal-500/[0.04]",
 		haloClassName: "from-teal-500/10 via-teal-500/5 to-transparent",
@@ -202,7 +209,7 @@ const documentTypeStyles: Record<
 	TRACEABILITY_MATRIX: {
 		icon: WrenchIcon,
 		iconClassName:
-			"border-teal-500/30 bg-teal-500/10 text-teal-600 dark:text-teal-300",
+			"border-teal-500/30 bg-teal-500/10 text-teal-700 dark:text-teal-300",
 		panelClassName:
 			"border-teal-500/20 bg-teal-500/[0.06] dark:border-teal-500/15 dark:bg-teal-500/[0.04]",
 		haloClassName: "from-teal-500/10 via-teal-500/5 to-transparent",
@@ -210,7 +217,7 @@ const documentTypeStyles: Record<
 	QA_STRATEGY: {
 		icon: WrenchIcon,
 		iconClassName:
-			"border-teal-500/30 bg-teal-500/10 text-teal-600 dark:text-teal-300",
+			"border-teal-500/30 bg-teal-500/10 text-teal-700 dark:text-teal-300",
 		panelClassName:
 			"border-teal-500/20 bg-teal-500/[0.06] dark:border-teal-500/15 dark:bg-teal-500/[0.04]",
 		haloClassName: "from-teal-500/10 via-teal-500/5 to-transparent",
@@ -226,7 +233,7 @@ const documentTypeStyles: Record<
 	// Run-produced (Discovery run, plan Slice 4); never offered for generation.
 	INTEGRATION_CONTRACT: {
 		icon: ClipboardListIcon,
-		iconClassName: "border-primary/30 bg-primary/10 text-primary",
+		iconClassName: "border-primary/30 bg-primary/10 text-primary-active",
 		panelClassName:
 			"border-primary/20 bg-primary/[0.06] dark:border-primary/15 dark:bg-primary/[0.04]",
 		haloClassName: "from-primary/10 via-primary/5 to-transparent",
@@ -251,19 +258,19 @@ const statusConfig: Record<
 	QUEUED: {
 		label: "Queued",
 		className:
-			"border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+			"border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-400",
 		dotClassName: "bg-amber-500 dark:bg-amber-400",
 	},
 	GENERATING: {
 		label: "Generating",
 		className:
-			"border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-300",
+			"border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300",
 		dotClassName: "bg-sky-500 dark:bg-sky-400",
 	},
 	IN_PROGRESS: {
 		label: "In Progress",
 		className:
-			"border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300",
+			"border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300",
 		dotClassName: "bg-amber-500 dark:bg-amber-400",
 	},
 	REVIEW: {
@@ -275,7 +282,7 @@ const statusConfig: Record<
 	COMPLETE: {
 		label: "Complete",
 		className:
-			"border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300",
+			"border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
 		dotClassName: "bg-emerald-500 dark:bg-emerald-400",
 	},
 	FAILED: {
@@ -524,6 +531,17 @@ export function DocumentsList({
 		title: string;
 		source: string | null;
 	} | null>(null);
+	// Consent for the regenerate being confirmed, and only that one: unticked
+	// each time the dialog opens or closes, so no run inherits a tick.
+	const [allowWebResearch, setAllowWebResearch] = useState(false);
+	const webResearchAvailability = useWebResearchAvailability({
+		projectId,
+		enabled: confirmRegenDoc !== null,
+	});
+	const closeRegenerateConfirm = () => {
+		setConfirmRegenDoc(null);
+		setAllowWebResearch(false);
+	};
 	const [togglingActiveDocId, setTogglingActiveDocId] = useState<
 		string | null
 	>(null);
@@ -622,12 +640,15 @@ export function DocumentsList({
 				const toastKey = resolveRegenerateToastKey({
 					outcome: result?.outcome,
 					documentStatus: existing?.status ?? null,
+					requestedWebResearch: variables.allowWebResearch === true,
+					sameRequest: readSameRequest(result),
 				});
-				// A live run that could not be confirmed is a warning, not a
-				// success: nothing started and the person should try again.
-				(toastKey === "liveRunUnknown" ? toast.warning : toast.success)(
-					tRegenerateToast(toastKey),
-				);
+				// A live run that could not be confirmed, or a joined run that
+				// will not research the web the person ticked, is a warning,
+				// not a success: what they asked for did not happen.
+				(isRegenerateToastWarning(toastKey)
+					? toast.warning
+					: toast.success)(tRegenerateToast(toastKey));
 				queryClient.invalidateQueries({
 					queryKey: orpc.projects.documents.list.queryKey({
 						input: { projectId, organizationId },
@@ -747,6 +768,7 @@ export function DocumentsList({
 		// Always confirm before regenerating: regen replaces the live content
 		// with a fresh AI generation. The current content is preserved in
 		// version history, but the user should know that's about to happen.
+		setAllowWebResearch(false);
 		setConfirmRegenDoc({
 			id: doc.id,
 			title: doc.title,
@@ -759,8 +781,16 @@ export function DocumentsList({
 			return;
 		}
 		setRegeneratingDocId(confirmRegenDoc.id);
-		regenerateMutation.mutate({ id: confirmRegenDoc.id });
-		setConfirmRegenDoc(null);
+		// The dialog offered the option, so the request says what was chosen,
+		// `false` included.
+		regenerateMutation.mutate({
+			id: confirmRegenDoc.id,
+			allowWebResearch: webResearchToSend(
+				allowWebResearch,
+				webResearchAvailability,
+			),
+		});
+		closeRegenerateConfirm();
 	};
 
 	const handleDocumentClick = (documentId: string) => {
@@ -907,7 +937,7 @@ export function DocumentsList({
 								<Button
 									onClick={() => setCreateDialogOpen(true)}
 									variant="outline"
-									className="gap-2 border-primary/25 bg-primary/10 text-primary hover:border-primary/40 hover:bg-primary/[0.14]"
+									className="gap-2 border-primary/25 bg-primary/10 text-primary-active hover:border-primary/40 hover:bg-primary/[0.14]"
 									data-onboarding-target="documents-create"
 								>
 									<PlusIcon className="size-4" />
@@ -922,7 +952,7 @@ export function DocumentsList({
 			{/* Documents list */}
 			{documents.length === 0 ? (
 				<div className="flex flex-col items-center justify-center rounded-lg border border-border/60 bg-card/40 py-16 backdrop-blur-sm">
-					<div className="mb-4 rounded-lg border border-primary/15 bg-primary/10 p-4 text-primary">
+					<div className="mb-4 rounded-lg border border-primary/15 bg-primary/10 p-4 text-primary-active">
 						<FileTextIcon className="size-8" />
 					</div>
 					<p className="mb-2 font-medium text-foreground">
@@ -935,7 +965,7 @@ export function DocumentsList({
 					<Button
 						onClick={() => setCreateDialogOpen(true)}
 						variant="outline"
-						className="gap-2 border-primary/25 bg-primary/10 text-primary hover:border-primary/40 hover:bg-primary/[0.14]"
+						className="gap-2 border-primary/25 bg-primary/10 text-primary-active hover:border-primary/40 hover:bg-primary/[0.14]"
 					>
 						<SparklesIcon className="size-4" />
 						Create First Document
@@ -1087,7 +1117,7 @@ export function DocumentsList({
 									 */}
 									{isActive && (
 										<div className="absolute top-[1.15rem] right-5 z-10 transition-opacity group-hover:opacity-0 not-pointer-coarse:group-has-focus-visible:opacity-0 pointer-events-none">
-											<Badge className="border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 text-xs font-medium">
+											<Badge className="border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 text-xs font-medium">
 												Active
 											</Badge>
 										</div>
@@ -1151,7 +1181,7 @@ export function DocumentsList({
 													}
 												/>
 											</h3>
-											<p className="mt-0.5 text-foreground/50 text-xs leading-normal">
+											<p className="mt-0.5 text-muted-foreground text-xs leading-normal">
 												{documentTypeDescriptions[
 													doc.type
 												] ||
@@ -1452,7 +1482,7 @@ export function DocumentsList({
 											`title` and in the badge's `sr-only` child. */}
 										{queueSummary && (
 											<span
-												className="max-w-[200px] truncate text-xs text-amber-600 dark:text-amber-400"
+												className="max-w-[200px] truncate text-xs text-amber-700 dark:text-amber-400"
 												title={queueDetail ?? undefined}
 											>
 												{queueSummary}
@@ -1486,7 +1516,7 @@ export function DocumentsList({
 										{doc.source === "IMPORTED" && (
 											<Badge
 												variant="outline"
-												className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 text-xs"
+												className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 text-xs"
 											>
 												Imported
 											</Badge>
@@ -1494,7 +1524,7 @@ export function DocumentsList({
 										{doc.source === "EXTERNAL" && (
 											<Badge
 												variant="outline"
-												className="border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-300 text-xs"
+												className="border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300 text-xs"
 											>
 												External
 											</Badge>
@@ -1511,7 +1541,7 @@ export function DocumentsList({
 										)}
 
 										{/* Meta info */}
-										<div className="flex items-center gap-2 text-muted-foreground/80 text-xs">
+										<div className="flex items-center gap-2 text-muted-foreground text-xs">
 											<span>v{doc.version}</span>
 											<span>•</span>
 											<span>
@@ -1547,7 +1577,7 @@ export function DocumentsList({
 				open={!!confirmRegenDoc}
 				onOpenChange={(open) => {
 					if (!open) {
-						setConfirmRegenDoc(null);
+						closeRegenerateConfirm();
 					}
 				}}
 			>
@@ -1588,12 +1618,18 @@ export function DocumentsList({
 												: "Your current content will be saved to version history before being replaced."}
 										</p>
 									</div>
+									<WebResearchOption
+										checked={allowWebResearch}
+										onCheckedChange={setAllowWebResearch}
+										availability={webResearchAvailability}
+										onNavigate={closeRegenerateConfirm}
+									/>
 								</div>
 
 								<DialogFooter>
 									<Button
 										variant="outline"
-										onClick={() => setConfirmRegenDoc(null)}
+										onClick={closeRegenerateConfirm}
 									>
 										Cancel
 									</Button>

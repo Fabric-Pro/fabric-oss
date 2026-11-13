@@ -88,10 +88,19 @@ describe("isRetryableGraphStatus", () => {
 		}
 	});
 
-	it("does not replay writes on a gateway failure", () => {
-		// The front door can fail after the backend applied the write, so a
+	it("retries a server error on reads", () => {
+		// Exchange answered calendar and mail reads with an empty 500
+		// UnknownError during a service degradation; the next attempt
+		// usually succeeded.
+		expect(isRetryableGraphStatus(500)).toBe(true);
+		expect(isRetryableGraphStatus(500, "GET")).toBe(true);
+		expect(isRetryableGraphStatus(500, "HEAD")).toBe(true);
+	});
+
+	it("does not replay writes on a server or gateway failure", () => {
+		// The server can fail after the backend applied the write, so a
 		// retry could post the same Teams message twice.
-		for (const status of [502, 504]) {
+		for (const status of [500, 502, 504]) {
 			expect(isRetryableGraphStatus(status, "POST")).toBe(false);
 			expect(isRetryableGraphStatus(status, "PATCH")).toBe(false);
 			expect(isRetryableGraphStatus(status, "PUT")).toBe(false);
@@ -100,7 +109,7 @@ describe("isRetryableGraphStatus", () => {
 	});
 
 	it("leaves client errors and success to the caller", () => {
-		for (const status of [200, 201, 400, 401, 403, 404, 409, 500, 501]) {
+		for (const status of [200, 201, 400, 401, 403, 404, 409, 501]) {
 			expect(isRetryableGraphStatus(status, "GET")).toBe(false);
 		}
 	});

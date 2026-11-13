@@ -115,7 +115,10 @@ export function InstanceAgentCard({
 							className="h-6 w-6 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
 							aria-label={`Actions for ${instance.name}`}
 						>
-							<MoreVerticalIcon className="h-3.5 w-3.5" />
+							<MoreVerticalIcon
+								strokeWidth={2.5}
+								className="h-3.5 w-3.5"
+							/>
 						</Button>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end">

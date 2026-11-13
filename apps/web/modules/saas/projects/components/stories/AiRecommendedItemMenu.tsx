@@ -72,7 +72,11 @@ export function AiRecommendedItemMenu({
 					className="size-8"
 					aria-label={t("trigger", { identifier })}
 				>
-					<MoreHorizontalIcon aria-hidden className="size-4" />
+					<MoreHorizontalIcon
+						strokeWidth={2.5}
+						aria-hidden
+						className="size-4"
+					/>
 				</Button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">

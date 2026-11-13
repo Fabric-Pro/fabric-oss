@@ -44,6 +44,7 @@ import {
 import { createEmptyToolInputRepairMiddleware } from "./lib/empty-tool-input-middleware";
 import { createGatewayFlexMiddleware } from "./lib/gateway-service-tier";
 import { createLLMTelemetryMiddleware } from "./lib/llm-telemetry-middleware";
+import { createOpenAIOneShotCacheMiddleware } from "./lib/openai-one-shot-cache-middleware";
 import {
 	createAnthropicStructuredOutputLimitsMiddleware,
 	createPromptSteeredStructuredOutputMiddleware,
@@ -329,6 +330,11 @@ function wrapWithProviderMiddleware(
 	// arguments fail to parse as JSON, including no-parameter calls arriving
 	// as `arguments: ""`. See empty-tool-input-middleware.ts.
 	const middleware = [
+		createOpenAIOneShotCacheMiddleware(
+			extractModelName(modelName),
+			resolvedProvider,
+			viaGateway,
+		),
 		createLLMTelemetryMiddleware({
 			provider: resolvedProvider ?? nameProvider,
 			model: modelName,
@@ -1469,7 +1475,13 @@ export function getImageModel(
 	const modelWithoutPrefix = getModelWithoutPrefix(model);
 
 	// Validate supported image models
-	const supportedModels = ["dall-e-3", "dall-e-2", "gpt-image-2"];
+	const supportedModels = [
+		"dall-e-3",
+		"dall-e-2",
+		"gpt-image-2",
+		"gpt-image-2.6-sunburst",
+		"gpt-image-2.6-flare",
+	];
 	if (!supportedModels.includes(modelWithoutPrefix)) {
 		throw new Error(
 			`Unsupported image model: ${modelWithoutPrefix}. Supported models: ${supportedModels.join(", ")}`,

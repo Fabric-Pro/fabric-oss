@@ -35,6 +35,7 @@ import { ProjectKnowledgePanel } from "../knowledge/ProjectKnowledgePanel";
 import { ConfigureRepositorySyncDialog } from "./ConfigureRepositorySyncDialog";
 import { ConsolidationPanel } from "./ConsolidationPanel";
 import { DirectRepositoryInstructions } from "./DirectRepositoryInstructions";
+import { InstructionSetsPanel } from "./InstructionSetsPanel";
 import { InstructionsDigestPanel } from "./InstructionsDigestPanel";
 import { InstructionsEmptyState } from "./InstructionsEmptyState";
 import {
@@ -47,6 +48,7 @@ import {
 	InstructionsTabSkeleton,
 } from "./InstructionsTabState";
 import { MoveInstructionsDialog } from "./MoveInstructionsDialog";
+import { useOrganizationTemplate } from "./OrganizationTemplate";
 import { PluginAccessPanel } from "./PluginAccessPanel";
 import { PluginNameSetting } from "./PluginNameSetting";
 import { RulesHealthPanel } from "./RulesHealthPanel";
@@ -156,6 +158,10 @@ export function CodingInstructionsTab(props: CodingInstructionsTabProps) {
 				/>
 			) : (
 				<>
+					<InstructionSetsPanel
+						projectId={props.projectId}
+						canEdit={props.canEdit && !props.readOnlyMode}
+					/>
 					<PluginNameSetting
 						projectId={props.projectId}
 						canEdit={props.canEdit && !props.readOnlyMode}
@@ -707,6 +713,16 @@ function SnapshotCodingInstructionsTab({
 		enabled: Boolean(syncState?.migration),
 		onGone: () => void rereadSync(),
 	});
+	// Offered wherever a folder upload is: the server re-checks the
+	// permission and the source of truth.
+	const template = useOrganizationTemplate({
+		projectId,
+		enabled:
+			canEdit &&
+			settings.isSuccess &&
+			settings.data.sourceOfTruth !== "REPOSITORY",
+		onApplied: () => void invalidate(),
+	});
 
 	const syncControls: RepositorySyncControls | undefined = syncState
 		? {
@@ -821,6 +837,7 @@ function SnapshotCodingInstructionsTab({
 				{dialog}
 				{configureDialog}
 				{moveDialog}
+				{template.dialog}
 				<InstructionsEmptyState
 					projectId={projectId}
 					projectName={projectName}
@@ -835,6 +852,7 @@ function SnapshotCodingInstructionsTab({
 					// view (Fizzy #2721).
 					localSetup={localSetup}
 					repositorySync={syncControls}
+					template={template.action}
 				/>
 			</InstructionMigrationRepositoryProvider>
 		);
@@ -850,6 +868,7 @@ function SnapshotCodingInstructionsTab({
 			{dialog}
 			{configureDialog}
 			{moveDialog}
+			{template.dialog}
 			<InstructionsPublishedView
 				projectId={projectId}
 				projectName={projectName}
@@ -866,6 +885,7 @@ function SnapshotCodingInstructionsTab({
 				}
 				snapshots={snapshots as unknown as InstructionsSnapshot[]}
 				onReplaceClick={() => setUploadOpen(true)}
+				applyTemplate={template.action}
 				onChanged={invalidate}
 				canEdit={canEdit}
 				canReview={canReview}

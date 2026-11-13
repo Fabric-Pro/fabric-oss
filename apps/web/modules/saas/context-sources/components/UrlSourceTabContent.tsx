@@ -1010,7 +1010,7 @@ export function UrlSourceTabContent({
 							className={cn(
 								"block space-y-2 rounded-lg border bg-card p-3",
 								allOk
-									? "border-border text-secondary"
+									? "border-border text-success"
 									: "border-destructive/30 text-destructive",
 							)}
 						>
@@ -1080,7 +1080,7 @@ export function UrlSourceTabContent({
 			)}
 
 			{bulkMode === "SINGLE" && linkStatus === "success" && (
-				<output className="flex items-center gap-2 rounded-lg border border-border bg-card p-3 text-secondary">
+				<output className="flex items-center gap-2 rounded-lg border border-border bg-card p-3 text-success">
 					<CheckCircleIcon className="size-5" />
 					<span>URL source added.</span>
 				</output>
@@ -1162,7 +1162,7 @@ function BulkUrlsForm({
 				<output className="block space-y-1.5" aria-live="polite">
 					{validLines.length > 0 && (
 						<p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-							<CheckIcon className="size-3.5 text-secondary" />
+							<CheckIcon className="size-3.5 text-success" />
 							<span>
 								<span className="font-medium text-foreground">
 									{validLines.length}

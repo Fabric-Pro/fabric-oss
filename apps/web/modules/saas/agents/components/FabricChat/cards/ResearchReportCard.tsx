@@ -79,22 +79,22 @@ const SOURCE_TYPE_CONFIG: Record<
 	rag: {
 		label: "Knowledge Base",
 		icon: <FileText className="h-3 w-3" />,
-		color: "text-emerald-600",
+		color: "text-emerald-700 dark:text-emerald-500",
 	},
 	workspace: {
 		label: "Library",
 		icon: <FileText className="h-3 w-3" />,
-		color: "text-emerald-600",
+		color: "text-emerald-700 dark:text-emerald-500",
 	},
 	web: {
 		label: "Web",
 		icon: <Globe className="h-3 w-3" />,
-		color: "text-blue-600",
+		color: "text-blue-600 dark:text-blue-400",
 	},
 	"sub-agent": {
 		label: "Research Agent",
 		icon: <Users className="h-3 w-3" />,
-		color: "text-violet-600",
+		color: "text-violet-600 dark:text-violet-400",
 	},
 };
 

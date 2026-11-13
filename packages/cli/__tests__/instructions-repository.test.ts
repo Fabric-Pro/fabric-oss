@@ -27,6 +27,8 @@ import { hookTiming } from "../src/lib/instructions/hook-timing.js";
 import { computeSnapshotDigest } from "../src/lib/instructions/manifest.js";
 import { fakeGit, HEAD_SHA } from "./helpers/git-fake.js";
 import {
+	hookMessageStdout,
+	hookSystemMessage,
 	makeTree,
 	manifestEntry,
 	resetInstructionsMocks,
@@ -432,7 +434,8 @@ describe("a direct repository project", () => {
 		]);
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toContain("sync skipped");
+		expect(hookSystemMessage(result.stdout)).toContain("sync skipped");
+		expect(result.stderr).toBe("");
 		expect(fakeGit.merges).toEqual([]);
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 	});
@@ -1702,9 +1705,12 @@ describe("a source that changes between two responses", () => {
 		]);
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toBe(
-			"fabric: coding instructions sync skipped: this project's instruction source changed while this command ran; nothing was written — run it again\n",
+		expect(result.stdout).toBe(
+			hookMessageStdout([
+				"fabric: coding instructions sync skipped: this project's instruction source changed while this command ran; nothing was written — run it again",
+			]),
 		);
+		expect(result.stderr).toBe("");
 		expect(mocks.createDownloadUrl).not.toHaveBeenCalled();
 		expect(await readdir(dest)).toEqual([".fabric"]);
 	});
@@ -1766,7 +1772,7 @@ describe("a source that changes between two responses", () => {
 			"--hook",
 		]);
 
-		expect(result.stderr).not.toContain("instruction source changed");
+		expect(result.stdout).not.toContain("instruction source changed");
 		expect(await readFile(path.join(dest, "AGENTS.md"), "utf8")).toBe(
 			"published\n",
 		);

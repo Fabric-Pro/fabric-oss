@@ -160,7 +160,7 @@ export function RoadmapSortControl({
 									className={cn(
 										"flex flex-1 items-center justify-start gap-1.5 rounded-md px-2 py-1 text-left text-sm transition-colors",
 										active
-											? "bg-primary/10 font-medium text-primary"
+											? "bg-primary/10 font-medium text-primary-active"
 											: "text-foreground hover:bg-accent",
 									)}
 								>
@@ -214,7 +214,7 @@ export function RoadmapSortControl({
 															"flex size-5 items-center justify-center rounded transition-colors",
 															on
 																? "bg-primary text-primary-foreground"
-																: "text-muted-foreground/50 hover:text-foreground",
+																: "text-muted-foreground hover:text-foreground",
 														)}
 													>
 														<Arrow className="size-3" />

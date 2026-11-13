@@ -149,6 +149,7 @@ import {
 	useDiffOutcomeStamp,
 } from "../hooks/use-diff-outcome-stamp";
 import { useDiffPreview } from "../hooks/use-diff-view-mode";
+import { useModalFocusTrap } from "../hooks/use-modal-focus-trap";
 import { useCollaborativeEditor } from "../hooks/useCollaborativeEditor";
 import { useDocumentAssistantHistoryRealtimeSync } from "../hooks/useDocumentAssistantHistory";
 import { useDocumentAssistantHistoryEnabled } from "../hooks/useDocumentAssistantHistoryEnabled";
@@ -235,6 +236,8 @@ import { ImageLightbox } from "./ImageLightbox";
 import { ImageSelectionToolbar } from "./ImageSelectionToolbar";
 import {
 	describeGenerationRefusal,
+	isRegenerateToastWarning,
+	readSameRequest,
 	resolveRegenerateToastKey,
 } from "./proposal-artifact/generation-feedback";
 import {
@@ -294,6 +297,11 @@ import {
 	MeetingNotesFlow,
 	MeetingNotesFlowCard,
 } from "./stories/MeetingNotesFlow";
+import {
+	useWebResearchAvailability,
+	webResearchToSend,
+} from "./web-research/use-web-research-availability";
+import { WebResearchOption } from "./web-research/WebResearchOption";
 
 export {
 	MEETING_NOTES_SKIPPED_NONE_RESULT,
@@ -1768,7 +1776,7 @@ function CollaborativeDocumentEditor({
 					>
 						<Loader2 className="h-8 w-8 animate-spin" aria-hidden />
 						<span>{tRun("reconnecting.title")}</span>
-						<span className="text-xs text-muted-foreground/70">
+						<span className="text-xs text-muted-foreground">
 							{tRun("reconnecting.hint")}
 						</span>
 					</output>
@@ -1784,7 +1792,7 @@ function CollaborativeDocumentEditor({
 							? "Syncing document..."
 							: "Connecting to collaboration server..."}
 					</span>
-					<span className="text-xs text-muted-foreground/70">
+					<span className="text-xs text-muted-foreground">
 						Will continue without collaboration if connection fails
 					</span>
 				</div>
@@ -2427,6 +2435,45 @@ function DocumentEditorInner({
 	const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 	const [showImportedRegenWarning, setShowImportedRegenWarning] =
 		useState(false);
+	// The regenerate confirmation's "Allow web research" tick. It belongs to
+	// one opening of the confirmation: every opening starts unticked, and a
+	// cancel or a confirm clears it.
+	const [allowWebResearch, setAllowWebResearch] = useState(false);
+	const webResearchAvailability = useWebResearchAvailability({
+		projectId,
+		enabled: showImportedRegenWarning,
+	});
+	const regenWarningRef = useRef<HTMLDivElement>(null);
+	const regenWarningTitleId = useId();
+	const regenWarningDescriptionId = useId();
+	// The editor's own frame, where focus goes when what opened the
+	// confirmation can no longer take it back.
+	const editorFrameRef = useRef<HTMLDivElement>(null);
+	const getEditorFrame = useCallback(() => editorFrameRef.current, []);
+	// Focus opens on Cancel, the least destructive control, rather than the
+	// consent checkbox a reflexive Space would tick.
+	const regenWarningCancelRef = useRef<HTMLButtonElement>(null);
+	const getRegenWarningCancel = useCallback(
+		() => regenWarningCancelRef.current,
+		[],
+	);
+	const cancelRegenWarning = useCallback(() => {
+		setShowImportedRegenWarning(false);
+		setAllowWebResearch(false);
+	}, []);
+	// The confirmation is modal: focus moves into it, onto Cancel, when it
+	// opens, stays in it while open, and goes back to what opened it when it
+	// closes.
+	const {
+		onKeyDown: handleRegenWarningKeyDown,
+		rememberOpener: rememberRegenWarningOpener,
+	} = useModalFocusTrap({
+		open: showImportedRegenWarning,
+		panelRef: regenWarningRef,
+		onEscape: cancelRegenWarning,
+		fallbackFocus: getEditorFrame,
+		initialFocus: getRegenWarningCancel,
+	});
 	const [showVersionHistory, setShowVersionHistory] = useState(false);
 	const [selectedPromptId, setSelectedPromptId] = useState<
 		string | undefined
@@ -8740,7 +8787,7 @@ function DocumentEditorInner({
 	// Regenerate document action - triggers Temporal workflow for major rewrites
 	const regenerateMutation = useMutation(
 		orpc.projects.documents.generate.mutationOptions({
-			onSuccess: (result) => {
+			onSuccess: (result, variables) => {
 				const documentQueryKey = orpc.projects.documents.get.queryKey({
 					input: { id: documentId, projectId, organizationId },
 				});
@@ -8767,13 +8814,15 @@ function DocumentEditorInner({
 					const cached = queryClient.getQueryData(documentQueryKey) as
 						| { document?: { status?: string | null } }
 						| undefined;
-					const message = tRegenerateToast(
-						resolveRegenerateToastKey({
-							outcome,
-							documentStatus: cached?.document?.status ?? null,
-						}),
-					);
-					if (outcome === "liveRunUnknown") {
+					const toastKey = resolveRegenerateToastKey({
+						outcome,
+						documentStatus: cached?.document?.status ?? null,
+						requestedWebResearch:
+							variables.allowWebResearch === true,
+						sameRequest: readSameRequest(result),
+					});
+					const message = tRegenerateToast(toastKey);
+					if (isRegenerateToastWarning(toastKey)) {
 						toast.warning(message);
 					} else {
 						toast.info(message);
@@ -8877,11 +8926,14 @@ function DocumentEditorInner({
 								// looks again later. The review, the FAILED
 								// watcher, a run that leaves the running
 								// states, or one silent for longer than the
-								// editor polls ends the wait.
+								// editor polls ends the wait. A run allowed to
+								// research the web can also write for up to ten
+								// minutes, so it waits the same way.
 								const latestStatus =
 									latest?.document?.status ?? "";
 								if (
-									suppressGenerationOverlay &&
+									(suppressGenerationOverlay ||
+										variables.allowWebResearch === true) &&
 									isDocumentGenerationRunning(latestStatus) &&
 									getDocumentPollInterval(
 										latestStatus,
@@ -9243,10 +9295,19 @@ function DocumentEditorInner({
 		// version history, but the user should know that's what's about to
 		// happen so they can cancel if they meant to edit instead.
 		if (!showImportedRegenWarning) {
+			rememberRegenWarningOpener();
+			setAllowWebResearch(false);
 			setShowImportedRegenWarning(true);
 			return;
 		}
+		// Read before the await below: only this confirmation's tick, while
+		// research is available, lets this run research the web.
+		const sendWebResearch = webResearchToSend(
+			allowWebResearch,
+			webResearchAvailability,
+		);
 		setShowImportedRegenWarning(false);
+		setAllowWebResearch(false);
 
 		// Capture baseline BEFORE regeneration starts
 		const baselineContent = document?.content || currentDocument;
@@ -9279,6 +9340,9 @@ function DocumentEditorInner({
 			prompt: "", // Empty = use default document-type prompt (matches Step 5 behavior)
 			promptId: selectedPromptId,
 			promptVersionId: selectedPromptVersionId,
+			// The confirmation offered the option, so the request says what
+			// was chosen, `false` included.
+			allowWebResearch: sendWebResearch,
 		});
 	};
 
@@ -10488,7 +10552,11 @@ function DocumentEditorInner({
 									}
 								/>
 							) : null}
-							<div className="flex flex-col h-full">
+							<div
+								ref={editorFrameRef}
+								tabIndex={-1}
+								className="flex flex-col h-full focus:outline-none"
+							>
 								{/* Header */}
 								<div className="relative flex items-center justify-between px-6 py-2 border-b bg-background gap-4">
 									{/* AI Generating Indicator - Centered when active */}
@@ -10780,7 +10848,12 @@ function DocumentEditorInner({
 																				isSaving
 																			}
 																		>
-																			<MoreHorizontalIcon className="h-4 w-4" />
+																			<MoreHorizontalIcon
+																				strokeWidth={
+																					2.5
+																				}
+																				className="h-4 w-4"
+																			/>
 																		</Button>
 																	</DropdownMenuTrigger>
 																</TooltipTrigger>
@@ -10885,7 +10958,7 @@ function DocumentEditorInner({
 									(!document.content ||
 										document.content.trim().length ===
 											0) && (
-										<div className="mx-6 mt-4 flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 px-4 py-2.5 text-xs text-primary">
+										<div className="mx-6 mt-4 flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 px-4 py-2.5 text-xs text-primary-active">
 											<div className="flex items-center gap-2">
 												{/* A queued run is not in progress, and
 													saying so with a spinner would claim
@@ -11023,10 +11096,30 @@ function DocumentEditorInner({
 											docSource === "EXTERNAL";
 										return (
 											<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-												<div className="bg-card border border-border rounded-lg p-6 shadow-2xl max-w-md mx-4">
+												<div
+													ref={regenWarningRef}
+													role="dialog"
+													aria-modal="true"
+													aria-labelledby={
+														regenWarningTitleId
+													}
+													aria-describedby={
+														regenWarningDescriptionId
+													}
+													tabIndex={-1}
+													onKeyDown={
+														handleRegenWarningKeyDown
+													}
+													className="bg-card border border-border rounded-lg p-6 shadow-2xl max-w-md mx-4 outline-none"
+												>
 													<div className="flex items-center gap-2 mb-3">
 														<AlertTriangle className="h-5 w-5 text-highlight" />
-														<h3 className="text-lg font-semibold">
+														<h3
+															id={
+																regenWarningTitleId
+															}
+															className="text-lg font-semibold"
+														>
 															{isImported
 																? "Regenerate Imported Document?"
 																: "Regenerate this document?"}
@@ -11040,7 +11133,12 @@ function DocumentEditorInner({
 																: "This document was imported from an uploaded file."}
 														</p>
 													)}
-													<p className="text-sm mb-3">
+													<p
+														id={
+															regenWarningDescriptionId
+														}
+														className="text-sm mb-3"
+													>
 														Regenerating will
 														replace the current
 														content with a new
@@ -11057,14 +11155,30 @@ function DocumentEditorInner({
 																: "Your current content will be saved to version history before being replaced."}
 														</p>
 													</div>
+													<WebResearchOption
+														checked={
+															allowWebResearch
+														}
+														onCheckedChange={
+															setAllowWebResearch
+														}
+														availability={
+															webResearchAvailability
+														}
+														onNavigate={
+															cancelRegenWarning
+														}
+														className="mb-4"
+													/>
 													<div className="flex justify-end gap-2">
 														<Button
+															ref={
+																regenWarningCancelRef
+															}
 															variant="outline"
 															size="sm"
-															onClick={() =>
-																setShowImportedRegenWarning(
-																	false,
-																)
+															onClick={
+																cancelRegenWarning
 															}
 														>
 															Cancel
@@ -12897,7 +13011,7 @@ function ConfirmChanges({
 						⚠️ Warning: {contentLossPercent}% content reduction
 						detected
 					</p>
-					<p className="text-xs text-destructive/80 mt-1">
+					<p className="text-xs text-destructive mt-1">
 						The AI removed significant content. Review the changes
 						(red = removed, green = added) before accepting.
 					</p>

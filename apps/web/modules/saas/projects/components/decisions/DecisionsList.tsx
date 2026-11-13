@@ -769,7 +769,7 @@ export function DecisionsList({
 								<SlidersHorizontalIcon className="size-4" />
 								Filters
 								{activeFilterCount > 0 && (
-									<span className="ml-0.5 inline-flex min-w-4 items-center justify-center rounded-full bg-primary/15 px-1 text-primary text-xs">
+									<span className="ml-0.5 inline-flex min-w-4 items-center justify-center rounded-full bg-primary/15 px-1 text-primary-active text-xs">
 										{activeFilterCount}
 									</span>
 								)}
@@ -1080,9 +1080,7 @@ function StatusTabs({
 				className={tabClass(value === ALL)}
 			>
 				All
-				<span className="text-muted-foreground/80 text-xs">
-					{total}
-				</span>
+				<span className="text-muted-foreground text-xs">{total}</span>
 			</button>
 			{DECISION_STATUSES.map((s) => (
 				<button
@@ -1098,7 +1096,7 @@ function StatusTabs({
 						)}
 					/>
 					{STATUS_CONFIG[s].label}
-					<span className="text-muted-foreground/80 text-xs">
+					<span className="text-muted-foreground text-xs">
 						{counts[s] ?? 0}
 					</span>
 				</button>
@@ -1189,7 +1187,7 @@ function MeetingCandidatePreviewDialog({
 								"inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-medium text-[11px]",
 								isUpdate
 									? "border-highlight/40 bg-highlight/10 text-highlight"
-									: "border-primary/30 bg-primary/5 text-primary",
+									: "border-primary/30 bg-primary/5 text-primary-active",
 							)}
 						>
 							<SparklesIcon className="size-3" />
@@ -1558,7 +1556,7 @@ function DecisionRow({
 					{fromMeeting && (
 						<Tooltip>
 							<TooltipTrigger asChild>
-								<span className="relative z-10 inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] text-primary">
+								<span className="relative z-10 inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] text-primary-active">
 									<SparklesIcon className="size-3" />
 									From meeting
 								</span>

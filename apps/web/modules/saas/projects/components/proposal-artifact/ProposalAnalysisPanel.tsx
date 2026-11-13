@@ -365,7 +365,11 @@ export function ProposalAnalysisPanel({
 							: t("awaitingNewRun")}
 					</AlertDescription>
 				</Alert>
-				<div className="opacity-60">
+				{/* Greyed by removing colour, not by fading: grayscale keeps each
+				    colour's luminance, so the previous run reads at full
+				    contrast while plainly not the current one (Fizzy #1444 —
+				    opacity-60 took its text under 4.5:1). */}
+				<div data-stale="" className="grayscale">
 					<AnalysisRun
 						analysis={data}
 						interactive={false}

@@ -51,35 +51,35 @@ export const TASK_TYPES = [
 		label: "Reasoning",
 		description: "Deep thinking, problem-solving, and multi-step reasoning",
 		icon: SparklesIcon,
-		color: "text-secondary",
+		color: "text-success",
 	},
 	{
 		id: "CHAT",
 		label: "Chat",
 		description: "Interactive conversations and dialogue",
 		icon: MessageSquareIcon,
-		color: "text-cyan-500",
+		color: "text-cyan-700 dark:text-cyan-500",
 	},
 	{
 		id: "TOOL_CALLING",
 		label: "Tool Calling",
 		description: "Function/tool calling for agents and orchestrators",
 		icon: WrenchIcon,
-		color: "text-orange-500",
+		color: "text-orange-700 dark:text-orange-500",
 	},
 	{
 		id: "EMBEDDING",
 		label: "Embeddings",
 		description: "Text embeddings for semantic search and RAG",
 		icon: CodeIcon,
-		color: "text-indigo-500",
+		color: "text-indigo-600 dark:text-indigo-400",
 	},
 	{
 		id: "IMAGE",
 		label: "Image Generation",
 		description: "Creating images from text prompts",
 		icon: ImageIcon,
-		color: "text-pink-500",
+		color: "text-pink-700 dark:text-pink-400",
 	},
 	{
 		id: "AUDIO",
@@ -93,7 +93,7 @@ export const TASK_TYPES = [
 		label: "Evaluations",
 		description: "LLM-as-judge evaluation of generated content quality",
 		icon: CheckCircleIcon,
-		color: "text-emerald-500",
+		color: "text-emerald-700 dark:text-emerald-500",
 	},
 	{
 		id: "DECISION",
@@ -101,7 +101,7 @@ export const TASK_TYPES = [
 		description:
 			"Bug or feature classification, with the regular AI model as fallback",
 		icon: ListChecksIcon,
-		color: "text-violet-500",
+		color: "text-violet-600 dark:text-violet-400",
 	},
 ] as const;
 
@@ -116,6 +116,8 @@ export const TEXT_TASK_IDS = [
 	"SIMPLE",
 ] as const;
 
+const IMAGE_RUNTIME_PROVIDERS = new Set(["VERCEL_GATEWAY", "OPENAI_DIRECT"]);
+
 /** Audio retains its existing provider selection. */
 function effectiveProviderForTask(
 	taskType: string,
@@ -124,9 +126,6 @@ function effectiveProviderForTask(
 ): string | null | undefined {
 	if (taskType === "EMBEDDING") {
 		return embeddingProvider;
-	}
-	if (taskType === "IMAGE") {
-		return "VERCEL_GATEWAY";
 	}
 	if ((TEXT_TASK_IDS as readonly string[]).includes(taskType)) {
 		return defaultProvider;
@@ -381,6 +380,9 @@ export function useOrgApiModelPreferences({
 		if (taskType === "DECISION") {
 			return provider === "VERCEL_GATEWAY" || provider === "DATABRICKS";
 		}
+		if (taskType === "IMAGE") {
+			return provider !== null && IMAGE_RUNTIME_PROVIDERS.has(provider);
+		}
 		const effective = effectiveProviderForTask(
 			taskType,
 			defaultProvider,
@@ -559,25 +561,8 @@ export function useOrgApiModelPreferences({
 				isFallback: false,
 			};
 		}
-		if (
-			pending &&
-			effectiveProviderForTask(
-				taskType,
-				defaultProvider,
-				embeddingProvider,
-			) !== undefined
-		) {
-			return {
-				provider:
-					pending.provider ??
-					effectiveProviderForTask(
-						taskType,
-						defaultProvider,
-						embeddingProvider,
-					) ??
-					defaultProvider,
-				isFallback: false,
-			};
+		if (pending) {
+			return { provider: pending.provider ?? null, isFallback: false };
 		}
 		if (taskType === "EMBEDDING") {
 			return { provider: embeddingProvider, isFallback: false };

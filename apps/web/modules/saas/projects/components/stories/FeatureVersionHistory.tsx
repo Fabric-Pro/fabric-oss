@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
+import { stageInkStyle } from "../../lib/stories/stage-ink";
 import type { FeatureDraftingStage } from "../../lib/stories/types";
 import { DRAFTING_STAGE_META } from "../../lib/stories/types";
 import { VersionDiffViewer } from "../VersionDiffViewer";
@@ -412,11 +413,13 @@ export function FeatureVersionHistory({
 															{stageMeta && (
 																<Badge
 																	variant="outline"
-																	className="text-[10px] px-1.5 py-0"
+																	className="stage-ink text-[10px] px-1.5 py-0"
 																	style={{
+																		...stageInkStyle(
+																			stageMeta.color,
+																		),
 																		borderColor:
 																			stageMeta.color,
-																		color: stageMeta.color,
 																	}}
 																>
 																	{
@@ -485,7 +488,7 @@ export function FeatureVersionHistory({
 																Editor
 															</span>
 														)}
-														<span className="text-muted-foreground/60">
+														<span className="text-muted-foreground">
 															{(() => {
 																const content =
 																	buildFeatureContent(

@@ -595,7 +595,11 @@ describe("InstructionsTree: files the version left out", () => {
 		const row = screen.getByText("retro.md").closest("div");
 		expect(row).toHaveAttribute("title", "Left out by retro.md");
 		expect(row).toHaveTextContent("left out · retro.md");
-		expect(row).toHaveClass("text-foreground/40");
+		// Greyed with the secondary ink, not a 40% fade: the reason a file was
+		// left out is text someone reads, and the fade measured about 2.5:1
+		// (WCAG AA, Fizzy #1444).
+		expect(row).toHaveClass("text-muted-foreground");
+		expect(row).not.toHaveClass("text-foreground");
 		expect(
 			screen.getByRole("button", { name: "Hide left-out files" }),
 		).toBeInTheDocument();

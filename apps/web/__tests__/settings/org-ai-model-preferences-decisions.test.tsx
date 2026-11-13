@@ -584,3 +584,106 @@ describe("Databricks decision choices", () => {
 		);
 	});
 });
+
+it.each([
+	["IMAGE", "OPENAI_DIRECT", "OpenAI"],
+	["DECISION", "DATABRICKS", "Databricks"],
+])(
+	"shows and saves the selected %s connection through the real hook",
+	async (taskType, provider, label) => {
+		const makeModel = (id: string) => ({
+			...decisionModelsResponse.models[0],
+			id,
+			canonicalName: id,
+			displayName: id,
+			suitableForTasks: [taskType],
+			capabilities: [taskType === "IMAGE" ? "IMAGE" : "EVALUATION"],
+			providerMappings: [
+				{
+					provider: "VERCEL_GATEWAY",
+					providerModelId: `openai/${id}`,
+					isAvailable: true,
+				},
+				{ provider, providerModelId: id, isAvailable: true },
+			],
+		});
+		const saved = makeModel("example-saved");
+		const picked = makeModel("example-picked");
+		const response = {
+			...generalModelsResponse,
+			configuredProviders: [
+				...generalModelsResponse.configuredProviders,
+				{
+					...generalModelsResponse.configuredProviders[0],
+					id: "example-connection",
+					provider,
+				},
+			],
+			models: [saved, picked],
+			modelsByGatewayAndProvider: Object.fromEntries(
+				["VERCEL_GATEWAY", provider].map((connection) => [
+					connection,
+					{
+						gatewayDisplayName: connection,
+						isDefault: false,
+						providers: {
+							[connection]: {
+								providerDisplayName: connection,
+								models: [saved, picked].map((m) => ({
+									...m,
+									providerModelId:
+										connection === "VERCEL_GATEWAY"
+											? `openai/${m.id}`
+											: m.id,
+								})),
+							},
+						},
+					},
+				]),
+			),
+		};
+		mockListAvailable.mockImplementation(
+			({ taskType: queryTask }: { taskType?: string }) =>
+				Promise.resolve(
+					queryTask === "DECISION" && taskType !== "DECISION"
+						? decisionModelsResponse
+						: response,
+				),
+		);
+		mockGetTaskDefaults.mockResolvedValue([]);
+		mockGetOrg.mockResolvedValue([
+			{
+				id: "example-preference",
+				taskType,
+				provider: "VERCEL_GATEWAY",
+				model: saved,
+				customParameters: null,
+			},
+		]);
+		mockSetOrg.mockClear();
+		mockSetOrg.mockResolvedValue({});
+		renderForm();
+		const trigger = await screen.findByRole("button", {
+			name: /example-saved/,
+		});
+		expect(trigger).toHaveTextContent("via Vercel AI Gateway");
+		fireEvent.click(trigger);
+		const group = screen.getByRole("group", {
+			name: new RegExp(`^${label}`),
+		});
+		fireEvent.click(
+			within(group).getByRole("option", { name: /example-picked/ }),
+		);
+		expect(trigger).toHaveTextContent(`via ${label}`);
+		expect(mockSetOrg).not.toHaveBeenCalled();
+		fireEvent.click(screen.getByText("Save Changes"));
+		await waitFor(() =>
+			expect(mockSetOrg).toHaveBeenCalledWith({
+				organizationId: "org-1",
+				taskType,
+				modelCanonicalName: picked.canonicalName,
+				overrideProvider: provider,
+			}),
+		);
+	},
+);

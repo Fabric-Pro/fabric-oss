@@ -257,7 +257,7 @@ function NodeLinkifiedText({
 						key={i}
 						type="button"
 						onClick={() => onFocusNode(seg.key)}
-						className="inline-flex items-center gap-0.5 rounded bg-primary/10 px-1 py-0.5 text-[0.8em] font-medium text-primary underline-offset-2 hover:bg-primary/20 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+						className="inline-flex items-center gap-0.5 rounded bg-primary/10 px-1 py-0.5 text-[0.8em] font-medium text-primary-active underline-offset-2 hover:bg-primary/20 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						aria-label={`Focus node: ${seg.label}`}
 					>
 						{seg.label}
@@ -1012,7 +1012,7 @@ export function AtlasChatPanel({
 								)}
 								<span
 									aria-hidden="true"
-									className="text-muted-foreground/40"
+									className="text-muted-foreground"
 								>
 									·
 								</span>
@@ -1035,6 +1035,7 @@ export function AtlasChatPanel({
 								className="shrink-0"
 							>
 								<MoreHorizontalIcon
+									strokeWidth={2.5}
 									aria-hidden="true"
 									className="size-3.5"
 								/>
@@ -1214,7 +1215,7 @@ export function AtlasChatPanel({
 											key={bucket}
 											className="flex flex-col gap-0.5"
 										>
-											<p className="px-2 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+											<p className="px-2 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 												{t(BUCKET_LABEL_KEY[bucket])}
 											</p>
 											<ul className="flex flex-col gap-0.5 overflow-x-hidden">
@@ -1239,7 +1240,7 @@ export function AtlasChatPanel({
 												setOlderExpanded((v) => !v)
 											}
 											aria-expanded={olderExpanded}
-											className="flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+											className="flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 										>
 											<ChevronDownIcon
 												aria-hidden="true"
@@ -1251,7 +1252,7 @@ export function AtlasChatPanel({
 												)}
 											/>
 											{t("conversationsBucketOlder")}
-											<span className="text-muted-foreground/50">
+											<span className="text-muted-foreground">
 												{
 													groupedConversations.older
 														.length

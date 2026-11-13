@@ -9,7 +9,7 @@
  */
 import { ORPCError } from "@orpc/client";
 import {
-	countLivingMemoryFilesSkippedAtFirstSync,
+	countLivingMemoryFilesAwaitingDecisionScan,
 	createDecisionFromLivingMemoryCandidate,
 	dismissLivingMemoryDecision,
 	getArchitectureDecision,
@@ -17,6 +17,7 @@ import {
 	hasProjectAccess,
 	LIVING_MEMORY_DECISION_SOURCE_KIND,
 	listLivingMemoryDecisionCandidates,
+	listLivingMemoryLimitedFiles,
 } from "@repo/database";
 import { z } from "zod";
 import {
@@ -78,17 +79,22 @@ export const listLivingMemoryDecisionCandidatesProcedure =
 				organizationId,
 			);
 
-			const [candidates, filesSkippedAtFirstSync] = await Promise.all([
-				listLivingMemoryDecisionCandidates({
-					projectId: input.projectId,
-					organizationId,
-				}),
-				countLivingMemoryFilesSkippedAtFirstSync({
-					projectId: input.projectId,
-					organizationId,
-				}),
-			]);
-			return { candidates, filesSkippedAtFirstSync };
+			const [candidates, filesNotScanned, limitedFiles] =
+				await Promise.all([
+					listLivingMemoryDecisionCandidates({
+						projectId: input.projectId,
+						organizationId,
+					}),
+					countLivingMemoryFilesAwaitingDecisionScan({
+						projectId: input.projectId,
+						organizationId,
+					}),
+					listLivingMemoryLimitedFiles({
+						projectId: input.projectId,
+						organizationId,
+					}),
+				]);
+			return { candidates, filesNotScanned, limitedFiles };
 		});
 
 export const scanLivingMemoryFirstSyncFilesProcedure = tenantProtectedProcedure
@@ -99,7 +105,7 @@ export const scanLivingMemoryFirstSyncFilesProcedure = tenantProtectedProcedure
 		path: "/projects/{projectId}/living-memory-decision-candidates/scan-first-sync",
 		tags: ["Projects", "Architecture Decisions"],
 		summary:
-			"Read the files a repository's first sync skipped for decisions, using one AI request per file",
+			"Read the synced files not yet read for decisions, using one AI request per file",
 	})
 	.input(
 		z.object({
@@ -117,7 +123,7 @@ export const scanLivingMemoryFirstSyncFilesProcedure = tenantProtectedProcedure
 			context.user.id,
 			organizationId,
 		);
-		const fileCount = await countLivingMemoryFilesSkippedAtFirstSync({
+		const fileCount = await countLivingMemoryFilesAwaitingDecisionScan({
 			projectId: input.projectId,
 			organizationId,
 		});
@@ -127,6 +133,7 @@ export const scanLivingMemoryFirstSyncFilesProcedure = tenantProtectedProcedure
 		const started = await startLivingMemoryFirstSyncScan({
 			projectId: input.projectId,
 			organizationId: organizationId ?? null,
+			requestedByUserId: context.user.id,
 		});
 		return { fileCount, alreadyRunning: !started };
 	});
@@ -234,6 +241,11 @@ export const createDecisionFromLivingMemoryProcedure = tenantProtectedProcedure
 					index: candidate.decisionIndex,
 					originalText: candidate.text,
 					...(updates ? { supersedes: updates.id } : {}),
+					// Re-read by the lookup: only a work item the project
+					// still has is carried over.
+					...(candidate.workItem
+						? { workItem: candidate.workItem }
+						: {}),
 				},
 				userId: user.id,
 				organizationId,

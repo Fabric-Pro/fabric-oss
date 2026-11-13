@@ -185,6 +185,7 @@ export interface PendingApprovalInfo {
 	approvalId: string;
 	stepId: string;
 	reason: string;
+	riskLevel?: "low" | "medium" | "high" | "critical";
 	checkboxText?: string;
 	agent?: string;
 	reviewType?: string;
@@ -299,6 +300,8 @@ export interface IterativeMessage {
 	toolCallId?: string;
 	/** Positive declaration returned by the executor for this result; absent means unknown. */
 	toolResultReadOnly?: true;
+	/** Same-run ordinal reference; contains no result body. */
+	toolResultRef?: string;
 	timestamp: string;
 	/** Which workflow iteration produced this message (for pruning) */
 	iteration?: number;
@@ -429,6 +432,9 @@ export interface WorkflowState {
 	advisorBudgetEnabled?: boolean;
 	/** Entry-point marker plus recorded chat input; no environment reads in workflows. */
 	advisorBoundedHistoryEnabled?: boolean;
+	/** Decided once at run start under orch-advisor-result-reads-v1. */
+	advisorResultReadsEnabled?: boolean;
+	advisorResultReuseEnabled?: boolean;
 	/** Recorded entry-point decisions; pre-marker histories keep the original arithmetic. */
 	advisorBoundedHistoryV2Enabled?: boolean;
 	advisorWeightedAllowanceEnabled?: boolean;
@@ -668,6 +674,7 @@ export interface PhaseResult<T = void> {
  * This avoids redundant database queries and MCP connections per step.
  */
 export interface PreloadedResources {
+	advisorStoredResults?: import("./advisor-result-reuse").StoredResultEntry[];
 	// User preferences (loaded once)
 	userPreferences: {
 		enabledMcpConfigIds: string[];

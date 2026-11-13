@@ -47,15 +47,17 @@ async function unusedPort(): Promise<number> {
 
 async function terminate(child: ChildProcess) {
 	if (!child.pid || child.exitCode !== null || child.signalCode !== null)
-		return;
-	await new Promise<void>((resolve) => {
-		const timer = setTimeout(() => child.kill("SIGKILL"), 5_000);
-		child.once("exit", () => {
-			clearTimeout(timer);
-			resolve();
-		});
-		child.kill("SIGTERM");
-	});
+		return { code: child.exitCode, signal: child.signalCode };
+	return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+		(resolve) => {
+			const timer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+			child.once("exit", (code, signal) => {
+				clearTimeout(timer);
+				resolve({ code, signal });
+			});
+			child.kill("SIGTERM");
+		},
+	);
 }
 
 describe("production bundle", () => {
@@ -115,6 +117,10 @@ describe("production bundle", () => {
 							agent: "data_analyst",
 						});
 						expect(output).not.toContain("Dynamic require of");
+						expect(await terminate(child)).toEqual({
+							code: 0,
+							signal: null,
+						});
 						return;
 					}
 				} catch (error) {

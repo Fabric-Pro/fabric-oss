@@ -291,7 +291,7 @@ it("extends all matched passages by score even across source and passage positio
 	]);
 	expect(result.context).toContain("H".repeat(3000));
 	expect(result.context).toContain("M".repeat(4000));
-	expect(result.context).toContain("L".repeat(800));
+	expect(result.context).not.toContain("L".repeat(1));
 	expect(result.context).not.toContain("L".repeat(801));
 	expect(JSON.stringify(result).length).toBeLessThanOrEqual(10000);
 });

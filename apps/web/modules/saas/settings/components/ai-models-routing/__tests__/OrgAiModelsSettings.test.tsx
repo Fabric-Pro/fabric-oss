@@ -1232,6 +1232,8 @@ function providerFixture(documents = false) {
 		"EMBEDDING",
 	]);
 	const image = exampleModel("Example image", ["IMAGE"]);
+	const openAiImage = exampleModel("OpenAI image", ["IMAGE"]);
+	const openRouterImage = exampleModel("OpenRouter image", ["IMAGE"]);
 	const decision = exampleModel("Example decision", ["EVALUATION"]);
 	const wrongDecision = exampleModel("Wrong decision", ["EVALUATION"]);
 	const providers = [
@@ -1240,6 +1242,13 @@ function providerFixture(documents = false) {
 			...OPENAI,
 			provider: "VERCEL_GATEWAY",
 			displayName: "Vercel AI Gateway",
+			isDefault: false,
+			isEmbeddingProvider: false,
+		},
+		{
+			...OPENAI,
+			provider: "OPENROUTER",
+			displayName: "OpenRouter",
 			isDefault: false,
 			isEmbeddingProvider: false,
 		},
@@ -1266,6 +1275,8 @@ function providerFixture(documents = false) {
 							nextEmbedding,
 							largeEmbedding,
 							image,
+							openAiImage,
+							openRouterImage,
 						],
 			modelsByGatewayAndProvider:
 				taskType === "DECISION"
@@ -1291,11 +1302,7 @@ function providerFixture(documents = false) {
 											embedding,
 											nextEmbedding,
 											largeEmbedding,
-											{
-												...image,
-												canonicalName: "Wrong image",
-												displayName: "Wrong image",
-											},
+											openAiImage,
 										],
 									},
 								},
@@ -1312,6 +1319,18 @@ function providerFixture(documents = false) {
 									},
 								},
 							},
+							OPENROUTER: {
+								...exampleGateway(
+									openRouterImage,
+									"OpenRouter",
+								),
+								providers: {
+									example: {
+										providerDisplayName: "OpenRouter",
+										models: [openRouterImage],
+									},
+								},
+							},
 						},
 		}),
 	);
@@ -1324,7 +1343,7 @@ function providerFixture(documents = false) {
 		{
 			taskType: "IMAGE",
 			provider: "OPENAI_DIRECT",
-			model: { ...image, displayName: "Wrong image" },
+			model: openAiImage,
 		},
 		{ taskType: "IMAGE", provider: "VERCEL_GATEWAY", model: image },
 		{ taskType: "EMBEDDING", provider: "OPENAI_DIRECT", model: embedding },
@@ -1480,8 +1499,10 @@ describe.each([false, true])(
 					screen.getByTestId(`ai-models-row-${task}`),
 				).not.toHaveTextContent(/via /);
 			}
-			expect(screen.getByTestId("ai-models-row-IMAGE")).toHaveTextContent(
-				"via Vercel AI Gateway",
+			await waitFor(() =>
+				expect(
+					screen.getByTestId("ai-models-row-IMAGE"),
+				).toHaveTextContent("via OpenAI"),
 			);
 			expect(
 				screen.getByTestId("ai-models-embeddings"),
@@ -1498,7 +1519,7 @@ describe.each([false, true])(
 			await waitFor(() => expect(button).toHaveFocus());
 		});
 		// Removing the two-section partition puts the specialized rows back into the text table.
-		it("places specialized work outside the six-row text table and pins Image to the gateway", async () => {
+		it("shows OpenAI image models and keeps image providers without a runtime hidden", async () => {
 			providerFixture(true);
 			renderPage();
 			const other = await screen.findByRole("region", {
@@ -1521,17 +1542,17 @@ describe.each([false, true])(
 				name: /^Image generation on API billing/,
 			});
 			await waitFor(() =>
-				expect(image).toHaveTextContent("Example image"),
+				expect(image).toHaveTextContent("OpenAI image"),
 			);
 			fireEvent.click(image);
 			expect(
-				await screen.findByRole("option", { name: /Example image/ }),
+				await screen.findByRole("option", { name: /OpenAI image/ }),
 			).toBeInTheDocument();
 			expect(
-				screen.queryByRole("option", { name: /Wrong image/ }),
+				screen.queryByRole("option", { name: /OpenRouter image/ }),
 			).toBeNull();
 			fireEvent.click(
-				screen.getByRole("option", { name: /Example image/ }),
+				screen.getByRole("option", { name: /OpenAI image/ }),
 			);
 			const decisionSelect = within(other).getByRole("button", {
 				name: /^Decisions on API billing/,
@@ -1550,6 +1571,39 @@ describe.each([false, true])(
 				screen.getByRole("option", { name: /Disabled/ }),
 			).toBeInTheDocument();
 		});
+		// Falling through to the saved provider leaves this badge on OpenAI until Save.
+		if (!routing) {
+			it("shows a pending IMAGE selection's provider before saving", async () => {
+				providerFixture(true);
+				renderPage();
+				const user = userEvent.setup();
+				const image = await screen.findByRole("button", {
+					name: /^Image generation on API billing/,
+				});
+				await waitFor(() => {
+					expect(image).toHaveTextContent("OpenAI image");
+					expect(image).toHaveTextContent("via OpenAI");
+				});
+
+				await user.click(image);
+				await user.click(
+					await screen.findByRole("option", {
+						name: /Example image/,
+					}),
+				);
+
+				await waitFor(() => {
+					const pendingImage = screen.getByRole("button", {
+						name: /^Image generation on API billing/,
+					});
+					expect(pendingImage).toHaveTextContent("Example image");
+					expect(pendingImage).toHaveTextContent(
+						"via Vercel AI Gateway",
+					);
+				});
+				expect(api.setOrg).not.toHaveBeenCalled();
+			});
+		}
 		// Removing the review panel or typed confirmation breaks the preview and mutation boundary.
 		it("reviews all text tasks and requires typed confirmation without a documents provider", async () => {
 			providerFixture();

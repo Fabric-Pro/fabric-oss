@@ -163,7 +163,7 @@ export function MeetingTranscriptPageView({ transcript, backHref }: Props) {
 							{meetingDate ? (
 								<span>{meetingDate}</span>
 							) : (
-								<span className="text-muted-foreground/70">
+								<span className="text-muted-foreground">
 									Date unavailable
 								</span>
 							)}
@@ -182,7 +182,7 @@ export function MeetingTranscriptPageView({ transcript, backHref }: Props) {
 							)}
 						</div>
 						{speakerCount > 0 && (
-							<p className="text-muted-foreground/80 text-xs">
+							<p className="text-muted-foreground text-xs">
 								<span className="sr-only">Participants: </span>
 								{transcript.speakerNames.join(", ")}
 							</p>

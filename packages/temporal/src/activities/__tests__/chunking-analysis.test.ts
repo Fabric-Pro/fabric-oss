@@ -105,7 +105,7 @@ describe("buildChunkingQuestionsActivity", () => {
 				},
 			}),
 		);
-		const saved = m.update.mock.calls[0]?.[1].result;
+		const saved = m.update.mock.calls.at(-1)?.[1].result;
 		expect(saved.questions).toEqual([
 			{
 				sourceId: "c1",
@@ -124,7 +124,12 @@ describe("buildChunkingQuestionsActivity", () => {
 		);
 		const result = await buildChunkingQuestionsActivity(scope);
 		expect(result.questions).toBe(0);
-		expect(m.update.mock.calls[0]?.[1].result.questions).toEqual([]);
+		// Progress is written as each sampled source is read.
+		expect(m.update.mock.calls[0]?.[1].progress).toMatchObject({
+			stage: "questions",
+			done: 0,
+		});
+		expect(m.update.mock.calls.at(-1)?.[1].result.questions).toEqual([]);
 	});
 });
 

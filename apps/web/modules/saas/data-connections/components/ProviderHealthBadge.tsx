@@ -15,7 +15,7 @@
  *
  * Visual language (CLAUDE.md aesthetic constraints)
  * ------------------------------------------------
- * - Uses semantic CSS tokens (`--secondary` emerald, `--highlight` amber,
+ * - Uses semantic CSS tokens (`--success` green, `--highlight` amber,
  *   `--destructive` red, `--primary` for blue/maintenance, `--muted` for
  *   unknown). NO hardcoded hex.
  * - Leading colored dot (4px filled circle) to disambiguate from the
@@ -110,7 +110,7 @@ interface HealthVisualConfig {
 
 /**
  * The six visual configurations. Every color reference here is a
- * design-token utility class (`text-secondary`, `bg-highlight/10`, ...)
+ * design-token utility class (`text-success`, `bg-highlight/10`, ...)
  * mapped through Tailwind to the CSS variables in `globals.css`. No
  * hardcoded hex per CLAUDE.md.
  */
@@ -118,9 +118,8 @@ const HEALTH_CONFIG: Record<ProviderHealthStatusValue, HealthVisualConfig> = {
 	OPERATIONAL: {
 		label: "Operational",
 		Icon: CheckCircle,
-		surfaceClass:
-			"border-secondary/30 bg-secondary/10 text-secondary dark:text-secondary",
-		dotClass: "bg-secondary",
+		surfaceClass: "border-success/30 bg-success/10 text-success",
+		dotClass: "bg-success",
 		ariaText: "operational",
 	},
 	DEGRADED: {
@@ -155,7 +154,7 @@ const HEALTH_CONFIG: Record<ProviderHealthStatusValue, HealthVisualConfig> = {
 		label: "Maintenance",
 		Icon: Wrench,
 		surfaceClass:
-			"border-primary/30 bg-primary/10 text-primary dark:text-primary",
+			"border-primary/30 bg-primary/10 text-primary-active dark:text-primary",
 		dotClass: "bg-primary",
 		ariaText: "in scheduled maintenance",
 	},
@@ -284,7 +283,7 @@ export function ProviderHealthBadge({
 					href={statusPageUrl}
 					target="_blank"
 					rel="noopener noreferrer"
-					className="mt-2 inline-flex items-center gap-1 text-[11px] underline underline-offset-2 text-primary hover:text-primary/80"
+					className="mt-2 inline-flex items-center gap-1 text-[11px] underline underline-offset-2 text-primary hover:text-primary-hover"
 					// Prevent the badge click handler from firing when the
 					// user activates the link inside the tooltip.
 					onClick={(event) => event.stopPropagation()}

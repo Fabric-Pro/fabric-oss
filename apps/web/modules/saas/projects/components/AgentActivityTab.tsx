@@ -31,7 +31,7 @@ const ACTIVITY_CONFIG = {
 	project_update_draft_saved: {
 		label: "Update draft",
 		icon: FilePenLineIcon,
-		className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+		className: "bg-amber-500/10 text-amber-800 dark:text-amber-300",
 	},
 	implementation_session_started: {
 		label: "Implementation",
@@ -46,7 +46,7 @@ const ACTIVITY_CONFIG = {
 	automation_trigger_saved: {
 		label: "Automation",
 		icon: WorkflowIcon,
-		className: "bg-primary/10 text-primary",
+		className: "bg-primary/10 text-primary-active",
 	},
 	agent_comment_replied: {
 		label: "Agent reply",
@@ -77,7 +77,7 @@ export function AgentActivityTab({ projectId }: AgentActivityTabProps) {
 			>
 				<div className="flex items-start justify-between gap-4">
 					<div>
-						<div className="mb-2 inline-flex items-center gap-2 rounded-full border border-primary/15 bg-primary/8 px-2.5 py-1 text-xs font-medium text-primary">
+						<div className="mb-2 inline-flex items-center gap-2 rounded-full border border-primary/15 bg-primary/8 px-2.5 py-1 text-xs font-medium text-primary-active">
 							<ActivityIcon className="size-3.5" />
 							Agent Activity
 						</div>
@@ -165,7 +165,7 @@ export function AgentActivityTab({ projectId }: AgentActivityTabProps) {
 													{activity.description}
 												</p>
 											)}
-											<p className="mt-2 text-xs text-muted-foreground/70">
+											<p className="mt-2 text-xs text-muted-foreground">
 												{formatRelativeTime(
 													activity.createdAt,
 												)}

@@ -263,7 +263,10 @@ export function MyAgentsList({
 													size="icon"
 													className="h-8 w-8"
 												>
-													<MoreVerticalIcon className="h-4 w-4" />
+													<MoreVerticalIcon
+														strokeWidth={2.5}
+														className="h-4 w-4"
+													/>
 												</Button>
 											</DropdownMenuTrigger>
 											<DropdownMenuContent align="end">

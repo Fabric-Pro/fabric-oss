@@ -779,7 +779,7 @@ export function ConnectionRequiredDialog({
 											{isConnected && (
 												<Badge
 													variant="outline"
-													className="text-xs text-green-700 border-green-300 dark:text-green-400 dark:border-green-700"
+													className="text-xs text-green-800 border-green-300 dark:text-green-400 dark:border-green-700"
 												>
 													<CheckCircle2 className="h-3 w-3 mr-1" />
 													Connected
@@ -1083,7 +1083,7 @@ export function ConnectionRequiredDialog({
 													{isConnected && (
 														<Badge
 															variant="outline"
-															className="text-xs text-green-700 border-green-300 dark:text-green-400 dark:border-green-700"
+															className="text-xs text-green-800 border-green-300 dark:text-green-400 dark:border-green-700"
 														>
 															<CheckCircle2 className="h-3 w-3 mr-1" />
 															Connected
@@ -1132,7 +1132,7 @@ export function ConnectionRequiredDialog({
 																) {
 																	return (
 																		<div className="space-y-2">
-																			<p className="text-xs text-amber-600 dark:text-amber-400">
+																			<p className="text-xs text-amber-700 dark:text-amber-400">
 																				{providerConfig?.providerName ||
 																					integration.provider}{" "}
 																				OAuth

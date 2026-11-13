@@ -7,38 +7,43 @@
 <style>
 /* Current light tokens from tooling/tailwind/theme.css. */
 :root{
-  --border:#e5e5e5; --ring:#0d0d0d;
-  --background:#ffffff; --foreground:#0d0d0d;
-  --primary:#0d0d0d; --primary-foreground:#ffffff;
-  --muted:#f4f4f4; --muted-foreground:#5d5d5d;
-  --accent:#ececec; --card:#ffffff;
-  --radius:0.625rem; --radius-lg:var(--radius);
+  --border:#dce0e5; --ring:#bc3e0b;
+  --background:#ffffff; --foreground:#11171c;
+  --primary:#bc3e0b; --primary-foreground:#ffffff;
+  --destructive:#b8223b; --success:#24773f;
+  --muted:#f1f3f6; --muted-foreground:#4f6170;
+  --accent:#e8edf2; --card:#ffffff;
+  --radius:0.25rem; --radius-lg:calc(var(--radius) + 2px);
   --font-sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{width:1048px;padding:24px;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
-.shot{margin-bottom:40px;background:var(--background);padding:24px;border:1px solid var(--border);border-radius:12px}
+.shot{margin-bottom:40px;background:var(--background);padding:24px;border:1px solid var(--border);border-radius:var(--radius-lg)}
 .wide{width:1000px}.dialog{width:760px;background:var(--card);padding:24px}
 .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.between{justify-content:space-between}.top{align-items:flex-start}
 .muted{color:var(--muted-foreground)}.small{font-size:12px}.space{margin-top:18px}.tight{margin-top:8px}
 h1{font-size:20px;font-weight:600}h2{font-size:18px;font-weight:600}h3{font-size:14px;font-weight:500}
-button{border:1px solid var(--border);border-radius:7px;padding:7px 11px;background:var(--card);font:inherit;font-size:13px;color:var(--foreground);white-space:nowrap}
+button{border:1px solid var(--border);border-radius:var(--radius);padding:7px 11px;background:var(--card);font:inherit;font-size:13px;color:var(--foreground);white-space:nowrap}
 .primary{background:var(--primary);border-color:var(--primary);color:var(--primary-foreground)}
-.badge{font-family:"JetBrains Mono",monospace;font-size:12px;border:1px solid var(--border);border-radius:6px;padding:2px 7px}
-.files{display:grid;grid-template-columns:235px 1fr;border:1px solid var(--border);border-radius:10px;background:var(--card);overflow:hidden;margin-top:18px;min-height:350px}
-.tree{border-right:1px solid var(--border);padding:12px}.tree p{padding:7px 9px}.selected{background:var(--muted);border-radius:6px}.indent{padding-left:26px!important}
+.badge{font-family:"IBM Plex Mono",monospace;font-size:12px;border:1px solid var(--border);border-radius:var(--radius);padding:2px 7px}
+.files{display:grid;grid-template-columns:235px 1fr;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--card);overflow:hidden;margin-top:18px;min-height:350px}
+.tree{border-right:1px solid var(--border);padding:12px}.tree p{padding:7px 9px}.selected{background:var(--muted);border-radius:var(--radius)}.indent{padding-left:26px!important}
 .file-head{padding:12px 16px;border-bottom:1px solid var(--border)}.body{padding:20px 24px}.body h2{margin-bottom:14px}.body h3{margin-top:16px;margin-bottom:8px}.body ul{padding-left:20px}
-code,pre,.mono{font-family:"JetBrains Mono",monospace;font-size:12px}code{background:var(--muted);padding:2px 4px;border-radius:4px}
-pre{padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--muted);line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+code,pre,.mono{font-family:"IBM Plex Mono",monospace;font-size:12px}code{background:var(--muted);padding:2px 4px;border-radius:4px}
+pre{padding:14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--muted);line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
 .tabs{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:20px}.tabs button{display:flex;flex-direction:column;align-items:center;gap:8px;background:var(--muted);padding:12px 6px}.tabs img{width:28px;height:28px;object-fit:contain}.tabs .active{background:var(--background);border-color:var(--foreground);font-weight:500}
-.facts{display:flex;gap:28px;border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-top:16px;background:var(--card)}.facts dt{font-size:12px;color:var(--muted-foreground)}.facts dd{margin-top:5px;font-size:13px}.facts button{border:0;padding:0;margin-left:7px;text-decoration:underline;font-size:12px}
-.segment{display:inline-flex;background:var(--muted);padding:3px;border-radius:8px;margin:10px 0}.segment span{padding:7px 10px;font-size:13px}.segment .chosen{background:var(--background);border:1px solid var(--border);border-radius:6px;font-weight:500}
+.facts{display:flex;gap:28px;border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 16px;margin-top:16px;background:var(--card)}.facts dt{font-size:12px;color:var(--muted-foreground)}.facts dd{margin-top:5px;font-size:13px}.facts button{border:0;padding:0;margin-left:7px;text-decoration:underline;font-size:12px}
+.segment{display:inline-flex;background:var(--muted);padding:3px;border-radius:var(--radius-lg);margin:10px 0}.segment span{padding:7px 10px;font-size:13px}.segment .chosen{background:var(--background);border:1px solid var(--border);border-radius:var(--radius);font-weight:500}
 .step{display:grid;grid-template-columns:26px 1fr;gap:10px;margin-top:22px}.number{width:24px;height:24px;border:1px solid var(--border);border-radius:50%;text-align:center;line-height:22px;font-size:12px}.step p{margin-top:6px}
 table{width:100%;border-collapse:collapse;font-size:13px;margin-top:18px}th{text-align:left;font-weight:500;color:var(--muted-foreground)}td,th{padding:11px 10px;border-bottom:1px solid var(--border)}.excluded{color:var(--muted-foreground);background:var(--muted)}
 .check{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;background:var(--primary);color:var(--primary-foreground);border-radius:4px;margin-right:7px;font-size:11px}
-.footer{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}.input{padding:10px 12px;border:1px solid var(--border);border-radius:7px;margin-top:7px;background:var(--background)}
-.editor{min-height:170px;background:var(--background);border:1px solid var(--border);border-radius:7px;padding:15px;white-space:pre-wrap;line-height:1.8}
+.footer{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}.input{padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);margin-top:7px;background:var(--background)}
+.editor{min-height:170px;background:var(--background);border:1px solid var(--border);border-radius:var(--radius);padding:15px;white-space:pre-wrap;line-height:1.8}
 .choice{display:grid;grid-template-columns:16px 1fr;gap:12px;margin-top:16px}.radio{border:1px solid var(--foreground);border-radius:50%;width:16px;height:16px;margin-top:3px}.radio.on:after{content:"";display:block;width:8px;height:8px;margin:3px;border-radius:50%;background:var(--foreground)}
+.history{display:grid;grid-template-columns:1fr 2fr;gap:16px;margin-top:16px}.history>div>*+*{margin-top:12px}.commits{list-style:none}.commits li{border:1px solid var(--border);border-radius:var(--radius);padding:8px}.commits li+li{margin-top:8px}.commits li>*+*{margin-top:4px}
+.sha{display:block;width:100%;text-align:left;border:0;padding:6px 8px;font-family:"IBM Plex Mono",monospace;font-size:12px;white-space:normal;word-break:break-all}.sha.on{background:var(--muted)}
+.diff{border:1px solid var(--border);border-radius:var(--radius);background:color-mix(in srgb,var(--muted) 40%,transparent);padding:12px;font-family:"IBM Plex Mono",monospace;font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
+.diff .del{display:block;background:rgba(239,68,68,.15);color:#991b1b}.diff .add{display:block;background:rgba(16,185,129,.15);color:#065f46}
 </style>
 </head>
 <body>
@@ -88,6 +93,34 @@ Before changing code, read the nearby implementation and tests.
 Run pnpm test and the affected package's typecheck.</div>
   <p class="small muted space">Committing pushes to main in example-org/team-guide.</p><label class="space" style="display:block">Commit message</label><div class="input">Clarify the verification commands</div>
   <div class="row space"><button class="primary">Commit to main</button><button>Suggest as a pull request</button><button>Cancel</button></div>
+</section>
+<!-- InstructionFileHistory dialog with InstructionFileHistoryContent and InstructionDiffBody; synthetic repository, commits and authors. -->
+<section id="shot-git-file-restore" class="shot wide">
+  <div class="row between"><h2>Git history: AGENTS.md</h2><span class="muted">×</span></div>
+  <p class="muted tight">History is read from Git when you open it. It follows this exact path; earlier names are not included.</p>
+  <p class="muted space">example-org/team-guide · main · /</p>
+  <p class="tight">Current branch revision: 9f4c2e7a1b3d5f6081a2c4e6b8d0f1a3c5e7b9d2</p>
+  <div class="history">
+    <div>
+      <ul class="commits" aria-label="File versions">
+        <li><button class="sha">9f4c2e7a1b3d5f6081a2c4e6b8d0f1a3c5e7b9d2</button><p>Run the affected package's typecheck too</p><p class="small muted">Example Developer · Nov 4, 2026, 10:12 AM</p><p><span style="text-decoration:underline">Open commit in Git</span></p></li>
+        <li><button class="sha on" aria-pressed="true">3b8e1d0c6a4f2e9b7d5c3a1f0e8d6b4a2c0e9f71</button><p>Add the verification section</p><p class="small muted">Example Developer · Oct 28, 2026, 3:40 PM</p><p><span style="text-decoration:underline">Open commit in Git</span></p></li>
+      </ul>
+    </div>
+    <div>
+      <p>Selected revision: 3b8e1d0c6a4f2e9b7d5c3a1f0e8d6b4a2c0e9f71</p>
+      <p class="small muted">Current file: complete text loaded</p>
+      <p class="small muted">Selected file: complete text loaded</p>
+      <div><p class="small muted">+1 −1</p><div class="diff tight">  # Project coding instructions
+
+  Before changing code, read the nearby implementation and tests.
+
+  ## Verification
+<span class="del">- Run pnpm test and the affected package's typecheck.</span><span class="add">+ Run pnpm test before you push.</span></div></div>
+      <p class="small muted">Restoration creates a new commit for this file only. Other files and Git history are preserved. Historical executable permissions are not restored.</p>
+      <button class="primary">Restore this file</button>
+    </div>
+  </div>
 </section>
 </body>
 </html>

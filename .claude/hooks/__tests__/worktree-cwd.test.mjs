@@ -119,3 +119,47 @@ describe("enforce-branch-naming — reads the branch of the tree the push runs i
 		git(mainTree, "worktree", "remove", "--force", badTree);
 	});
 });
+
+describe("tilde cd — real worktree guards", () => {
+	it("blocks reset in the dirty HOME worktree", async () => {
+		const result = await runHook(
+			"block-destructive-bash.mjs",
+			{
+				tool_input: { command: "cd ~/feature && git reset --hard" },
+				cwd: mainTree,
+			},
+			{ env: { ...realGit, HOME: root }, spawnCwd: mainTree },
+		);
+		assert.equal(result.exitCode, 2, result.stderr);
+		assert.match(result.stderr, /uncommitted/);
+	});
+	it("blocks push in the HOME worktree with an invalid branch", async () => {
+		const badTree = path.join(root, "tilde-bad");
+		git(
+			mainTree,
+			"worktree",
+			"add",
+			"-q",
+			"-b",
+			"bad_tilde_branch",
+			badTree,
+		);
+		try {
+			const result = await runHook(
+				"enforce-branch-naming.mjs",
+				{
+					tool_input: { command: "cd ~/tilde-bad && git push" },
+					cwd: mainTree,
+				},
+				{
+					env: { FABRIC_TEST_BRANCH: undefined, HOME: root },
+					spawnCwd: mainTree,
+				},
+			);
+			assert.equal(result.exitCode, 2, result.stderr);
+			assert.match(result.stderr, /bad_tilde_branch/);
+		} finally {
+			git(mainTree, "worktree", "remove", "--force", badTree);
+		}
+	});
+});

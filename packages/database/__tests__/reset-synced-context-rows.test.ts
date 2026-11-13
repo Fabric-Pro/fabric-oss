@@ -12,7 +12,10 @@
  *  - a configured repository sync refuses the reset, naming the repository
  *    and branch, and changes nothing;
  *  - a row a sync adopted is never deleted nor queued for cleanup;
- *  - a second reset deletes nothing, queues nothing and records nothing.
+ *  - a second reset deletes nothing, queues nothing and records nothing;
+ *  - with a folder, only the rows under it (a directory prefix, matched
+ *    literally), with the folder on the audit row; a root, absolute or
+ *    dot-segment folder is refused before the transaction.
  *
  * The client is an in-memory table; `$transaction` runs its callback against
  * a working copy committed only when the callback returns.
@@ -51,17 +54,33 @@ const table = vi.hoisted(() => {
 		}
 	}
 
-	/** Equality, plus the two operators the reset uses: `not: null` and `in`. */
+	/**
+	 * Equality, plus the operators the reset uses: `not: null`, `in`, and
+	 * `startsWith` with its `LIKE` escapes, which Postgres removes.
+	 */
 	function matches(row: Row, where: Record<string, unknown>): boolean {
 		return Object.entries(where).every(([key, value]) => {
 			const actual = row[key] ?? null;
 			if (value !== null && typeof value === "object") {
-				const filter = value as { not?: unknown; in?: unknown };
+				const filter = value as {
+					not?: unknown;
+					in?: unknown;
+					startsWith?: unknown;
+				};
 				if ("not" in filter && filter.not === null) {
 					return actual !== null;
 				}
 				if (Array.isArray(filter.in)) {
 					return filter.in.includes(actual);
+				}
+				if (typeof filter.startsWith === "string") {
+					const literal = filter.startsWith.replace(
+						/\\([\\%_])/g,
+						"$1",
+					);
+					return (
+						typeof actual === "string" && actual.startsWith(literal)
+					);
 				}
 				throw new Error(`fake table: unsupported operator on ${key}`);
 			}
@@ -209,6 +228,10 @@ vi.mock("../prisma/client", () => ({
 	Prisma: { sql: vi.fn(), join: vi.fn() },
 }));
 
+import {
+	ContextSourcePathError,
+	normalizeSyncedContextResetFolder,
+} from "../prisma/queries/projects/context-source-path";
 import {
 	resetSyncedContextRows,
 	SYNCED_CONTEXT_RESET_AUDIT_ACTION,
@@ -389,5 +412,131 @@ describe("resetSyncedContextRows", () => {
 			"org-row",
 			"someone-else",
 		]);
+	});
+});
+
+describe("resetSyncedContextRows with a folder", () => {
+	it("deletes only the synced rows under the folder, nested ones included", async () => {
+		table.committed.rows = [
+			synced("a", { sourcePath: "docs/a.md" }),
+			synced("nested", { sourcePath: "docs/guides/b.md" }),
+			// A sibling whose name only starts with the folder's.
+			synced("archive", { sourcePath: "docs-archive/c.md" }),
+			synced("root", { sourcePath: "README.md" }),
+			synced("manual", { sourcePath: null }),
+			synced("managed", {
+				sourcePath: "docs/managed.md",
+				repositorySyncId: "sync-gone",
+			}),
+		];
+
+		const result = await reset({ folder: "docs/" });
+
+		expect(result).toEqual({
+			status: "reset",
+			deletedIds: ["a", "nested"],
+			cleanupId: "cleanup-1",
+		});
+		expect(table.committed.rows.map((row) => row.id).sort()).toEqual([
+			"archive",
+			"managed",
+			"manual",
+			"root",
+		]);
+		expect(table.committed.cleanups).toEqual([
+			expect.objectContaining({ contextIds: ["a", "nested"] }),
+		]);
+	});
+
+	it("matches a folder name holding LIKE wildcards only literally", async () => {
+		table.committed.rows = [
+			synced("literal", { sourcePath: "a_b/x.md" }),
+			synced("wildcard", { sourcePath: "aXb/y.md" }),
+		];
+
+		const result = await reset({ folder: "a_b" });
+
+		expect(result).toMatchObject({ deletedIds: ["literal"] });
+		expect(table.committed.rows.map((row) => row.id)).toEqual(["wildcard"]);
+	});
+
+	it("names the folder and the count on the audit row", async () => {
+		table.committed.rows = [
+			synced("a", { sourcePath: "docs/a.md" }),
+			synced("b", { sourcePath: "docs/b.md" }),
+		];
+
+		await reset({ folder: "./docs" });
+
+		expect(table.committed.audit).toHaveLength(1);
+		expect(table.committed.audit[0]).toMatchObject({
+			action: SYNCED_CONTEXT_RESET_AUDIT_ACTION,
+			metadata: expect.objectContaining({
+				scope: "folder",
+				folder: "docs",
+				deletedCount: 2,
+			}),
+		});
+	});
+
+	it("refuses while a repository sync is configured, and changes nothing", async () => {
+		table.committed.rows = [synced("a", { sourcePath: "docs/a.md" })];
+		table.committed.syncs = [
+			{
+				id: "sync-1",
+				projectId: "proj-1",
+				organizationId: "org-1",
+				ref: "main",
+				repositoryOwner: "example-org",
+				repositoryName: "notes",
+			},
+		];
+
+		const result = await reset({ folder: "docs" });
+
+		expect(result).toMatchObject({ status: "repository-sync-active" });
+		expect(table.committed.rows).toHaveLength(1);
+		expect(table.committed.audit).toHaveLength(0);
+	});
+
+	it("writes nothing for a folder that holds no synced file", async () => {
+		table.committed.rows = [synced("a", { sourcePath: "docs/a.md" })];
+
+		const result = await reset({ folder: "notes" });
+
+		expect(result).toEqual({
+			status: "reset",
+			deletedIds: [],
+			cleanupId: null,
+		});
+		expect(table.committed.rows).toHaveLength(1);
+		expect(table.committed.audit).toHaveLength(0);
+		expect(table.committed.cleanups).toHaveLength(0);
+	});
+
+	it.each([
+		["the root", "."],
+		["an absolute path", "/docs"],
+		["a dot segment", "docs/../secrets"],
+		["a backslash", "docs\\guides"],
+	])("refuses %s before any transaction", async (_label, folder) => {
+		table.committed.rows = [synced("a", { sourcePath: "docs/a.md" })];
+		table.db.$transaction.mockClear();
+
+		await expect(reset({ folder })).rejects.toBeInstanceOf(
+			ContextSourcePathError,
+		);
+		expect(table.db.$transaction).not.toHaveBeenCalled();
+		expect(table.committed.rows).toHaveLength(1);
+	});
+});
+
+describe("normalizeSyncedContextResetFolder", () => {
+	it.each([
+		["docs", "docs"],
+		["docs/", "docs"],
+		["./docs/guides/", "docs/guides"],
+	])("spells %s as %s", (input, expected) => {
+		expect(normalizeSyncedContextResetFolder(input)).toBe(expected);
 	});
 });

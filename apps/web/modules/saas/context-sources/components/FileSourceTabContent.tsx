@@ -374,8 +374,8 @@ function getFileIcon(mimeType: string) {
 //     screen readers announce state transitions ("Uploading", "Done", etc.).
 //
 // Editorial aesthetic: warm-neutral card (`bg-card border border-border`),
-// `text-destructive` for failures (not red hex), `text-secondary` for the
-// success done-state (rose-tint matches the rest of the dialog).
+// `text-destructive` for failures (not red hex), `text-success` for the
+// success done-state.
 
 type FileQueueRowProps = {
 	row: UploadedFileRow;
@@ -428,7 +428,7 @@ function FileQueueRow({ row, onRemove, disabled }: FileQueueRowProps) {
 				isFailed
 					? "border-destructive/30"
 					: isTerminal
-						? "border-secondary/40"
+						? "border-success/40"
 						: "border-border",
 			)}
 		>
@@ -468,7 +468,7 @@ function FileQueueRow({ row, onRemove, disabled }: FileQueueRowProps) {
 					isFailed
 						? "border-destructive/30 text-destructive"
 						: row.status === "completed"
-							? "border-secondary/40 text-secondary"
+							? "border-success/40 text-success"
 							: isInFlight
 								? "border-border text-primary"
 								: "border-border text-muted-foreground",

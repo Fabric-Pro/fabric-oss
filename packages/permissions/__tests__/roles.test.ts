@@ -192,6 +192,18 @@ describe("ORG_ROLE_PERMISSIONS", () => {
 			expect(ORG_ROLE_PERMISSIONS.member).toContain(p);
 		}
 	});
+
+	it.each(["owner", "admin", "member", "viewer"] as const)(
+		"org %s can archive and restore their own notifications",
+		(role) => {
+			expect(
+				hasPermission(
+					ORG_ROLE_PERMISSIONS[role],
+					Permissions.NOTIFICATIONS_WRITE,
+				),
+			).toBe(true);
+		},
+	);
 });
 
 /**
@@ -389,6 +401,60 @@ describe("PROJECT_ROLE_PERMISSIONS", () => {
 			).toBe(expected);
 		},
 	);
+});
+
+describe("time tracking permissions", () => {
+	it.each([
+		["owner", true],
+		["admin", true],
+		["member", true],
+		["viewer", false],
+	] as const)("org %s: TIME_LOG → %s", (role, expected) => {
+		expect(
+			hasPermission(ORG_ROLE_PERMISSIONS[role], Permissions.TIME_LOG),
+		).toBe(expected);
+	});
+
+	it.each([
+		["OWNER", true],
+		["PROJECT_ADMIN", true],
+		["EDITOR", true],
+		["COMMENTER", false],
+		["VIEWER", false],
+	] as const)("project %s: TIME_LOG → %s", (role, expected) => {
+		expect(
+			hasPermission(PROJECT_ROLE_PERMISSIONS[role], Permissions.TIME_LOG),
+		).toBe(expected);
+	});
+
+	it.each([
+		["owner", true],
+		["admin", true],
+		["member", false],
+		["viewer", false],
+	] as const)("org %s: TIME_REPORT_VIEW → %s", (role, expected) => {
+		expect(
+			hasPermission(
+				ORG_ROLE_PERMISSIONS[role],
+				Permissions.TIME_REPORT_VIEW,
+			),
+		).toBe(expected);
+	});
+
+	it.each([
+		["OWNER", true],
+		["PROJECT_ADMIN", true],
+		["EDITOR", false],
+		["COMMENTER", false],
+		["VIEWER", false],
+	] as const)("project %s: TIME_REPORT_VIEW → %s", (role, expected) => {
+		expect(
+			hasPermission(
+				PROJECT_ROLE_PERMISSIONS[role],
+				Permissions.TIME_REPORT_VIEW,
+			),
+		).toBe(expected);
+	});
 });
 
 // Regression tests for the stale-role-authorization migration. Each case

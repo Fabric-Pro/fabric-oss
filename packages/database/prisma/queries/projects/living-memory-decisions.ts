@@ -20,9 +20,13 @@
  * notification applies that rule too ({@link openLivingMemoryDecisions} for
  * whether to announce, {@link summarizeOpenLivingMemoryDecisions} for what to
  * say), so the tab and the notification agree.
+ *
+ * A decision can name the project's feature or bug it came from
+ * (`workItem`). It is offered, and copied onto the created decision, only
+ * while the project still has that work item.
  */
 
-import { type ArchitectureDecisionStatus, db, type Prisma } from "../../client";
+import { type ArchitectureDecisionStatus, db, Prisma } from "../../client";
 import { advisoryObjectKey } from "../lib/refresh-lock-key";
 import {
 	type ArchitectureDecisionDetail,
@@ -43,6 +47,12 @@ export const LIVING_MEMORY_DECISION_SOURCE_KIND = "living_memory";
 export const IN_FORCE_DECISION_STATUSES: readonly ArchitectureDecisionStatus[] =
 	["ACCEPTED", "PROPOSED"];
 
+/** The project's feature or bug a decision came from. */
+export type LivingMemoryDecisionWorkItem = {
+	id: string;
+	identifier: string;
+};
+
 /**
  * One entry of `ProjectContextDecisionExtraction.decisions`. A type alias, not
  * an interface, so it stays assignable to Prisma's JSON input type.
@@ -51,6 +61,7 @@ export type LivingMemoryDecision = {
 	text: string;
 	rationale?: string;
 	sourceQuote?: string;
+	workItem?: LivingMemoryDecisionWorkItem;
 };
 
 export interface LivingMemoryDecisionCandidate {
@@ -64,6 +75,17 @@ export interface LivingMemoryDecisionCandidate {
 	rationale?: string;
 	/** When it matches an existing decision, the one it most likely updates. */
 	matchedDecision?: { id: string; identifier: string; title: string };
+	/** The work item it came from, while the project still has it. */
+	workItem?: LivingMemoryDecisionWorkItem;
+}
+
+/** A file whose current version met an extraction limit. */
+export interface LivingMemoryLimitedFile {
+	sourcePath: string;
+	/** Only the first part of the file was read. */
+	truncated: boolean;
+	/** Only the first decisions the file listed were kept. */
+	capped: boolean;
 }
 
 /** The fields of an extraction the open-candidate rule reads. */
@@ -99,6 +121,7 @@ export function parseLivingMemoryDecisions(
 		if (!text) {
 			return null;
 		}
+		const workItem = parseWorkItem(entry.workItem);
 		return {
 			text,
 			...(typeof entry.rationale === "string" && entry.rationale.trim()
@@ -108,8 +131,52 @@ export function parseLivingMemoryDecisions(
 			entry.sourceQuote.trim()
 				? { sourceQuote: entry.sourceQuote.trim() }
 				: {}),
+			...(workItem ? { workItem } : {}),
 		};
 	});
+}
+
+function parseWorkItem(
+	value: Prisma.JsonValue | undefined,
+): LivingMemoryDecisionWorkItem | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return null;
+	}
+	return typeof value.id === "string" &&
+		value.id &&
+		typeof value.identifier === "string" &&
+		value.identifier
+		? { id: value.id, identifier: value.identifier }
+		: null;
+}
+
+/**
+ * Of the given work item ids, the ones the project still has, with their
+ * current identifiers. A work item deleted since the file was read is not
+ * linked.
+ */
+async function existingWorkItems(
+	projectId: string,
+	ids: string[],
+): Promise<Map<string, string>> {
+	if (ids.length === 0) {
+		return new Map();
+	}
+	const rows = await db.userStory.findMany({
+		where: { projectId, id: { in: [...new Set(ids)] } },
+		select: { id: true, identifier: true },
+	});
+	return new Map(rows.map((row) => [row.id, row.identifier]));
+}
+
+/** The decision's work item, as `existing` still has it. */
+function linkedWorkItem(
+	decision: LivingMemoryDecision,
+	existing: Map<string, string>,
+): { workItem: LivingMemoryDecisionWorkItem } | null {
+	const id = decision.workItem?.id;
+	const identifier = id ? existing.get(id) : undefined;
+	return id && identifier ? { workItem: { id, identifier } } : null;
 }
 
 /** How two versions of a file are compared for "the same decision". */
@@ -324,6 +391,14 @@ export async function listLivingMemoryDecisionCandidates(input: {
 			select: { id: true, identifier: true, title: true, decision: true },
 		}),
 	]);
+	const workItems = await existingWorkItems(
+		input.projectId,
+		current.flatMap(({ open }) =>
+			open.flatMap(({ decision }) =>
+				decision.workItem ? [decision.workItem.id] : [],
+			),
+		),
+	);
 
 	const candidates: LivingMemoryDecisionCandidate[] = [];
 	for (const { extraction, open } of current) {
@@ -353,6 +428,7 @@ export async function listLivingMemoryDecisionCandidates(input: {
 							},
 						}
 					: {}),
+				...linkedWorkItem(decision, workItems),
 			});
 		}
 	}
@@ -368,7 +444,8 @@ export type LivingMemoryCandidateLookup =
 /**
  * One candidate, for the create flow. `stale` when the file changed since the
  * candidate was read (only the current version is offered), `converted` when
- * a decision was already created from it.
+ * a decision was already created from it. Its work item is re-read, so a
+ * work item deleted since is not linked.
  */
 export async function getLivingMemoryDecisionCandidate(input: {
 	projectId: string;
@@ -414,6 +491,10 @@ export async function getLivingMemoryDecisionCandidate(input: {
 	) {
 		return { status: "converted" };
 	}
+	const workItems = await existingWorkItems(
+		input.projectId,
+		decision.workItem ? [decision.workItem.id] : [],
+	);
 	return {
 		status: "found",
 		candidate: {
@@ -425,6 +506,7 @@ export async function getLivingMemoryDecisionCandidate(input: {
 			decisionIndex: input.decisionIndex,
 			text: decision.text,
 			...(decision.rationale ? { rationale: decision.rationale } : {}),
+			...linkedWorkItem(decision, workItems),
 		},
 	};
 }
@@ -491,40 +573,94 @@ export function livingMemoryUpdateTargetId(decision: {
 	return meta.supersedes;
 }
 
-/** The `decisionScanSkippedHash` rows still waiting on a requested scan. */
-function skippedAtFirstSyncWhere(input: {
+/**
+ * The files whose current version met an extraction limit, by path, so the
+ * Decisions tab can say which files were only partly read.
+ */
+export async function listLivingMemoryLimitedFiles(input: {
 	projectId: string;
-	organizationId: string | null;
-}) {
-	return {
-		projectId: input.projectId,
-		organizationId: input.organizationId,
-		decisionScanSkippedHash: { not: null },
-		indexingExcluded: false,
-	} satisfies Prisma.ProjectContextWhereInput;
+	organizationId?: string | null;
+}): Promise<LivingMemoryLimitedFile[]> {
+	const extractions = await db.projectContextDecisionExtraction.findMany({
+		where: {
+			projectId: input.projectId,
+			organizationId: input.organizationId ?? null,
+			OR: [{ contentTruncated: true }, { decisionsCapped: true }],
+		},
+		select: {
+			contentHash: true,
+			sourcePath: true,
+			contentTruncated: true,
+			decisionsCapped: true,
+			context: { select: { contentHash: true } },
+		},
+		orderBy: { sourcePath: "asc" },
+	});
+	return extractions
+		.filter(
+			(extraction) =>
+				extraction.context.contentHash === extraction.contentHash,
+		)
+		.map((extraction) => ({
+			sourcePath: extraction.sourcePath,
+			truncated: extraction.contentTruncated,
+			capped: extraction.decisionsCapped,
+		}));
 }
 
 /**
- * How many synced files a repository's first sync did not read for decisions.
- * A file edited since is not counted: its new version was read as usual.
+ * The synced files a member's "Scan for decisions" reads: those a
+ * repository's first sync skipped (`skipped`), and those whose current
+ * version has no extraction at all, such as files synced before decisions
+ * were read from Living Memory. `skipped` differs by caller: the count wants
+ * a mark that still names the current version, the scan any mark it clears.
  */
-export async function countLivingMemoryFilesSkippedAtFirstSync(input: {
+function awaitingDecisionScanWhere(
+	scope: { projectId: string; organizationId: string | null },
+	skipped: Prisma.Sql,
+): Prisma.Sql {
+	return Prisma.sql`c."projectId" = ${scope.projectId}
+		AND c."organizationId" IS NOT DISTINCT FROM ${scope.organizationId}
+		AND c."indexingExcluded" = false
+		AND (
+			${skipped}
+			OR (
+				c."sourcePath" IS NOT NULL
+				AND c."contentHash" IS NOT NULL
+				AND c."embeddedAt" IS NOT NULL
+				AND NOT EXISTS (
+					SELECT 1 FROM project_context_decision_extraction e
+					WHERE e."contextId" = c.id
+					  AND e."contentHash" = c."contentHash"
+				)
+			)
+		)`;
+}
+
+/**
+ * How many synced files have not been read for decisions: skipped by a
+ * repository's first sync, or never read. A skipped file edited since is not
+ * counted as skipped: its new version was read as usual.
+ */
+export async function countLivingMemoryFilesAwaitingDecisionScan(input: {
 	projectId: string;
 	organizationId?: string | null;
 }): Promise<number> {
-	const rows = await db.projectContext.findMany({
-		where: skippedAtFirstSyncWhere({
-			projectId: input.projectId,
-			organizationId: input.organizationId ?? null,
-		}),
-		select: { contentHash: true, decisionScanSkippedHash: true },
-	});
-	return rows.filter((row) => row.contentHash === row.decisionScanSkippedHash)
-		.length;
+	const [row] = await db.$queryRaw<Array<{ count: number }>>`
+		SELECT count(*)::integer AS count
+		  FROM project_context c
+		 WHERE ${awaitingDecisionScanWhere(
+				{
+					projectId: input.projectId,
+					organizationId: input.organizationId ?? null,
+				},
+				Prisma.sql`c."decisionScanSkippedHash" = c."contentHash"`,
+			)}`;
+	return row?.count ?? 0;
 }
 
 /** One page of those files, by id, for a scan a member asked for. */
-export async function listLivingMemoryFilesSkippedAtFirstSync(input: {
+export async function listLivingMemoryFilesAwaitingDecisionScan(input: {
 	projectId: string;
 	organizationId: string | null;
 	afterId?: string;
@@ -532,15 +668,18 @@ export async function listLivingMemoryFilesSkippedAtFirstSync(input: {
 }): Promise<
 	Array<{ id: string; projectId: string; organizationId: string | null }>
 > {
-	return db.projectContext.findMany({
-		where: {
-			...skippedAtFirstSyncWhere(input),
-			...(input.afterId ? { id: { gt: input.afterId } } : {}),
-		},
-		select: { id: true, projectId: true, organizationId: true },
-		orderBy: { id: "asc" },
-		take: input.limit,
-	});
+	return db.$queryRaw<
+		Array<{ id: string; projectId: string; organizationId: string | null }>
+	>`
+		SELECT c.id, c."projectId", c."organizationId"
+		  FROM project_context c
+		 WHERE ${awaitingDecisionScanWhere(
+				input,
+				Prisma.sql`c."decisionScanSkippedHash" IS NOT NULL`,
+			)}
+		   ${input.afterId ? Prisma.sql`AND c.id > ${input.afterId}` : Prisma.empty}
+		 ORDER BY c.id ASC
+		 LIMIT ${input.limit}::integer`;
 }
 
 /** The file no longer waits on a scan. */

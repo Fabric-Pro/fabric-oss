@@ -1,7 +1,9 @@
+import { ORPCError } from "@orpc/client";
 import {
 	db,
 	disconnectIntegrationsForUser,
 	logRepoIntegrationActivity,
+	ProjectMemberRole,
 } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
@@ -54,6 +56,37 @@ export const removeMemberProcedure = tenantProtectedProcedure
 			},
 			select: { role: true, userId: true },
 		});
+		// Only an OWNER may remove another owner; otherwise a PROJECT_ADMIN
+		// could remove the owners above them. Read the caller's own standing
+		// rather than getProjectMemberRole, which is for display and answers
+		// null for an owner invited from outside the organization.
+		if (target?.role === ProjectMemberRole.OWNER) {
+			const [project, actorOwnerRow] = await Promise.all([
+				db.project.findUnique({
+					where: { id: input.projectId },
+					select: { userId: true },
+				}),
+				db.projectMember.findFirst({
+					where: {
+						projectId: input.projectId,
+						userId: user.id,
+						role: ProjectMemberRole.OWNER,
+						acceptedAt: { not: null },
+						OR: [
+							{ expiresAt: null },
+							{ expiresAt: { gt: new Date() } },
+						],
+					},
+					select: { userId: true },
+				}),
+			]);
+			if (project?.userId !== user.id && !actorOwnerRow) {
+				throw new ORPCError("FORBIDDEN", {
+					message: "Only project owners can remove another owner",
+				});
+			}
+		}
+
 		const targetUser = target
 			? await db.user.findUnique({
 					where: { id: target.userId },

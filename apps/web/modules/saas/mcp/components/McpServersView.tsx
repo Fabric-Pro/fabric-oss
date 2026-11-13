@@ -1554,7 +1554,7 @@ export function McpServersView({
 											line and cannot be configured from
 											the web UI.
 										</p>
-										<p className="mt-2 text-xs text-highlight/80">
+										<p className="mt-2 text-xs text-highlight">
 											Use Claude Desktop or a local MCP
 											client to run this server.
 										</p>

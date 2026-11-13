@@ -1,5 +1,13 @@
 # @fabricorg/integrations-slack
 
+## 0.1.17
+
+### Patch Changes
+
+- Updated dependencies [c283fae]
+- Updated dependencies [c283fae]
+  - @fabricorg/sdk@0.8.2
+
 ## 0.1.16
 
 ### Patch Changes

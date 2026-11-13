@@ -618,6 +618,8 @@ describe("which workflows may wait for a plan", () => {
 			"document-refresh.ts",
 			"existing-project-setup.ts",
 			"generate-and-send-newsletter.ts",
+			// Bounds the newsletter's captures by the same run deadline.
+			"newsletter-screenshots.ts",
 			"parlume-notes.ts",
 			"publishing-suggestion-generation-workflow.ts",
 			"scan-finding-review.ts",

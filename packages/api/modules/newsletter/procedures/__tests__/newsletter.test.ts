@@ -39,6 +39,8 @@ const {
 	mockWorkflowStart,
 	mockListNewsletterSends,
 	mockCountNewsletterSends,
+	mockGetNewsletterIncompleteScanReasons,
+	mockCountPublishedNewsletterSendImages,
 	mockListNewsletterSendsForMembers,
 	mockCountNewsletterSendsForMembers,
 	mockGetNewsletterSendForMembers,
@@ -63,6 +65,8 @@ const {
 	mockWorkflowStart: vi.fn(),
 	mockListNewsletterSends: vi.fn(),
 	mockCountNewsletterSends: vi.fn(),
+	mockGetNewsletterIncompleteScanReasons: vi.fn(),
+	mockCountPublishedNewsletterSendImages: vi.fn(),
 	mockListNewsletterSendsForMembers: vi.fn(),
 	mockCountNewsletterSendsForMembers: vi.fn(),
 	mockGetNewsletterSendForMembers: vi.fn(),
@@ -100,6 +104,8 @@ vi.mock("@repo/database", () => ({
 	resolveWindow: mockResolveWindow,
 	listNewsletterSends: mockListNewsletterSends,
 	countNewsletterSends: mockCountNewsletterSends,
+	getNewsletterIncompleteScanReasons: mockGetNewsletterIncompleteScanReasons,
+	countPublishedNewsletterSendImages: mockCountPublishedNewsletterSendImages,
 	listNewsletterSendsForMembers: mockListNewsletterSendsForMembers,
 	countNewsletterSendsForMembers: mockCountNewsletterSendsForMembers,
 	getNewsletterSendForMembers: mockGetNewsletterSendForMembers,
@@ -134,6 +140,7 @@ vi.mock("@repo/temporal", () => ({
 vi.mock("../../../../orpc/procedures", () => {
 	const chainable: any = {
 		use: () => chainable,
+		meta: () => chainable,
 		route: () => chainable,
 		input: () => chainable,
 		output: () => chainable,
@@ -916,6 +923,8 @@ describe("sends.list — pagination + filter + shape", () => {
 		});
 		mockListNewsletterSends.mockResolvedValue([]);
 		mockCountNewsletterSends.mockResolvedValue(0);
+		mockGetNewsletterIncompleteScanReasons.mockResolvedValue(new Map());
+		mockCountPublishedNewsletterSendImages.mockResolvedValue(new Map());
 	});
 
 	it("returns { sends, total } with default pagination", async () => {
@@ -936,8 +945,99 @@ describe("sends.list — pagination + filter + shape", () => {
 
 		expect(Array.isArray(res.sends)).toBe(true);
 		expect(typeof res.total).toBe("number");
-		expect(res.sends).toEqual(sends);
+		expect(res.sends).toEqual([
+			{
+				id: "s1",
+				status: "SENT",
+				incompleteScanReason: null,
+				publishedImageCount: 0,
+			},
+		]);
 		expect(res.total).toBe(5);
+	});
+
+	it("adds the recorded reason to an incomplete-scan send only", async () => {
+		mockListNewsletterSends.mockResolvedValue([
+			{
+				id: "s1",
+				status: "SKIPPED_EMPTY",
+				skipReason: "INCOMPLETE_SCAN",
+			},
+			{ id: "s2", status: "SENT", skipReason: null },
+		]);
+		mockGetNewsletterIncompleteScanReasons.mockResolvedValue(
+			new Map([
+				["s1", "example-org/example-repo: GitHub API error: Not Found"],
+			]),
+		);
+
+		const res = (await listSends({
+			input: {
+				projectId,
+				organizationId,
+				limit: 15,
+				offset: 0,
+				status: "all",
+			},
+			context: personalContext,
+		})) as { sends: unknown[] };
+
+		expect(mockGetNewsletterIncompleteScanReasons).toHaveBeenCalledWith(
+			projectId,
+			["s1", "s2"],
+		);
+		expect(res.sends).toEqual([
+			{
+				id: "s1",
+				status: "SKIPPED_EMPTY",
+				skipReason: "INCOMPLETE_SCAN",
+				incompleteScanReason:
+					"example-org/example-repo: GitHub API error: Not Found",
+				publishedImageCount: 0,
+			},
+			{
+				id: "s2",
+				status: "SENT",
+				skipReason: null,
+				incompleteScanReason: null,
+				publishedImageCount: 0,
+			},
+		]);
+	});
+
+	it("counts the images each send still has published", async () => {
+		mockListNewsletterSends.mockResolvedValue([
+			{ id: "s1", status: "SENT" },
+			{ id: "s2", status: "SENT" },
+		]);
+		mockCountPublishedNewsletterSendImages.mockResolvedValue(
+			new Map([["s1", 3]]),
+		);
+
+		const res = (await listSends({
+			input: {
+				projectId,
+				organizationId,
+				limit: 15,
+				offset: 0,
+				status: "all",
+			},
+			context: personalContext,
+		})) as { sends: Array<{ id: string; publishedImageCount: number }> };
+
+		expect(mockCountPublishedNewsletterSendImages).toHaveBeenCalledWith(
+			projectId,
+			["s1", "s2"],
+		);
+		expect(
+			res.sends.map(({ id, publishedImageCount }) => ({
+				id,
+				publishedImageCount,
+			})),
+		).toEqual([
+			{ id: "s1", publishedImageCount: 3 },
+			{ id: "s2", publishedImageCount: 0 },
+		]);
 	});
 
 	it("rejects an unsupported page size (e.g. 20)", async () => {

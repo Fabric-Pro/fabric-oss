@@ -540,7 +540,7 @@ function SourceItem({ source }: { source: SourceReference }) {
 							href={source.url}
 							target="_blank"
 							rel="noopener noreferrer"
-							className="text-primary hover:text-primary/80 transition-colors shrink-0"
+							className="text-primary hover:text-primary-hover transition-colors shrink-0"
 						>
 							<ExternalLink className="size-3.5" />
 						</a>

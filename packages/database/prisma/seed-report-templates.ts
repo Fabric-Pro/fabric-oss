@@ -1741,6 +1741,15 @@ export function seededReportTemplateDefinition(
 		: { definition: seeded, keptEdited: false };
 }
 
+/**
+ * The system template the seed owns under a name. A person's template published
+ * to every organization is SYSTEM scope too and may share the name; it has an
+ * author, so the seed never rewrites it and adds its own row beside it.
+ */
+export function seededSystemTemplateWhere(name: string) {
+	return { name, scope: "SYSTEM" as const, userId: null };
+}
+
 async function seedReportTemplates() {
 	logger.info(
 		"\nSeeding System Report Templates v3 (Standardized Format)...",
@@ -1751,9 +1760,8 @@ async function seedReportTemplates() {
 
 	for (const template of SYSTEM_TEMPLATES) {
 		const existing = await db.reportTemplate.findFirst({
-			where: {
-				OR: [{ name: template.name, scope: "SYSTEM" }],
-			},
+			where: seededSystemTemplateWhere(template.name),
+			orderBy: { createdAt: "asc" },
 		});
 
 		const { definition, keptEdited } = seededReportTemplateDefinition(

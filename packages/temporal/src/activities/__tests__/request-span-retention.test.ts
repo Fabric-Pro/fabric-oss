@@ -9,9 +9,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	executeRawMock: vi.fn(),
 	purgeReplayMock: vi.fn(),
+	purgeAdvisorMock: vi.fn(),
 	purgeMcpDurableMock: vi.fn(),
 	loggerInfoMock: vi.fn(),
 	loggerWarnMock: vi.fn(),
+}));
+
+vi.mock("@repo/database/prisma/queries/advisor-tool-results", () => ({
+	advisorToolResultStorage: { deleteExpired: mocks.purgeAdvisorMock },
 }));
 
 vi.mock("@repo/database", () => ({
@@ -36,6 +41,7 @@ import { purgeExpiredRequestSpansActivity } from "../request-span-retention";
 const originalEnv = process.env.FABRIC_REQUEST_SPAN_RETENTION_DAYS;
 
 beforeEach(() => {
+	mocks.purgeAdvisorMock.mockReset().mockResolvedValue(0);
 	mocks.purgeReplayMock.mockReset().mockResolvedValue(0);
 	mocks.purgeMcpDurableMock.mockReset().mockResolvedValue(0);
 	mocks.executeRawMock.mockReset();
@@ -140,5 +146,40 @@ describe("purgeExpiredRequestSpansActivity", () => {
 		expect(result.hitSafetyCap).toBe(true);
 		expect(mocks.executeRawMock).toHaveBeenCalledTimes(1_000);
 		expect(mocks.loggerWarnMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("Advisor result retention", () => {
+	it("purges expired results even when span retention is disabled", async () => {
+		process.env.FABRIC_REQUEST_SPAN_RETENTION_DAYS = "0";
+		mocks.purgeAdvisorMock
+			.mockResolvedValueOnce(5000)
+			.mockResolvedValueOnce(0);
+		await purgeExpiredRequestSpansActivity();
+		expect(mocks.purgeAdvisorMock).toHaveBeenCalledTimes(2);
+		expect(mocks.executeRawMock).not.toHaveBeenCalled();
+	});
+	it("bounds cleanup to 1000 batches", async () => {
+		process.env.FABRIC_REQUEST_SPAN_RETENTION_DAYS = "0";
+		mocks.purgeAdvisorMock.mockResolvedValue(1);
+		await purgeExpiredRequestSpansActivity();
+		expect(mocks.purgeAdvisorMock).toHaveBeenCalledTimes(1000);
+		expect(mocks.loggerWarnMock).toHaveBeenCalledWith(
+			expect.stringContaining("AdvisorResultRetention"),
+		);
+	});
+	it("continues retention without logging a failed cleanup's error", async () => {
+		process.env.FABRIC_REQUEST_SPAN_RETENTION_DAYS = "7";
+		mocks.purgeAdvisorMock.mockRejectedValue(
+			new Error("example result content"),
+		);
+		mocks.executeRawMock.mockResolvedValue(0);
+		await expect(purgeExpiredRequestSpansActivity()).resolves.toMatchObject(
+			{ deletedCount: 0 },
+		);
+		expect(JSON.stringify(mocks.loggerWarnMock.mock.calls)).not.toContain(
+			"example result content",
+		);
+		expect(mocks.executeRawMock).toHaveBeenCalledOnce();
 	});
 });

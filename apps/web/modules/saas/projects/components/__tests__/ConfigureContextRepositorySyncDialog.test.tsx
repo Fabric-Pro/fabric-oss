@@ -48,17 +48,35 @@ beforeAll(() => {
 	}
 });
 
-const { configureMock, syncNowMock, listTreeMock, readIgnoreFilesMock } =
-	vi.hoisted(() => ({
-		configureMock: vi.fn(),
-		syncNowMock: vi.fn(),
-		listTreeMock: vi.fn(),
-		readIgnoreFilesMock: vi.fn(),
-	}));
+const {
+	configureMock,
+	syncNowMock,
+	listTreeMock,
+	readIgnoreFilesMock,
+	branchesMock,
+} = vi.hoisted(() => ({
+	configureMock: vi.fn(),
+	syncNowMock: vi.fn(),
+	listTreeMock: vi.fn(),
+	readIgnoreFilesMock: vi.fn(),
+	branchesMock: vi.fn(),
+}));
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
+			repositoryIntegrations: {
+				branches: {
+					queryOptions: (options: {
+						input: unknown;
+						[key: string]: unknown;
+					}) => ({
+						...options,
+						queryKey: ["branches", options.input],
+						queryFn: () => branchesMock(options.input),
+					}),
+				},
+			},
 			contexts: {
 				repositorySync: {
 					configure: {
@@ -124,6 +142,13 @@ beforeEach(() => {
 	listTreeMock.mockResolvedValue(EMPTY_TREE);
 	readIgnoreFilesMock.mockReset();
 	readIgnoreFilesMock.mockResolvedValue({ supported: true, files: [] });
+	// The provider names no default by default: the stored branch seeds.
+	branchesMock.mockReset();
+	branchesMock.mockResolvedValue({
+		defaultBranch: null,
+		branches: [],
+		truncated: false,
+	});
 });
 
 import { toast } from "sonner";
@@ -1755,5 +1780,64 @@ describe("ConfigureContextRepositorySyncDialog — the .contextignore notice", (
 
 		expect(screen.getByText(READ_NOTICE)).toBeInTheDocument();
 		expect(screen.queryByText(UNREAD_NOTICE)).toBeNull();
+	});
+});
+
+describe("ConfigureContextRepositorySyncDialog — the repository's own default branch", () => {
+	const branchInput = () =>
+		screen.getByLabelText(
+			`${NS}.configureDialog.branchLabel`,
+		) as HTMLInputElement;
+
+	it("seeds a new sync from the provider's live default, not the stale stored branch", async () => {
+		branchesMock.mockResolvedValue({
+			defaultBranch: "develop",
+			branches: ["develop", "main"],
+			truncated: false,
+		});
+		renderDialog();
+
+		await waitFor(() => expect(branchInput().value).toBe("develop"));
+		expect(branchesMock).toHaveBeenCalledWith({
+			projectId: "proj_1",
+			repositoryIntegrationId: "int_1",
+		});
+	});
+
+	it("offers the repository's branches as suggestions while still taking a typed name", async () => {
+		const user = userEvent.setup();
+		branchesMock.mockResolvedValue({
+			defaultBranch: "main",
+			branches: ["main", "release/1.0"],
+			truncated: false,
+		});
+		renderDialog();
+
+		const list = await screen.findByTestId(
+			"context-sync-branch-suggestions",
+		);
+		expect(
+			Array.from(list.querySelectorAll("option")).map((o) => o.value),
+		).toEqual(["main", "release/1.0"]);
+		expect(branchInput()).toHaveAttribute(
+			"list",
+			"context-sync-branch-suggestions",
+		);
+
+		await user.clear(branchInput());
+		await user.type(branchInput(), "not-listed");
+		expect(branchInput().value).toBe("not-listed");
+	});
+
+	it("keeps a configured sync's branch even when the provider default differs", async () => {
+		branchesMock.mockResolvedValue({
+			defaultBranch: "develop",
+			branches: ["develop", "release"],
+			truncated: false,
+		});
+		renderDialog({ current: CURRENT });
+
+		await screen.findByTestId("context-sync-branch-suggestions");
+		expect(branchInput().value).toBe("release");
 	});
 });

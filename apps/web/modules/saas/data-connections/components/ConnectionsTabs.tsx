@@ -225,7 +225,7 @@ export function ConnectionsTabs({
 								Create or modify MCP server
 							</span>
 						</div>
-						<div className="mt-2.5 text-xs leading-relaxed text-foreground/65">
+						<div className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
 							Connect custom tools, internal databases, or scripts
 							to your workspace through the Model Context
 							Protocol.
@@ -244,11 +244,11 @@ export function ConnectionsTabs({
 								Connect external tools to Fabric
 							</span>
 						</div>
-						<div className="mt-2.5 text-xs leading-relaxed text-foreground/65">
+						<div className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
 							{MCP_ACCESS_HINT}{" "}
 							<Link
 								href={apiKeysHref}
-								className="font-medium text-primary underline underline-offset-4 hover:text-primary/90"
+								className="font-medium text-primary underline underline-offset-4 hover:text-primary-hover"
 							>
 								{MCP_ACCESS_LINK_LABEL}
 							</Link>

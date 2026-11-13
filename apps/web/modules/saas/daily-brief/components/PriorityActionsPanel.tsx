@@ -191,7 +191,7 @@ export function PriorityActionsPanel({ actions }: PriorityActionsPanelProps) {
 										aria-hidden="true"
 									/>
 									<span>{meta.label}</span>
-									<span className="text-muted-foreground/60">
+									<span className="text-muted-foreground">
 										· {group.items.length}
 									</span>
 								</div>

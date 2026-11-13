@@ -10,7 +10,7 @@
 # =============================================================================
 # Stage 1: Dependencies
 # =============================================================================
-FROM node:22-slim AS deps
+FROM node:24-slim AS deps
 
 # Install certificates and OpenSSL for the build-time Prisma CLI.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -182,7 +182,7 @@ RUN cd apps/web && NODE_OPTIONS=--max-old-space-size=12288 node --max-old-space-
 # =============================================================================
 # Stage 3: Production
 # =============================================================================
-FROM node:22-slim AS production
+FROM node:24-slim AS production
 
 # Node handles TLS for the JavaScript driver; keep system CA certificates.
 RUN apt-get update && apt-get install -y --no-install-recommends \

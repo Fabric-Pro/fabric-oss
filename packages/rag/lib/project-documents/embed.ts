@@ -8,7 +8,7 @@
  * Key Features:
  * - Embed on document completion/update
  * - Re-embed when content changes (using content hash)
- * - Delete old embeddings before re-embedding
+ * - Replace old embeddings after successful re-embedding
  * - Uses same Qdrant collection as project contexts
  */
 
@@ -37,8 +37,11 @@ import {
 import { generateEmbedding, generateEmbeddings } from "../embedding";
 import {
 	deleteProjectContext,
+	deleteProjectContextPoints,
+	listProjectContextPointIds,
 	storeProjectContext,
 } from "../project-contexts/store";
+import { replaceDocumentEmbedding } from "./replace";
 
 /**
  * How many chunk texts to send in a single embeddings API call.
@@ -103,6 +106,8 @@ export interface EmbedDocumentOptions {
 
 export interface DocumentEmbedResult {
 	success: boolean;
+	/** This run was cancelled or lost the document version guard. */
+	superseded?: boolean;
 	qdrantId?: string;
 	contentHash?: string;
 	error?: string;
@@ -275,7 +280,7 @@ export async function embedProjectDocument(
 					chunkingVersion: ragSettings.chunkingVersion,
 				},
 			);
-			if (result.success) {
+			if (result.success && !result.superseded) {
 				await recordDocumentChunkingVersion(
 					documentId,
 					ragSettings.chunkingVersion,
@@ -305,6 +310,7 @@ export async function embedProjectDocument(
 			);
 			return {
 				success: false,
+				superseded: true,
 				error: "Embedding cancelled — superseded by a newer run",
 				chunksCreated: 0,
 			};
@@ -347,6 +353,7 @@ export async function embedProjectDocument(
 			);
 			return {
 				success: false,
+				superseded: true,
 				error: "Embedding cancelled — superseded by a newer run",
 				chunksCreated: 0,
 			};
@@ -392,6 +399,7 @@ export async function embedProjectDocument(
 				);
 				return {
 					success: true,
+					superseded: true,
 					qdrantId,
 					contentHash,
 					chunksCreated: 1,
@@ -421,6 +429,7 @@ export async function embedProjectDocument(
 		return {
 			success: false,
 			error: errorMessage,
+			...(options.abortSignal?.aborted ? { superseded: true } : {}),
 		};
 	}
 }
@@ -490,14 +499,16 @@ async function embedDocumentWithChunking(
 		`[DocumentEmbed] Created ${chunks.length} chunks for document ${documentId}`,
 	);
 
-	// Generate embeddings in batches (one API call per batch) and store each
-	// chunk with bounded upsert parallelism. Strictly sequential embed + upsert
+	// Generate all vectors in batches before writing any points. Then store
+	// chunks with bounded upsert parallelism. Strictly sequential embed + upsert
 	// was taking up to 5 min for ~150-chunk docs and tripping the activity
 	// timeout. Batching embeddings collapses N HTTP round-trips into N/25, and
 	// parallel upserts hide Qdrant latency for the remaining work.
 	let firstQdrantId: string | undefined;
 	let successCount = 0;
 	const errors: string[] = [];
+	const chunkEmbeddings: number[][] = [];
+	const writtenIds: string[] = [];
 	let aborted = false;
 
 	// Per-chunk contextIds are suffixed with the document version when the
@@ -552,136 +563,164 @@ async function embedDocumentWithChunking(
 			logger.error(
 				`[DocumentEmbed] Failed to generate embeddings for batch starting at chunk ${batch[0]?.index}: ${errorMsg}`,
 			);
-			for (const chunk of batch) {
-				errors.push(`Chunk ${chunk.index}: ${errorMsg}`);
-			}
-			continue;
+			return {
+				success: false,
+				error: errorMsg,
+				...(options.abortSignal?.aborted ? { superseded: true } : {}),
+			};
 		}
-
 		if (batchEmbeddings.length !== batch.length) {
-			const errorMsg = `Embedding count mismatch: expected ${batch.length}, got ${batchEmbeddings.length}`;
-			logger.error(`[DocumentEmbed] ${errorMsg}`);
-			for (const chunk of batch) {
-				errors.push(`Chunk ${chunk.index}: ${errorMsg}`);
+			const error = `Embedding count mismatch: expected ${batch.length}, got ${batchEmbeddings.length}`;
+			logger.error(`[DocumentEmbed] ${error}`);
+			return { success: false, error };
+		}
+		for (const [offset, embedding] of batchEmbeddings.entries()) {
+			if (!embedding || embedding.length === 0) {
+				const error = `Chunk ${batch[offset].index}: Empty embedding result`;
+				logger.error(`[DocumentEmbed] ${error}`);
+				return { success: false, error };
 			}
-			continue;
+			chunkEmbeddings.push(embedding);
+		}
+	}
+	if (options.abortSignal?.aborted) {
+		return {
+			success: false,
+			superseded: true,
+			error: "Embedding cancelled",
+			chunksCreated: 0,
+		};
+	}
+	// Preserve pre-existing ids during rollback, including same-version retries.
+	// A write failure in a same-version run can leave overwritten chunks in
+	// place with new text; the point-id-only API cannot restore them (Fizzy #3563).
+	const previousIds = new Set(
+		await listProjectContextPointIds(embeddingContextId, organizationId),
+	);
+
+	// Upsert chunks to Qdrant with bounded parallelism. Preserve order
+	// so firstQdrantId maps to the first chunk (index 0) in a stable way.
+	for (
+		let windowStart = 0;
+		windowStart < chunks.length;
+		windowStart += UPSERT_CONCURRENCY
+	) {
+		// Check cancellation again at each upsert-window boundary so a
+		// mid-batch cancellation doesn't end up upserting the remainder
+		// of the batch after the heartbeat has surfaced the abort.
+		if (options.abortSignal?.aborted) {
+			aborted = true;
+			logger.warn(
+				`[DocumentEmbed] Aborting chunked embedding for ${documentId} mid-batch — activity was cancelled (${successCount}/${chunks.length} chunks landed before cancellation)`,
+			);
+			break;
 		}
 
-		// Upsert the batch to Qdrant with bounded parallelism. Preserve order
-		// so firstQdrantId maps to the first chunk (index 0) in a stable way.
-		for (
-			let windowStart = 0;
-			windowStart < batch.length;
-			windowStart += UPSERT_CONCURRENCY
-		) {
-			// Check cancellation again at each upsert-window boundary so a
-			// mid-batch cancellation doesn't end up upserting the remainder
-			// of the batch after the heartbeat has surfaced the abort.
-			if (options.abortSignal?.aborted) {
-				aborted = true;
-				logger.warn(
-					`[DocumentEmbed] Aborting chunked embedding for ${documentId} mid-batch — activity was cancelled (${successCount}/${chunks.length} chunks landed before cancellation)`,
+		const window = chunks.slice(
+			windowStart,
+			windowStart + UPSERT_CONCURRENCY,
+		);
+		const results = await Promise.all(
+			window.map(async (chunk, offset) => {
+				const embedding = chunkEmbeddings[windowStart + offset];
+				if (!embedding || embedding.length === 0) {
+					return {
+						chunk,
+						error: "Empty embedding result",
+						qdrantId: undefined as string | undefined,
+					};
+				}
+				try {
+					const qdrantId = await storeProjectContext({
+						contextId: buildChunkContextId(chunk.index),
+						projectId,
+						userId,
+						organizationId,
+						content: chunk.content,
+						embedding,
+						metadata: {
+							type: `DOCUMENT_${documentType}`,
+							sourceTitle: title,
+							documentId,
+							documentType,
+							chunkIndex: chunk.index,
+							totalChunks: chunks.length,
+							headings: chunk.metadata.headings,
+							section: chunk.metadata.section,
+							originalContextId: embeddingContextId,
+							documentVersion: options.expectedVersion,
+							// The profile on content-type chunks; absent otherwise.
+							...(precomputed
+								? {
+										...precomputed.payloads[chunk.index],
+										chunkingVersion:
+											precomputed.chunkingVersion,
+									}
+								: {}),
+						},
+					});
+					return { chunk, error: undefined, qdrantId };
+				} catch (error) {
+					return {
+						chunk,
+						error:
+							error instanceof Error
+								? error.message
+								: String(error),
+						qdrantId: undefined,
+					};
+				}
+			}),
+		);
+
+		for (const r of results) {
+			if (r.error) {
+				logger.error(
+					`[DocumentEmbed] Failed to embed chunk ${r.chunk.index}: ${r.error}`,
 				);
-				break;
+				errors.push(`Chunk ${r.chunk.index}: ${r.error}`);
+				continue;
 			}
-
-			const window = batch.slice(
-				windowStart,
-				windowStart + UPSERT_CONCURRENCY,
-			);
-			const results = await Promise.all(
-				window.map(async (chunk, offset) => {
-					const embedding = batchEmbeddings[windowStart + offset];
-					if (!embedding || embedding.length === 0) {
-						return {
-							chunk,
-							error: "Empty embedding result",
-							qdrantId: undefined as string | undefined,
-						};
-					}
-					try {
-						const qdrantId = await storeProjectContext({
-							contextId: buildChunkContextId(chunk.index),
-							projectId,
-							userId,
-							organizationId,
-							content: chunk.content,
-							embedding,
-							metadata: {
-								type: `DOCUMENT_${documentType}`,
-								sourceTitle: title,
-								documentId,
-								documentType,
-								chunkIndex: chunk.index,
-								totalChunks: chunks.length,
-								headings: chunk.metadata.headings,
-								section: chunk.metadata.section,
-								originalContextId: embeddingContextId,
-								documentVersion: options.expectedVersion,
-								// The profile on content-type chunks; absent otherwise.
-								...(precomputed
-									? {
-											...precomputed.payloads[
-												chunk.index
-											],
-											chunkingVersion:
-												precomputed.chunkingVersion,
-										}
-									: {}),
-							},
-						});
-						return { chunk, error: undefined, qdrantId };
-					} catch (error) {
-						return {
-							chunk,
-							error:
-								error instanceof Error
-									? error.message
-									: String(error),
-							qdrantId: undefined,
-						};
-					}
-				}),
-			);
-
-			for (const r of results) {
-				if (r.error) {
-					logger.error(
-						`[DocumentEmbed] Failed to embed chunk ${r.chunk.index}: ${r.error}`,
-					);
-					errors.push(`Chunk ${r.chunk.index}: ${r.error}`);
-					continue;
-				}
-				// Capture the first successful upsert in ascending chunk order
-				// (batches and windows both iterate ascending). Matches the
-				// legacy per-chunk loop's semantics: firstQdrantId is the
-				// Qdrant point ID of the earliest chunk that successfully
-				// landed, used by markDocumentAsEmbedded as the document's
-				// anchor point reference.
-				if (!firstQdrantId) {
-					firstQdrantId = r.qdrantId;
-				}
-				successCount++;
+			// Capture the first successful upsert in ascending chunk order
+			// (batches and windows both iterate ascending). Matches the
+			// legacy per-chunk loop's semantics: firstQdrantId is the
+			// Qdrant point ID of the earliest chunk that successfully
+			// landed, used by markDocumentAsEmbedded as the document's
+			// anchor point reference.
+			if (!firstQdrantId) {
+				firstQdrantId = r.qdrantId;
+			}
+			successCount++;
+			if (r.qdrantId) {
+				writtenIds.push(r.qdrantId);
 			}
 		}
-
-		if (aborted) {
+		if (errors.length > 0) {
 			break;
 		}
 	}
 
-	if (aborted) {
-		// Cancelled before finishing — don't mark as embedded (even under the
-		// version guard) since we only did partial upserts. The newer run
-		// that caused this cancellation will do its own delete + re-upsert
-		// and own the final state.
+	if (options.abortSignal?.aborted) {
+		aborted = true;
+	}
+	if (aborted || errors.length > 0) {
+		try {
+			await deleteProjectContextPoints(
+				writtenIds.filter((id) => !previousIds.has(id)),
+				organizationId,
+			);
+		} catch (error) {
+			logger.warn("[DocumentEmbed] Failed to roll back new points", {
+				error,
+			});
+		}
 		return {
 			success: false,
-			error: "Embedding cancelled — superseded by a newer run",
-			chunksCreated: successCount,
+			...(aborted ? { superseded: true } : {}),
+			error: aborted ? "Embedding cancelled" : errors[0],
+			chunksCreated: 0,
 		};
 	}
-
 	if (successCount === 0) {
 		return {
 			success: false,
@@ -705,6 +744,7 @@ async function embedDocumentWithChunking(
 				);
 				return {
 					success: true,
+					superseded: true,
 					qdrantId: firstQdrantId,
 					contentHash,
 					chunksCreated: successCount,
@@ -733,13 +773,13 @@ async function embedDocumentWithChunking(
 
 /**
  * Re-embed a document after content update
- * Deletes old embeddings and creates new ones
+ * Writes new embeddings before removing stale points
  */
 export async function reembedProjectDocument(
 	options: EmbedDocumentOptions,
 	oldContentHash?: string,
 ): Promise<DocumentEmbedResult> {
-	const { documentId, organizationId } = options;
+	const { documentId } = options;
 
 	// Check if content actually changed — on the slot-free body, the one
 	// `embedProjectDocument` hashes and stores.
@@ -756,21 +796,7 @@ export async function reembedProjectDocument(
 	logger.info(`[DocumentEmbed] Re-embedding document ${documentId}`);
 
 	try {
-		// Delete old embedding
-		const embeddingContextId = `doc-${documentId}`;
-		try {
-			await deleteProjectContext(embeddingContextId, organizationId);
-		} catch {
-			logger.debug(
-				`[DocumentEmbed] No existing embedding to delete for ${documentId}`,
-			);
-		}
-
-		// Clear database fields
-		await clearDocumentEmbedding(documentId);
-
-		// Create new embedding
-		return await embedProjectDocument(options);
+		return await replaceDocumentEmbedding(options, embedProjectDocument);
 	} catch (error) {
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
@@ -781,6 +807,7 @@ export async function reembedProjectDocument(
 		return {
 			success: false,
 			error: errorMessage,
+			...(options.abortSignal?.aborted ? { superseded: true } : {}),
 		};
 	}
 }

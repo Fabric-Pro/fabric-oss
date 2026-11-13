@@ -120,7 +120,7 @@ services:
 
   # Document Generator - Unified Server (AG-UI + A2A)
   document-generator:
-    image: node:22-alpine
+    image: node:24-alpine
     container_name: fabric-document-generator
     working_dir: /app/agents/langchain/document-generator
     command: >
@@ -169,7 +169,7 @@ services:
   # Single unified server handles both AG-UI (CopilotKit) and A2A (orchestrator) protocols
 
   project-document-generator:
-    image: node:22-alpine
+    image: node:24-alpine
     container_name: fabric-project-document-generator
     working_dir: /app/agents/langchain/project-document-generator
     command: >
@@ -218,7 +218,7 @@ services:
   # Single unified server handles both AG-UI (CopilotKit) and A2A (orchestrator) protocols
 
   task-planner:
-    image: node:22-alpine
+    image: node:24-alpine
     container_name: fabric-task-planner
     working_dir: /app/agents/langchain/task-planner
     command: >
@@ -267,7 +267,7 @@ services:
   # Single unified server handles both AG-UI (CopilotKit) and A2A (orchestrator) protocols
 
   story-breakdown:
-    image: node:22-alpine
+    image: node:24-alpine
     container_name: fabric-story-breakdown
     working_dir: /app/agents/langchain/story-breakdown
     command: >
@@ -316,7 +316,7 @@ services:
   # Single unified server handles both AG-UI (CopilotKit) and A2A (orchestrator) protocols
 
   api-agent:
-    image: node:22-alpine
+    image: node:24-alpine
     container_name: fabric-api-agent
     working_dir: /app/agents/langchain/api-agent
     command: >
@@ -365,7 +365,7 @@ services:
   # Single unified server handles both AG-UI (CopilotKit) and A2A (orchestrator) protocols
 
   prompt-enhancer:
-    image: node:22-alpine
+    image: node:24-alpine
     container_name: fabric-prompt-enhancer
     working_dir: /app/agents/langchain/prompt-enhancer
     command: >
@@ -410,7 +410,7 @@ services:
 
   # Custom Agent Runtime - hosts user-created custom agents
   custom-agent-runtime:
-    image: node:22-alpine
+    image: node:24-alpine
     container_name: fabric-custom-agent-runtime
     working_dir: /app/agents/langchain/custom-agent-runtime
     command: >
@@ -459,7 +459,7 @@ services:
   # PartyKit server for real-time collaboration features (document editing, presence, etc.)
 
   partykit:
-    image: node:22
+    image: node:24
     container_name: fabric-partykit
     working_dir: /app/party
     command: >
@@ -500,7 +500,7 @@ services:
   # Weave multi-agent services (plan, read, implement)
 
   weave-readers:
-    image: node:22-alpine
+    image: node:24-alpine
     container_name: fabric-weave-readers
     working_dir: /app
     command: >
@@ -532,7 +532,7 @@ services:
       start_period: 30s
 
   weave-planners:
-    image: node:22-alpine
+    image: node:24-alpine
     container_name: fabric-weave-planners
     working_dir: /app
     command: >
@@ -566,7 +566,7 @@ services:
       start_period: 30s
 
   weave-shuttle:
-    image: node:22-alpine
+    image: node:24-alpine
     container_name: fabric-weave-shuttle
     working_dir: /app
     command: >
@@ -597,7 +597,7 @@ services:
       start_period: 30s
 
   temporal-worker:
-    image: node:22-bookworm
+    image: node:24-bookworm
     container_name: fabric-temporal-worker
     working_dir: /app
     command: >
@@ -631,7 +631,7 @@ services:
         condition: service_healthy
 
   web:
-    image: node:22-alpine
+    image: node:24-alpine
     container_name: fabric-web
     working_dir: /app
     command: >

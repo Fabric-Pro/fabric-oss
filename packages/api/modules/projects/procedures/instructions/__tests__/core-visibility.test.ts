@@ -30,6 +30,7 @@ import {
 	PERMISSION_MIDDLEWARE_TAG,
 	Permissions,
 } from "../../../../../orpc/procedures";
+import { applyTemplateProcedure } from "../apply-template";
 import { beginSnapshotProcedure } from "../begin-snapshot";
 import { compareSnapshotsProcedure } from "../compare-snapshots";
 import { createDownloadUrlProcedure } from "../create-download-url";
@@ -50,6 +51,7 @@ import { listSnapshotsProcedure } from "../list-snapshots";
 import { publishSnapshotProcedure } from "../publish-snapshot";
 import { removeAllInstructionsProcedure } from "../remove-all";
 import { removeAllInstructionsPreviewProcedure } from "../remove-all-preview";
+import { templateStatusProcedure } from "../template-status";
 import { updateSettingsProcedure } from "../update-settings";
 
 type TaggedMiddleware = ((
@@ -74,6 +76,8 @@ function permissionMiddleware(procedure: unknown): TaggedMiddleware {
 const PROCEDURES = [
 	["beginSnapshot", beginSnapshotProcedure],
 	["deriveSnapshot", deriveSnapshotProcedure],
+	["applyTemplate", applyTemplateProcedure],
+	["templateStatus", templateStatusProcedure],
 	["finalizeSnapshot", finalizeSnapshotProcedure],
 	["createUploadUrls", createUploadUrlsProcedure],
 	["publishSnapshot", publishSnapshotProcedure],

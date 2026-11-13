@@ -732,7 +732,7 @@ const string agentRetryScriptMacOS = """
     """;
 
 // Simple startup script for Linux. The host node_modules is reused directly: the
-// container image is node:22-slim (Debian/glibc), the same libc the host install
+// container image is node:24-slim (Debian/glibc), the same libc the host install
 // targets, so the native optional dependencies (rollup, esbuild, ...) resolve. An
 // alpine/musl image would not — pnpm installs only the host platform's native
 // binaries, so tsup fails on load with a missing @rollup/rollup-linux-x64-musl.
@@ -850,13 +850,13 @@ var workspacePackageDirs = isLinux ? new List<string>() : ReadWorkspacePackageDi
 
 // Helper extension to conditionally shadow node_modules with volumes (macOS/Windows)
 // On Linux, the host node_modules already has glibc Linux binaries that match the
-// node:22-slim image, so no volume shadowing needed
+// node:24-slim image, so no volume shadowing needed
 IResourceBuilder<ContainerResource> AddNodeModulesVolume(IResourceBuilder<ContainerResource> container)
 {
     if (!isLinux)
     {
         // The name carries the libc and the layout. "fabric-linux-node-modules" was
-        // populated by node:22-alpine containers with musl binaries;
+        // populated by the previous Alpine containers with musl binaries;
         // "fabric-glibc-node-modules" shadowed only the root node_modules, so its
         // .linux-installed marker would skip the install the package volumes need.
         container = container.WithVolume("fabric-glibc-workspace-node-modules", "/app/node_modules");
@@ -867,7 +867,7 @@ IResourceBuilder<ContainerResource> AddNodeModulesVolume(IResourceBuilder<Contai
         }
         return container;
     }
-    // Linux: Use host node_modules directly (glibc binaries, valid in node:22-slim)
+    // Linux: Use host node_modules directly (glibc binaries, valid in node:24-slim)
     return container;
 }
 
@@ -1138,7 +1138,7 @@ if (isPublishMode)
 }
 else
 {
-    var weaveReadersBase = builder.AddContainer("weave-readers", "node", "22-slim")
+    var weaveReadersBase = builder.AddContainer("weave-readers", "node", "24-slim")
         .WithHttpEndpoint(port: 8140, targetPort: 8140, name: "http")
         .WithBindMount("../../", "/app");
     weaveReaders = AddHostGateway(AddNodeModulesVolume(weaveReadersBase))
@@ -1200,7 +1200,7 @@ if (isPublishMode)
 }
 else
 {
-    var weaveShuttleBase = builder.AddContainer("weave-shuttle", "node", "22-slim")
+    var weaveShuttleBase = builder.AddContainer("weave-shuttle", "node", "24-slim")
         .WithHttpEndpoint(port: 8141, targetPort: 8141, name: "http")
         .WithBindMount("../../", "/app");
     weaveShuttle = AddHostGateway(AddNodeModulesVolume(weaveShuttleBase))
@@ -1253,7 +1253,7 @@ if (isPublishMode)
 }
 else
 {
-    var weavePlannersBase = builder.AddContainer("weave-planners", "node", "22-slim")
+    var weavePlannersBase = builder.AddContainer("weave-planners", "node", "24-slim")
         .WithHttpEndpoint(port: 8142, targetPort: 8142, name: "http")
         .WithBindMount("../../", "/app");
     weavePlanners = AddHostGateway(AddNodeModulesVolume(weavePlannersBase))
@@ -1324,8 +1324,8 @@ else
     // NOTE: On macOS, we use a Docker volume to shadow node_modules for cross-platform compatibility.
     // This allows the container to have Linux-native binaries while the host keeps macOS binaries.
     // On Linux, the host node_modules already has the right (glibc) binaries for the
-    // node:22-slim image, so we skip the volume.
-    var docGenBase = builder.AddContainer("document-generator", "node", "22-slim")
+    // node:24-slim image, so we skip the volume.
+    var docGenBase = builder.AddContainer("document-generator", "node", "24-slim")
         .WithHttpEndpoint(port: 8124, targetPort: 8124, name: "http")
         .WithBindMount("../../", "/app");
     documentGenerator = AddHostGateway(AddNodeModulesVolume(docGenBase))
@@ -1379,7 +1379,7 @@ if (isPublishMode)
 }
 else
 {
-    var projDocGenBase = builder.AddContainer("project-document-generator", "node", "22-slim")
+    var projDocGenBase = builder.AddContainer("project-document-generator", "node", "24-slim")
         .WithHttpEndpoint(port: 8125, targetPort: 8125, name: "http")
         .WithBindMount("../../", "/app");
     projectDocumentGenerator = AddHostGateway(AddNodeModulesVolume(projDocGenBase))
@@ -1432,7 +1432,7 @@ if (isPublishMode)
 }
 else
 {
-    var taskPlannerBase = builder.AddContainer("task-planner", "node", "22-slim")
+    var taskPlannerBase = builder.AddContainer("task-planner", "node", "24-slim")
         .WithHttpEndpoint(port: 8126, targetPort: 8126, name: "http")
         .WithBindMount("../../", "/app");
     taskPlanner = AddHostGateway(AddNodeModulesVolume(taskPlannerBase))
@@ -1485,7 +1485,7 @@ if (isPublishMode)
 }
 else
 {
-    var storyBreakdownBase = builder.AddContainer("story-breakdown", "node", "22-slim")
+    var storyBreakdownBase = builder.AddContainer("story-breakdown", "node", "24-slim")
         .WithHttpEndpoint(port: 8127, targetPort: 8127, name: "http")
         .WithBindMount("../../", "/app");
     storyBreakdown = AddHostGateway(AddNodeModulesVolume(storyBreakdownBase))
@@ -1538,7 +1538,7 @@ if (isPublishMode)
 }
 else
 {
-    var dataAnalystBase = builder.AddContainer("data-analyst", "node", "22-slim")
+    var dataAnalystBase = builder.AddContainer("data-analyst", "node", "24-slim")
         .WithHttpEndpoint(port: 8130, targetPort: 8130, name: "http")
         .WithBindMount("../../", "/app");
     dataAnalyst = AddHostGateway(AddNodeModulesVolume(dataAnalystBase))
@@ -1591,7 +1591,7 @@ if (isPublishMode)
 }
 else
 {
-    var apiAgentBase = builder.AddContainer("api-agent", "node", "22-slim")
+    var apiAgentBase = builder.AddContainer("api-agent", "node", "24-slim")
         .WithHttpEndpoint(port: 8131, targetPort: 8131, name: "http")
         .WithBindMount("../../", "/app");
     apiAgent = AddHostGateway(AddNodeModulesVolume(apiAgentBase))
@@ -1644,7 +1644,7 @@ if (isPublishMode)
 }
 else
 {
-    var promptEnhancerBase = builder.AddContainer("prompt-enhancer", "node", "22-slim")
+    var promptEnhancerBase = builder.AddContainer("prompt-enhancer", "node", "24-slim")
         .WithHttpEndpoint(port: 8134, targetPort: 8134, name: "http")
         .WithBindMount("../../", "/app");
     promptEnhancer = AddHostGateway(AddNodeModulesVolume(promptEnhancerBase))
@@ -1697,7 +1697,7 @@ if (isPublishMode)
 }
 else
 {
-    var backlogUpdaterBase = builder.AddContainer("backlog-updater", "node", "22-slim")
+    var backlogUpdaterBase = builder.AddContainer("backlog-updater", "node", "24-slim")
         .WithHttpEndpoint(port: 8135, targetPort: 8135, name: "http")
         .WithBindMount("../../", "/app");
     backlogUpdater = AddHostGateway(AddNodeModulesVolume(backlogUpdaterBase))
@@ -1750,7 +1750,7 @@ if (isPublishMode)
 }
 else
 {
-    var customAgentBase = builder.AddContainer("custom-agent-runtime", "node", "22-slim")
+    var customAgentBase = builder.AddContainer("custom-agent-runtime", "node", "24-slim")
         .WithHttpEndpoint(port: 8240, targetPort: 8240, name: "http")
         .WithBindMount("../../", "/app");
     customAgentRuntime = AddHostGateway(AddNodeModulesVolume(customAgentBase))

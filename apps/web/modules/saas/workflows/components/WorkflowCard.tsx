@@ -175,7 +175,10 @@ export function WorkflowCard({
 							className="mr-1 shrink-0"
 							aria-label={`Actions for ${workflow.name}`}
 						>
-							<MoreHorizontalIcon className="size-4" />
+							<MoreHorizontalIcon
+								strokeWidth={2.5}
+								className="size-4"
+							/>
 						</Button>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="start">
@@ -259,7 +262,10 @@ export function WorkflowCard({
 									size="icon"
 									aria-label="Workflow actions"
 								>
-									<MoreHorizontalIcon className="h-4 w-4" />
+									<MoreHorizontalIcon
+										strokeWidth={2.5}
+										className="h-4 w-4"
+									/>
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end">
@@ -330,7 +336,7 @@ export function WorkflowCard({
 					className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-secondary/10 cursor-pointer"
 					onClick={() => router.push(`${basePath}/${workflow.id}`)}
 				>
-					<ZapIcon className="h-4.5 w-4.5 text-secondary" />
+					<ZapIcon className="h-4.5 w-4.5 text-muted-foreground" />
 				</button>
 
 				<div className="flex-1 min-w-0">
@@ -361,7 +367,10 @@ export function WorkflowCard({
 								className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
 								onClick={(e) => e.stopPropagation()}
 							>
-								<MoreHorizontalIcon className="h-3.5 w-3.5" />
+								<MoreHorizontalIcon
+									strokeWidth={2.5}
+									className="h-3.5 w-3.5"
+								/>
 							</Button>
 						</DropdownMenuTrigger>
 						<DropdownMenuContent align="end">

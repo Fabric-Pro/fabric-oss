@@ -4,6 +4,7 @@
  * See: server-cache-lru rule from Vercel React Best Practices
  */
 
+import { waitUntil } from "@vercel/functions";
 import { db, Prisma } from "../client";
 import type {
 	AIProvider,
@@ -18,6 +19,7 @@ import { estimateAiUsageCostUsd } from "./ai-credits";
 import { writeAiUsageLog } from "./ai-usage-origins";
 import { redactSensitiveKeys } from "./audit-log";
 import { aiModelCatalogCache, aiTaskDefaultsCache } from "./cache";
+import { LATEST_IMAGE_MODEL_PREFERENCE_ORDER_BY } from "./image-model-preference-selection";
 import {
 	readTaskDefaultsSnapshot,
 	type TaskDefaultsConnection,
@@ -584,7 +586,10 @@ export async function getOrgModelPreferences(
 				},
 			},
 		},
-		orderBy: { taskType: "asc" },
+		orderBy: [
+			{ taskType: "asc" },
+			...LATEST_IMAGE_MODEL_PREFERENCE_ORDER_BY,
+		],
 	});
 }
 
@@ -1412,23 +1417,29 @@ export async function logAiUsage(data: AiUsageLogData) {
 	// Zero-token rows (image/transcription invocation markers, failure
 	// markers) can never move a limit counter — skip the recorder chain
 	// instead of paying its timezone + limits queries for a BigInt(0) delta.
+	// The promise is registered with `waitUntil` so Vercel keeps the function
+	// alive until the counters are written: a bare floating promise is frozen
+	// with the function once the response is sent, and when it resumes on a
+	// later request its pg connection has timed out (Fizzy #3528).
 	if (
 		data.userId &&
 		aiUsageRecorder &&
 		(data.totalTokens > 0 || costMicroUsd > 0)
 	) {
-		aiUsageRecorder({
-			userId: data.userId,
-			organizationId: data.organizationId ?? null,
-			projectId: data.projectId ?? null,
-			providerConfigId: data.providerConfigId ?? null,
-			modelCanonicalName: data.modelCanonicalName ?? null,
-			taskType: data.taskType ?? null,
-			totalTokens: data.totalTokens,
-			costMicroUsd,
-		}).catch(() => {
-			// Swallow — the recorder itself logs failures.
-		});
+		keepAliveAfterResponse(
+			aiUsageRecorder({
+				userId: data.userId,
+				organizationId: data.organizationId ?? null,
+				projectId: data.projectId ?? null,
+				providerConfigId: data.providerConfigId ?? null,
+				modelCanonicalName: data.modelCanonicalName ?? null,
+				taskType: data.taskType ?? null,
+				totalTokens: data.totalTokens,
+				costMicroUsd,
+			}).catch(() => {
+				// Swallow — the recorder itself logs failures.
+			}),
+		);
 	}
 
 	return logEntry;
@@ -1472,22 +1483,38 @@ export function setAiUsageRecorder(recorder: AiUsageRecorder | null): void {
 }
 
 /**
+ * Keep the current Vercel function alive until `work` settles, without making
+ * the caller wait for it. Outside a Vercel request (the Temporal worker, tests,
+ * local Node) `waitUntil` has no request context to extend and the promise
+ * simply runs on the live process. A throw from `waitUntil` itself must not
+ * break the AI call that produced the usage, so it is swallowed, as in
+ * `withTransactionLifetime`. `work` must already handle its own rejection.
+ */
+function keepAliveAfterResponse(work: Promise<void>): void {
+	try {
+		waitUntil(work);
+	} catch {
+		// The work is still running; it just may not outlive the response.
+	}
+}
+
+/**
  * Log AI usage asynchronously without blocking the response.
  * This is the fire-and-forget version of logAiUsage for use in performance-critical paths.
  * Errors are silently logged to console instead of propagating.
- * See: server-after-nonblocking rule from Vercel React Best Practices
- * For Next.js route handlers, you can also use:
- * ```typescript
- * import { after } from "next/server";
- * after(=> logAiUsage(data));
- * ```
+ * The work is registered with Vercel's `waitUntil`, so it is not frozen with
+ * the function after the response is sent (Fizzy #3528).
  */
 export function logAiUsageAsync(data: AiUsageLogData): void {
-	// Fire-and-forget: don't await, just schedule the work
-	logAiUsage(data).catch((error) => {
-		// Silent failure - logging should never break the main flow
-		console.error("[AI Usage Logging] Failed to log usage:", error);
-	});
+	keepAliveAfterResponse(
+		logAiUsage(data).then(
+			() => undefined,
+			(error) => {
+				// Silent failure - logging should never break the main flow
+				console.error("[AI Usage Logging] Failed to log usage:", error);
+			},
+		),
+	);
 }
 
 /**

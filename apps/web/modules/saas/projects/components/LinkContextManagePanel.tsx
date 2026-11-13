@@ -195,6 +195,7 @@ export function LinkContextManagePanel({
 								data-testid="link-card-more"
 							>
 								<MoreVerticalIcon
+									strokeWidth={2.5}
 									className="size-3.5"
 									aria-hidden="true"
 								/>

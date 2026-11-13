@@ -107,7 +107,7 @@ export function StoryKindRegenerationNotice({
 						"mx-6 mt-3 flex shrink-0 items-start gap-3 rounded-lg border px-4 py-3",
 						tone === "running" && "border-primary/40 bg-primary/10",
 						tone === "completed" &&
-							"border-secondary/40 bg-secondary/10",
+							"border-success/40 bg-success/10",
 						tone === "failed" &&
 							"border-destructive/40 bg-destructive/10",
 					)}
@@ -120,7 +120,7 @@ export function StoryKindRegenerationNotice({
 						{tone === "running" ? (
 							<Loader2Icon className="size-4 text-primary motion-safe:animate-spin" />
 						) : tone === "completed" ? (
-							<CheckIcon className="size-4 text-secondary" />
+							<CheckIcon className="size-4 text-success" />
 						) : (
 							<TriangleAlertIcon className="size-4 text-destructive" />
 						)}

@@ -24,6 +24,8 @@ import {
 	BrainCircuitIcon,
 	Building2Icon,
 	ClipboardListIcon,
+	ClockIcon,
+	ContrastIcon,
 	CreditCardIcon,
 	FileTextIcon,
 	HistoryIcon,
@@ -36,6 +38,7 @@ import {
 	Settings2Icon,
 	SettingsIcon,
 	SparklesIcon,
+	TimerIcon,
 	TriangleAlertIcon,
 	Users2Icon,
 } from "lucide-react";
@@ -132,6 +135,13 @@ export default async function SettingsLayout({
 					title: "API Keys",
 					href: `${organizationSettingsBasePath}/api-keys`,
 					icon: <KeyIcon className="size-4" />,
+				},
+				// Every member sees the organization's time policy; the page is
+				// read-only for those who cannot update the organization.
+				{
+					title: t("settings.menu.organization.timeTracking"),
+					href: `${organizationSettingsBasePath}/time-tracking`,
+					icon: <ClockIcon className="size-4" />,
 				},
 			],
 		},
@@ -234,6 +244,20 @@ export default async function SettingsLayout({
 							},
 						]
 					: []),
+				// Time reports show everyone's time, which only owners and
+				// admins may read (the report procedures enforce it), so the
+				// entry is theirs alone.
+				...(userIsOrganizationAdmin
+					? [
+							{
+								title: t(
+									"settings.menu.organization.timeReports",
+								),
+								href: `${organizationSettingsBasePath}/time-reports`,
+								icon: <TimerIcon className="size-4" />,
+							},
+						]
+					: []),
 				// User Activity dashboard — same visibility rule
 				// as Audit Log (owners/admins + deployment admins), plus the
 				// FABRIC_FEATURE_USER_ACTIVITY_DASHBOARD kill switch.
@@ -314,6 +338,11 @@ export default async function SettingsLayout({
 					title: t("settings.menu.account.general"),
 					href: `${organizationSettingsBasePath}/account/profile`,
 					icon: <SettingsIcon className="size-4" />,
+				},
+				{
+					title: t("settings.menu.account.appearance"),
+					href: `${organizationSettingsBasePath}/account/appearance`,
+					icon: <ContrastIcon className="size-4" />,
 				},
 				{
 					title: t("settings.menu.account.security"),

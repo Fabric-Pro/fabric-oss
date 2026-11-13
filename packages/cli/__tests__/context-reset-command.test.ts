@@ -7,6 +7,9 @@
  *    and without `--yes` it refuses and sends nothing;
  *  - `fabric context reset <dir>` leaves that folder an empty lock, and
  *    refuses a lock that belongs to another project before sending anything;
+ *  - `--folder` sends the folder in the server's spelling, names it in the
+ *    confirmation and the report, refuses a spelling the server would
+ *    refuse before sending, and drops only that folder's lock entries;
  *  - `fabric context push --init` after a server wipe sends every file as
  *    new, naming no version, so a stale lock can never produce a "deleted on
  *    the server" conflict, and replaces the lock;
@@ -317,6 +320,130 @@ describe("fabric context reset", () => {
 		expect(result.stderr).toContain(
 			"This credential is missing the projects:write scope, which a browser sign-in does not carry. Create an API key with the projects:write scope and sign in with it: fabric auth login --key <api-key>",
 		);
+	});
+
+	describe("--folder", () => {
+		it("sends the folder in the server's spelling and names it in the report", async () => {
+			mocks.resetSyncedFiles.mockResolvedValue({ deleted: 2 });
+
+			const result = await runCli([
+				"reset",
+				"--project",
+				"project-1",
+				"--folder",
+				"docs\\guides\\",
+				"--yes",
+			]);
+
+			expect(result.code).toBe(0);
+			expect(mocks.resetSyncedFiles).toHaveBeenCalledWith("project-1", {
+				folder: "docs/guides",
+			});
+			expect(result.stdout).toContain(
+				"Removed the folder docs/guides from the Living Memory of project project-1: 2 synced files deleted.",
+			);
+		});
+
+		it.each([
+			["the root", "."],
+			["an absolute path", "/etc"],
+			["a dot segment", "docs/../other"],
+		])("refuses %s before sending anything", async (_label, folder) => {
+			const result = await runCli([
+				"reset",
+				"--project",
+				"project-1",
+				"--folder",
+				folder,
+				"--yes",
+			]);
+
+			expect(result.code).toBe(2);
+			expect(result.stderr).toContain("--folder must be a folder's path");
+			expect(mocks.resetSyncedFiles).not.toHaveBeenCalled();
+		});
+
+		it("names the folder when it refuses without --yes", async () => {
+			const result = await runCli([
+				"reset",
+				"--project",
+				"project-1",
+				"--folder",
+				"docs",
+			]);
+
+			expect(result.code).toBe(2);
+			expect(result.stderr).toContain("under the folder docs");
+			expect(mocks.resetSyncedFiles).not.toHaveBeenCalled();
+		});
+
+		it("removes only the lock's entries under the folder", async () => {
+			const files = {
+				"docs/a.md": "# A\n",
+				"docs/guides/b.md": "# B\n",
+				"docs-archive/c.md": "# C\n",
+				"README.md": "# R\n",
+			};
+			const dir = await makeFolder(files);
+			await seedLock(dir, files);
+			mocks.resetSyncedFiles.mockResolvedValue({ deleted: 2 });
+
+			const result = await runCli([
+				"reset",
+				dir,
+				"--project",
+				"project-1",
+				"--folder",
+				"docs",
+				"--yes",
+			]);
+
+			expect(result.code).toBe(0);
+			const lock = await readLockFile(dir);
+			expect(Object.keys(lock.files).sort()).toEqual([
+				"README.md",
+				"docs-archive/c.md",
+			]);
+		});
+
+		it("names the folder in the typed confirmation", async () => {
+			mocks.getProject.mockResolvedValue({ name: "Example Project" });
+			mocks.resetSyncedFiles.mockResolvedValue({ deleted: 1 });
+			let stderr = "";
+			const outSpy = vi
+				.spyOn(process.stdout, "write")
+				.mockImplementation(() => true);
+			const errSpy = vi
+				.spyOn(process.stderr, "write")
+				.mockImplementation((chunk: unknown) => {
+					stderr += String(chunk);
+					return true;
+				});
+			try {
+				await runReset(
+					undefined,
+					{ project: "project-1", folder: "docs" },
+					false,
+					{
+						run: async (_opts, body) => body(),
+						client: () => fakeClient as unknown as FabricClient,
+						resolveFolder: async (dir: string) => dir,
+						canPrompt: () => true,
+						ask: async () => "Example Project",
+					},
+				);
+			} finally {
+				outSpy.mockRestore();
+				errSpy.mockRestore();
+			}
+
+			expect(stderr).toContain(
+				"This deletes every file synced into the Living Memory of project project-1 under the folder docs, for everyone.",
+			);
+			expect(mocks.resetSyncedFiles).toHaveBeenCalledWith("project-1", {
+				folder: "docs",
+			});
+		});
 	});
 
 	describe("typed confirmation", () => {

@@ -27,9 +27,11 @@
  *   `documents.proposal-prompt-not-bound` maps; other reasons are `null`.
  * - `proposalMainCatalogHref(basePath)`: the Prompt Library catalog focused on
  *   Client proposal (Main), the link both feedbacks carry.
- * - `resolveRegenerateToastKey({ outcome, documentStatus })`: which
- *   `projects.documents.regenerateToast.*` key a finished regenerate request
- *   earned, from the dispatcher's `outcome`.
+ * - `resolveRegenerateToastKey({ outcome, documentStatus, requestedWebResearch,
+ *   sameRequest })`: which `projects.documents.regenerateToast.*` key a
+ *   finished regenerate request earned, from the dispatcher's `outcome`;
+ *   `readSameRequest(result)` reads the result's `sameRequest` flag and
+ *   `isRegenerateToastWarning(key)` says which keys are warnings.
  *
  * `t` for the two refusal functions is
  * `useTranslations("projects.proposalArtifact.generationFeedback")`, and
@@ -145,7 +147,37 @@ export type RegenerateToastKey =
 	| "started"
 	| "alreadyQueued"
 	| "alreadyRunning"
+	| "alreadyQueuedResearchNotApplied"
+	| "alreadyRunningResearchNotApplied"
 	| "liveRunUnknown";
+
+/**
+ * Whether a regenerate key is a warning rather than news: nothing the person
+ * asked for happened, either because the live run could not be confirmed or
+ * because the run they joined will not research the web they ticked.
+ */
+export function isRegenerateToastWarning(key: RegenerateToastKey): boolean {
+	return (
+		key === "liveRunUnknown" ||
+		key === "alreadyQueuedResearchNotApplied" ||
+		key === "alreadyRunningResearchNotApplied"
+	);
+}
+
+/**
+ * The `sameRequest` flag of a generate result, read without trusting its
+ * shape: `true` when an `alreadyInProgress` answer joined a run started by
+ * the identical request, `false` when the live run was started with other
+ * settings, and `undefined` when the server did not say (a deploy that
+ * predates the flag), which callers treat as unknown.
+ */
+export function readSameRequest(result: unknown): boolean | undefined {
+	if (typeof result !== "object" || result === null) {
+		return undefined;
+	}
+	const value = (result as { sameRequest?: unknown }).sameRequest;
+	return typeof value === "boolean" ? value : undefined;
+}
 
 /**
  * The sentence a finished regenerate has actually earned, as a translation key
@@ -162,9 +194,15 @@ export type RegenerateToastKey =
  * `alreadyInProgress` is named after the run rather than a state, so the state
  * is READ from the document row: only its status separates a run still waiting
  * on the project's context ("already queued") from one already writing
- * ("already running"). `liveRunUnknown` means a client-document Proposal's
- * row names a live run the server could not confirm, so nothing was started
- * and the person is asked to try again in a moment: it neither claims a run
+ * ("already running"). When the request ticked web research and the server
+ * says the live run was started with different settings (`sameRequest:
+ * false`), that run keeps its own instructions and research choice, so the
+ * toast says this request's were not applied. An identical request, an
+ * unticked one, or a server that does not say keeps the plain sentence:
+ * nothing ticked was lost, or nothing is known to have been. `liveRunUnknown`
+ * means a client-document Proposal's row names a live run the server could
+ * not confirm, so nothing was started and the person is asked to try again
+ * in a moment: it neither claims a run
  * started nor that none is going. `statusUnknown` is a different answer — this
  * request's own start may have registered, and the row is already queued for
  * it — so it reads as started, as it always has.
@@ -178,12 +216,24 @@ export type RegenerateToastKey =
 export function resolveRegenerateToastKey({
 	outcome,
 	documentStatus,
+	requestedWebResearch,
+	sameRequest,
 }: {
 	outcome: string | null | undefined;
 	documentStatus: string | null | undefined;
+	/** The request asked for web research (`allowWebResearch: true`). */
+	requestedWebResearch?: boolean;
+	/** The joined run was started by this identical request; unknown when absent. */
+	sameRequest?: boolean;
 }): RegenerateToastKey {
 	if (outcome === "alreadyInProgress") {
-		return documentStatus === "QUEUED" ? "alreadyQueued" : "alreadyRunning";
+		const queued = documentStatus === "QUEUED";
+		if (requestedWebResearch === true && sameRequest === false) {
+			return queued
+				? "alreadyQueuedResearchNotApplied"
+				: "alreadyRunningResearchNotApplied";
+		}
+		return queued ? "alreadyQueued" : "alreadyRunning";
 	}
 	if (outcome === "liveRunUnknown") {
 		return "liveRunUnknown";

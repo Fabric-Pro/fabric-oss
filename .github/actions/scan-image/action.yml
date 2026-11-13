@@ -16,11 +16,11 @@ runs:
     # gated all fixable criticals and blocked the dev deploy on 2026-07-15
     # (run 29455372935) on findings no change to this repo could fix.
     #
-    # `--ignore-unfixed`: node:22-slim carried 19 high / 4 critical with no
-    # upstream fix; only 2 of 23 were actionable.
+    # `--ignore-unfixed`: the previous Node 22 slim base carried 19 high / 4
+    # critical with no upstream fix; only 2 of 23 were actionable.
     #
     # CRITICAL rather than HIGH: this runs on every push to master and on the
-    # v*.*.* tags that drive prod, and node:22-slim is a moving tag — a newly
+    # v*.*.* tags that drive prod, and node:24-slim is a moving tag — a newly
     # disclosed high in the base image would block a release with no Fabric
     # change behind it.
     #

@@ -25,7 +25,7 @@ const META: Record<string, RepoStatusMeta> = {
 		icon: CheckCircle2Icon,
 		bgColor:
 			"bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800",
-		iconColor: "text-green-600 dark:text-green-400",
+		iconColor: "text-green-800 dark:text-green-400",
 	},
 	TOKEN_EXPIRED: {
 		label: "Expired",
@@ -33,7 +33,7 @@ const META: Record<string, RepoStatusMeta> = {
 		icon: AlertTriangleIcon,
 		bgColor:
 			"bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800",
-		iconColor: "text-amber-600 dark:text-amber-400",
+		iconColor: "text-amber-700 dark:text-amber-400",
 		hint: "Credentials expired — re-authenticate to restore access",
 	},
 	// Deliberately NOT the Expired hint: here the credential is fine but cannot
@@ -45,7 +45,7 @@ const META: Record<string, RepoStatusMeta> = {
 		icon: EyeOffIcon,
 		bgColor:
 			"bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800",
-		iconColor: "text-red-600 dark:text-red-400",
+		iconColor: "text-red-700 dark:text-red-400",
 		hint: "Credentials work, but Fabric can't read this repository — install the provider app on it, or connect it with a personal access token from the row menu",
 	},
 	ERROR: {
@@ -54,7 +54,7 @@ const META: Record<string, RepoStatusMeta> = {
 		icon: AlertTriangleIcon,
 		bgColor:
 			"bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800",
-		iconColor: "text-red-600 dark:text-red-400",
+		iconColor: "text-red-700 dark:text-red-400",
 		hint: "Connection error — reconnect to restore access",
 	},
 	DISCONNECTED: {
@@ -63,7 +63,7 @@ const META: Record<string, RepoStatusMeta> = {
 		icon: AlertTriangleIcon,
 		bgColor:
 			"bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800",
-		iconColor: "text-red-600 dark:text-red-400",
+		iconColor: "text-red-700 dark:text-red-400",
 		hint: "Disconnected — re-configure to restore access",
 	},
 	// The project only records the repository's link (a creation that could
@@ -74,7 +74,7 @@ const META: Record<string, RepoStatusMeta> = {
 		icon: AlertTriangleIcon,
 		bgColor:
 			"bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800",
-		iconColor: "text-amber-600 dark:text-amber-400",
+		iconColor: "text-amber-700 dark:text-amber-400",
 		hint: "Only the link is saved, so Fabric can't read or index this repository — connect it with Add Repository",
 	},
 };

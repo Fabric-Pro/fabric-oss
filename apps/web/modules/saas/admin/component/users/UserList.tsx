@@ -199,7 +199,7 @@ export function UserList() {
 							<strong className="block">
 								{row.original.name ?? row.original.email}
 							</strong>
-							<small className="flex items-center gap-1 text-foreground/60">
+							<small className="flex items-center gap-1 text-muted-foreground">
 								<span className="block">
 									{!!row.original.name && row.original.email}
 								</span>
@@ -225,7 +225,10 @@ export function UserList() {
 							<DropdownMenu>
 								<DropdownMenuTrigger asChild>
 									<Button size="icon" variant="ghost">
-										<MoreVerticalIcon className="size-4" />
+										<MoreVerticalIcon
+											strokeWidth={2.5}
+											className="size-4"
+										/>
 									</Button>
 								</DropdownMenuTrigger>
 								<DropdownMenuContent>

@@ -58,6 +58,7 @@ export function OrgSettingsLayoutClient({
 		if (accountMatch) {
 			const accountTitles: Record<string, string> = {
 				profile: "Account",
+				appearance: "Appearance",
 				security: "Security",
 				notifications: "Notifications",
 				"connected-agents": "Connected Agents",

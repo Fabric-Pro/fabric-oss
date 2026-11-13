@@ -161,7 +161,7 @@ export function InstanceDataSourcePicker({
 					>
 						<CardContent className="p-4">
 							<div className="flex items-center gap-3">
-								<div className="p-2 rounded-lg bg-blue-100 text-blue-600 dark:bg-blue-900 dark:text-blue-400">
+								<div className="p-2 rounded-lg bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">
 									<ServerIcon className="h-4 w-4" />
 								</div>
 								<div className="flex-1 min-w-0">

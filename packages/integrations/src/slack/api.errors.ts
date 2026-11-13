@@ -56,3 +56,27 @@ export class SlackConfigurationError extends Error {
 export function isPermanentSlackError(slackError: string | undefined): boolean {
 	return slackError !== undefined && PERMANENT_SLACK_ERRORS.has(slackError);
 }
+
+/**
+ * The permanent codes that describe the token, not the channel.
+ *
+ * Every call made with such a token fails the same way, whichever channel it
+ * names, so a caller reading several channels learns nothing from the second
+ * failure and should not report it as a fault per channel. Only the person who
+ * owns the connection can clear it, by reconnecting Slack.
+ */
+export const DEAD_TOKEN_SLACK_ERRORS = new Set([
+	"invalid_auth",
+	"token_revoked",
+	"account_inactive",
+]);
+
+/** True when Slack refused the token itself, for every channel alike. */
+export function isDeadSlackTokenError(
+	error: unknown,
+): error is SlackConfigurationError {
+	return (
+		error instanceof SlackConfigurationError &&
+		DEAD_TOKEN_SLACK_ERRORS.has(error.slackError)
+	);
+}

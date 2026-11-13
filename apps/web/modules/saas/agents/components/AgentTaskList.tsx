@@ -401,7 +401,7 @@ export function AgentTaskList({
 									"h-8 px-3 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 									idx > 0 && "border-l border-border",
 									active
-										? "bg-primary/[0.10] text-primary dark:bg-primary/[0.18]"
+										? "bg-primary/[0.10] text-primary-active dark:bg-primary/[0.18]"
 										: "text-foreground hover:bg-muted/60",
 								)}
 							>
@@ -438,7 +438,7 @@ export function AgentTaskList({
 									"h-8 px-2.5 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 									idx > 0 && "border-l border-border",
 									active
-										? "bg-primary/[0.10] text-primary dark:bg-primary/[0.18]"
+										? "bg-primary/[0.10] text-primary-active dark:bg-primary/[0.18]"
 										: "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
 								)}
 							>
@@ -682,7 +682,7 @@ function RunStatusCell({
 			);
 		case "PENDING":
 			return (
-				<span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+				<span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400">
 					<Clock className="h-3.5 w-3.5 shrink-0" />
 					<span>Pending</span>
 				</span>

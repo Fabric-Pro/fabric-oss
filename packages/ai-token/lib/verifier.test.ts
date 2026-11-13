@@ -11,6 +11,7 @@ import {
 	decodeTokenClaims,
 	getRemainingValidity,
 	isTokenExpired,
+	readResearchGrantId,
 	verifyAIToken,
 } from "./verifier";
 
@@ -111,6 +112,135 @@ describe("AI Token Verifier", () => {
 
 			expect(eligible.valid && eligible.claims.pe).toBe(true);
 			expect(background.valid && background.claims.pe).toBeUndefined();
+		});
+
+		describe("web research claim", () => {
+			function signWebResearchToken(
+				wr: unknown,
+				options: {
+					secret?: string;
+					exp?: number | string;
+					extra?: Record<string, unknown>;
+				} = {},
+			) {
+				return new SignJWT({
+					org: "org-1",
+					src: "document-generator",
+					wr,
+					...options.extra,
+				})
+					.setProtectedHeader({ alg: "HS256" })
+					.setIssuer("fabric-portal")
+					.setSubject("user-1")
+					.setIssuedAt()
+					.setExpirationTime(options.exp ?? "5m")
+					.setJti("example-nonce")
+					.sign(
+						new TextEncoder().encode(options.secret ?? TEST_SECRET),
+					);
+			}
+
+			it("extracts the project bound to the permission", async () => {
+				const result = await verifyAIToken(
+					await signWebResearchToken(true, {
+						extra: { wrp: "project-1" },
+					}),
+				);
+
+				expect(result.valid && result.claims.wrp).toBe("project-1");
+			});
+
+			it.each([
+				["without the permission", false, "project-1"],
+				["when empty", true, ""],
+				["when not a string", true, 7],
+			])("ignores a project claim %s", async (_label, wr, wrp) => {
+				const result = await verifyAIToken(
+					await signWebResearchToken(wr, { extra: { wrp } }),
+				);
+
+				expect(result.valid).toBe(true);
+				if (result.valid) {
+					expect(result.claims).not.toHaveProperty("wrp");
+				}
+			});
+
+			it("extracts the research grant bound to the permission", async () => {
+				const result = await verifyAIToken(
+					await signWebResearchToken(true, {
+						extra: { wrg: "grant-1" },
+					}),
+				);
+
+				expect(result.valid && result.claims.wrg).toBe("grant-1");
+			});
+
+			it.each([
+				["without the permission", false, "grant-1"],
+				["when empty", true, ""],
+				["when not a string", true, 7],
+			])("ignores a grant claim %s", async (_label, wr, wrg) => {
+				const result = await verifyAIToken(
+					await signWebResearchToken(wr, { extra: { wrg } }),
+				);
+
+				expect(result.valid).toBe(true);
+				if (result.valid) {
+					expect(result.claims).not.toHaveProperty("wrg");
+				}
+			});
+
+			it("extracts a signed wr: true claim", async () => {
+				const result = await verifyAIToken(
+					await signWebResearchToken(true),
+				);
+
+				expect(result.valid).toBe(true);
+				if (result.valid) {
+					expect(result.claims.wr).toBe(true);
+				}
+			});
+
+			it("rejects a wr token signed with a different secret", async () => {
+				const token = await signWebResearchToken(true, {
+					secret: WRONG_SECRET,
+				});
+
+				const result = await verifyAIToken(token);
+
+				expect(result.valid).toBe(false);
+				if (!result.valid) {
+					expect(result.code).toBe("INVALID_SIGNATURE");
+				}
+			});
+
+			it("rejects an expired wr token", async () => {
+				// Past the 30 s clock tolerance, so the claim cannot outlive it.
+				const token = await signWebResearchToken(true, {
+					exp: Math.floor(Date.now() / 1000) - 120,
+				});
+
+				const result = await verifyAIToken(token);
+
+				expect(result.valid).toBe(false);
+				if (!result.valid) {
+					expect(result.code).toBe("EXPIRED");
+				}
+			});
+
+			it.each([
+				['the string "true"', "true"],
+				["the number 1", 1],
+			])("ignores a wr claim that is %s", async (_label, wr) => {
+				const result = await verifyAIToken(
+					await signWebResearchToken(wr),
+				);
+
+				expect(result.valid).toBe(true);
+				if (result.valid) {
+					expect(result.claims).not.toHaveProperty("wr");
+				}
+			});
 		});
 
 		it("should reject empty token", async () => {
@@ -353,6 +483,24 @@ describe("AI Token Verifier", () => {
 			expect(claims?.src).toBe("test-service");
 		});
 
+		it("exposes no research claims from an unverified decode", async () => {
+			const claims = decodeTokenClaims(
+				await issueAIToken({
+					userId: "user_123",
+					organizationId: "org_456",
+					source: "test-service",
+					impersonated: false,
+					webResearch: true,
+					webResearchProjectId: "project-1",
+					webResearchGrantId: "grant-1",
+				}),
+			);
+
+			expect(claims).not.toHaveProperty("wr");
+			expect(claims).not.toHaveProperty("wrp");
+			expect(claims).not.toHaveProperty("wrg");
+		});
+
 		it("should return null for malformed token", () => {
 			const claims = decodeTokenClaims("not-a-jwt");
 			expect(claims).toBeNull();
@@ -361,6 +509,88 @@ describe("AI Token Verifier", () => {
 		it("should return null for invalid base64", () => {
 			const claims = decodeTokenClaims("header.!!invalid!!.signature");
 			expect(claims).toBeNull();
+		});
+	});
+
+	describe("readResearchGrantId", () => {
+		/** An unsigned token carrying `payload`; only decoded, never verified. */
+		function unsignedToken(payload: Record<string, unknown>): string {
+			const encode = (value: object) =>
+				Buffer.from(JSON.stringify(value)).toString("base64url");
+			return `${encode({ alg: "HS256" })}.${encode(payload)}.signature`;
+		}
+
+		it("reads the research grant of an issued token", async () => {
+			const token = await issueAIToken({
+				userId: "user_123",
+				organizationId: "org_456",
+				source: "test-service",
+				impersonated: false,
+				webResearch: true,
+				webResearchGrantId: "grant-1",
+			});
+
+			expect(readResearchGrantId(token)).toBe("grant-1");
+		});
+
+		it("falls back to the token's own nonce when it carries no grant", async () => {
+			const token = await issueAIToken({
+				userId: "user_123",
+				organizationId: "org_456",
+				source: "test-service",
+				impersonated: false,
+			});
+
+			expect(readResearchGrantId(token)).toBe(
+				decodeTokenClaims(token)?.jti,
+			);
+			expect(readResearchGrantId(token)).toMatch(/^[0-9a-f-]{36}$/);
+		});
+
+		it("accepts a grant of exactly 128 characters", () => {
+			const grant = `${"a".repeat(127)}_`;
+
+			expect(readResearchGrantId(unsignedToken({ wrg: grant }))).toBe(
+				grant,
+			);
+		});
+
+		it.each([
+			["too long", "g".repeat(129)],
+			["empty", ""],
+			["not a string", 7],
+			["made of other characters", "grant 1"],
+			["a path", "grant/../1"],
+			["a key pattern", "web-research:grant:web_search"],
+		])(
+			"ignores a grant claim that is %s, using the nonce",
+			(_label, wrg) => {
+				expect(
+					readResearchGrantId(unsignedToken({ wrg, jti: "nonce-1" })),
+				).toBe("nonce-1");
+			},
+		);
+
+		it("returns nothing when neither the grant nor the nonce is usable", () => {
+			expect(
+				readResearchGrantId(
+					unsignedToken({ wrg: "g".repeat(129), jti: "nonce 1" }),
+				),
+			).toBeUndefined();
+			expect(
+				readResearchGrantId(unsignedToken({ sub: "user-1" })),
+			).toBeUndefined();
+		});
+
+		it.each([
+			["not a JWT", "not-a-jwt"],
+			["not base64 JSON", "header.!!invalid!!.signature"],
+			[
+				"a JSON value that is not an object",
+				`h.${Buffer.from("7").toString("base64url")}.s`,
+			],
+		])("returns nothing for a token that is %s", (_label, token) => {
+			expect(readResearchGrantId(token)).toBeUndefined();
 		});
 	});
 

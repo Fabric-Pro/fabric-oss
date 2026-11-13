@@ -36,6 +36,7 @@ const h = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	fetchCredentialsByProvider: h.fetchCredentialsByProvider,
 	logAiUsageAsync: vi.fn(),
+	resolveImageModelChoice: vi.fn().mockResolvedValue(undefined),
 	resolveModel: vi.fn(),
 	checkConversationTurnDispatchable: h.checkDispatchable,
 	recordChatMediaObject: vi.fn(),
@@ -154,7 +155,7 @@ const TURN_SCOPE = {
 	organizationId: "org-example-1",
 };
 
-const NANO_BANANA = "google/gemini-3.1-flash-image-preview";
+const NANO_BANANA = "google/gemini-3.1-flash-image";
 const IMAGE_API_MODEL = "openai/gpt-image-1";
 
 let cancelled = false;

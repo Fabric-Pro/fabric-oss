@@ -70,5 +70,6 @@ export {
 	decodeTokenClaims,
 	getRemainingValidity,
 	isTokenExpired,
+	readResearchGrantId,
 	verifyAIToken,
 } from "./lib/verifier";

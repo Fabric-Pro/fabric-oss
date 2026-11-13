@@ -110,8 +110,12 @@ jobs:
     needs: [promotion_policy]
     name: Detect changed paths
     # Public mirror only, except on workflow_dispatch (see header).
-    # arm64: checkout and paths-filter only, both architecture-neutral.
-    runs-on: ubuntu-24.04-arm
+    # Architecture-neutral steps; private PRs use Namespace amd64,
+    # while other events retain the GitHub arm64 label.
+    # Only private pull requests use Namespace, by event allowlist. Pushes and
+    # other events retain GitHub runners: their caches can be restored by other
+    # branches, including secret-holding jobs. See unit-tests.yml vitest.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
     outputs:
       db: ${{ steps.filter.outputs.db }}
       temporal: ${{ steps.filter.outputs.temporal }}
@@ -163,11 +167,17 @@ jobs:
     # when DB-relevant paths changed.
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.changes.result == 'success' && ((github.event_name == 'workflow_dispatch' || needs.changes.outputs.db == 'true'))
-    runs-on: ubuntu-latest
+    # Private PRs use the 4-vCPU / 8 GB Namespace profile, not the 2-vCPU /
+    # 4 GB one: the push-only warm-caches job in unit-tests.yml publishes the
+    # base branch's Prisma client, so a PR that changes a cache-key input
+    # generates the client cold here, and that `prisma generate` was
+    # OOM-killed on 4 GB (Fizzy #3562). Both labels are Linux x64, matching
+    # the cache producer.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd4' || 'ubuntu-latest' }}
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:16
+        image: public.ecr.aws/docker/library/postgres:16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -223,12 +233,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          # Matches root package.json `engines.node` (^22.23.4 || >=24.22.1) and the
+          # Matches root package.json `engines.node` (>=24.22.1) and the
           # temporal-tests job below. This job used to pin 20; the prompt
           # notification-delivery suite's import graph (undici v8 via the
           # external-delivery path) requires >=22, and shipping on 22 while
           # testing on 20 exercises a runtime nobody runs.
-          node-version: '22'
+          node-version: '24'
           check-latest: true
 
       - name: Install dependencies
@@ -289,6 +299,32 @@ jobs:
             throw new Error("Chat replay integration tests must execute without skips or failures");
           }
           NODE
+
+      - name: Run Advisor result storage against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/advisor-tool-results.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=advisor-result-store-results.json
+
+      - name: 'Guard: assert the Advisor result-store suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("packages/database/advisor-result-store-results.json", "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const failed = report.numFailedTests ?? 0;
+          if (files !== 1 || total !== 41 || passed !== 41 || skipped > 0 || failed > 0) {
+            console.error(`::error::expected one Advisor result-store file with 41 passes and zero skips or failures; files=${files} total=${total} passed=${passed} skipped=${skipped} failed=${failed}`);
+            process.exit(1);
+          }
+          EOF
 
       - name: Run MCP durable-call concurrency against real Postgres
         env:
@@ -1499,6 +1535,40 @@ jobs:
           }
           EOF
 
+      - name: Run the newsletter review-image suite against real Postgres
+        # The review images of a held release-notes send. Only a real
+        # Postgres shows the send row lock serialising image writes against
+        # an approval, the two-per-highlight cap under racing uploads, the
+        # project scoping of every query, and that only a rejected or expired
+        # send's images are removed. Without this listing the suite self-skips
+        # on the unit-tests placeholder URL and never executes anywhere.
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            prisma/queries/projects/__tests__/newsletter-images.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=newsletter-images-results.json
+
+      - name: 'Guard: assert the newsletter review-image suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 39 = 32 it() cases + it.each tables of four and three rows. Bump
+          // it whenever the suite gains or loses a case.
+          const report = JSON.parse(fs.readFileSync("packages/database/newsletter-images-results.json", "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const failed = report.numFailedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0) + (report.numTodoTests ?? 0);
+          console.log(`newsletter-images-results: ${files} file(s), ${passed} passed, ${failed} failed, ${skipped} skipped`);
+          if (files !== 1) { console.error("::error::expected exactly 1 test file (prisma/queries/projects/__tests__/newsletter-images.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
+          if (failed > 0) { console.error(`::error::${failed} test(s) failed`); process.exit(1); }
+          if (passed !== 39) { console.error(`::error::expected exactly 39 passing tests, got ${passed}`); process.exit(1); }
+          EOF
+
       - name: Run the feature-maturation query suite against real Postgres
         env:
           RUN_DB_INTEGRATION: '1'
@@ -1923,11 +1993,13 @@ jobs:
     # when temporal- or database-relevant paths changed.
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.changes.result == 'success' && ((github.event_name == 'workflow_dispatch' || needs.changes.outputs.temporal == 'true'))
-    runs-on: ubuntu-latest
+    # 4-vCPU / 8 GB on private PRs for the same cold `prisma generate` as
+    # db-tests above (Fizzy #3562).
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd4' || 'ubuntu-latest' }}
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:16
+        image: public.ecr.aws/docker/library/postgres:16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -1986,10 +2058,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          # Matches root package.json `engines.node` (^22.23.4 || >=24.22.1) and unit-tests.yml.
+          # Matches root package.json `engines.node` (>=24.22.1) and unit-tests.yml.
           # The suite under test ships on 22, so pinning an older major here would
           # exercise a runtime nobody runs.
-          node-version: '22'
+          node-version: '24'
           check-latest: true
 
       - name: Install dependencies

@@ -4,9 +4,10 @@ import { invalidateUnreadCount } from "../../../lib/notification-cache";
 import {
 	Permissions,
 	requirePermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { bellVisibleWhere } from "../lib/bell-visible-where";
+import { resolveNotificationOrganization } from "../lib/resolve-notification-organization";
 
 export const markAllReadNotificationsProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.NOTIFICATIONS_READ))
@@ -22,14 +23,17 @@ export const markAllReadNotificationsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const organizationId =
-			resolveOrganizationId(input.organizationId, context.session) ??
-			null;
+		const organizationId = await resolveNotificationOrganization(
+			input.organizationId,
+			context,
+		);
 
 		const result = await db.notification.updateMany({
 			where: {
-				userId: context.user.id,
-				organizationId,
+				...bellVisibleWhere({
+					userId: context.user.id,
+					organizationId,
+				}),
 				readAt: null,
 				archivedAt: null,
 			},

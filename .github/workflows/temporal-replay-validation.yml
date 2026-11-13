@@ -296,13 +296,14 @@ jobs:
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.initialize_status.result == 'success' && needs.authorize.result == 'success' && (needs.initialize_status.result == 'success' && needs.authorize.result == 'success' && needs.authorize.outputs.secret_eligible == 'true' && (github.event_name == 'workflow_dispatch' || needs.authorize.outputs.workflows == 'true'))
     runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 'ubuntu-8core-arm' || 'ubuntu-latest' }}
-    # arm64 in the private repo, as unit-tests.yml's Vitest shards already
-    # run there. Node setup plus install took 124-163 s here on the 2-vCPU
+    # arm64 in the private repo. Node setup plus install took 124-163 s here on the 2-vCPU
     # x64 standard runner (October 2026); on that label Node setup takes
     # about 16 s and a full, unfiltered install 51 s. The replay loads the
     # Temporal native core bridge, which @temporalio/core-bridge ships
-    # prebuilt for aarch64-unknown-linux-gnu, and the @repo/temporal shard
-    # already runs Worker.create and TestWorkflowEnvironment on this label.
+    # prebuilt for aarch64-unknown-linux-gnu. unit-tests.yml's @repo/temporal
+    # Vitest shard, which runs Worker.create and TestWorkflowEnvironment, uses
+    # this label only on manual dispatches; pull requests run it on a
+    # Namespace amd64 runner (November 2026).
     # Elsewhere a missing label would queue for 24 hours, so other
     # repositories keep the standard runner.
     # (Kept below runs-on: the eligibility pin test reads the `if:` block as
@@ -362,7 +363,7 @@ jobs:
         # (.github/actions/pnpm-install caches node_modules instead), and the
         # filtered install below fetches its ~1,700 packages directly.
         with:
-          node-version: '22'
+          node-version: '24'
           check-latest: true
 
       # Most of this install used to be pnpm re-verifying all 3,348 lockfile

@@ -4,7 +4,10 @@ const mockHasProjectAccess = vi.fn();
 const mockListProjectRepoIntegrations = vi.fn();
 const mockGetProjectCodeIndexes = vi.fn();
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	...(await vi.importActual<
+		typeof import("@repo/database/src/code-index-cancel")
+	>("@repo/database/src/code-index-cancel")),
 	hasProjectAccess: (...a: unknown[]) => mockHasProjectAccess(...a),
 	listProjectRepoIntegrations: (...a: unknown[]) =>
 		mockListProjectRepoIntegrations(...a),
@@ -82,6 +85,38 @@ describe("listRepoIntegrationsProcedure", () => {
 			}),
 		);
 		expect(result.integrations[1].codeIndex).toBeNull();
+	});
+
+	it("marks a user-cancelled index as cancelled without exposing its error", async () => {
+		mockListProjectRepoIntegrations.mockResolvedValue([
+			{ id: "repo-1", repositoryOwner: "acme", repositoryName: "app-1" },
+			{ id: "repo-2", repositoryOwner: "acme", repositoryName: "app-2" },
+		]);
+		mockGetProjectCodeIndexes.mockResolvedValue([
+			{
+				repositoryIntegrationId: "repo-1",
+				status: "FAILED",
+				error: "Cancelled by user",
+			},
+			{
+				repositoryIntegrationId: "repo-2",
+				status: "FAILED",
+				error: "Embedding provider unavailable",
+			},
+		]);
+
+		const result = await getHandler()({
+			input: { projectId: "proj-1" },
+			context: { user: { id: "user-1" }, session: {} },
+		});
+
+		expect(result.integrations[0].codeIndex).toEqual(
+			expect.objectContaining({ status: "FAILED", cancelled: true }),
+		);
+		expect(result.integrations[1].codeIndex).toEqual(
+			expect.objectContaining({ status: "FAILED", cancelled: false }),
+		);
+		expect(result.integrations[0].codeIndex).not.toHaveProperty("error");
 	});
 
 	it("flags hasLegacyIndexRecord: true when a legacy null-keyed index record exists", async () => {

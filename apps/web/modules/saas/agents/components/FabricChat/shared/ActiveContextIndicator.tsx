@@ -380,7 +380,7 @@ function ContextPill({
 															"flex-shrink-0 transition-colors",
 															isPrioritized
 																? colors.star
-																: "text-muted-foreground/40 hover:text-muted-foreground",
+																: "text-muted-foreground hover:text-muted-foreground",
 														)}
 														aria-label={
 															priorityCopy
@@ -686,7 +686,7 @@ export function ActiveContextIndicator({
 			)}
 
 			{projectId && (
-				<span className="inline-flex items-center gap-0.5 rounded-full border border-primary/25 bg-primary/10 pr-0.5 text-[11px] font-medium text-primary">
+				<span className="inline-flex items-center gap-0.5 rounded-full border border-primary/25 bg-primary/10 pr-0.5 text-[11px] font-medium text-primary-active">
 					<button
 						type="button"
 						onClick={onProjectClick}
@@ -707,7 +707,7 @@ export function ActiveContextIndicator({
 							onClick={onProjectRemove}
 							disabled={projectRemoveDisabled}
 							aria-label={`Remove project ${projectName}`}
-							className="rounded-full p-0.5 text-primary/70 transition-colors hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+							className="rounded-full p-0.5 text-primary transition-colors hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
 						>
 							<X className="h-2.5 w-2.5" />
 						</button>

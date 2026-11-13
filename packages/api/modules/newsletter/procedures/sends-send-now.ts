@@ -125,6 +125,8 @@ export const sendNowProcedure = tenantProtectedProcedure
 			detailLevel: effectiveDetailLevel,
 			deliveryDestination: effectiveDeliveryDestination,
 			requireApproval: settings.requireApproval,
+			screenshotsEnabled: settings.screenshotsEnabled,
+			screenshotEnvironmentId: settings.screenshotEnvironmentId,
 			chatChannels: (settings.chatChannels ??
 				[]) as NewsletterChatChannel[],
 		});
@@ -150,6 +152,9 @@ export const sendNowProcedure = tenantProtectedProcedure
 			),
 			chatChannels: (send.chatChannels ?? []) as NewsletterChatChannel[],
 			requireApproval: send.requireApproval,
+			captureScreenshots: Boolean(
+				send.screenshotsEnabled && send.screenshotEnvironmentId,
+			),
 			timeWindowStart: start.toISOString(),
 			timeWindowEnd: end.toISOString(),
 		};

@@ -16,6 +16,7 @@ import type {
 	TrajectoryStep,
 } from "../../workflows/orchestrator/types";
 import type { SecondaryUsageInput } from "../../workflows/orchestrator/usage-attribution";
+import type { AdvisorResultStoreContext } from "../advisor-result-store";
 import type { TurnScope } from "./turn-dispatch";
 
 // =============================================================================
@@ -235,6 +236,7 @@ export interface ExecuteStepOutput {
 }
 
 export interface ExecuteMcpToolInput {
+	advisorResultStore?: AdvisorResultStoreContext;
 	toolName: string;
 	args: Record<string, unknown>;
 	userId: string;

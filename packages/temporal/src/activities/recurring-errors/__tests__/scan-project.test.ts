@@ -692,10 +692,10 @@ describe("scanRecurringErrorsForProject — failures are visible", () => {
 	});
 
 	it("records a project binding that cannot be used as the last-scan error", async () => {
-		// What the resolver throws for an unknown provider, incomplete settings
-		// or the deployment's shared workspace (see resolve-error-source).
+		// One of the reasons the resolver throws for a binding it cannot use
+		// (see UNUSABLE_BINDING_REASONS in resolve-error-source).
 		const reason =
-			"The project's log source could not be used: it names this deployment's shared telemetry workspace, or its settings are incomplete.";
+			"The project's log source settings are incomplete. Enter the workspace again in the project's settings.";
 		resolveRecurringErrorSource.mockRejectedValue(new Error(reason));
 
 		const result = await scanRecurringErrorsForProject(INPUT);

@@ -102,7 +102,7 @@ export function ResetLivingMemory({
 			{repositorySyncConnected ? (
 				<p
 					id={reasonId}
-					className="max-w-xs text-right text-foreground/60 text-xs"
+					className="max-w-xs text-right text-muted-foreground text-xs"
 				>
 					{t("disabledSyncConnected")}
 				</p>

@@ -16,6 +16,15 @@
  * A project with no usable AI provider is skipped without a record, so a
  * later version extracts once a provider exists. Other model failures throw,
  * for the workflow's retry policy.
+ *
+ * The record says whether the file met a limit: longer than the model reads
+ * (`contentTruncated`), or listing more decisions than are kept
+ * (`decisionsCapped`), so the Decisions tab can say the file was only partly
+ * read. A decision that names one of the project's features or bugs is linked
+ * to it (`workItem`).
+ *
+ * The extraction announces its candidates to the project's reviewers. For a
+ * scan a member asked for, that member is left out: they are already looking.
  */
 
 import {
@@ -32,8 +41,13 @@ import {
 	createDecisionCandidatesReadyNotifications,
 	db,
 	type LivingMemoryDecision,
+	type LivingMemoryDecisionWorkItem,
 } from "@repo/database";
 import { logger } from "@repo/logs";
+import {
+	LIVING_MEMORY_DECISION_FILE_CHAR_CAP as FILE_CHAR_CAP,
+	LIVING_MEMORY_DECISION_MAX_PER_FILE as MAX_DECISIONS,
+} from "@repo/utils/living-memory-decision-limits";
 import {
 	LIVING_MEMORY_DECISIONS_FALLBACK_BODY,
 	LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY,
@@ -41,11 +55,10 @@ import {
 import { heartbeat } from "@temporalio/activity";
 import { z } from "zod";
 import { resolveBoundPromptText } from "../lib/bound-prompt";
+import { resolveProjectFeatureRef } from "../shared/project-feature-reads";
 
-/** How much of a file is read; the rest is cut with a marker. */
-const FILE_CHAR_CAP = 60_000;
-/** A file listing more than this is not a decision log; keep the first ones. */
-const MAX_DECISIONS = 50;
+/** A feature or bug identifier as a file writes it: "F-012", "B-7", "US-3". */
+const WORK_ITEM_REF = /\b(F|B|US)-(\d+)\b/g;
 
 const ExtractedDecisionsSchema = z.object({
 	decisions: z.array(
@@ -60,8 +73,13 @@ const ExtractedDecisionsSchema = z.object({
 export interface ExtractLivingMemoryDecisionsInput {
 	contextId: string;
 	contentHash: string;
-	/** False for a scan a member asked for; the default is to notify. */
+	/**
+	 * False records without notifying. Extractions started by a requested
+	 * scan before scans notified reviewers still carry it.
+	 */
 	notify?: boolean;
+	/** The member whose own scan started this extraction; not notified. */
+	requestedByUserId?: string;
 }
 
 export type ExtractLivingMemoryDecisionsResult =
@@ -119,6 +137,8 @@ export async function extractLivingMemoryDecisionsActivity(
 	const actorUserId = context.project.userId;
 	let decisions: LivingMemoryDecision[] = [];
 	let model: string | null = null;
+	let contentTruncated = false;
+	let decisionsCapped = false;
 
 	if (context.content.trim().length > 0) {
 		let resolved: Awaited<ReturnType<typeof getAIModelWithMetadata>>;
@@ -169,8 +189,24 @@ export async function extractLivingMemoryDecisionsActivity(
 			}),
 		);
 		resolved.trackUsage();
-		decisions = normalizeDecisions(result.output.decisions);
+		const normalized = normalizeDecisions(result.output.decisions);
+		decisions = await linkWorkItems(normalized.decisions, {
+			projectId: context.projectId,
+			sourcePath,
+			content: context.content,
+		});
+		decisionsCapped = normalized.capped;
+		contentTruncated = context.content.length > FILE_CHAR_CAP;
 		model = resolved.metadata.modelString;
+	}
+
+	if (contentTruncated || decisionsCapped) {
+		logger.warn("[LivingMemoryDecisions] file only partly read", {
+			contextId: context.id,
+			contentLength: context.content.length,
+			contentTruncated,
+			decisionsCapped,
+		});
 	}
 
 	heartbeat(`extractLivingMemoryDecisions: recording ${context.id}`);
@@ -185,6 +221,8 @@ export async function extractLivingMemoryDecisionsActivity(
 				sourcePath,
 				decisions,
 				model,
+				contentTruncated,
+				decisionsCapped,
 				userId: context.userId,
 				organizationId: context.organizationId,
 			},
@@ -206,7 +244,12 @@ export async function extractLivingMemoryDecisionsActivity(
 	});
 
 	if (decisions.length > 0 && input.notify !== false) {
-		await createDecisionCandidatesReadyNotifications({ extractionId });
+		await createDecisionCandidatesReadyNotifications({
+			extractionId,
+			...(input.requestedByUserId
+				? { excludeUserIds: [input.requestedByUserId] }
+				: {}),
+		});
 	}
 	return {
 		status: "recorded",
@@ -230,10 +273,13 @@ ${body}
 </file>`;
 }
 
-/** Trim, drop blanks and repeats, and cap the list. */
+/**
+ * Trim, drop blanks and repeats, and cap the list. `capped` when a distinct
+ * decision past the cap was dropped.
+ */
 function normalizeDecisions(
 	raw: z.infer<typeof ExtractedDecisionsSchema>["decisions"],
-): LivingMemoryDecision[] {
+): { decisions: LivingMemoryDecision[]; capped: boolean } {
 	const seen = new Set<string>();
 	const out: LivingMemoryDecision[] = [];
 	for (const entry of raw) {
@@ -243,6 +289,9 @@ function normalizeDecisions(
 			continue;
 		}
 		seen.add(key);
+		if (out.length === MAX_DECISIONS) {
+			return { decisions: out, capped: true };
+		}
 		const rationale = entry.rationale?.trim();
 		const sourceQuote = entry.sourceQuote?.trim();
 		out.push({
@@ -250,11 +299,63 @@ function normalizeDecisions(
 			...(rationale ? { rationale } : {}),
 			...(sourceQuote ? { sourceQuote } : {}),
 		});
-		if (out.length === MAX_DECISIONS) {
-			break;
+	}
+	return { decisions: out, capped: false };
+}
+
+/**
+ * Link each decision to the project's feature or bug it came from, where
+ * that can be told: the one identifier its quote names, else the one its
+ * text names, else the one the whole file (path and content) names. Two or
+ * more distinct identifiers in the same place name no single work item, so
+ * none is linked. Only a work item of this project is ever linked.
+ */
+async function linkWorkItems(
+	decisions: LivingMemoryDecision[],
+	file: { projectId: string; sourcePath: string; content: string },
+): Promise<LivingMemoryDecision[]> {
+	if (decisions.length === 0) {
+		return decisions;
+	}
+	const fileRef = soleRef(
+		workItemRefs(`${file.sourcePath}\n${file.content}`),
+	);
+	const resolved = new Map<string, LivingMemoryDecisionWorkItem | null>();
+	const linked: LivingMemoryDecision[] = [];
+	for (const decision of decisions) {
+		const quoteRefs = workItemRefs(decision.sourceQuote ?? "");
+		const ownRefs =
+			quoteRefs.length > 0 ? quoteRefs : workItemRefs(decision.text);
+		const ref = ownRefs.length === 0 ? fileRef : soleRef(ownRefs);
+		if (!ref) {
+			linked.push(decision);
+			continue;
+		}
+		let workItem = resolved.get(ref);
+		if (workItem === undefined) {
+			const row = await resolveProjectFeatureRef(ref, file.projectId);
+			workItem = row ? { id: row.id, identifier: row.identifier } : null;
+			resolved.set(ref, workItem);
+		}
+		linked.push(workItem ? { ...decision, workItem } : decision);
+	}
+	return linked;
+}
+
+/** The distinct identifiers `text` names, normalized ("F-012" is "F-12"). */
+function workItemRefs(text: string): string[] {
+	const refs = new Set<string>();
+	for (const [, prefix, digits] of text.matchAll(WORK_ITEM_REF)) {
+		if (prefix && digits) {
+			refs.add(`${prefix}-${Number(digits)}`);
 		}
 	}
-	return out;
+	return [...refs];
+}
+
+/** The identifier, when exactly one is named. */
+function soleRef(refs: string[]): string | undefined {
+	return refs.length === 1 ? refs[0] : undefined;
 }
 
 function isUniqueViolation(error: unknown): boolean {

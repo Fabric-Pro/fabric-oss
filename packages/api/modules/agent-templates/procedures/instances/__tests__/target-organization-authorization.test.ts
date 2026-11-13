@@ -378,6 +378,34 @@ describe.each(cases)(
 		});
 	},
 );
+
+it("returns NOT_FOUND before instantiating another organization's template", async () => {
+	mocks.getAgentTemplate.mockImplementation(
+		(_id: string, access?: { organizationId: string }) =>
+			access?.organizationId === ACTIVE
+				? null
+				: { scope: "ORGANIZATION", organizationId: TARGET },
+	);
+
+	const error = await invoke(createInstanceProcedure, {
+		templateId: "example-template",
+		name: "Example",
+		description: "Example agent",
+		customInstructions: { role: "Help" },
+		organizationId: ACTIVE,
+	}).then(
+		() => null,
+		(caught: unknown) => caught,
+	);
+
+	expect(error).toBeInstanceOf(ORPCError);
+	expect(error).toMatchObject({ code: "NOT_FOUND" });
+	expect(mocks.getAgentTemplate).toHaveBeenCalledWith("example-template", {
+		userId: USER,
+		organizationId: ACTIVE,
+	});
+	expect(mocks.createAgentTemplateInstance).not.toHaveBeenCalled();
+});
 describe.each(instanceCases)("$name row boundary", ({ procedure, input }) => {
 	it("hides rows outside the session organization when input omits it", async () => {
 		await refused(procedure, input, "NOT_FOUND", "Instance not found");

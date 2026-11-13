@@ -96,7 +96,7 @@ The base theme token pairs and control borders are covered by automated checks f
 | `--popover-foreground` | `#11171c` | `#e8ecf0` | Ink inside floating overlays | `18.05:1` / `12.76:1` on `popover` |
 | `--sidebar` | `#f6f7f9` | `#0d1216` | Left workspace navigation rail (`grey050` / dark rail) | — |
 | `--muted` | `#f1f3f6` | `#1e262d` | Subtle container fills, table header bands, secondary pills | — |
-| `--muted-foreground` | `#4f6170` | `#94a3b3` | Secondary labels, placeholders, timestamps, column headers | `5.77:1` / `5.95:1` on `muted` |
+| `--muted-foreground` | `#4f6170` | `#94a3b3` | Secondary labels, placeholders, timestamps, column headers — always at full strength, never `/NN` | `5.77:1` / `5.95:1` on `muted`; lowest `5.44:1` / `5.07:1` on `accent` |
 | `--accent` | `#e8edf2` | `#26323d` | Hover wash on menu items, ghost buttons, and list rows | — |
 | `--accent-foreground` | `#11171c` | `#e8ecf0` | Ink on hovered/active menu items and rows | `15.33:1` / `11.01:1` on `accent` |
 
@@ -115,8 +115,8 @@ The base theme token pairs and control borders are covered by automated checks f
 | `--destructive-foreground` | `#ffffff` | `#11171c` | Text on filled `--destructive` surfaces | `6.31:1` / `8.00:1` |
 | `--destructive-hover` | `#9e102c` | `#ff9ca4` | Solid DuBois hover state for destructive buttons | `8.19:1` / `9.06:1` with `destructive-foreground` |
 | `--destructive-active` | `#630316` | `#ffafb5` | Solid DuBois pressed/active state for destructive buttons | `13.50:1` / `10.36:1` with `destructive-foreground` |
-| `--success` | `#277c43` | `#4cc36e` | Healthy cluster/job states, applied outcomes, confirmations | `5.18:1` / `8.03:1` with `success-foreground` |
-| `--success-foreground` | `#ffffff` | `#11171c` | Text on filled `--success` surfaces | `5.18:1` / `8.03:1` |
+| `--success` | `#24773f` | `#4cc36e` | Healthy cluster/job states, applied outcomes, confirmations | `5.55:1` / `8.03:1` with `success-foreground`; `4.71:1` / `5.81:1` as text on `accent` |
+| `--success-foreground` | `#ffffff` | `#11171c` | Text on filled `--success` surfaces | `5.55:1` / `8.03:1` |
 | `--highlight` | `#8a5a00` | `#f5b027` | Warning states, degraded service badges, attention callouts | `5.93:1` / `9.56:1` with `highlight-foreground` |
 | `--highlight-foreground` | `#ffffff` | `#11171c` | Text on filled `--highlight` surfaces | `5.93:1` / `9.56:1` |
 | `--highlight-ink` | `#8a5a00` | `#f5b027` | Warning text/icons rendered directly on `--card` or `--background` | `5.93:1` / `8.73:1` on `card` |
@@ -266,6 +266,23 @@ Databricks Workspace relies on **luminance stepping** and **`1px` structural bor
 > [!IMPORTANT]
 > Never invent arbitrary `z-*` classes to resolve stacking bugs. Follow the canonical layering ladder in [UI Style Guide §3](docs/ui-style-guide.md#layering): Shell notice (in-flow) → Backstop banner (`z-10`) → Sidebar (`z-30`) → Advisory dock (`z-40`) → Overlays (`z-50`) → Consent banner (`z-[100]`) → Guided tour (`200`).
 
+### High-Contrast Theme (`.high-contrast`, Fizzy #1444)
+
+High contrast is a **modifier on the colour mode, not a third mode**: the class sits on `<html>` beside `.dark`, so `.high-contrast` is the light high-contrast palette and `.dark.high-contrast` the dark one. Switching light/dark while it is on moves between the two; turning it off returns to whichever ordinary palette the colour mode selects. It is a per-person preference saved on the account (`user.contrastPreference`, written by `users.appearance.update`) and applied by the server layout before first paint; the colour mode stays per-browser (next-themes). It covers the authenticated app only — public pages keep the ordinary palettes.
+
+| Token | Light HC | Dark HC | What changes |
+| --- | --- | --- | --- |
+| `--background` / `--card` / `--popover` | `#ffffff` | `#000000` / `#0a0d10` / `#101418` | Pure white / near-black surfaces |
+| `--foreground` | `#000000` | `#ffffff` | `21:1` body ink |
+| `--muted-foreground` | `#26313b` | `#d5dde5` | Secondary text `>= 10:1` on every surface |
+| `--border` | `#5d6b78` | `#8b9aa8` | Structural edges drawn at `>= 4.5:1` instead of a hairline |
+| `--input` | `#26313b` | `#b8c4cf` | Control borders `>= 10:1` |
+| `--ring` | `#7d2604` | `#ffa36e` | Focus ring `>= 7:1`; held against org brand colours (`!important`) |
+| `--primary` / `--primary-ink` | `#7d2604` | `#ffa36e` | Brand ink `>= 7:1` as text on every surface |
+| `--destructive` / `--success` / `--highlight-ink` | `#8c0f25` / `#134d27` / `#634000` | `#ffa3ab` / `#6fe08f` / `#ffc94d` | Status inks `>= 7:1` |
+
+Beyond tokens, high contrast gives every `outline-hidden` control a solid `2px` outline in `--ring`, renders placeholders and selections opaque, and underlines links in running text ([`globals.css`](apps/web/app/globals.css)). Use the `hc:` variant only where a component needs a treatment no token can express.
+
 ---
 
 ## Accessibility & Inclusive Design
@@ -273,11 +290,17 @@ Databricks Workspace relies on **luminance stepping** and **`1px` structural bor
 1. **WCAG 2.1 AA Contrast Enforcement**:
    - Every `--<role>` / `--<role>-foreground` pair, button hover/active state (`--primary-hover`, `--primary-active`, `--destructive-hover`, `--destructive-active`), and ink token (`--primary`, `--primary-ink`, `--highlight-ink`) in [`tooling/tailwind/theme.css`](tooling/tailwind/theme.css) is verified in [`theme-token-contrast.test.ts`](apps/web/__tests__/theme-token-contrast.test.ts) to exceed `4.5:1` contrast in both light and dark modes.
    - Non-text UI states (`--input`, `--ring`, slider tracks, and adjacent stacked bar segments) are verified in [`theme-token-contrast.test.ts`](apps/web/__tests__/theme-token-contrast.test.ts) and [`ProjectUsage.test.tsx`](apps/web/modules/saas/projects/components/usage/__tests__/ProjectUsage.test.tsx) to exceed `3.0:1` contrast (WCAG 2.1 SC 1.4.11).
-2. **Keyboard Focus & Forced-Colors Visibility**:
+2. **Text Strength (Fizzy #1444)**:
+   - Secondary text is `text-muted-foreground` at full strength. Opacity modifiers on text tokens (`text-muted-foreground/70`, `text-foreground/50`) and the raw greys `text-gray-400`/`-500` fall to `2-4:1` on the app's surfaces and are blocked by [`faded-text-colour-ratchet.test.ts`](apps/web/__tests__/faded-text-colour-ratchet.test.ts); `text-foreground/70` and stronger clear AA and are allowed. Exempt and still allowed: icons (non-text), disabled controls, and decorative textures.
+   - The same holds for the status and brand inks: `text-success/80`, `text-highlight/80`, `text-destructive/50` and friends are blocked by the same ratchet; a hover that should "lighten" a primary link uses `hover:text-primary-hover`, not `hover:text-primary/80`.
+   - Text on a wash of the primary colour (`bg-primary/10` … `/20`, the active nav and settings items, selected chips) uses `text-primary-active`: `text-primary` on its own tint measures 3.7-4.6:1 in light mode and under 4.5:1 on dark cards at `/20`. Enforced by the coloured-text ratchet.
+   - Coloured status text from the Tailwind palette uses the shade that clears `4.5:1` on its fill: in the light theme `-700` for most hues (`-800` for yellow, lime and green, `-600` for blue, indigo, violet and purple) on neutral surfaces, darker on a tinted `-100`/`-200` badge fill; in the dark theme `-500` or lighter (`-400` for red, blue, the violets and the pinks; up to `-600` for yellow and lime). A light-mode colour with no `dark:` counterpart paints dark mode too, so it always gets one. Enforced by [`coloured-text-contrast-ratchet.test.ts`](apps/web/__tests__/coloured-text-contrast-ratchet.test.ts), which derives each hue's floor from the palette.
+   - `--muted-foreground`, `--foreground`, the brand ink and the status inks are verified at `>= 4.5:1` on **every** surface (`background`, `card`, `popover`, `muted`, `secondary`, `accent`, `sidebar`) in all four palettes, and at `>= 7:1` in high contrast, in [`theme-token-contrast.test.ts`](apps/web/__tests__/theme-token-contrast.test.ts).
+3. **Keyboard Focus & Forced-Colors Visibility**:
    - All interactive controls use `focus-visible:outline-hidden` (or `focus:outline-hidden` on `SelectTrigger` and menu items), which emits a `2px` transparent outline that remains visible in `forced-colors: active` / Windows High Contrast mode, paired with a solid Fabric orange focus ring (`focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background` on buttons/toggles/tabs, `focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring` on text inputs, and `focus:border-ring focus:ring-1 focus:ring-ring` on `SelectTrigger`).
-3. **Reduced Motion**:
+4. **Reduced Motion**:
    - `prefers-reduced-motion: reduce` collapses all animation and transition durations to `0.01ms` in [`apps/web/app/globals.css`](apps/web/app/globals.css) and forces scroll-reveal elements to `opacity: 1`.
-4. **Screen Reader & Semantic Parity**:
+5. **Screen Reader & Semantic Parity**:
    - Icon-only buttons (`size="icon"`, `size="icon-sm"`, `size="icon-lg"`) require an explicit `aria-label` and `title`.
    - Multiple pagination instances on a single screen require distinct `navigationLabel`, `goToPageLabel`, `previousLabel`, and `nextLabel` props.
 
@@ -288,6 +311,7 @@ Databricks Workspace relies on **luminance stepping** and **`1px` structural bor
 | Do (Databricks DuBois Pattern) | Don’t (Anti-Pattern) |
 | --- | --- |
 | Use semantic tokens (`bg-primary`, `border-input`, `text-muted-foreground`, `bg-card`). | Hardcode hex values (`bg-[#2272b4]`) or inline `style={{ ... }}` colors in React components. |
+| Use `text-muted-foreground` at full strength for secondary text, captions, and helper text. | Fade text with opacity modifiers (`text-muted-foreground/70`, `text-foreground/50`) or raw greys (`text-gray-400`), which drop under `4.5:1`. |
 | Use `rounded-md` (`4px`) for buttons, inputs, and select triggers, and `rounded-lg` (`6px`) for cards, dialogs, and popovers. | Use pill-shaped (`rounded-full`) or oversized (`rounded-2xl`) radii on standard workspace controls. |
 | Separate `--border` (structural card/table dividers) from `--input` (`>= 3:1` contrast form control borders). | Use faint structural borders on textboxes, checkboxes, or select triggers that fail WCAG 1.4.11 `3:1` contrast. |
 | Use `font-semibold` (`600`) for headings, dialog titles, and table column headers inside `@layer base`. | Put unlayered element rules in `globals.css` that override Tailwind utility classes. |

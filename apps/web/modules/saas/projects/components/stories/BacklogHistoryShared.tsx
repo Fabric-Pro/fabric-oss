@@ -89,7 +89,7 @@ export function HistoryTimestamp({
 		>
 			<span className="text-muted-foreground">{relative}</span>
 			{absolute ? (
-				<span className="block text-[11px] text-muted-foreground/70">
+				<span className="block text-[11px] text-muted-foreground">
 					{absolute}
 				</span>
 			) : null}
@@ -108,7 +108,7 @@ function SourceTag({ source }: { source: string }) {
 				<span
 					role="img"
 					aria-label={`Source: ${source}`}
-					className="inline-flex shrink-0 items-center gap-1 rounded-full border border-secondary/30 bg-secondary/15 px-1.5 py-0 font-medium text-[10px] text-secondary"
+					className="inline-flex shrink-0 items-center gap-1 rounded-full border border-success/30 bg-success/15 px-1.5 py-0 font-medium text-[10px] text-success"
 				>
 					<SparklesIcon className="size-2.5" aria-hidden="true" />
 					{source}

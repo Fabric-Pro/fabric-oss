@@ -213,21 +213,21 @@ function getDataSourceColors(type: DataSourceType, isConnected: boolean) {
 			return {
 				bg: "bg-emerald-50/50 dark:bg-emerald-950/20",
 				border: "border-emerald-200 dark:border-emerald-800",
-				icon: "text-emerald-600 dark:text-emerald-400",
+				icon: "text-emerald-700 dark:text-emerald-400",
 				iconBg: "bg-emerald-100 dark:bg-emerald-900",
 			};
 		case "workspace":
 			return {
 				bg: "bg-amber-50/50 dark:bg-amber-950/20",
 				border: "border-amber-200 dark:border-amber-800",
-				icon: "text-amber-600 dark:text-amber-400",
+				icon: "text-amber-700 dark:text-amber-400",
 				iconBg: "bg-amber-100 dark:bg-amber-900",
 			};
 		case "integration":
 			return {
 				bg: "bg-pink-50/50 dark:bg-pink-950/20",
 				border: "border-pink-200 dark:border-pink-800",
-				icon: "text-pink-600 dark:text-pink-400",
+				icon: "text-pink-700 dark:text-pink-400",
 				iconBg: "bg-pink-100 dark:bg-pink-900",
 			};
 		default:

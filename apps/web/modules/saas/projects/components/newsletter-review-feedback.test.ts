@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+	describeImageFailure,
+	describeImageRefusal,
 	describeReviewFailure,
 	describeReviewSuccess,
 } from "./newsletter-review-feedback";
@@ -142,5 +144,100 @@ describe("describeReviewFailure", () => {
 		const feedback = describeReviewFailure("approve", "boom");
 		expect(feedback.level).toBe("error");
 		expect(feedback.message).toMatch(/Failed to approve/);
+	});
+});
+
+/** An oRPC client error that also carries the server's `data`. */
+class OrpcErrorWithData extends OrpcErrorLike {
+	data: unknown;
+	constructor(code: string, message: string, data: unknown) {
+		super(code, message);
+		this.data = data;
+	}
+}
+
+describe("describeImageFailure", () => {
+	it("a CONFLICT is the neutral no-longer-awaiting-review notice and refreshes", () => {
+		const message =
+			"This newsletter is no longer awaiting review, so its images can no longer be changed.";
+		expect(
+			describeImageFailure(new OrpcErrorLike("CONFLICT", message)),
+		).toEqual({ level: "info", message, refresh: true });
+	});
+
+	it("a capture still running is a CONFLICT that keeps the panel open", () => {
+		expect(
+			describeImageFailure(
+				new OrpcErrorWithData("CONFLICT", "server copy", {
+					code: "capture_in_progress",
+				}),
+			),
+		).toEqual({
+			level: "error",
+			message: "This screenshot is already being captured.",
+			refresh: false,
+		});
+	});
+
+	it("a CONFLICT without a message falls back to the generic notice", () => {
+		expect(
+			describeImageFailure(new OrpcErrorLike("CONFLICT", "")).message,
+		).toBe("This newsletter is no longer awaiting review.");
+	});
+
+	it.each([
+		{
+			code: "too_large",
+			message:
+				"That image is too large even after shrinking. Try a smaller one.",
+		},
+		{ code: "unsupported", message: "Use a PNG or JPEG image." },
+		{
+			code: "highlight_full",
+			message: "This highlight already has two images.",
+		},
+		{
+			code: "no_capture_environment",
+			message:
+				"Choose an environment to capture from in the release notes settings first.",
+		},
+		{
+			code: "capture_limit",
+			message:
+				"This newsletter has reached its limit of screenshot captures. Upload an image instead.",
+		},
+	])("BAD_REQUEST $code explains the refusal", ({ code, message }) => {
+		expect(
+			describeImageFailure(
+				new OrpcErrorWithData("BAD_REQUEST", "server copy", { code }),
+			),
+		).toEqual({ level: "error", message, refresh: false });
+	});
+
+	it.each([
+		{
+			name: "an unknown data code",
+			error: new OrpcErrorWithData("BAD_REQUEST", "x", { code: "nope" }),
+		},
+		{
+			name: "a server error",
+			error: new OrpcErrorLike("INTERNAL_SERVER_ERROR", "x"),
+		},
+		{ name: "a network failure", error: new Error("Failed to fetch") },
+		{ name: "a thrown string", error: "boom" },
+	])("$name gets the generic retry copy", ({ error }) => {
+		expect(describeImageFailure(error)).toEqual({
+			level: "error",
+			message: "Could not save the image. Try again.",
+			refresh: false,
+		});
+	});
+});
+
+describe("describeImageRefusal", () => {
+	it("uses the same copy as the server's refusal codes", () => {
+		expect(describeImageRefusal("unsupported")).toBe(
+			"Use a PNG or JPEG image.",
+		);
 	});
 });

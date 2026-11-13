@@ -43,13 +43,13 @@ const scopeConfig: Record<
 > = {
 	SYSTEM: {
 		label: "System",
-		className: "bg-primary/10 text-primary",
+		className: "bg-primary/10 text-primary-active",
 		dot: "bg-primary",
 	},
 	ORGANIZATION: {
 		label: "Organization",
-		className: "bg-secondary/10 text-secondary",
-		dot: "bg-secondary",
+		className: "bg-secondary/10 text-muted-foreground",
+		dot: "bg-muted-foreground",
 	},
 	USER: {
 		label: "Personal",
@@ -105,7 +105,7 @@ export function SkillCard({ skill, onUpdate }: SkillCardProps) {
 			{/* Scope badge + dropdown - absolute top-right */}
 			<div className="absolute top-3 right-3 z-10 flex items-center gap-1">
 				{skill.useCount > 5 && (
-					<span className="text-[10px] px-1.5 py-0.5 rounded font-medium leading-tight flex items-center gap-1 bg-amber-500/10 text-amber-600 border border-amber-500/20">
+					<span className="text-[10px] px-1.5 py-0.5 rounded font-medium leading-tight flex items-center gap-1 bg-amber-500/10 text-amber-800 border border-amber-500/20 dark:text-amber-500">
 						<TrendingUpIcon className="h-2.5 w-2.5" />
 						{skill.useCount}
 					</span>
@@ -134,7 +134,10 @@ export function SkillCard({ skill, onUpdate }: SkillCardProps) {
 								className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
 								onClick={(e) => e.stopPropagation()}
 							>
-								<MoreHorizontalIcon className="h-3.5 w-3.5" />
+								<MoreHorizontalIcon
+									strokeWidth={2.5}
+									className="h-3.5 w-3.5"
+								/>
 							</Button>
 						</DropdownMenuTrigger>
 						<DropdownMenuContent align="end">
@@ -168,7 +171,7 @@ export function SkillCard({ skill, onUpdate }: SkillCardProps) {
 			<div className="flex gap-3 p-4 pb-3">
 				{/* Icon */}
 				<div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-secondary/10">
-					<PuzzleIcon className="h-4.5 w-4.5 text-secondary" />
+					<PuzzleIcon className="h-4.5 w-4.5 text-muted-foreground" />
 				</div>
 
 				{/* Content - pr-16 so text clears the absolute badge */}

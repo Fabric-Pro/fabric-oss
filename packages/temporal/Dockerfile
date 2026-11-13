@@ -6,7 +6,7 @@
 # =============================================================================
 # Stage 1: Base - Install dependencies
 # =============================================================================
-FROM node:22-slim AS base
+FROM node:24-slim AS base
 
 # Install certificates, OpenSSL for the Prisma CLI, and pnpm.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -106,7 +106,7 @@ RUN grep -rq "storyPriorityChange" packages/database/prisma/generated/ || \
 # 128 s) and the node_modules layer (544 MB, 57 s) from the registry cache on a
 # fresh runner just to have a filesystem to run it on, though both were cache
 # hits. Linked copies with no RUN after them do not need those layers unpacked.
-FROM node:22-slim AS runtime-deps
+FROM node:24-slim AS runtime-deps
 
 # Install OpenSSL for the Prisma migration CLI, git for code indexing, and tools.
 #
@@ -144,7 +144,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # This image previously had NO browser binary at all. `playwright` is a
 # dependency of @repo/temporal, but pnpm blocks its postinstall (it is absent
 # from `allowBuilds` in pnpm-workspace.yaml), so the browsers were
-# never downloaded — and node:22-slim lacks the shared libraries Chromium needs
+# never downloaded — and node:24-slim lacks the shared libraries Chromium needs
 # regardless. Anything calling `chromium.launch()` therefore failed at runtime
 # with "Executable doesn't exist".
 #

@@ -18,6 +18,7 @@ import {
 } from "../src/activities/daily-brief/providers/gitlab";
 
 const gitlabRequestMock = vi.mocked(gitlabRequest);
+const WINDOW_START = new Date("2026-05-01T00:00:00Z");
 
 beforeEach(() => {
 	vi.resetAllMocks();
@@ -80,10 +81,15 @@ describe("fetchGitLabReleases", () => {
 			owner: "grp",
 			repo: "proj",
 			repositoryUrl: "https://gitlab.com/grp/proj",
+			windowStart: WINDOW_START,
 			remainingMs: () => 60_000,
 		});
 		expect(out.truncated).toBe(false);
 		expect(out.releases.map((r) => r.tag_name)).toEqual(["v2", "v1"]);
+		expect(gitlabRequestMock.mock.calls[0][0].query).toMatchObject({
+			order_by: "released_at",
+			sort: "desc",
+		});
 		expect(out.releases[0]).toMatchObject({
 			draft: false,
 			published_at: "2026-06-09T10:00:00Z",
@@ -95,8 +101,36 @@ describe("fetchGitLabReleases", () => {
 		);
 	});
 
+	it("stops after the page that reaches past the window start — not truncated", async () => {
+		gitlabRequestMock
+			.mockResolvedValueOnce({
+				status: 200,
+				headers: new Headers({ "x-next-page": "2" }),
+				body: [glRelease("v3", "2026-06-09T10:00:00Z")],
+			})
+			.mockResolvedValueOnce({
+				status: 200,
+				headers: new Headers({ "x-next-page": "3" }),
+				body: [
+					glRelease("v2", "2026-05-02T10:00:00Z"),
+					glRelease("v1", "2026-04-20T10:00:00Z"),
+				],
+			});
+		const out = await fetchGitLabReleases({
+			getToken: async () => "t",
+			owner: "g",
+			repo: "p",
+			repositoryUrl: "u",
+			windowStart: WINDOW_START,
+			remainingMs: () => 60_000,
+		});
+		expect(out.truncated).toBe(false);
+		expect(out.releases.map((r) => r.tag_name)).toEqual(["v3", "v2", "v1"]);
+		expect(gitlabRequestMock).toHaveBeenCalledTimes(2);
+	});
+
 	it("marks truncated at the page cap with a next page pending", async () => {
-		for (let p = 1; p <= 5; p++) {
+		for (let p = 1; p <= 20; p++) {
 			gitlabRequestMock.mockResolvedValueOnce({
 				status: 200,
 				headers: new Headers({ "x-next-page": String(p + 1) }),
@@ -108,10 +142,11 @@ describe("fetchGitLabReleases", () => {
 			owner: "g",
 			repo: "p",
 			repositoryUrl: "u",
+			windowStart: WINDOW_START,
 			remainingMs: () => 60_000,
 		});
 		expect(out.truncated).toBe(true);
-		expect(gitlabRequestMock).toHaveBeenCalledTimes(5); // cap respected
+		expect(gitlabRequestMock).toHaveBeenCalledTimes(20); // cap respected
 	});
 
 	it("upcoming_release maps to prerelease (filtered out downstream)", async () => {
@@ -130,6 +165,7 @@ describe("fetchGitLabReleases", () => {
 			owner: "g",
 			repo: "p",
 			repositoryUrl: "u",
+			windowStart: WINDOW_START,
 			remainingMs: () => 60_000,
 		});
 		expect(out.releases[0].prerelease).toBe(true);
@@ -141,6 +177,7 @@ describe("fetchGitLabReleases", () => {
 			owner: "g",
 			repo: "p",
 			repositoryUrl: "u",
+			windowStart: WINDOW_START,
 			remainingMs: () => 100,
 		});
 		expect(out).toEqual({ releases: [], truncated: true });
@@ -154,6 +191,7 @@ describe("fetchGitLabReleases", () => {
 			owner: "g",
 			repo: "p",
 			repositoryUrl: "u",
+			windowStart: WINDOW_START,
 			remainingMs: () => 100, // below MIN_FETCH_MS (500)
 		});
 		expect(out).toEqual({ releases: [], truncated: true });
@@ -169,6 +207,7 @@ describe("fetchGitLabReleases", () => {
 				owner: "g",
 				repo: "p",
 				repositoryUrl: "u",
+				windowStart: WINDOW_START,
 				remainingMs: () => 600, // > MIN_FETCH_MS, small enough to time out fast
 			}),
 		).rejects.toThrow("GitLab: token acquisition timed out");
@@ -195,6 +234,7 @@ describe("fetchGitLabReleases", () => {
 			owner: "g",
 			repo: "p",
 			repositoryUrl: "u",
+			windowStart: WINDOW_START,
 			remainingMs: () => 600,
 		});
 		const onRefreshToken =
@@ -215,6 +255,7 @@ describe("fetchGitLabReleases", () => {
 				owner: "g",
 				repo: "p",
 				repositoryUrl: "u",
+				windowStart: WINDOW_START,
 				remainingMs: () => 60_000,
 			}),
 		).rejects.toThrow("GitLab API error: HTTP 401: Unauthorized");
@@ -230,6 +271,7 @@ describe("fetchGitLabReleases", () => {
 				owner: "g",
 				repo: "p",
 				repositoryUrl: "u",
+				windowStart: WINDOW_START,
 				remainingMs: () => 60_000,
 			}),
 		).rejects.toThrow("GitLab: refresh_token revoked");

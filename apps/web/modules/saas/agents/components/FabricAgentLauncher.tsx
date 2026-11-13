@@ -536,9 +536,9 @@ function _ContextChip({
 	return (
 		<div className="inline-flex items-center gap-1 rounded border border-border/60 bg-muted/40 px-2 py-0.5 text-[11px]">
 			{icon ? (
-				<span className="text-muted-foreground/70">{icon}</span>
+				<span className="text-muted-foreground">{icon}</span>
 			) : (
-				<span className="text-muted-foreground/70">{label}:</span>
+				<span className="text-muted-foreground">{label}:</span>
 			)}
 			<span className="max-w-[160px] truncate font-medium text-foreground/80">
 				{value}
@@ -1046,7 +1046,7 @@ function FabricAgentLauncherSheet({
 												<button
 													type="button"
 													onClick={onClearContext}
-													className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+													className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
 													aria-label="Clear context"
 												>
 													<XIcon className="size-2.5" />
@@ -1094,7 +1094,7 @@ function FabricAgentLauncherSheet({
 										type="button"
 										disabled
 										aria-disabled="true"
-										className="inline-flex h-7 items-center rounded-md border border-border/60 bg-card/50 px-2.5 text-xs font-medium text-muted-foreground/40"
+										className="inline-flex h-7 items-center rounded-md border border-border/60 bg-card/50 px-2.5 text-xs font-medium text-muted-foreground"
 										title="Expanding would end the reply being written. Available as soon as it finishes."
 									>
 										Expand

@@ -129,8 +129,15 @@ const version = (overrides: Record<string, unknown> = {}) => ({
 	changedBy: "user-1",
 	author: { kind: "HUMAN", name: "Ada Lovelace" },
 	createdAt: "2026-07-01T00:00:00.000Z",
+	madeBy: { description: null, at: "2026-06-30T00:00:00.000Z" },
 	promptVersion: null,
 	...overrides,
+});
+
+/** A version whose body the given change made, as the server reports it. */
+const madeBy = (description: string | null, at: string | null = null) => ({
+	description,
+	at,
 });
 
 let queryClient: QueryClient;
@@ -321,55 +328,62 @@ describe("DocumentVersionHistory — word count (Fizzy #2946)", () => {
 const CHANGE_COPY = en.projects.versionHistory.change;
 
 describe("DocumentVersionHistory — which writer made a version (Fizzy #2946)", () => {
-	it("labels each writer's version as its own", async () => {
+	it("labels each version with the change that made its body, not the one stored on its row", async () => {
 		listVersions.mockResolvedValue({
 			versions: [
+				// Each row's own description belongs to the change that
+				// replaced its body; the card reads `madeBy`.
 				version({
 					id: "v18",
 					version: 18,
-					changeDescription: "Chat edit",
+					changeDescription: "Restored to version 2",
+					madeBy: madeBy("Chat edit", "2026-07-02T00:00:00.000Z"),
 				}),
 				version({
 					id: "v17",
 					version: 17,
-					changeDescription: "Edit with instructions",
+					madeBy: madeBy("Edit with instructions"),
 				}),
 				version({
 					id: "v16",
 					version: 16,
-					changeDescription: "Applied a review recommendation",
+					madeBy: madeBy("Applied a review recommendation"),
 				}),
 				version({
 					id: "v15",
 					version: 15,
-					changeDescription: "Updated with latest context",
+					madeBy: madeBy("Revised a section with instructions"),
 				}),
 				version({
 					id: "v14",
 					version: 14,
-					changeDescription: "Regenerated version",
+					madeBy: madeBy("Updated with latest context"),
 				}),
 				version({
 					id: "v13",
 					version: 13,
-					changeDescription: "Restored to version 1",
+					madeBy: madeBy("Regenerated version"),
 				}),
 				version({
 					id: "v12",
 					version: 12,
-					changeDescription: "Assistant edit",
+					madeBy: madeBy("Restored to version 1"),
 				}),
 				version({
 					id: "v11",
 					version: 11,
-					changeDescription: "Tightened the scope",
+					madeBy: madeBy("Assistant edit"),
+				}),
+				version({
+					id: "v10",
+					version: 10,
+					madeBy: madeBy("Tightened the scope"),
 				}),
 			],
 		});
 
 		renderPanel();
 
-		// Numbered past the current version, whose "v3" heads the list.
 		const descriptionOf = async (label: string) =>
 			(await screen.findByText(label))
 				.closest("[role='button']")
@@ -381,23 +395,88 @@ describe("DocumentVersionHistory — which writer made a version (Fizzy #2946)",
 		expect(await descriptionOf("v16")).toBe(
 			CHANGE_COPY.recommendationApplied,
 		);
-		expect(await descriptionOf("v15")).toBe(CHANGE_COPY.updatedFromContext);
-		expect(await descriptionOf("v14")).toBe(CHANGE_COPY.regenerated);
-		expect(await descriptionOf("v13")).toBe("Restored to version 1");
+		expect(await descriptionOf("v15")).toBe(CHANGE_COPY.sectionRevised);
+		expect(await descriptionOf("v14")).toBe(CHANGE_COPY.updatedFromContext);
+		expect(await descriptionOf("v13")).toBe(CHANGE_COPY.regenerated);
+		expect(await descriptionOf("v12")).toBe("Restored to version 1");
 		// Older rows keep what they say: an "Assistant edit" from before the
 		// writers were told apart, and a person's own description.
-		expect(await descriptionOf("v12")).toBe("Assistant edit");
-		expect(await descriptionOf("v11")).toBe("Tightened the scope");
+		expect(await descriptionOf("v11")).toBe("Assistant edit");
+		expect(await descriptionOf("v10")).toBe("Tightened the scope");
+		// The row's own description is not shown anywhere on its card.
+		expect(renderedText()).not.toContain("Restored to version 2");
 		// The chat edit and Edit with instructions no longer read alike.
 		expect(CHANGE_COPY.chatEdit).not.toBe(CHANGE_COPY.editWithInstructions);
 	});
 
-	it("labels the version in the restore confirm and the diff viewer alike", async () => {
+	it("reads a version whose maker is unknown as an edit, with no time; a save without a description keeps its time", async () => {
+		listVersions.mockResolvedValue({
+			versions: [
+				version({
+					id: "v2",
+					version: 2,
+					createdAt: "2026-07-05T00:00:00.000Z",
+					madeBy: madeBy(null, "2026-07-03T00:00:00.000Z"),
+				}),
+				version({
+					id: "v1",
+					version: 1,
+					createdAt: "2026-07-03T00:00:00.000Z",
+					madeBy: madeBy(null),
+				}),
+			],
+		});
+
+		renderPanel();
+
+		const card = async (label: string) =>
+			(await screen.findByText(label)).closest(
+				"[role='button']",
+			) as HTMLElement;
+		const saved = await card("v2");
+		expect(saved.querySelector("p")?.textContent).toBe(CHANGE_COPY.edited);
+		expect(saved.querySelector("time")?.getAttribute("dateTime")).toBe(
+			"2026-07-03T00:00:00.000Z",
+		);
+		const unknown = await card("v1");
+		expect(unknown.querySelector("p")?.textContent).toBe(
+			CHANGE_COPY.edited,
+		);
+		// Its row's time is when it was replaced, not when it was made.
+		expect(unknown.querySelector("time")).toBeNull();
+	});
+
+	it("says what made the current version beside its number", async () => {
+		listVersions.mockResolvedValue({
+			versions: [
+				// The current v3 came from the section revision stored on v2.
+				version({
+					id: "v2",
+					version: 2,
+					changeDescription: "Revised a section with instructions",
+					madeBy: madeBy("Chat edit"),
+				}),
+			],
+		});
+
+		renderPanel();
+
+		await screen.findByText("v2");
+		expect(renderedText()).toContain(
+			`Current version: v3 · ${CHANGE_COPY.sectionRevised}`,
+		);
+	});
+
+	it("labels the version in the restore confirm and the diff viewer with its maker", async () => {
 		listVersions.mockResolvedValue({
 			versions: [
 				version({
 					version: 2,
-					changeDescription: "Edit with instructions",
+					changeDescription: "Restored to version 1",
+					madeBy: madeBy(
+						"Edit with instructions",
+						"2026-07-02T00:00:00.000Z",
+					),
 				}),
 			],
 		});
@@ -418,10 +497,16 @@ describe("DocumentVersionHistory — which writer made a version (Fizzy #2946)",
 		expect(
 			(
 				diffViewer.props as unknown as {
-					selectedVersion: { changeDescription: string | null };
+					selectedVersion: {
+						changeDescription: string | null;
+						createdAt: string | null;
+					};
 				}
-			).selectedVersion.changeDescription,
-		).toBe(CHANGE_COPY.editWithInstructions);
+			).selectedVersion,
+		).toMatchObject({
+			changeDescription: CHANGE_COPY.editWithInstructions,
+			createdAt: "2026-07-02T00:00:00.000Z",
+		});
 	});
 });
 

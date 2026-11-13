@@ -13,7 +13,8 @@
  * never a blank pane. Once this run has written a section the previous body
  * never returns: when the live preview stops and the fallback writes the Main
  * (Fizzy #2946), the sections stay with a "preview stopped" line, announced
- * once.
+ * once. An option the page hands in for the Retry shows on its own line by
+ * either Retry, only while a run is stalled and the reader can retry.
  *
  * The read-only editor is the real Tiptap one with the editor's extensions,
  * and `next-intl` resolves the real en.json, so a missing string fails.
@@ -53,6 +54,15 @@ vi.mock("next-intl", async () => {
 	};
 });
 
+// For the web research option the page puts beside a Retry.
+vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useOrganizationContext: () => ({
+		organizationId: "org-1",
+		organizationSlug: "example-org",
+		basePath: "/app/example-org",
+	}),
+}));
+
 import messages from "@repo/i18n/translations/en.json";
 import {
 	PROPOSAL_FINISHING_PROGRESS,
@@ -70,6 +80,7 @@ import {
 	type ProposalLiveSectionsProps,
 } from "@saas/projects/components/proposal-artifact/ProposalLiveSections";
 import type { ProposalThemeRootProps } from "@saas/projects/components/proposal-artifact/use-proposal-theme";
+import { WebResearchOption } from "@saas/projects/components/web-research/WebResearchOption";
 import type { CSSProperties } from "react";
 
 const copy = messages.projects.proposalArtifactPage.live;
@@ -363,7 +374,7 @@ describe("ProposalLiveSections — before the first section", () => {
 		expect(
 			within(previous)
 				.getByText("The earlier version.")
-				.closest(".opacity-60"),
+				.closest("[data-stale]"),
 		).not.toBeNull();
 		expect(screen.queryByText(copy.newDocument)).not.toBeInTheDocument();
 	});
@@ -381,7 +392,9 @@ describe("ProposalLiveSections — before the first section", () => {
 		const root = themeRoot(container);
 		expect(root).toContainElement(screen.getByText("The earlier version."));
 		// The paper dims as a whole.
-		expect(root.parentElement).toHaveClass("opacity-60");
+		expect(root.parentElement).toHaveAttribute("data-stale");
+		expect(root.parentElement).toHaveClass("grayscale");
+		expect(root.parentElement).not.toHaveClass("opacity-60");
 		expect(root).not.toContainElement(
 			screen.getByRole("region", {
 				name: "Document generation progress",
@@ -459,6 +472,186 @@ describe("ProposalLiveSections — before the first section", () => {
 
 		const live = renderPane({ liveContent: TWO_SECTIONS });
 		await screen.findByRole("heading", { level: 2, name: "Scope" });
+		expect(await axe(live.container)).toHaveNoViolations();
+	});
+});
+
+describe("ProposalLiveSections — an option for the Retry", () => {
+	const RETRY_OPTION = (
+		<p data-testid="retry-option">An option for the next Retry</p>
+	);
+	const stalledAt = () => new Date(Date.now() - 10 * 60 * 1000);
+
+	/** Whether `later` comes after `earlier` in document order. */
+	function follows(later: Node, earlier: Node): boolean {
+		return Boolean(
+			earlier.compareDocumentPosition(later) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		);
+	}
+
+	it("puts the option on its own line by a stalled run's Retry once sections have arrived", async () => {
+		const at = stalledAt();
+		renderPane({
+			liveContent: TWO_SECTIONS,
+			generationStartedAt: at,
+			updatedAt: at,
+			onRetry: vi.fn(),
+			retryOption: RETRY_OPTION,
+		});
+		await screen.findByRole("heading", { level: 2, name: "Scope" });
+
+		const retry = screen.getByRole("button", { name: copy.retry });
+		const option = screen.getByTestId("retry-option");
+		expect(follows(option, retry)).toBe(true);
+		// Its own line: not inside the row that holds the stall and its Retry.
+		expect(retry.parentElement?.contains(option)).toBe(false);
+	});
+
+	it("puts the option directly beneath the progress block before any section", () => {
+		const at = stalledAt();
+		renderPane({
+			status: "GENERATING",
+			progress: 35,
+			generationStartedAt: at,
+			updatedAt: at,
+			onRetry: vi.fn(),
+			retryOption: RETRY_OPTION,
+		});
+
+		const progress = screen.getByRole("region", {
+			name: "Document generation progress",
+		});
+		const retry = within(progress).getByRole("button", {
+			name: /retry generation/i,
+		});
+		const option = screen.getByTestId("retry-option");
+		// The progress block keeps its own Retry; the option sits outside it,
+		// immediately after it.
+		expect(retry).toBeInTheDocument();
+		expect(progress.contains(option)).toBe(false);
+		expect(progress.nextElementSibling?.contains(option)).toBe(true);
+	});
+
+	it.each([
+		["with sections", TWO_SECTIONS],
+		["before any section", null],
+	])(
+		"shows no option while the run is healthy (%s)",
+		(_label, liveContent) => {
+			renderPane({
+				liveContent,
+				status: "GENERATING",
+				generationStartedAt: new Date(),
+				updatedAt: new Date(),
+				onRetry: vi.fn(),
+				retryOption: RETRY_OPTION,
+			});
+
+			expect(
+				screen.queryByTestId("retry-option"),
+			).not.toBeInTheDocument();
+		},
+	);
+
+	it("shows no option where the progress block shows no Retry (progress at 100)", () => {
+		const at = stalledAt();
+		renderPane({
+			status: "GENERATING",
+			progress: 100,
+			generationStartedAt: at,
+			updatedAt: at,
+			onRetry: vi.fn(),
+			retryOption: RETRY_OPTION,
+		});
+
+		expect(
+			screen.queryByRole("button", { name: /retry generation/i }),
+		).not.toBeInTheDocument();
+		expect(screen.queryByTestId("retry-option")).not.toBeInTheDocument();
+	});
+
+	it("shows no option while a run waits in the queue", () => {
+		const at = stalledAt();
+		renderPane({
+			status: "QUEUED",
+			progress: 0,
+			generationStartedAt: at,
+			updatedAt: at,
+			onRetry: vi.fn(),
+			retryOption: RETRY_OPTION,
+		});
+
+		expect(screen.queryByTestId("retry-option")).not.toBeInTheDocument();
+	});
+
+	it.each([
+		["with sections", TWO_SECTIONS],
+		["before any section", null],
+	])(
+		"shows no option to a reader who cannot retry (%s)",
+		(_label, liveContent) => {
+			const at = stalledAt();
+			renderPane({
+				liveContent,
+				generationStartedAt: at,
+				updatedAt: at,
+				retryOption: RETRY_OPTION,
+			});
+
+			expect(
+				screen.queryByRole("button", { name: /retry/i }),
+			).not.toBeInTheDocument();
+			expect(
+				screen.queryByTestId("retry-option"),
+			).not.toBeInTheDocument();
+		},
+	);
+
+	it("has no detectable accessibility violations with the web research option by either Retry", async () => {
+		const at = stalledAt();
+		// Unavailable, so the reason and the settings link render as well.
+		const webResearchOption = (
+			<WebResearchOption
+				variant="compact"
+				checked={false}
+				onCheckedChange={vi.fn()}
+				availability={{ status: "unavailable", missing: ["search"] }}
+			/>
+		);
+
+		const waiting = renderPane({
+			generationStartedAt: at,
+			updatedAt: at,
+			onRetry: vi.fn(),
+			retryOption: webResearchOption,
+		});
+		expect(
+			screen.getByRole("checkbox", {
+				name: messages.projects.documents.webResearch.label,
+			}),
+		).toBeInTheDocument();
+		// The hosted progress card's bar is unnamed, as above.
+		expect(
+			await axe(waiting.container, {
+				rules: { "aria-progressbar-name": { enabled: false } },
+			}),
+		).toHaveNoViolations();
+		waiting.unmount();
+
+		const live = renderPane({
+			liveContent: TWO_SECTIONS,
+			generationStartedAt: at,
+			updatedAt: at,
+			onRetry: vi.fn(),
+			retryOption: webResearchOption,
+		});
+		await screen.findByRole("heading", { level: 2, name: "Scope" });
+		expect(
+			screen.getByRole("checkbox", {
+				name: messages.projects.documents.webResearch.label,
+			}),
+		).toBeInTheDocument();
 		expect(await axe(live.container)).toHaveNoViolations();
 	});
 });

@@ -56,7 +56,7 @@ function ToolbarIconButton({
 			<TooltipContent>
 				{label}
 				{shortcut ? (
-					<span className="ml-2 font-mono text-[11px] opacity-70">
+					<span className="ml-2 font-mono text-[11px]">
 						{shortcut}
 					</span>
 				) : null}
@@ -256,7 +256,7 @@ export function EditorHeader({
 					Workflows
 				</Link>
 				<span
-					className="shrink-0 text-muted-foreground/60"
+					className="shrink-0 text-muted-foreground"
 					aria-hidden="true"
 				>
 					/

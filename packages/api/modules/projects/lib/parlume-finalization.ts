@@ -4,6 +4,7 @@ import {
 	buildParlumeChatDeliveryEvidence,
 	formatParlumeChatDeliveryEvidence,
 } from "@repo/utils/parlume-chat-delivery-evidence";
+import { startTimeSuggestionsAfterMeeting } from "../../time-tracking/lib/automatic-suggestions";
 import { deleteParlumeMeetingBotData } from "./parlume-attendee";
 import { parlumeLog } from "./parlume-log";
 import { resolveParlumeAttendeeSettings } from "./parlume-provider-settings";
@@ -75,6 +76,7 @@ export async function finalizeParlumeSession(
 			captureStoppedAt: true,
 			finalizedAt: true,
 			transcriptContextId: true,
+			trigger: true,
 			createdAt: true,
 		},
 	});
@@ -334,6 +336,28 @@ export async function finalizeParlumeSession(
 				: null,
 			botMs: endedAt.getTime() - session.createdAt.getTime(),
 		});
+		// Only a meeting the member had the agent join is evidence of their
+		// time (see `time-evidence.ts`). The session is already committed as
+		// finalized; awaited so a serverless route does not cut it off, and
+		// never thrown, so finalization cannot fail with it.
+		if (!options.preserveFailure && session.trigger === "MANUAL") {
+			try {
+				await startTimeSuggestionsAfterMeeting({
+					sessionId: session.id,
+					organizationId: session.organizationId,
+					userId: session.userId,
+					projectId: session.projectId,
+					joinedAt: session.joinedAt,
+				});
+			} catch (error) {
+				parlumeLog("warn", "session.time_suggestions_failed", {
+					sessionId: session.id,
+					botId: session.providerBotId,
+					error:
+						error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
 	}
 	if (transcriptContextId) {
 		const { getTemporalClient } = await import("@repo/temporal");

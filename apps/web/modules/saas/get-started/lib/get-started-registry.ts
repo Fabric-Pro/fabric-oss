@@ -10,8 +10,10 @@ import {
 	CalendarDaysIcon,
 	ClipboardCheckIcon,
 	ClipboardListIcon,
+	ClockIcon,
 	CodeIcon,
 	CombineIcon,
+	ContrastIcon,
 	CreditCardIcon,
 	FileTextIcon,
 	FolderIcon,
@@ -41,12 +43,17 @@ import {
 	ShieldCheckIcon,
 	SparklesIcon,
 	TargetIcon,
+	TimerIcon,
 	TriangleAlertIcon,
 	Users2Icon,
 	WorkflowIcon,
 } from "lucide-react";
 import type { ComponentType } from "react";
-import { anchorForProjectTab, type ProjectTabId } from "./tour-steps";
+import {
+	anchorForProjectTab,
+	ONBOARDING_ANCHORS,
+	type ProjectTabId,
+} from "./tour-steps";
 
 /**
  * Single source of truth for the "Get started" drawer — a flag-aware overview
@@ -264,6 +271,15 @@ const WORKSPACE_GROUP: GsGroup = {
 			runtimeGate: "todoList",
 			anchor: "nav-todos",
 			href: ({ basePath }) => `${basePath}/todos`,
+		},
+		{
+			id: "time",
+			label: "Time",
+			description:
+				"Log the time you spend on each project, with an optional work item, or run a timer, and see your own week at a glance.",
+			icon: ClockIcon,
+			anchor: ONBOARDING_ANCHORS.navTime,
+			href: ({ basePath }) => `${basePath}/time`,
 		},
 		{
 			id: "agents",
@@ -607,7 +623,7 @@ const PROJECT_GROUP: GsGroup = {
 			id: "project-settings",
 			label: "Project Settings",
 			description:
-				"Configure the project — details, the recipient brand its Glossy editions are prepared for, PM/integration credentials, Agent Runtime (Fabric Desktop, remote servers, and subscription harnesses), context import, deployment environments, the QA testing policy (including which branch each repo's CI results come from), and danger zone.",
+				"Configure the project — details, the recipient brand its Glossy editions are prepared for, PM/integration credentials, Agent Runtime (Fabric Desktop, remote servers, and subscription harnesses), context import, time tracking (project type and entry rules, with its time report), deployment environments, the QA testing policy (including which branch each repo's CI results come from), and danger zone.",
 			icon: SettingsIcon,
 			projectTab: "settings",
 			anchor: anchorForProjectTab("settings"),
@@ -630,10 +646,22 @@ const SETTINGS_GROUP: GsGroup = {
 			id: "settings-general",
 			label: "General",
 			description:
-				"Your profile — name, avatar, and account basics (org name, logo, slug, and the Brand kit — colours, fonts, hero image and website — that styles Glossy editions and client Proposals in an organization).",
+				"Your profile — name, avatar, and account basics (org name, logo, slug, the Brand kit — colours, fonts, hero image and website — that styles Glossy editions and client Proposals, and the coding instructions template other projects can start from, in an organization).",
 			icon: SettingsIcon,
 			cluster: "Account & profile",
 			href: settingsHref("general"),
+		},
+		// Account-global (Fizzy #1444): colour mode and high contrast. Rooted
+		// under `account/` like the other person-owned pages, which resolves in
+		// an organization and redirects there from the personal base.
+		{
+			id: "settings-appearance",
+			label: "Appearance",
+			description:
+				"Colour mode and the high-contrast theme. High contrast is saved to your account, so it follows you to every device.",
+			icon: ContrastIcon,
+			cluster: "Account & profile",
+			href: settingsHref("account/appearance"),
 		},
 		// No `scope` on either of these: both surfaces are account-global and
 		// now have an organization-rooted route as well as a personal one
@@ -778,6 +806,26 @@ const SETTINGS_GROUP: GsGroup = {
 			icon: ScrollTextIcon,
 			cluster: "Admin & records",
 			href: settingsHref("audit-log"),
+		},
+		{
+			id: "settings-time-tracking",
+			label: "Time tracking",
+			description:
+				"The entry rules every project starts from: whether time needs start and stop times, and whether new entries are billable. Administrators change them; everyone else sees them read-only.",
+			icon: ClockIcon,
+			cluster: "Admin & records",
+			scope: "org",
+			href: settingsHref("time-tracking"),
+		},
+		{
+			id: "settings-time-reports",
+			label: "Time reports",
+			description:
+				"Everyone's time on the organization's projects, a month at a time, filtered by project, person, billable, activity and project type, with a CSV export for billing (owners and admins).",
+			icon: TimerIcon,
+			cluster: "Admin & records",
+			scope: "org",
+			href: settingsHref("time-reports"),
 		},
 	],
 };
@@ -1028,6 +1076,13 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				body: "Not just file uploads — pull from Teams, Slack, Notion, Confluence and Google Docs, or point the Link tab at a docs site and crawl the whole thing (up to 500 pages) on a refresh cadence. Everything here is what the AI retrieves and cites.",
 			},
 			{
+				id: "context-add-meeting",
+				anchor: "context-add-meeting",
+				title: "Add meetings here too",
+				body: "The same choices as the Meeting Digest: link a meeting from your calendar, upload a transcript file, configure the Teams and Slack meeting series, or connect a OneDrive transcript folder. A linked meeting is listed as waiting until its first transcript arrives, and folder imports show their progress here.",
+				conditional: true,
+			},
+			{
 				id: "context-readiness",
 				anchor: "context-readiness",
 				title: "Watch for 'Embedded'",
@@ -1106,7 +1161,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "instructions-more-actions",
 				anchor: "instructions-more-actions",
 				title: "Configure the source",
-				body: "Repository settings select the connected repository, branch, folder and excluded paths. Refresh reads the current Git source. On an upload project, More contains upload and proposal actions, and Settings offers Move to a repository. An open move retains the uploaded version until it completes; Cancel move or Switch to upload mode follows its recovery controls.",
+				body: "Repository settings select the connected repository, branch, folder and excluded paths. Refresh reads the current Git source. On an upload project, More contains upload and proposal actions, Add files from the organization template when your organization has one, and Settings offers Move to a repository. An open move retains the uploaded version until it completes; Cancel move or Switch to upload mode follows its recovery controls.",
 			},
 			{
 				id: "coding-instructions-history",
@@ -1201,6 +1256,13 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				anchor: "parlume-history",
 				title: "Open Parlume",
 				body: "Open Parlume to invite the voice agent into a Teams meeting, watch the live session, and review past sessions, requests, suggestions and spend. Invitations are read-only by default; with actions on, Parlume makes the changes attendees ask for, with your permissions.",
+				conditional: true,
+			},
+			{
+				id: "meeting-digest-add",
+				anchor: "meeting-digest-add",
+				title: "Every way to add a meeting",
+				body: "Link a meeting from your calendar, upload a .txt, .vtt or .docx transcript for meetings outside Teams, configure the Teams and Slack meeting series, or connect a OneDrive folder whose transcripts are imported as they arrive. Imports show their progress here, and a meeting whose date is not known waits under Unknown date.",
 				conditional: true,
 			},
 			{
@@ -1820,6 +1882,63 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				anchor: "pages-list",
 				title: "Your organization's pages",
 				body: "Each card is one Page you can open, with who it is shared with: your own, and the ones shared with the organization. Open one to read it, ask Fabric Agent to change it, or change who can open it.",
+				conditional: true,
+			},
+		],
+	},
+	{
+		tab: "time",
+		app: true,
+		label: "My time",
+		icon: ClockIcon,
+		since: "2026-11-11T00:00:00.000Z",
+		components: [
+			{
+				id: "time-view-switch",
+				anchor: "time-view-switch",
+				title: "Your week or one day",
+				body: "Week shows your hours per project and day. Day lists one day's entries and the line to log more. The arrows step back and forward, and the total on the right counts only the period on screen.",
+			},
+			{
+				id: "time-log-time",
+				anchor: "time-log-time",
+				title: "Log time in one line",
+				body: "Log time opens the entry line for the selected day. Type a duration such as 1h 30m and press Enter; project and activity start from your last entry. Note, billable and time zone are under More.",
+				conditional: true,
+			},
+			{
+				id: "time-start-timer",
+				anchor: "time-start-timer",
+				title: "Or run a timer",
+				body: "Start timer times the project, activity and work item in the entry line. A small timer at the bottom right of every page pauses it, and Stop and save turns it into entries under the same rules as typed time. The gear beside the title turns the widget and reminders on or off.",
+				conditional: true,
+			},
+			{
+				id: "time-suggestions",
+				anchor: "time-suggestions",
+				title: "Time to confirm",
+				body: "Check my activity suggests time from your own meetings, test runs and work item edits, one line each. Type or keep the duration and press Confirm, or choose Not work time. Open a row to change its note, billable, activity or work item first.",
+				conditional: true,
+			},
+			{
+				id: "time-week-table",
+				anchor: "time-week-table",
+				title: "Hours per project and day",
+				body: "One row per project you logged time on this week, with totals per row and per day. Select a day or a cell to open that day and change its entries.",
+				conditional: true,
+			},
+			{
+				id: "time-day-strip",
+				anchor: "time-day-strip",
+				title: "Jump between days",
+				body: "Each day of the week with its total. Select one to see its entries and log time on it; the selected day has a heavier border.",
+				conditional: true,
+			},
+			{
+				id: "time-quick-entry",
+				anchor: "time-quick-entry",
+				title: "Add an entry",
+				body: "Duration first, then project, activity and an optional work item. A project that needs start and stop times asks for both instead; for work past midnight, choose the next day as the stop date.",
 				conditional: true,
 			},
 		],

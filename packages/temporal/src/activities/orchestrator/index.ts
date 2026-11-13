@@ -480,3 +480,5 @@ export {
 } from "./routing/semantic-intent-matcher";
 
 export { preloadFrameToolsActivity } from "./tools/preload-frame-tools";
+
+export { readAdvisorStoredResult } from "../advisor-result-reuse";

@@ -11,6 +11,8 @@
  * - `stripInlineMarkdown`          — inline Markdown → plain text for jsPDF
  * - `TABLE_ROW`, `TABLE_SEPARATOR`, `splitTableRow`, `readMarkdownTable`
  *                                  — read a GFM table out of Markdown lines
+ * - `readMarkdownBlockquote`       — read a `>` blockquote's paragraphs
+ * - `readBoldRuns`, `layOutPdfRuns` — split text at bold and wrap it for jsPDF
  * - `layOutPdfTable`               — PDF table column widths sized to their words
  * - `toWinAnsiText`                — text jsPDF's built-in fonts can draw
  * - `getImageDimensions`           — natural size of an image data URL
@@ -108,6 +110,198 @@ export function readMarkdownTable(
 	}
 	const columns = Math.max(...rows.map((row) => row.length));
 	return { rows, columns, next };
+}
+
+/** A blockquote line: `>` after optional indentation, one space dropped. */
+const BLOCKQUOTE_LINE = /^\s*> ?/;
+
+/**
+ * The blockquote starting at `lines[start]`, if one does: every consecutive
+ * `>` line, its marker removed. A bare `>` line separates paragraphs; the
+ * lines of one paragraph join with a space, as Markdown reflows them. Each
+ * paragraph keeps its inline Markdown, so a quote's bold label stays bold;
+ * `next` is the index after the quote. Null when `start` is not a quote line.
+ */
+export function readMarkdownBlockquote(
+	lines: readonly string[],
+	start: number,
+): { paragraphs: string[]; next: number } | null {
+	if (!BLOCKQUOTE_LINE.test(lines[start] ?? "")) {
+		return null;
+	}
+	const paragraphs: string[] = [];
+	let current: string[] = [];
+	const close = () => {
+		if (current.length > 0) {
+			paragraphs.push(current.join(" "));
+			current = [];
+		}
+	};
+	let next = start;
+	while (next < lines.length && BLOCKQUOTE_LINE.test(lines[next])) {
+		const text = lines[next].replace(BLOCKQUOTE_LINE, "").trim();
+		if (text === "") {
+			close();
+		} else {
+			current.push(text);
+		}
+		next++;
+	}
+	close();
+	return { paragraphs, next };
+}
+
+/** A stretch of PDF text drawn in one font: bold, or the regular font. */
+export interface PdfTextRun {
+	text: string;
+	bold: boolean;
+}
+
+/**
+ * `**bold**` or `***bold italic***`, which a plain PDF draws in bold. The
+ * markers hug the text, so `2 ** 3 and 4 ** 2` holds no bold.
+ */
+const BOLD_SPAN = /(\*\*\*(?!\s).+?(?<!\s)\*\*\*|\*\*(?!\s).+?(?<!\s)\*\*)/;
+
+/**
+ * A paragraph as the plain PDF draws it, after `stripInlineMarkdown` and
+ * `toWinAnsiText`, split where bold starts and ends. Where the split would
+ * change the drawn text, as for emphasis that spans a bold word
+ * (`*a **b** c*`) or a stand-in word glued to the bold (`**↑**12%`, drawn
+ * `up 12%`), the paragraph comes back as one regular run, drawn as before.
+ */
+export function readBoldRuns(markdown: string): PdfTextRun[] {
+	const drawn = toWinAnsiText(stripInlineMarkdown(markdown));
+	const runs = markdown
+		.split(BOLD_SPAN)
+		.map((part, index) => {
+			const bold = index % 2 === 1;
+			const marks =
+				part.startsWith("***") && part.endsWith("***") ? 3 : 2;
+			const inner = bold ? part.slice(marks, -marks) : part;
+			return { text: toWinAnsiText(stripInlineMarkdown(inner)), bold };
+		})
+		.filter((run) => run.text !== "");
+	if (
+		!runs.some((run) => run.bold) ||
+		runs.map((run) => run.text).join("") !== drawn
+	) {
+		return [{ text: drawn, bold: false }];
+	}
+	return runs;
+}
+
+/** A run placed on a line, `x` from the line's start. */
+export interface PlacedPdfRun extends PdfTextRun {
+	x: number;
+}
+
+/**
+ * Lines of mixed bold and regular text that fit `width`, breaking at
+ * spaces as `splitTextToSize` does: bold text glued to punctuation
+ * (`**Label**:`) stays together, and a word wider than the line, such as a
+ * link, breaks inside it. Each line holds one string per stretch of the
+ * same font, without a leading or trailing space; a space between two
+ * stretches moves the next one along. `measure` returns a string's width
+ * and `split` wraps one, both in the given font.
+ */
+export function layOutPdfRuns(
+	runs: readonly PdfTextRun[],
+	width: number,
+	measure: (text: string, bold: boolean) => number,
+	split: (text: string, bold: boolean, width: number) => string[],
+): PlacedPdfRun[][] {
+	// Words, each with the spaces before it; parts glued to one another
+	// with no space between keep their own fonts.
+	type Word = { gap: string; parts: PdfTextRun[] };
+	const words: Word[] = [];
+	let gap = "";
+	let open = false;
+	for (const run of runs) {
+		for (const piece of run.text.split(/( +)/)) {
+			if (piece === "") {
+				continue;
+			}
+			if (piece.startsWith(" ")) {
+				gap = piece;
+				open = false;
+			} else if (open) {
+				words[words.length - 1].parts.push({
+					text: piece,
+					bold: run.bold,
+				});
+			} else {
+				words.push({ gap, parts: [{ text: piece, bold: run.bold }] });
+				gap = "";
+				open = true;
+			}
+		}
+	}
+
+	// A word wider than the line breaks into pieces that each fit it.
+	const fitted = words.flatMap((word): Word[] => {
+		const wide =
+			word.parts.reduce(
+				(sum, part) => sum + measure(part.text, part.bold),
+				0,
+			) > width;
+		if (!wide) {
+			return [word];
+		}
+		return word.parts.flatMap((part, partIndex) =>
+			split(part.text, part.bold, width).map((text, index) => ({
+				gap: partIndex === 0 && index === 0 ? word.gap : "",
+				parts: [{ text, bold: part.bold }],
+			})),
+		);
+	});
+
+	const lines: Word[][] = [];
+	let line: Word[] = [];
+	let lineWidth = 0;
+	for (const word of fitted) {
+		const wordWidth = word.parts.reduce(
+			(sum, part) => sum + measure(part.text, part.bold),
+			0,
+		);
+		const gapWidth = line.length > 0 ? measure(word.gap, false) : 0;
+		if (line.length > 0 && lineWidth + gapWidth + wordWidth > width) {
+			lines.push(line);
+			line = [];
+			lineWidth = 0;
+		}
+		line.push(line.length > 0 ? word : { ...word, gap: "" });
+		lineWidth += (line.length > 1 ? gapWidth : 0) + wordWidth;
+	}
+	if (line.length > 0 || lines.length === 0) {
+		// An empty paragraph still takes one line, as `splitTextToSize` gives it.
+		lines.push(line);
+	}
+
+	return lines.map((words) => {
+		const placed: (PlacedPdfRun & { gap: string })[] = [];
+		for (const word of words) {
+			word.parts.forEach((part, index) => {
+				const before = index === 0 ? word.gap : "";
+				const last = placed[placed.length - 1];
+				if (last && last.bold === part.bold) {
+					last.text += before + part.text;
+				} else {
+					placed.push({ ...part, gap: before, x: 0 });
+				}
+			});
+		}
+		placed.forEach((run, index) => {
+			if (index > 0) {
+				const previous = placed[index - 1];
+				run.x =
+					previous.x +
+					measure(previous.text, previous.bold) +
+					measure(run.gap, false);
+			}
+		});
+		return placed.map(({ text, bold, x }) => ({ text, bold, x }));
+	});
 }
 
 /**

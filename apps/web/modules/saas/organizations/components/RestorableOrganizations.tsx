@@ -103,7 +103,7 @@ export function RestorableOrganizations({
 
 	return (
 		<div className="flex flex-col gap-1 px-1 py-1">
-			<p className="px-2 pb-1 font-medium text-foreground/60 text-xs">
+			<p className="px-2 pb-1 font-medium text-muted-foreground text-xs">
 				{t("organizations.restore.recentlyDeleted")}
 			</p>
 			{organizations.map((organization) => (

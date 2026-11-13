@@ -1218,7 +1218,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 					    on the Overview view (the dashboard it snapshots). */}
 					{isReady && view === "OVERVIEW" && (
 						<>
-							<span className="hidden text-[11px] uppercase tracking-wide text-muted-foreground/70 sm:inline">
+							<span className="hidden text-[11px] uppercase tracking-wide text-muted-foreground sm:inline">
 								{t("overview.export")}
 							</span>
 							<Button

@@ -3,27 +3,27 @@
 <head>
 <meta charset="utf-8">
 <title>Fabric — Workflow approval card (docs mock)</title>
-<!-- Real Inter + JetBrains Mono, the app's --font-sans / --font-mono. -->
+<!-- Real Inter + IBM Plex Mono, the app's --font-sans / --font-mono. -->
 <link rel="stylesheet" href="../.fonts/fonts.css">
 <style>
 /* Design tokens copied verbatim from tooling/tailwind/theme.css :root (light). */
 :root{
-  --border:#e5e5e5; --input:#e5e5e5; --ring:#0d0d0d;
-  --background:#ffffff; --foreground:#0d0d0d;
-  --primary:#0d0d0d; --primary-foreground:#ffffff;
-  --secondary:#f4f4f4; --secondary-foreground:#1a1a1a;
-  --destructive:#b3261e; --destructive-foreground:#ffffff;
-  --muted:#f4f4f4; --muted-foreground:#5d5d5d;
-  --accent:#ececec; --accent-foreground:#1a1a1a;
-  --card:#ffffff; --card-foreground:#1a1a1a;
+  --border:#dce0e5; --input:#7d90a0; --ring:#bc3e0b;
+  --background:#ffffff; --foreground:#11171c;
+  --primary:#bc3e0b; --primary-foreground:#ffffff;
+  --secondary:#f1f3f6; --secondary-foreground:#11171c;
+  --destructive:#b8223b; --destructive-foreground:#ffffff;
+  --muted:#f1f3f6; --muted-foreground:#4f6170;
+  --accent:#e8edf2; --accent-foreground:#11171c;
+  --card:#ffffff; --card-foreground:#11171c;
   --popover:#ffffff;
-  --highlight:#8a5e12; --highlight-foreground:#ffffff;
-  --radius:0.625rem;
-  --radius-md:calc(var(--radius) - 2px);
-  --radius-lg:var(--radius);
+  --highlight:#8a5a00; --highlight-foreground:#ffffff;
+  --radius:0.25rem;
+  --radius-md:var(--radius);
+  --radius-lg:calc(var(--radius) + 2px);
   /* Inter is the app's --font-sans (next/font). Falls back to the host sans. */
   --font-sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-  --font-mono:"JetBrains Mono",ui-monospace,"Cascadia Mono",Consolas,monospace;
+  --font-mono:"IBM Plex Mono",ui-monospace,"Cascadia Mono",Consolas,monospace;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{

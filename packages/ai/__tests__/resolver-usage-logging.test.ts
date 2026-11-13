@@ -442,6 +442,8 @@ describe("gateway flex resolution", () => {
 		["publishing-suggestion", undefined, false, undefined, "flex"],
 		["living-document-refresh", undefined, false, undefined, "flex"],
 		["newsletter-curation", undefined, false, undefined, "flex"],
+		// Many sequential steps inside a few-minute capture: flex queueing would time it out.
+		["newsletter-screenshot", undefined, false, undefined, undefined],
 		// "Trigger now" starts this job without an interactive marker, so it stays off.
 		["teams-channel-monitor", undefined, false, undefined, undefined],
 		["recurring-error-scan", undefined, false, undefined, "flex"],

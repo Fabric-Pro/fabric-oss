@@ -227,3 +227,52 @@ describe("getDocumentVersions — author resolution", () => {
 		});
 	});
 });
+
+describe("getDocumentVersions — the change that made each version (Fizzy #2946)", () => {
+	it("reads each version's maker from the row before it, loading one row past the page for the oldest", async () => {
+		// Rows hold their version's body; the description and time on each
+		// belong to the change that replaced that body.
+		givenVersions([
+			versionRow({
+				id: "ver-3",
+				version: 3,
+				changeDescription: "Restored to version 1",
+				createdAt: new Date("2026-07-03T00:00:00Z"),
+			}),
+			versionRow({
+				id: "ver-2",
+				version: 2,
+				changeDescription: "Revised a section with instructions",
+				createdAt: new Date("2026-07-02T00:00:00Z"),
+			}),
+			versionRow({
+				id: "ver-1",
+				version: 1,
+				changeDescription: "Initial version",
+				changedBy: "user-2",
+				createdAt: new Date("2026-07-01T00:00:00Z"),
+			}),
+		]);
+
+		const result = await getDocumentVersions("doc-1", 2, 0);
+
+		expect(versionFindManyMock.mock.calls[0]?.[0]).toMatchObject({
+			take: 3,
+			skip: 0,
+		});
+		// The extra row only names the oldest card's maker.
+		expect(result.versions.map((v) => v.id)).toEqual(["ver-3", "ver-2"]);
+		expect(result.versions[0]?.madeBy).toEqual({
+			description: "Revised a section with instructions",
+			at: new Date("2026-07-02T00:00:00Z"),
+		});
+		// v2 came from the first change after the creation, which stored
+		// nothing: no maker is known.
+		expect(result.versions[1]?.madeBy).toEqual({
+			description: null,
+			at: null,
+		});
+		const where = userFindManyMock.mock.calls[0]?.[0]?.where;
+		expect(where.id.in).toEqual(["user-1"]);
+	});
+});

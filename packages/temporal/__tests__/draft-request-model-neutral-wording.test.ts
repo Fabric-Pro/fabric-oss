@@ -23,8 +23,7 @@ const { mocks } = vi.hoisted(() => ({
 		getPromptById: vi.fn(),
 		createStory: vi.fn(),
 		createFeatureVersion: vi.fn(),
-		retrieveProjectContexts: vi.fn(),
-		formatContextsForPrompt: vi.fn(),
+		retrieveRankedPassages: vi.fn(),
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		renderTemplate: vi.fn(),
@@ -58,8 +57,7 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 vi.mock("@repo/rag", () => ({
-	formatContextsForPrompt: mocks.formatContextsForPrompt,
-	retrieveProjectContexts: mocks.retrieveProjectContexts,
+	retrieveRankedPassages: mocks.retrieveRankedPassages,
 }));
 vi.mock("@repo/rag/lib/project-contexts/live-integration-context", () => ({
 	fetchLiveIntegrationContext: mocks.fetchLiveIntegrationContext,
@@ -141,8 +139,7 @@ beforeEach(() => {
 		name: PROJECT_NAME,
 		description: PROJECT_DESCRIPTION,
 	});
-	mocks.retrieveProjectContexts.mockResolvedValue([{ id: "ctx-1" }]);
-	mocks.formatContextsForPrompt.mockReturnValue(RAG_CONTEXT);
+	mocks.retrieveRankedPassages.mockResolvedValue(RAG_CONTEXT);
 	mocks.fetchLiveIntegrationContext.mockResolvedValue({});
 	mocks.formatLiveContextForPrompt.mockReturnValue(LIVE_CONTEXT);
 	mocks.createStory.mockResolvedValue({

@@ -9,9 +9,11 @@ import {
 	useOrganizationContext,
 } from "@saas/organizations/hooks";
 import { ColorModeToggle } from "@saas/shared/components/ColorModeToggle";
+import { useContrastPreference } from "@saas/shared/components/ContrastPreferenceProvider";
 import { UserAvatar } from "@shared/components/UserAvatar";
 import {
 	DropdownMenu,
+	DropdownMenuCheckboxItem,
 	DropdownMenuContent,
 	DropdownMenuItem,
 	DropdownMenuLabel,
@@ -19,6 +21,7 @@ import {
 } from "@ui/components/dropdown-menu";
 import {
 	Building2Icon,
+	ContrastIcon,
 	HomeIcon,
 	LogOutIcon,
 	MoreVerticalIcon,
@@ -37,6 +40,7 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 	// Keep the current workspace base on the admin link so a system admin stays
 	// in their org (`/app/{slug}/admin`) rather than flipping to "Personal".
 	const adminPath = useContextPath("admin");
+	const contrast = useContrastPreference();
 	const [mounted, setMounted] = useState(false);
 
 	useEffect(() => {
@@ -93,7 +97,10 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 					</span>
 
 					{showUserName && (
-						<MoreVerticalIcon className="size-4 shrink-0 text-muted-foreground" />
+						<MoreVerticalIcon
+							strokeWidth={2.5}
+							className="size-4 shrink-0 text-muted-foreground"
+						/>
 					)}
 				</button>
 			</DropdownMenuTrigger>
@@ -125,6 +132,27 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 					</span>
 					<ColorModeToggle />
 				</DropdownMenuItem>
+
+				{/*
+				 * High contrast (Fizzy #1444) — a checkbox item, so a screen
+				 * reader announces it as "High contrast, checked/not checked"
+				 * and Enter or Space toggles it (AC-9). The menu stays open:
+				 * the person is looking at the page to see whether it helped.
+				 */}
+				{contrast && (
+					<DropdownMenuCheckboxItem
+						checked={contrast.highContrast}
+						onCheckedChange={(checked) =>
+							contrast.setHighContrast(checked === true)
+						}
+						onSelect={(e) => e.preventDefault()}
+						data-testid="user-menu-high-contrast"
+						className="rounded-sm py-2 text-sm text-foreground"
+					>
+						<ContrastIcon className="mr-2 size-4 text-muted-foreground" />
+						{t("app.userMenu.highContrast")}
+					</DropdownMenuCheckboxItem>
+				)}
 
 				<div className="my-1.5 h-px bg-border" />
 

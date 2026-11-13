@@ -9,8 +9,9 @@ import { getStorageProvider } from "@repo/storage";
 import { extensionsForAiChatMime } from "@repo/utils/ai-chat-attachment";
 import { z } from "zod";
 import {
+	authorizeInputOrganization,
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
@@ -23,7 +24,11 @@ import {
 const UPLOAD_URL_TTL_SECONDS = 3600;
 
 export const createDocumentUploadUrl = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AI_CHAT))
+	.use(
+		requireInputOrgPermission(Permissions.AI_CHAT, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/ai/documents/upload-url",
@@ -71,6 +76,37 @@ export const createDocumentUploadUrl = tenantProtectedProcedure
 			let chat = inputChatId
 				? await getAiChatByIdForOwner(inputChatId, user.id)
 				: null;
+			const protectedOrganizationId =
+				chat?.organizationId ?? organizationId;
+
+			// Authorize the organization before the first protected write. For an
+			// existing chat, use the chat's stored organization rather than the
+			// caller's input; for a new chat, use the already target-authorized
+			// request organization.
+			if (protectedOrganizationId) {
+				const membership = await verifyOrganizationMembership(
+					protectedOrganizationId,
+					user.id,
+				);
+
+				if (!membership) {
+					throw new ORPCError("FORBIDDEN", {
+						message: "Not a member of this organization",
+					});
+				}
+
+				// An existing chat can belong to a different organization than the
+				// request named. Re-check AI_CHAT against the organization that will
+				// actually own the document; this also refuses legacy null-org chats.
+				if (chat) {
+					await authorizeInputOrganization(
+						Permissions.AI_CHAT,
+						chat.organizationId,
+						context,
+						{ requireOrganization: true },
+					);
+				}
+			}
 
 			if (!chat) {
 				console.log(
@@ -91,22 +127,6 @@ export const createDocumentUploadUrl = tenantProtectedProcedure
 				"[CreateUploadURL] Chat found/created:",
 				`ID=${chat.id}`,
 			);
-
-			// If the chat is org-scoped, verify the caller is still a
-			// member (defense-in-depth against a chat that outlives its
-			// cascade-delete).
-			if (chat.organizationId) {
-				const membership = await verifyOrganizationMembership(
-					chat.organizationId,
-					user.id,
-				);
-
-				if (!membership) {
-					throw new ORPCError("FORBIDDEN", {
-						message: "Not a member of this organization",
-					});
-				}
-			}
 
 			// Validate file type against the live allowlist. Resolving by
 			// extension when the declared MIME is not allowlisted admits an

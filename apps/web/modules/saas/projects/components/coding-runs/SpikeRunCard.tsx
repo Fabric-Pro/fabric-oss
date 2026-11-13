@@ -140,7 +140,7 @@ export function SpikeRunCard({
 			className={cn(
 				"rounded-lg border border-border/60 bg-card",
 				compact ? "p-4" : "p-5",
-				isDemoReady && "border-secondary/40",
+				isDemoReady && "border-success/40",
 				className,
 			)}
 			aria-labelledby={`${reasonId}-title`}
@@ -150,7 +150,7 @@ export function SpikeRunCard({
 					<div className="flex flex-wrap items-center gap-2">
 						<Badge
 							variant="outline"
-							className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary"
+							className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary-active"
 						>
 							<FlaskConicalIcon className="mr-1 size-3" />
 							{t("kindBadge")}
@@ -366,7 +366,7 @@ function SpikeStatusBadge({ status }: { status: SpikeRunView["status"] }) {
 			return (
 				<Badge
 					variant="outline"
-					className="gap-1 rounded-full border-secondary/40 bg-secondary/10 px-2.5 py-0.5 text-[11px] text-secondary"
+					className="gap-1 rounded-full border-success/40 bg-success/10 px-2.5 py-0.5 text-[11px] text-success"
 				>
 					<PlayIcon className="size-3" />
 					{t("DEMO_READY")}

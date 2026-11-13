@@ -110,7 +110,7 @@ export function FramesPanel({
 										).toLocaleDateString()}
 										{frame.conversationId ===
 											conversationId && (
-											<span className="ml-1.5 text-primary/70">
+											<span className="ml-1.5 text-primary">
 												· This conversation
 											</span>
 										)}

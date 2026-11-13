@@ -277,7 +277,7 @@ export function CreatePlanForm({
 						</p>
 
 						{refinement.isReady && (
-							<div className="flex items-center gap-2 rounded-md bg-secondary/10 border border-secondary/20 px-3 py-2 text-sm text-secondary">
+							<div className="flex items-center gap-2 rounded-md bg-success/10 border border-success/20 px-3 py-2 text-sm text-success">
 								<CheckCircle2Icon className="size-4 shrink-0" />
 								Request looks clear — ready to create plan.
 							</div>

@@ -41,6 +41,7 @@ vi.mock("@temporalio/workflow", () => ({
 	ParentClosePolicy: { ABANDON: "ABANDON" },
 }));
 
+import { RESULT_READ_TOOL } from "../../advisor-result-read";
 import { createInitialState, type WorkflowState } from "../../types";
 import { streamFailureResult } from "../../usage-limit";
 import { buildWorkflowOutput } from "../completion";
@@ -95,6 +96,121 @@ function buildLargeElements(count = 80): Array<Record<string, unknown>> {
 const TRUNCATION_SENTINEL_PREFIX = "[Object truncated,";
 
 describe("buildWorkflowOutput — tool-call truncation", () => {
+	it.each(["flat", "nested", "artifacts"] as const)(
+		"keeps disabled external read-name content in %s",
+		(projection) => {
+			const result = "External source evidence";
+			const call = {
+				id: "external-example",
+				name: RESULT_READ_TOOL,
+				args: {},
+				result,
+				status: "success" as const,
+				durationMs: 1,
+			};
+			const state = buildState({
+				advisorResultReadsEnabled: false,
+				toolCalls: [call],
+				stepResults: [
+					{
+						stepId: "step-example",
+						stepDescription: "Example step",
+						status: "complete",
+						toolCalls: [call],
+						durationMs: 1,
+					},
+				],
+			});
+			const output = buildWorkflowOutput(state, "completed");
+			if (projection === "flat") {
+				expect(output.toolCalls[0].result).toBe(result);
+			}
+			if (projection === "nested") {
+				expect(output.stepResults?.[0].toolCalls[0].result).toBe(
+					result,
+				);
+			}
+			if (projection === "artifacts") {
+				expect(output.artifacts?.[0].content).toBe(result);
+			}
+			expect(state.toolCalls[0].result).toBe(result);
+		},
+	);
+	it.each([false, true])(
+		"awaiting-auth presentation uses its own run decision: %s",
+		(enabled) => {
+			const result = { v: 1, status: "unavailable" };
+			const call = {
+				id: "read-example",
+				name: RESULT_READ_TOOL,
+				args: {},
+				result,
+				status: "success" as const,
+				durationMs: 1,
+			};
+			const output = buildWorkflowOutput(
+				buildState({
+					advisorResultReadsEnabled: enabled,
+					toolCalls: [call],
+				}),
+				"awaiting_auth",
+			);
+			expect(output.toolCalls[0].result).toEqual(
+				enabled ? undefined : result,
+			);
+		},
+	);
+
+	it.each([
+		{
+			v: 1,
+			status: "success",
+			ref: "r1",
+			offset: 0,
+			nextOffset: 16_000,
+			returnedCharacters: 16_000,
+			totalCharacters: 80_000,
+		},
+		{ v: 1, status: "unavailable" },
+	])(
+		"keeps recorded read metadata out of user tool outputs and artifacts: %j",
+		(result) => {
+			const read = {
+				id: "read-example",
+				name: RESULT_READ_TOOL,
+				args: { ref: "r1" },
+				result,
+				status: "success" as const,
+				durationMs: 1,
+			};
+			const state = buildState({
+				advisorResultReadsEnabled: true,
+				toolCalls: [read],
+				stepResults: [
+					{
+						stepId: "step-example",
+						stepDescription: "Example step",
+						status: "complete",
+						toolCalls: [read],
+						durationMs: 1,
+					},
+				],
+			});
+			const output = buildWorkflowOutput(
+				state,
+				"completed",
+				undefined,
+				"Real evidence",
+			);
+			expect(output.toolCalls[0].name).toBe(RESULT_READ_TOOL);
+			expect(output.toolCalls[0].result).toBeUndefined();
+			expect(output.stepResults).toHaveLength(1);
+			expect(output.stepResults?.[0].toolCalls[0].result).toBeUndefined();
+			expect(output.artifacts).toBeUndefined();
+			expect(state.toolCalls[0].result).toEqual(result);
+		},
+	);
+
 	it("preserves args/result on tool calls with `mcpAppResourceUri` (Excalidraw payload survives)", () => {
 		const elements = buildLargeElements();
 		const elementsJsonSize = JSON.stringify({ elements }).length;

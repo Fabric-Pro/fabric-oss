@@ -1,6 +1,10 @@
 import { routing } from "@i18n/routing";
 import { config as appConfig } from "@repo/config";
 import { RETURN_TO_HEADER } from "@saas/auth/lib/login-redirect";
+import {
+	PROXY_TIMING_HEADER,
+	proxyTimingHeaderValue,
+} from "@shared/lib/proxy-timing";
 import { runMicrofrontendsMiddleware } from "@vercel/microfrontends/next/middleware";
 import { getSessionCookie } from "better-auth/cookies";
 import { NextRequest, NextResponse } from "next/server";
@@ -394,18 +398,22 @@ export default async function proxy(incoming: NextRequest) {
 		// CC6.6). The ONLY framable /app routes are the frame-embed views
 		// (.../frames/:id/embed) which must stay embeddable cross-origin —
 		// exclude those; every other /app page denies framing to other origins.
+		const timing = { [PROXY_TIMING_HEADER]: proxyTimingHeaderValue() };
 		if (pathname.endsWith("/embed")) {
 			// Rendered inside an iframe: the same embed flag as the public
 			// widgets below, so the page draws without the app shell, banners
 			// or analytics around it.
-			const embedRes = forward(req, { [EMBED_FLAG_HEADER]: "1" });
+			const embedRes = forward(req, {
+				[EMBED_FLAG_HEADER]: "1",
+				...timing,
+			});
 			embedRes.headers.set(
 				"Content-Security-Policy",
 				FRAME_EMBED_PARENT_CSP,
 			);
 			return embedRes;
 		}
-		const appRes = forward(req);
+		const appRes = forward(req, timing);
 		appRes.headers.set("X-Frame-Options", "SAMEORIGIN");
 		appRes.headers.set("Content-Security-Policy", "frame-ancestors 'self'");
 		return appRes;

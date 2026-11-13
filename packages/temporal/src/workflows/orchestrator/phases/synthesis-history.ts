@@ -16,6 +16,7 @@ import {
  * Pure and deterministic: runs in the workflow sandbox.
  */
 
+import { RESULT_READ_TOOL } from "../advisor-result-read";
 import type { IterativeMessage } from "../types";
 
 export const SYNTHESIS_INPUT = {
@@ -198,10 +199,15 @@ const FINDINGS = {
  */
 export function renderPartialFindings(
 	toolCalls: Array<{ name: string; result?: unknown; status: string }>,
+	resultReadsEnabled = false,
 ): string | null {
 	const lines: string[] = [];
 	const successful = toolCalls
-		.filter((call) => call.status === "success")
+		.filter(
+			(call) =>
+				call.status === "success" &&
+				(!resultReadsEnabled || call.name !== RESULT_READ_TOOL),
+		)
 		.slice(-FINDINGS.maxResults);
 	for (const call of successful) {
 		if (call.result === undefined || call.result === null) {

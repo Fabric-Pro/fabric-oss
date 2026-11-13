@@ -32,6 +32,7 @@ import {
 import sharp from "sharp";
 import type { PendingAttachmentRef } from "../shared/attachment-types";
 import { TEAMS_TOOL_LIMITS } from "./config/limits";
+import { downloadDriveItem, listDriveFolderChildren } from "./drive-folder";
 import { extractHostedContentRefsFromHtml } from "./hosted-content";
 import { executeParlumeChannelOperation } from "./parlume-channel";
 import { assertParlumeChannelSendAccess } from "./parlume-channel-access";
@@ -49,6 +50,7 @@ export {
 	isMicrosoftAccessDeniedError,
 	isMicrosoftNotConnectedError,
 } from "./connection-errors";
+export type { DriveFolderItem, DriveItemDownload } from "./drive-folder";
 // Re-export the chat-thread image-attachments helpers from the Microsoft barrel
 // so downstream packages can `import { downloadTeamsHostedContent } from
 // "@repo/integrations/microsoft"` without reaching into the file directly.
@@ -556,11 +558,13 @@ export function computeGraphThrottleBackoffMs(
  * - **429 / 503** — throttling and "service busy", which Graph's own guidance
  *   says to retry after a delay. Retried for every method, as they were before
  *   502/504 joined them.
- * - **502 / 504** — Graph's front door could not complete the backend call
- *   ("Failed to execute backend request"). Also transient, but a gateway can
- *   fail *after* the backend applied the request, so replaying a write risks
- *   duplicating it (posting the same Teams message twice). Retried only for
- *   side-effect-free methods.
+ * - **500 / 502 / 504** — Graph's front door could not complete the backend
+ *   call ("Failed to execute backend request"), or the backend failed with an
+ *   empty `UnknownError`. During an Exchange Online degradation calendar and
+ *   mail reads returned all three intermittently, and the next attempt
+ *   usually succeeded. A server can fail *after* applying the request, so
+ *   replaying a write risks duplicating it (posting the same Teams message
+ *   twice). Retried only for side-effect-free methods.
  *
  * `method` is the `RequestInit.method` of the request being retried; `fetch`
  * treats an absent method as GET, so does this.
@@ -574,7 +578,7 @@ export function isRetryableGraphStatus(
 	if (status === 429 || status === 503) {
 		return true;
 	}
-	if (status !== 502 && status !== 504) {
+	if (status !== 500 && status !== 502 && status !== 504) {
 		return false;
 	}
 	const verb = (method ?? "GET").toUpperCase();
@@ -936,8 +940,8 @@ export async function executeMicrosoftTeamsTool(
 
 		// Transient-failure backoff. Graph returns 429 (rate limited) or 503
 		// (service busy) under load — far more likely now that transcript/
-		// calendar requests run concurrently — and 502/504 when its front door
-		// cannot reach the backend. All four clear on their own, and retrying
+		// calendar requests run concurrently — and 500/502/504 on reads when its
+		// backend fails. All of them clear on their own, and retrying
 		// here is the only backoff several callers get: activities that report
 		// a failed fetch as a return value rather than throwing (the meeting
 		// transcript sync, for one) never reach the Temporal retry policy.
@@ -2547,8 +2551,14 @@ export async function executeMicrosoftTeamsTool(
 				}
 			}
 
-			// If structured metadata fails with 404, fall back to VTT
-			if (!res.ok && useStructured && res.status === 404) {
+			// Structured metadata is not offered for every transcript: Graph
+			// answers 404 for some and `400 Invalid transcript id` for others
+			// whose WebVTT content it still serves. Either way, read the VTT.
+			if (
+				!res.ok &&
+				useStructured &&
+				(res.status === 404 || res.status === 400)
+			) {
 				const vttUrl = `${graphBaseUrl}/me/onlineMeetings/${meetingId}/transcripts/${transcriptId}/content`;
 				res = await graphRequest(vttUrl, {
 					headers: { Accept: "text/vtt" },
@@ -2697,6 +2707,38 @@ export async function executeMicrosoftTeamsTool(
 				count: entries.length,
 				speakerCount,
 			};
+		}
+
+		// ========== OneDrive transcript folders (Fizzy #3507) ==========
+		// Not advertised to the assistant: they serve folder connection and
+		// the folder sync. See ./drive-folder.ts.
+
+		case "list_drive_children": {
+			return await listDriveFolderChildren({
+				graphFetch: graphRequest,
+				graphBaseUrl,
+				driveId: args.driveId as string | undefined,
+				itemId: args.itemId as string | undefined,
+				maxItems: args.maxItems as number | undefined,
+			});
+		}
+
+		case "download_drive_item": {
+			const driveId = args.driveId as string;
+			const itemId = args.itemId as string;
+			const maxBytes = args.maxBytes as number;
+			if (!driveId || !itemId || !maxBytes) {
+				throw new Error(
+					"driveId, itemId and maxBytes are required for download_drive_item.",
+				);
+			}
+			return await downloadDriveItem({
+				graphFetch: graphRequest,
+				graphBaseUrl,
+				driveId,
+				itemId,
+				maxBytes,
+			});
 		}
 
 		// get_all_my_transcripts stays disabled, but NOT for the reason previously

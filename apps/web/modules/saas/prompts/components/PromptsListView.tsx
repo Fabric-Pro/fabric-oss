@@ -232,7 +232,10 @@ function PromptListItem({
 									{deletion.isPreparing ? (
 										<Spinner className="motion-reduce:animate-none" />
 									) : (
-										<MoreVerticalIcon className="h-4 w-4" />
+										<MoreVerticalIcon
+											strokeWidth={2.5}
+											className="h-4 w-4"
+										/>
 									)}
 								</Button>
 							</DropdownMenuTrigger>

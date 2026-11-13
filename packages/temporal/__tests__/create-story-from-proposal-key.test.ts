@@ -15,8 +15,7 @@ const { mocks } = vi.hoisted(() => ({
 		getPromptById: vi.fn(),
 		createStory: vi.fn(),
 		createFeatureVersion: vi.fn(),
-		retrieveProjectContexts: vi.fn(),
-		formatContextsForPrompt: vi.fn(),
+		retrieveRankedPassages: vi.fn(),
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		renderTemplate: vi.fn(),
@@ -57,8 +56,7 @@ vi.mock("@repo/logs", () => ({
 }));
 
 vi.mock("@repo/rag", () => ({
-	formatContextsForPrompt: mocks.formatContextsForPrompt,
-	retrieveProjectContexts: mocks.retrieveProjectContexts,
+	retrieveRankedPassages: mocks.retrieveRankedPassages,
 }));
 
 vi.mock("@repo/rag/lib/project-contexts/live-integration-context", () => ({
@@ -115,10 +113,9 @@ function bindPromptAndModel() {
 		name: "Proj",
 		description: null,
 	});
-	mocks.retrieveProjectContexts.mockResolvedValue([]);
+	mocks.retrieveRankedPassages.mockResolvedValue("");
 	mocks.fetchLiveIntegrationContext.mockResolvedValue({});
 	mocks.formatLiveContextForPrompt.mockReturnValue("");
-	mocks.formatContextsForPrompt.mockReturnValue("");
 }
 
 beforeEach(() => {
@@ -203,23 +200,26 @@ it.each([true, false])(
 		await createStoryFromProposal({
 			...baseParams,
 			title: "Title",
+			organizationId: "example-org",
 			...parts,
 		} as never);
-		expect.soft(mocks.retrieveProjectContexts).toHaveBeenLastCalledWith(
+		expect.soft(mocks.retrieveRankedPassages).toHaveBeenLastCalledWith(
 			expect.objectContaining({
+				organizationId: "example-org",
 				query: optional ? "Title Criteria Body Source" : "Title Body",
 			}),
 		);
 		await draftBodyByKind({
 			projectId: "p1",
-			organizationId: null,
 			userId: "u1",
 			kind: "FEATURE",
 			title: "Title",
+			organizationId: "example-org",
 			...parts,
 		});
-		expect.soft(mocks.retrieveProjectContexts).toHaveBeenLastCalledWith(
+		expect.soft(mocks.retrieveRankedPassages).toHaveBeenLastCalledWith(
 			expect.objectContaining({
+				organizationId: "example-org",
 				query: optional ? "Title Criteria Body" : "Title Body",
 			}),
 		);

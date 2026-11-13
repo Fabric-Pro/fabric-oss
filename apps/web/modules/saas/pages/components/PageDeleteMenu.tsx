@@ -74,7 +74,11 @@ export function PageDeleteMenu({
 						size="icon-sm"
 						aria-label="More actions"
 					>
-						<MoreHorizontalIcon className="size-4" aria-hidden />
+						<MoreHorizontalIcon
+							strokeWidth={2.5}
+							className="size-4"
+							aria-hidden
+						/>
 					</Button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end">

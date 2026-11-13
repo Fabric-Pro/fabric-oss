@@ -53,6 +53,8 @@ export type RiskRules = "legacy" | "read-only-exempt-v1" | "fabric-gated-v2";
 
 export interface RiskAssessmentOptions {
 	rules: RiskRules;
+	/** Enabled by orch-risk-image-content-exempt-v1; retained with each call. */
+	imageContentExempt?: boolean;
 	/**
 	 * The loop will run this call itself or through the Fabric catalog, not
 	 * through a user's MCP server. Only then can a read be vouched for.
@@ -235,7 +237,11 @@ export function assessToolCallRisk(
 
 	// Content creation tools are exempt from bulk/destructive keyword scanning
 	// because their content arguments commonly contain false-positive trigger words
-	if (RISK_EXEMPT_TOOLS.has(toolCall.name)) {
+	if (
+		RISK_EXEMPT_TOOLS.has(toolCall.name) ||
+		(options.imageContentExempt === true &&
+			toolCall.name === "fabric_generate_image")
+	) {
 		return {
 			riskLevel: "low",
 			requiresApproval: false,

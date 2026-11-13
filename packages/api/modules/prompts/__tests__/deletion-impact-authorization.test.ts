@@ -549,16 +549,18 @@ describe("missing-workspace marker has one spelling", () => {
 		return found.sort();
 	};
 
-	it("is emitted by exactly the three known sites", () => {
-		// A fourth emitter fails here rather than shipping an unmarked refusal
+	it("is emitted by exactly the four known sites", () => {
+		// A fifth emitter fails here rather than shipping an unmarked refusal
 		// a client would silently misread as "some other FORBIDDEN". Adding one
 		// means marking it and listing it, in that order.
 		//
-		// One gate in the prompts module and two middlewares — not one per
-		// procedure. The count is meant to track the number of PLACES the rule
-		// is written, and it only stays honest if a new procedure needing this
-		// condition calls an existing gate instead of adding a fourth row here.
+		// One gate in the prompts module, one notification gate, and two
+		// middlewares — not one per procedure. The count is meant to track the
+		// number of PLACES the rule is written, and it only stays honest if a new
+		// procedure needing this condition calls an existing gate instead of
+		// adding a fifth row here.
 		expect(emitters()).toEqual([
+			"modules/notifications/lib/resolve-notification-organization.ts",
 			"modules/prompts/lib/assert-organization-context.ts",
 			"orpc/middleware/require-permission.ts",
 			"orpc/middleware/tenant-context-middleware.ts",
@@ -569,7 +571,7 @@ describe("missing-workspace marker has one spelling", () => {
 		// Asserted here too, not only in the sibling above: without it a
 		// refactor that made the scan return nothing would leave this loop with
 		// no iterations, and a test that proves nothing passes green.
-		expect(emitters().length).toBe(3);
+		expect(emitters().length).toBe(4);
 
 		for (const file of emitters()) {
 			const source = readFileSync(resolve(apiRoot, file), "utf8");

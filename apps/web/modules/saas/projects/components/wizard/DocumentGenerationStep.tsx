@@ -178,11 +178,11 @@ const DOCUMENT_TYPE_COLORS: Record<string, { text: string; bg: string }> = {
 		bg: "bg-green-100 dark:bg-green-900/20",
 	},
 	BUSINESS_CASE: {
-		text: "text-amber-600 dark:text-amber-400",
+		text: "text-amber-700 dark:text-amber-400",
 		bg: "bg-amber-100 dark:bg-amber-900/20",
 	},
 	DESIGN_SYSTEM: {
-		text: "text-fuchsia-600 dark:text-fuchsia-400",
+		text: "text-fuchsia-700 dark:text-fuchsia-400",
 		bg: "bg-fuchsia-100 dark:bg-fuchsia-900/20",
 	},
 	ARCHITECTURE: {
@@ -194,11 +194,11 @@ const DOCUMENT_TYPE_COLORS: Record<string, { text: string; bg: string }> = {
 		bg: "bg-orange-100 dark:bg-orange-900/20",
 	},
 	USER_STORY: {
-		text: "text-pink-600 dark:text-pink-400",
+		text: "text-pink-700 dark:text-pink-400",
 		bg: "bg-pink-100 dark:bg-pink-900/20",
 	},
 	API_SPEC: {
-		text: "text-cyan-600 dark:text-cyan-400",
+		text: "text-cyan-700 dark:text-cyan-400",
 		bg: "bg-cyan-100 dark:bg-cyan-900/20",
 	},
 	GENERAL: {
@@ -773,7 +773,7 @@ export function DocumentGenerationStep({
 				<div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
 					<div className="flex items-center gap-2">
 						<CheckCircle2Icon className="h-4 w-4 text-success" />
-						<p className="text-sm text-green-700 dark:text-green-300">
+						<p className="text-sm text-green-800 dark:text-green-300">
 							{importedDocTypes.size} document type
 							{importedDocTypes.size !== 1 ? "s" : ""} already
 							imported. Only generating the remaining{" "}
@@ -983,7 +983,7 @@ export function DocumentGenerationStep({
 						) {
 							return (
 								<div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg">
-									<p className="text-sm font-medium text-destructive/80">
+									<p className="text-sm font-medium text-destructive">
 										Document generation failed
 									</p>
 									<p className="text-sm text-muted-foreground">
@@ -1042,7 +1042,7 @@ export function DocumentGenerationStep({
 						) {
 							return (
 								<div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg">
-									<p className="text-sm font-medium text-green-700 dark:text-green-300">
+									<p className="text-sm font-medium text-green-800 dark:text-green-300">
 										Documents generated successfully
 									</p>
 									<p className="text-sm text-muted-foreground">

@@ -21,6 +21,7 @@ describe("buildCiConfigTemplate", () => {
 			/upload-artifact[\s\S]*?name: (.+)/.exec(t.content)?.[1] ?? "";
 		expect(artifactName).toMatch(/junit|test|report|result/i);
 		expect(t.path).toBe(".github/workflows/fabric-qa.yml");
+		expect(t.content).toContain("node-version: '24'");
 	});
 
 	it("uploads GitHub results even when the suite fails", () => {
@@ -46,6 +47,7 @@ describe("buildCiConfigTemplate", () => {
 		expect(t.content).toContain("PublishTestResults@2");
 		expect(t.content).toContain("testResultsFormat: 'JUnit'");
 		expect(t.content).toContain("condition: always()");
+		expect(t.content).toContain("versionSpec: '24.x'");
 	});
 
 	it("warns about the scope each provider actually needs", () => {

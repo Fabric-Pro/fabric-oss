@@ -22,7 +22,8 @@ const { handlers, mocks, captured } = vi.hoisted(() => {
 	const mocks = {
 		hasProjectAccess: vi.fn(),
 		listLivingMemoryDecisionCandidates: vi.fn(),
-		countLivingMemoryFilesSkippedAtFirstSync: vi.fn(),
+		countLivingMemoryFilesAwaitingDecisionScan: vi.fn(),
+		listLivingMemoryLimitedFiles: vi.fn(),
 		startLivingMemoryFirstSyncScan: vi.fn(),
 		getLivingMemoryDecisionCandidate: vi.fn(),
 		dismissLivingMemoryDecision: vi.fn(),
@@ -38,8 +39,9 @@ vi.mock("@repo/database", () => ({
 	hasProjectAccess: mocks.hasProjectAccess,
 	listLivingMemoryDecisionCandidates:
 		mocks.listLivingMemoryDecisionCandidates,
-	countLivingMemoryFilesSkippedAtFirstSync:
-		mocks.countLivingMemoryFilesSkippedAtFirstSync,
+	countLivingMemoryFilesAwaitingDecisionScan:
+		mocks.countLivingMemoryFilesAwaitingDecisionScan,
+	listLivingMemoryLimitedFiles: mocks.listLivingMemoryLimitedFiles,
 	getLivingMemoryDecisionCandidate: mocks.getLivingMemoryDecisionCandidate,
 	dismissLivingMemoryDecision: mocks.dismissLivingMemoryDecision,
 	getArchitectureDecision: mocks.getArchitectureDecision,
@@ -180,20 +182,24 @@ describe("Living Memory candidate procedures — authorization", () => {
 describe("scanFirstSync", () => {
 	const scanInput = { projectId: "p-1", organizationId: "org-1" };
 
-	it("starts the project's scan and says how many files it covers", async () => {
-		mocks.countLivingMemoryFilesSkippedAtFirstSync.mockResolvedValue(3);
+	it("starts the project's scan, naming the member who asked, and says how many files it covers", async () => {
+		mocks.countLivingMemoryFilesAwaitingDecisionScan.mockResolvedValue(3);
 		mocks.startLivingMemoryFirstSyncScan.mockResolvedValue(true);
 
 		await expect(
 			handlers.scanFirstSync?.({ input: scanInput, context }),
 		).resolves.toEqual({ fileCount: 3, alreadyRunning: false });
-		expect(mocks.startLivingMemoryFirstSyncScan).toHaveBeenCalledWith(
-			scanInput,
-		);
+		expect(
+			mocks.countLivingMemoryFilesAwaitingDecisionScan,
+		).toHaveBeenCalledWith(scanInput);
+		expect(mocks.startLivingMemoryFirstSyncScan).toHaveBeenCalledWith({
+			...scanInput,
+			requestedByUserId: "user-1",
+		});
 	});
 
 	it("answers rather than fails when a scan is already open", async () => {
-		mocks.countLivingMemoryFilesSkippedAtFirstSync.mockResolvedValue(3);
+		mocks.countLivingMemoryFilesAwaitingDecisionScan.mockResolvedValue(3);
 		mocks.startLivingMemoryFirstSyncScan.mockResolvedValue(false);
 
 		await expect(
@@ -202,7 +208,7 @@ describe("scanFirstSync", () => {
 	});
 
 	it("starts nothing when no file is waiting", async () => {
-		mocks.countLivingMemoryFilesSkippedAtFirstSync.mockResolvedValue(0);
+		mocks.countLivingMemoryFilesAwaitingDecisionScan.mockResolvedValue(0);
 
 		await expect(
 			handlers.scanFirstSync?.({ input: scanInput, context }),
@@ -212,9 +218,13 @@ describe("scanFirstSync", () => {
 });
 
 describe("list", () => {
-	it("returns the project's candidates for the resolved organization", async () => {
+	it("returns the project's candidates, unread file count and partly read files for the resolved organization", async () => {
+		const limitedFiles = [
+			{ sourcePath: "docs/huge.md", truncated: true, capped: false },
+		];
 		mocks.listLivingMemoryDecisionCandidates.mockResolvedValue([candidate]);
-		mocks.countLivingMemoryFilesSkippedAtFirstSync.mockResolvedValue(2);
+		mocks.countLivingMemoryFilesAwaitingDecisionScan.mockResolvedValue(2);
+		mocks.listLivingMemoryLimitedFiles.mockResolvedValue(limitedFiles);
 
 		await expect(
 			handlers.list?.({
@@ -223,12 +233,14 @@ describe("list", () => {
 			}),
 		).resolves.toEqual({
 			candidates: [candidate],
-			filesSkippedAtFirstSync: 2,
+			filesNotScanned: 2,
+			limitedFiles,
 		});
-		expect(mocks.listLivingMemoryDecisionCandidates).toHaveBeenCalledWith({
-			projectId: "p-1",
-			organizationId: "org-1",
-		});
+		const scope = { projectId: "p-1", organizationId: "org-1" };
+		expect(mocks.listLivingMemoryDecisionCandidates).toHaveBeenCalledWith(
+			scope,
+		);
+		expect(mocks.listLivingMemoryLimitedFiles).toHaveBeenCalledWith(scope);
 	});
 });
 
@@ -270,6 +282,27 @@ describe("createFrom", () => {
 		);
 		expect(result).toEqual({
 			decision: { id: "dec-new", identifier: "ADR-007", tagged: true },
+		});
+	});
+
+	it("carries the work item the lookup re-read into the decision's source", async () => {
+		const workItem = { id: "story-12", identifier: "F-012" };
+		mocks.getLivingMemoryDecisionCandidate.mockResolvedValue({
+			status: "found",
+			candidate: { ...candidate, workItem },
+		});
+
+		await handlers.createFrom?.({ input: createInput, context });
+
+		const written =
+			mocks.createDecisionFromLivingMemoryCandidate.mock.calls[0]?.[1];
+		expect(written.sourceMetadata).toEqual({
+			contextId: "ctx-1",
+			contentHash: HASH,
+			sourcePath: "docs/architecture.md",
+			index: 2,
+			originalText: candidate.text,
+			workItem,
 		});
 	});
 

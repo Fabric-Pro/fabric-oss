@@ -175,6 +175,11 @@ export const Permissions = {
 	TODO_CREATE: "todo:create",
 	TODO_UPDATE: "todo:update",
 
+	// Time tracking (a member logs and manages their own time on a project;
+	// administrators read everyone's time in reports)
+	TIME_LOG: "time:log",
+	TIME_REPORT_VIEW: "time:report:view",
+
 	// Dashboard
 	DASHBOARD_READ: "dashboard:read",
 

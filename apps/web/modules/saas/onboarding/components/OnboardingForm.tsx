@@ -1,8 +1,8 @@
 "use client";
 import { authClient } from "@repo/auth/client";
-import { safeRelativePath } from "@shared/lib/safe-redirect";
 import { useRouter } from "@shared/hooks/router";
 import { clearCache } from "@shared/lib/cache";
+import { safeRelativePath } from "@shared/lib/safe-redirect";
 import { Progress } from "@ui/components/progress";
 import { useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
@@ -49,7 +49,7 @@ export function OnboardingForm() {
 			<h1 className="font-bold text-xl md:text-2xl">
 				{t("onboarding.title")}
 			</h1>
-			<p className="mt-2 mb-6 text-foreground/60">
+			<p className="mt-2 mb-6 text-muted-foreground">
 				{t("onboarding.message")}
 			</p>
 
@@ -59,7 +59,7 @@ export function OnboardingForm() {
 						value={(onboardingStep / steps.length) * 100}
 						className="h-2"
 					/>
-					<span className="shrink-0 text-foreground/60 text-xs">
+					<span className="shrink-0 text-muted-foreground text-xs">
 						{t("onboarding.step", {
 							step: onboardingStep,
 							total: steps.length,

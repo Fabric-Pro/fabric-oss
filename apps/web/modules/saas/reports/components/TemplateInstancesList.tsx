@@ -300,7 +300,10 @@ export function TemplateInstancesList({
 									<DropdownMenu>
 										<DropdownMenuTrigger asChild>
 											<Button variant="ghost" size="sm">
-												<MoreVerticalIcon className="h-4 w-4" />
+												<MoreVerticalIcon
+													strokeWidth={2.5}
+													className="h-4 w-4"
+												/>
 											</Button>
 										</DropdownMenuTrigger>
 										<DropdownMenuContent align="end">

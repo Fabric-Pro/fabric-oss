@@ -301,7 +301,7 @@ function DoBothProgress({
 										"motion-safe:animate-spin",
 									(status === "done" ||
 										status === "nothingNew") &&
-										"text-secondary",
+										"text-success",
 									status === "failed" && "text-destructive",
 									(status === "waiting" ||
 										status === "unknown") &&
@@ -467,7 +467,7 @@ export function RoadmapStartBuilding({
 				<button
 					type="button"
 					onClick={onShowHidden}
-					className="rounded-sm text-primary text-sm underline underline-offset-2 hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+					className="rounded-sm text-primary text-sm underline underline-offset-2 hover:text-primary-hover focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
 				>
 					{t("showHidden", { count: hiddenCount })}
 				</button>

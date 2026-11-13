@@ -37,7 +37,7 @@ export function FocusModeToggle() {
 						className={cn(
 							"h-8 px-2.5 gap-1.5 transition-colors text-xs font-medium shrink-0",
 							isFocusMode &&
-								"border-primary/40 bg-primary/15 text-primary hover:bg-primary/20",
+								"border-primary/40 bg-primary/15 text-primary-active hover:bg-primary/20",
 						)}
 					>
 						{isFocusMode ? (

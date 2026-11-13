@@ -3,7 +3,8 @@
 Renders the screenshots used by the public documentation under
 `apps/web/content/docs`, writing PNGs into `apps/web/public/images/docs/qa/`, or
 into the folder a mock names in `OUTPUT_FOLDERS` in `render.mjs` (the Parlume
-images go to `images/docs/parlume/`).
+images go to `images/docs/parlume/`, the time tracking images to
+`images/docs/time-tracking/`).
 
 ```bash
 node tooling/docs-screenshots/render.mjs             # all of them

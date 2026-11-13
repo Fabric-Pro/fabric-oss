@@ -156,7 +156,7 @@ export function AvailableFieldsList({
 						Show all fields
 					</Label>
 					{plumbingHiddenCount > 0 && (
-						<span className="text-muted-foreground/70 text-xs">
+						<span className="text-muted-foreground text-xs">
 							({plumbingHiddenCount} hidden)
 						</span>
 					)}

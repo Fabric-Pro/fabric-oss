@@ -9,6 +9,7 @@ import {
 } from "@ui/components/dropdown-menu";
 import { format } from "date-fns";
 import { MoreVerticalIcon, PlusIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import type {
 	ParlumeAutoJoinSettings,
 	ParlumeAutoJoinState,
@@ -39,6 +40,7 @@ export function DigestConfigPanel({
 	onSetIncluded,
 	pendingIncludeIds,
 	onAddMeeting,
+	addMeetingAction,
 	onUnlink,
 	autoJoin,
 }: {
@@ -51,6 +53,11 @@ export function DigestConfigPanel({
 	// that don't track in-flight state still work.
 	pendingIncludeIds?: Set<string>;
 	onAddMeeting: () => void;
+	/**
+	 * Replaces the calendar-only button with the page's own "Add meeting"
+	 * control (Fizzy #3507), so the panel offers what the header does.
+	 */
+	addMeetingAction?: ReactNode;
 	onUnlink: (meeting: ConfigMeeting) => void;
 	autoJoin?: ConfigPanelAutoJoin;
 }) {
@@ -60,15 +67,17 @@ export function DigestConfigPanel({
 				<p className="text-sm text-muted-foreground">
 					Meetings feeding this digest
 				</p>
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					onClick={onAddMeeting}
-				>
-					<PlusIcon className="size-4 mr-1.5" />
-					Add meeting
-				</Button>
+				{addMeetingAction ?? (
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						onClick={onAddMeeting}
+					>
+						<PlusIcon className="size-4 mr-1.5" />
+						Add meeting
+					</Button>
+				)}
 			</div>
 
 			{!meetings.length ? (
@@ -120,7 +129,10 @@ export function DigestConfigPanel({
 												size="icon"
 												aria-label={`Meeting options for ${m.subject ?? "Meeting"}`}
 											>
-												<MoreVerticalIcon className="size-4" />
+												<MoreVerticalIcon
+													strokeWidth={2.5}
+													className="size-4"
+												/>
 											</Button>
 										</DropdownMenuTrigger>
 										<DropdownMenuContent align="end">

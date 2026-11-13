@@ -180,7 +180,7 @@ exports[`PublishingSuiteList row parity > renders the flag-off row exactly as it
             Tweet
           </span>
           <span
-            class="text-muted-foreground/70"
+            class="text-muted-foreground"
           >
              · 
             launch

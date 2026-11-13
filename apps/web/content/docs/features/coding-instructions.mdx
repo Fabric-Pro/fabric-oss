@@ -19,6 +19,17 @@ If your team has already connected a repository or published an upload, select a
 
 The illustrations use example project and repository data. Setup commands in your own dialog are specific to your project and Fabric address.
 
+### See what changed since your last visit
+
+When you come back to the tab after something changed, the **Since your last visit** panel shows what happened since the time it names in **Last seen**:
+
+- each new version, with who published it, or the branch and commit it was synced from;
+- the files that differ between the version you last saw and the current one, marked **Added**, **Changed** or **Removed**. The first 10 are listed, followed by how many more there are;
+- new lessons, which are files added under a `Lessons/` folder;
+- proposals that were approved or rejected, and by whom.
+
+Choose **Mark all as seen** to clear the panel. On your first visit, or when nothing is new, Fabric records the visit without showing the panel. If the version you last saw is no longer kept, the panel says so instead of listing the changed files.
+
 ## Add instructions to a project
 
 If you only need to use instructions your team has already set up, skip to [Connect your coding tool](#connect-your-coding-tool).
@@ -29,8 +40,12 @@ Use this option when your team already keeps its instructions in Git.
 
 1. Connect the repository to your project if it is not connected yet.
 2. In **Coding Instructions**, choose **Sync from repository**. To change an existing connection, open **More → Settings** and choose **Change** in the repository section.
-3. Choose the repository and branch. Select the folder that contains the instructions, or the whole repository if that is where you keep them. Review any excluded paths.
+3. Choose the repository and branch. Select the folder that contains the instructions, or the whole repository if that is where you keep them, in the file tree. Review any excluded paths.
 4. Choose **Save connection**. Open a file to check that you selected the right folder and branch.
+
+Ticking a folder in the tree includes everything inside it, including files added to it later. A folder that is partly left out shows a dash. A row you cannot tick says why. Above the tree you can search, choose **Show only selected** to keep only ticked and left-out rows and the folders that lead to them, or use **Collapse all**, **Select all** and **Select none**. **Show only selected** works together with search.
+
+The tree is a single stop when you press Tab. Use the arrow keys, Home and End to move, Enter to open or close a folder, and Space to tick or untick a row. Type the start of a name to jump to it.
 
 The files stay in Git. After someone commits or merges changes, use **More → Refresh** to load the latest branch version. Fabric reports **Up to date.** or **Updated to** the new commit.
 
@@ -46,6 +61,30 @@ Use an upload when you have a folder of instructions to share without connecting
 ![The upload review for an example instruction folder: AGENTS.md, a skill, and a test script are included, tasks/session.log is excluded by a default rule, and Publish as soon as the upload passes checks is selected above Upload 3 files.](/images/docs/qa/coding-instructions-upload.png)
 
 If your browser cannot choose a folder, use **Choose files** or try a browser that supports folder selection, such as Chrome or Edge.
+
+### Start from your organization's template
+
+An organization can keep one project's coding instructions as a starting point for its other projects. An organization admin or owner chooses that project in **Settings → General → Coding instructions template**. The list offers only projects whose instructions are uploaded to Fabric. Projects with published instructions come first, and a project that has nothing published yet is marked. The template project's own Coding Instructions tab is where the template is changed, so uploads, checks, versions and history work as they do for any project.
+
+In another project that uploads its instructions, choose **Start from the organization template** in an empty Coding Instructions tab, or **More → Add files from the organization template** once the project has files. You need permission to upload to the project; you do not need access to the template project.
+
+- Fabric creates a new version of your project with the template's published files, checks it like an upload, and publishes it when the checks pass.
+- Your project's own files always win. Only files your project does not have yet are added, and a file that would clash with one of yours is left out.
+- The template's `.fabricignore` is not copied. Your project's own ignore rules decide what is left out, and credential files are never copied.
+- When it finishes, Fabric lists how many files were added and each file it left out, with the reason.
+- Later changes to the template are not copied automatically. Choose the action again to add files the template has gained since.
+
+Projects whose instructions come from a Git repository are not offered the template; change their files in the repository.
+
+### Use separate instructions for different repositories
+
+When code repositories need different rules, for example a mobile app and a web service, split the project's instructions into **instruction sets**. Open **Instruction sets** on the Coding Instructions tab, choose **New set**, name it, and choose the code repositories it applies to. A repository can be in more than one set.
+
+Each set is a folder in your project's instructions: the files of a set named **Mobile apps** live in `instructions/mobile-apps/`, laid out the same way as the instructions at the root. The project's existing instructions become the **default set**: everything outside the other sets' folders. Keeping one instructions source means syncing, proposals, review, and published versions work as before and cover every set at once.
+
+When a project has sets, a code repository gets only the instructions of the sets it is in. A repository in no set gets none, and the Instruction sets panel names it. Renaming a set keeps its folder. Deleting a set removes it from Fabric only; its files stay in your instructions.
+
+When you connect your coding tool inside a code repository, setup picks the set that repository belongs to. If it belongs to several, choose one, or pass `--set <folder name>` to the setup command. Each set gets its own plugin, which also lists the set's code repositories in `REPOSITORIES.md`.
 
 ## Connect your coding tool
 
@@ -126,6 +165,18 @@ Edit in your normal Git checkout, or open a file in Fabric and choose **Edit** i
 
 After a change lands, refresh the tab and start a new coding session to use the updated instructions. A Git-backed project uses the repository's commits and pull requests; it does not need a separate Fabric upload publication.
 
+### Your proposal branch
+
+When you suggest changes to instructions kept in Git, they go to your own branch in the project's repository, one commit each, with one pull request for all of them. Open **More → Your proposals** to follow that pull request.
+
+**Files your branch changes** lists every file the branch adds, changes or deletes. A file that only your branch has is marked **Only on your branch**. In the file tree, these files carry a **your branch**, **changed on your branch** or **deleted on your branch** tag. For each file you can:
+
+- choose **Restore published version** to add a change that puts the published file back;
+- choose **Delete from my branch** for a file the published version does not have;
+- choose **Edit**, change the file, then **Suggest change** to add another commit.
+
+If someone commits to your branch outside Fabric, the panel shows **Your branch has commits made outside Fabric**. Fabric does not overwrite those files while the pull request is open: a new suggestion that touches them is refused with the paths it would overwrite. Make that change on the branch in the repository, or wait until the pull request merges. Fabric also does not start your branch over while it has such commits. **Close pull request** withdraws your changes and deletes the branch only if Fabric made every commit on it.
+
 ### View and restore a Git file
 
 Open a file in **Coding Instructions** and choose **History**. Fabric reads that file's history from Git when you open the dialog. Select a commit to compare its file contents with the current branch. Use **Refresh from Git** to check for newer commits.
@@ -137,13 +188,25 @@ To restore a version:
 3. Choose **Restore this file** and wait for the Git result. If Fabric opens a pull request, follow its link and complete the usual review and merge.
 4. Reopen the file to check the committed contents.
 
-![A selected Git file version compared with the current branch, with the Restore this file action below the diff.](/images/docs/qa/coding-instructions-git-file-restore.png)
+![The Git history dialog for AGENTS.md in an example repository: two commits are listed, the older one is selected and compared with the current branch, and the Restore this file action sits below the diff.](/images/docs/qa/coding-instructions-git-file-restore.png)
 
 Restoring creates a new change for that file. Other files and earlier commits stay intact. Fabric follows the file's exact path, so history from an earlier filename remains in your Git provider. Binary files, incomplete text, and unavailable versions cannot be restored here. If the branch changes while you review, refresh and compare again before restoring.
 
 ### Instructions uploaded to Fabric
 
 Editors can upload a new version or edit a file and choose **Save and publish**. To keep a change unpublished, use **Save as a new version**. If you can suggest changes but cannot publish them, submit a proposal for someone with review permission. **Review proposals** opens those suggestions; **History** lists uploaded versions and their download or publication actions. In **History** a proposal is labelled by its review state: **Proposed** while it waits, **Replaced by version N** once a rebased proposal took its place, **Proposal rejected** after a reviewer declined it, or **Proposal closed** when it ended without a review. History reads the list again each time you open it.
+
+### Review a proposal
+
+**Review proposals** shows each changed file. A Markdown file is shown rendered by default, with additions and removals marked in the text. Switch to **Raw lines** to see the line diff; your browser remembers the choice. Other files always show the line diff. When a Markdown file's frontmatter also changed, the rendered view says so, and **Raw lines** shows the frontmatter change.
+
+### Know when a new version is published
+
+Each time a new version of the instructions is published, Fabric sends one notification, **Coding instructions vN published**. It names who published it, or the repository sync and the branch and commit, and says how to update your copy: run `fabric instructions sync --project <id>` for uploaded instructions, or pull the branch for instructions kept in Git. The notification links to the Coding Instructions tab.
+
+It goes to the project owner and to project members who can read the instructions, except the person who published the version. This applies whether someone published directly, a proposal was approved, or the version was published automatically. **Roll back to this version** in **History** sends nothing for a version that was already announced.
+
+To stop these notifications, turn off **Sync & integrations** in **Settings → Account → Notifications**. Email and webhook delivery follow your delivery settings on that page.
 
 ### Set how many approvals a proposal needs
 

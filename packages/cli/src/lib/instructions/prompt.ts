@@ -1,10 +1,12 @@
 /**
- * The two questions `fabric instructions` ever asks a person: which of
- * several projects, and whether to clone into an empty folder. Both go to
- * stderr and read one line from stdin, so a command's stdout stays what a
- * script expects. Neither is ever asked without a terminal on both ends.
+ * The questions `fabric instructions` asks a person: which of several
+ * projects (or Coding Instructions sets), and whether to clone into an empty
+ * folder. All go to stderr and read one line from stdin, so a command's stdout
+ * stays what a script expects. None is ever asked without a terminal on both
+ * ends.
  */
 import { createInterface } from "node:readline/promises";
+import { sanitizeDisplayText } from "./checks.js";
 import type { ProjectChoice } from "./outcome.js";
 
 export interface PromptStreams {
@@ -64,4 +66,22 @@ export async function confirm(
 	streams: PromptStreams = { input: process.stdin, output: process.stderr },
 ): Promise<boolean> {
 	return /^y(es)?$/i.test(await ask(`${question} [y/N] `, streams));
+}
+
+/** The zero-based index of the Coding Instructions set chosen, or `null` for anything but a listed number. */
+export async function chooseInstructionSet(
+	sets: ReadonlyArray<{ name: string; slug: string }>,
+	streams: PromptStreams = { input: process.stdin, output: process.stderr },
+): Promise<number | null> {
+	streams.output.write(
+		`${sets.length} Coding Instructions sets apply to this repository:\n`,
+	);
+	for (const [index, set] of sets.entries()) {
+		streams.output.write(
+			`  [${index + 1}] ${sanitizeDisplayText(set.name, 80)} (${sanitizeDisplayText(set.slug, 40)})\n`,
+		);
+	}
+	const answer = await ask(`Which one? [1-${sets.length}] `, streams);
+	const number = /^\d+$/.test(answer) ? Number(answer) : 0;
+	return number >= 1 && number <= sets.length ? number - 1 : null;
 }

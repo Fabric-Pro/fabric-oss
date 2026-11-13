@@ -12,7 +12,6 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@ui/components/dialog";
-import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
 import { Loader2Icon } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -58,10 +57,12 @@ import {
 	type SelectionMessage,
 	selectionTreeListingOf,
 } from "./repository-sync/lib/selection-row";
+import { RepositoryBranchInput } from "./repository-sync/RepositoryBranchInput";
 import { RepositorySyncSelectionTree } from "./repository-sync/RepositorySyncSelectionTree";
 import { SelectedPathsList } from "./repository-sync/SelectedPathsList";
 import { SelectionSummary } from "./repository-sync/SelectionSummary";
 import { useContextIgnorePolicies } from "./repository-sync/useContextIgnorePolicies";
+import { useRepositoryBranchField } from "./repository-sync/useRepositoryBranchField";
 
 const NAMESPACE = "projects.contexts.livingMemory.repositorySync";
 
@@ -128,7 +129,21 @@ export function ConfigureContextRepositorySyncDialog({
 		active[0] ??
 		null;
 	const [integrationId, setIntegrationId] = useState(seed?.id ?? "");
-	const [ref, setRef] = useState(current?.ref ?? seed?.defaultBranch ?? "");
+	// A configured sync keeps its ref; otherwise the repository's live
+	// provider default seeds the field (`useRepositoryBranchField`), as in
+	// the Coding Instructions dialog.
+	const branchField = useRepositoryBranchField({
+		projectId,
+		open,
+		integrationId,
+		configuredRef:
+			current && current.repositoryIntegrationId === integrationId
+				? current.ref
+				: null,
+		storedBranch:
+			active.find((i) => i.id === integrationId)?.defaultBranch ?? null,
+	});
+	const { ref, setRef } = branchField;
 	const [selection, setSelection] = useState<ContextSelection>(() => ({
 		paths: current?.paths ?? [],
 		excludedPaths: current?.excludedPaths ?? [],
@@ -405,13 +420,11 @@ export function ConfigureContextRepositorySyncDialog({
 								className="h-9 rounded-md border border-input bg-background px-3 text-sm"
 								value={integrationId}
 								onChange={(e) => {
-									const next = active.find(
-										(i) => i.id === e.target.value,
-									);
 									setIntegrationId(e.target.value);
-									if (next) {
-										setRef(next.defaultBranch);
-									}
+									// Its branch: the configured ref, else its
+									// live provider default, else its stored
+									// branch.
+									branchField.reset();
 									clearInlineError();
 								}}
 							>
@@ -435,17 +448,16 @@ export function ConfigureContextRepositorySyncDialog({
 						<Label htmlFor="context-sync-branch">
 							{t("configureDialog.branchLabel")}
 						</Label>
-						<Input
+						<RepositoryBranchInput
 							id="context-sync-branch"
 							value={ref}
-							onChange={(e) => {
-								setRef(e.target.value);
+							onChange={(next) => {
+								setRef(next);
 								clearInlineError();
 							}}
-							aria-invalid={
-								inlineErrorField === "branch" ? true : undefined
-							}
-							aria-describedby={
+							branches={branchField.branches}
+							invalid={inlineErrorField === "branch"}
+							describedBy={
 								inlineErrorField === "branch"
 									? ids.error
 									: undefined

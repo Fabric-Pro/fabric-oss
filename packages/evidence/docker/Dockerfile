@@ -21,7 +21,7 @@
 # Temporal activity that uses it falls back to a non-Docker build whenever
 # Docker is unavailable, which is the case in Container Apps.
 
-FROM node:22-alpine
+FROM node:24-alpine
 
 # Set working directory
 WORKDIR /evidence

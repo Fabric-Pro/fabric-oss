@@ -53,6 +53,7 @@ const m = vi.hoisted(() => ({
 	listRuns: vi.fn(),
 	listTree: vi.fn(),
 	readIgnoreFile: vi.fn(),
+	branches: vi.fn(),
 	getSettings: vi.fn(),
 	updateSettings: vi.fn(),
 	toastSuccess: vi.fn(),
@@ -90,6 +91,15 @@ function mutationOptionsStub(fn: (input: unknown) => Promise<unknown>) {
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
+			repositoryIntegrations: {
+				branches: {
+					queryOptions: (o: { input: unknown }) => ({
+						...o,
+						queryKey: ["branches", o.input],
+						queryFn: () => m.branches(o.input),
+					}),
+				},
+			},
 			instructions: {
 				getSettings: {
 					queryOptions: (o: { input: unknown }) => ({
@@ -271,6 +281,12 @@ beforeEach(() => {
 		sourceOfTruth: "REPOSITORY",
 	});
 	m.updateSettings.mockResolvedValue({ ok: true });
+	// The provider names no default by default: the stored branch seeds.
+	m.branches.mockResolvedValue({
+		defaultBranch: null,
+		branches: [],
+		truncated: false,
+	});
 });
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -482,6 +498,50 @@ describe("ConfigureRepositorySyncDialog (§7.2)", () => {
 		).toHaveValue("main");
 		expect(await findTreeItem("agents")).toBeChecked();
 		expect(within(syncsList()).getByText("agents/")).toBeInTheDocument();
+	});
+
+	it("seeds a new sync from the repository's live provider default and offers its branches", async () => {
+		// Stored as "develop" when connected; the provider now says "main".
+		m.branches.mockResolvedValue({
+			defaultBranch: "main",
+			branches: ["main", "release/2.0"],
+			truncated: false,
+		});
+		const user = userEvent.setup();
+		renderDialog();
+
+		const field = screen.getByLabelText(copy.configureDialog.branchLabel);
+		await waitFor(() => expect(field).toHaveValue("main"));
+		expect(m.branches).toHaveBeenCalledWith({
+			projectId: "proj_1",
+			repositoryIntegrationId: "int_1",
+		});
+		const list = screen.getByTestId("instructions-sync-branch-suggestions");
+		expect(
+			Array.from(list.querySelectorAll("option")).map((o) => o.value),
+		).toEqual(["main", "release/2.0"]);
+
+		await pickAgents(user);
+		await user.click(submit());
+		await waitFor(() =>
+			expect(m.configure).toHaveBeenCalledWith(
+				expect.objectContaining({ ref: "main" }),
+			),
+		);
+	});
+
+	it("keeps a configured sync's branch even when the provider default differs", async () => {
+		m.branches.mockResolvedValue({
+			defaultBranch: "develop",
+			branches: ["develop", "main"],
+			truncated: false,
+		});
+		renderDialog({ current: CONFIGURED.configured });
+
+		await screen.findByTestId("instructions-sync-branch-suggestions");
+		expect(
+			screen.getByLabelText(copy.configureDialog.branchLabel),
+		).toHaveValue("main");
 	});
 
 	// B-3 (Task 9 review): the five inline codes `configure` can throw, each

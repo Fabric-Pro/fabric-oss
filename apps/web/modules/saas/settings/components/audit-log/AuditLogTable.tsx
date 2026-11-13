@@ -193,7 +193,7 @@ function TooltipLegendRow({
 }) {
 	const toneClass =
 		tone === "success"
-			? "text-secondary"
+			? "text-success"
 			: tone === "failure" || tone === "destructive"
 				? "text-destructive"
 				: tone === "warning"
@@ -934,7 +934,7 @@ export function AuditLogTable({
 													{absolute}
 													<span
 														aria-hidden="true"
-														className="ml-1 text-muted-foreground/80"
+														className="ml-1 text-muted-foreground"
 													>
 														UTC
 													</span>
@@ -1207,7 +1207,7 @@ export function AuditLogTable({
 															"inline-flex items-center gap-1.5 text-[11px] font-medium",
 															isFailure
 																? "text-destructive"
-																: "text-secondary",
+																: "text-success",
 														)}
 														data-testid={`audit-outcome-${row.outcome}`}
 													>

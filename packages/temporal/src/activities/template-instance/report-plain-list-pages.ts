@@ -8,7 +8,7 @@
  * Pure apart from the page fetch the caller injects.
  */
 
-import { isPlainObject, rawJsonSchema } from "./report-card-pages";
+import { clipText, isPlainObject, rawJsonSchema } from "./report-card-pages";
 
 /**
  * Pages read for one plain list, the first included, when nothing says how far
@@ -18,11 +18,13 @@ export const MAX_PLAIN_LIST_PAGES = 3;
 
 /**
  * Pages read for a dated list when the report period is known: the walk stops
- * once a page reaches back before the period starts, so this only guards a
- * list that is not newest first. On staging, 300 pull requests covered 74 days
- * of a busy repository.
+ * once a page reaches back before the period starts. On staging, three months
+ * of a busy repository held 2,045 commits, 21 pages of 100.
  */
-export const MAX_DATED_LIST_PAGES = 10;
+export const MAX_DATED_LIST_PAGES = 25;
+
+/** Pages read for one search: GitHub returns no result past the 1,000th. */
+export const MAX_SEARCH_PAGES = 10;
 
 /** Fields that date a list item, in the order they are read. */
 const ITEM_DATE_FIELDS = [
@@ -95,6 +97,45 @@ export function reportPeriodParameter(
 		}
 	}
 	return undefined;
+}
+
+/** Where the person says deployments are recorded, from the `deploymentRecords` parameter. */
+export function deploymentRecordsParameter(
+	parameters: Record<string, unknown>,
+): string | undefined {
+	const value = parameters.deploymentRecords;
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/**
+ * The gathering prompt's statement of the report settings that decide what to
+ * read: the period, and where deployments are recorded when the person said.
+ */
+export function reportSettingsPromptLines(settings: {
+	reportPeriod?: { text: string; start?: number };
+	deploymentRecords?: string;
+}): string[] {
+	const lines: string[] = [];
+	const { reportPeriod, deploymentRecords } = settings;
+	if (reportPeriod) {
+		const from =
+			reportPeriod.start !== undefined
+				? `, from ${new Date(reportPeriod.start).toISOString().slice(0, 10)} (UTC)`
+				: "";
+		lines.push(
+			"",
+			"## Report Period",
+			`The report covers \`${reportPeriod.text}\`${from}. When a tool can filter or search by date, ask for this period.`,
+		);
+	}
+	if (deploymentRecords) {
+		lines.push(
+			"",
+			"## Deployment Records",
+			`The person says deployments are recorded in: \`${deploymentRecords}\`. Read these records for the whole period, with their dates and outcomes, as well as anything else the report needs.`,
+		);
+	}
+	return lines;
 }
 
 const MONTHS = [
@@ -283,6 +324,186 @@ export function searchResultPage(output: unknown): SearchResultPage | null {
 	return { items: output.items, total: output.total_count };
 }
 
+/**
+ * Searches one query becomes, at most, when its date range is split. GitHub
+ * returns no more than 1,000 results for a query however it is paged, so a
+ * busy repository's three months of merged pull requests need two or more.
+ */
+export const MAX_SEARCH_WINDOWS = 8;
+
+const SEARCH_QUERY_ARGS = ["query", "q"];
+
+/** A search qualifier over dates, such as `merged:2026-08-07..2026-11-07`. */
+const DATE_RANGE_QUALIFIER =
+	/\b([a-z-]+):(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})\b/;
+
+const DAY_MS = 86_400_000;
+
+/**
+ * The search's arguments split at the middle day of its query's date range,
+ * later half first so the result stays newest first, each from page 1. Null
+ * when the query has no date range spanning two days or more.
+ */
+export function splitSearchDateRange(
+	args: Record<string, unknown>,
+): [Record<string, unknown>, Record<string, unknown>] | null {
+	for (const key of SEARCH_QUERY_ARGS) {
+		const query = args[key];
+		if (typeof query !== "string") {
+			continue;
+		}
+		const match = DATE_RANGE_QUALIFIER.exec(query);
+		if (!match) {
+			continue;
+		}
+		const [text, qualifier, from, to] = match;
+		const start = Date.parse(`${from}T00:00:00Z`);
+		const end = Date.parse(`${to}T00:00:00Z`);
+		if (!(end > start)) {
+			return null;
+		}
+		const middle = start + Math.floor((end - start) / DAY_MS / 2) * DAY_MS;
+		const day = (time: number) => new Date(time).toISOString().slice(0, 10);
+		const window = (first: number, last: number) => ({
+			...args,
+			[key]: query.replace(
+				text,
+				`${qualifier}:${day(first)}..${day(last)}`,
+			),
+			page: 1,
+		});
+		return [window(middle + DAY_MS, end), window(start, middle)];
+	}
+	return null;
+}
+
+/** Items in order, each item with an `id` or `number` kept once. */
+function uniqueItems(items: unknown[]): unknown[] {
+	const seen = new Set<unknown>();
+	return items.filter((item) => {
+		const key = isPlainObject(item) ? (item.id ?? item.number) : undefined;
+		if (key === undefined || key === null) {
+			return true;
+		}
+		if (seen.has(key)) {
+			return false;
+		}
+		seen.add(key);
+		return true;
+	});
+}
+
+/**
+ * A commit cut to what a report reads: its hash, subject line, author and
+ * date, in the source's own shape. Its full message, often a squashed pull
+ * request's whole description, and its URLs and e-mail addresses made 1,000
+ * commits 1.4 MB on staging, and the run's data limit dropped 200 of them.
+ * Anything that is not a commit is returned as it came.
+ */
+export function slimCommit(item: unknown): unknown {
+	if (
+		!isPlainObject(item) ||
+		typeof item.sha !== "string" ||
+		!isPlainObject(item.commit)
+	) {
+		return item;
+	}
+	const { message, author } = item.commit;
+	return {
+		sha: item.sha,
+		commit: {
+			message:
+				typeof message === "string"
+					? message.split("\n", 1)[0]
+					: message,
+			author: isPlainObject(author)
+				? { name: author.name, date: author.date }
+				: author,
+		},
+		...(isPlainObject(item.author) && typeof item.author.login === "string"
+			? { author: { login: item.author.login } }
+			: {}),
+	};
+}
+
+/** The link of a GitHub issue or pull request. */
+const ISSUE_OR_PULL_URL = /\/(?:issues|pull)\/\d+$/;
+
+/** Plain fields of an issue or pull request that a report reads. */
+const PULL_REQUEST_FIELDS = [
+	"number",
+	"title",
+	"state",
+	"draft",
+	"created_at",
+	"updated_at",
+	"closed_at",
+	"merged_at",
+	"html_url",
+	"comments",
+];
+
+/** Longest description kept on an issue or pull request. */
+const MAX_BODY_CHARS = 280;
+
+/**
+ * An issue or pull request cut to what a report reads: its number, title,
+ * state, dates, author, labels, branches and the start of its description, in
+ * the source's own shape. A search item keeps its merge date under
+ * `pull_request`. On staging, a search for 1,022 merged pull requests came to
+ * 3.9 MB, and the run's data limit dropped 498 of them. Anything else is
+ * returned as it came.
+ */
+export function slimPullRequest(item: unknown): unknown {
+	if (
+		!isPlainObject(item) ||
+		typeof item.html_url !== "string" ||
+		!ISSUE_OR_PULL_URL.test(item.html_url)
+	) {
+		return item;
+	}
+	const login = (person: unknown) =>
+		isPlainObject(person) ? { login: person.login } : person;
+	const slim: Record<string, unknown> = {};
+	for (const key of PULL_REQUEST_FIELDS) {
+		if (item[key] !== undefined) {
+			slim[key] = item[key];
+		}
+	}
+	if (isPlainObject(item.pull_request)) {
+		slim.pull_request = { merged_at: item.pull_request.merged_at };
+	}
+	if (typeof item.body === "string" && item.body.length > 0) {
+		slim.body = clipText(item.body, MAX_BODY_CHARS);
+	}
+	if (item.user !== undefined) {
+		slim.user = login(item.user);
+	}
+	if (Array.isArray(item.assignees)) {
+		slim.assignees = item.assignees.map(login);
+	}
+	if (Array.isArray(item.labels)) {
+		slim.labels = item.labels.map((label) =>
+			isPlainObject(label) ? { name: label.name } : label,
+		);
+	}
+	if (isPlainObject(item.milestone)) {
+		slim.milestone = { title: item.milestone.title };
+	}
+	for (const key of ["base", "head"]) {
+		const branch = item[key];
+		if (isPlainObject(branch)) {
+			slim[key] = { ref: branch.ref };
+		}
+	}
+	return slim;
+}
+
+/** A commit, issue or pull request cut to what a report reads. */
+function slimListItem(item: unknown): unknown {
+	return slimPullRequest(slimCommit(item));
+}
+
 /** True when a tool's input takes a numeric `page`. */
 export function takesPageArgument(inputSchema: unknown): boolean {
 	const properties = rawJsonSchema(inputSchema)?.properties;
@@ -324,6 +545,8 @@ export interface PlainListPages {
 	pages: number;
 	/** How many matches a search reported in all, when the list came from one. */
 	total?: number;
+	/** How many narrower date ranges a split search was read in. */
+	windows?: number;
 	/** Set when the walk stopped with more possibly left to read. */
 	stoppedEarly?: string;
 }
@@ -442,23 +665,88 @@ export async function readToolResultPages(params: {
 			beat,
 			periodStart,
 		});
-		return { output: read.items, read };
+		return { output: read.items.map(slimListItem), read };
 	}
 	const search = searchResultPage(output);
 	if (!search) {
 		return { output };
 	}
+	const read = await readSearch({
+		args,
+		first: search,
+		fetchPage,
+		beat,
+		periodStart,
+		windows: { used: 1 },
+	});
+	return { output: read.items.map(slimListItem), read };
+}
+
+/**
+ * A search read up to its match count. When the walk stops short and the
+ * query names a date range, the range is split in two and each half is read
+ * the same way, until every match is held or `MAX_SEARCH_WINDOWS` searches
+ * are used. `pages` counts every call, the caller's first one included.
+ */
+async function readSearch(params: {
+	args: Record<string, unknown>;
+	first: SearchResultPage;
+	fetchPage: (args: Record<string, unknown>) => Promise<unknown>;
+	beat: () => void;
+	periodStart?: number;
+	windows: { used: number };
+}): Promise<PlainListPages> {
+	const { args, first, fetchPage, beat, periodStart, windows } = params;
 	const read = await readFullPages({
 		args,
-		firstPage: search.items,
+		firstPage: first.items,
 		fetchPage: async (pageArgs) => {
 			const next = await fetchPage(pageArgs);
 			return searchResultPage(next)?.items ?? next;
 		},
 		beat,
 		periodStart,
-		total: search.total,
-		maxPages: MAX_DATED_LIST_PAGES,
+		total: first.total,
+		maxPages: MAX_SEARCH_PAGES,
 	});
-	return { output: read.items, read: { ...read, total: search.total } };
+	const whole: PlainListPages = { ...read, total: first.total };
+	const halves = read.stoppedEarly ? splitSearchDateRange(args) : null;
+	if (!halves || windows.used >= MAX_SEARCH_WINDOWS) {
+		return whole;
+	}
+	windows.used++;
+	let pages = read.pages;
+	const parts: PlainListPages[] = [];
+	for (const half of halves) {
+		beat();
+		let output: unknown;
+		try {
+			output = await fetchPage(half);
+		} catch (error) {
+			const detail =
+				error instanceof Error ? error.message : "unknown error";
+			return {
+				...whole,
+				pages,
+				stoppedEarly: `a narrower search could not be read: ${detail}`,
+			};
+		}
+		pages++;
+		const page = searchResultPage(output);
+		if (!page) {
+			return { ...whole, pages };
+		}
+		const part = await readSearch({ ...params, args: half, first: page });
+		pages += part.pages - 1;
+		parts.push(part);
+	}
+	const stoppedEarly = parts.find((part) => part.stoppedEarly)?.stoppedEarly;
+	return {
+		items: uniqueItems(parts.flatMap((part) => part.items)),
+		startPage: read.startPage,
+		pages,
+		total: first.total,
+		windows: parts.reduce((count, part) => count + (part.windows ?? 1), 0),
+		...(stoppedEarly ? { stoppedEarly } : {}),
+	};
 }

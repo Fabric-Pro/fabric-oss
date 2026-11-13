@@ -59,6 +59,11 @@ import {
 } from "@ui/components/dropdown-menu";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@ui/components/popover";
 import { RadioGroup, RadioGroupItem } from "@ui/components/radio-group";
 import {
 	Select,
@@ -264,6 +269,25 @@ function hasPriorIndexRecord(
 		return false;
 	}
 	return true;
+}
+
+/** The one-line reason a repository's CI-results sync fails. */
+function pipelineSyncSummary(kind: string | null | undefined): string {
+	switch (classificationForRawKind(kind)?.kind) {
+		case "PERMISSION_MISSING":
+			return "CI results not read: the credential lacks Actions access";
+		case "CREDENTIAL_MISSING":
+		case "CREDENTIAL_REJECTED":
+			return "CI results not read: the credential needs reconnecting";
+		case "SSO_REQUIRED":
+			return "CI results not read: authorize the credential for SSO";
+		case "RATE_LIMITED":
+			return "CI results paused: provider rate limit";
+		case "NOT_FOUND":
+			return "CI results not read: repository or branch not found";
+		default:
+			return "CI results not read";
+	}
 }
 
 export function ProjectRepositoryIntegrationSettings({
@@ -755,7 +779,9 @@ export function ProjectRepositoryIntegrationSettings({
 			repoUrl: string,
 			owner: string,
 			name: string,
-			branch: string,
+			// Omitted when nothing was chosen: the server then asks the
+			// provider for the repository's own default branch.
+			branch?: string,
 			roleTag?: string | null,
 		) => {
 			setIsConnectingOAuth(true);
@@ -800,7 +826,9 @@ export function ProjectRepositoryIntegrationSettings({
 			repoUrl: string,
 			owner: string,
 			name: string,
-			branch: string,
+			// Omitted when nothing was chosen: the server then asks the
+			// provider for the repository's own default branch.
+			branch?: string,
 			roleTag?: string | null,
 		) => {
 			setIsConnectingOAuth(true);
@@ -851,7 +879,9 @@ export function ProjectRepositoryIntegrationSettings({
 			const url =
 				integration.repositoryUrl ??
 				`https://${integration.provider === "GITLAB" ? "gitlab" : "github"}.com/${integration.repositoryOwner}/${integration.repositoryName}`;
-			const branch = integration.defaultBranch ?? "main";
+			// The stored branch wins; without one the server resolves the
+			// provider's default rather than this client inventing "main".
+			const branch = integration.defaultBranch || undefined;
 			if (integration.provider === "GITHUB") {
 				handleAddGitHubRepo(
 					url,
@@ -965,7 +995,7 @@ export function ProjectRepositoryIntegrationSettings({
 					repositoryUrl: repo.url,
 					repositoryOwner: repo.owner,
 					repositoryName: repo.name,
-					defaultBranch: repo.defaultBranch || "main",
+					defaultBranch: repo.defaultBranch || undefined,
 					roleTag: roleTagInput.trim() || undefined,
 					sourceIntegrationId: reposData?.sourceIntegrationId,
 				});
@@ -1012,7 +1042,7 @@ export function ProjectRepositoryIntegrationSettings({
 			repo.url,
 			repo.owner,
 			repo.name,
-			repo.defaultBranch || "main",
+			repo.defaultBranch || undefined,
 		);
 	}, [
 		selectedRepoUrl,
@@ -1072,7 +1102,7 @@ export function ProjectRepositoryIntegrationSettings({
 				first.htmlUrl,
 				first.owner,
 				first.name,
-				first.defaultBranch || "main",
+				first.defaultBranch || undefined,
 				first.roleTag || undefined,
 			);
 		},
@@ -1114,9 +1144,9 @@ export function ProjectRepositoryIntegrationSettings({
 			return;
 		}
 		if (provider === "GITHUB") {
-			handleAddGitHubRepo(url, parsed.owner, parsed.name, "main");
+			handleAddGitHubRepo(url, parsed.owner, parsed.name);
 		} else if (provider === "GITLAB") {
-			handleAddGitLabRepo(url, parsed.owner, parsed.name, "main");
+			handleAddGitLabRepo(url, parsed.owner, parsed.name);
 		} else if (provider === "AZURE_DEVOPS") {
 			// Pre-fill the PAT form with the URL
 			setAdoRepoUrl(url);
@@ -2428,7 +2458,7 @@ export function IntegrationStatusRow({
 									href={githubAppInstallUrl}
 									target="_blank"
 									rel="noopener noreferrer"
-									className="inline-flex items-center gap-1 text-xs text-primary-ink underline underline-offset-2 hover:text-primary/80"
+									className="inline-flex items-center gap-1 text-xs text-primary-ink underline underline-offset-2 hover:text-primary-hover"
 								>
 									Install the GitHub App
 									<ExternalLink className="h-3 w-3" />
@@ -2441,37 +2471,52 @@ export function IntegrationStatusRow({
 						    contradicting each other on the page the QA-tab banner's
 						    reconnect link sends people to. */}
 						{syncHealth?.status === "FAILED" ? (
+							// One compact line; the provider's full answer is
+							// behind the icon. Choosing another credential is
+							// in the ⋮ menu; Reconnect shows only when it fixes
+							// the failure.
 							<div className="mt-1 flex flex-wrap items-center gap-2">
-								<p className="text-destructive text-xs">
-									Pipeline sync failing
-									{syncHealth.lastError
-										? `: ${syncHealth.lastError}`
-										: ""}
-								</p>
-								{canManageIntegrations && choosesCredential ? (
+								<Popover>
+									<PopoverTrigger asChild>
+										<button
+											type="button"
+											className="inline-flex items-center gap-1 rounded text-amber-700 text-xs hover:underline focus-visible:outline-2 focus-visible:outline-ring dark:text-amber-400"
+											aria-label={`${pipelineSyncSummary(syncHealth.lastErrorKind)}. Show details`}
+										>
+											<AlertTriangleIcon
+												className="size-3.5 shrink-0"
+												aria-hidden="true"
+											/>
+											{pipelineSyncSummary(
+												syncHealth.lastErrorKind,
+											)}
+										</button>
+									</PopoverTrigger>
+									<PopoverContent className="w-96 text-sm">
+										<p className="font-medium">
+											Pipeline sync failing
+										</p>
+										<p className="mt-1 break-words text-muted-foreground text-xs">
+											{syncHealth.lastError ??
+												"The provider gave no reason."}
+										</p>
+										<p className="mt-2 text-muted-foreground text-xs">
+											Code search and indexing are not
+											affected. QA reads CI results
+											through this sync.
+										</p>
+									</PopoverContent>
+								</Popover>
+								{syncHealthReconnectFixes && (
 									<Button
 										type="button"
 										size="sm"
 										variant="outline"
 										className="h-6 px-2 text-xs"
-										onClick={() =>
-											setCredentialDialogOpen(true)
-										}
+										onClick={onReconnect}
 									>
-										Choose credential
+										Reconnect
 									</Button>
-								) : (
-									syncHealthReconnectFixes && (
-										<Button
-											type="button"
-											size="sm"
-											variant="outline"
-											className="h-6 px-2 text-xs"
-											onClick={onReconnect}
-										>
-											Reconnect
-										</Button>
-									)
 								)}
 							</div>
 						) : (
@@ -2540,7 +2585,10 @@ export function IntegrationStatusRow({
 								className="text-muted-foreground"
 								aria-label={`Manage ${repoLabel}`}
 							>
-								<EllipsisVerticalIcon className="h-4 w-4" />
+								<EllipsisVerticalIcon
+									strokeWidth={2.5}
+									className="h-4 w-4"
+								/>
 							</Button>
 						</DropdownMenuTrigger>
 						<DropdownMenuContent align="end" className="w-44">
@@ -2605,7 +2653,7 @@ export function IntegrationStatusRow({
 											className={
 												hasPriorIndex
 													? "text-destructive focus:text-destructive"
-													: "text-emerald-600 dark:text-emerald-400 focus:text-emerald-600 dark:focus:text-emerald-400"
+													: "text-emerald-700 dark:text-emerald-400 focus:text-emerald-700 dark:focus:text-emerald-400"
 											}
 										>
 											{hasPriorIndex ? (
@@ -2739,7 +2787,7 @@ function getCodeIndexStatusMeta({
 					: "";
 			return {
 				icon: CheckCircle2Icon,
-				iconColor: "text-secondary",
+				iconColor: "text-success",
 				text: `Code indexed — agents search the pre-built index.${suffix}`,
 			};
 		}

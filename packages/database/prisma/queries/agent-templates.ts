@@ -106,9 +106,12 @@ export function getBuiltInToolConfig(
 // TEMPLATE QUERIES
 // ============================================
 
-export interface ListAgentTemplatesParams {
-	userId?: string;
-	organizationId?: string | null;
+export interface AgentTemplateAccessContext {
+	userId: string;
+	organizationId: string | null | undefined;
+}
+
+export interface ListAgentTemplatesParams extends AgentTemplateAccessContext {
 	scope?: AgentTemplateScope;
 	category?: AgentTemplateCategory;
 	tags?: string[];
@@ -119,6 +122,26 @@ export interface ListAgentTemplatesParams {
 	offset?: number;
 	sortBy?: "name" | "createdAt" | "updatedAt" | "useCount" | "lastUsedAt";
 	sortOrder?: "asc" | "desc";
+}
+
+function agentTemplateAccessWhere(
+	context: AgentTemplateAccessContext,
+): Prisma.AgentTemplateWhereInput {
+	if (context.organizationId === undefined) {
+		return { id: { in: [] } };
+	}
+
+	return {
+		OR: [
+			{ scope: "SYSTEM" },
+			context.organizationId
+				? {
+						scope: "ORGANIZATION",
+						organizationId: context.organizationId,
+					}
+				: { scope: "USER", userId: context.userId },
+		],
+	};
 }
 
 export async function listAgentTemplates(
@@ -142,34 +165,32 @@ export async function listAgentTemplates(
 		sortOrder = "desc",
 	} = params;
 
-	// Build where clause
+	const filters: Prisma.AgentTemplateWhereInput[] = [
+		agentTemplateAccessWhere({ userId, organizationId }),
+	];
+
+	if (scope) {
+		filters.push({ scope });
+	}
+
+	if (search) {
+		filters.push({
+			OR: [
+				{ name: { contains: search, mode: "insensitive" } },
+				{
+					displayName: { contains: search, mode: "insensitive" },
+				},
+				{
+					description: { contains: search, mode: "insensitive" },
+				},
+			],
+		});
+	}
+
 	const where: Prisma.AgentTemplateWhereInput = {
 		isPublished,
+		AND: filters,
 	};
-
-	// XOR PATTERN: Strict context isolation
-	// ORGANIZATION CONTEXT: SYSTEM + ORG templates only
-	// PERSONAL CONTEXT: SYSTEM + USER templates only
-	if (scope) {
-		where.scope = scope;
-	} else {
-		const scopeConditions: Prisma.AgentTemplateWhereInput[] = [
-			{ scope: "SYSTEM" },
-		];
-
-		if (organizationId) {
-			// ORGANIZATION CONTEXT: SYSTEM + ORG templates only (no personal templates)
-			scopeConditions.push({
-				scope: "ORGANIZATION" as const,
-				organizationId,
-			});
-		} else if (userId) {
-			// PERSONAL CONTEXT: SYSTEM + USER templates only (no org templates)
-			scopeConditions.push({ scope: "USER" as const, userId });
-		}
-
-		where.OR = scopeConditions;
-	}
 
 	if (category) {
 		where.category = category;
@@ -177,14 +198,6 @@ export async function listAgentTemplates(
 
 	if (tags && tags.length > 0) {
 		where.tags = { hasSome: tags };
-	}
-
-	if (search) {
-		where.OR = [
-			{ name: { contains: search, mode: "insensitive" } },
-			{ displayName: { contains: search, mode: "insensitive" } },
-			{ description: { contains: search, mode: "insensitive" } },
-		];
 	}
 
 	if (isFeatured !== undefined) {
@@ -206,15 +219,30 @@ export async function listAgentTemplates(
 
 export async function getAgentTemplate(
 	slugOrId: string,
+	context: AgentTemplateAccessContext,
 ): Promise<AgentTemplate | null> {
 	return db.agentTemplate.findFirst({
 		where: {
-			OR: [{ id: slugOrId }, { slug: slugOrId }],
+			AND: [
+				agentTemplateAccessWhere(context),
+				{ OR: [{ id: slugOrId }, { slug: slugOrId }] },
+			],
 		},
 	});
 }
 
 export async function getAgentTemplateBySlug(
+	slug: string,
+	context: AgentTemplateAccessContext,
+): Promise<AgentTemplate | null> {
+	return db.agentTemplate.findFirst({
+		where: {
+			AND: [agentTemplateAccessWhere(context), { slug }],
+		},
+	});
+}
+
+export async function getAgentTemplateBySlugGlobally(
 	slug: string,
 ): Promise<AgentTemplate | null> {
 	return db.agentTemplate.findUnique({

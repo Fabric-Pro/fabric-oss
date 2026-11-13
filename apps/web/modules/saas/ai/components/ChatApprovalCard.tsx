@@ -179,7 +179,7 @@ export function ChatApprovalCard(props: ChatApprovalCardProps) {
 				<button
 					type="button"
 					onClick={() => setShowFeedback((v) => !v)}
-					className="flex items-center gap-1 text-xs text-orange-600 transition-colors hover:text-orange-800 dark:text-orange-400 dark:hover:text-orange-200"
+					className="flex items-center gap-1 text-xs text-orange-700 transition-colors hover:text-orange-800 dark:text-orange-400 dark:hover:text-orange-200"
 				>
 					{showFeedback ? (
 						<ChevronUp className="h-3 w-3" />
@@ -207,7 +207,7 @@ export function ChatApprovalCard(props: ChatApprovalCardProps) {
 					size="sm"
 					onClick={() => handleRespond(false)}
 					disabled={isSubmitting}
-					className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/30 gap-1.5"
+					className="text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30 gap-1.5"
 				>
 					{submittingAction === "reject" && (
 						<Loader2 className="h-3.5 w-3.5 animate-spin" />

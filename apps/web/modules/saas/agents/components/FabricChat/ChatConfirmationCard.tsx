@@ -63,7 +63,7 @@ export function ChatConfirmationCard({
 						onClick={onDecline}
 						disabled={busy}
 						variant="outline"
-						className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
+						className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950 dark:hover:text-red-300"
 					>
 						<XCircle className="h-4 w-4 mr-2" />
 						Cancel

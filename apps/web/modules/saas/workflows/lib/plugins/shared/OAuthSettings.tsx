@@ -276,7 +276,7 @@ export function OAuthSettings({
 									{providerName} Connected
 								</span>
 							</div>
-							<p className="text-sm text-green-700 dark:text-green-300 mt-1">
+							<p className="text-sm text-green-800 dark:text-green-300 mt-1">
 								{connectionStatus.name ? (
 									<>
 										Signed in as{" "}

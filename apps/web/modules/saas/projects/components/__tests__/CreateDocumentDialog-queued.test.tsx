@@ -131,6 +131,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						input,
 					],
 				},
+				// Mounted with the dialog; nothing here is about web research.
+				webResearchAvailability: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: [
+							"projects.documents.webResearchAvailability",
+							input,
+						],
+						queryFn: () => ({ available: true, missing: [] }),
+					}),
+				},
 			},
 		},
 		prompts: {
@@ -182,7 +192,7 @@ function renderDialog() {
 async function createAndGenerate() {
 	const user = userEvent.setup();
 	renderDialog();
-	await screen.findByRole("checkbox");
+	await screen.findByRole("checkbox", { name: copy.generateWithAiLabel });
 	await user.click(screen.getByRole("button", { name: copy.submitWithAi }));
 }
 

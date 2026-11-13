@@ -6,9 +6,7 @@ import {
 } from "@repo/utils/correlation-id";
 import type { mailTemplates } from "../../emails";
 import type { MailAttachment } from "../../types";
-import { send } from "../provider";
 import type { TemplateId } from "./templates";
-import { getTemplate } from "./templates";
 
 /** Header name for correlation ID */
 const CORRELATION_ID_HEADER = "X-Correlation-ID";
@@ -104,6 +102,13 @@ export async function sendEmail<T extends TemplateId>(
 	let subject = "";
 
 	try {
+		// Loaded on the first send: the auth package imports this module on
+		// every page, and the templates and provider bring react-email,
+		// prettier and the Resend SDK with them.
+		const [{ getTemplate }, { send }] = await Promise.all([
+			import("./templates"),
+			import("../provider"),
+		]);
 		let html: string;
 		let text: string;
 

@@ -80,7 +80,12 @@ vi.mock("@repo/temporal", () => ({
 	})),
 }));
 
-vi.mock("@repo/utils", () => ({
+vi.mock("@repo/utils", async (importOriginal) => ({
+	// The real provider check: which rows go back to the upload's ingest is
+	// what the dispatch tests below are about.
+	isTranscriptFileProvider: (
+		await importOriginal<typeof import("@repo/utils")>()
+	).isTranscriptFileProvider,
 	decryptApiKey: mockDecryptApiKey,
 }));
 
@@ -243,6 +248,23 @@ describe("retryStalled — dispatch", () => {
 			userId: "user-1",
 			organizationId: ORG_ID,
 		});
+	});
+
+	it("reads a transcript from a OneDrive folder again with the same workflow (#3507)", async () => {
+		mockGetContextById.mockResolvedValue(
+			row({
+				type: "MEETING_TRANSCRIPT",
+				metadata: { provider: "onedrive-folder" },
+				s3Path: "projects/proj-1/ctx.vtt",
+			}),
+		);
+		const handler = await loadHandler();
+		const result = await handler({ input, context: orgCtx });
+
+		expect(result.dispatch).toBe("transcript");
+		expect(mockTemporalWorkflowStart.mock.calls[0]?.[0]).toBe(
+			"uploadedTranscriptIngestWorkflow",
+		);
 	});
 
 	it("treats a Google Doc as a stored original, not a live integration", async () => {

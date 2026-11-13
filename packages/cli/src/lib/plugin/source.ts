@@ -10,6 +10,10 @@
  * network. The cache is checked against that identity on every read: a damaged
  * or planted file is a miss, never an instruction.
  *
+ * A Coding Instructions set narrows the read to the set's folder
+ * (`instruction-sets.ts`): only its files are fetched, and every path the
+ * read returns is relative to that folder, as the set's plugin carries it.
+ *
  * A plugin that silently lost a skill would make a session worse than no
  * update at all, so anything the read cannot complete (a tree the server
  * reports as partial, a file that cannot be fetched) fails the render. Claude
@@ -31,6 +35,10 @@ import type {
 	InstructionCatalogEntry,
 	InstructionSourceIdentity,
 } from "./instruction-access.js";
+import {
+	type InstructionSetScope,
+	pathInInstructionSet,
+} from "./instruction-sets.js";
 import { type InstructionFile, pluginPathFor } from "./layout.js";
 
 const READ_BATCH_SIZE = 200;
@@ -68,6 +76,24 @@ export interface ReadInstructionsInput {
 	timeoutMs: number;
 	signal?: AbortSignal;
 	fetchImpl?: typeof fetch;
+	/** The Coding Instructions set to read; absent or `null` for the whole source. */
+	set?: InstructionSetScope | null;
+}
+
+/**
+ * The entries that belong to the set, each with its path relative to the
+ * set's folder. The set's folder itself (an empty relative path) is no file.
+ */
+function inSet<T extends { path: string }>(
+	entries: readonly T[],
+	set: InstructionSetScope | null | undefined,
+): Array<{ entry: T; path: string }> {
+	return entries.flatMap((entry) => {
+		const relative = pathInInstructionSet(entry.path, set ?? null);
+		return relative === null || relative === ""
+			? []
+			: [{ entry, path: relative }];
+	});
 }
 
 function blobPath(cacheDirectory: string, key: string): string {
@@ -125,14 +151,21 @@ async function readDirect(
 		generation: listing.generation,
 		commitSha: listing.commitSha,
 	};
-	const listed = listing.files.map((file) => ({
-		path: file.path,
+	const ours = inSet(listing.files, input.set);
+	const listed = ours.map(({ entry: file, path: relative }) => ({
+		path: relative,
 		size: file.size,
 		kind: file.kind,
 		blobId: file.blobId,
 		mode: file.mode,
 	}));
-	const wanted = listing.files.filter((file) => isWantedPath(file.path));
+	const wanted = ours.filter(({ path: relative }) => isWantedPath(relative));
+	/** A source path's path within the set: what the read returns. */
+	const local = new Map(
+		ours.map(({ entry, path: relative }) => [entry.path, relative]),
+	);
+	const localPath = (sourcePath: string) =>
+		local.get(sourcePath) ?? sourcePath;
 	const files: InstructionFile[] = [];
 	const skipped: string[] = [];
 	const missing: DirectInstructionRepositoryFile[] = [];
@@ -143,7 +176,7 @@ async function readDirect(
 		throw new Error("The repository returned unsafe or colliding paths.");
 	}
 
-	for (const file of wanted) {
+	for (const { entry: file } of wanted) {
 		input.signal?.throwIfAborted();
 		const blobId = file.blobId;
 		if (blobId === undefined || objectFormatOf(blobId) === null) {
@@ -159,7 +192,7 @@ async function readDirect(
 		);
 		if (hit !== null) {
 			files.push({
-				path: file.path,
+				path: localPath(file.path),
 				bytes: hit,
 				mode: modeOf(file.mode),
 			});
@@ -202,7 +235,7 @@ async function readDirect(
 				}
 				const read = result.read;
 				if (read.state === "binary" || read.state === "tooLarge") {
-					skipped.push(file.path);
+					skipped.push(localPath(file.path));
 					continue;
 				}
 				if (read.state !== "found" || typeof read.text !== "string") {
@@ -226,7 +259,11 @@ async function readDirect(
 					`git-${file.blobId}`,
 					bytes,
 				);
-				files.push({ path: file.path, bytes, mode: modeOf(file.mode) });
+				files.push({
+					path: localPath(file.path),
+					bytes,
+					mode: modeOf(file.mode),
+				});
 			}
 			if (page.nextIndex === null) {
 				break;
@@ -267,16 +304,22 @@ async function readUploaded(
 		};
 	}
 	const digest = published.snapshot.digest;
-	const listed = (published.manifest ?? []).map((entry) => ({
-		path: entry.path,
+	const ours = inSet(published.manifest ?? [], input.set);
+	const listed = ours.map(({ entry, path: relative }) => ({
+		path: relative,
 		size: entry.size,
 		kind: entry.kind,
 		sha256: entry.sha256,
 		mode: entry.mode,
 	}));
-	const manifest = (published.manifest ?? []).filter((entry) =>
-		isWantedPath(entry.path),
+	const local = new Map(
+		ours.map(({ entry, path: relative }) => [entry.path, relative]),
 	);
+	const localPath = (sourcePath: string) =>
+		local.get(sourcePath) ?? sourcePath;
+	const manifest = ours
+		.filter(({ path: relative }) => isWantedPath(relative))
+		.map(({ entry }) => entry);
 	const files: InstructionFile[] = [];
 	const missing: typeof manifest = [];
 	for (const entry of manifest) {
@@ -288,7 +331,11 @@ async function readUploaded(
 		if (hit === null) {
 			missing.push(entry);
 		} else {
-			files.push({ path: entry.path, bytes: hit, mode: entry.mode });
+			files.push({
+				path: localPath(entry.path),
+				bytes: hit,
+				mode: entry.mode,
+			});
 		}
 	}
 	if (missing.length > 0) {
@@ -311,7 +358,7 @@ async function readUploaded(
 					bytes,
 				);
 				files.push({
-					path: file.path,
+					path: localPath(file.path),
 					bytes,
 					mode: byPath.get(file.path)?.mode ?? null,
 				});

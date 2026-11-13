@@ -700,7 +700,7 @@ export function AuditLogExplorer() {
 					<p className="max-w-3xl text-sm leading-6 text-muted-foreground">
 						{t("subtitle")}
 					</p>
-					<p className="max-w-4xl text-sm leading-6 text-muted-foreground/90">
+					<p className="max-w-4xl text-sm leading-6 text-muted-foreground">
 						{t("explanation")}
 					</p>
 				</div>
@@ -724,13 +724,13 @@ export function AuditLogExplorer() {
 							</h2>
 						</div>
 						{connected ? (
-							<div className="flex items-center gap-2 rounded-full border border-secondary/30 bg-secondary/10 px-3 py-1.5 text-xs text-secondary">
+							<div className="flex items-center gap-2 rounded-full border border-success/30 bg-success/10 px-3 py-1.5 text-xs text-success">
 								<PlugZapIcon
 									aria-hidden="true"
 									className="size-3.5"
 								/>
 								<span data-testid="explorer-tenant-summary">
-									<code className="font-mono text-secondary">
+									<code className="font-mono text-success">
 										{baseUrl}
 									</code>
 								</span>
@@ -883,12 +883,12 @@ export function AuditLogExplorer() {
 					className="flex min-w-0 flex-col gap-4"
 				>
 					<div
-						className="inline-flex w-fit items-center gap-2 rounded-full border border-secondary/40 bg-card px-3 py-1.5 text-xs"
+						className="inline-flex w-fit items-center gap-2 rounded-full border border-success/40 bg-card px-3 py-1.5 text-xs"
 						data-testid="explorer-connected-url"
 					>
 						<PlugZapIcon
 							aria-hidden="true"
-							className="size-3.5 text-secondary"
+							className="size-3.5 text-success"
 						/>
 						<span className="uppercase tracking-wider text-muted-foreground">
 							Connected to

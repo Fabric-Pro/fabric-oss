@@ -1,5 +1,11 @@
 import { ORPCError } from "@orpc/server";
-import { countNewsletterSends, db, listNewsletterSends } from "@repo/database";
+import {
+	countNewsletterSends,
+	countPublishedNewsletterSendImages,
+	db,
+	getNewsletterIncompleteScanReasons,
+	listNewsletterSends,
+} from "@repo/database";
 import { z } from "zod";
 import { assertInputOrgMatchesProject } from "../../../lib/authorized-project-tenant";
 import {
@@ -42,5 +48,22 @@ export const listSendsProcedure = tenantProtectedProcedure
 			}),
 			countNewsletterSends(input.projectId, input.status),
 		]);
-		return { sends, total };
+		// Why a scan-incomplete send was skipped: which repositories failed.
+		// Read separately so the list projection keeps excluding `errorMessage`
+		// for every other send.
+		// How many of a delivered send's images are still public, so the row
+		// can offer to take them down.
+		const sendIds = sends.map((send) => send.id);
+		const [reasons, publishedImages] = await Promise.all([
+			getNewsletterIncompleteScanReasons(input.projectId, sendIds),
+			countPublishedNewsletterSendImages(input.projectId, sendIds),
+		]);
+		return {
+			sends: sends.map((send) => ({
+				...send,
+				incompleteScanReason: reasons.get(send.id) ?? null,
+				publishedImageCount: publishedImages.get(send.id) ?? 0,
+			})),
+			total,
+		};
 	});

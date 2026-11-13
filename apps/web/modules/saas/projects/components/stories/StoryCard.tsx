@@ -1084,8 +1084,10 @@ function StoryCardImpl({
 							style={{ order: orderOf("title") }}
 							className={cn(
 								"inline-flex items-center gap-1 text-xs text-muted-foreground",
+								// Deferred reads as struck through, not faded: a
+								// 60% fade took the label to 2.7:1 (Fizzy #1444).
 								story.deliveryTrack === "DEFER" &&
-									"line-through opacity-60",
+									"line-through",
 							)}
 						>
 							{tRow("track")}: {tRow(story.deliveryTrack)}
@@ -1237,7 +1239,7 @@ function StoryCardImpl({
 				<Tooltip>
 					<TooltipTrigger asChild>
 						<span
-							className="flex shrink-0 items-center text-secondary"
+							className="flex shrink-0 items-center text-success"
 							role="img"
 							aria-label={pmTerminalTooltip}
 						>
@@ -1288,7 +1290,7 @@ function StoryCardImpl({
 										e.stopPropagation();
 										setTasksExpanded(true);
 									}}
-									className="flex shrink-0 items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15"
+									className="flex shrink-0 items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary-active transition-colors hover:bg-primary/15"
 								>
 									<Loader2Icon className="size-3 animate-spin" />
 									{workingCount} agent
@@ -1337,7 +1339,7 @@ function StoryCardImpl({
 						e.stopPropagation();
 						setTasksExpanded(true);
 					}}
-					className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15"
+					className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary-active transition-colors hover:bg-primary/15"
 				>
 					{taskSessionSummary.activeCount} task session
 					{taskSessionSummary.activeCount === 1 ? "" : "s"}
@@ -1483,7 +1485,7 @@ function StoryCardImpl({
 								<br />
 								{new Date(story.createdAt).toLocaleString()}
 								<br />
-								<span className="text-muted-foreground/80">
+								<span className="text-muted-foreground">
 									{new Date(story.createdAt).toUTCString()}
 								</span>
 							</p>
@@ -1498,13 +1500,13 @@ function StoryCardImpl({
 										story.lastEditedAt,
 									).toLocaleString()}
 									<br />
-									<span className="text-muted-foreground/80">
+									<span className="text-muted-foreground">
 										{new Date(
 											story.lastEditedAt,
 										).toUTCString()}
 									</span>
 									<br />
-									<span className="text-muted-foreground/80">
+									<span className="text-muted-foreground">
 										{formatLastEditSource(
 											story.lastEditedSource,
 											pmToolName ?? null,
@@ -1512,7 +1514,7 @@ function StoryCardImpl({
 									</span>
 								</p>
 							) : (
-								<p className="text-muted-foreground/80">
+								<p className="text-muted-foreground">
 									No edit recorded yet
 								</p>
 							)}
@@ -2117,7 +2119,10 @@ function StoryCardImpl({
 												}}
 												aria-label="Story actions"
 											>
-												<MoreHorizontalIcon className="size-3.5" />
+												<MoreHorizontalIcon
+													strokeWidth={2.5}
+													className="size-3.5"
+												/>
 											</Button>
 										</DropdownMenuTrigger>
 									</TooltipTrigger>
@@ -2399,7 +2404,7 @@ function StoryCardImpl({
 															);
 														}}
 													>
-														<SparklesIcon className="size-4 mr-2 text-secondary" />
+														<SparklesIcon className="size-4 mr-2 text-success" />
 														<span>
 															Re-assess priority
 															with AI
@@ -2677,7 +2682,8 @@ function getAgentStatusDisplay(
 			return {
 				label: "WORKING",
 				icon: <Loader2Icon className="size-3 animate-spin" />,
-				className: "bg-primary/10 text-primary border-primary/20",
+				className:
+					"bg-primary/10 text-primary-active border-primary/20",
 				dotClass: "bg-primary motion-safe:animate-pulse",
 			};
 		case "paused":
@@ -2852,7 +2858,7 @@ function TaskPreviewItem({
 										rel="noopener noreferrer"
 										aria-label="Open workspace session"
 										onClick={(e) => e.stopPropagation()}
-										className="text-muted-foreground/60 hover:text-foreground"
+										className="text-muted-foreground hover:text-foreground"
 									>
 										<ExternalLinkIcon className="size-3" />
 									</a>
@@ -2871,7 +2877,7 @@ function TaskPreviewItem({
 										rel="noopener noreferrer"
 										aria-label="Open linked Vibe project"
 										onClick={(e) => e.stopPropagation()}
-										className="text-muted-foreground/60 hover:text-foreground"
+										className="text-muted-foreground hover:text-foreground"
 									>
 										<FolderKanbanIcon className="size-3" />
 									</a>
@@ -2890,7 +2896,7 @@ function TaskPreviewItem({
 										rel="noopener noreferrer"
 										aria-label="Open linked Vibe issue"
 										onClick={(e) => e.stopPropagation()}
-										className="text-muted-foreground/60 hover:text-foreground"
+										className="text-muted-foreground hover:text-foreground"
 									>
 										<GitPullRequestArrowIcon className="size-3" />
 									</a>

@@ -895,6 +895,7 @@ function CompanySourceRow({
 									data-testid="company-source-more"
 								>
 									<MoreVerticalIcon
+										strokeWidth={2.5}
 										className="size-4"
 										aria-hidden="true"
 									/>

@@ -1460,7 +1460,10 @@ function ReadinessGapRow({
 								className="size-7 p-0 text-muted-foreground hover:text-foreground"
 								aria-label={t("panel.itemActions")}
 							>
-								<MoreHorizontalIcon className="size-4" />
+								<MoreHorizontalIcon
+									strokeWidth={2.5}
+									className="size-4"
+								/>
 							</Button>
 						</DropdownMenuTrigger>
 						<DropdownMenuContent align="end">

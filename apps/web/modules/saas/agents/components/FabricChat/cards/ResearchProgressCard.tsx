@@ -40,42 +40,42 @@ const PHASE_MAP: Record<string, PhaseDisplay> = {
 	analyzing_complexity: {
 		label: "Understanding your question...",
 		icon: <Loader2 className="h-4 w-4 animate-spin" />,
-		color: "text-blue-600",
+		color: "text-blue-600 dark:text-blue-400",
 	},
 	awaiting_clarification: {
 		label: "Need your input",
 		icon: <HelpCircle className="h-4 w-4" />,
-		color: "text-amber-600",
+		color: "text-amber-700 dark:text-amber-500",
 	},
 	decomposing: {
 		label: "Planning research approach...",
 		icon: <Loader2 className="h-4 w-4 animate-spin" />,
-		color: "text-violet-600",
+		color: "text-violet-600 dark:text-violet-400",
 	},
 	executing_subagents: {
 		label: "Researching",
 		icon: <Loader2 className="h-4 w-4 animate-spin" />,
-		color: "text-blue-600",
+		color: "text-blue-600 dark:text-blue-400",
 	},
 	aggregating: {
 		label: "Synthesizing findings...",
 		icon: <Loader2 className="h-4 w-4 animate-spin" />,
-		color: "text-emerald-600",
+		color: "text-emerald-700 dark:text-emerald-500",
 	},
 	evaluating: {
 		label: "Checking completeness...",
 		icon: <Loader2 className="h-4 w-4 animate-spin" />,
-		color: "text-emerald-600",
+		color: "text-emerald-700 dark:text-emerald-500",
 	},
 	iterating: {
 		label: "Refining research...",
 		icon: <Loader2 className="h-4 w-4 animate-spin" />,
-		color: "text-orange-600",
+		color: "text-orange-700 dark:text-orange-500",
 	},
 	completed: {
 		label: "Research complete",
 		icon: <CheckCircle2 className="h-4 w-4" />,
-		color: "text-emerald-600",
+		color: "text-emerald-700 dark:text-emerald-500",
 	},
 	failed: {
 		label: "Research failed",

@@ -153,7 +153,7 @@ export function SkillSuggestionChips({
 					key={suggestion.skillId}
 					variant="secondary"
 					className={cn(
-						"text-xs cursor-pointer rounded-full gap-1.5 pr-1 transition-all hover:bg-primary/10 hover:text-primary",
+						"text-xs cursor-pointer rounded-full gap-1.5 pr-1 transition-all hover:bg-primary/10 hover:text-primary-active",
 						executingId === suggestion.skillId && "opacity-60",
 					)}
 					onClick={() => handleExecute(suggestion)}

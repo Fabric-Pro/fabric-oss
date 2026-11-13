@@ -10,9 +10,10 @@ import { z } from "zod";
 import {
 	Permissions,
 	requirePermission,
-	resolveOrganizationId,
+	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { resolveProjectOrganizationId } from "../../projects/lib/project-organization";
 import {
 	isStoryRunnable,
 	loadStoryReadiness,
@@ -26,7 +27,7 @@ import {
  * are not queued; they are returned in `skipped` with the gap list.
  */
 export const pushToKanban = tenantProtectedProcedure
-	.use(requirePermission(Permissions.STORY_UPDATE))
+	.use(requireProjectPermission(Permissions.STORY_UPDATE))
 	.route({
 		method: "POST",
 		path: "/kanban/sync/push",
@@ -62,18 +63,10 @@ export const pushToKanban = tenantProtectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
-		const organizationId = resolveOrganizationId(
+		const organizationId = await resolveProjectOrganizationId(
 			input.organizationId,
-			context.session,
+			input.projectId,
 		);
-
-		// Verify project access
-		const canView = await hasProjectAccess(input.projectId, user.id);
-		if (!canView) {
-			throw new ORPCError("FORBIDDEN", {
-				message: "You don't have permission to view this project",
-			});
-		}
 
 		// Fetch stories to push (only those not already in queue with pending status)
 		const candidates = await db.userStory.findMany({
@@ -127,7 +120,7 @@ export const pushToKanban = tenantProtectedProcedure
 					data: {
 						projectId: input.projectId,
 						storyId: story.id,
-						organizationId: organizationId ?? null,
+						organizationId,
 						createdById: user.id,
 						status: "PENDING",
 						context: {
@@ -187,10 +180,6 @@ export const pullFromKanban = tenantProtectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
-		const _organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
 
 		// Verify project access
 		const canView = await hasProjectAccess(input.projectId, user.id);

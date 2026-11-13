@@ -5,8 +5,8 @@ import {
 	updatePurchase,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import { withProviderBreaker } from "@repo/observability";
-import Stripe from "stripe";
+import { withProviderBreaker } from "@repo/observability/breakers";
+import type Stripe from "stripe";
 import { setCustomerIdToEntity } from "../../src/lib/customer";
 import type {
 	CancelSubscription,
@@ -18,7 +18,9 @@ import type {
 
 let stripeClient: Stripe | null = null;
 
-export function getStripeClient() {
+// The SDK loads on the first Stripe call: the auth package imports this
+// provider on every page, and only billing actions and the webhook use it.
+export async function getStripeClient(): Promise<Stripe> {
 	if (stripeClient) {
 		return stripeClient;
 	}
@@ -29,13 +31,14 @@ export function getStripeClient() {
 		throw new Error("Missing env variable STRIPE_SECRET_KEY");
 	}
 
-	stripeClient = new Stripe(stripeSecretKey);
+	const { default: StripeSdk } = await import("stripe");
+	stripeClient = new StripeSdk(stripeSecretKey);
 
 	return stripeClient;
 }
 
 export const createCheckoutLink: CreateCheckoutLink = async (options) => {
-	const stripeClient = getStripeClient();
+	const stripeClient = await getStripeClient();
 	const {
 		type,
 		productId,
@@ -93,7 +96,7 @@ export const createCustomerPortalLink: CreateCustomerPortalLink = async ({
 	customerId,
 	redirectUrl,
 }) => {
-	const stripeClient = getStripeClient();
+	const stripeClient = await getStripeClient();
 
 	const response = await withProviderBreaker(
 		"stripe",
@@ -112,7 +115,7 @@ export const setSubscriptionSeats: SetSubscriptionSeats = async ({
 	id,
 	seats,
 }) => {
-	const stripeClient = getStripeClient();
+	const stripeClient = await getStripeClient();
 
 	const subscription = await withProviderBreaker(
 		"stripe",
@@ -137,7 +140,7 @@ export const setSubscriptionSeats: SetSubscriptionSeats = async ({
 };
 
 export const cancelSubscription: CancelSubscription = async (id) => {
-	const stripeClient = getStripeClient();
+	const stripeClient = await getStripeClient();
 
 	await withProviderBreaker("stripe", "subscription_cancel", () =>
 		stripeClient.subscriptions.cancel(id),
@@ -145,7 +148,7 @@ export const cancelSubscription: CancelSubscription = async (id) => {
 };
 
 export const webhookHandler: WebhookHandler = async (req) => {
-	const stripeClient = getStripeClient();
+	const stripeClient = await getStripeClient();
 
 	if (!req.body) {
 		return new Response("Invalid request.", {

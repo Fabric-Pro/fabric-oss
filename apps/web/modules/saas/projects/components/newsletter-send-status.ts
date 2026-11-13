@@ -117,6 +117,31 @@ export function formatChatDeliveryStatus(status: string): {
 	}
 }
 
+/**
+ * The recipient line in the "Send now" dialog. `count` is the server preview of
+ * who the send would email after member and organization reconciliation;
+ * `undefined` while it loads, `null` when it could not be read. A send held
+ * for review emails nobody until it is approved, so the line says so.
+ */
+export function describeSendRecipients(
+	count: number | null | undefined,
+	heldForReview = false,
+): string {
+	if (count === undefined) {
+		return "Counting recipients…";
+	}
+	if (count === null) {
+		return "Couldn't count the recipients.";
+	}
+	if (count === 0) {
+		return "Nobody will be emailed: this newsletter has no active subscribers.";
+	}
+	const people = count === 1 ? "1 person" : `${count} people`;
+	return heldForReview
+		? `Held for review first. Approving it emails ${people}.`
+		: `Will email ${people}.`;
+}
+
 /** True if any repo integration is not ACTIVE (expired/error/disconnected). */
 export function hasExpiredRepoIntegrations(
 	integrations: ReadonlyArray<{ status: string }>,

@@ -61,6 +61,7 @@ import {
 	INSTRUCTIONS_BUCKET as BUCKET,
 	pruneProjectInstructionSnapshots,
 } from "./lib/instruction-prune";
+import { startExternalNotificationDelivery } from "./lib/notification-delivery-start";
 
 /**
  * Caps a gate's rejection list so a pathological upload (thousands of
@@ -2283,16 +2284,17 @@ export async function publishInstructionSnapshotActivity(
 	});
 	if (r.published && r.changed) {
 		// After the commit, only for the call that moved the pointer, and at
-		// most once per snapshot (the writer claims `publishNotifiedAt`). In-app
-		// only from here: external delivery is started by the API's writers,
-		// which this worker cannot import. Never throws.
-		await createInstructionPublishedNotifications({
+		// most once per snapshot (the writer claims `publishNotifiedAt`). The
+		// rows it wrote then go out by email/webhook where the member opted
+		// in, as the API's publish paths do. Neither call throws.
+		const notified = await createInstructionPublishedNotifications({
 			snapshotId: ref.snapshotId,
 			projectId: ref.projectId,
 			organizationId: ref.organizationId,
 			actorUserId: unscanned ? snapshot.userId : ref.userId,
 			via: "automatic",
 		});
+		await startExternalNotificationDelivery(notified);
 	}
 	if (unscanned) {
 		return r.published

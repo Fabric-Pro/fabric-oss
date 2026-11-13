@@ -1,3 +1,7 @@
+import {
+	type StoredResultEntry,
+	storedResultCatalog,
+} from "../../../workflows/orchestrator/advisor-result-reuse";
 /**
  * Run Agent Iteration Activity
  *
@@ -350,6 +354,8 @@ export interface RunAgentIterationInput {
 	 * frame-forcing check.
 	 */
 	turnNotice?: string;
+	/** Optional untrusted catalog, resent after cache marking; absent on older workflows. */
+	advisorStoredResults?: StoredResultEntry[];
 	/**
 	 * The chat turn this round belongs to. When set, every stream attempt
 	 * (the in-activity retry included) first asks the turn record whether
@@ -1237,8 +1243,14 @@ async function runAgentIterationRound(
 	// A user message after tool results is valid for every provider path:
 	// Anthropic merges it into the tool-result user turn after the results,
 	// OpenAI accepts a user message after tool messages.
-	if (input.turnNotice) {
-		messages.push({ role: "user", content: input.turnNotice });
+	const callNotice = [
+		input.turnNotice,
+		storedResultCatalog(input.advisorStoredResults),
+	]
+		.filter(Boolean)
+		.join("\n\n");
+	if (callNotice) {
+		messages.push({ role: "user", content: callNotice });
 	}
 
 	// Debug: Log the last few messages to verify tool results are included
@@ -1427,7 +1439,7 @@ async function runAgentIterationRound(
 		if (
 			finalizationSizing &&
 			aiSdkToolCount === 0 &&
-			!input.turnNotice &&
+			!callNotice &&
 			(omitFinalizationImages ||
 				(attachedDocumentIds.length === 0 && !hasImageAttachments))
 		) {

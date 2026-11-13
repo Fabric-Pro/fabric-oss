@@ -463,3 +463,15 @@ describe("assessToolCallRisk", () => {
 		});
 	});
 });
+
+it("does not classify an image prompt with clear labels as deletion", () => {
+	expect(
+		assessToolCallRisk({
+			name: "fabric_generate_image",
+			args: {
+				prompt: "Simple, clean sample network architecture diagram ... clear readable labels, no clutter.",
+				aspectRatio: "4:3",
+			},
+		}),
+	).toMatchObject({ riskLevel: "low", requiresApproval: false });
+});

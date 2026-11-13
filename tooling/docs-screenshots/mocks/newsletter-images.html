@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fabric release notes newsletter, images in highlights (docs mock)</title>
+<!-- Real Inter + IBM Plex Mono, the app's --font-sans / --font-mono (Document.tsx). -->
+<link rel="stylesheet" href="../.fonts/fonts.css">
+<style>
+/* Tokens copied verbatim from tooling/tailwind/theme.css :root (light). */
+:root{
+  --border: #dce0e5; --input: #7d90a0; --ring: #bc3e0b;
+  --background: #ffffff; --foreground: #11171c;
+  --primary: #bc3e0b; --primary-foreground: #ffffff;
+  --secondary: #f1f3f6; --secondary-foreground: #11171c;
+  --destructive: #b8223b; --success: #24773f;
+  --muted: #f1f3f6; --muted-foreground: #4f6170;
+  --accent: #e8edf2; --accent-foreground: #11171c;
+  --popover: #ffffff; --popover-foreground: #11171c;
+  --card: #ffffff; --card-foreground: #11171c;
+  --highlight: #8a5a00;
+  --radius: 0.25rem;
+  --font-sans: Inter, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+/* globals.css @layer base body: 13px / 20px. */
+body{background:var(--background);color:var(--foreground);font-family:var(--font-sans);
+  font-size:13px;line-height:20px;-webkit-font-smoothing:antialiased;padding:24px 0;width:880px}
+body > * + *{margin-top:32px}
+.shot{background:var(--background)}
+#shot-settings{width:720px;padding:16px}
+#shot-review,#shot-image{width:816px;padding:24px}
+/* svg.lucide { stroke-width: 1.5px } from globals.css */
+svg.i{width:16px;height:16px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.5px;
+  stroke-linecap:round;stroke-linejoin:round}
+.muted{color:var(--muted-foreground)}
+.text-xs{font-size:12px;line-height:16px}
+.text-sm{font-size:13px;line-height:20px}
+
+/* --- Label (label.tsx): text-sm font-medium leading-tight --- */
+.label{display:block;font-size:13px;line-height:1.25;font-weight:500;color:var(--foreground)}
+.label.normal{font-weight:400}
+.space-15 > * + *{margin-top:6px}
+
+/* --- Switch (switch.tsx), checked: h-5 w-9 border-2 bg-primary, thumb h-4 w-4 translate-x-4 --- */
+.switch{display:inline-flex;height:20px;width:36px;flex-shrink:0;align-items:center;border-radius:9999px;
+  border:2px solid transparent;background:var(--primary)}
+.switch .thumb{display:block;width:16px;height:16px;border-radius:9999px;background:var(--background);
+  box-shadow:0 1px 2px 0 rgb(0 0 0 / .05);transform:translateX(16px)}
+
+/* --- SelectTrigger (select.tsx) --- */
+.select{display:flex;height:36px;width:100%;align-items:center;justify-content:space-between;gap:8px;
+  border-radius:var(--radius);background:var(--background);border:1px solid var(--input);padding:8px 12px;
+  font:400 13px/20px var(--font-sans);color:var(--foreground)}
+.select > span{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.select svg.i{opacity:.5}
+.max-w-sm{max-width:384px}
+
+/* --- Input / Textarea (input.tsx, textarea.tsx) --- */
+.input{display:flex;height:36px;width:100%;align-items:center;border-radius:var(--radius);background:var(--background);
+  border:1px solid var(--input);padding:6px 12px;font:400 13px/20px var(--font-sans);color:var(--foreground)}
+.textarea{display:block;min-height:80px;width:100%;border-radius:var(--radius);background:var(--background);
+  border:1px solid var(--input);padding:8px 12px;font:400 13px/20px var(--font-sans);color:var(--foreground)}
+
+/* --- Checkbox (checkbox.tsx): h-4 w-4 rounded-sm border-input; checked = primary --- */
+.cb{display:grid;place-content:center;width:16px;height:16px;flex-shrink:0;border-radius:3px;
+  border:1px solid var(--input);background:var(--background)}
+.cb.on{border-color:var(--primary);background:var(--primary);color:var(--primary-foreground)}
+.cb svg.i{width:16px;height:16px}
+.mt-05{margin-top:2px}
+
+/* --- RadioGroupItem (radio-group.tsx) --- */
+.radios{display:grid;gap:8px}
+.radio-row{display:flex;align-items:center;gap:8px}
+.radio{display:flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:9999px;
+  border:1px solid var(--input);background:var(--background);color:var(--primary)}
+.radio.on{border-color:var(--primary)}
+.radio .dot{width:10px;height:10px;border-radius:9999px;background:currentColor}
+
+/* --- Button (button.tsx) --- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;
+  border-radius:var(--radius);font:500 13px/20px var(--font-sans);border:0;background:transparent;
+  color:var(--foreground);flex-shrink:0;text-decoration:none}
+.btn.md{height:36px;padding:8px 14px}
+.btn.sm{height:32px;gap:6px;padding:0 12px}
+.btn.sm.has-svg{padding:0 10px}
+.btn.outline{border:1px solid var(--input);background:var(--background)}
+.btn.primary{background:var(--primary);color:var(--primary-foreground)}
+.btn[disabled]{opacity:.5}
+
+/* --- DialogContent (dialog.tsx): rounded-lg border bg-popover p-6 gap-4 shadow-elevated --- */
+.dialog{position:relative;display:grid;gap:16px;width:100%;max-width:768px;border:1px solid var(--border);
+  border-radius:calc(var(--radius) + 2px);background:var(--popover);color:var(--popover-foreground);padding:24px;
+  box-shadow:0 1px 2px 0 rgb(0 0 0 / .05),0 8px 24px -4px rgb(0 0 0 / .1)}
+.dialog.flush{display:flex;flex-direction:column;gap:0;padding:0;overflow:hidden}
+.close{position:absolute;right:8px;top:8px;display:flex;width:44px;height:44px;align-items:center;
+  justify-content:center;border-radius:3px;opacity:.7;color:var(--foreground)}
+.dheader{display:flex;flex-direction:column;padding-right:32px}
+.dheader > * + *{margin-top:6px}
+.dtitle{font-size:18px;line-height:1;font-weight:600;letter-spacing:-0.025em}
+.dtitle.xl{font-size:20px}
+.ddesc{font-size:13px;line-height:20px;color:var(--muted-foreground)}
+
+/* ===== NewsletterImagesSetting ===== */
+.setting{border:1px solid var(--border);border-radius:calc(var(--radius) + 2px);padding:16px;background:var(--card)}
+.setting .top{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px}
+.setting .top > div{min-width:0}
+.setting .name{font-weight:500;color:var(--foreground)}
+.setting .picker{margin-top:16px}
+
+/* ===== NewsletterReviewDialog ===== */
+/* px-6 pt-6 pb-4; DialogHeader's [data-has-close] pr-8 still wins on the right. */
+.rv-header{border-bottom:1px solid var(--border);padding:24px 32px 16px 24px}
+.eyebrow{display:flex;align-items:center;gap:8px}
+.eyebrow .bar{width:3px;height:12px;flex-shrink:0;background:var(--primary)}
+.eyebrow span:last-child{font-size:11px;line-height:16px;font-weight:500;color:var(--muted-foreground);
+  text-transform:uppercase;letter-spacing:.2em}
+.rv-list{padding:16px 24px}
+.rv-col{max-width:640px;margin:0 auto}
+.rv-col > * + *{margin-top:16px}
+.intro{font-size:13px;line-height:1.625;color:var(--foreground)}
+.release > * + *{margin-top:10px}
+.release-head{display:flex;align-items:center;gap:12px}
+.tag{border-radius:9999px;background:var(--muted);padding:4px 8px;font-size:12px;line-height:16px;
+  font-weight:600;color:var(--primary)}
+.rule{height:1px;flex:1;background:var(--border)}
+.rows{list-style:none}
+.rows > * + *{margin-top:10px}
+.hl{border:1px solid var(--border);border-radius:calc(var(--radius) + 2px);background:var(--card)}
+.hl .head{display:flex;align-items:flex-start;gap:8px;padding:14px}
+.grip{margin-left:-4px;flex-shrink:0;border-radius:var(--radius);padding:2px;color:var(--muted-foreground);display:flex}
+.hl .body{min-width:0;flex:1;font-size:13px;line-height:20px}
+.hl .body strong{font-weight:700}
+.hl .body .d{margin-top:2px;color:var(--muted-foreground)}
+.hl .imgs{display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px;padding:0 14px 14px 60px}
+.dashed-btn{display:flex;align-items:center;justify-content:center;gap:8px;border-radius:var(--radius);
+  border:1px dashed var(--border);padding:8px 12px;background:none;font:400 13px/20px var(--font-sans);
+  color:var(--muted-foreground)}
+.rv-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;
+  border-top:1px solid var(--border);padding:16px 24px}
+.rv-foot .actions{display:flex;flex-wrap:wrap;gap:8px}
+
+/* ===== NewsletterReviewImageTile ===== */
+.tile{display:flex;width:260px;max-width:100%;flex-direction:column;gap:6px}
+.tile .frame{position:relative;display:block;width:100%;aspect-ratio:600/340;overflow:hidden;border-radius:var(--radius);
+  border:1px solid var(--border);background:var(--muted);padding:0}
+.tile .frame.included{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary)}
+.tile .frame.failed{border-style:dashed}
+.tile .frame svg.shot-img{display:block;width:100%;height:100%}
+.tile .frame .faded{opacity:.5}
+.tile .empty{display:flex;width:100%;height:100%;align-items:center;justify-content:center;color:var(--muted-foreground)}
+.tile .empty svg.i{width:20px;height:20px}
+.tile .line{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.tile .line .left{display:flex;align-items:center;gap:8px}
+.tile .reason{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:13px;line-height:20px;
+  color:var(--muted-foreground)}
+
+/* ===== NewsletterReviewImageDialog ===== */
+.im-body > * + *{margin-top:20px}
+.im-frame{display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:var(--radius);
+  border:1px solid var(--border);background:var(--muted)}
+.im-frame svg.shot-img{display:block;width:100%;height:auto}
+.row-2{display:flex;align-items:center;gap:8px}
+.btn-row{display:flex;flex-wrap:wrap;gap:8px}
+.prompt > * + *{margin-top:6px}
+</style>
+</head>
+<body>
+<!-- lucide-react icon geometry, copied from the installed package. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-chevrons-up-down" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+  <symbol id="i-grip-vertical" viewBox="0 0 24 24"><circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z"/><circle cx="12" cy="13" r="3"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></symbol>
+  <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></symbol>
+  <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></symbol>
+  <symbol id="i-trash-2" viewBox="0 0 24 24"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+
+  <!-- The captured screenshot: a synthetic "Work orders" screen of a sample
+       product, drawn here instead of a real capture. 600 x 340, the tile's
+       aspect ratio. Inline styles so the clones under <use> keep the tokens. -->
+  <symbol id="m-work-orders" viewBox="0 0 600 340">
+    <rect width="600" height="340" style="fill:var(--background)"/>
+    <rect width="600" height="44" style="fill:var(--muted)"/>
+    <rect y="44" width="600" height="1" style="fill:var(--border)"/>
+    <rect x="20" y="13" width="18" height="18" rx="4" style="fill:var(--primary)"/>
+    <text x="46" y="28" style="font:600 15px var(--font-sans);fill:var(--foreground)">Acme Tasks</text>
+    <text x="580" y="28" text-anchor="end" style="font:400 13px var(--font-sans);fill:var(--muted-foreground)">Northwind</text>
+    <text x="20" y="84" style="font:600 21px var(--font-sans);fill:var(--foreground)">Work orders</text>
+    <rect x="20.5" y="100.5" width="118" height="27" rx="13.5" style="fill:color-mix(in srgb,var(--primary) 10%,transparent);stroke:var(--primary)"/>
+    <text x="79.5" y="119" text-anchor="middle" style="font:500 13px var(--font-sans);fill:var(--primary)">Priority: High</text>
+    <rect x="148.5" y="100.5" width="108" height="27" rx="13.5" style="fill:none;stroke:var(--border)"/>
+    <text x="202.5" y="119" text-anchor="middle" style="font:400 13px var(--font-sans);fill:var(--muted-foreground)">Status: Open</text>
+    <text x="20" y="160" style="font:500 12px var(--font-sans);fill:var(--muted-foreground)">Order</text>
+    <text x="104" y="160" style="font:500 12px var(--font-sans);fill:var(--muted-foreground)">Title</text>
+    <text x="368" y="160" style="font:500 12px var(--font-sans);fill:var(--muted-foreground)">Priority</text>
+    <text x="466" y="160" style="font:500 12px var(--font-sans);fill:var(--muted-foreground)">Assignee</text>
+    <rect x="20" y="170" width="560" height="1" style="fill:var(--border)"/>
+    <g style="font:400 14px var(--font-sans);fill:var(--foreground)">
+      <text x="20" y="196" style="font-family:var(--font-mono);font-size:13px;fill:var(--muted-foreground)">WO-1042</text>
+      <text x="104" y="196">Replace pump seal</text>
+      <text x="466" y="196">Jane Doe</text>
+      <text x="20" y="236" style="font-family:var(--font-mono);font-size:13px;fill:var(--muted-foreground)">WO-1038</text>
+      <text x="104" y="236">Inspect cooling unit</text>
+      <text x="466" y="236">Sam Lee</text>
+      <text x="20" y="276" style="font-family:var(--font-mono);font-size:13px;fill:var(--muted-foreground)">WO-1031</text>
+      <text x="104" y="276">Repair loading door</text>
+      <text x="466" y="276">Jane Doe</text>
+      <text x="20" y="316" style="font-family:var(--font-mono);font-size:13px;fill:var(--muted-foreground)">WO-1027</text>
+      <text x="104" y="316">Service forklift</text>
+      <text x="466" y="316">Sam Lee</text>
+    </g>
+    <rect x="20" y="210" width="560" height="1" style="fill:var(--border)"/>
+    <rect x="20" y="250" width="560" height="1" style="fill:var(--border)"/>
+    <rect x="20" y="290" width="560" height="1" style="fill:var(--border)"/>
+    <g style="font:500 12px var(--font-sans);fill:var(--highlight)">
+      <rect x="368" y="181" width="42" height="21" rx="4" style="fill:color-mix(in srgb,var(--highlight) 12%,transparent)"/>
+      <text x="389" y="196" text-anchor="middle">High</text>
+      <rect x="368" y="221" width="42" height="21" rx="4" style="fill:color-mix(in srgb,var(--highlight) 12%,transparent)"/>
+      <text x="389" y="236" text-anchor="middle">High</text>
+      <rect x="368" y="261" width="42" height="21" rx="4" style="fill:color-mix(in srgb,var(--highlight) 12%,transparent)"/>
+      <text x="389" y="276" text-anchor="middle">High</text>
+      <rect x="368" y="301" width="42" height="21" rx="4" style="fill:color-mix(in srgb,var(--highlight) 12%,transparent)"/>
+      <text x="389" y="316" text-anchor="middle">High</text>
+    </g>
+  </symbol>
+</svg>
+
+<!-- Synthetic data. Mirrors NewsletterImagesSetting with images on, an
+     environment chosen and its sample-data confirmation already accepted (the
+     AlertDialog has closed). Review is on, so screenshotHint() renders nothing. -->
+<div class="shot" id="shot-settings">
+  <div class="setting">
+    <div class="top">
+      <div>
+        <p class="name">Images in highlights</p>
+        <p class="text-sm muted">Add up to two images to each highlight. Choose an environment to capture screenshots automatically.</p>
+      </div>
+      <span class="switch" role="switch" aria-checked="true" aria-label="Images in highlights"><span class="thumb"></span></span>
+    </div>
+    <div class="picker space-15">
+      <label class="label">Capture from</label>
+      <div class="select max-w-sm"><span>Demo (sample data)</span><svg class="i"><use href="#i-chevrons-up-down"/></svg></div>
+    </div>
+  </div>
+</div>
+
+<!-- Synthetic data. Mirrors NewsletterReviewDialog (ReviewBody) with one
+     release and two highlights (NewsletterReviewHighlightRow): the first holds
+     a finished capture that is not yet included (NewsletterReviewImageTile,
+     READY, included=false), the second a capture that FAILED. The send has an
+     environment, so each row offers "Capture screenshot". Footer copy comes
+     from includedImagesLine() and approveButtonLabel(0). -->
+<div class="shot" id="shot-review">
+  <div class="dialog flush" role="dialog">
+    <div class="dheader rv-header">
+      <div class="eyebrow"><span class="bar" aria-hidden="true"></span><span>Review newsletter</span></div>
+      <h2 class="dtitle xl">What's new in Acme Tasks</h2>
+      <p class="ddesc">Tick what should go out. Drag to change the order within a release.</p>
+    </div>
+
+    <div class="rv-list">
+      <div class="rv-col">
+        <p class="intro">Here is what changed in Acme Tasks this month.</p>
+        <section class="release">
+          <div class="release-head">
+            <span class="tag">v2.14.0</span>
+            <div class="rule"></div>
+          </div>
+          <ul class="rows">
+            <li class="hl">
+              <div class="head">
+                <span class="grip" aria-label="Reorder Filter work orders by priority"><svg class="i"><use href="#i-grip-vertical"/></svg></span>
+                <span class="cb on mt-05" role="checkbox" aria-checked="true"><svg class="i"><use href="#i-check"/></svg></span>
+                <div class="body">
+                  <p><strong>Filter work orders by priority</strong></p>
+                  <p class="d">Find urgent jobs faster. The Work orders list now filters by priority.</p>
+                </div>
+              </div>
+              <div class="imgs">
+                <div class="tile">
+                  <button class="frame" type="button" aria-label="Open image: The Work orders list with the new priority filter.">
+                    <svg class="shot-img faded" viewBox="0 0 600 340" preserveAspectRatio="xMidYMin slice"><use href="#m-work-orders"/></svg>
+                  </button>
+                  <div class="line">
+                    <div class="left">
+                      <span class="cb" role="checkbox" aria-checked="false"></span>
+                      <label class="label normal">Include in email</label>
+                    </div>
+                    <button class="btn sm" type="button">Change</button>
+                  </div>
+                </div>
+                <button class="dashed-btn" type="button"><svg class="i"><use href="#i-plus"/></svg>Add image</button>
+                <button class="dashed-btn" type="button"><svg class="i"><use href="#i-camera"/></svg>Capture screenshot</button>
+              </div>
+            </li>
+            <li class="hl">
+              <div class="head">
+                <span class="grip" aria-label="Reorder Saved reports"><svg class="i"><use href="#i-grip-vertical"/></svg></span>
+                <span class="cb on mt-05" role="checkbox" aria-checked="true"><svg class="i"><use href="#i-check"/></svg></span>
+                <div class="body">
+                  <p><strong>Saved reports</strong></p>
+                  <p class="d">Save a report's filters and open it again in one click.</p>
+                </div>
+              </div>
+              <div class="imgs">
+                <div class="tile">
+                  <button class="frame failed" type="button" aria-label="Open screenshot that was not captured">
+                    <span class="empty"><svg class="i"><use href="#i-image"/></svg></span>
+                  </button>
+                  <div class="line">
+                    <p class="reason" title="The screen could not be reached: the Reports page shows no saved reports.">The screen could not be reached: the Reports page shows no saved reports.</p>
+                    <button class="btn sm" type="button">Change</button>
+                  </div>
+                </div>
+                <button class="dashed-btn" type="button"><svg class="i"><use href="#i-plus"/></svg>Add image</button>
+                <button class="dashed-btn" type="button"><svg class="i"><use href="#i-camera"/></svg>Capture screenshot</button>
+              </div>
+            </li>
+          </ul>
+        </section>
+      </div>
+    </div>
+
+    <div class="rv-foot">
+      <p class="text-sm muted" role="status">0 of 1 image included</p>
+      <div class="actions">
+        <button class="btn md" type="button" aria-label="Include all images">Include all</button>
+        <button class="btn md outline" type="button">Reject</button>
+        <button class="btn md primary" type="button">Approve &amp; send as text</button>
+      </div>
+    </div>
+
+    <span class="close" aria-label="Close"><svg class="i"><use href="#i-x"/></svg></span>
+  </div>
+</div>
+
+<!-- Synthetic data. Mirrors NewsletterReviewImageDialog for a captured
+     (source != UPLOAD) READY image, ticked, the first of two images under its
+     highlight (so "Move earlier" is disabled and "Move later" is enabled), on a
+     send with an environment (so "Not the right screen?" shows, prefilled with
+     the capture's own description), with a download URL. -->
+<div class="shot" id="shot-image">
+  <div class="dialog" role="dialog">
+    <div class="dheader">
+      <h2 class="dtitle">Image</h2>
+      <p class="ddesc">Choose whether it goes out, and how it is described.</p>
+    </div>
+    <div class="im-body">
+      <div class="im-frame">
+        <svg class="shot-img" viewBox="0 0 600 340" role="img" aria-label="The Work orders list with the new priority filter."><use href="#m-work-orders"/></svg>
+      </div>
+
+      <div class="row-2">
+        <span class="cb on" role="checkbox" aria-checked="true"><svg class="i"><use href="#i-check"/></svg></span>
+        <label class="label normal">Include in email</label>
+      </div>
+
+      <div class="space-15">
+        <label class="label">Description</label>
+        <div class="input">The Work orders list with the new priority filter.</div>
+        <p class="text-xs muted">Shown to readers whose mail app blocks pictures.</p>
+      </div>
+
+      <div class="radios" role="radiogroup" aria-label="Where the image is shown">
+        <div class="radio-row"><span class="radio" role="radio" aria-checked="false"></span><label class="label normal">Show above the text</label></div>
+        <div class="radio-row"><span class="radio on" role="radio" aria-checked="true"><span class="dot"></span></span><label class="label normal">Show below the text</label></div>
+      </div>
+
+      <div class="space-15">
+        <label class="label">Shown under</label>
+        <div class="select"><span>Filter work orders by priority</span><svg class="i"><use href="#i-chevrons-up-down"/></svg></div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn sm has-svg outline" type="button" disabled><svg class="i"><use href="#i-arrow-up"/></svg>Move earlier</button>
+        <button class="btn sm has-svg outline" type="button"><svg class="i"><use href="#i-arrow-down"/></svg>Move later</button>
+      </div>
+
+      <form class="prompt">
+        <label class="label">Not the right screen?</label>
+        <div class="textarea">The Work orders list, filtered to high priority</div>
+        <p class="text-xs muted">Name the screen and what should be on it, for example "the project overview with the new filters panel open".</p>
+        <div class="btn-row">
+          <button class="btn sm outline" type="button">Capture again</button>
+        </div>
+      </form>
+
+      <div class="btn-row">
+        <button class="btn sm has-svg outline" type="button"><svg class="i"><use href="#i-upload"/></svg>Replace</button>
+        <a class="btn sm has-svg" href="#"><svg class="i"><use href="#i-download"/></svg>Download</a>
+        <button class="btn sm has-svg" type="button"><svg class="i"><use href="#i-trash-2"/></svg>Remove</button>
+      </div>
+    </div>
+
+    <span class="close" aria-label="Close"><svg class="i"><use href="#i-x"/></svg></span>
+  </div>
+</div>
+</body>
+</html>

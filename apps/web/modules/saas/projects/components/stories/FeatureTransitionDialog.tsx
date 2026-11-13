@@ -224,7 +224,7 @@ export function FeatureTransitionDialog({
 											</ul>
 										</div>
 									) : (
-										<p className="inline-flex items-center gap-1.5 text-secondary">
+										<p className="inline-flex items-center gap-1.5 text-success">
 											<CheckCircle2Icon
 												className="size-3.5"
 												aria-hidden="true"

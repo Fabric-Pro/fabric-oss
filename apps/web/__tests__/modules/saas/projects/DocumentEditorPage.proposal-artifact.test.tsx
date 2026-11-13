@@ -95,6 +95,7 @@ const fixtures = vi.hoisted(() => ({
 		getGlossy: vi.fn(),
 		getThemeTokens: vi.fn(),
 		generate: vi.fn(),
+		getWebResearchAvailability: vi.fn(),
 	},
 	toast: {
 		success: vi.fn(),
@@ -172,6 +173,18 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 							mutationFn: async (input: unknown) =>
 								fixtures.api.generate(input),
 							...config,
+						}),
+					},
+					webResearchAvailability: {
+						queryOptions: (opts: { input: unknown }) => ({
+							queryKey: [
+								"projects.documents.webResearchAvailability",
+								opts.input,
+							],
+							queryFn: async () =>
+								fixtures.api.getWebResearchAvailability(
+									opts.input,
+								),
 						}),
 					},
 					update: {
@@ -567,6 +580,11 @@ beforeEach(() => {
 	fixtures.api.getThemeTokens.mockImplementation(async () => themeTokens());
 	fixtures.api.generate.mockReset();
 	fixtures.api.generate.mockResolvedValue({ outcome: "started" });
+	fixtures.api.getWebResearchAvailability.mockReset();
+	fixtures.api.getWebResearchAvailability.mockResolvedValue({
+		available: true,
+		missing: [],
+	});
 	for (const notify of Object.values(fixtures.toast)) {
 		notify.mockReset();
 	}
@@ -842,8 +860,12 @@ describe("DocumentEditorPage — the Main tab follows the server's status", () =
 			screen.getByRole("button", { name: /retry generation/i }),
 		);
 
+		// The option sits beside this Retry, left unticked.
 		await waitFor(() =>
-			expect(fixtures.api.generate).toHaveBeenCalledWith({ id: "doc-1" }),
+			expect(fixtures.api.generate).toHaveBeenCalledWith({
+				id: "doc-1",
+				allowWebResearch: false,
+			}),
 		);
 	});
 });
@@ -871,7 +893,10 @@ describe("DocumentEditorPage — the live pane's Retry says what the server did"
 			screen.getByRole("button", { name: /retry generation/i }),
 		);
 		await waitFor(() =>
-			expect(fixtures.api.generate).toHaveBeenCalledWith({ id: "doc-1" }),
+			expect(fixtures.api.generate).toHaveBeenCalledWith({
+				id: "doc-1",
+				allowWebResearch: false,
+			}),
 		);
 		return { readsBefore };
 	}
@@ -983,6 +1008,229 @@ describe("DocumentEditorPage — the live pane's Retry says what the server did"
 				pageCopy.live.retryFailed.replace("{message}", "Network down"),
 			),
 		);
+	});
+});
+
+describe("DocumentEditorPage — web research on the live pane's Retry", () => {
+	const webResearchCopy = messages.projects.documents.webResearch;
+
+	/** A run whose last write is ten minutes old, so the pane offers Retry. */
+	function stalledRun(overrides: Record<string, unknown> = {}) {
+		const stalledAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+		return proposal({
+			status: "GENERATING",
+			generationStartedAt: stalledAt,
+			updatedAt: stalledAt,
+			generationProgress: 50,
+			...overrides,
+		});
+	}
+
+	function option(): HTMLElement {
+		return screen.getByRole("checkbox", { name: webResearchCopy.label });
+	}
+
+	/** Waits until the option reflects the server's "available" answer. */
+	async function availableOption(): Promise<HTMLElement> {
+		await waitFor(() =>
+			expect(option()).not.toHaveAttribute("aria-disabled"),
+		);
+		return option();
+	}
+
+	/** Clicks Retry once the previous one has settled. */
+	async function clickRetry(user: ReturnType<typeof userEvent.setup>) {
+		const calls = fixtures.api.generate.mock.calls.length;
+		const retry = screen.getByRole("button", { name: /retry generation/i });
+		await waitFor(() => expect(retry).not.toBeDisabled());
+		await user.click(retry);
+		await waitFor(() =>
+			expect(fixtures.api.generate).toHaveBeenCalledTimes(calls + 1),
+		);
+		return fixtures.api.generate.mock.calls.at(-1)?.[0];
+	}
+
+	it.each([
+		["once sections have arrived", "## Scope\n\nFirst finished section."],
+		["before any section", null],
+	])(
+		"sends a tick with that Retry only, then reads unticked again (%s)",
+		async (_label, liveContent) => {
+			const user = userEvent.setup();
+			fixtures.document = stalledRun({ liveContent });
+			renderPage();
+			await pageReady();
+
+			const unticked = await availableOption();
+			expect(unticked).toHaveAttribute("aria-checked", "false");
+			await user.click(unticked);
+			expect(option()).toHaveAttribute("aria-checked", "true");
+
+			expect(await clickRetry(user)).toStrictEqual({
+				id: "doc-1",
+				allowWebResearch: true,
+			});
+			await waitFor(() =>
+				expect(option()).toHaveAttribute("aria-checked", "false"),
+			);
+
+			expect(await clickRetry(user)).toStrictEqual({
+				id: "doc-1",
+				allowWebResearch: false,
+			});
+		},
+	);
+
+	it("forgets an unused tick once the stall it was made in clears", async () => {
+		const user = userEvent.setup();
+		fixtures.document = stalledRun();
+		const startedAt = fixtures.document.generationStartedAt;
+		renderPage();
+		await pageReady();
+
+		await user.click(await availableOption());
+		expect(option()).toHaveAttribute("aria-checked", "true");
+
+		// The run writes again, so the stall and its option go away.
+		await serverReports({
+			status: "GENERATING",
+			generationStartedAt: startedAt,
+			updatedAt: new Date().toISOString(),
+			generationProgress: 60,
+		});
+		expect(
+			screen.queryByRole("checkbox", { name: webResearchCopy.label }),
+		).not.toBeInTheDocument();
+
+		// It stalls once more (the test clock stands still, so the last write
+		// is simply older than the threshold): offered again, unticked.
+		await serverReports({
+			status: "GENERATING",
+			generationStartedAt: startedAt,
+			updatedAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+			generationProgress: 60,
+		});
+		expect(await availableOption()).toHaveAttribute(
+			"aria-checked",
+			"false",
+		);
+
+		expect(await clickRetry(user)).toStrictEqual({
+			id: "doc-1",
+			allowWebResearch: false,
+		});
+	});
+
+	it("offers the option unticked for a new attempt", async () => {
+		const user = userEvent.setup();
+		fixtures.document = stalledRun();
+		const stalledAt = fixtures.document.updatedAt;
+		renderPage();
+		await pageReady();
+
+		await user.click(await availableOption());
+		expect(option()).toHaveAttribute("aria-checked", "true");
+
+		// Only the attempt's stamp moves, so the stall, and the option with
+		// it, stays on screen throughout.
+		await serverReports({
+			status: "GENERATING",
+			generationStartedAt: new Date(
+				Date.now() - 20 * 60 * 1000,
+			).toISOString(),
+			updatedAt: stalledAt,
+			generationProgress: 50,
+		});
+		expect(option()).toHaveAttribute("aria-checked", "false");
+
+		expect(await clickRetry(user)).toStrictEqual({
+			id: "doc-1",
+			allowWebResearch: false,
+		});
+	});
+
+	it("sends allowWebResearch: false for a tick that availability has since withdrawn", async () => {
+		const user = userEvent.setup();
+		fixtures.document = stalledRun();
+		renderPage();
+		await pageReady();
+
+		await user.click(await availableOption());
+		expect(option()).toHaveAttribute("aria-checked", "true");
+
+		// The organization loses its page-reading provider beside the stall.
+		act(() => {
+			client.setQueryData(
+				[
+					"projects.documents.webResearchAvailability",
+					{ projectId: "proj-1" },
+				],
+				{ available: false, missing: ["read"] },
+			);
+		});
+		await waitFor(() =>
+			expect(option()).toHaveAttribute("aria-disabled", "true"),
+		);
+
+		expect(await clickRetry(user)).toStrictEqual({
+			id: "doc-1",
+			allowWebResearch: false,
+		});
+	});
+
+	it("sends allowWebResearch: false when research is unavailable, and says why", async () => {
+		const user = userEvent.setup();
+		fixtures.api.getWebResearchAvailability.mockResolvedValue({
+			available: false,
+			missing: ["read"],
+		});
+		fixtures.document = stalledRun();
+		renderPage();
+		await pageReady();
+
+		expect(
+			await screen.findByText(webResearchCopy.missingRead),
+		).toBeInTheDocument();
+		expect(option()).toHaveAttribute("aria-disabled", "true");
+		await user.click(option());
+		expect(option()).toHaveAttribute("aria-checked", "false");
+
+		expect(await clickRetry(user)).toStrictEqual({
+			id: "doc-1",
+			allowWebResearch: false,
+		});
+	});
+
+	it("offers no option, and asks nothing, to a reader who cannot retry", async () => {
+		fixtures.userRole = "viewer";
+		fixtures.document = stalledRun();
+		renderPage();
+		await pageReady();
+
+		expect(screen.getByTestId("proposal-live-sections")).toBeVisible();
+		expect(
+			screen.queryByRole("button", { name: /retry generation/i }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("checkbox", { name: webResearchCopy.label }),
+		).not.toBeInTheDocument();
+		expect(fixtures.api.getWebResearchAvailability).not.toHaveBeenCalled();
+	});
+
+	it("offers no option while the run is healthy", async () => {
+		fixtures.document = proposal({
+			status: "GENERATING",
+			generationStartedAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString(),
+			generationProgress: 40,
+		});
+		renderPage();
+		await pageReady();
+
+		expect(screen.getByTestId("proposal-live-sections")).toBeVisible();
+		expect(
+			screen.queryByRole("checkbox", { name: webResearchCopy.label }),
+		).not.toBeInTheDocument();
 	});
 });
 

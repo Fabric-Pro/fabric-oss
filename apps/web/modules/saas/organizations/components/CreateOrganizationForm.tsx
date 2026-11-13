@@ -75,7 +75,7 @@ export function CreateOrganizationForm({
 			<h1 className="font-bold text-xl md:text-2xl">
 				{t("organizations.createForm.title")}
 			</h1>
-			<p className="mt-2 mb-6 text-foreground/60">
+			<p className="mt-2 mb-6 text-muted-foreground">
 				{t("organizations.createForm.subtitle")}
 			</p>
 

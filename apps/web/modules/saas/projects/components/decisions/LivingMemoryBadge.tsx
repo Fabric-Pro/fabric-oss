@@ -1,5 +1,6 @@
 "use client";
 
+import { buildStoryHref } from "@saas/projects/components/security/lib/story-href";
 import {
 	Tooltip,
 	TooltipContent,
@@ -7,6 +8,8 @@ import {
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import { BookOpenTextIcon } from "lucide-react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 
 /**
@@ -26,6 +29,55 @@ function livingMemorySourcePath(sourceMetadata: unknown): string | null {
 		: null;
 }
 
+/** The feature or bug a Living Memory decision came from, read defensively. */
+function livingMemoryWorkItem(
+	sourceMetadata: unknown,
+): { id: string; identifier: string } | null {
+	if (
+		!sourceMetadata ||
+		typeof sourceMetadata !== "object" ||
+		!("workItem" in sourceMetadata)
+	) {
+		return null;
+	}
+	const { workItem } = sourceMetadata;
+	return workItem &&
+		typeof workItem === "object" &&
+		"id" in workItem &&
+		typeof workItem.id === "string" &&
+		"identifier" in workItem &&
+		typeof workItem.identifier === "string"
+		? { id: workItem.id, identifier: workItem.identifier }
+		: null;
+}
+
+/**
+ * The feature or bug a Living Memory decision came from, as a chip that opens
+ * it. Above a stretched click target, so it stays clickable inside a card.
+ */
+export function LivingMemoryWorkItemLink({
+	workItem,
+	className,
+}: {
+	workItem: { id: string; identifier: string };
+	className?: string;
+}) {
+	const t = useTranslations("projects.livingMemoryDecisions");
+	const pathname = usePathname();
+	return (
+		<Link
+			href={buildStoryHref(pathname, workItem.id)}
+			aria-label={t("workItemLink", { identifier: workItem.identifier })}
+			className={cn(
+				"relative z-10 inline-flex shrink-0 items-center rounded-full border px-1.5 font-mono text-[11px] text-foreground hover:border-primary/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-safe:transition-colors",
+				className,
+			)}
+		>
+			{workItem.identifier}
+		</Link>
+	);
+}
+
 /**
  * The "From Living Memory" marker beside "From meeting": a labelled pill in
  * the list, an icon in the dense table.
@@ -40,7 +92,7 @@ export function LivingMemoryBadge({
 		<Tooltip>
 			<TooltipTrigger asChild>
 				{variant === "pill" ? (
-					<span className="relative z-10 inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] text-primary">
+					<span className="relative z-10 inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] text-primary-active">
 						<BookOpenTextIcon className="size-3" aria-hidden />
 						{t("badge")}
 					</span>
@@ -80,7 +132,10 @@ export function LivingMemoryLegendItem() {
 	);
 }
 
-/** The detail sheet's provenance line: the marker and the file's path. */
+/**
+ * The detail sheet's provenance line: the marker, the file's path, and the
+ * work item the decision came from when one was linked.
+ */
 export function LivingMemorySourceNote({
 	sourceMetadata,
 	className,
@@ -90,6 +145,7 @@ export function LivingMemorySourceNote({
 }) {
 	const t = useTranslations("projects.livingMemoryDecisions");
 	const path = livingMemorySourcePath(sourceMetadata);
+	const workItem = livingMemoryWorkItem(sourceMetadata);
 	return (
 		<span
 			className={cn(
@@ -104,6 +160,7 @@ export function LivingMemorySourceNote({
 					{path}
 				</span>
 			)}
+			{workItem && <LivingMemoryWorkItemLink workItem={workItem} />}
 		</span>
 	);
 }

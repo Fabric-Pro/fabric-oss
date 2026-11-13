@@ -24,6 +24,7 @@ import {
 } from "./multi-agent-runtime-protocol";
 import { ORCHESTRATOR_INTERRUPT_REASON } from "./orchestrator-runtime-protocol";
 import type { OrchestratorStreamEvent } from "./orchestrator-stream-protocol";
+import { approvalRiskLevelSchema } from "./orchestrator-stream-protocol";
 
 /**
  * What the Orchestrator chat shows of a multi-agent turn: each agent's
@@ -254,8 +255,10 @@ function pendingApprovalOf(
 	}
 	const metadata: unknown = approval.metadata?.fabric;
 	const fabric = isRecord(metadata) ? metadata : {};
+	const riskLevel = approvalRiskLevelSchema.safeParse(fabric.riskLevel);
 	return {
 		approvalId: approval.id,
+		...(riskLevel.success ? { riskLevel: riskLevel.data } : {}),
 		stepId: typeof fabric.stepId === "string" ? fabric.stepId : "",
 		reason:
 			approval.message ??

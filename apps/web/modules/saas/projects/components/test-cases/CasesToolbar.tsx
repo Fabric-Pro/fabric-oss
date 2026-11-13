@@ -739,8 +739,10 @@ function StateSegment({
 			<span
 				className={cn(
 					"rounded-full px-1.5 text-xs tabular-nums",
+					// Inverted on the active tab: a 20% white wash under white
+					// text measured 3.9:1 on the orange fill (Fizzy #1444).
 					active
-						? "bg-primary-foreground/20"
+						? "bg-primary-foreground text-primary"
 						: "bg-muted text-muted-foreground",
 				)}
 			>

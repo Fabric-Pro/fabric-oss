@@ -3,7 +3,7 @@
 # Prompt Enhancer Agent Dockerfile for Container Deployment
 # Multi-stage build that packages the agent with its dependencies
 
-FROM node:22-slim AS base
+FROM node:24-slim AS base
 
 # Install OpenSSL for Prisma and pnpm
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -99,7 +99,7 @@ COPY --from=prisma /app/packages/database/prisma/generated ./packages/database/p
 COPY --from=prisma /app/packages/database/prisma/zod ./packages/database/prisma/zod
 RUN pnpm --filter prompt-enhancer-agent build
 
-FROM node:22-slim AS production
+FROM node:24-slim AS production
 
 # Install OpenSSL and pnpm for production dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -885,6 +885,11 @@ export interface RecordAiUsageAndCheckOverageParams
 export async function recordAiUsageAndCheckOverage(
 	params: RecordAiUsageAndCheckOverageParams,
 ): Promise<void> {
+	// Which step was running when the outer catch fired, so the failure log
+	// says whether the limits never loaded or one limit's counter update and
+	// threshold check failed (notification failures are caught separately).
+	let stage: "loadLimits" | "updateLimit" = "loadLimits";
+	let stageLimitId: string | null = null;
 	try {
 		const limits = await loadApplicableLimits({
 			userId: params.userId,
@@ -907,6 +912,8 @@ export async function recordAiUsageAndCheckOverage(
 			const deltaTokens = isTokens ? tokenDelta : BigInt(0);
 			const deltaMicroUsd = isTokens ? BigInt(0) : microUsdDelta;
 
+			stage = "updateLimit";
+			stageLimitId = limit.id;
 			const post = await incrementCounter({
 				limitId: limit.id,
 				windowStart: limit.currentWindowStart,
@@ -990,6 +997,8 @@ export async function recordAiUsageAndCheckOverage(
 		logger.error(
 			{
 				event: "aiUsageLimits.recordFailed",
+				stage,
+				limitId: stageLimitId,
 				userId: params.userId,
 				organizationId: params.organizationId ?? null,
 				error: String(error),

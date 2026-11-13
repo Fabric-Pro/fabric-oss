@@ -62,8 +62,10 @@ const {
 	mockApproveNewsletterSend,
 	mockRejectNewsletterSend,
 	mockListPendingApprovalSends,
+	mockReleaseStaleNewsletterCaptures,
 	WorkflowExecutionAlreadyStartedError,
 } = vi.hoisted(() => ({
+	mockReleaseStaleNewsletterCaptures: vi.fn(),
 	mockProjectFindUnique: vi.fn(),
 	mockNewsletterSendFindFirst: vi.fn(),
 	mockIsTemporalAvailable: vi.fn(),
@@ -102,9 +104,15 @@ vi.mock("@repo/database", () => ({
 		newsletterSend: { findFirst: mockNewsletterSendFindFirst },
 	},
 	listPendingApprovalSends: mockListPendingApprovalSends,
+	// Captures that stopped without a result: covered in
+	// sends-approve-images.test.ts and the real-Postgres image tests.
+	releaseStaleNewsletterCaptures: mockReleaseStaleNewsletterCaptures,
+	countCapturingNewsletterImages: async () => 0,
 	getNewsletterSendForSendPhase: mockGetNewsletterSendForSendPhase,
 	approveNewsletterSend: mockApproveNewsletterSend,
 	rejectNewsletterSend: mockRejectNewsletterSend,
+	// A rejected send's images: covered in sends-reject-images.test.ts.
+	deleteDiscardedNewsletterSendImages: async () => [],
 	// Real, lightweight zod schema — sends-approve.ts calls
 	// `removedHighlightIndexesSchema.default([])` at module-load time when
 	// building its input schema, so this needs real zod chaining methods.
@@ -127,6 +135,7 @@ vi.mock("@repo/temporal", () => ({
 vi.mock("../../../../orpc/procedures", () => {
 	const chainable: any = {
 		use: () => chainable,
+		meta: () => chainable,
 		route: () => chainable,
 		input: () => chainable,
 		output: () => chainable,
@@ -210,6 +219,9 @@ describe("sends.approve", () => {
 		expect(mockApproveNewsletterSend).toHaveBeenCalledWith({
 			sendId: "send-1",
 			removedHighlightIndexes: [0],
+			highlightOrder: undefined,
+			// Images are off on this send: nothing is published or embedded.
+			publishedImages: [],
 			audit: {
 				reviewedByUserId: "reviewer-1",
 				actorEmail: "r@example.com",
@@ -838,9 +850,15 @@ describe("sends.reject", () => {
 
 describe("sends.pending", () => {
 	it("returns the pending+approved review inbox for the resolved project", async () => {
+		// A send without review images lists an empty `images` array.
 		const rows = [
-			pendingRow(),
-			pendingRow({ id: "send-2", status: "APPROVED" }),
+			pendingRow({ screenshotsEnabled: false, images: [] }),
+			pendingRow({
+				id: "send-2",
+				status: "APPROVED",
+				screenshotsEnabled: false,
+				images: [],
+			}),
 		];
 		mockListPendingApprovalSends.mockResolvedValue(rows);
 
@@ -851,6 +869,24 @@ describe("sends.pending", () => {
 
 		expect(result).toEqual({ sends: rows });
 		expect(mockListPendingApprovalSends).toHaveBeenCalledWith("p1");
+	});
+
+	it("settles captures that stopped without a result before listing", async () => {
+		mockListPendingApprovalSends.mockResolvedValue([]);
+
+		await pending({
+			input: { projectId: "p1", organizationId: "org-9" },
+			context: orgContext,
+		});
+
+		expect(mockReleaseStaleNewsletterCaptures).toHaveBeenCalledWith({
+			projectId: "p1",
+		});
+		expect(
+			mockReleaseStaleNewsletterCaptures.mock.invocationCallOrder[0],
+		).toBeLessThan(
+			mockListPendingApprovalSends.mock.invocationCallOrder[0],
+		);
 	});
 
 	it("a project id that resolves to no row -> NOT_FOUND", async () => {

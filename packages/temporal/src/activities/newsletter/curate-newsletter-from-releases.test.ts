@@ -19,6 +19,7 @@ vi.mock("@repo/ai", () => ({
 const mockIsCurrentOrgMember = vi.fn();
 vi.mock("@repo/database", () => ({
 	NEWSLETTER_SCHEMA_VERSION: 1,
+	NEWSLETTER_CAPTURE_BRIEF_MAX: 500,
 	isCurrentOrgMember: (...a: unknown[]) => mockIsCurrentOrgMember(...a),
 }));
 vi.mock("@repo/logs", () => ({
@@ -39,6 +40,7 @@ vi.mock("../daily-brief/collect-github-releases", () => ({
 
 import {
 	buildReleaseNewsletterPrompt,
+	buildScreenshotTargetingClause,
 	curateNewsletterFromReleasesActivity,
 	mapHighlightReleaseMeta,
 } from "./curate-newsletter-from-releases";
@@ -263,6 +265,109 @@ describe("curateNewsletterFromReleasesActivity", () => {
 		);
 		const promptArg = generateText.mock.calls[0][0].prompt as string;
 		expect(promptArg).toContain("2-4 sentences");
+	});
+});
+
+describe("screenshot targeting", () => {
+	const targeting = [
+		{
+			repoFullName: "example-org/web",
+			tagName: "v1.3.7",
+			changedPaths: ["apps/web/dashboard/Overview.tsx"],
+			pathsTruncated: false,
+			workItems: [{ identifier: "F-3", title: "New dashboard" }],
+		},
+	];
+	const modelOutput = (highlight: Record<string, unknown>) => ({
+		output: {
+			headline: "h",
+			intro: "i",
+			hasMajorFeatures: true,
+			highlights: [
+				{ title: "Dashboard", description: "New home", ...highlight },
+			],
+		},
+		usage: { totalTokens: 1 },
+	});
+	const curate = (withTargeting: boolean) =>
+		curateNewsletterFromReleasesActivity({
+			projectId: "p",
+			organizationId: null,
+			userId: "u",
+			projectName: "Acme",
+			releases: [rel()],
+			...(withTargeting ? { targeting } : {}),
+		});
+
+	beforeEach(() => {
+		generateText.mockReset();
+		mockIsCurrentOrgMember.mockResolvedValue(true);
+	});
+
+	it("leaves the prompt unchanged without targeting", () => {
+		const prompt = buildReleaseNewsletterPrompt("Acme", [rel()]);
+		expect(prompt).not.toContain("visualChange");
+	});
+
+	it("asks for visualChange and captureBrief with the work items and files", () => {
+		const prompt = buildReleaseNewsletterPrompt(
+			"Acme",
+			[rel()],
+			"STANDARD",
+			targeting,
+		);
+		expect(prompt).toContain("- visualChange:");
+		expect(prompt).toContain("- captureBrief");
+		expect(prompt).toContain("  - F-3: New dashboard");
+		expect(prompt).toContain("  apps/web/dashboard/Overview.tsx");
+	});
+
+	it("still asks for the hints when no context could be gathered", () => {
+		const clause = buildScreenshotTargetingClause([]).join("\n");
+		expect(clause).toContain("- visualChange:");
+		expect(clause).not.toContain("Use these work items");
+	});
+
+	it("keeps the hints only when they were asked for", async () => {
+		generateText.mockResolvedValue(
+			modelOutput({
+				visualChange: true,
+				captureBrief: "  The project overview page.  ",
+			}),
+		);
+
+		const asked = await curate(true);
+		const notAsked = await curate(false);
+
+		expect(asked.content.highlights[0]).toMatchObject({
+			visualChange: true,
+			captureBrief: "The project overview page.",
+		});
+		expect(notAsked.content.highlights[0]).not.toHaveProperty(
+			"visualChange",
+		);
+		expect(notAsked.content.highlights[0]).not.toHaveProperty(
+			"captureBrief",
+		);
+	});
+
+	it("drops the brief of a change nobody can see and cuts a long one", async () => {
+		generateText.mockResolvedValueOnce(
+			modelOutput({ visualChange: false, captureBrief: "Ignored." }),
+		);
+		const invisible = await curate(true);
+		expect(invisible.content.highlights[0]).toMatchObject({
+			visualChange: false,
+		});
+		expect(invisible.content.highlights[0]).not.toHaveProperty(
+			"captureBrief",
+		);
+
+		generateText.mockResolvedValueOnce(
+			modelOutput({ visualChange: true, captureBrief: "x".repeat(900) }),
+		);
+		const long = await curate(true);
+		expect(long.content.highlights[0].captureBrief).toHaveLength(500);
 	});
 });
 

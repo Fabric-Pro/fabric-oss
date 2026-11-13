@@ -83,7 +83,7 @@ export function DatabricksIndexPicker({
 							className={cn(
 								"text-xs",
 								selection.indexes.length >= MAX_QUERY_INDEXES
-									? "font-medium text-amber-600 dark:text-amber-400"
+									? "font-medium text-amber-700 dark:text-amber-400"
 									: "text-muted-foreground",
 							)}
 						>

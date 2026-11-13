@@ -188,7 +188,7 @@ export function ClarifyingQuestionCard({
 			<div className="rounded-lg border border-border bg-muted/30 p-3">
 				<div className="flex items-start gap-2">
 					<CheckCircle2Icon
-						className="mt-0.5 size-4 shrink-0 text-secondary"
+						className="mt-0.5 size-4 shrink-0 text-success"
 						aria-hidden="true"
 					/>
 					<p className="text-sm text-foreground">

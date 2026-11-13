@@ -100,7 +100,15 @@ export function packPassageBlocks<T>(
 		Math.floor((budgetChars - size()) / Math.max(1, blocks.length) / 2),
 	);
 	for (let i = 0; i < blocks.length; i++) {
-		extend(i, 0, 800, size() + openingBudget);
+		const block = blocks[i];
+		const opening = block.matched
+			? block.passages.reduce(
+					(best, p, index) =>
+						p.score > block.passages[best].score ? index : best,
+					0,
+				)
+			: 0;
+		extend(i, opening, 800, size() + openingBudget);
 	}
 	// A trailer is atomic: reserve the complete legend when it fits alongside
 	// all openings, otherwise keep the explicit reference-cut warning.

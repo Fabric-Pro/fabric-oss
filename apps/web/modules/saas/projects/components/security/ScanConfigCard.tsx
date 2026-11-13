@@ -826,10 +826,10 @@ export function ScanConfigCard({ projectId, organizationId }: Props) {
 					</div>
 
 					{/* Privacy: secrets are never stored */}
-					<div className="flex items-start gap-2.5 rounded-lg border border-secondary/30 bg-secondary/5 px-4 py-3">
+					<div className="flex items-start gap-2.5 rounded-lg border border-success/30 bg-success/5 px-4 py-3">
 						<ShieldCheckIcon
 							aria-hidden="true"
-							className="mt-0.5 size-4 shrink-0 text-secondary"
+							className="mt-0.5 size-4 shrink-0 text-success"
 						/>
 						<p className="text-muted-foreground text-xs leading-relaxed">
 							<span className="font-medium text-foreground">

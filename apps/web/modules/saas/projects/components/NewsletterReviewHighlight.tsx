@@ -41,18 +41,23 @@ export function NewsletterReviewHighlight({
 				}
 			>
 				<strong>{title}</strong> — {description}
-				{excluded ? (
-					// aria-hidden: the checkbox already announces the state, and
-					// hearing it twice makes the row read as two controls that
-					// disagree.
-					<span
-						aria-hidden="true"
-						className="ml-2 rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground uppercase tracking-[0.1em]"
-					>
-						Excluded
-					</span>
-				) : null}
+				{excluded ? <ExcludedPill /> : null}
 			</span>
 		</li>
+	);
+}
+
+/**
+ * aria-hidden: the checkbox already announces the state, and hearing it twice
+ * makes the row read as two controls that disagree.
+ */
+export function ExcludedPill() {
+	return (
+		<span
+			aria-hidden="true"
+			className="ml-2 rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground uppercase tracking-[0.1em]"
+		>
+			Excluded
+		</span>
 	);
 }

@@ -95,7 +95,7 @@ export function ActionItemRoutingSettings({
 					aria-label="Match action items to existing tickets"
 				/>
 			</div>
-			<p className="mt-3 flex items-center gap-1.5 text-muted-foreground/80 text-xs">
+			<p className="mt-3 flex items-center gap-1.5 text-muted-foreground text-xs">
 				<InfoIcon aria-hidden="true" className="size-3.5 shrink-0" />
 				Applies to meeting transcripts and monitored Teams and Slack
 				conversations analyzed from now on

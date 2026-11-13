@@ -506,7 +506,7 @@ export function TriggersSheet({
 															!hasIntegration && (
 																<Badge
 																	variant="outline"
-																	className="text-xs text-amber-600 border-amber-500/50"
+																	className="text-xs text-amber-700 border-amber-500/50 dark:text-amber-500"
 																>
 																	Needs setup
 																</Badge>
@@ -782,7 +782,7 @@ function SlackConfigPanel({
 				<p className="text-sm font-medium text-highlight mb-2">
 					Slack integration required
 				</p>
-				<p className="text-xs text-highlight/80 mb-3">
+				<p className="text-xs text-highlight mb-3">
 					Connect your Slack workspace to enable this trigger.
 				</p>
 				<Button variant="outline" size="sm" asChild>
@@ -1202,7 +1202,7 @@ function LifecycleConditionsEditor({
 								<button
 									type="button"
 									onClick={() => removeRow(key)}
-									className="rounded p-1 text-muted-foreground/70 hover:bg-muted hover:text-foreground"
+									className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
 									aria-label={`Remove ${key} condition`}
 								>
 									<svg

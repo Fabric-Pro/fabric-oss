@@ -56,7 +56,7 @@ export function LocalModelsNotice({ models }: { models: LocalModels }) {
 					<p className="font-medium text-foreground">
 						Local models (development)
 					</p>
-					<ul className="text-success/80">
+					<ul className="text-success">
 						{active.map(({ label, model, provider }) => (
 							<li key={label}>
 								{label}:{" "}
@@ -65,7 +65,7 @@ export function LocalModelsNotice({ models }: { models: LocalModels }) {
 							</li>
 						))}
 					</ul>
-					<p className="text-success/80">
+					<p className="text-success">
 						Set in .env.local (FABRIC_LOCAL_OLLAMA,
 						FABRIC_LOCAL_LOCALAI). The providers and models chosen
 						here apply again to a task when its local model is

@@ -195,7 +195,10 @@ export interface FastForwardContext {
 export interface FastForwardLines {
 	/** For the person or agent: the session reads it. */
 	stdout: string[];
-	/** For the log only, behind `fabric: coding instructions sync skipped:`. */
+	/**
+	 * For the developer, as the hook's message, behind `fabric: coding
+	 * instructions sync skipped:`.
+	 */
 	stderr: string[];
 }
 

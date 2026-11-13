@@ -385,6 +385,30 @@ export const listDigestProcedure = tenantProtectedProcedure
 				})
 			: [];
 
+		// #3507: a meeting whose date is not known (a folder import that did not
+		// say) has no day on the calendar, so it is listed apart until someone
+		// gives it one. Not date-filtered: it belongs to no month.
+		const includedIds = linked
+			.filter((l) => l.includedInDigest)
+			.map((l) => l.id);
+		const undated = includedIds.length
+			? await db.projectMeetingTranscript.findMany({
+					where: {
+						projectId: input.projectId,
+						linkedMeetingId: { in: includedIds },
+						meetingDate: null,
+					},
+					select: {
+						id: true,
+						// What the detail sheet and corrections are keyed on.
+						transcriptId: true,
+						linkedMeetingId: true,
+						meetingSubject: true,
+					},
+					orderBy: { syncedAt: "desc" },
+				})
+			: [];
+
 		// Availability check for the "no transcripts synced yet" note. Deliberately
 		// NOT date-filtered — a series with only out-of-range transcripts is still
 		// synced, just not visible in the requested window.
@@ -481,5 +505,6 @@ export const listDigestProcedure = tenantProtectedProcedure
 				),
 			}),
 			awaitingOccurrences,
+			undatedMeetings: undated,
 		};
 	});

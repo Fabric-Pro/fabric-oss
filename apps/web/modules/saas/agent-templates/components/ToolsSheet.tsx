@@ -969,7 +969,7 @@ export function ToolsSheet({
 																			className="h-10 w-10 rounded-lg"
 																			fallbackClassName={cn(
 																				isSelected
-																					? "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/50 dark:text-emerald-400"
+																					? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-400"
 																					: "bg-muted text-muted-foreground",
 																			)}
 																		/>
@@ -1278,7 +1278,7 @@ function CapabilityCard({
 						</p>
 					)}
 					{footerText && (
-						<p className="mt-1 text-xs text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1">
+						<p className="mt-1 text-xs text-amber-700 dark:text-amber-400 font-medium flex items-center gap-1">
 							<SettingsIcon className="h-3 w-3" />
 							{footerText}
 						</p>

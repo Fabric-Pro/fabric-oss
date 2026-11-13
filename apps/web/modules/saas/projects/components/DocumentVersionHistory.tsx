@@ -7,7 +7,10 @@
  */
 
 import type { DocumentVersionAuthor } from "@repo/utils/document-version-author";
-import { describeDocumentVersionChange } from "@repo/utils/document-version-change";
+import {
+	describeDocumentVersionChange,
+	documentVersionMaker,
+} from "@repo/utils/document-version-change";
 import { countDocumentWords } from "@repo/utils/document-word-count";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -102,7 +105,20 @@ interface DocumentVersion {
 	 * render with no author line at all rather than a fabricated one.
 	 */
 	author: DocumentVersionAuthor | null;
+	/**
+	 * When this row was written. For most rows that is when the change that
+	 * replaced this version's body was saved, as `changeDescription` names it;
+	 * for a creation, an import or a regeneration it is when the body itself
+	 * was made. The card shows `madeBy` instead.
+	 */
 	createdAt: string;
+	/**
+	 * The change that made this version's body, and when (Fizzy #2946), read
+	 * by the server from the row before it. `description` is null for a save
+	 * that recorded none and for a change nothing recorded; `at` is null only
+	 * for the latter.
+	 */
+	madeBy: { description: string | null; at: string | null };
 	promptVersion?: {
 		id: string;
 		version: number;
@@ -182,6 +198,11 @@ export function DocumentVersionHistory({
 			? t("change.restored", { version: change.version })
 			: t(`change.${change.kind}`);
 	};
+	// What made a version's body, never blank: a save that recorded no
+	// description, or a change nothing recorded, reads as an edit.
+	const describeMaker = (description: string | null): string =>
+		(description?.trim() ? describeChange(description) : null) ??
+		t("change.edited");
 	const rowRestoreBlockedId = useId();
 	const dialogRestoreBlockedId = useId();
 	const [restoreTarget, setRestoreTarget] = useState<DocumentVersion | null>(
@@ -208,6 +229,16 @@ export function DocumentVersionHistory({
 	});
 
 	const versions = data?.versions as DocumentVersion[] | undefined;
+	// The change that made the current body, beside its number: the newest
+	// row names it, whether it holds the current body (after a creation or a
+	// regeneration) or the one before it.
+	const currentMadeBy =
+		versions && versions.length > 0
+			? documentVersionMaker(
+					currentVersion,
+					new Map(versions.map((row) => [row.version, row])),
+				)
+			: null;
 
 	// Restore mutation - no global callbacks; each call site provides its own
 	// onSuccess to avoid duplicate toasts and stale restoreTarget reads.
@@ -461,6 +492,15 @@ export function DocumentVersionHistory({
 										<span className="font-medium text-foreground">
 											v{currentVersion}
 										</span>
+										{currentMadeBy && (
+											<>
+												{" "}
+												&middot;{" "}
+												{describeMaker(
+													currentMadeBy.description,
+												)}
+											</>
+										)}
 									</p>
 									<Badge
 										variant="outline"
@@ -514,7 +554,9 @@ export function DocumentVersionHistory({
 														<div className="flex items-center gap-2 min-w-0 overflow-hidden">
 															<div className="flex items-center gap-1.5 text-muted-foreground">
 																{getChangeIcon(
-																	version.changeDescription,
+																	version
+																		.madeBy
+																		.description,
 																)}
 															</div>
 															<span className="font-semibold text-sm">
@@ -592,13 +634,12 @@ export function DocumentVersionHistory({
 														</div>
 													</div>
 
-													{version.changeDescription && (
-														<p className="text-sm text-muted-foreground mt-1.5 ml-5">
-															{describeChange(
-																version.changeDescription,
-															)}
-														</p>
-													)}
+													<p className="text-sm text-muted-foreground mt-1.5 ml-5">
+														{describeMaker(
+															version.madeBy
+																.description,
+														)}
+													</p>
 
 													{version.promptVersion && (
 														<div className="flex items-center gap-1.5 mt-1.5 ml-5">
@@ -613,7 +654,7 @@ export function DocumentVersionHistory({
 																			.name
 																	}
 																</span>
-																<span className="text-muted-foreground/70">
+																<span className="text-muted-foreground">
 																	{" "}
 																	v
 																	{
@@ -627,26 +668,34 @@ export function DocumentVersionHistory({
 													)}
 
 													<div className="flex items-center gap-3 mt-2 ml-5 text-xs text-muted-foreground">
-														<time
-															className="flex items-center gap-1"
-															dateTime={new Date(
-																version.createdAt,
-															).toISOString()}
-															title={formatDate(
-																version.createdAt,
-															)}
-														>
-															<ClockIcon className="h-3 w-3" />
-															{formatRelativeTime(
-																version.createdAt,
-															)}
-														</time>
+														{version.madeBy.at && (
+															<time
+																className="flex items-center gap-1"
+																dateTime={new Date(
+																	version
+																		.madeBy
+																		.at,
+																).toISOString()}
+																title={formatDate(
+																	version
+																		.madeBy
+																		.at,
+																)}
+															>
+																<ClockIcon className="h-3 w-3" />
+																{formatRelativeTime(
+																	version
+																		.madeBy
+																		.at,
+																)}
+															</time>
+														)}
 														<VersionAuthorBadge
 															author={
 																version.author
 															}
 														/>
-														<span className="text-muted-foreground/60">
+														<span className="text-muted-foreground">
 															{version.content
 																? `${countDocumentWords(version.content)} words`
 																: ""}
@@ -680,14 +729,14 @@ export function DocumentVersionHistory({
 						</DialogDescription>
 					</DialogHeader>
 
-					{restoreTarget?.changeDescription && (
+					{restoreTarget && (
 						<div className="p-3 rounded-lg bg-muted">
 							<p className="text-sm font-medium mb-1">
 								Version {restoreTarget.version} description:
 							</p>
 							<p className="text-sm text-muted-foreground">
-								{describeChange(
-									restoreTarget.changeDescription,
+								{describeMaker(
+									restoreTarget.madeBy.description,
 								)}
 							</p>
 						</div>
@@ -739,9 +788,10 @@ export function DocumentVersionHistory({
 					onOpenChange={setShowDiffViewer}
 					selectedVersion={{
 						...diffVersion,
-						changeDescription: describeChange(
-							diffVersion.changeDescription,
+						changeDescription: describeMaker(
+							diffVersion.madeBy.description,
 						),
+						createdAt: diffVersion.madeBy.at,
 					}}
 					currentContent={currentContent}
 					currentVersion={currentVersion}

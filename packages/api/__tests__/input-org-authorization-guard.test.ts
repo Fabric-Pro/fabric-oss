@@ -94,12 +94,6 @@ const ALLOWLIST: ReadonlyMap<string, string> = new Map([
 		"packages/api/modules/projects/procedures/kanban-user-preference.ts",
 		"getProjectAccessById(userId,org) gate + upsert keyed by projectId_userId",
 	],
-	// In-memory per-process Map (no persistent tenant data). The DB-backed
-	// equivalent (workflows/approval-templates) is membership-verified.
-	[
-		"packages/api/modules/orchestrator/procedures/approval-templates.ts",
-		"in-memory Map stub, non-persistent; DB-backed variant secured separately",
-	],
 ]);
 
 function findProcedureFiles(root: string): string[] {

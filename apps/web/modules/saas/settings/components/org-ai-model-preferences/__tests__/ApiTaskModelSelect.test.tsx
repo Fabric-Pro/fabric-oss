@@ -501,3 +501,175 @@ it.each([false, true])(
 		).toBeNull();
 	},
 );
+
+function imageView(both = true): ApiTaskView {
+	const gateway = view().hierarchicalModels[0];
+	const direct = {
+		...gateway,
+		gateway: "OPENAI_DIRECT",
+		providers: [
+			{
+				provider: "OPENAI_DIRECT",
+				providerDisplayName: "OpenAI",
+				models: [model("Example current", "example-current")],
+			},
+		],
+	};
+	return view("VERCEL_GATEWAY", {
+		taskType: "IMAGE",
+		defaultModel: null,
+		hierarchicalModels: both ? [direct, gateway] : [gateway],
+	});
+}
+
+it("groups multiple connections in billing order with full accessible names", async () => {
+	const { user } = setup({ view: imageView() });
+	await open(user);
+	const gateway = screen.getByRole("group", {
+		name: "Vercel AI Gateway Vercel key · Vercel billing",
+	});
+	const direct = screen.getByRole("group", {
+		name: "OpenAI (direct) OpenAI key · OpenAI billing",
+	});
+	expect(
+		gateway.compareDocumentPosition(direct) &
+			Node.DOCUMENT_POSITION_FOLLOWING,
+	).toBeTruthy();
+	expect(screen.getByText("Vercel key · Vercel billing")).toBeInTheDocument();
+	expect(screen.getByText("OpenAI key · OpenAI billing")).toBeInTheDocument();
+	for (const group of [gateway, direct]) {
+		expect(
+			within(group).getAllByRole("option", { name: /Example current/ }),
+		).toHaveLength(1);
+	}
+	await user.click(screen.getByRole("button", { name: "Anthropic (2)" }));
+	expect(
+		screen.queryByRole("group", {
+			name: "OpenAI (direct) OpenAI key · OpenAI billing",
+		}),
+	).toBeNull();
+	expect(
+		within(
+			screen.getByRole("group", {
+				name: "Vercel AI Gateway Vercel key · Vercel billing",
+			}),
+		).getAllByRole("option"),
+	).toHaveLength(2);
+	await user.click(screen.getByRole("button", { name: "All" }));
+});
+
+it("keeps vendor grouping when IMAGE has only one connection", async () => {
+	const { user } = setup({ view: imageView(false) });
+	await open(user);
+	expect(
+		screen.queryByRole("group", {
+			name: "OpenAI (direct) OpenAI key · OpenAI billing",
+		}),
+	).toBeNull();
+	expect(
+		screen.getByRole("group", { name: "Anthropic" }),
+	).toBeInTheDocument();
+});
+
+it.each([false, true])(
+	"shows visible model ids without title duplication (connections=%s)",
+	async (both) => {
+		const { user } = setup({ view: imageView(both) });
+		await open(user);
+		const row = screen
+			.getAllByRole("option", { name: /Example current/ })
+			.find((item) =>
+				within(item).queryByText(
+					both ? "example-current" : "openai/example-current",
+				),
+			);
+		if (!row) {
+			throw new Error("Missing model id row");
+		}
+		expect(
+			within(row).getByText(
+				both ? "example-current" : "openai/example-current",
+			),
+		).toBeVisible();
+		expect(row).not.toHaveAttribute("title");
+	},
+);
+
+it("keeps the current choice exactly once inside its connection with its badge", async () => {
+	const { user } = setup({ view: imageView() });
+	await open(user);
+	const current = screen.getAllByRole("option", {
+		name: /Example current.*Current/,
+	});
+	expect(current).toHaveLength(1);
+	expect(current[0].closest("[cmdk-group]")).toHaveTextContent(
+		"Vercel AI Gateway",
+	);
+	expect(
+		screen.getAllByRole("option", { name: /Example current/ }),
+	).toHaveLength(2);
+});
+
+it("constrains the trigger name and connection lines inside a shrinking column", () => {
+	setup({ view: imageView() });
+	const name = within(screen.getByRole("button")).getByText(
+		"Example current",
+	);
+	expect(name.parentElement).toHaveClass("min-w-0");
+	expect(name).toHaveClass("truncate", "max-w-full");
+	expect(
+		within(screen.getByRole("button")).getByText("via Vercel AI Gateway"),
+	).toHaveClass("truncate", "max-w-full");
+});
+
+it("orders known and unknown decision connections and omits absent notes", async () => {
+	const base = imageView();
+	const gateway = base.hierarchicalModels[1];
+	const connection = (id: string) => ({
+		...gateway,
+		gateway: id,
+		providers: [
+			{ provider: id, providerDisplayName: id, models: [model(id, id)] },
+		],
+	});
+	const { user } = setup({
+		view: {
+			...base,
+			taskType: "DECISION",
+			hierarchicalModels: [
+				connection("GROQ"),
+				connection("DATABRICKS"),
+				...base.hierarchicalModels,
+			],
+		},
+	});
+	await open(user);
+	const headings = Array.from(
+		document.querySelectorAll("[cmdk-group-heading]"),
+	).map((node) => node.textContent);
+	expect(headings).toEqual([
+		"Vercel AI GatewayVercel key · Vercel billing",
+		"OpenAI (direct)OpenAI key · OpenAI billing",
+		"DatabricksDatabricks workspace · Databricks billing",
+		"Groq",
+	]);
+	const unknown = screen
+		.getByRole("group", { name: "Groq" })
+		.closest("[cmdk-group]");
+	if (!unknown) {
+		throw new Error("Missing connection group");
+	}
+	expect(unknown.querySelector("[cmdk-group-heading]")?.textContent).toBe(
+		"Groq",
+	);
+	expect(unknown.querySelectorAll("[cmdk-group-heading] span")).toHaveLength(
+		0,
+	);
+});
+
+it("shows the connection for a text task when its options span connections", () => {
+	setup({ view: { ...imageView(), taskType: "COMPLEX" } });
+	expect(screen.getByRole("button")).toHaveTextContent(
+		"via Vercel AI Gateway",
+	);
+});

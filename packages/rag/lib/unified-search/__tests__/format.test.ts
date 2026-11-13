@@ -212,7 +212,7 @@ it("uses passage scores within a result before extending the next result", () =>
 	second.matchedPassages = [{ content: "B".repeat(50000), score: 0.99 }];
 	const output = formatUnifiedResultsForPrompt(response([first, second]));
 	expect((output.match(/H/g) ?? []).length).toBeGreaterThan(7000);
-	expect((output.match(/L/g) ?? []).length).toBe(800);
+	expect((output.match(/L/g) ?? []).length).toBe(0);
 	expect((output.match(/B/g) ?? []).length).toBe(800);
 	expect(JSON.stringify(output).length).toBeLessThanOrEqual(10000);
 });

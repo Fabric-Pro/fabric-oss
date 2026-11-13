@@ -124,11 +124,14 @@ export async function compressImage(
 		 * sets this because it is chasing a BYTE target, not a pixel one.
 		 */
 		force?: boolean;
+		/** Encode as this type instead of the input's own (e.g. a PNG as JPEG). */
+		type?: string;
 	},
 ): Promise<File> {
 	const maxDimension = options?.maxDimension ?? MAX_IMAGE_DIMENSION;
 	const quality = options?.quality ?? 0.85;
 	const force = options?.force ?? false;
+	const outputType = options?.type ?? file.type;
 
 	// Don't compress GIFs (they lose animation)
 	if (file.type === "image/gif") {
@@ -187,14 +190,14 @@ export async function compressImage(
 					}
 
 					const compressed = new File([blob], file.name, {
-						type: file.type,
+						type: outputType,
 						lastModified: Date.now(),
 					});
 
 					// Only use compressed version if it's actually smaller
 					resolve(compressed.size < file.size ? compressed : file);
 				},
-				file.type,
+				outputType,
 				quality,
 			);
 		};

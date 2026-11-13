@@ -56,7 +56,7 @@ export function MetricCard({
 								{title}
 							</p>
 							{customIcon ? (
-								<div className="text-muted-foreground/30">
+								<div className="text-muted-foreground">
 									{customIcon}
 								</div>
 							) : Icon ? (

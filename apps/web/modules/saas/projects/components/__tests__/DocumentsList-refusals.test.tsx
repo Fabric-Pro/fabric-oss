@@ -78,6 +78,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 					generate: mutation((input) => generateMock(input)),
 					setActive: mutation((input) => setActiveMock(input)),
 					update: mutation(),
+					// Asked only while the regenerate dialog is open.
+					webResearchAvailability: {
+						queryOptions: ({ input }: { input: unknown }) => ({
+							queryKey: [
+								"projects.documents.webResearchAvailability",
+								input,
+							],
+							queryFn: () => ({ available: false, missing: [] }),
+						}),
+					},
 				},
 			},
 		},

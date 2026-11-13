@@ -11,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hookTiming } from "../src/lib/instructions/hook-timing.js";
 import { fakeGit, TIP_SHA } from "./helpers/git-fake.js";
 import {
+	hookContext,
+	hookSystemMessage,
 	makeTree,
 	manifestEntry,
 	resetInstructionsMocks,
@@ -308,7 +310,7 @@ describe("sync --hook in a checkout of a repository project", () => {
 		expect(fakeGit.merges).toEqual([]);
 	});
 
-	it("keeps a network failure to the log", async () => {
+	it("shows a network failure to the developer, and tells the agent where the checkout stands", async () => {
 		const dest = await makeTree();
 		inCheckout(dest);
 		fakeGit.state.fetchResult = { kind: "failed", reason: "network" };
@@ -317,13 +319,14 @@ describe("sync --hook in a checkout of a repository project", () => {
 		const result = await hook("sync", dest);
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toBe(
-			`fabric: coding instructions sync skipped: could not fetch ${NAME}: git.example.com did not answer; nothing was updated.\n`,
+		expect(hookSystemMessage(result.stdout)).toBe(
+			`fabric: coding instructions sync skipped: could not fetch ${NAME}: git.example.com did not answer; nothing was updated.`,
 		);
-		expect(result.stdout).toContain("this checkout is behind");
+		expect(hookContext(result.stdout)).toContain("this checkout is behind");
+		expect(result.stderr).toBe("");
 	});
 
-	it("keeps a ran-out budget to the log, makes no merge, and still exits 0", async () => {
+	it("shows a ran-out budget to the developer, makes no merge, and still exits 0", async () => {
 		const dest = await makeTree();
 		inCheckout(dest);
 		fakeGit.state.fetchResult = { kind: "timed-out" };
@@ -332,9 +335,10 @@ describe("sync --hook in a checkout of a repository project", () => {
 		const result = await hook("sync", dest);
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).toBe(
-			"fabric: coding instructions sync skipped: gave up after 9.5 s\n",
+		expect(hookSystemMessage(result.stdout)).toBe(
+			"fabric: coding instructions sync skipped: gave up after 9.5 s",
 		);
+		expect(result.stderr).toBe("");
 		expect(fakeGit.merges).toEqual([]);
 	});
 
@@ -369,7 +373,7 @@ describe("sync --hook in a checkout of a repository project", () => {
 
 		const result = await hook("sync", dest);
 
-		expect(result.stdout).toBe(
+		expect(hookContext(result.stdout)).toBe(
 			"fabric: coding instructions v7 (aaaaaaa) is on main; this checkout is behind — run: git pull --ff-only origin main\n",
 		);
 		expect(await traceEntries()).toMatchObject([

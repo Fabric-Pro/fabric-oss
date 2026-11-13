@@ -896,7 +896,7 @@ export function OrchestratorConfigPanel({
 																	)
 														}
 														activeClassName="text-primary"
-														idleClassName="text-muted-foreground/40 hover:text-primary"
+														idleClassName="text-muted-foreground hover:text-primary"
 													/>
 													{agent.description ? (
 														<Tooltip>
@@ -1018,7 +1018,7 @@ export function OrchestratorConfigPanel({
 							{Object.entries(fabricToolsByCategory).map(
 								([category, tools]) => (
 									<div key={category}>
-										<div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+										<div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
 											{category}
 										</div>
 										<div className="space-y-0.5">
@@ -1063,7 +1063,7 @@ export function OrchestratorConfigPanel({
 																			)
 																}
 																activeClassName="text-primary"
-																idleClassName="text-muted-foreground/40 hover:text-primary"
+																idleClassName="text-muted-foreground hover:text-primary"
 															/>
 															<Tooltip>
 																<TooltipTrigger
@@ -1228,7 +1228,7 @@ export function OrchestratorConfigPanel({
 																	)
 														}
 														activeClassName="text-primary"
-														idleClassName="text-muted-foreground/40 hover:text-primary"
+														idleClassName="text-muted-foreground hover:text-primary"
 													/>
 													<McpLogo
 														size={12}
@@ -1421,7 +1421,7 @@ export function OrchestratorConfigPanel({
 																	)
 														}
 														activeClassName="text-primary"
-														idleClassName="text-muted-foreground/40 hover:text-primary"
+														idleClassName="text-muted-foreground hover:text-primary"
 													/>
 													<div
 														className={cn(
@@ -1460,7 +1460,7 @@ export function OrchestratorConfigPanel({
 													) && (
 														<Badge
 															variant="outline"
-															className="h-4 flex-shrink-0 px-1 text-[9px] text-amber-600"
+															className="h-4 flex-shrink-0 px-1 text-[9px] text-amber-700 dark:text-amber-500"
 														>
 															{integrationCredentialBadge(
 																integration,

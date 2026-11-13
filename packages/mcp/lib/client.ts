@@ -25,6 +25,7 @@ import {
 	parseMcpOAuthBinding,
 	refreshMcpOAuthAccessToken,
 } from "@repo/database";
+import { isUnrunnableSystemMcpServer } from "@repo/database/prisma/hidden-mcp-server-keys";
 import { stdioCredentialEnvVar } from "@repo/database/prisma/stdio-credential-env";
 import {
 	GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
@@ -1000,6 +1001,22 @@ async function buildMcpClientForConfig(
 			code: "OAUTH_AUTH_REQUIRED",
 			serverName: mcpConfig.displayName || undefined,
 			isAuthError: true,
+		});
+	}
+	// A retired system server that cannot start (Fizzy #3531): its package
+	// was never published, or it needs more secrets than a STDIO connection
+	// carries. Starting it only fails, and fails again on the next call.
+	// Refused here, before anything runs, with what the person can do about it.
+	if (
+		transport === "STDIO" &&
+		isUnrunnableSystemMcpServer(mcpConfig.mcpServer)
+	) {
+		const serverName =
+			mcpConfig.displayName || mcpServer?.name || undefined;
+		throw new McpClientError({
+			message: `"${serverName ?? "This MCP server"}" can no longer run: this retired server cannot start. Remove this connection in MCP Settings.`,
+			code: "SERVER_UNAVAILABLE",
+			serverName,
 		});
 	}
 	if (transport === "STDIO") {

@@ -288,7 +288,7 @@ export function CodingRunTimeline({
 							{isSpike && (
 								<Badge
 									variant="outline"
-									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-1 text-[11px] text-primary"
+									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-1 text-[11px] text-primary-active"
 								>
 									<FlaskConicalIcon className="mr-1 size-3" />
 									Spike
@@ -314,7 +314,7 @@ export function CodingRunTimeline({
 							{connectionLabel && (
 								<Badge
 									variant="outline"
-									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-1 text-[11px] text-primary"
+									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-1 text-[11px] text-primary-active"
 								>
 									{connectionLabel}
 								</Badge>
@@ -341,7 +341,7 @@ export function CodingRunTimeline({
 						{liveStatus?.liveStatus && (
 							<Badge
 								variant="outline"
-								className="rounded-full border-primary/30 bg-primary/5 px-2.5 py-1 text-[11px] text-primary"
+								className="rounded-full border-primary/30 bg-primary/5 px-2.5 py-1 text-[11px] text-primary-active"
 							>
 								Agent:{" "}
 								{liveStatus.liveStatus.sessionState ??
@@ -711,7 +711,7 @@ export function CodingRunTimeline({
 													event.eventType,
 												)}
 												{event.count > 1 && (
-													<span className="ml-1 text-muted-foreground/50">
+													<span className="ml-1 text-muted-foreground">
 														({event.count}x)
 													</span>
 												)}
@@ -722,7 +722,7 @@ export function CodingRunTimeline({
 												</p>
 											)}
 										</div>
-										<span className="shrink-0 tabular-nums text-muted-foreground/60">
+										<span className="shrink-0 tabular-nums text-muted-foreground">
 											{new Date(
 												event.createdAt,
 											).toLocaleTimeString([], {
@@ -880,7 +880,7 @@ function StatusIcon({ status }: { status: string }) {
 		case "PR_OPENED":
 			return <GitPullRequestIcon className="size-4 text-primary" />;
 		case "DEMO_READY":
-			return <FlaskConicalIcon className="size-4 text-secondary" />;
+			return <FlaskConicalIcon className="size-4 text-success" />;
 		case "COMPLETED":
 			return <CheckCircleIcon className="size-4 text-success" />;
 		case "FAILED":

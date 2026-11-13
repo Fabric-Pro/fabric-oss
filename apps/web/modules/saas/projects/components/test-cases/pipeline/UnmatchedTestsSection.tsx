@@ -162,7 +162,7 @@ export function UnmatchedTestsSection({
 								)}
 							</div>
 							{createdKeys.has(key) ? (
-								<span className="inline-flex shrink-0 items-center gap-1.5 text-secondary text-xs">
+								<span className="inline-flex shrink-0 items-center gap-1.5 text-success text-xs">
 									<CheckIcon
 										className="size-3.5"
 										aria-hidden="true"

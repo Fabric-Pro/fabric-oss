@@ -14,8 +14,11 @@ const getInputSchema = z.object({
 export const getTemplateProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.AGENT_TEMPLATE_READ))
 	.input(getInputSchema)
-	.handler(async ({ input }) => {
-		const template = await getAgentTemplate(input.slugOrId);
+	.handler(async ({ input, context }) => {
+		const template = await getAgentTemplate(input.slugOrId, {
+			userId: context.user.id,
+			organizationId: context.session.activeOrganizationId,
+		});
 
 		if (!template) {
 			throw new ORPCError("NOT_FOUND", {

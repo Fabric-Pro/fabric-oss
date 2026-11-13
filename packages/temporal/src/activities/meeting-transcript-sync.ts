@@ -616,33 +616,15 @@ export async function fetchAndStoreMeetingTranscript(
 			}
 
 			heartbeat("looking for a channel meeting recording");
-			const recordingResult = (await executeMicrosoftTeamsTool(
-				"list_recording_transcripts",
-				{ joinUrl, meetingSubject, meetingDate },
+			const recordingResult = await listRecordingTranscripts({
+				joinUrl,
+				meetingSubject,
+				occurrenceDate: meetingDate,
 				userId,
 				organizationId,
-			)) as {
-				transcripts?: Array<{
-					id: string;
-					createdDateTime: string;
-					driveId: string;
-					recordingItemId: string;
-					recordingWebUrl: string;
-				}>;
-				diagnostic?: string;
-			};
+			});
 
-			pendingTranscripts = (recordingResult.transcripts ?? []).map(
-				(transcript) => ({
-					transcriptId: transcript.id,
-					createdDateTime: transcript.createdDateTime,
-					recording: {
-						driveId: transcript.driveId,
-						recordingItemId: transcript.recordingItemId,
-						recordingWebUrl: transcript.recordingWebUrl,
-					},
-				}),
-			);
+			pendingTranscripts = recordingResult.transcripts;
 			fallbackDiagnostic = recordingResult.diagnostic;
 
 			if (pendingTranscripts.length > 0) {
@@ -677,6 +659,7 @@ export async function fetchAndStoreMeetingTranscript(
 		let lastContextId: string | undefined;
 		let lastTranscriptRecordId: string | undefined;
 		let lastWasSummarized = false;
+		let firstContentError: string | undefined;
 
 		// Step 3: decide which listed transcripts are already ours.
 		//
@@ -779,24 +762,12 @@ export async function fetchAndStoreMeetingTranscript(
 			// can hand us a transcript without a recording, so `meetingId` is
 			// always resolved on that branch.
 			heartbeat(`fetching transcript ${transcriptId}`);
-			const transcriptContent = (await executeMicrosoftTeamsTool(
-				transcript.recording
-					? "get_recording_transcript_content"
-					: "get_meeting_transcript_content",
-				transcript.recording ?? { meetingId, transcriptId },
+			const transcriptContent = await readTranscriptContent(
+				transcript,
+				meetingId,
 				userId,
 				organizationId,
-			)) as {
-				format?: string;
-				content?: string;
-				entries?: Array<{
-					speaker: string;
-					text: string;
-					start?: string;
-					end?: string;
-				}>;
-				error?: string;
-			};
+			);
 
 			if (transcriptContent.error) {
 				logger.warn(
@@ -807,6 +778,28 @@ export async function fetchAndStoreMeetingTranscript(
 						transcriptId,
 					},
 				);
+				// Graph can list a channel meeting's transcript and then refuse
+				// to hand it over, on both content endpoints and for days. The
+				// occurrence's recording in the channel library still has it.
+				// Queued here, it is read and stored by the iterations below.
+				const recovered =
+					isChannelMeeting && !transcript.recording
+						? await recordingsForRefusedOccurrence({
+								transcript,
+								queued: pendingTranscripts,
+								projectId,
+								meetingKey,
+								joinUrl,
+								meetingSubject,
+								userId,
+								organizationId,
+							})
+						: [];
+				if (recovered.length > 0) {
+					pendingTranscripts.push(...recovered);
+					continue;
+				}
+				firstContentError ??= transcriptContent.error;
 				continue;
 			}
 
@@ -985,6 +978,11 @@ export async function fetchAndStoreMeetingTranscript(
 			transcriptRecordId: lastTranscriptRecordId,
 			wasSummarized: lastWasSummarized,
 			transcriptsFetched,
+			...(transcriptsFetched === 0 && firstContentError
+				? {
+						error: `Failed to fetch meeting transcript: ${firstContentError}`,
+					}
+				: {}),
 		};
 	} catch (error) {
 		const errorMessage =
@@ -1060,6 +1058,151 @@ export async function updateMeetingTranscriptSyncLastRunActivity(
 // =============================================================================
 // Internal Helpers
 // =============================================================================
+
+interface TranscriptContent {
+	format?: string;
+	content?: string;
+	entries?: Array<{
+		speaker: string;
+		text: string;
+		start?: string;
+		end?: string;
+	}>;
+	error?: string;
+}
+
+/**
+ * Read one transcript's content. A refusal comes back as `error` whether the
+ * tool reported it or threw it. A thrown refusal used to end the whole
+ * attempt, so one transcript Graph would not hand over left every new
+ * occurrence after it in the listing unread on every run.
+ */
+async function readTranscriptContent(
+	transcript: PendingTranscript,
+	meetingId: string | null,
+	userId: string,
+	organizationId: string | undefined,
+): Promise<TranscriptContent> {
+	const { transcriptId, recording } = transcript;
+	try {
+		return (await executeMicrosoftTeamsTool(
+			recording
+				? "get_recording_transcript_content"
+				: "get_meeting_transcript_content",
+			recording ?? { meetingId, transcriptId },
+			userId,
+			organizationId,
+		)) as TranscriptContent;
+	} catch (error) {
+		return {
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
+/**
+ * Find a channel meeting occurrence's transcript through its recording in the
+ * channel's SharePoint library. Matching is by occurrence time (and subject),
+ * so it never reaches a neighbouring occurrence's recording.
+ */
+async function listRecordingTranscripts(input: {
+	joinUrl: string;
+	meetingSubject: string;
+	occurrenceDate: string;
+	userId: string;
+	organizationId: string | undefined;
+}): Promise<{ transcripts: PendingTranscript[]; diagnostic?: string }> {
+	const result = (await executeMicrosoftTeamsTool(
+		"list_recording_transcripts",
+		{
+			joinUrl: input.joinUrl,
+			meetingSubject: input.meetingSubject,
+			meetingDate: input.occurrenceDate,
+		},
+		input.userId,
+		input.organizationId,
+	)) as {
+		transcripts?: Array<{
+			id: string;
+			createdDateTime: string;
+			driveId: string;
+			recordingItemId: string;
+			recordingWebUrl: string;
+		}>;
+		diagnostic?: string;
+	};
+
+	return {
+		transcripts: (result.transcripts ?? []).map((transcript) => ({
+			transcriptId: transcript.id,
+			createdDateTime: transcript.createdDateTime,
+			recording: {
+				driveId: transcript.driveId,
+				recordingItemId: transcript.recordingItemId,
+				recordingWebUrl: transcript.recordingWebUrl,
+			},
+		})),
+		diagnostic: result.diagnostic,
+	};
+}
+
+/**
+ * The recording transcripts to read in place of a Graph transcript whose
+ * content Graph refused. Leaves out one already stored or already queued — two
+ * refused transcripts of one occurrence (transcription stopped and restarted)
+ * lead to the same recording.
+ */
+async function recordingsForRefusedOccurrence(input: {
+	transcript: PendingTranscript;
+	queued: PendingTranscript[];
+	projectId: string;
+	meetingKey: string;
+	joinUrl: string;
+	meetingSubject: string;
+	userId: string;
+	organizationId: string | undefined;
+}): Promise<PendingTranscript[]> {
+	const { transcript, queued, projectId, meetingKey } = input;
+	if (!transcript.createdDateTime) {
+		return [];
+	}
+
+	heartbeat("looking for a refused transcript's recording");
+	const { transcripts, diagnostic } = await listRecordingTranscripts({
+		joinUrl: input.joinUrl,
+		meetingSubject: input.meetingSubject,
+		occurrenceDate: transcript.createdDateTime,
+		userId: input.userId,
+		organizationId: input.organizationId,
+	});
+
+	const queuedIds = new Set(queued.map((t) => t.transcriptId));
+	const recovered: PendingTranscript[] = [];
+	for (const candidate of transcripts) {
+		if (
+			queuedIds.has(candidate.transcriptId) ||
+			(await isTranscriptAlreadySynced(
+				projectId,
+				meetingKey,
+				candidate.transcriptId,
+			))
+		) {
+			continue;
+		}
+		recovered.push(candidate);
+	}
+
+	logger.info(
+		"[MeetingTranscriptSync] Looked for a refused transcript's recording",
+		{
+			meetingKey,
+			transcriptId: transcript.transcriptId,
+			recovered: recovered.length,
+			diagnostic,
+		},
+	);
+	return recovered;
+}
 
 /**
  * Summarize a long transcript using an LLM.

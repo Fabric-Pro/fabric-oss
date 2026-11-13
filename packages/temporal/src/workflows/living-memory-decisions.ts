@@ -9,9 +9,11 @@
  * workflow on purpose: a failed or slow extraction never touches the index.
  *
  * `livingMemoryDecisionFirstSyncScanWorkflow` is the scan a member asks for
- * from the Decisions tab: the files a repository's first sync did not read,
- * started a page at a time so a large repository cannot flood the worker with
- * AI requests. One per project, by its workflow id.
+ * from the Decisions tab: the files not read for decisions yet (skipped by a
+ * repository's first sync, or never read), started a page at a time so a
+ * large repository cannot flood the worker with AI requests. One per project,
+ * by its workflow id. Its input names the member who asked, whom the
+ * extractions' notifications leave out.
  */
 
 import { proxyActivities, sleep } from "@temporalio/workflow";

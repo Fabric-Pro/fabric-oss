@@ -386,7 +386,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 							<h2 className="font-semibold text-xl">
 								RAG Settings
 							</h2>
-							<p className="text-foreground/50 text-sm">
+							<p className="text-muted-foreground text-sm">
 								Configure how context is processed and retrieved
 							</p>
 						</div>
@@ -585,7 +585,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 												documents using your current RAG
 												settings.
 											</span>
-											<span className="block font-medium text-amber-600 dark:text-amber-400">
+											<span className="block font-medium text-amber-700 dark:text-amber-400">
 												This operation cannot be undone
 												and may take several minutes
 												depending on the number of
@@ -669,7 +669,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 																		</span>
 																	)}
 															</div>
-															<span className="text-foreground/50 text-xs">
+															<span className="text-muted-foreground text-xs">
 																{
 																	option.description
 																}
@@ -681,7 +681,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 										</SelectContent>
 									</Select>
 									{settings.splitMethod === "SEMANTIC" && (
-										<p className="text-amber-600 dark:text-amber-400 text-xs">
+										<p className="text-amber-700 dark:text-amber-400 text-xs">
 											⚠️ Semantic chunking uses AI
 											embeddings and may incur additional
 											API costs
@@ -716,7 +716,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 										step={100}
 										className="py-2"
 									/>
-									<p className="text-foreground/50 text-xs">
+									<p className="text-muted-foreground text-xs">
 										Larger chunks preserve more context but
 										may reduce precision
 									</p>
@@ -752,7 +752,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 										step={50}
 										className="py-2"
 									/>
-									<p className="text-foreground/50 text-xs">
+									<p className="text-muted-foreground text-xs">
 										Overlap helps maintain context
 										continuity between chunks
 									</p>
@@ -821,7 +821,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 										<p className="font-medium">
 											{option.label}
 										</p>
-										<p className="break-words text-foreground/50 text-sm">
+										<p className="break-words text-muted-foreground text-sm">
 											{option.description}
 										</p>
 									</div>
@@ -879,7 +879,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 								step={1}
 								className="py-2"
 							/>
-							<p className="text-foreground/50 text-xs">
+							<p className="text-muted-foreground text-xs">
 								Matching chunks searched before sources are
 								chosen
 							</p>
@@ -923,7 +923,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 								step={0.05}
 								className="py-2"
 							/>
-							<p className="text-foreground/50 text-xs">
+							<p className="text-muted-foreground text-xs">
 								Minimum similarity for semantic matches. Keyword
 								matches are kept regardless.
 							</p>
@@ -969,7 +969,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 									<p className="font-medium">
 										Enable Reranking
 									</p>
-									<p className="break-words text-foreground/50 text-sm">
+									<p className="break-words text-muted-foreground text-sm">
 										Matches are reordered by a reranking
 										model using the organization's Vercel AI
 										Gateway key. Without one, sources are
@@ -985,7 +985,7 @@ export function RagSettingsForm({ projectId, compact = false }: Props) {
 							/>
 						</div>
 
-						<p className="text-foreground/50 text-xs">
+						<p className="text-muted-foreground text-xs">
 							Reranking can improve result quality but adds
 							latency. Recommended for complex queries.
 						</p>

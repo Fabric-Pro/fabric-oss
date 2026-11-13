@@ -599,6 +599,10 @@ With Codex the steps are the same, except that the setup also installs the plugi
 | `fabric_add_instruction_lesson` | Record a lesson, a mistake the team should not repeat, as a new file under `Lessons/`, through the same proposal path |
 | `fabric_change_instructions` | Change the instructions on the user's request. It proposes through the same path, unless the sign-in also carries `instructions:publish` and the owner may edit the instructions: then it commits to the instructions repository's branch, or opens a pull request for a protected branch |
 | `fabric_list_code_repositories` | List the project's code repositories (every connected one except the instructions repository), each with its clone URL and the `repos/<folder>` path to clone it into. The agent clones them with plain git and the developer's own sign-in; Fabric does not clone, sync or watch them |
+| `fabric_list_instruction_sets` | List the project's Coding Instructions sets, the default first, each with the code repositories it applies to |
+| `fabric_create_instruction_set` | Create a named set of instructions for chosen code repositories. Needs edit rights on Coding Instructions, checked on every call |
+| `fabric_update_instruction_set` | Rename a set or replace its code repositories. The set's slug, which names its folders, never changes |
+| `fabric_delete_instruction_set` | Delete a set from Fabric. The default set cannot be deleted; a deleted set's files stay in the instructions repository |
 | `fabric_semantic_search` | Semantic (RAG) search over the project's Context (documents, transcripts, notes, synced files), the same retrieval the Fabric chat answers from. Returns ranked matched passages under the project's RAG settings, each with how to read the source in full. It does not search the code index; search the code itself for that |
 
 The writing tools are held for review: the agent reports a suggestion as awaiting
@@ -901,6 +905,10 @@ These give the AI direct access to your Fabric data — no extra setup needed:
 | `fabric_add_instruction_lesson` | Record a lesson as a new file under `Lessons/`, through the same review-gated proposal path |
 | `fabric_change_instructions` | Change the coding instructions on the user's request; proposes for review unless the sign-in carries `instructions:publish` |
 | `fabric_list_code_repositories` | List the project's code repositories with clone URLs and `repos/<folder>` paths, for the agent to clone with git |
+| `fabric_list_instruction_sets` | List the project's Coding Instructions sets, the default first, each with the code repositories it applies to |
+| `fabric_create_instruction_set` | Create a named set of instructions for chosen code repositories. Needs edit rights on Coding Instructions, checked on every call |
+| `fabric_update_instruction_set` | Rename a set or replace its code repositories. The set's slug, which names its folders, never changes |
+| `fabric_delete_instruction_set` | Delete a set from Fabric. The default set cannot be deleted; a deleted set's files stay in the instructions repository |
 | `fabric_semantic_search` | Semantic (RAG) search over the project's Context; ranked passages. Not the code index |
 | `fabric_memory_targets` | List a project's Living Memory write folders and where their files land |
 | `fabric_memory_read` | List the files under a Living Memory write folder, or read one file's text a page at a time; works with a coding tool's default sign-in |

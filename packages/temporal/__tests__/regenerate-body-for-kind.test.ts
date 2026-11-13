@@ -37,8 +37,7 @@ const { mocks } = vi.hoisted(() => ({
 		loggerWarn: vi.fn(),
 		loggerError: vi.fn(),
 		// @repo/rag
-		retrieveProjectContexts: vi.fn(),
-		formatContextsForPrompt: vi.fn(),
+		retrieveRankedPassages: vi.fn(),
 		fetchLiveIntegrationContext: vi.fn(),
 		formatLiveContextForPrompt: vi.fn(),
 		// @repo/utils
@@ -118,8 +117,7 @@ vi.mock("@repo/logs", () => ({
 	},
 }));
 vi.mock("@repo/rag", () => ({
-	formatContextsForPrompt: mocks.formatContextsForPrompt,
-	retrieveProjectContexts: mocks.retrieveProjectContexts,
+	retrieveRankedPassages: mocks.retrieveRankedPassages,
 }));
 vi.mock("@repo/rag/lib/project-contexts/live-integration-context", () => ({
 	fetchLiveIntegrationContext: mocks.fetchLiveIntegrationContext,
@@ -376,7 +374,7 @@ beforeEach(() => {
 			error: null,
 		}),
 	);
-	mocks.retrieveProjectContexts.mockResolvedValue([]);
+	mocks.retrieveRankedPassages.mockResolvedValue("");
 	mocks.projectFindUnique.mockResolvedValue({ organizationId: ORG_ID });
 	mocks.buildFabricStoryUrl.mockResolvedValue(
 		"https://app.example/app/projects/p1/stories/s1",
@@ -765,7 +763,7 @@ describe("regenerateBodyForKindActivity — tenant plumbing", () => {
 				userId: ACTOR_ID,
 			}),
 		);
-		expect(mocks.retrieveProjectContexts).toHaveBeenCalledWith(
+		expect(mocks.retrieveRankedPassages).toHaveBeenCalledWith(
 			expect.objectContaining({
 				organizationId: ORG_ID,
 				userId: ACTOR_ID,

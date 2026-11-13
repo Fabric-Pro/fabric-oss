@@ -153,8 +153,10 @@ overrides:
   # >=1.19.10 <2.1.3). Its consumers here are @modelcontextprotocol/sdk, which
   # declares `^1.19.9 || ^2.0.5`, and @copilotkit/runtime, which declares
   # `^1.13.5` but never imports it. v2 keeps the `serve`/`getRequestListener`
-  # API and only drops Node 18 and the `/vercel` entry point.
-  "@hono/node-server@^1.0.0": "^2.1.3"
+  # API and only drops Node 18 and the `/vercel` entry point. The floor is
+  # 2.1.6 for GHSA-jpvv-r467-5p4w (a raw backslash in the request path is
+  # parsed as `/`), which reaches every `serve` listener.
+  "@hono/node-server@^1.0.0": "^2.1.6"
   "sharp@<0.35.0": "^0.35.5"
   # `next` carries its own `sharp` optional peer and resolved it to 0.35.3,
   # which the `<0.35.0` key above cannot reach — so GHSA-rgj7-g3m4-5g8c (libheif)

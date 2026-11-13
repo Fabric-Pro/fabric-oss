@@ -34,6 +34,18 @@ export interface DigestSeriesEntry {
 	subject: string | null;
 }
 
+/**
+ * A meeting with no known date (#3507): a folder import whose file did not
+ * say. It has no day on the calendar until someone gives it one.
+ */
+export interface UndatedMeeting {
+	id: string;
+	/** What the detail sheet opens and a correction names, as for any meeting. */
+	transcriptId: string;
+	linkedMeetingId: string;
+	meetingSubject: string | null;
+}
+
 /** Mirrors `LinkedTicket` from `packages/api/.../get-meeting.ts` (#1823). */
 export interface LinkedTicket {
 	storyId: string;

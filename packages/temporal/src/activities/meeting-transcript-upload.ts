@@ -28,6 +28,7 @@ import { LocalDocxExtractor } from "@repo/rag";
 import { downloadFile } from "@repo/storage";
 import {
 	formatSizeLimit,
+	ONEDRIVE_TRANSCRIPT_PROVIDER,
 	TRANSCRIPT_UPLOAD_FORMAT_LIST,
 	TRANSCRIPT_UPLOAD_MAX_BYTES,
 	transcriptUploadFormatOf,
@@ -44,12 +45,14 @@ import {
 	parsePlainTranscript,
 	parseVttTranscript,
 } from "./lib/transcript-file-text";
+import { inferMeetingDate } from "./lib/transcript-meeting-date";
 import {
 	summarizeTranscript,
 	TRANSCRIPT_SUMMARIZATION_THRESHOLD,
 } from "./meeting-transcript-sync";
 
-const ALREADY_ADDED = "This file has already been added to this project.";
+export const ALREADY_ADDED =
+	"This file has already been added to this project.";
 const NO_LONGER_ALLOWED =
 	"This transcript was not added: you no longer have access to add context to this project.";
 const INGEST_FAILED =
@@ -222,10 +225,21 @@ export async function ingestUploadedTranscript(
 			? metadata.meetingSubject
 			: context.originalFilename;
 	const { meetingId, transcriptId } = uploadedTranscriptKeys(contentSha256);
-	const meetingDate = context.createdAt;
+	// A file someone uploads is dated by the upload, as it always was. A file
+	// from a folder may be a year old: its date comes from the file, or stays
+	// unknown, and never from the day it was imported (#3507).
+	const fromFolder = metadata.provider === ONEDRIVE_TRANSCRIPT_PROVIDER;
+	const meetingDate = fromFolder
+		? inferMeetingDate({
+				filename: context.originalFilename,
+				text: transcript.text,
+			})
+		: context.createdAt;
 	const header = formatTranscriptHeader({
 		meetingSubject,
-		formattedDate: meetingDate.toLocaleString(),
+		formattedDate: meetingDate
+			? meetingDate.toLocaleString()
+			: "Unknown date",
 		speakerNames: transcript.speakerNames,
 	});
 	const content = `${header}${transcript.text}`;
@@ -256,14 +270,16 @@ export async function ingestUploadedTranscript(
 			sourceTitle: `Meeting Transcript: ${meetingSubject}`,
 			metadata: {
 				...metadata,
-				provider: UPLOADED_TRANSCRIPT_PROVIDER,
+				provider: fromFolder
+					? ONEDRIVE_TRANSCRIPT_PROVIDER
+					: UPLOADED_TRANSCRIPT_PROVIDER,
 				meetingId,
 				transcriptId,
 				meetingSubject,
-				meetingDate: meetingDate.toISOString(),
+				meetingDate: meetingDate ? meetingDate.toISOString() : null,
 				speakerNames: transcript.speakerNames,
 				wasSummarized: false,
-				transcriptSource: "upload",
+				transcriptSource: fromFolder ? "onedrive" : "upload",
 				...(transcript.unreadableParts > 0
 					? { unreadableParts: transcript.unreadableParts }
 					: {}),
@@ -319,12 +335,17 @@ export async function startUploadedTranscriptPipelines(input: {
 	});
 	const context = await db.projectContext.findFirst({
 		where: { id: contextId, projectId },
-		select: { content: true },
+		select: { content: true, metadata: true },
 	});
 	// Removed while it waited, which is the user's call, not a failure.
 	if (!transcript || !context) {
 		return;
 	}
+	const provider =
+		(context.metadata as { provider?: unknown } | null)?.provider ===
+		ONEDRIVE_TRANSCRIPT_PROVIDER
+			? ONEDRIVE_TRANSCRIPT_PROVIDER
+			: UPLOADED_TRANSCRIPT_PROVIDER;
 
 	await startTranscriptPipelines({
 		projectId,
@@ -336,9 +357,9 @@ export async function startUploadedTranscriptPipelines(input: {
 		meetingId: transcript.meetingId,
 		transcriptId: transcript.transcriptId,
 		meetingSubject: transcript.meetingSubject ?? "Uploaded transcript",
-		meetingDate: (transcript.meetingDate ?? new Date()).toISOString(),
+		meetingDate: transcript.meetingDate?.toISOString(),
 		transcriptText: context.content,
-		provider: UPLOADED_TRANSCRIPT_PROVIDER,
+		provider,
 		embeddingWorkflowId: `context-embedding-${contextId}-upload`,
 	});
 }

@@ -124,7 +124,7 @@ export const SORT_DEFAULT_DIRECTION: Record<SortKey, SortDirection> = {
  * faint pill tint); the label text stays `text-foreground` so it always clears
  * WCAG AA contrast regardless of the accent. Meaning is therefore carried by the
  * dot/icon + the words, never colour alone. All colours are design-system tokens
- * (`--secondary`/`--highlight`/`--muted-foreground`/`--destructive`/`--primary`)
+ * (`--success`/`--highlight`/`--muted-foreground`/`--destructive`/`--primary`)
  * — no hex.
  */
 export type Tone =
@@ -148,10 +148,10 @@ export const TONE_CLASSES: Record<
 	}
 > = {
 	secondary: {
-		dot: "bg-secondary",
-		pill: "border-secondary/30 bg-secondary/10",
-		text: "text-secondary",
-		solid: "bg-secondary",
+		dot: "bg-success",
+		pill: "border-success/30 bg-success/10",
+		text: "text-success",
+		solid: "bg-success",
 	},
 	highlight: {
 		dot: "bg-highlight",

@@ -15,6 +15,7 @@ import { chooseProject } from "../src/lib/instructions/prompt.js";
 import { resolveProjectFromCheckout } from "../src/lib/instructions/resolve-project.js";
 import { fakeGit } from "./helpers/git-fake.js";
 import {
+	hookMessageStdout,
 	makeTree,
 	manifestEntry,
 	resetInstructionsMocks,
@@ -325,6 +326,20 @@ describe("a command run with no --project", () => {
 		);
 	});
 
+	// Nothing outside a checkout can name the project but `--project`, so a
+	// person with no organization-wide sign-in is told that, not to sign in.
+	it("asks for --project, not a sign-in, outside a git checkout with no lock", async () => {
+		const dest = await makeTree();
+		mocks.getApiKey.mockReturnValue(undefined);
+
+		const result = await runCli(["sync", "--dest", dest]);
+
+		expect(result.code).toBe(2);
+		expect(result.stderr).toContain("--project <id>");
+		expect(result.stderr).not.toContain("Not signed in");
+		expect(mocks.getPublished).not.toHaveBeenCalled();
+	});
+
 	// A folder kept up to date by `sync` alone has no remote to ask; its own
 	// lock already says which project it holds, and a sign-in for that one
 	// project is then enough.
@@ -357,7 +372,8 @@ describe("a command run with no --project", () => {
 		const result = await runCli(["sync", "--dest", dest, "--hook"]);
 
 		expect(result.code).toBe(0);
-		expect(result.stderr).not.toContain("names no project");
+		expect(result.stdout).not.toContain("names no project");
+		expect(result.stderr).toBe("");
 		expect(mocks.getPublished).toHaveBeenCalledWith(
 			"project-lock",
 			expect.anything(),
@@ -437,10 +453,12 @@ describe("a command run with no --project", () => {
 		const result = await runCli(["check", "--dest", dest, "--hook"]);
 
 		expect(result.code).toBe(0);
-		expect(result.stdout).toBe("");
-		expect(result.stderr).toBe(
-			"fabric: coding instructions check skipped: this hook names no project. Run: fabric instructions init\n",
+		expect(result.stdout).toBe(
+			hookMessageStdout([
+				"fabric: coding instructions check skipped: this hook names no project. Run: fabric instructions init",
+			]),
 		);
+		expect(result.stderr).toBe("");
 		expect(mocks.resolveCheckout).not.toHaveBeenCalled();
 	});
 

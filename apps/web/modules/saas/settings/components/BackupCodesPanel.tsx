@@ -218,7 +218,7 @@ export function BackupCodesPanel({ twoFactorEnabled }: BackupCodesPanelProps) {
 							}}
 						>
 							<div className="grid grid-cols-1 gap-4">
-								<p className="text-sm text-foreground/60">
+								<p className="text-sm text-muted-foreground">
 									{t(
 										"settings.account.security.twoFactor.backupCodes.regenerateDialog.description",
 									)}
@@ -271,7 +271,7 @@ export function BackupCodesPanel({ twoFactorEnabled }: BackupCodesPanelProps) {
 						</form>
 					) : (
 						<div className="flex flex-col gap-4">
-							<p className="text-sm text-foreground/60">
+							<p className="text-sm text-muted-foreground">
 								{t(
 									"settings.account.security.twoFactor.backupCodes.saveDialog.description",
 								)}

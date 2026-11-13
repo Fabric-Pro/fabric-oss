@@ -85,8 +85,9 @@ name: Type Check
 # resource contract stays visible here. The merged heavy shard still runs one
 # Turbo task at a time (`TURBO_CONCURRENCY: 1`), so sharing its runner does not
 # increase peak memory. This leaves room for the OS and pnpm on the 16 GB
-# standard runner. Private shards reuse that same ceiling on the bigger
-# `ubuntu-8core-arm` label for headroom, not for extra concurrency. The one
+# standard runner. Private shards reuse that same ceiling on bigger 8-vCPU
+# runners for headroom, not for extra concurrency: a Namespace amd64 runner
+# (16 GB) for pull requests, `ubuntu-8core-arm` otherwise. The one
 # exception is the private push/dispatch `rest` shards, which run on the 8 GB
 # standard arm64 runner (see the shard's runs-on): the three heavy packages are
 # excluded from them by construction, and an out-of-memory failure there would
@@ -157,9 +158,10 @@ jobs:
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
     needs: [promotion_policy]
     name: Plan shards
-    # arm64: architecture-neutral (JS actions, pnpm/node; turbo ships
-    # @turbo/linux-arm64). The plan matrix is package names only.
-    runs-on: ubuntu-24.04-arm
+    # Architecture-neutral steps; private PRs use Namespace amd64,
+    # while other events retain the GitHub arm64 label.
+    # Private PRs alone use Namespace; see the vitest job in unit-tests.yml.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -185,7 +187,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '24'
           check-latest: true
           # No `cache: 'pnpm'` on purpose: this job never installs, so it has
           # no store to save, and a save here would race the shards' own.
@@ -337,22 +339,42 @@ jobs:
     # Free and unlimited on public repositories at 4 CPU / 16 GB. A larger
     # label is billed everywhere and a label that does not exist leaves a job
     # queued for 24 hours rather than failing, so this stays `ubuntu-latest`
-    # — except in the private repo, which uses `ubuntu-8core-arm` because its
+    # — except in the private repo, which uses an 8-vCPU runner because its
     # standard runner (2 CPU / 8 GB) cannot hold the heavy shard's heap: tsgo
     # peaks near 7.6 GB on @repo/web alone (see MEMORY in the header).
     #
-    # Private pushes and dispatches run the two `rest` shards on the standard
-    # arm64 runner instead: they exist to seed the caches PRs restore, nobody
-    # waits on them, and the standard label bills about a third of the
-    # 8-core rate per minute. PR shards and every `heavy` shard keep the
-    # 8-core label. Both labels are Linux arm64, and the cache keys below use
-    # only `runner.os` and the shard name, so a PR shard restores exactly the
-    # entries a push shard saved; Turbo's task hashes cover file contents,
+    # Private pushes and dispatches run the `heavy` shard on
+    # `ubuntu-8core-arm` and the two `rest` shards on the standard arm64
+    # runner: they exist to seed the caches PRs restore, nobody waits on them,
+    # and the standard label bills about a third of the 8-core rate per
+    # minute. Private PR shards run on the Namespace amd64 profile below. The
+    # Turbo and TypeScript cache keys below use only `runner.os` and the shard
+    # name, so a PR shard restores the entries an arm64 push shard saved
+    # (dependency caches are keyed by architecture and are not shared);
+    # Turbo's task hashes cover file contents,
     # the lockfile and the `globalEnv` values, which this job pins at the job
     # level, not the runner size.
+    #
+    # Pilot (November 2026): private pull-request shards run on the Namespace
+    # profile `namespace-profile-vitest-amd8` (amd64, 8 vCPU / 16 GB), which ran
+    # the Vitest shards in about 75% of `ubuntu-8core-arm`'s job time at a lower
+    # per-minute price. The profile is shared with unit-tests.yml's shards; its
+    # name is historical. Only the private repository has the Namespace GitHub
+    # App, so the label stays behind the repository check. Pushes and
+    # dispatches stay on GitHub-hosted runners: a push to `staging` writes
+    # cache entries every branch restores, including jobs that hold secrets,
+    # and the push shards also seed the arm64 pnpm cache other workflows
+    # restore. On a pull request the runner can still write that pull
+    # request's cache entries; the pull request's own code can already do
+    # that, so what this adds is trust in Namespace's infrastructure. The
+    # check allows the one event by name, so a new trigger lands on GitHub.
+    # Turbo's task hashes do
+    # not include the architecture, so an amd64 PR shard still restores the
+    # arm64 push shards' entries.
     runs-on: >-
       ${{ github.repository != 'Fabric-Pro/fabric-dev' && 'ubuntu-latest'
-      || (github.event_name == 'pull_request' || matrix.slug == 'heavy') && 'ubuntu-8core-arm'
+      || github.event_name == 'pull_request' && 'namespace-profile-vitest-amd8'
+      || matrix.slug == 'heavy' && 'ubuntu-8core-arm'
       || 'ubuntu-24.04-arm' }}
     timeout-minutes: 30
     env:
@@ -388,7 +410,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '24'
           check-latest: true
 
       # Per-shard key family — the non-obvious part of this workflow, spelled
@@ -510,9 +532,9 @@ jobs:
     # per push adds no useful verdict. Private PRs execute this aggregate.
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (always() && github.event_name != 'push')
-    # arm64: this aggregate only runs bash and `gh api` — no checkout, no
-    # compiled binaries.
-    runs-on: ubuntu-24.04-arm
+    # Architecture-neutral steps; private PRs use Namespace amd64,
+    # while other events retain the GitHub arm64 label.
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
     env:
       PLAN_RESULT: ${{ needs.plan.result }}
       HAS_SHARDS: ${{ needs.plan.outputs.has_shards }}

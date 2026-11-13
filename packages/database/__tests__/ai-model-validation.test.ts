@@ -87,6 +87,8 @@ const OPENAI_DIRECT_OFFICIAL_MODELS = new Set([
 	"dall-e-3",
 	"dall-e-2",
 	"gpt-image-2",
+	"gpt-image-2.6-sunburst",
+	"gpt-image-2.6-flare",
 ]);
 
 /**
@@ -240,6 +242,8 @@ const VERCEL_GATEWAY_OFFICIAL_MODELS = new Set([
 	"openai/whisper-1",
 	"openai/dall-e-3",
 	"openai/gpt-image-2",
+	"openai/gpt-image-2.6-sunburst",
+	"openai/gpt-image-2.6-flare",
 	"openai/gpt-oss-120b",
 	"openai/gpt-oss-20b",
 	"openai/codex-mini",
@@ -265,9 +269,11 @@ const VERCEL_GATEWAY_OFFICIAL_MODELS = new Set([
 	"anthropic/claude-3-haiku",
 
 	// Google models
-	"google/gemini-3.1-flash-image-preview",
+	"google/gemini-3.1-flash-image",
 	"google/gemini-3-flash-preview",
 	"google/gemini-3-pro-image",
+	"google/gemini-nano-banana-2.1",
+	"google/gemini-3.1-flash-lite-image",
 	"google/gemini-3.1-pro-preview",
 	"google/gemini-4-argon",
 

@@ -530,6 +530,75 @@ describe("startExistingSetupProcedure — GitHub and GitLab auto-populate", () =
 		);
 	});
 
+	it("keeps the project's branch for its own repository only", async () => {
+		mockProjectFindUnique.mockResolvedValue({
+			id: "p1",
+			organizationId: "org-1",
+			name: "Proj",
+			codeAnalysisStatus: "NOT_STARTED",
+			repositoryOwner: "my-org",
+			repositoryName: "product",
+			defaultBranch: "master",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: null,
+			projectManagementAdditionalContext: null,
+		});
+		mockWorkflowIntegrationFindFirst.mockResolvedValue({
+			id: "wi-1",
+			credentials: encryptApiKey(
+				JSON.stringify({
+					access_token: "fake-github-token",
+					scope: "repo",
+				}),
+			),
+		});
+		mockParseRepoUrl.mockImplementation((url: string) => {
+			const name = url.split("/").pop() ?? "";
+			return { provider: "GITHUB", owner: "my-org", name, url };
+		});
+		mockRepoIntegrationFindFirst.mockResolvedValue(null);
+		mockVerifyRepositoryAccess.mockResolvedValue({
+			outcome: "accessible",
+			defaultBranch: "main",
+		});
+		mockResolveDefaultBranch.mockImplementation(
+			async ({ providedBranch }: { providedBranch?: string }) =>
+				providedBranch ?? "main",
+		);
+
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				projectId: "p1",
+				organizationId: "org-1",
+				repoUrls: [
+					"https://github.com/my-org/product",
+					"https://github.com/my-org/ai-rules",
+				],
+				repoTags: {
+					"https://github.com/my-org/ai-rules": "instructions",
+				},
+				selectedDocumentTypes: [],
+				projectTypes: [],
+				projectName: "Proj",
+			},
+			context: baseContext,
+		});
+
+		expect(mockCreateProjectRepoIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({
+				repositoryName: "product",
+				defaultBranch: "master",
+			}),
+		);
+		expect(mockCreateProjectRepoIntegration).toHaveBeenCalledWith(
+			expect.objectContaining({
+				repositoryName: "ai-rules",
+				defaultBranch: "main",
+			}),
+		);
+	});
+
 	it("resolves the GitLab default branch with the PAT if project.defaultBranch is null", async () => {
 		const GITLAB_URL = "https://gitlab.com/my-org/my-repo";
 		mockProjectFindUnique.mockResolvedValue({

@@ -565,7 +565,7 @@ describe("ProposalAnalysisPanel — during a regeneration", () => {
 			await screen.findByText(copy.newRunAfterGeneration),
 		).toBeInTheDocument();
 		const previous = screen.getByText("Previous finding");
-		expect(previous.closest(".opacity-60")).not.toBeNull();
+		expect(previous.closest("[data-stale]")).not.toBeNull();
 		// The notice replaces the stale banner while the new run is pending.
 		expect(screen.queryByText(copy.stale)).not.toBeInTheDocument();
 		expect(
@@ -597,7 +597,7 @@ describe("ProposalAnalysisPanel — during a regeneration", () => {
 			await screen.findByText(copy.awaitingNewRun),
 		).toBeInTheDocument();
 		const previous = screen.getByText("Previous finding");
-		expect(previous.closest(".opacity-60")).not.toBeNull();
+		expect(previous.closest("[data-stale]")).not.toBeNull();
 		expect(screen.queryByText(copy.stale)).not.toBeInTheDocument();
 	});
 
@@ -2695,12 +2695,12 @@ describe("ProposalAnalysisPanel — report", () => {
 		expect(
 			await screen.findByText(copy.newRunAfterGeneration),
 		).toBeInTheDocument();
-		expect(reportRegion().closest(".opacity-60")).not.toBeNull();
+		expect(reportRegion().closest("[data-stale]")).not.toBeNull();
 		expect(fullReport()).toHaveAttribute("aria-expanded", "true");
 
 		view.rerender(panel());
 		await waitFor(() =>
-			expect(reportRegion().closest(".opacity-60")).toBeNull(),
+			expect(reportRegion().closest("[data-stale]")).toBeNull(),
 		);
 		expect(fullReport()).toHaveAttribute("aria-expanded", "true");
 		expect(screen.getByText(/The client wants SSO/)).toBeInTheDocument();
@@ -2880,7 +2880,7 @@ describe("ProposalAnalysisPanel — report", () => {
 		);
 		renderPanel({ isGenerating: true });
 		await screen.findByText(copy.newRunAfterGeneration);
-		expect(reportRegion().closest(".opacity-60")).not.toBeNull();
+		expect(reportRegion().closest("[data-stale]")).not.toBeNull();
 		expect(
 			screen.queryByRole("button", { name: copy.actions.confirm }),
 		).not.toBeInTheDocument();

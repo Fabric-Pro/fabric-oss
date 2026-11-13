@@ -48,6 +48,11 @@ import { PERSONAL_AI_PROVIDERS_TAB } from "@saas/settings/lib/personal-ai-provid
  */
 const ACCOUNT_GLOBAL: Record<string, string> = {
 	general: "account/profile",
+	// Never a personal page — Appearance arrived after the tree was removed
+	// (Fizzy #1444) — but `/app/settings/appearance` is the address a person
+	// would guess, and without this it would land on an organization page
+	// that does not exist.
+	appearance: "account/appearance",
 	security: "account/security",
 	notifications: "account/notifications",
 	"danger-zone": "account/danger-zone",

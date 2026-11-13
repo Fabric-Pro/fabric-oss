@@ -40,6 +40,7 @@ The table below lists the **functional consumer** for each variable: where the v
 | `DATABASE_URL` | Secret | yes | Auto-populated by Terraform (`aws_secretsmanager_secret_version.database`); verify-full TLS against the mounted RDS CA bundle (§3.1) |
 | `DIRECT_URL` | Secret | yes | Same database as `DATABASE_URL`, in Prisma's TLS form; used by Prisma CLI database commands through `prisma.config.ts` (§3.1) |
 | `OPERATOR_ORGANIZATION_ID` | ConfigMap | no | Empty preserves role-only admin access; when set, global admins must be members of this organization. |
+| `FABRIC_BUG_ANALYSIS_LOG_WORKSPACE_ID` | ConfigMap | no | The deployment's shared Log Analytics workspace id (its customerId); same value as the worker. `projects.update` refuses a project log source that names it. Unset means nothing is refused at save, and the worker still refuses the binding at scan time. On Azure the worker gets it from Bicep and the web (Vercel) project needs it set by hand. |
 | `BETTER_AUTH_SECRET` | Secret | yes | `openssl rand -base64 48` |
 | `BRUTE_FORCE_IP_LOCKOUT_CAP` | ConfigMap | no | Default `3` |
 | `REDIS_URL` | Secret (`redis` group) | yes | `rediss://default:<token>@<endpoint>:6379` — Terraform-managed |

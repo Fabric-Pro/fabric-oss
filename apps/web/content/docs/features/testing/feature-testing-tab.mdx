@@ -7,7 +7,7 @@ Open a feature and switch to its **Testing** tab. Where the project's Testing ta
 
 Everything on the tab is an input to that question. The tab answers it directly rather than leaving you to assemble it.
 
-![A feature's Testing tab: a red verdict card reading "Not ready to sign off" above its three reasons — one failing case, two uncovered criteria, one ambiguous criterion — with buttons to refresh the analysis and draft cases for the gaps, and a standalone pair below it reading Generate QA analysis and Draft test cases with AI; a notice stating the project uses standard ordering; the under-specified criterion quoted with why it cannot be tested; the traceability table pairing each acceptance criterion with its covering cases, two marked Not covered; and a right-hand rail carrying a 71% coverage ring, recent pipeline results and the analysis history](/images/docs/qa/qa-feature-testing-tab.png)
+![A feature's Testing tab: a red verdict card reading "Not ready to sign off" above its three reasons, one failing linked case, two acceptance criteria with no case covering them and one criterion too ambiguous to test, with a button to draft cases for the 2 gaps; below it the Refresh QA analysis and Draft test cases with AI buttons, a notice stating the project uses standard ordering, and the time the analysis was generated; the under-specified criterion with the reason it cannot be tested; the traceability list pairing each acceptance criterion with its covering cases and their latest result, coverage type, test file and commit, with two criteria marked Not covered and one case not mapped to a criterion; the linked test cases with their state and a Revise button; the integration and end-to-end notes; and a right-hand rail with a coverage ring for 3 of 5 criteria, the pipeline results with Run tests and Sync now, and the drafting and analysis history](/images/docs/qa/qa-feature-testing-tab.png)
 
 ## The verdict
 
@@ -45,10 +45,9 @@ The linked-case count is shown separately, and says so when not all of them are 
 
 Each acceptance criterion — labelled `AC 1`, `AC 2` and so on, the same numbering the drafter uses — and the cases covering it. A criterion with nothing against it is marked **Not covered**.
 
-Below it, two lists that exist because coverage can fail in both directions:
+Below the criteria, **Not mapped to a criterion** lists cases linked to this feature that no criterion claims. That is usually fine; sometimes it is a case that outlived the criterion it was written for.
 
-- **Not mapped to a criterion** — cases linked to this feature that no criterion claims. Usually fine, sometimes a case that outlived the criterion it was written for.
-- **Automated tests not tracked** — tests your CI is genuinely running that match no case in Fabric. They **do not count towards coverage**: Fabric will not credit you for a test it cannot tie to a requirement. Create a case and the next sync links it.
+Coverage can also fail the other way: tests your CI runs that match no case in Fabric. Those belong to no feature, so they are listed under **Automated tests not tracked** on the **Runs** segment of the project's Testing tab, not here. They **do not count towards coverage**: Fabric will not credit you for a test it cannot tie to a requirement. Create a case and the next sync links it.
 
 **Export** on the section heading downloads the matrix.
 

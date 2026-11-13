@@ -12,6 +12,7 @@ export const KNOWN_SETTINGS_TABS: readonly SettingsTab[] = [
 	"project-management",
 	"agent-runtime",
 	"members",
+	"time-tracking",
 	"retrieval",
 	"environments",
 	"testing",
@@ -29,6 +30,8 @@ export type SettingsTabGates = {
 	 *  at request time, so the caller reads it from the feature-flag context
 	 *  rather than from the environment. */
 	publishingEnabled: boolean;
+	/** Time tracking exists on an organization's projects only. */
+	timeTrackingEnabled: boolean;
 };
 
 /**
@@ -69,6 +72,10 @@ export function resolveStoredSettingsTab(
 		// the flag hides, so a stale sessionStorage value must not reopen it.
 		if (stored === "publishing" && !gates.publishingEnabled) {
 			return "development";
+		}
+		// A personal project has no Time tracking tab to land on.
+		if (stored === "time-tracking" && !gates.timeTrackingEnabled) {
+			return "general";
 		}
 		return stored as SettingsTab;
 	}

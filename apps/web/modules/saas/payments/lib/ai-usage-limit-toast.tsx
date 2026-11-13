@@ -245,7 +245,7 @@ export function showAiUsageLimitToast(
 			{(resetLabel || manageUrl) && (
 				<span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pt-0.5">
 					{resetLabel ? (
-						<span className="text-[11px] text-muted-foreground/85">
+						<span className="text-[11px] text-muted-foreground">
 							{resetLabel}
 						</span>
 					) : (

@@ -222,6 +222,15 @@ export async function startExistingProjectSetup({
 		});
 	}
 
+	// The project's branch names a branch of the project's own repository
+	// only; an instructions or Living Memory repository keeps its own
+	// default ("main" next to a product on "master").
+	const projectBranchFor = (parsed: { owner: string; name: string }) =>
+		project.repositoryOwner?.toLowerCase() === parsed.owner.toLowerCase() &&
+		project.repositoryName?.toLowerCase() === parsed.name.toLowerCase()
+			? (project.defaultBranch ?? undefined)
+			: undefined;
+
 	// Every tenant use below — the AI token (exchanged for the
 	// organization's provider key), the credentials copied into the
 	// project, the workflow and the activity rows — runs in the
@@ -470,7 +479,7 @@ export async function startExistingProjectSetup({
 						// passing it here short-circuits resolveDefaultBranch's
 						// second identical fetch.
 						providedBranch:
-							project.defaultBranch ?? probedDefaultBranch,
+							projectBranchFor(parsed) ?? probedDefaultBranch,
 						provider: "GITHUB",
 						token,
 						repositoryUrl: `https://github.com/${parsed.owner}/${parsed.name}`,
@@ -661,7 +670,7 @@ export async function startExistingProjectSetup({
 					}
 
 					const resolvedBranch = await resolveDefaultBranch({
-						providedBranch: project.defaultBranch ?? undefined,
+						providedBranch: projectBranchFor(parsed),
 						provider: "GITLAB",
 						token,
 						repositoryUrl: parsed.url,

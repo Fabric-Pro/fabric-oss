@@ -47,7 +47,11 @@ vi.mock("../../../../orpc/procedures", () => {
 	return {
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => () => undefined,
-		resolveOrganizationId: (id: string | null | undefined) => id ?? null,
+		resolveOrganizationIdForCaller: async (
+			id: string | null | undefined,
+			session: { activeOrganizationId?: string },
+		) =>
+			(id === undefined ? session.activeOrganizationId : id) ?? undefined,
 		tenantProtectedProcedure: passthrough,
 	};
 });
@@ -86,7 +90,10 @@ function reset() {
 async function call(input: Record<string, unknown> = {}) {
 	return (listNotificationsProcedure as any)({
 		input: { organizationId: "org-a", status: "all", limit: 20, ...input },
-		context: { user: { id: "u1" }, session: {} },
+		context: {
+			user: { id: "u1" },
+			session: { activeOrganizationId: "example-org" },
+		},
 	});
 }
 

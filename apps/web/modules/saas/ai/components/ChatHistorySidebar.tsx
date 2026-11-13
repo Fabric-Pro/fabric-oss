@@ -95,7 +95,10 @@ export function ChatHistorySidebar({
 										className="size-7 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
 										title="More options"
 									>
-										<MoreHorizontalIcon className="size-3.5" />
+										<MoreHorizontalIcon
+											strokeWidth={2.5}
+											className="size-3.5"
+										/>
 									</Button>
 								</DropdownMenuTrigger>
 								<DropdownMenuContent
@@ -129,7 +132,7 @@ export function ChatHistorySidebar({
 			{/* Search results count (only when searching) */}
 			{search.trim() && (
 				<div className="flex shrink-0 items-center justify-between px-4 pt-2 pb-0">
-					<span className="text-[10px] text-muted-foreground/40">
+					<span className="text-[10px] text-muted-foreground">
 						{visibleChats} result{visibleChats !== 1 ? "s" : ""}
 					</span>
 				</div>

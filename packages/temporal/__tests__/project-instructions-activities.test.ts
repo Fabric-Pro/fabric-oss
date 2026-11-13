@@ -98,6 +98,18 @@ const warmMocks = vi.hoisted(() => ({
 }));
 vi.mock("@repo/instructions/export", () => warmMocks);
 
+// The automatic publish starts email/webhook delivery for the notification
+// rows it wrote. The real helper reads preferences and reaches Temporal, so
+// the activity's contract with it is asserted here: the writer's rows, handed
+// over after the publish.
+const deliveryMocks = vi.hoisted(() => ({
+	startExternalNotificationDelivery: vi.fn(),
+}));
+vi.mock(
+	"../src/activities/lib/notification-delivery-start",
+	() => deliveryMocks,
+);
+
 // Separate hoisted holder for the `@temporalio/activity` mock so the
 // heartbeat spy (Important 3) can be asserted on from test bodies, without
 // mixing it into `m` (which mirrors `@repo/database`/`@repo/storage` only).
@@ -366,6 +378,11 @@ beforeEach(() => {
 	vi.mocked(scanTextForSecrets).mockClear();
 	warmMocks.warmInstructionSnapshotExport.mockReset();
 	warmMocks.warmInstructionSnapshotExport.mockResolvedValue(undefined);
+	deliveryMocks.startExternalNotificationDelivery.mockReset();
+	deliveryMocks.startExternalNotificationDelivery.mockResolvedValue(
+		undefined,
+	);
+	m.createInstructionPublishedNotifications.mockResolvedValue([]);
 	logMocks.warn.mockReset();
 	m.listObjects.mockResolvedValue({ objects: [] });
 	m.deleteObjects.mockResolvedValue({ deleted: 0, errors: [] });
@@ -2113,6 +2130,35 @@ describe("publishInstructionSnapshotActivity", () => {
 		});
 	});
 
+	it("starts email/webhook delivery for the rows the automatic publish wrote", async () => {
+		const rows = [
+			{ id: "n-1", userId: "member" },
+			{ id: "n-2", userId: "owner" },
+		];
+		m.publishInstructionSnapshot.mockResolvedValue({
+			published: true,
+			changed: true,
+		});
+		m.createInstructionPublishedNotifications.mockResolvedValueOnce(rows);
+
+		await expect(publishInstructionSnapshotActivity(snap)).resolves.toEqual(
+			{
+				published: true,
+			},
+		);
+
+		expect(
+			deliveryMocks.startExternalNotificationDelivery,
+		).toHaveBeenCalledWith(rows);
+		expect(
+			deliveryMocks.startExternalNotificationDelivery.mock
+				.invocationCallOrder[0],
+		).toBeGreaterThan(
+			m.createInstructionPublishedNotifications.mock
+				.invocationCallOrder[0]!,
+		);
+	});
+
 	it("notifies nobody on the idempotent retry or a refused fast-forward", async () => {
 		m.publishInstructionSnapshot.mockResolvedValueOnce({
 			published: true,
@@ -2128,6 +2174,9 @@ describe("publishInstructionSnapshotActivity", () => {
 
 		expect(
 			m.createInstructionPublishedNotifications,
+		).not.toHaveBeenCalled();
+		expect(
+			deliveryMocks.startExternalNotificationDelivery,
 		).not.toHaveBeenCalled();
 	});
 

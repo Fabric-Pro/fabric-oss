@@ -37,6 +37,13 @@
  * Idempotent: a second reset finds nothing, deletes nothing, writes no audit
  * row and queues no cleanup.
  *
+ * # One folder
+ *
+ * With `folder`, only the synced files under that folder of the working
+ * tree are deleted (`docs` selects `docs/a.md` and `docs/guides/b.md`, never
+ * `docs-archive/c.md`), with the same refusal, the same transaction and an
+ * audit row that names the folder. Without it, every synced file.
+ *
  * Authorization is the CALLER's job and must happen before this is reached.
  */
 
@@ -46,6 +53,10 @@ import {
 	CONTEXT_SYNC_TRANSACTION_TIMEOUT_MS,
 	lockContextRepositorySyncByProject,
 } from "./context-repository-sync";
+import {
+	escapeLikeLiteral,
+	normalizeSyncedContextResetFolder,
+} from "./context-source-path";
 import { createPendingVectorCleanup } from "./pending-vector-cleanup";
 import type { SyncedContextDeletionAuditContext } from "./synced-context-delete-audit";
 import {
@@ -54,9 +65,9 @@ import {
 } from "./synced-context-write";
 
 /**
- * A Living Memory reset: every synced file of a project deleted at once.
- * One row per reset that deleted something, with the count, never a path or
- * any content.
+ * A Living Memory reset: every synced file of a project, or of one folder,
+ * deleted at once. One row per reset that deleted something, with the count
+ * and, for a folder, the folder; never a file's path or any content.
  */
 export const SYNCED_CONTEXT_RESET_AUDIT_ACTION =
 	"project.context_source.synced_files_reset" as const;
@@ -81,6 +92,13 @@ export interface ResetSyncedContextRowsInput {
 	operationId: string;
 	/** The request the reset came from, for the audit row. */
 	audit: SyncedContextDeletionAuditContext;
+	/**
+	 * Only the synced files under this folder of the working tree, e.g.
+	 * `docs/guides`. Normalized with
+	 * {@link normalizeSyncedContextResetFolder}, which throws before the
+	 * transaction starts. Absent means every synced file.
+	 */
+	folder?: string;
 }
 
 export type ResetSyncedContextRowsResult =
@@ -105,6 +123,10 @@ export async function resetSyncedContextRows(
 	input: ResetSyncedContextRowsInput,
 ): Promise<ResetSyncedContextRowsResult> {
 	const { projectId, organizationId } = input;
+	const folder =
+		input.folder === undefined
+			? null
+			: normalizeSyncedContextResetFolder(input.folder);
 	// Exclusive: the organization arm, or the personal arm. Never OR-ed.
 	const tenantFilter = organizationId
 		? { organizationId }
@@ -133,10 +155,14 @@ export async function resetSyncedContextRows(
 				projectId,
 				...tenantFilter,
 				repositorySyncId: null,
+				sourcePath:
+					folder === null
+						? { not: null }
+						: { startsWith: escapeLikeLiteral(`${folder}/`) },
 			} satisfies Prisma.ProjectContextWhereInput;
 
 			const candidates = await tx.projectContext.findMany({
-				where: { ...scope, sourcePath: { not: null } },
+				where: scope,
 				select: { id: true },
 			});
 			if (candidates.length === 0) {
@@ -146,11 +172,7 @@ export async function resetSyncedContextRows(
 
 			for (const ids of chunks(candidateIds)) {
 				await tx.projectContext.deleteMany({
-					where: {
-						...scope,
-						id: { in: ids },
-						sourcePath: { not: null },
-					},
+					where: { ...scope, id: { in: ids } },
 				});
 			}
 			// What the guard kept: a row adopted by a sync after the read.
@@ -198,7 +220,9 @@ export async function resetSyncedContextRows(
 				},
 				resource: { type: "project", id: projectId },
 				metadata: {
-					scope: "project",
+					...(folder === null
+						? { scope: "project" }
+						: { scope: "folder", folder }),
 					deletedCount: deletedIds.length,
 					via: audit.via,
 					operationId: input.operationId,

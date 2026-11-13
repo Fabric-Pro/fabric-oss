@@ -58,6 +58,7 @@ vi.mock("@temporalio/workflow", () => ({
 	ParentClosePolicy: { ABANDON: "ABANDON" },
 }));
 
+import { patched } from "@temporalio/workflow";
 import { TOOL_RESULTS } from "../../orchestrator-config";
 import {
 	DISCOVER_REPO_TOOLS,
@@ -75,6 +76,8 @@ import {
 
 beforeEach(() => {
 	installDefaultStubs(mocks);
+	// Existing progression cases pin the legacy allowance independently of cap rollout.
+	mocks.off.add("orch-tool-result-cap-v2");
 });
 
 // ---------------------------------------------------------------------------
@@ -709,5 +712,233 @@ describe("round 3 fix 2: an escaped 2,048-character cursor survives exactly", ()
 		);
 		expect(noteFields(noteOf(shown)).nextCursor).toBe(cursor);
 		expect(shown.length).toBeLessThanOrEqual(TOOL_RESULTS.maxChars);
+	});
+});
+
+describe("versioned tool result cap", () => {
+	it.each([
+		[false, 20_000, true, false],
+		[true, 20_000, true, false],
+		[true, 32_000, true, false],
+		[true, 32_001, true, false],
+		[true, 20_000, false, false],
+		[true, 32_001, true, true],
+	] as const)(
+		"result with cap marker=%s, length=%s, chat=%s, read marker=%s",
+		async (enabled, length, chat, resultReads) => {
+			if (enabled) {
+				mocks.off.delete("orch-tool-result-cap-v2");
+			}
+			// Pre-cap histories also predate result reads; newer cap histories may
+			// replay without the result-read marker.
+			mocks.off[resultReads ? "delete" : "add"](
+				"orch-advisor-result-reads-v1",
+			);
+			const value = {
+				...slackResult(""),
+				messages: [{ content: "x".repeat(20_000) }],
+			};
+			value.messages[0].content = "x".repeat(
+				length -
+					JSON.stringify({ ...value, messages: [{ content: "" }] })
+						.length,
+			);
+			const body = JSON.stringify(value);
+			expect(body).toHaveLength(length);
+			mocks.stub("searchProjectSlackMessages").mockResolvedValue(value);
+			mocks.stub("summarizeLargeToolResult").mockResolvedValue("summary");
+			vi.mocked(patched).mockClear();
+			const { seen } = await runTurn(mocks, {
+				input: chat ? { turnId: "example-turn" } : {},
+				message: "Read the messages.",
+				steps: [
+					{
+						calls: [
+							{
+								name: "search_slack_messages",
+								args: { query: "launch" },
+							},
+						],
+					},
+					{ answer: "Done." },
+				],
+			});
+			expect(
+				vi
+					.mocked(patched)
+					.mock.calls.some(
+						([id]) => id === "orch-tool-result-cap-v2",
+					),
+			).toBe(chat);
+			const shown = toolMessage(seen, 1, "call-1-0");
+			if (chat && enabled && length <= 32_000) {
+				expect(shown).toBe(body);
+				expect(
+					mocks.stub("summarizeLargeToolResult"),
+				).not.toHaveBeenCalled();
+			} else if (chat && resultReads) {
+				const noteStart = shown.indexOf("\n\n[Host note:");
+				expect(noteStart).toBeGreaterThan(0);
+				expect(shown.slice(0, noteStart)).toBe(
+					body.slice(0, noteStart),
+				);
+				expect(shown.slice(noteStart)).toBe(
+					`\n\n[Host note: this is the exact result up to character ${noteStart} of ${length}. Read more with advisor_result_read ${JSON.stringify({ ref: "r1", offset: noteStart })}.]`,
+				);
+				expect(shown.length).toBeLessThanOrEqual(32_000);
+				expect(
+					mocks.stub("summarizeLargeToolResult"),
+				).not.toHaveBeenCalled();
+			} else {
+				expect(shown).toBe("summary");
+				expect(
+					mocks.stub("summarizeLargeToolResult"),
+				).toHaveBeenCalledWith(
+					expect.objectContaining({
+						maxOutputLength: chat && enabled ? 31_500 : 11_500,
+					}),
+				);
+			}
+		},
+	);
+});
+
+describe("versioned paged body allowance", () => {
+	it.each([
+		[true, true, 24_000],
+		[false, true, 8_000],
+		[true, false, 8_000],
+	] as const)(
+		"marker=%s chat=%s fits to %s",
+		async (enabled, chat, expected) => {
+			if (enabled) {
+				mocks.off.delete("orch-tool-result-cap-v2");
+			}
+			vi.mocked(patched).mockClear();
+			await runTurn(mocks, {
+				input: chat ? { turnId: "example-turn" } : {},
+				message: "Read the document.",
+				steps: [
+					{
+						calls: [
+							{
+								name: "fabric_get_project_document",
+								args: {
+									document: "doc-long",
+									maxLength: 40_000,
+								},
+							},
+						],
+					},
+					{ answer: "Done." },
+				],
+			});
+			expect(
+				mocks.stub("executeMcpTool").mock.calls[0][0].args.maxLength,
+			).toBe(expected);
+			expect(
+				vi
+					.mocked(patched)
+					.mock.calls.some(
+						([id]) => id === "orch-tool-result-cap-v2",
+					),
+			).toBe(chat);
+		},
+	);
+
+	it("shows the requested 24,000-character document page verbatim without summarizing", async () => {
+		mocks.off.delete("orch-tool-result-cap-v2");
+		const body = "0123456789abcdef".repeat(2_000);
+		const offset = 137;
+		mocks.stub("executeMcpTool").mockImplementation(async ({ args }) => {
+			const start = args.offset ?? 0;
+			const content = body.slice(start, start + args.maxLength);
+			const nextOffset = start + content.length;
+			return {
+				output: {
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify({
+								content,
+								truncated: nextOffset < body.length,
+								nextOffset,
+							}),
+						},
+					],
+				},
+				success: true,
+				durationMs: 1,
+				cached: false,
+			};
+		});
+		const { seen } = await runTurn(mocks, {
+			input: { turnId: "example-turn" },
+			message: "Read the document.",
+			steps: [
+				{
+					calls: [
+						{
+							name: "fabric_get_project_document",
+							args: {
+								document: "doc-long",
+								offset,
+								maxLength: 40_000,
+							},
+						},
+					],
+				},
+				{ answer: "Done." },
+			],
+		});
+		const expectedPage = body.slice(offset, offset + 24_000);
+		expect(expectedPage).toHaveLength(24_000);
+		expect(toolMessage(seen, 1, "call-1-0")).toBe(
+			JSON.stringify({
+				content: expectedPage,
+				truncated: true,
+				nextOffset: offset + 24_000,
+			}),
+		);
+		expect(mocks.stub("summarizeLargeToolResult")).not.toHaveBeenCalled();
+	});
+
+	// Guard the existing over-cap continuation handling at the larger page size.
+	// This fixed response does not exercise selection of the requested page size.
+	it("preserves existing overflow pagination for an escaped 24,000-character page", async () => {
+		mocks.off.delete("orch-tool-result-cap-v2");
+		const page = JSON.stringify({
+			content: '"'.repeat(24_000),
+			truncated: true,
+			nextOffset: 24_000,
+		});
+		expect(JSON.parse(page).content).toHaveLength(24_000);
+		expect(page.length).toBeGreaterThan(32_000);
+		mocks.stub("executeMcpTool").mockResolvedValue({
+			output: { content: [{ type: "text", text: page }] },
+			success: true,
+			durationMs: 1,
+			cached: false,
+		});
+		mocks.stub("summarizeLargeToolResult").mockResolvedValue("summary");
+		const { seen } = await runTurn(mocks, {
+			input: { turnId: "example-turn" },
+			message: "Read the document.",
+			steps: [
+				{
+					calls: [
+						{
+							name: "fabric_get_project_document",
+							args: { document: "doc-long", maxLength: 40_000 },
+						},
+					],
+				},
+				{ answer: "Done." },
+			],
+		});
+		const shown = toolMessage(seen, 1, "call-1-0");
+		expect(shown).toContain('"truncated":true');
+		expect(shown).toContain('"nextOffset":24000');
+		expect(shown.length).toBeLessThanOrEqual(32_000);
 	});
 });

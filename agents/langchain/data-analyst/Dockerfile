@@ -6,7 +6,7 @@
 # =============================================================================
 # Stage 1: Base - Install dependencies
 # =============================================================================
-FROM node:22-slim AS base
+FROM node:24-slim AS base
 
 # Install OpenSSL for Prisma and pnpm
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -110,7 +110,7 @@ RUN pnpm --filter data-analyst-agent build
 # =============================================================================
 # Stage 3: Production - Minimal runtime image
 # =============================================================================
-FROM node:22-slim AS production
+FROM node:24-slim AS production
 
 # Install OpenSSL and pnpm for production dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

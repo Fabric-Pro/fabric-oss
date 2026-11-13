@@ -203,6 +203,7 @@
 			"organizationSettings": "Organization settings",
 			"prompts": "Prompts",
 			"start": "Start",
+			"time": "Time",
 			"todos": "To Do"
 		},
 		"userMenu": {
@@ -210,7 +211,8 @@
 			"colorMode": "Color mode",
 			"documentation": "Documentation",
 			"home": "Home",
-			"logout": "Logout"
+			"logout": "Logout",
+			"highContrast": "High contrast"
 		},
 		"jobs": {
 			"sectionLabel": "Job Hub",
@@ -1367,6 +1369,24 @@
 			"title": "Organization",
 			"dangerZone": {
 				"title": "Danger zone"
+			},
+			"instructionTemplate": {
+				"title": "Coding instructions template",
+				"description": "The project whose published coding instructions your other projects can start from",
+				"label": "Template project",
+				"none": "No template",
+				"save": "Save",
+				"help": "Projects that upload their coding instructions can start from this project's published files, or add the ones they are missing. A project's own files always win, and later changes to the template are not copied automatically. Projects whose instructions come from a repository are not offered the template.",
+				"saved": "The coding instructions template was saved",
+				"cleared": "The organization no longer has a coding instructions template",
+				"saveFailed": "Failed to update the coding instructions template",
+				"notUploadMode": "That project's coding instructions come from a repository now. Choose a project whose instructions are uploaded to Fabric.",
+				"notFound": "That project is no longer in this organization. Choose another one.",
+				"forbidden": "Only organization admins and owners can change the template.",
+				"nothingPublished": "{name} (nothing published yet)",
+				"noCandidates": "No project in this organization uploads its coding instructions to Fabric yet.",
+				"loadFailed": "Failed to load the coding instructions template",
+				"loading": "Loading..."
 			}
 		},
 		"start": {
@@ -1865,7 +1885,7 @@
 						"metadata_updated": "Context source details updated",
 						"content_upserted": "Synced context file created, updated or moved",
 						"synced_file_deleted": "Synced context file deleted",
-						"synced_files_reset": "Living Memory reset (all synced files deleted)"
+						"synced_files_reset": "Living Memory reset (synced files deleted)"
 					},
 					"context": {
 						"repository_sync_configured": "Living Memory repository sync configured",
@@ -1889,6 +1909,9 @@
 						"deleted": "Coding-instructions version deleted",
 						"removed": "Coding instructions removed (all versions)",
 						"settings_updated": "Coding-instructions settings updated",
+						"set_created": "Coding Instructions set created",
+						"set_updated": "Coding Instructions set updated",
+						"set_deleted": "Coding Instructions set deleted",
 						"repository_sync_configured": "Coding-instructions repository sync configured",
 						"repository_sync_started": "Coding-instructions repository sync started",
 						"repository_sync_completed": "Coding-instructions repository sync finished",
@@ -1947,6 +1970,9 @@
 					"deletion_impact_viewed": "Prompt deletion impact viewed",
 					"system_deleted": "System prompt deleted"
 				},
+				"time": {
+					"report_exported": "Time report exported"
+				},
 				"admin": {
 					"auditLog": {
 						"viaApiKey": "Customer audit log queried (staff)"
@@ -1994,6 +2020,12 @@
 					},
 					"organization_distribution": {
 						"changed": "Organization distribution changed"
+					},
+					"screenshots": {
+						"capture_started": "Newsletter screenshot capture started",
+						"changed": "Newsletter images setting changed",
+						"environment_changed": "Newsletter screenshot environment changed",
+						"unpublished": "Newsletter images removed after sending"
 					},
 					"send": {
 						"approved": "Newsletter send approved",
@@ -2427,7 +2459,28 @@
 					"dismissCta": "Dismiss"
 				}
 			},
-			"title": "Account settings"
+			"title": "Account settings",
+			"appearance": {
+				"title": "Appearance",
+				"label": "Account",
+				"description": "Choose how Fabric looks for you. These settings are yours and do not change what anyone else in your organization sees.",
+				"colorMode": {
+					"title": "Color mode",
+					"description": "Light, dark, or whatever your operating system uses. Saved in this browser.",
+					"system": "System",
+					"light": "Light",
+					"dark": "Dark"
+				},
+				"highContrast": {
+					"title": "High contrast",
+					"description": "Stronger text, border and focus colors throughout the app. Works with light and dark mode, and is saved to your account so it follows you to every device.",
+					"label": "Use high contrast"
+				},
+				"notifications": {
+					"saveFailed": "Your high contrast setting is applied in this tab, but it could not be saved to your account. Other devices will not pick it up until it saves.",
+					"notSavedWhileImpersonating": "High contrast is applied on this page until you reload. It is not saved to an account you are impersonating."
+				}
+			}
 		},
 		"billing": {
 			"createCustomerPortal": {
@@ -2597,7 +2650,8 @@
 				"dangerZone": "Danger zone",
 				"general": "General",
 				"security": "Security",
-				"title": "Account"
+				"title": "Account",
+				"appearance": "Appearance"
 			},
 			"organization": {
 				"aiGateway": "AI Gateway",
@@ -2607,7 +2661,9 @@
 				"title": "Org",
 				"dangerZone": "Danger zone",
 				"companyContext": "Company context",
-				"meetingAssistant": "Meeting assistant"
+				"meetingAssistant": "Meeting assistant",
+				"timeTracking": "Time tracking",
+				"timeReports": "Time reports"
 			}
 		},
 		"save": "Save",
@@ -4023,6 +4079,18 @@
 					"done": "Living Memory reset: {count, plural, =0 {there were no synced files to delete} one {# synced file deleted} other {# synced files deleted}}.",
 					"failed": "Could not reset Living Memory: {message}"
 				},
+				"removeFolder": {
+					"action": "Remove folder",
+					"actionLabel": "Remove folder {folder}",
+					"title": "Remove the folder {folder}?",
+					"description": "This deletes every file synced into this project's Living Memory under {folder} ({count, plural, one {# file} other {# files}}, files in its subfolders included), for every member. Other folders and context sources are not affected. This cannot be undone. To restore the files, push the folder again with fabric context push.",
+					"confirmLabel": "Type the folder, {folder}, to confirm",
+					"cancel": "Cancel",
+					"confirm": "Remove folder",
+					"removing": "Removing…",
+					"done": "Folder {folder} removed: {count, plural, =0 {there were no synced files to delete} one {# synced file deleted} other {# synced files deleted}}.",
+					"failed": "Could not remove the folder {folder}: {message}"
+				},
 				"repositorySync": {
 					"entry": "Sync from repository",
 					"running": "Syncing…",
@@ -4565,6 +4633,8 @@
 				"started": "Document regeneration started",
 				"alreadyQueued": "A generation for this document is already queued — a second one was not started",
 				"alreadyRunning": "A generation for this document is already running — a second one was not started and new instructions were not applied",
+				"alreadyQueuedResearchNotApplied": "This document is already queued for generation with the settings it started with, so your instructions and web research choice were not applied. Try again once it finishes if you still need them.",
+				"alreadyRunningResearchNotApplied": "This document is already being generated with the settings it started with, so your instructions and web research choice were not applied. Try again once it finishes if you still need them.",
 				"liveRunUnknown": "Could not confirm whether a generation for this document is already running — try again in a moment",
 				"failed": "Failed to regenerate: {message}"
 			},
@@ -4582,6 +4652,18 @@
 				"badge": "Deprecated",
 				"message": "Feature recommendations now live in Roadmap. Use Roadmap to generate, review, accept, and manage AI-recommended Feature work items. Existing generated Features documents remain available as historical snapshots.",
 				"roadmapLink": "Go to Roadmap"
+			},
+			"webResearch": {
+				"label": "Allow web research",
+				"hint": "Fabric may search the web for public evidence when it helps. Searching isn't required. Search queries are checked for your organization and project names, and a query that contains them is blocked.",
+				"compactHint": "Fabric may search the web for public evidence. Queries are checked for your organization and project names.",
+				"missingSearch": "Web research needs a provider that can search the web, and this organization doesn't have one. Ask an organization admin to add one.",
+				"missingRead": "Web research needs a provider that can read web pages, and this organization doesn't have one. Ask an organization admin to add one.",
+				"missingBoth": "Web research needs a provider that can search the web and one that can read web pages, and this organization has neither. Ask an organization admin to add them.",
+				"settingsLink": "Open search provider settings",
+				"checking": "Checking whether this organization can research the web…",
+				"checkFailed": "Fabric couldn't check whether this organization can research the web, so it stays off for now. Try again in a moment.",
+				"fileSource": "Web research isn't available when the source is an attached file."
 			}
 		},
 		"stories": {
@@ -5970,6 +6052,13 @@
 			"badgeTooltip": "— found by AI in a Living Memory file. Review and complete the details.",
 			"legend": "— found by AI in a Living Memory file.",
 			"sourceNote": "captured from Living Memory",
+			"workItemLink": "Open {identifier}, the work item this decision came from",
+			"limits": {
+				"label": "Files only partly read for decisions",
+				"truncated": "only the first {limit, number} characters were read.",
+				"capped": "only the first {limit, number} decisions were kept.",
+				"more": "{count, plural, one {# more file was} other {# more files were}} only partly read."
+			},
 			"strip": {
 				"count": "{count, plural, one {# decision} other {# decisions}}",
 				"detected": "found in Living Memory files",
@@ -5983,7 +6072,7 @@
 				"paginationLabel": "Living Memory decision candidates pagination",
 				"previousPage": "Previous page, Living Memory candidates",
 				"nextPage": "Next page, Living Memory candidates",
-				"firstSyncSkipped": "{count, plural, one {# file} other {# files}} from the repository's first sync {count, plural, one {was} other {were}} not read for decisions. Scanning uses one AI request per file.",
+				"filesNotScanned": "{count, plural, one {# synced file has} other {# synced files have}} not been read for decisions yet. Scanning uses one AI request per file, and the project's reviewers are told when it finds decisions.",
 				"scanFirstSync": "Scan for decisions"
 			},
 			"dialog": {
@@ -7550,6 +7639,8 @@
 				"snapshotActive": "An upload or an edit is still being received or checked. Wait for it to finish, or delete it from History.",
 				"pullRequestUnresolved": "A proposal's pull request is still open or being closed. Wait for it to be merged or closed.",
 				"proposalPending": "A proposed change is waiting for review. Approve or reject it first.",
+				"templateChanged": "The organization template changed while its files were being copied. Try again.",
+				"templateUnavailable": "The organization template's files can't be copied right now. Ask an organization admin to publish the template again.",
 				"badRequest": "That wasn't accepted. Check it and try again.",
 				"preconditionFailed": "That can't be done in the project's current state. Refresh and try again.",
 				"tooManyRequests": "Too many requests. Wait a moment and try again.",
@@ -7580,6 +7671,7 @@
 				"body": "Upload the folder that holds your <claudeDir>.claude</claudeDir> directory, <claudeMd>CLAUDE.md</claudeMd>, knowledge docs and scripts, or sync it from the repository connected to this project.",
 				"bodyRepository": "Commit <claudeMd>AGENTS.md</claudeMd>, <claudeDir>.claude/</claudeDir> or <claudeDir>.codex/</claudeDir> to <claudeDir>{ref}</claudeDir>; Fabric picks it up.",
 				"uploadButton": "Upload folder",
+				"templateButton": "Start from the organization template",
 				"syncButton": "Sync from repository",
 				"syncNowButton": "Sync now",
 				"historyButton": "History",
@@ -7591,6 +7683,21 @@
 				"developersTitle": "Developers stay current",
 				"developersDescription": "Connect Claude Code, Codex, VS Code or Cursor with one step. Agents read the published files over the Fabric MCP server, and a session-start hook keeps a local checkout current.",
 				"connectButton": "Connect your agent"
+			},
+			"organizationTemplate": {
+				"resultTitle": "Files from the organization template",
+				"resultAdded": "{count, plural, one {# file was added} other {# files were added}} as version {version}. Fabric checks the new version now and publishes it when the checks pass.",
+				"resultNothingAdded": "This project already has every file the template could add, so nothing was changed.",
+				"skippedHeading": "{count, plural, one {# file left out} other {# files left out}}",
+				"reasonExists": "The project already has this file",
+				"reasonTreeConflict": "Clashes with a file or folder in the project",
+				"reasonExcluded": "The project's ignore rules leave it out",
+				"reasonIgnoreFile": "The project's own ignore rules apply",
+				"reasonSecretName": "Looks like a credential file",
+				"reasonInvalidPath": "Not a valid file path",
+				"reasonNonPortable": "The name cannot be created on every system",
+				"reasonTooLarge": "Larger than the size limit for one file",
+				"doneButton": "Done"
 			},
 			"uploadDialog": {
 				"pickTitle": "Upload a folder",
@@ -8070,6 +8177,7 @@
 				"connectButton": "Connect your agent",
 				"uploadNewVersionButton": "Upload new version",
 				"addFileButton": "Add file",
+				"applyTemplateButton": "Add files from the organization template",
 				"proposeFileButton": "Propose file",
 				"uploadButton": "Upload folder",
 				"repositoryUnknown": "the repository",
@@ -8820,6 +8928,7 @@
 					"removed": "Removed"
 				},
 				"morePaths": "and {count} more",
+				"lessonsTitle": "{count, plural, one {# new lesson} other {# new lessons}}",
 				"seenVersionGone": "Version {version}, the one you last saw, is no longer kept, so the changed files can't be listed.",
 				"proposalsTitle": "{count, plural, one {# proposal decided} other {# proposals decided}}",
 				"proposalApproved": "{title} was approved by {name}",
@@ -8857,6 +8966,34 @@
 				"tooLargeCommit": "This file is too large to compare here.",
 				"withheldRefused": "Fabric doesn't show this file: the secret scan refused the commit it is in.",
 				"withheldSecret": "Fabric doesn't show this file: it looks like it contains a secret."
+			},
+			"sets": {
+				"title": "Instruction sets",
+				"new": "New set",
+				"default": "Default",
+				"noRepositories": "No code repositories: these instructions apply nowhere yet.",
+				"uncovered": "No instructions apply to {names}: add them to a set.",
+				"editLabel": "Edit {name}",
+				"deleteLabel": "Delete {name}",
+				"deleteTitle": "Delete {name}?",
+				"deleteMessage": "The set leaves Fabric and its repositories get no instructions from it. Its files stay in the instructions repository.",
+				"delete": "Delete set",
+				"deleted": "{name} deleted. Its files stay in the instructions repository.",
+				"deleteFailed": "The set was not deleted.",
+				"newTitle": "New instruction set",
+				"editTitle": "Edit instruction set",
+				"dialogHelp": "A set's instructions are the files in its own folder under instructions/, and apply to the code repositories you choose. A repository can be in several sets.",
+				"name": "Name",
+				"slugStays": "Its files live in {folder}; that stays when you rename it.",
+				"repositories": "Code repositories",
+				"noCodeRepositories": "Connect a code repository to the project first.",
+				"cancel": "Cancel",
+				"save": "Save",
+				"create": "Create set",
+				"saved": "Set saved.",
+				"created": "{name} created.",
+				"saveFailed": "The set was not saved.",
+				"rootFolder": "the root"
 			}
 		},
 		"glossyEntry": {
@@ -9934,7 +10071,8 @@
 				"sectionRevised": "Section revised",
 				"updatedFromContext": "Updated from context",
 				"regenerated": "Regenerated",
-				"restored": "Restored to version {version}"
+				"restored": "Restored to version {version}",
+				"edited": "Edited"
 			}
 		},
 		"updateWithContext": {
@@ -11275,6 +11413,327 @@
 			"SHOULD": "Recommended",
 			"COULD": "Optional",
 			"NOT_APPLICABLE": "Not needed in this phase"
+		}
+	},
+	"timeTracking": {
+		"title": "My time",
+		"aboutTitle": "About My time",
+		"about": "Your own confirmed time across the projects of this organization. Only you see this page.",
+		"logTime": "Log time",
+		"view": "View",
+		"dayView": "Day",
+		"weekView": "Week",
+		"previousWeek": "Previous week",
+		"nextWeek": "Next week",
+		"previousDay": "Previous day",
+		"nextDay": "Next day",
+		"weekTotal": "This week",
+		"dayTotal": "This day",
+		"loading": "Loading your time",
+		"loadFailed": "Could not load your time. Try again later.",
+		"emptyWeek": "No time logged this week",
+		"week": {
+			"caption": "Time logged per project and day",
+			"project": "Project",
+			"total": "Total",
+			"today": "today",
+			"openCell": "{duration} on {project}, {date}. Open the day"
+		},
+		"day": {
+			"today": "today",
+			"logTime": "Log time",
+			"noLoggableProjects": "You cannot log time on any project in this organization.",
+			"entriesFor": "Entries for {date}",
+			"noEntries": "No time logged on this day."
+		},
+		"form": {
+			"date": "Work date",
+			"duration": "Duration",
+			"durationPlaceholder": "e.g. 1h 30m",
+			"startTime": "Start time",
+			"stopTime": "Stop time",
+			"stopDate": "Stop date",
+			"calculatedDuration": "Calculated duration",
+			"to": "to",
+			"on": "on",
+			"project": "Project",
+			"projectPlaceholder": "Project",
+			"activity": "Activity",
+			"workItem": "Work item",
+			"workItemPlaceholder": "Work item (optional)",
+			"workItemSearch": "Search work items",
+			"workItemLoading": "Loading work items…",
+			"workItemLoadFailed": "Could not load work items.",
+			"workItemNoMatches": "No matching work items.",
+			"clearWorkItem": "Remove work item",
+			"add": "Add",
+			"save": "Save",
+			"cancel": "Cancel",
+			"more": "More",
+			"aboutQuickEntry": "About logging time",
+			"aboutDuration": "Type 1h 30m, 1.5 or 90m and press Enter. Project and activity start from your last entry.",
+			"aboutStartStop": "This project needs start and stop times, and Fabric calculates the duration. For work past midnight, choose the next day as the stop date. The entry counts toward the day it started.",
+			"note": "Note",
+			"billable": "Billable",
+			"timeZone": "Time zone",
+			"added": "Time logged",
+			"updated": "Entry updated",
+			"saveFailed": "Could not save the entry. Try again.",
+			"problems": {
+				"project": "Choose a project.",
+				"duration": "Enter a duration such as 1h 30m.",
+				"times": "Enter a start and a stop time.",
+				"stopBeforeStart": "The stop time must be after the start time.",
+				"tooLong": "An entry can be at most 24 hours."
+			}
+		},
+		"warnings": {
+			"duplicate": "You already logged {duration} of {activity} on {target} for this date. Is this separate work?",
+			"duplicateConfirm": "Yes, add it",
+			"overLimit": "This makes {date} {total}. Keep it?",
+			"overLimitConfirm": "Yes, keep it",
+			"skip": "No, skip"
+		},
+		"suggestions": {
+			"title": "To confirm",
+			"aboutTitle": "About To confirm",
+			"about": "Time Fabric suggests from your own meetings, test runs, test work and work item edits. A duration is filled in only when a real start and stop are known; otherwise type how long you worked. Confirm or press Enter to log it, or choose Not work time. Open a row to change its note, billable, activity or work item first. On time and materials projects the list fills on its own after your meetings and when you open this page; on fixed bid projects, choose Check my activity. Suggestions expire at the end of the following week.",
+			"check": "Check my activity",
+			"checking": "Checking…",
+			"confirm": "Confirm",
+			"dismiss": "Not work time",
+			"confirmAll": "Confirm all with a known duration ({count})",
+			"showDetails": "Show details for {project}, {date}",
+			"hideDetails": "Hide details for {project}, {date}",
+			"description": "Note",
+			"dayHasSuggestions": "time to confirm",
+			"confirmed": "Time logged",
+			"confirmedMany": "{count, plural, one {# entry logged} other {# entries logged}}",
+			"confirmFailed": "Could not confirm the suggestion. Try again.",
+			"dismissFailed": "Could not dismiss the suggestion. Try again.",
+			"notices": {
+				"alreadyChecking": "Already checking your activity",
+				"unavailable": "Checking is not available now. Try again later.",
+				"failed": "Could not check your activity.",
+				"nothingNew": "Nothing new to confirm"
+			},
+			"evidence": {
+				"meetings": "{count, plural, one {# meeting} other {# meetings}}",
+				"testRuns": "{count, plural, one {# test run} other {# test runs}}",
+				"workItemEdits": "{count, plural, one {# work item edit} other {# work item edits}}",
+				"testResults": "{count, plural, one {# recorded test result} other {# recorded test results}}",
+				"testCaseChanges": "{count, plural, one {# test case change} other {# test case changes}}",
+				"pullRequestPushes": "{count, plural, one {# pull request push} other {# pull request pushes}}"
+			}
+		},
+		"entry": {
+			"nonBillable": "Non-billable",
+			"edit": "Edit {duration} of {activity}",
+			"summary": "{duration} of {activity}"
+		},
+		"delete": {
+			"action": "Delete",
+			"title": "Delete this entry?",
+			"description": "{summary} will be removed from your time. This cannot be undone.",
+			"cancel": "Cancel",
+			"confirm": "Delete",
+			"deleted": "Entry deleted",
+			"failed": "Could not delete the entry. Try again."
+		},
+		"story": {
+			"title": "My time on this item",
+			"aboutTitle": "About my time on this item",
+			"about": "Only your own time on this work item is shown here.",
+			"logTime": "Log time",
+			"loadFailed": "Could not load your time on this item.",
+			"empty": "You have not logged time on this item."
+		},
+		"settings": {
+			"title": "Time tracking",
+			"aboutTitle": "About time tracking settings",
+			"about": "Members can always log time by hand. These settings apply to new entries only: existing entries keep the rules they were saved with. Changes save as you make them.",
+			"readOnly": "Only administrators can change these settings.",
+			"loadFailed": "Could not load the time-tracking settings. Try again later.",
+			"saveFailed": "Could not save the change. Try again.",
+			"projectType": "Project type",
+			"aboutProjectTypeTitle": "About project type",
+			"aboutProjectType": "Fixed bid: members log time when they choose to. Time and materials: time is expected, and the project is in the month-end time report. The report follows each project's current type, so switching moves all of this project's past time into or out of that view. The entries themselves do not change.",
+			"entryRules": "Entry rules",
+			"aboutEntryRulesTitle": "About entry rules",
+			"aboutEntryRules": "Require start and stop times: members enter two times and Fabric calculates the duration. When your organization requires it, it is on here and cannot be turned off. New entries start as: the billable value each new entry begins with. Members can change it on any entry.",
+			"aboutOrganizationEntryRules": "These rules apply to every project. A project can also require start and stop times, but cannot turn off this requirement. A project can set its own billable default instead of this one.",
+			"requireStartStop": "Require start and stop times",
+			"setByOrganization": "Set by your organization",
+			"defaultBillable": "New entries start as",
+			"billableInherit": "Organization default ({value})",
+			"billable": "Billable",
+			"notBillable": "Not billable",
+			"viewReport": "View time report"
+		},
+		"report": {
+			"titleOrganization": "Time reports",
+			"titleProject": "Time report",
+			"aboutTitle": "About time reports",
+			"about": "Everyone's confirmed time in the chosen month, including people who have since left. The project type filter uses each project's current type, so a project's past time follows its type. The CSV has one line per entry and adds up to the same totals.",
+			"previousMonth": "Previous month",
+			"nextMonth": "Next month",
+			"total": "Total",
+			"billablePart": "{duration} billable",
+			"exportCsv": "Export CSV",
+			"exportFailed": "Could not export the report. Try again.",
+			"loading": "Loading the report",
+			"loadFailed": "Could not load the report. Try again later.",
+			"empty": "No time in this month",
+			"emptyRange": "No time in this range",
+			"tooManyRows": "This report has too many entries to show at once. Narrow the filters to see it.",
+			"noAccess": "You do not have access to this time report.",
+			"filters": {
+				"filter": "Filter",
+				"activeCount": "{count, plural, one {# active filter} other {# active filters}}",
+				"project": "Project",
+				"person": "Person",
+				"billable": "Billable",
+				"activity": "Activity",
+				"projectType": "Project type",
+				"allProjects": "All projects",
+				"everyone": "Everyone",
+				"all": "All",
+				"billableOnly": "Billable",
+				"nonBillableOnly": "Non-billable",
+				"allActivities": "All activities",
+				"allTypes": "All project types",
+				"workItem": "Work item",
+				"period": "Period",
+				"periodMonth": "Month",
+				"periodCustom": "Custom range",
+				"rangeFrom": "From",
+				"rangeTo": "To",
+				"rangeInvalid": "Choose a start date and an end date on or after it.",
+				"rangeTooLong": "Choose a range of at most {days} days.",
+				"clear": "Clear"
+			},
+			"table": {
+				"caption": "Time per project",
+				"project": "Project",
+				"people": "People",
+				"billable": "Billable",
+				"nonBillable": "Non-billable",
+				"total": "Total",
+				"showAll": "Show all {count} entries"
+			}
+		},
+		"timer": {
+			"start": "Start timer",
+			"runningButton": "Timer running",
+			"pausedButton": "Timer paused",
+			"openTimer": "Open the timer",
+			"switchHere": "Stop it and start one here",
+			"started": "Timer started",
+			"startFailed": "Could not start the timer. Try again.",
+			"changeFailed": "Could not change the timer. Try again.",
+			"stopFailed": "Could not stop the timer. Try again.",
+			"changedElsewhere": "Your timer changed in another tab or device. This is its current state.",
+			"alreadyRunning": "You already have a timer running.",
+			"discarded": "Timer discarded",
+			"nothingSaved": "The timer ran under a minute, so nothing was saved.",
+			"spokenDuration": "{hours, plural, =0 {} one {# hour } other {# hours }}{minutes, plural, one {# minute} other {# minutes}}",
+			"chipLabel": "Timer {state}, {duration}, {project}. Open the timer",
+			"panelLabel": "Timer",
+			"since": "since {time}",
+			"minimize": "Minimize the timer",
+			"close": "Close the timer widget",
+			"state": {
+				"running": "Running",
+				"paused": "Paused",
+				"long": "Running a long time",
+				"saved": "Saved"
+			},
+			"fields": {
+				"project": "Project",
+				"activity": "Activity",
+				"workItem": "Work item",
+				"note": "Note",
+				"notePlaceholder": "Add a note"
+			},
+			"pause": "Pause",
+			"resume": "Resume",
+			"stopAndSave": "Stop and save",
+			"discard": "Discard",
+			"discardQuestion": "Discard without saving?",
+			"discardCancel": "Keep it",
+			"discardConfirm": "Discard",
+			"question": {
+				"title": "Stop at {time}?",
+				"lastAction": "Last action: {action}, {time}",
+				"yourLastAction": "your last action",
+				"noActivity": "No activity in Fabric since the timer started.",
+				"stopAt": "Stop at {time}",
+				"stopNow": "Stop now",
+				"pickTime": "Pick a time",
+				"pickLabel": "Stop time",
+				"pickSave": "Stop at this time",
+				"pickInvalid": "Pick a time between {start} and now.",
+				"cancel": "Cancel"
+			},
+			"actions": {
+				"created": "created {object}",
+				"edited": "edited {object}",
+				"deleted": "deleted {object}",
+				"worked": "worked on {object}"
+			},
+			"objects": {
+				"testCase": "test cases",
+				"todo": "a to-do",
+				"comment": "a comment",
+				"workItem": "a work item",
+				"document": "a document",
+				"agent": "an agent",
+				"workflow": "a workflow",
+				"meeting": "a meeting",
+				"time": "your time",
+				"project": "a project"
+			},
+			"saved": {
+				"close": "Close the timer widget",
+				"entries": "{count, plural, =0 {No entries} one {One entry} other {# entries}} added to {date}",
+				"startAgain": "Start again",
+				"openInMyTime": "Open in My time",
+				"undo": "Undo",
+				"undone": "The timer's entries were removed.",
+				"undoFailed": "Could not remove every entry. Try again."
+			},
+			"closeMenu": {
+				"hide": "Hide until the next timer",
+				"hideHint": "The timer keeps running. A dot on My time shows it.",
+				"off": "Don't show the timer widget",
+				"offHint": "Turn it back on in the timer settings on My time.",
+				"hidden": "Timer widget hidden until the next timer.",
+				"turnedOff": "Timer widget turned off.",
+				"undo": "Undo"
+			},
+			"nav": {
+				"running": "Timer running",
+				"paused": "Timer paused",
+				"long": "Timer running a long time"
+			},
+			"settings": {
+				"open": "Timer settings",
+				"title": "Timer",
+				"widget": "Timer widget",
+				"aboutWidgetTitle": "About the timer widget",
+				"aboutWidget": "A small timer at the bottom right of every page while a timer runs, is paused or has just been saved. When it is off, a running timer still shows as a dot on My time.",
+				"reminders": "Reminders",
+				"aboutRemindersTitle": "About reminders",
+				"aboutReminders": "One browser notification per timer, when it has run over four hours or when you seem to have stopped working. Never for a paused timer.",
+				"blocked": "Notifications are blocked for Fabric in this browser.",
+				"unsupported": "This browser cannot show notifications.",
+				"notAllowedYet": "Allow notifications in this browser to get reminders.",
+				"saveFailed": "Could not save the setting. Try again."
+			},
+			"reminder": {
+				"title": "Your timer is still running",
+				"body": "{project} · since {time}"
+			}
 		}
 	},
 	"todos": {

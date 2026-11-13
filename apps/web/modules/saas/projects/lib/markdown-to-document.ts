@@ -26,7 +26,9 @@
  *
  * A GFM table renders as a table in both formats, header row first, the way
  * the Glossy renderer draws one; before, each row came out as a line of raw
- * pipes.
+ * pipes. A `>` blockquote renders indented behind a grey bar, its paragraphs
+ * kept apart and its bold text still bold, rather than as a paragraph opening
+ * with a literal `>`.
  */
 
 import { stripVisualSlots } from "@repo/utils/glossy/visual-slots";
@@ -34,8 +36,12 @@ import { wrapFlowchartNodeLabels } from "@repo/utils/proposal-artifact/diagram-l
 import type { LiveDiagramEngine } from "@repo/utils/proposal-artifact/diagram-printability";
 import {
 	isThematicBreak,
+	layOutPdfRuns,
 	layOutPdfTable,
 	normalizeOrderedMarkerEscape,
+	type PlacedPdfRun,
+	readBoldRuns,
+	readMarkdownBlockquote,
 	readMarkdownTable,
 	stripInlineMarkdown,
 	svgToPng,
@@ -496,6 +502,66 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 		y += 10;
 	};
 
+	// A quote's paragraphs, indented in dark grey behind a thin grey bar,
+	// their bold text (a notice's label) still bold. The bar is drawn a
+	// line at a time, so a quote that crosses a page keeps its bar on both
+	// pages.
+	const drawBlockquote = (paragraphs: readonly string[]) => {
+		const indent = 12;
+		const lineHeight = 15;
+		const width = contentWidth - indent;
+		const setWeight = (bold: boolean) =>
+			doc.setFont("helvetica", bold ? "bold" : "normal");
+		doc.setFontSize(11);
+		paragraphs.forEach((paragraph, index) => {
+			if (index > 0) {
+				y += 4;
+			}
+			const runs = readBoldRuns(paragraph);
+			setWeight(false);
+			const lines: PlacedPdfRun[][] = runs.some((run) => run.bold)
+				? layOutPdfRuns(
+						runs,
+						width,
+						// Measured without kerning, as `text` draws it:
+						// `getTextWidth` kerns, and the words after a bold
+						// label would start inside it.
+						(text, bold) => {
+							setWeight(bold);
+							return (
+								(doc.getStringUnitWidth(text, { kerning: {} }) *
+									doc.getFontSize()) /
+								doc.internal.scaleFactor
+							);
+						},
+						(text, bold, within) => {
+							setWeight(bold);
+							return doc.splitTextToSize(text, within);
+						},
+					)
+				: (
+						doc.splitTextToSize(
+							runs[0]?.text ?? "",
+							width,
+						) as string[]
+					).map((text) => [{ text, bold: false, x: 0 }]);
+			for (const line of lines) {
+				checkPageBreak(lineHeight);
+				doc.setFillColor(187, 187, 187);
+				doc.rect(margin, y - 11, 2, lineHeight, "F");
+				doc.setTextColor(68, 68, 68);
+				for (const run of line) {
+					setWeight(run.bold);
+					doc.text(run.text, margin + indent + run.x, y);
+				}
+				y += lineHeight;
+			}
+		});
+		setWeight(false);
+		doc.setTextColor(0, 0, 0);
+		y += 4;
+	};
+
 	// Visual slots are Glossy layout, not content (R38).
 	const lines = stripVisualSlots(content).split("\n");
 	let i = 0;
@@ -506,6 +572,15 @@ export async function renderMarkdownToPdf(content: string): Promise<Blob> {
 		if (table) {
 			drawTable(table);
 			i = table.next;
+			continue;
+		}
+
+		// Read before the list and paragraph branches, so `> - item` stays
+		// part of the quote rather than becoming a bullet.
+		const quote = readMarkdownBlockquote(lines, i);
+		if (quote) {
+			drawBlockquote(quote.paragraphs);
+			i = quote.next;
 			continue;
 		}
 
@@ -691,6 +766,7 @@ export async function renderMarkdownToDocx(
 		TableCell,
 		WidthType,
 		ShadingType,
+		BorderStyle,
 	} = await import("docx");
 
 	const children: (
@@ -804,6 +880,30 @@ export async function renderMarkdownToDocx(
 			);
 			children.push(new Paragraph({}));
 			i = table.next;
+			continue;
+		}
+
+		// Read before the list and paragraph branches, so `> - item` stays
+		// part of the quote rather than becoming a bullet.
+		const quote = readMarkdownBlockquote(lines, i);
+		if (quote) {
+			for (const paragraph of quote.paragraphs) {
+				children.push(
+					new Paragraph({
+						children: parseInline(paragraph),
+						indent: { left: 360 },
+						border: {
+							left: {
+								style: BorderStyle.SINGLE,
+								size: 12,
+								color: "BBBBBB",
+								space: 8,
+							},
+						},
+					}),
+				);
+			}
+			i = quote.next;
 			continue;
 		}
 
