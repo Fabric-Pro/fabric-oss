@@ -167,7 +167,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.18)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.3.2(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.221.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -191,7 +191,7 @@ importers:
         version: link:../../../packages/observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       undici:
         specifier: ^8.12.2
         version: 8.12.3
@@ -265,10 +265,10 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.18)
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       uuid:
         specifier: ^14.0.2
         version: 14.0.2
@@ -308,7 +308,7 @@ importers:
         version: 0.2.141(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.6.7)
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.18)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.3.2(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.221.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -347,7 +347,7 @@ importers:
         version: 2.1.1
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       next:
         specifier: 16.4.2
         version: 16.4.2(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@20.19.27)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
@@ -429,7 +429,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.18)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.3.2(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.221.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -465,7 +465,7 @@ importers:
         version: link:../../../packages/observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       undici:
         specifier: ^8.12.2
         version: 8.12.3
@@ -496,7 +496,7 @@ importers:
         version: 1.80.0(fe7b100d86507b22702e53a2fee7cfa6)
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.18)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.3.2(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.221.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -535,7 +535,7 @@ importers:
         version: link:../../../packages/utils
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       undici:
         specifier: ^8.12.2
         version: 8.12.3
@@ -566,7 +566,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.18)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.3.2(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.221.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -593,7 +593,7 @@ importers:
         version: link:../../../packages/observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       undici:
         specifier: ^8.12.2
         version: 8.12.3
@@ -621,7 +621,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.18)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.3.2(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.221.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -648,7 +648,7 @@ importers:
         version: link:../../../packages/observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       undici:
         specifier: ^8.12.2
         version: 8.12.3
@@ -676,7 +676,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.18)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.3.2(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.221.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -703,7 +703,7 @@ importers:
         version: link:../../../packages/observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       undici:
         specifier: ^8.12.2
         version: 8.12.3
@@ -731,7 +731,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.18)
       '@langchain/core':
         specifier: ^1.3.2
         version: 1.3.2(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.221.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))
@@ -755,7 +755,7 @@ importers:
         version: link:../../../packages/rag
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       undici:
         specifier: ^8.12.2
         version: 8.12.3
@@ -783,7 +783,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.18)
       '@repo/agent-runtime':
         specifier: workspace:*
         version: link:../../../packages/agent-runtime
@@ -801,7 +801,7 @@ importers:
         version: 7.0.140(zod@4.6.7)
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       nunjucks:
         specifier: ^3.2.4
         version: 3.2.4(chokidar@3.6.0)
@@ -835,7 +835,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.18)
       '@repo/agent-runtime':
         specifier: workspace:*
         version: link:../../../packages/agent-runtime
@@ -844,7 +844,7 @@ importers:
         version: link:../../../packages/observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
     devDependencies:
       '@types/node':
         specifier: ^20.10.0
@@ -1094,7 +1094,7 @@ importers:
         version: link:../../packages/utils
       '@scalar/hono-api-reference':
         specifier: ^0.9.23
-        version: 0.9.23(hono@4.13.13)
+        version: 0.9.23(hono@4.13.18)
       '@tanstack/react-query':
         specifier: ^5.90.6
         version: 5.90.6(react@19.2.0)
@@ -1253,7 +1253,7 @@ importers:
         version: 16.8.2(@tailwindcss/oxide@4.1.16)(@types/mdx@2.0.13)(@types/react-dom@19.2.2(@types/react@19.2.2))(@types/react@19.2.2)(fumadocs-core@16.8.2(@mdx-js/mdx@3.1.1(supports-color@10.2.2))(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.2)(lucide-react@0.552.0(react@19.2.0))(next@16.4.2(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@24.10.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(sass@1.51.0))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(supports-color@10.2.2)(zod@4.6.7))(next@16.4.2(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@24.10.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(sass@1.51.0))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(tailwindcss@4.1.16)
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       html-to-image:
         specifier: ^1.11.13
         version: 1.11.13
@@ -1512,7 +1512,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.18)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.3.2(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.221.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@7.19.0(@aws-sdk/credential-provider-node@3.972.92)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -1560,7 +1560,7 @@ importers:
         version: link:../utils
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       undici:
         specifier: ^8.12.2
         version: 8.12.3
@@ -1637,7 +1637,7 @@ importers:
         version: 6.3.0(@aws-sdk/credential-provider-node@3.972.92)(@cfworker/json-schema@4.1.1)(@smithy/signature-v4@5.7.5)(bufferutil@4.0.9)(supports-color@10.2.2)(undici@6.29.1)(utf-8-validate@5.0.10)(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7)
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       uuid:
         specifier: ^14.0.2
         version: 14.0.2
@@ -1898,7 +1898,7 @@ importers:
         version: link:../utils
       '@scalar/hono-api-reference':
         specifier: ^0.9.23
-        version: 0.9.23(hono@4.13.13)
+        version: 0.9.23(hono@4.13.18)
       '@sindresorhus/slugify':
         specifier: ^3.0.0
         version: 3.0.0
@@ -1934,7 +1934,7 @@ importers:
         version: 2.0.4
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       ioredis:
         specifier: ^5.11.1
         version: 5.11.1(supports-color@10.2.2)
@@ -2713,13 +2713,13 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.1.6
-        version: 2.1.6(hono@4.13.13)
+        version: 2.1.6(hono@4.13.18)
       '@repo/observability':
         specifier: workspace:*
         version: link:../observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.13
+        version: 4.13.18
       shell-quote:
         specifier: ^1.11.0
         version: 1.12.0
@@ -15043,8 +15043,8 @@ packages:
       hono:
         optional: true
 
-  hono@4.13.13:
-    resolution: {integrity: sha512-CQ46U0ZkAGmbT/4UxdzzGJpacP2IeKgY4a5/tOI9AABbpOMfK739wfDXmv1usCk+3RkKj1hQy4/fjhiwa2xlrA==}
+  hono@4.13.18:
+    resolution: {integrity: sha512-H9q/E1XizaWstJxUW881dmLxEj+t/TrGGnyxINkm4+sK0qUwsMtFdo2BWI9Vs3cIS19MU6b6iCijoUoEf4f3DA==}
     engines: {node: '>=16.9.0'}
 
   hookable@6.1.2:
@@ -21892,7 +21892,7 @@ snapshots:
       '@cloudflare/containers': 0.3.7
       aws4fetch: 1.0.20
       capnweb: 0.8.0
-      hono: 4.13.13
+      hono: 4.13.18
     optionalDependencies:
       '@openai/agents': 0.3.9(@cfworker/json-schema@4.1.1)(bufferutil@4.0.9)(supports-color@10.2.2)(utf-8-validate@5.0.10)(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7)
 
@@ -22209,7 +22209,7 @@ snapshots:
       '@copilotkit/license-verifier': 0.5.0
       '@copilotkit/shared': 1.80.0(@ag-ui/core@1.0.2(patch_hash=153de2e00fea90a9c5f72a661e584c87c49fcd96634ffb4d97aafac580e95bf6)(zod@4.6.7))(encoding@0.1.13)
       '@graphql-yoga/plugin-defer-stream': 3.24.4(graphql-yoga@5.24.4(graphql@16.14.2))(graphql@16.14.2)
-      '@hono/node-server': 2.1.6(hono@4.13.13)
+      '@hono/node-server': 2.1.6(hono@4.13.18)
       '@langchain/core': 1.3.2(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.221.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.12.0(@opentelemetry/api@1.9.1))(openai@7.19.0(@aws-sdk/credential-provider-node@3.972.92)(@smithy/signature-v4@5.7.5)(undici@6.29.1)(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))
       '@modelcontextprotocol/sdk': 1.32.1(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@3.25.76)
       '@remix-run/node-fetch-server': 0.13.3
@@ -22223,7 +22223,7 @@ snapshots:
       graphql: 16.14.2
       graphql-scalars: 1.25.0(graphql@16.14.2)
       graphql-yoga: 5.24.4(graphql@16.14.2)
-      hono: 4.13.13
+      hono: 4.13.18
       openai: 7.19.0(@aws-sdk/credential-provider-node@3.972.92)(@smithy/signature-v4@5.7.5)(undici@6.29.1)(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7)
       partial-json: 0.1.7
       phoenix: 1.8.13
@@ -22277,7 +22277,7 @@ snapshots:
       '@copilotkit/license-verifier': 0.5.0
       '@copilotkit/shared': 1.80.0(@ag-ui/core@1.0.2(patch_hash=153de2e00fea90a9c5f72a661e584c87c49fcd96634ffb4d97aafac580e95bf6)(zod@4.6.7))(encoding@0.1.13)
       '@graphql-yoga/plugin-defer-stream': 3.24.4(graphql-yoga@5.24.4(graphql@16.14.2))(graphql@16.14.2)
-      '@hono/node-server': 2.1.6(hono@4.13.13)
+      '@hono/node-server': 2.1.6(hono@4.13.18)
       '@langchain/core': 1.3.2(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.221.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@7.19.0(@aws-sdk/credential-provider-node@3.972.92)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))
       '@modelcontextprotocol/sdk': 1.32.1(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@3.25.76)
       '@remix-run/node-fetch-server': 0.13.3
@@ -22291,7 +22291,7 @@ snapshots:
       graphql: 16.14.2
       graphql-scalars: 1.25.0(graphql@16.14.2)
       graphql-yoga: 5.24.4(graphql@16.14.2)
-      hono: 4.13.13
+      hono: 4.13.18
       openai: 7.19.0(@aws-sdk/credential-provider-node@3.972.92)(@smithy/signature-v4@5.7.5)(undici@8.12.3)(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.7)
       partial-json: 0.1.7
       phoenix: 1.8.13
@@ -23461,9 +23461,9 @@ snapshots:
 
   '@hexagon/base64@1.1.28': {}
 
-  '@hono/node-server@2.1.6(hono@4.13.13)':
+  '@hono/node-server@2.1.6(hono@4.13.18)':
     dependencies:
-      hono: 4.13.13
+      hono: 4.13.18
 
   '@hookform/resolvers@5.2.2(react-hook-form@7.66.0(react@19.2.0))':
     dependencies:
@@ -24015,8 +24015,8 @@ snapshots:
       '@modelcontextprotocol/sdk': 1.32.1(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.6.7)
       '@sindresorhus/slugify': 2.2.1
       dotenv: 17.2.3
-      hono: 4.13.13
-      hono-openapi: 1.1.2(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(@standard-schema/spec@1.1.0)(effect@3.21.0)(openapi-types@12.1.3)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod@4.6.7))(@types/json-schema@7.0.15)(hono@4.13.13)(openapi-types@12.1.3)
+      hono: 4.13.18
+      hono-openapi: 1.1.2(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(@standard-schema/spec@1.1.0)(effect@3.21.0)(openapi-types@12.1.3)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod@4.6.7))(@types/json-schema@7.0.15)(hono@4.13.18)(openapi-types@12.1.3)
       js-tiktoken: 1.0.21
       json-schema: 0.4.0
       lru-cache: 11.2.2
@@ -24146,7 +24146,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@3.25.76)':
     dependencies:
-      '@hono/node-server': 2.1.6(hono@4.13.13)
+      '@hono/node-server': 2.1.6(hono@4.13.18)
       ajv: 8.18.0
       ajv-formats: 3.0.1
       content-type: 1.0.5
@@ -24156,7 +24156,7 @@ snapshots:
       eventsource-parser: 3.1.1
       express: 5.2.1(supports-color@10.2.2)
       express-rate-limit: 8.4.1(express@5.2.1(supports-color@10.2.2))
-      hono: 4.13.13
+      hono: 4.13.18
       jose: 6.2.12
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -24170,7 +24170,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.6.7)':
     dependencies:
-      '@hono/node-server': 2.1.6(hono@4.13.13)
+      '@hono/node-server': 2.1.6(hono@4.13.18)
       ajv: 8.18.0
       ajv-formats: 3.0.1
       content-type: 1.0.5
@@ -24180,7 +24180,7 @@ snapshots:
       eventsource-parser: 3.1.1
       express: 5.2.1(supports-color@10.2.2)
       express-rate-limit: 8.4.1(express@5.2.1(supports-color@10.2.2))
-      hono: 4.13.13
+      hono: 4.13.18
       jose: 6.2.12
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -27594,10 +27594,10 @@ snapshots:
     dependencies:
       '@scalar/types': 0.4.0
 
-  '@scalar/hono-api-reference@0.9.23(hono@4.13.13)':
+  '@scalar/hono-api-reference@0.9.23(hono@4.13.18)':
     dependencies:
       '@scalar/core': 0.3.21
-      hono: 4.13.13
+      hono: 4.13.18
 
   '@scalar/openapi-types@0.5.1':
     dependencies:
@@ -33300,16 +33300,16 @@ snapshots:
 
   highlightjs-vue@1.0.0: {}
 
-  hono-openapi@1.1.2(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(@standard-schema/spec@1.1.0)(effect@3.21.0)(openapi-types@12.1.3)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod@4.6.7))(@types/json-schema@7.0.15)(hono@4.13.13)(openapi-types@12.1.3):
+  hono-openapi@1.1.2(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(@standard-schema/spec@1.1.0)(effect@3.21.0)(openapi-types@12.1.3)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod@4.6.7))(@types/json-schema@7.0.15)(hono@4.13.18)(openapi-types@12.1.3):
     dependencies:
       '@standard-community/standard-json': 0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7)
       '@standard-community/standard-openapi': 0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod-to-json-schema@3.25.2(zod@4.6.7))(zod@4.6.7))(@standard-schema/spec@1.1.0)(effect@3.21.0)(openapi-types@12.1.3)(typebox@1.3.27)(valibot@1.4.2(typescript@5.9.3))(zod@4.6.7)
       '@types/json-schema': 7.0.15
       openapi-types: 12.1.3
     optionalDependencies:
-      hono: 4.13.13
+      hono: 4.13.18
 
-  hono@4.13.13: {}
+  hono@4.13.18: {}
 
   hookable@6.1.2: {}
 
