@@ -31,7 +31,7 @@
 	},
 	"dependencies": {
 		"@fabric-harness/client": "6.3.0",
-		"hono": "^4.13.11",
+		"hono": "^4.13.16",
 		"uuid": "^14.0.2"
 	},
 	"devDependencies": {
