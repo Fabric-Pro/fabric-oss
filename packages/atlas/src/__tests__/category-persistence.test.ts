@@ -35,7 +35,20 @@ const ctx = { userId: "user-1", organizationId: "org-1" };
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mockTransaction.mockResolvedValue([]);
+	mockTransaction.mockImplementation(async (callback) =>
+		typeof callback !== "function"
+			? Promise.all(callback)
+			: callback({
+					atlasNode: {
+						deleteMany: mockNodeDeleteMany,
+						createMany: mockNodeCreateMany,
+					},
+					atlasEdge: {
+						deleteMany: mockEdgeDeleteMany,
+						createMany: mockEdgeCreateMany,
+					},
+				}),
+	);
 });
 
 describe("persistBusinessGraph — capability category", () => {

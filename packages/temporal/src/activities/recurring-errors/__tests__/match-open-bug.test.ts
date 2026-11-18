@@ -38,7 +38,10 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-import { createOpenBugMatcher } from "../match-open-bug";
+import {
+	createOpenBugMatcher,
+	detectionTextForErrorGroup,
+} from "../match-open-bug";
 
 const INPUT = {
 	projectId: "proj_1",
@@ -301,8 +304,8 @@ describe("createOpenBugMatcher", () => {
 	});
 
 	it("lets a later group join a proposal the same scan filed", async () => {
-		// One open bug unlike both groups keeps the first check from being a
-		// no-op, so the first group's vector is computed and can be remembered.
+		// With a non-empty pool, the remembered group reuses the vector computed
+		// in its own check when a later group compares against its proposal.
 		mocks.listOpenBugStoriesForMatching.mockResolvedValue([
 			bug("b_far", "Avatar upload rejects PNG files"),
 		]);
@@ -331,6 +334,146 @@ describe("createOpenBugMatcher", () => {
 			kind: "proposal",
 			proposalId: "prop_new",
 		});
+	});
+
+	describe("when the scan starts empty", () => {
+		beforeEach(() => {
+			mocks.listOpenBugStoriesForMatching.mockResolvedValue([]);
+			mocks.loadStoryVectors.mockResolvedValue({
+				vectors: new Map(),
+				embedded: 0,
+			});
+		});
+
+		it.each([
+			["same_work_item", 0.7, true],
+			["distinct", 0.9, false],
+			["same_work_item", 0.69, false],
+		] as const)(
+			"compares the second group: %s at %s",
+			async (relationship, confidence, matches) => {
+				answer({
+					"Fix checkout timeouts": { relationship, confidence },
+				});
+				const matcher = createOpenBugMatcher(INPUT);
+				expect(await matcher.check(GROUP)).toEqual({
+					match: null,
+					checked: [],
+				});
+				matcher.remember(GROUP, "prop_new", "Fix checkout timeouts");
+				expect(mocks.generateEmbeddings).not.toHaveBeenCalled();
+				expect(mocks.generateText).not.toHaveBeenCalled();
+				const second = await matcher.check({
+					...GROUP,
+					fingerprint: "fp_2",
+				});
+				expect(mocks.generateEmbeddings.mock.calls[1]?.[0]).toEqual([
+					detectionTextForErrorGroup(GROUP),
+				]);
+				expect(second.checked).toHaveLength(1);
+				expect(second.match).toEqual(
+					matches
+						? {
+								kind: "proposal",
+								proposalId: "prop_new",
+								identifier: "Fix checkout timeouts",
+								confidence,
+							}
+						: null,
+				);
+			},
+		);
+
+		it("does not embed eagerly when a group is remembered without a vector", async () => {
+			const matcher = createOpenBugMatcher(INPUT);
+			await matcher.check(GROUP);
+			matcher.remember(GROUP, "prop_new", "Fix checkout timeouts");
+			expect(mocks.generateEmbeddings).not.toHaveBeenCalled();
+			expect(mocks.generateText).not.toHaveBeenCalled();
+		});
+
+		it.each([undefined, []])(
+			"rejects unusable vectors without losing a later batch entry: %s",
+			async (badVector) => {
+				const matcher = createOpenBugMatcher(INPUT);
+				await matcher.check(GROUP);
+				matcher.remember(GROUP, "prop_bad", "Unavailable candidate");
+				matcher.remember(
+					{ ...GROUP, fingerprint: "fp_other" },
+					"prop_good",
+					"Available candidate",
+				);
+				mocks.generateEmbeddings
+					.mockResolvedValueOnce({ embeddings: [[1, 0]] })
+					.mockResolvedValueOnce({ embeddings: [badVector, [1, 0]] });
+				answer({
+					"Available candidate": {
+						relationship: "same_work_item",
+						confidence: 0.9,
+					},
+				});
+				expect(
+					(await matcher.check({ ...GROUP, fingerprint: "fp_2" }))
+						.match,
+				).toMatchObject({ proposalId: "prop_good" });
+				mocks.generateEmbeddings
+					.mockResolvedValueOnce({ embeddings: [[1, 0]] })
+					.mockResolvedValueOnce({ embeddings: [] });
+				await matcher.check({ ...GROUP, fingerprint: "fp_3" });
+				expect(mocks.generateEmbeddings).toHaveBeenCalledTimes(4);
+			},
+		);
+
+		it.each(["missing", "empty", "failed"])(
+			"skips a %s remembered embedding and keeps another candidate usable",
+			async (failure) => {
+				const matcher = createOpenBugMatcher(INPUT);
+				await matcher.check(GROUP);
+				matcher.remember(GROUP, "prop_bad", "Unavailable candidate");
+				if (failure === "failed") {
+					mocks.generateEmbeddings
+						.mockResolvedValueOnce({ embeddings: [[1, 0]] })
+						.mockRejectedValueOnce(
+							new Error("embedding unavailable"),
+						);
+				} else {
+					mocks.generateEmbeddings
+						.mockResolvedValueOnce({ embeddings: [[1, 0]] })
+						.mockResolvedValueOnce({
+							embeddings: failure === "empty" ? [[]] : [],
+						});
+				}
+				const secondGroup = { ...GROUP, fingerprint: "fp_2" };
+				await expect(matcher.check(secondGroup)).resolves.toEqual({
+					match: null,
+					checked: [],
+				});
+				expect(mocks.generateText).not.toHaveBeenCalled();
+				matcher.remember(
+					secondGroup,
+					"prop_good",
+					"Available candidate",
+				);
+				mocks.generateEmbeddings
+					.mockResolvedValueOnce({ embeddings: [[1, 0]] })
+					.mockResolvedValueOnce({ embeddings: [] });
+				answer({
+					"Available candidate": {
+						relationship: "same_work_item",
+						confidence: 0.9,
+					},
+				});
+				expect(matcher.degraded).toBe(true);
+				const third = await matcher.check({
+					...GROUP,
+					fingerprint: "fp_3",
+				});
+				expect(third.match).toMatchObject({ proposalId: "prop_good" });
+				expect(third.checked.map((entry) => entry.identifier)).toEqual([
+					"Available candidate",
+				]);
+			},
+		);
 	});
 
 	it("loads the candidates once per scan", async () => {
@@ -383,4 +526,57 @@ describe("createOpenBugMatcher", () => {
 		});
 		expect(mocks.loadStoryVectors).toHaveBeenCalledTimes(2);
 	});
+});
+
+it("reports verifier failure as degraded without changing the no-match result", async () => {
+	mocks.generateEmbeddings
+		.mockReset()
+		.mockResolvedValue({ embeddings: [[1, 0]] });
+	mocks.generateText
+		.mockReset()
+		.mockRejectedValue(new Error("verifier unavailable"));
+	const matcher = createOpenBugMatcher(INPUT);
+	const result = await matcher.check(GROUP);
+	expect(result.match).toBeNull();
+	expect(matcher.degraded).toBe(true);
+});
+
+it("reports a missing error embedding as degraded", async () => {
+	mocks.generateEmbeddings.mockReset().mockResolvedValue({ embeddings: [] });
+	const matcher = createOpenBugMatcher(INPUT);
+	expect((await matcher.check(GROUP)).match).toBeNull();
+	expect(matcher.degraded).toBe(true);
+});
+it("reports missing candidate vectors as degraded", async () => {
+	mocks.loadStoryVectors.mockResolvedValue({
+		vectors: new Map(),
+		embedded: 0,
+	});
+	const matcher = createOpenBugMatcher(INPUT);
+	expect((await matcher.check(GROUP)).match).toBeNull();
+	expect(matcher.degraded).toBe(true);
+});
+
+it("reports a missing pending proposal embedding as degraded", async () => {
+	mocks.listOpenBugStoriesForMatching.mockResolvedValue([]);
+	mocks.listPendingLogProposalsForMatching.mockResolvedValue([
+		{ id: "prop_1", summary: "Payment timeout", evidence: "Timeout" },
+	]);
+	mocks.generateEmbeddings.mockResolvedValueOnce({ embeddings: [] });
+	const matcher = createOpenBugMatcher(INPUT);
+	expect((await matcher.check(GROUP)).match).toBeNull();
+	expect(matcher.degraded).toBe(true);
+});
+
+it("reports a candidate embedding dimension mismatch as degraded", async () => {
+	mocks.listOpenBugStoriesForMatching.mockResolvedValue([
+		bug("b_close", "Payment timeout"),
+	]);
+	mocks.loadStoryVectors.mockResolvedValue({
+		vectors: new Map([["b_close", [1, 0, 0]]]),
+		embedded: 0,
+	});
+	const matcher = createOpenBugMatcher(INPUT);
+	expect((await matcher.check(GROUP)).match).toBeNull();
+	expect(matcher.degraded).toBe(true);
 });

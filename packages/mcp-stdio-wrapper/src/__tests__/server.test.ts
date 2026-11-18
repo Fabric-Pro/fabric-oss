@@ -72,7 +72,7 @@ describe("MCP STDIO wrapper initialization", () => {
 		const body = await response.json();
 		assert.deepEqual(body, {
 			success: false,
-			error: "Process exited unexpectedly",
+			error: "Process exited unexpectedly (exit code 1)",
 		});
 		assert.equal(getProcessPool().getStats().size, 0);
 
@@ -146,7 +146,7 @@ describe("MCP STDIO wrapper initialization", () => {
 		assert.equal(response.status, 500);
 		assert.deepEqual(await response.json(), {
 			success: false,
-			error: "Process exited unexpectedly",
+			error: "Process exited unexpectedly (exit code 1)",
 		});
 		assert.equal(getProcessPool().getStats().size, 0);
 	});

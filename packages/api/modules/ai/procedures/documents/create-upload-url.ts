@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { ORPCError } from "@orpc/server";
 import { config } from "@repo/config";
 import {
@@ -150,7 +151,7 @@ export const createDocumentUploadUrl = tenantProtectedProcedure
 			// resolved MIME rather than the raw filename, so a filename can no
 			// longer steer the storage key (it could previously contain a slash
 			// and nest the object deeper under the owner's prefix).
-			const documentId = `doc_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+			const documentId = `doc_${Date.now()}_${randomBytes(16).toString("hex")}`;
 			const ownerPrefix = chat.organizationId || chat.userId;
 			const extension = extensionsForAiChatMime(resolvedMime)[0] ?? "bin";
 			const storagePath = `${ownerPrefix}/${chatId}/${documentId}.${extension}`;

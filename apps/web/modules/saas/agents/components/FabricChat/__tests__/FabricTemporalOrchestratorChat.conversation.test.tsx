@@ -14,6 +14,7 @@
  * decides on its own runs for real.
  */
 
+import { prepareImageForAi } from "@saas/projects/lib/image-upload-utils";
 import {
 	act,
 	cleanup,
@@ -255,7 +256,7 @@ vi.mock("@saas/projects/lib/image-upload-utils", async (importOriginal) => {
 		>();
 	return {
 		...actual,
-		prepareImageForAi: async (file: File) => ({ ok: true, file }),
+		prepareImageForAi: vi.fn(async (file: File) => ({ ok: true, file })),
 	};
 });
 
@@ -269,12 +270,14 @@ vi.mock("../shared", async (importOriginal) => {
 			value,
 			onChange,
 			onSend,
+			topSlot,
 			headerSlot,
 		}: {
 			value: string;
 			onChange: (value: string) => void;
 			onSend: () => void;
 			headerSlot?: ReactNode;
+			topSlot?: ReactNode;
 		}) => (
 			<div>
 				<textarea
@@ -286,6 +289,7 @@ vi.mock("../shared", async (importOriginal) => {
 					Send
 				</button>
 				{headerSlot}
+				{topSlot}
 			</div>
 		),
 		ActiveContextIndicator: () => null,
@@ -765,6 +769,256 @@ describe("FabricTemporalOrchestratorChat — a message refused because another i
 			global.fetch = originalFetch;
 			URL.createObjectURL = originalCreate;
 			URL.revokeObjectURL = originalRevoke;
+		});
+
+		async function attachImages(container: HTMLElement) {
+			await act(async () => {
+				fireEvent.change(
+					container.querySelector(
+						'input[type="file"]',
+					) as HTMLInputElement,
+					{
+						target: {
+							files: [
+								new File(["png"], "one.png", {
+									type: "image/png",
+								}),
+								new File(["png"], "two.png", {
+									type: "image/png",
+								}),
+							],
+						},
+					},
+				);
+			});
+		}
+
+		it("keeps two local previews through upload, hand-off, reset and unmount", async () => {
+			URL.createObjectURL = vi
+				.fn()
+				.mockReturnValueOnce("blob:one")
+				.mockReturnValueOnce("blob:two")
+				.mockReturnValueOnce("blob:three")
+				.mockReturnValueOnce("blob:four");
+			let resolveUploads!: () => void;
+			const gate = new Promise<void>((resolve) => {
+				resolveUploads = resolve;
+			});
+			let index = 0;
+			global.fetch = vi.fn(async () => {
+				const path = `uploads/image-${index++}.png`;
+				await gate;
+				return { ok: true, json: async () => ({ storagePath: path }) };
+			}) as unknown as typeof fetch;
+			const props = {
+				reasoningMode: "balanced" as const,
+				activeConversationId: "conv_existing",
+			};
+			streamState.current = idleStream({
+				sendMessage: vi.fn(async () => {
+					streamState.current = idleStream({
+						messages: [
+							{
+								id: "user_image",
+								role: "user",
+								content: "Describe these images",
+								imageUrls: [
+									"uploads/image-0.png",
+									"uploads/image-1.png",
+									"uploads/history.png",
+								],
+							},
+						],
+					});
+					view.rerender(
+						<FabricTemporalOrchestratorChat {...props} />,
+					);
+					return null;
+				}),
+			});
+			const view = render(<FabricTemporalOrchestratorChat {...props} />);
+			await attachImages(view.container);
+			await send("Describe these images");
+			const pending = screen.getByText("Describe these images")
+				.parentElement as HTMLElement;
+			expect(
+				Array.from(pending.querySelectorAll("img")).map(
+					(img) => img.src,
+				),
+			).toEqual(["blob:one", "blob:two"]);
+			expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+			await act(async () => {
+				resolveUploads();
+			});
+			expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+
+			view.rerender(<FabricTemporalOrchestratorChat {...props} />);
+			expect(
+				screen
+					.getAllByAltText("Attached")
+					.map((img) => img.getAttribute("src")),
+			).toEqual([
+				"blob:one",
+				"blob:two",
+				"/api/storage/image?path=uploads%2Fhistory.png",
+			]);
+			streamState.current = idleStream({
+				...streamState.current,
+				isComplete: true,
+				state: {
+					...(streamState.current.state as object),
+					executionId: "exec_images",
+					status: "completed",
+					result: { response: "Two pictures" },
+				},
+			});
+			view.rerender(<FabricTemporalOrchestratorChat {...props} />);
+			// Remove the live stream so only the completed-execution renderer
+			// can supply the old turn's thumbnails after the next send.
+			streamState.current = idleStream();
+			view.rerender(<FabricTemporalOrchestratorChat {...props} />);
+			await send("Next question");
+			const completedQuestion = screen
+				.getByText("Describe these images")
+				.closest(".is-user") as HTMLElement;
+			expect(
+				Array.from(completedQuestion.querySelectorAll("img")).map(
+					(img) => img.getAttribute("src"),
+				),
+			).toEqual(["blob:one", "blob:two"]);
+			view.rerender(
+				<FabricTemporalOrchestratorChat
+					{...props}
+					activeConversationId={null}
+				/>,
+			);
+			expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+			await attachImages(view.container);
+			view.unmount();
+			expect(URL.revokeObjectURL).toHaveBeenCalledTimes(4);
+		});
+
+		it("sends uploaded images and drops a failed image preview", async () => {
+			const uploadToast = vi.spyOn(toast, "error");
+			URL.createObjectURL = vi
+				.fn()
+				.mockReturnValueOnce("blob:uploaded")
+				.mockReturnValueOnce("blob:failed");
+			let resolveSuccess!: () => void;
+			const successGate = new Promise<void>((resolve) => {
+				resolveSuccess = resolve;
+			});
+			let index = 0;
+			global.fetch = vi.fn(async () => {
+				if (index++ === 0) {
+					await successGate;
+					return {
+						ok: true,
+						json: async () => ({ storagePath: "uploads/one.png" }),
+					};
+				}
+				return {
+					ok: false,
+					status: 500,
+					json: async () => ({ error: "Upload unavailable" }),
+				};
+			}) as unknown as typeof fetch;
+			const sendMessage = vi.fn(async (...args: unknown[]) => {
+				streamState.current = idleStream({
+					messages: [
+						{
+							id: "sent_image",
+							role: "user",
+							content: "Describe images",
+							imageUrls: args[8],
+						},
+					],
+				});
+				view.rerender(
+					<FabricTemporalOrchestratorChat
+						reasoningMode="balanced"
+						activeConversationId="conv_existing"
+					/>,
+				);
+				return null;
+			});
+			streamState.current = idleStream({ sendMessage });
+			const view = render(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_existing"
+				/>,
+			);
+			await attachImages(view.container);
+			await send("Describe images");
+			expect(uploadToast).toHaveBeenCalledWith(
+				"Couldn't upload two.png: Upload unavailable",
+			);
+			const pending = screen.getByText("Describe images")
+				.parentElement as HTMLElement;
+			expect(
+				Array.from(pending.querySelectorAll("img")).map(
+					(img) => img.src,
+				),
+			).toEqual(["blob:uploaded"]);
+			await act(async () => {
+				resolveSuccess();
+			});
+			expect(sendMessage).toHaveBeenCalledTimes(1);
+			expect(sendMessage.mock.calls[0]?.[8]).toEqual(["uploads/one.png"]);
+			expect(
+				screen
+					.getAllByAltText("Attached")
+					.map((img) => img.getAttribute("src")),
+			).toEqual(["blob:uploaded"]);
+			expect(
+				view.container.querySelector('img[src="blob:failed"]'),
+			).toBeNull();
+			expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+			view.unmount();
+			expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+			uploadToast.mockRestore();
+		});
+
+		it("resets the picker while shaping is pending and discards a selection after switching", async () => {
+			let resolveShape!: (
+				result: Awaited<ReturnType<typeof prepareImageForAi>>,
+			) => void;
+			vi.mocked(prepareImageForAi).mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						resolveShape = resolve;
+					}),
+			);
+			const view = render(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_existing"
+				/>,
+			);
+			const picker = view.container.querySelector(
+				'input[type="file"]',
+			) as HTMLInputElement;
+			Object.defineProperty(picker, "value", {
+				configurable: true,
+				writable: true,
+				value: "selected-image.png",
+			});
+			const file = new File(["png"], "one.png", { type: "image/png" });
+			fireEvent.change(picker, { target: { files: [file] } });
+			expect(picker.value).toBe("");
+			view.rerender(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_other"
+				/>,
+			);
+			await act(async () => {
+				resolveShape({ ok: true, file });
+			});
+			expect(picker.value).toBe("");
+			expect(URL.createObjectURL).not.toHaveBeenCalled();
+			view.unmount();
 		});
 
 		it("says an image was not sent and has to be attached again", async () => {

@@ -4918,6 +4918,7 @@
 				"roadmapOrderHelp": "Roadmap-Reihenfolge — die gespeicherte Reihenfolge des Projekts (zuerst Priorität, dann die gespeicherte Position der Elemente).",
 				"groupSortHelp": "Ordnet die Bereiche nach {group} — aufsteigend entspricht der Standardreihenfolge, absteigend kehrt sie um.",
 				"sync": "Synchronisierung",
+				"pmStatus": "PM-Status",
 				"source": "Quelle",
 				"size": "Größe",
 				"flags": "Markierungen",
@@ -7321,6 +7322,10 @@
 			"generationFailed": "Fabric konnte keine Feature-Empfehlungen erstellen. Bitte versuchen Sie es erneut. Prüfen Sie bei anhaltenden Problemen den Projektkontext, verbundene Quellen oder den Status der Hintergrundaufträge, bevor Sie es erneut versuchen.",
 			"running": "Fabric empfiehlt bereits Features für dieses Projekt.",
 			"startFailed": "Empfehlungen konnten nicht gestartet werden"
+		},
+		"recurringErrorSource": {
+			"absenceExplanation": "{scans, plural, one {Der letzte Scan (seit {first}, zuletzt {last}) hat diesen Fehler nicht mit der erforderlichen Häufigkeit gefunden.} other {Die letzten # Scans (seit {first}, zuletzt {last}) haben diesen Fehler nicht mit der erforderlichen Häufigkeit gefunden.}}",
+			"belowThreshold": "Unter dem Schwellenwert · zuletzt gesehen {lastSeen}"
 		}
 	},
 	"tooltips": {

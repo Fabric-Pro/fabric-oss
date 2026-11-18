@@ -22,7 +22,7 @@ export const PRODUCTION_TAG_PATTERN = /^v\d+(?:\.\d+)*$/;
 // would pin lastSentAt forever and re-email the same releases). Couples to the
 // collector's failure-reason strings (collect-github-releases.ts) — pinned by test.
 const BENIGN_FAILURE =
-	/^latest:|latest-release lookups|release-note (?:body|bodies) omitted/i;
+	/(?:^latest:)|(?:latest-release lookups|release-note (?:body|bodies) omitted)/i;
 
 // The collector's item cap: it kept the NEWEST releases and dropped older ones.
 // Retrying cannot clear it — the skip keeps `lastSentAt`, so the next window

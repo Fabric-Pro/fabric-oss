@@ -322,6 +322,69 @@ describe("RoadmapFiltersPanel — more tier", () => {
 		await user.click(await screen.findByRole("option", { name: "Synced" }));
 		expect(onChange).toHaveBeenCalledWith({ sync: ["synced"] });
 	});
+
+	it("PM status: selects one status, replaces it, shows it, and clears to Any (Fizzy #3532)", async () => {
+		const user = userEvent.setup();
+		const onChange = vi.fn();
+		function Filters() {
+			const [filters, setFilters] = useState(EMPTY_ROADMAP_FILTERS);
+			return (
+				<RoadmapFiltersPanel
+					tier="more"
+					filters={filters}
+					pmStatusOptions={["Done", "In Progress"]}
+					onChange={(next) => {
+						onChange(next);
+						setFilters((prev) => ({ ...prev, ...next }));
+					}}
+				/>
+			);
+		}
+		render(<Filters />);
+		await user.click(
+			screen.getByRole("button", { name: "PM status: Any" }),
+		);
+		expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(
+			["Any", "Done", "In Progress"],
+		);
+		await user.click(screen.getByRole("option", { name: "Done" }));
+		expect(onChange).toHaveBeenLastCalledWith({ pmStatus: "Done" });
+
+		await user.click(
+			screen.getByRole("button", { name: "PM status: Done" }),
+		);
+		await user.click(screen.getByRole("option", { name: "In Progress" }));
+		expect(onChange).toHaveBeenLastCalledWith({ pmStatus: "In Progress" });
+
+		await user.click(
+			screen.getByRole("button", { name: "PM status: In Progress" }),
+		);
+		await user.click(screen.getByRole("option", { name: "Any" }));
+		expect(onChange).toHaveBeenLastCalledWith({ pmStatus: null });
+	});
+
+	it("PM status: hidden with no statuses, but a URL-selected status stays visible", () => {
+		const { rerender } = render(
+			<RoadmapFiltersPanel
+				tier="more"
+				filters={EMPTY_ROADMAP_FILTERS}
+				onChange={vi.fn()}
+			/>,
+		);
+		expect(
+			screen.queryByRole("button", { name: /^PM status:/ }),
+		).not.toBeInTheDocument();
+		rerender(
+			<RoadmapFiltersPanel
+				tier="more"
+				filters={{ ...EMPTY_ROADMAP_FILTERS, pmStatus: "QA/UAT" }}
+				onChange={vi.fn()}
+			/>,
+		);
+		expect(
+			screen.getByRole("button", { name: "PM status: QA/UAT" }),
+		).toBeInTheDocument();
+	});
 });
 
 vi.mock("next-intl", async (importOriginal) => {

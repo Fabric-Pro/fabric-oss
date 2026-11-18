@@ -128,12 +128,11 @@ function parsePackageJson(content: string): TechStackEntry[] {
 
 function parseCsproj(content: string): TechStackEntry[] {
 	const out: TechStackEntry[] = [];
-	const ref =
-		/<PackageReference\s+Include="([^"]+)"(?:[^>]*?\sVersion="([^"]+)")?/gi;
-	let m: RegExpExecArray | null = ref.exec(content);
-	while (m !== null) {
-		out.push(entry("nuget", m[1], m[2] ?? null, false));
-		m = ref.exec(content);
+	for (const tag of content.matchAll(
+		/<PackageReference\s+Include="([^"<>]+)"[^<>]*/gi,
+	)) {
+		const version = /\sVersion="([^"]+)"/i.exec(tag[0]);
+		out.push(entry("nuget", tag[1], version?.[1] ?? null, false));
 	}
 	const tfm = /<TargetFrameworks?>([^<]+)<\/TargetFrameworks?>/i.exec(
 		content,
@@ -148,23 +147,28 @@ function parseCsproj(content: string): TechStackEntry[] {
 
 function parseGoMod(content: string): TechStackEntry[] {
 	const out: TechStackEntry[] = [];
-	const goVer = /^\s*go\s+([\d.]+)/m.exec(content);
+	const goVer = /^[ \t]*go\s+([\d.]+)/m.exec(content);
 	if (goVer) {
 		out.push(entry("go", "go", goVer[1], false, "runtime"));
 	}
 	// require ( ... ) block + single-line requires
-	const block = /require\s*\(([\s\S]*?)\)/g;
+	const block = /require\s*\(/g;
 	let b: RegExpExecArray | null = block.exec(content);
 	while (b !== null) {
-		for (const line of b[1].split("\n")) {
+		const end = content.indexOf(")", block.lastIndex);
+		if (end === -1) {
+			break;
+		}
+		for (const line of content.slice(block.lastIndex, end).split("\n")) {
 			const r = /^\s*([^\s]+)\s+(v[\w.\-+]+)/.exec(line);
 			if (r) {
 				out.push(entry("go", r[1], r[2], /\/\/\s*indirect/.test(line)));
 			}
 		}
+		block.lastIndex = end + 1;
 		b = block.exec(content);
 	}
-	const single = /^\s*require\s+([^\s(]+)\s+(v[\w.\-+]+)/gm;
+	const single = /^[ \t]*require\s+([^\s(]+)\s+(v[\w.\-+]+)/gm;
 	let s: RegExpExecArray | null = single.exec(content);
 	while (s !== null) {
 		out.push(entry("go", s[1], s[2], false));
@@ -239,7 +243,7 @@ function parseComposer(content: string): TechStackEntry[] {
 
 function parseGemfile(content: string): TechStackEntry[] {
 	const out: TechStackEntry[] = [];
-	const gem = /^\s*gem\s+['"]([^'"]+)['"](?:\s*,\s*['"]([^'"]+)['"])?/gm;
+	const gem = /^[ \t]*gem\s+['"]([^'"]+)['"](?:\s*,\s*['"]([^'"]+)['"])?/gm;
 	let m: RegExpExecArray | null = gem.exec(content);
 	while (m !== null) {
 		out.push(entry("rubygems", m[1], m[2] ?? null, false));
@@ -250,12 +254,24 @@ function parseGemfile(content: string): TechStackEntry[] {
 
 function parsePomXml(content: string): TechStackEntry[] {
 	const out: TechStackEntry[] = [];
-	const dep =
-		/<dependency>[\s\S]*?<artifactId>([^<]+)<\/artifactId>(?:[\s\S]*?<version>([^<]+)<\/version>)?[\s\S]*?<\/dependency>/gi;
-	let m: RegExpExecArray | null = dep.exec(content);
-	while (m !== null) {
-		out.push(entry("maven", m[1], m[2] ?? null, false));
-		m = dep.exec(content);
+	const lower = content.toLowerCase();
+	let start = lower.indexOf("<dependency>");
+	while (start !== -1) {
+		const end = lower.indexOf("</dependency>", start + 12);
+		if (end === -1) {
+			break;
+		}
+		const body = content.slice(start + 12, end);
+		const artifact = /<artifactId>([^<]+)<\/artifactId>/i.exec(body);
+		const version = artifact
+			? /<version>([^<]+)<\/version>/i.exec(
+					body.slice(artifact.index + artifact[0].length),
+				)
+			: null;
+		if (artifact) {
+			out.push(entry("maven", artifact[1], version?.[1] ?? null, false));
+		}
+		start = lower.indexOf("<dependency>", end + 13);
 	}
 	return out;
 }
@@ -299,13 +315,10 @@ export function parsePublishedPackages(files: ManifestFile[]): string[] {
 					names.add(pkg.name.trim());
 				}
 			} else if (base.endsWith(".csproj")) {
-				const pid = /<PackageId>\s*([^<]+?)\s*<\/PackageId>/i.exec(
+				const pid = /<PackageId>([^<]+)<\/PackageId>/i.exec(f.content);
+				const asm = /<AssemblyName>([^<]+)<\/AssemblyName>/i.exec(
 					f.content,
 				);
-				const asm =
-					/<AssemblyName>\s*([^<]+?)\s*<\/AssemblyName>/i.exec(
-						f.content,
-					);
 				const name =
 					pid?.[1] ??
 					asm?.[1] ??
@@ -317,7 +330,7 @@ export function parsePublishedPackages(files: ManifestFile[]): string[] {
 					names.add(name.trim());
 				}
 			} else if (base === "go.mod") {
-				const m = /^\s*module\s+(\S+)/m.exec(f.content);
+				const m = /^[ \t]*module\s+(\S+)/m.exec(f.content);
 				if (m?.[1]) {
 					names.add(m[1].trim());
 				}

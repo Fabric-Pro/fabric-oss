@@ -3574,3 +3574,459 @@ describe("reply reconnect compaction", () => {
 		},
 	);
 });
+
+describe("run timing records", () => {
+	beforeEach(() => {
+		vi.stubEnv("AGENT_API_KEY", "");
+		vi.stubEnv("AGENT_API_KEYS", "");
+		vi.stubEnv("AGENT_HMAC_SECRET", "");
+	});
+	afterEach(() => vi.unstubAllEnvs());
+	it.each(["finished", "error"])(
+		"emits one timing record for %s",
+		async (outcome) => {
+			const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+			try {
+				const events: LangGraphStreamEvent[] =
+					outcome === "error"
+						? [{ nodeName: "throw", state: {} }]
+						: [];
+				const response = await createTestApp(events).request("/", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-Forwarded-For": "192.0.2.220",
+						"x-fabric-route-setup-ms": "600000",
+					},
+					body: JSON.stringify({
+						threadId: "example-thread",
+						runId: "example-run",
+						messages: [],
+					}),
+				});
+				const responseText = await response.text();
+				expect(response.status, responseText).toBe(200);
+				const records = spy.mock.calls.filter((call) =>
+					String(call[0]).endsWith("Run timing"),
+				);
+				expect(records).toHaveLength(1);
+				expect(records[0]?.[1]).toMatchObject({
+					outcome,
+					routeSetupMs: 600000,
+					threadId: "example-thread",
+					runId: "example-run",
+				});
+				if (outcome === "error")
+					expect(records[0]?.[1]).toMatchObject({
+						firstVisibleOutputMs: null,
+						firstVisibleEvent: null,
+					});
+			} finally {
+				spy.mockRestore();
+			}
+		},
+	);
+	it.each(["-1", "600001", "1.5", "invalid"])(
+		"drops invalid setup header %s",
+		async (header) => {
+			const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+			try {
+				const response = await createTestApp([]).request("/", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-Forwarded-For": "192.0.2.220",
+						"x-fabric-route-setup-ms": header,
+					},
+					body: JSON.stringify({ messages: [] }),
+				});
+				const responseText = await response.text();
+				expect(response.status, responseText).toBe(200);
+				expect(
+					spy.mock.calls.find((call) =>
+						String(call[0]).endsWith("Run timing"),
+					)?.[1],
+				).toMatchObject({ routeSetupMs: null });
+			} finally {
+				spy.mockRestore();
+			}
+		},
+	);
+});
+
+it("keeps the timing record unique when abort follows completion", async () => {
+	vi.stubEnv("AGENT_API_KEY", "");
+	vi.stubEnv("AGENT_API_KEYS", "");
+	vi.stubEnv("AGENT_HMAC_SECRET", "");
+	const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+	const controller = new AbortController();
+	try {
+		const response = await createTestApp([]).request("/", {
+			method: "POST",
+			signal: controller.signal,
+			headers: {
+				"Content-Type": "application/json",
+				"X-Forwarded-For": "192.0.2.221",
+			},
+			body: JSON.stringify({ messages: [] }),
+		});
+		expect(response.status).toBe(200);
+		await response.text();
+		controller.abort();
+		expect(
+			spy.mock.calls.filter((call) =>
+				String(call[0]).endsWith("Run timing"),
+			),
+		).toHaveLength(1);
+	} finally {
+		spy.mockRestore();
+		vi.unstubAllEnvs();
+	}
+});
+
+it.each(["text", "tool", "state"])(
+	"recognizes first visible %s output in the common sender",
+	async (kind) => {
+		vi.stubEnv("AGENT_API_KEY", "");
+		vi.stubEnv("AGENT_API_KEYS", "");
+		vi.stubEnv("AGENT_HMAC_SECRET", "");
+		const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const state =
+				kind === "state"
+					? { streamingContent: "Example visible content" }
+					: {
+							messages: [
+								new AIMessage(
+									kind === "text"
+										? { content: "Example reply" }
+										: {
+												content: "",
+												tool_calls: [
+													{
+														id: "example-call",
+														name: "example_tool",
+														args: {},
+													},
+												],
+											},
+								),
+							],
+						};
+			const response = await createTestApp([
+				{ nodeName: "chat_node", state },
+			]).request("/", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Forwarded-For": "192.0.2.222",
+					"x-fabric-route-setup-ms": "0",
+				},
+				body: JSON.stringify({ messages: [] }),
+			});
+			expect(response.status).toBe(200);
+			await response.text();
+			expect(
+				spy.mock.calls.find((call) =>
+					String(call[0]).endsWith("Run timing"),
+				)?.[1],
+			).toMatchObject({
+				firstVisibleOutputMs: expect.any(Number),
+				firstVisibleEvent:
+					kind === "text"
+						? "TEXT_MESSAGE_CONTENT"
+						: kind === "tool"
+							? "TOOL_CALL_START"
+							: "STATE_DELTA",
+				routeSetupMs: 0,
+			});
+		} finally {
+			spy.mockRestore();
+			vi.unstubAllEnvs();
+		}
+	},
+);
+
+describe("run timing output attribution", () => {
+	beforeEach(() => {
+		vi.stubEnv("AGENT_API_KEY", "");
+		vi.stubEnv("AGENT_API_KEYS", "");
+		vi.stubEnv("AGENT_HMAC_SECRET", "");
+	});
+	afterEach(() => vi.unstubAllEnvs());
+	it.each(["text", "state"])(
+		"ignores document seeds and repeats before generated %s",
+		async (kind) => {
+			const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+			const clock = vi.spyOn(Date, "now").mockReturnValue(100);
+			const document = "Example open document";
+			const streamingContent = "Example prior output";
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const app = createUnifiedServer(
+				{
+					name: "example-agent",
+					description: "Example",
+					baseUrl: "http://localhost:3000",
+					port: 3000,
+					skills: [],
+					supportsStreaming: true,
+				},
+				async () => ({}),
+				(output) => output,
+				undefined,
+				async function* () {
+					yield {
+						nodeName: "chat_node",
+						state: { document, streamingContent },
+					};
+					await gate;
+					clock.mockReturnValue(175);
+					yield {
+						nodeName: "chat_node",
+						state:
+							kind === "state"
+								? { document: "Example generated document" }
+								: {
+										messages: [
+											new AIMessage({
+												content:
+													"Example generated reply",
+											}),
+										],
+									},
+					};
+				},
+			).app;
+			try {
+				const response = await app.request("/", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"X-Forwarded-For": "192.0.2.223",
+					},
+					body: JSON.stringify({
+						messages: [],
+						state: { document, streamingContent },
+					}),
+				});
+				expect(response.status).toBe(200);
+				release();
+				await response.text();
+				const records = spy.mock.calls.filter((call) =>
+					String(call[0]).endsWith("Run timing"),
+				);
+				expect(records).toHaveLength(1);
+				expect(records[0]?.[1]).toMatchObject({
+					firstVisibleOutputMs: 75,
+					firstVisibleEvent:
+						kind === "state"
+							? "STATE_DELTA"
+							: "TEXT_MESSAGE_CONTENT",
+				});
+			} finally {
+				release();
+				clock.mockRestore();
+				spy.mockRestore();
+			}
+		},
+	);
+	it("marks terminal state errors as errors even when the protocol finishes", async () => {
+		const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const response = await createTestApp([
+				{
+					nodeName: "chat_node",
+					state: { error: "Example provider failure" },
+				},
+			]).request("/", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Forwarded-For": "192.0.2.224",
+				},
+				body: JSON.stringify({ messages: [] }),
+			});
+			const events = await readAgUiEvents(response);
+			expect(events.some((event) => event.type === "RUN_FINISHED")).toBe(
+				true,
+			);
+			expect(
+				spy.mock.calls.find((call) =>
+					String(call[0]).endsWith("Run timing"),
+				)?.[1],
+			).toMatchObject({ outcome: "error" });
+		} finally {
+			spy.mockRestore();
+		}
+	});
+});
+
+it("ignores a terminal snapshot that only repeats request output fields", async () => {
+	vi.stubEnv("AGENT_API_KEY", "");
+	vi.stubEnv("AGENT_API_KEYS", "");
+	vi.stubEnv("AGENT_HMAC_SECRET", "");
+	const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+	try {
+		const response = await createTestApp([]).request("/", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Forwarded-For": "192.0.2.225",
+			},
+			body: JSON.stringify({
+				messages: [],
+				state: {
+					document: "Example open document",
+					streamingContent: "Example prior output",
+				},
+			}),
+		});
+		await response.text();
+		expect(
+			spy.mock.calls.find((call) =>
+				String(call[0]).endsWith("Run timing"),
+			)?.[1],
+		).toMatchObject({
+			firstVisibleEvent: null,
+			firstVisibleOutputMs: null,
+		});
+	} finally {
+		spy.mockRestore();
+		vi.unstubAllEnvs();
+	}
+});
+
+describe("run timing early exits", () => {
+	beforeEach(() => {
+		vi.stubEnv("AGENT_API_KEY", "");
+		vi.stubEnv("AGENT_API_KEYS", "");
+		vi.stubEnv("AGENT_HMAC_SECRET", "");
+	});
+	afterEach(() => vi.unstubAllEnvs());
+	it.each(["abort", "cancel"])(
+		"records %s before a held graph finishes",
+		async (exit) => {
+			const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+			let release!: () => void;
+			let entered!: () => void;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const started = new Promise<void>((resolve) => {
+				entered = resolve;
+			});
+			const controller = new AbortController();
+			const app = createUnifiedServer(
+				{
+					name: "example-agent",
+					description: "Example",
+					baseUrl: "http://localhost:3000",
+					port: 3000,
+					skills: [],
+					supportsStreaming: true,
+				},
+				async () => ({}),
+				(output) => output,
+				undefined,
+				async function* () {
+					entered();
+					await gate;
+					yield { nodeName: "chat_node", state: {} };
+				},
+			).app;
+			try {
+				const response = await app.request("/", {
+					method: "POST",
+					signal: controller.signal,
+					headers: {
+						"Content-Type": "application/json",
+						"X-Forwarded-For": "192.0.2.226",
+					},
+					body: JSON.stringify({
+						messages: [],
+						threadId: "example-thread",
+						runId: "example-run",
+					}),
+				});
+				expect(response.status).toBe(200);
+				await started;
+				const reader = response.body!.getReader();
+				let cancellation: Promise<void> | undefined;
+				if (exit === "abort") controller.abort();
+				else cancellation = reader.cancel();
+				await vi.waitFor(() =>
+					expect(
+						spy.mock.calls.filter((call) =>
+							String(call[0]).endsWith("Run timing"),
+						),
+					).toHaveLength(1),
+				);
+				expect(
+					spy.mock.calls.find((call) =>
+						String(call[0]).endsWith("Run timing"),
+					)?.[1],
+				).toMatchObject({
+					outcome: "client_abort",
+					firstVisibleOutputMs: null,
+					threadId: "example-thread",
+					runId: "example-run",
+				});
+				release();
+				await cancellation;
+				if (exit === "abort") {
+					while (!(await reader.read()).done) {
+						/* drain */
+					}
+				}
+				expect(
+					spy.mock.calls.filter((call) =>
+						String(call[0]).endsWith("Run timing"),
+					),
+				).toHaveLength(1);
+			} finally {
+				release();
+				spy.mockRestore();
+			}
+		},
+	);
+	it("records token-exchange failure before returning the response", async () => {
+		const exchange = await import("../src/services/token-exchange");
+		const exchangeSpy = vi
+			.spyOn(exchange, "getAICredentialsFromHeaders")
+			.mockRejectedValue(new Error("Example expired token"));
+		const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const response = await createTestApp([]).request("/", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-Forwarded-For": "192.0.2.227",
+					"X-AI-Token": "example-token",
+				},
+				body: JSON.stringify({
+					messages: [],
+					threadId: "example-thread",
+					runId: "example-run",
+				}),
+			});
+			expect(response.status).toBe(401);
+			const records = spy.mock.calls.filter((call) =>
+				String(call[0]).endsWith("Run timing"),
+			);
+			expect(records).toHaveLength(1);
+			expect(records[0]?.[1]).toMatchObject({
+				outcome: "error",
+				firstVisibleOutputMs: null,
+				messageId: null,
+				threadId: "example-thread",
+				runId: "example-run",
+			});
+		} finally {
+			exchangeSpy.mockRestore();
+			spy.mockRestore();
+		}
+	});
+});

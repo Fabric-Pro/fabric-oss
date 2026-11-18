@@ -1151,6 +1151,23 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 		[stories, quotedPhases],
 	);
 
+	// PM Status filter options (Fizzy #3532): the distinct statuses the "PM
+	// sync" column shows, across every non-declined item (hidden ones too, so
+	// "Show hidden" can still reach them).
+	const pmStatusOptions = useMemo(
+		() =>
+			[
+				...new Set(
+					stories.flatMap((s) =>
+						s.draftingStage !== "DECLINED" && s.pmTicketStatus
+							? [s.pmTicketStatus]
+							: [],
+					),
+				),
+			].sort((a, b) => a.localeCompare(b)),
+		[stories],
+	);
+
 	const visibleStories = useMemo(() => {
 		return stories
 			.filter(
@@ -3200,6 +3217,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 							: undefined
 					}
 					filters={roadmapFilters}
+					pmStatusOptions={pmStatusOptions}
 					onFiltersChange={setRoadmapFilters}
 					onClearAll={clearRoadmapFilters}
 					onRemoveFilter={removeRoadmapFilter}

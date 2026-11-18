@@ -75,7 +75,10 @@ export function normalizeOrigin(origin: string): string {
 	try {
 		return new URL(origin).origin.toLowerCase();
 	} catch {
-		return origin.trim().replace(/\/+$/, "").toLowerCase();
+		return origin
+			.trim()
+			.replace(/(?<!\/)\/+$/g, "")
+			.toLowerCase();
 	}
 }
 

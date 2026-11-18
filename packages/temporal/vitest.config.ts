@@ -21,6 +21,7 @@ const slowHost = process.platform === "win32";
 export default defineConfig({
 	test: {
 		environment: "node",
+		setupFiles: ["./vitest.setup.ts"],
 		globals: true,
 		include: [
 			"__tests__/**/*.test.ts",

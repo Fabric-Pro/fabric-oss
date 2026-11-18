@@ -2,6 +2,7 @@
  * Embedding generation module
  */
 
+export * from "./errors";
 export * from "./generator";
 export * from "./project-index-model";
 export * from "./query";

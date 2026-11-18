@@ -28,7 +28,7 @@ function image(name: string, type = "image/png") {
 function makeDocuments() {
 	let next = 0;
 	return {
-		createUploadUrl: vi.fn(async () => ({
+		createUploadUrl: vi.fn(async (_input?: { chatId?: string }) => ({
 			documentId: `doc-${++next}`,
 			signedUploadUrl: `https://upload.example.com/${next}`,
 			useServerUpload: false,
@@ -265,4 +265,52 @@ describe("FabricTemporalOrchestratorChat send wiring", () => {
 		expect(source).toMatch(/images: turnImages,/);
 		expect(source).toMatch(/\.\.\.imageDocuments\.documentIds/);
 	});
+});
+
+it("starts three image uploads before any finishes and preserves attachment order", async () => {
+	const documents = makeDocuments();
+	const releases: Array<() => void> = [];
+	const fetchFn = vi.fn(
+		() =>
+			new Promise<Response>((resolve) => {
+				releases.push(() => resolve({ ok: true } as Response));
+			}),
+	);
+	const result = uploadTurnImagesAsDocuments({
+		images: [image("a.png"), image("b.png"), image("c.png")],
+		chatId: undefined,
+		organizationId: "example-org",
+		documents,
+		fetchFn,
+	});
+	await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(3));
+	expect(
+		documents.createUploadUrl.mock.calls.filter(
+			([input]) => !input?.chatId,
+		),
+	).toHaveLength(1);
+	releases[2]();
+	releases[1]();
+	releases[0]();
+	expect((await result).documentIds).toEqual(["doc-1", "doc-2", "doc-3"]);
+});
+
+it("uses the next image to establish the chat after a create failure and skips only that image", async () => {
+	const documents = makeDocuments();
+	documents.createUploadUrl.mockRejectedValueOnce(new Error("create failed"));
+	const onUploadError = vi.fn();
+	const result = await uploadTurnImagesAsDocuments({
+		images: [image("a.png"), image("b.png"), image("c.png")],
+		chatId: undefined,
+		organizationId: "example-org",
+		documents,
+		fetchFn: vi.fn(async () => ({ ok: true }) as Response),
+		onUploadError,
+	});
+	expect(onUploadError).toHaveBeenCalledTimes(1);
+	expect(onUploadError).toHaveBeenCalledWith("a.png", expect.any(Error));
+	expect(
+		documents.createUploadUrl.mock.calls.map(([input]) => input?.chatId),
+	).toEqual([undefined, undefined, "chat-1"]);
+	expect(result.documentIds).toEqual(["doc-1", "doc-2"]);
 });

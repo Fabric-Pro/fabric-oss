@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/integrations-slack",
-	"version": "0.1.17",
+	"version": "0.1.18",
 	"description": "Slack integration plugin for Fabric — type augmentation + runtime",
 	"keywords": [
 		"fabric",
@@ -47,7 +47,7 @@
 	"devDependencies": {
 		"@fabricorg/sdk": "workspace:*",
 		"@repo/tsconfig": "workspace:*",
-		"tsdown": "^0.23.0",
+		"tsdown": "^0.23.7",
 		"typescript": "5.9.3"
 	}
 }

@@ -29,14 +29,16 @@ function harness(
 ) {
 	return vi.fn<typeof fetch>(async (input, init) => {
 		const url = new URL(String(input));
-		if (url.pathname === "/oidc/v1/token")
+		if (url.pathname === "/oidc/v1/token") {
 			return json({
 				access_token: "example-token",
 				token_type: "Bearer",
 				expires_in: 3600,
 			});
-		if (url.pathname === "/api/2.0/sql/warehouses/example-warehouse")
+		}
+		if (url.pathname === "/api/2.0/sql/warehouses/example-warehouse") {
 			return json({ state: "RUNNING" });
+		}
 		return route(url.pathname, init);
 	});
 }
@@ -55,9 +57,11 @@ describe("Databricks SQL protocol", () => {
 			fetchImpl,
 		});
 		expect(result.rows).toEqual([["42"]]);
-		const [, init] = fetchImpl.mock.calls.find(([url]) =>
+		const statementCall = fetchImpl.mock.calls.find(([url]) =>
 			String(url).endsWith("/sql/statements"),
-		)!;
+		);
+		expect(statementCall).toBeDefined();
+		const [, init] = statementCall ?? [];
 		expect(JSON.parse(String(init?.body))).toMatchObject({
 			warehouse_id: "example-warehouse",
 			parameters: input.parameters,
@@ -68,7 +72,7 @@ describe("Databricks SQL protocol", () => {
 		expect(
 			fetchImpl.mock.calls.every(
 				([url, options]) =>
-					String(url).startsWith(host) &&
+					new URL(String(url)).origin === host &&
 					options?.redirect === "error",
 			),
 		).toBe(true);
@@ -123,12 +127,13 @@ describe("Databricks SQL protocol", () => {
 	});
 	it("polls an asynchronous statement and follows only bounded internal result pages", async () => {
 		const fetchImpl = harness((path) => {
-			if (path.endsWith("/statements"))
+			if (path.endsWith("/statements")) {
 				return json({
 					statement_id: "example-statement",
 					status: { state: "PENDING" },
 				});
-			if (path.endsWith("/example-statement"))
+			}
+			if (path.endsWith("/example-statement")) {
 				return json({
 					...success,
 					result: {
@@ -137,6 +142,7 @@ describe("Databricks SQL protocol", () => {
 							"/api/2.0/sql/statements/example-statement/result/chunks/1?row_offset=1",
 					},
 				});
+			}
 			return json({ data_array: [["second"]] });
 		});
 		const result = await executeDatabricksSql(credentials, {
@@ -158,7 +164,9 @@ describe("Databricks SQL protocol", () => {
 			executeDatabricksSql(credentials, { ...input, fetchImpl }),
 		).rejects.toThrow("invalid result page");
 		expect(
-			fetchImpl.mock.calls.every(([url]) => String(url).startsWith(host)),
+			fetchImpl.mock.calls.every(
+				([url]) => new URL(String(url)).origin === host,
+			),
 		).toBe(true);
 	});
 	it("cancels the remote statement on caller cancellation", async () => {

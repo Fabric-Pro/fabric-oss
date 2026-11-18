@@ -20,9 +20,9 @@
 import type { BaseMessage } from "@langchain/core/messages";
 import { HumanMessage, ToolMessage } from "@langchain/core/messages";
 import {
+	tool as langchainTool,
 	type StructuredToolInterface,
 	type ToolRuntime,
-	tool,
 } from "@langchain/core/tools";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { errorLogFields } from "@repo/agent-core";
@@ -48,6 +48,84 @@ const TEAMS_TOOL_LIMITS = {
 	MAX_CHARS_PER_EXCERPT: 400,
 	FULL_MESSAGE_MAX_CHARS: 10_000,
 } as const;
+
+// Keep timing around the handler so parallel tools retain separate clocks.
+const tool: typeof langchainTool = ((
+	handler: (...args: any[]) => any,
+	fields: any,
+) =>
+	langchainTool(async (...args: any[]) => {
+		const start = Date.now();
+		let success = false;
+		try {
+			const result = await handler(...args);
+			success = !(
+				typeof result === "string" &&
+				/^(?:Failed|Error:|Authentication to |The person.s project role|(?:File|Directory) .+ not found|Repository not found\.)|^[^\n]*(?: failed| skipped| encountered an error| could not be (?:read|searched))/i.test(
+					result,
+				)
+			);
+			return result;
+		} finally {
+			logger.info("[ToolNode] Tool completed", {
+				toolName: fields.name,
+				durationMs: Date.now() - start,
+				success,
+			});
+		}
+	}, fields)) as typeof langchainTool;
+
+function timedResearchTool<T extends StructuredToolInterface>(original: T): T {
+	return new Proxy(original, {
+		get(target, key, receiver) {
+			if (key !== "invoke") return Reflect.get(target, key, receiver);
+			return async (...args: Parameters<T["invoke"]>) => {
+				const start = Date.now();
+				let success = false;
+				try {
+					const result = await target.invoke(args[0], args[1]);
+					const artifact =
+						result instanceof ToolMessage
+							? result.artifact
+							: Array.isArray(result)
+								? result[1]
+								: undefined;
+					const content =
+						result instanceof ToolMessage ? result.content : result;
+					success =
+						!(
+							result instanceof ToolMessage &&
+							result.status === "error"
+						) &&
+						!(
+							artifact &&
+							typeof artifact === "object" &&
+							"status" in artifact &&
+							artifact.status !== "ok"
+						);
+					if (typeof content === "string") {
+						try {
+							const parsed = JSON.parse(content);
+							if (parsed.success === false || parsed.error)
+								success = false;
+						} catch {
+							/* Text results are valid. */
+						}
+					}
+					return result;
+				} finally {
+					logger.info("[ToolNode] Tool completed", {
+						toolName: target.name,
+						durationMs: Date.now() - start,
+						success,
+					});
+				}
+			};
+		},
+	});
+}
+const timedWebSearchTool = timedResearchTool(webSearchTool);
+const timedReadUrlTool = timedResearchTool(readUrlTool);
 
 interface ExtractedExcerpt {
 	messageId: string;
@@ -2426,7 +2504,7 @@ function toolsForGates(
 	// Only for a run the server authorized to research. The gate is part of
 	// the cache key, so a node built for such a run never serves another.
 	if (researchAllowed) {
-		tools.push(webSearchTool, readUrlTool);
+		tools.push(timedWebSearchTool, timedReadUrlTool);
 	}
 
 	return tools;

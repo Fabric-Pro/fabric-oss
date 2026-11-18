@@ -12,8 +12,8 @@ import {
 	type NewsletterReleaseTargeting,
 	plainStoryText,
 	previousProductionTag,
-	readReleaseListing,
 	RELEASE_LISTING_PAGE_SIZE,
+	readReleaseListing,
 } from "./screenshot-targeting-context";
 
 function release(
@@ -281,4 +281,12 @@ describe("formatTargetingContext", () => {
 		);
 		expect(text).not.toContain("b.ts");
 	});
+});
+
+it("scans repeated URL schemes once", () => {
+	const start = performance.now();
+	expect(
+		extractPullRequestRefs("http://".repeat(20_000), "example-org/app"),
+	).toEqual({ urls: [], numbers: [] });
+	expect(performance.now() - start).toBeLessThan(250);
 });

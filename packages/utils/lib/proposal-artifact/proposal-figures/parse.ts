@@ -31,7 +31,7 @@ export const FIGURE_KINDS = [
 export type FigureKind = (typeof FIGURE_KINDS)[number];
 
 /** A figure line, trimmed, capturing the kind as written. */
-export const FIGURE_LINE = /^%%\s*figure:\s*(\S*)\s*$/i;
+export const FIGURE_LINE = /^%%\s*figure:\s*(?:(\S+)\s*)?$/i;
 
 export function isFigureKind(value: string): value is FigureKind {
 	return (FIGURE_KINDS as readonly string[]).includes(value);

@@ -1,5 +1,6 @@
 import type { RemoteAgentTarget } from "@repo/database";
 import { fetchAgentEndpoint } from "@repo/utils/agent-endpoint";
+import { stripTrailingSlashes } from "@repo/utils/strip-trailing-slashes";
 import { ApplicationFailure } from "@temporalio/common";
 import { z } from "zod";
 import { getAuthHeaders } from "./auth";
@@ -44,12 +45,12 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 		private readonly expectedTarget?: RemoteAgentTarget,
 		private readonly registration?: { url: string; secret: string },
 	) {
-		this.controlPlaneUrl = (
+		this.controlPlaneUrl = stripTrailingSlashes(
 			registration?.url ??
-			(expectedTarget?.connectionId
-				? expectedTarget.url
-				: getBackgroundAgentsUrl())
-		).replace(/\/+$/, "");
+				(expectedTarget?.connectionId
+					? expectedTarget.url
+					: getBackgroundAgentsUrl()),
+		);
 		this.controlPlaneSecret =
 			registration?.secret ??
 			(expectedTarget?.connectionId ? "" : getBackgroundAgentsSecret());

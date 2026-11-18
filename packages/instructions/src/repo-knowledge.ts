@@ -137,7 +137,7 @@ export function classifyRepositoryDocument(input: {
 	// An AI assistant's saved memory (front matter typed user / feedback /
 	// project / reference): it belongs with the coding instructions.
 	if (
-		/^\s*(node_type:\s*memory|originSessionId:|type:\s*(user|feedback|project|reference)\s*$)/im.test(
+		/^[ \t]*(node_type:\s*memory|originSessionId:|type:\s*(user|feedback|project|reference)\s*$)/im.test(
 			head,
 		)
 	) {
@@ -204,8 +204,8 @@ export function classifyRepositoryDocument(input: {
 
 	// Work still to do: a list of open task items, or user stories. A
 	// document with open steps among much prose is a plan, kept as knowledge.
-	const openTasks = count(/^\s*[-*]\s+\[ \]\s+/gm, body);
-	const doneTasks = count(/^\s*[-*]\s+\[x\]\s+/gim, body);
+	const openTasks = count(/^[ \t]*[-*][^\S\r\n]+\[ \][^\S\r\n]+/gm, body);
+	const doneTasks = count(/^[ \t]*[-*]\s+\[x\]\s+/gim, body);
 	const userStories = count(/\bas an? [^,\n]{2,60},? i want\b/gi, body);
 	const plan = openTasks + doneTasks >= 3 && looksLikePlan(title, body);
 	if (plan) {
@@ -328,7 +328,7 @@ export function classifyRepositoryDocument(input: {
 	}
 
 	// Dated notes: several date headings.
-	const datedHeadings = count(/^#{1,4}\s*.*\b20\d\d-\d\d-\d\d\b/gm, body);
+	const datedHeadings = count(/^#{1,4}.*\b20\d\d-\d\d-\d\d\b/gm, body);
 	if (
 		datedHeadings >= 2 ||
 		/\b(retro|retrospective|journal|meeting notes|standup)\b/i.test(title)
@@ -361,11 +361,11 @@ const FINISHED_WORDS =
 function isFinished(head: string, body: string): boolean {
 	const top = `${head}\n${body.slice(0, 1500)}`;
 	const statusLine = new RegExp(
-		`^[\\s>*_-]*(status|state|статус|стан)[^\\p{L}\\n]{0,12}(${FINISHED_WORDS})(?![\\p{L}])`,
+		`^[ \\t>*_-]*(status|state|статус|стан)[^\\p{L}\\n]{0,12}(${FINISHED_WORDS})(?![\\p{L}])`,
 		"imu",
 	);
 	const closedNote = new RegExp(
-		`^\\s*>\\s*(\\*\\*)?(${FINISHED_WORDS})\\b`,
+		`^[ \\t]*>[ \\t]*(\\*\\*)?(${FINISHED_WORDS})\\b`,
 		"imu",
 	);
 	return statusLine.test(top) || closedNote.test(top);
@@ -429,7 +429,7 @@ function looksLikePlan(title: string, body: string): boolean {
 	) {
 		return true;
 	}
-	const fences = count(/^\s*```/gm, body);
+	const fences = count(/^[ \t]*```/gm, body);
 	const stepHeadings = count(
 		/^#{2,4}\s*(task|step|phase|stage|slice|milestone|part|крок|етап|фаза)\s*\d+[.:)]?\s/gimu,
 		body,
@@ -455,7 +455,7 @@ const MAX_ITEM_DESCRIPTION = 4000;
 export function sectionText(body: string, ...words: string[]): string | null {
 	const lines = body.split(/\r?\n/);
 	for (let i = 0; i < lines.length; i++) {
-		const match = /^(#{1,6})\s+(.+)$/.exec(lines[i] ?? "");
+		const match = /^(#{1,6})[^\S\r\n]+(.+)/.exec(lines[i] ?? "");
 		if (!match) {
 			continue;
 		}
@@ -502,17 +502,17 @@ export function extractBacklogItems(input: {
 	const { head, body } = stripFrontmatter(input.text);
 	const title = titleOf(input.path, body, head);
 	const item = workItemOf(title);
-	const openTasks = [...body.matchAll(/^\s*[-*]\s+\[ \]\s+(.+)$/gm)];
+	const openTasks = [...body.matchAll(/^[ \t]*[-*]\s+\[ \][^\S\r\n]+(.+)/gm)];
 	if (!item && openTasks.length >= 3) {
 		const items: RepoBacklogItem[] = [];
 		let heading = "";
 		for (const line of body.split(/\r?\n/)) {
-			const h = /^#{1,6}\s+(.+)$/.exec(line);
+			const h = /^#{1,6}[^\S\r\n]+(.+)/.exec(line);
 			if (h) {
 				heading = (h[1] ?? "").trim();
 				continue;
 			}
-			const task = /^\s*[-*]\s+\[ \]\s+(.+)$/.exec(line);
+			const task = /^[ \t]*[-*]\s+\[ \][^\S\r\n]+(.+)/.exec(line);
 			if (!task) {
 				continue;
 			}
@@ -602,7 +602,7 @@ export function extractDecision(input: {
 		sectionText(body, "consequences") ??
 		"See the decision.";
 	const statusWord = (
-		/^\s*status\s*:\s*(\w+)/im.exec(`${head}\n${body}`)?.[1] ??
+		/^[ \t]*status\s*:\s*(\w+)/im.exec(`${head}\n${body}`)?.[1] ??
 		sectionText(body, "status")?.split(/\s/)[0] ??
 		""
 	).toLowerCase();

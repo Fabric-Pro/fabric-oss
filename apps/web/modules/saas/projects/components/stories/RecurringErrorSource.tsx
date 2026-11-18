@@ -6,12 +6,14 @@
  * the evidence panel in the detail view. Kept out of the inbox component so
  * the two sources' shape lives in one place.
  *
- * Reads only `sourceMetadata.recurringError` (written by the scan, already
- * redacted) and `sourceMetadata.transcript` (the rendered evidence). Anything
+ * Reads `sourceMetadata.recurringError` (written by the scan, already
+ * redacted), `recurringErrorAbsence`, and `transcript` (the rendered evidence). Anything
  * missing or malformed renders as absent rather than throwing.
  */
 
+import { Badge } from "@ui/components/badge";
 import { ActivityIcon, FileTextIcon, LayersIcon } from "lucide-react";
+import { useTranslations } from "next-intl";
 
 const RECURRING_ERROR_SOURCES = ["LOG_MONITOR", "INCIDENT_CLUSTER"];
 
@@ -48,6 +50,52 @@ function formatWhen(value: unknown): string | null {
 			});
 }
 
+function absenceRecord(metadata: Record<string, unknown> | null) {
+	const value = record(metadata?.recurringErrorAbsence);
+	const scans = value?.scans as number;
+	if (!Number.isSafeInteger(scans) || scans < 1) {
+		return null;
+	}
+	const first = formatWhen(value?.firstAbsentScanAt);
+	const last = formatWhen(value?.lastAbsentScanAt);
+	if (
+		!first ||
+		!last ||
+		Date.parse(value?.firstAbsentScanAt as string) >
+			Date.parse(value?.lastAbsentScanAt as string)
+	) {
+		return null;
+	}
+	return { first, last, scans };
+}
+
+function latestSighting(
+	metadata: Record<string, unknown> | null,
+): string | null {
+	const related = Array.isArray(metadata?.relatedErrors)
+		? metadata.relatedErrors
+		: [];
+	const sightings = [
+		record(metadata?.recurringError)?.lastSeen,
+		...related.map(
+			(entry) => record(record(entry)?.recurringError)?.lastSeen,
+		),
+	];
+	let latest = Number.NEGATIVE_INFINITY;
+	for (const sighting of sightings) {
+		if (typeof sighting !== "string") {
+			continue;
+		}
+		const at = Date.parse(sighting);
+		if (Number.isFinite(at) && at > latest) {
+			latest = at;
+		}
+	}
+	return Number.isFinite(latest)
+		? formatWhen(new Date(latest).toISOString())
+		: null;
+}
+
 export function RecurringErrorSourceBadge({
 	source,
 	sourceMetadata,
@@ -55,18 +103,30 @@ export function RecurringErrorSourceBadge({
 	source: string;
 	sourceMetadata: Record<string, unknown> | null;
 }) {
+	const t = useTranslations("projects.recurringErrorSource");
+	const absence = absenceRecord(sourceMetadata);
 	const evidence = record(sourceMetadata?.recurringError);
 	if (source === "LOG_MONITOR") {
+		const lastSeen = latestSighting(sourceMetadata);
 		const occurrences = evidence?.occurrences;
 		const windowHours = evidence?.windowHours;
 		return (
-			<span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-				<ActivityIcon className="size-3" aria-hidden="true" />
-				{typeof occurrences === "number" &&
-				typeof windowHours === "number"
-					? `Recurring error · ${occurrences}× in ${windowHours}h`
-					: "Recurring error"}
-			</span>
+			<>
+				<span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+					<ActivityIcon className="size-3" aria-hidden="true" />
+					{typeof occurrences === "number" &&
+					typeof windowHours === "number"
+						? `Recurring error · ${occurrences}× in ${windowHours}h`
+						: "Recurring error"}
+				</span>
+				{absence && lastSeen && (
+					<Badge variant="warning">
+						{t("belowThreshold", {
+							lastSeen,
+						})}
+					</Badge>
+				)}
+			</>
 		);
 	}
 	if (source === "INCIDENT_CLUSTER") {
@@ -90,6 +150,8 @@ export function RecurringErrorSourcePanel({
 	source: string;
 	sourceMetadata: Record<string, unknown> | null;
 }) {
+	const t = useTranslations("projects.recurringErrorSource");
+	const absence = absenceRecord(sourceMetadata);
 	if (!isRecurringErrorSource(source)) {
 		return null;
 	}
@@ -140,6 +202,11 @@ export function RecurringErrorSourcePanel({
 						: "Consolidates related open bug reports"}
 				</span>
 			</div>
+			{isLogs && absence && (
+				<p className="text-xs text-muted-foreground">
+					{t("absenceExplanation", absence)}
+				</p>
+			)}
 			{isLogs && evidence && (
 				<p className="text-xs text-muted-foreground">
 					{typeof evidence.occurrences === "number" &&

@@ -42,6 +42,7 @@
 
 import type { TeamsHostedContentRef } from "../shared/attachment-types";
 import { DownloadFailedError } from "./hosted-content.errors";
+import { microsoftFetch } from "./request";
 
 // =============================================================================
 // extractHostedContentRefsFromHtml
@@ -383,7 +384,7 @@ async function attemptDownload(
 > {
 	let response: Response;
 	try {
-		response = await fetch(url, {
+		response = await microsoftFetch(url, {
 			headers: { Authorization: `Bearer ${accessToken}` },
 			signal,
 		});

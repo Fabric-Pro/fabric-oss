@@ -54,6 +54,10 @@ export function withoutHiddenSystemMcpServers<
  * `@browserbasehq/mcp@3.0.0`, which is published but reads both
  * BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID; a STDIO connection carries
  * one key, so neither command can start.
+ *
+ * Google Maps (`@modelcontextprotocol/server-google-maps`) exits at startup
+ * unless GOOGLE_MAPS_API_KEY is set, and its key is passed as API_KEY, so it
+ * cannot start whatever the connection holds (Fizzy #3457).
  */
 export const UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS = [
 	"fetch",
@@ -65,22 +69,58 @@ export const UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS = [
 	"turso",
 	"asana",
 	"browserbase",
+	"google-maps",
+] as const;
+
+/**
+ * Retired system servers that start only when the connection supplies their
+ * command-line arguments (Fizzy #3457). Their commands were seeded bare and the
+ * MCP Settings form collects arguments for Azure DevOps alone, so a connection
+ * without them exits at startup on every call:
+ *
+ * - `@modelcontextprotocol/server-postgres` reads the database URL from argv
+ *   only ("Please provide a database URL as a command-line argument"), seen
+ *   exiting in production in October 2026;
+ * - `mcp-obsidian` needs the vault directory (`Usage: mcp-obsidian
+ *   <vault-directory>`);
+ * - `@upstash/mcp-server` needs an email and an API key (`run <email> <key>`
+ *   or its own variables, neither of which the API_KEY it is given provides).
+ *
+ * A connection created through the API with those arguments keeps starting.
+ */
+export const ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS = [
+	"postgres",
+	"obsidian",
+	"upstash",
 ] as const;
 
 const UNRUNNABLE_KEY_SET: ReadonlySet<string> = new Set(
 	UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS,
 );
+const ARGUMENT_REQUIRED_KEY_SET: ReadonlySet<string> = new Set(
+	ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS,
+);
 
-/** A system server whose command cannot start, so no connection to it may. */
+/**
+ * A system server whose command cannot start, so no connection to it may.
+ * `commandArgs` are the connection's own arguments; a server that needs them
+ * is unrunnable only when there are none.
+ */
 export function isUnrunnableSystemMcpServer(
 	server:
 		| { key?: string | null; isSystemProvided?: boolean | null }
 		| null
 		| undefined,
+	commandArgs?: readonly string[] | null,
 ): boolean {
+	if (!server?.isSystemProvided || !server.key) {
+		return false;
+	}
+	if (UNRUNNABLE_KEY_SET.has(server.key)) {
+		return true;
+	}
 	return (
-		!!server?.isSystemProvided &&
-		!!server.key &&
-		UNRUNNABLE_KEY_SET.has(server.key)
+		ARGUMENT_REQUIRED_KEY_SET.has(server.key) &&
+		!commandArgs?.some((arg) => arg.trim() !== "")
 	);
 }

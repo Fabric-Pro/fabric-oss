@@ -22,3 +22,8 @@ export const TEAMS_TOOL_LIMITS = {
 	 */
 	FULL_MESSAGE_MAX_CHARS: 10_000,
 } as const;
+
+export const GRAPH_REQUEST_TIMEOUT_MS = 30_000;
+
+/** Leaves headroom for Graph metadata before the activity's next heartbeat. */
+export const MICROSOFT_DOWNLOAD_TIMEOUT_MS = 60_000;

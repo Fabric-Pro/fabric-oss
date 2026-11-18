@@ -121,3 +121,14 @@ describe("rankCredentials", () => {
 		]);
 	});
 });
+
+it("normalizes long invalid origins promptly", () => {
+	const start = performance.now();
+	expect(normalizeOrigin(`${"/".repeat(50000)}!`)).toBe(
+		`${"/".repeat(50000)}!`,
+	);
+	expect(normalizeOrigin(" HTTPS://Example.COM/ ")).toBe(
+		"https://example.com",
+	);
+	expect(performance.now() - start).toBeLessThan(500);
+});

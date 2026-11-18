@@ -56,6 +56,7 @@ export interface AgentUsageLogOptions {
 	/** Set only by reply-producing chat calls, excluding summaries. */
 	outputMessageId?: string;
 	latencyMs?: number;
+	firstTokenMs?: number;
 }
 
 interface ExtractedTokenUsage {
@@ -317,6 +318,7 @@ function buildAgentUsageEvent(
 					? usageConfig.usage_feature_key
 					: undefined,
 			latencyMs: options.latencyMs ?? 0,
+			firstTokenMs: options.firstTokenMs,
 			inputTokens: usage.inputTokens,
 			outputTokens: usage.outputTokens,
 			totalTokens: usage.totalTokens,

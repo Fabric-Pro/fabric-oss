@@ -362,7 +362,7 @@ const NODE_PATTERNS: readonly { regex: RegExp; shape: string; open: number }[] =
 const BARE_NODE = /^[\w-]+/;
 const CLASS_SHORTHAND = /^:::[\w][\w-]*/;
 const ARROW = /^(<)?(-->|-.->|==>|---|-\.-|===)(?:\|([^|]*)\|)?/;
-const TEXT_ARROW = /^(<)?(--|-\.|==)\s+(.+?)\s+(-->|---|\.->|-\.-|==>|===)/;
+const TEXT_ARROW = /^(<)?(--|-\.|==)\s(.+?)\s(-->|---|\.->|-\.-|==>|===)/;
 
 /** Lines the engine's flowchart parser reads as something other than edges. */
 const NON_EDGE_LINES: readonly RegExp[] = [

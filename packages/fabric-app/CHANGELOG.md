@@ -1,5 +1,33 @@
 # fabric-app
 
+## 1.16.46
+
+### Patch Changes
+
+- e8fb586: The Fabric Agent now shows your message and upload progress as soon as you send, uploads attachments in parallel, and lists new conversations in history right away.
+- e8fb586: Usage records for the AI Assistant now include the conversation, the request and the time to first streamed text or tool-call output, or reasoning when the provider streams it as message content.
+- e8fb586: Saving a large code-map analysis no longer fails when the save takes longer than five seconds.
+- e8fb586: Image uploads in the Fabric Agent no longer fail with "Could not upload file to S3" when the server route loads the circuit breakers without the rest of the observability package; Stripe and Resend calls made from such routes are covered by the same fix.
+- e8fb586: Published SDK and integration declaration files now retain entry documentation comments.
+- e8fb586: The recurring-error scan no longer reports a CPU metric gap logged as `FailedGetResourceMetric` or `FailedGetContainerResourceMetric` when a revision teardown or a brief CPU metrics API outage across several apps explains it, as it already did for `FailedComputeMetricsReplicas`.
+- e8fb586: Preserve backslashes in link destinations and titles when saving editor content as Markdown.
+- e8fb586: Harden diagram parsing and model endpoint normalization against slow inputs.
+- e8fb586: Updates the Hono web framework to 4.13.18, which fixes upstream security issues in mounted-path routing, wildcard middleware matching, form validation, request body size limits, CSS escaping and CSRF checks.
+- e8fb586: Harden repository content parsing and resource normalization against excessive processing time on malicious input.
+- e8fb586: Connections to the retired Postgres, Obsidian, Upstash and Google Maps MCP servers that cannot start are now refused with a prompt to remove them, instead of failing on every call, and an MCP server that stops unexpectedly now reports its exit code or signal.
+- e8fb586: "Sync now" for linked meetings now reports how the run ended: how many new transcripts it stored, or why it failed.
+- e8fb586: A linked meeting's transcript list is now ordered by meeting date, newest first, so meetings recovered by a sync no longer sit above newer ones.
+- e8fb586: Microsoft Teams, Graph, and identity requests now time out after 30 seconds, with a 60-second deadline for OneDrive file downloads, instead of hanging until the server limit.
+- e8fb586: Upgrades Next.js to 16.4.5, which fixes several moderate security advisories in caching, image optimization and Edge runtime cookie handling.
+- e8fb586: When the embedding provider rejects a key, the orchestrator no longer reports the execution as stored in semantic memory. The worker log now names whose key was rejected (a user's, an organization's or the platform AI Gateway key) instead of repeating the provider's advice to set the platform key.
+- e8fb586: Images you attach in the Fabric Agent stay visible while your message is sent, instead of disappearing until the thumbnails load.
+- e8fb586: A recurring-error proposal waiting in the review inbox now shows "Below threshold" with the latest sighting of its own or related errors once a complete log scan no longer finds the error at the threshold, and the marker clears when the error recurs.
+- e8fb586: After a bug tracked by the recurring-error scan is no longer open, the scan waits seven days from the first scan that sees this before proposing that error again. It no longer files a new proposal for an error whose bug was declined, though it still adds the error to a matching open bug or pending proposal, and it keeps the record of the open bugs it ruled out when a pending proposal's evidence is refreshed.
+- e8fb586: The recurring-error scan no longer reports autoscaler warnings about missing CPU samples when a container on the same revision started within two minutes before or after the warning, or the revision's autoscaler started within the two minutes before it.
+- e8fb586: Use cryptographic randomness in the storage keys for uploaded and generated chat media, AI chat documents, document and story media, and temporary uploads.
+- e8fb586: Filter the roadmap by the PM status shown in the PM sync column: pick one status under More filters to see only work items at that stage, and clear it to return to your other roadmap filters.
+- e8fb586: The recurring-error scan can now join related errors found in the same scan into one proposal even when the project had no open bug or pending proposal when the scan started.
+
 ## 1.16.45
 
 ### Patch Changes

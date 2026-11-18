@@ -91,3 +91,27 @@ describe("POST /api/agents/fabric-ai/upload-image", () => {
 		expect(mocks.getSignedUrl).not.toHaveBeenCalled();
 	});
 });
+
+it("builds storage keys without Math.random", async () => {
+	const random = vi.spyOn(Math, "random").mockImplementation(() => {
+		throw new Error("insecure randomness");
+	});
+	try {
+		const response = await POST(request());
+		const payload = await response.json();
+
+		expect(response.status).toBe(200);
+		expect(mocks.recordChatMediaObject).toHaveBeenCalledWith({
+			storageKey: payload.storagePath,
+			kind: "UPLOADED_IMAGE",
+			userId: USER_ID,
+			organizationId: ORGANIZATION_ID,
+			conversationId: null,
+		});
+		expect(
+			mocks.recordChatMediaObject.mock.invocationCallOrder[0],
+		).toBeLessThan(mocks.getSignedUrl.mock.invocationCallOrder[0]);
+	} finally {
+		random.mockRestore();
+	}
+});

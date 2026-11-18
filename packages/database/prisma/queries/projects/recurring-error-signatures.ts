@@ -4,8 +4,8 @@
  * The scheduled scan groups a project's application errors (and its open bug
  * reports) and files a BUG proposal for each group that keeps recurring. These
  * queries are the scan's memory between runs: one `RecurringErrorSignature`
- * per (project, source, fingerprint), so a rescan updates the group it already
- * filed instead of filing it again.
+ * per (project, source, fingerprint), so a rescan refreshes live tracking
+ * and observes a quiet period after close.
  */
 
 import { TERMINAL_DRAFTING_STAGES } from "../../../utils";
@@ -133,8 +133,8 @@ export interface RecurringErrorObservation {
 
 /**
  * Insert or refresh one signature with what this scan saw. `firstSeenAt` and
- * `detectedAt` keep their earliest values across scans; everything else is
- * this window's view.
+ * `detectedAt` keep their earliest values across scans; link fields and the
+ * close-observation stamp are left unchanged.
  */
 export async function upsertRecurringErrorSignature(
 	params: {
@@ -195,7 +195,11 @@ export async function upsertRecurringErrorSignature(
 
 export async function linkRecurringErrorSignature(
 	signatureId: string,
-	link: { pendingProposalId?: string | null; storyId?: string | null },
+	link: {
+		pendingProposalId?: string | null;
+		storyId?: string | null;
+		storyClosedSeenAt?: Date | null;
+	},
 	client: Prisma.TransactionClient = db,
 ): Promise<void> {
 	await client.recurringErrorSignature.update({
@@ -205,6 +209,9 @@ export async function linkRecurringErrorSignature(
 				? { pendingProposalId: link.pendingProposalId }
 				: {}),
 			...(link.storyId !== undefined ? { storyId: link.storyId } : {}),
+			...(link.storyClosedSeenAt !== undefined
+				? { storyClosedSeenAt: link.storyClosedSeenAt }
+				: {}),
 		},
 	});
 }
@@ -216,15 +223,20 @@ export async function linkRecurringErrorSignature(
  *   recurrence is evidence for that story, not a new ticket.
  * - `pending`: a proposal is still waiting for review (or mid-apply, or failed
  *   and retryable) — refresh it, do not file a second one.
- * - `declined`: a reviewer rejected or parked the proposal — do not re-file a
- *   problem someone already decided about.
- * - `none`: nothing open is tracking it (never filed, the story was closed, or
- *   the proposal was superseded or pruned) — file a new proposal.
+ * - `declined`: a reviewer rejected or parked the proposal — suppress it.
+ * - `declined-story`: the bug was removed or marked duplicate — match live
+ *   tracking and add evidence there, but do not file a new proposal.
+ * - `closed-story`: a known bug is otherwise no longer open (or deleted) — wait
+ *   seven days from the scan's first observation before proposing again.
+ * - `none`: no known bug (never filed, the proposal was superseded or pruned,
+ *   or applying it created no story) — file a new proposal.
  */
 export type SignatureTrackingState =
 	| { state: "open-story"; storyId: string; organizationId: string | null }
 	| { state: "pending"; proposalId: string }
 	| { state: "declined"; proposalId: string }
+	| { state: "declined-story"; storyId: string }
+	| { state: "closed-story" }
 	| { state: "none" };
 
 export async function resolveSignatureTracking(
@@ -298,13 +310,23 @@ export async function resolveSignatureTracking(
 		},
 		select: { id: true, project: { select: { organizationId: true } } },
 	});
-	return story
-		? {
-				state: "open-story",
-				storyId: story.id,
-				organizationId: story.project.organizationId,
-			}
-		: { state: "none" };
+	if (story) {
+		return {
+			state: "open-story",
+			storyId: story.id,
+			organizationId: story.project.organizationId,
+		};
+	}
+	// Keep openness in OPEN_STORY_WHERE; only inspect the stage after it fails.
+	const closed = await db.userStory.findFirst({
+		where: { id: storyId, projectId: signature.projectId },
+		select: { draftingStage: true },
+	});
+	if (closed?.draftingStage === "DECLINED") {
+		return { state: "declined-story", storyId };
+	}
+	// A known id whose story was deleted is also an observed close.
+	return { state: "closed-story" };
 }
 
 /** A project's open BUG stories, newest first. */
@@ -493,7 +515,9 @@ export async function refreshRecurringErrorProposalEvidence(
 		return false;
 	}
 	const base = jsonObject(proposal.sourceMetadata);
-	const ownFingerprint = jsonObject(base.recurringError).fingerprint;
+	delete base.recurringErrorAbsence;
+	const storedRecurringError = jsonObject(base.recurringError);
+	const ownFingerprint = storedRecurringError.fingerprint;
 	const isOwn =
 		typeof ownFingerprint !== "string" ||
 		ownFingerprint === evidence.fingerprint;
@@ -519,7 +543,18 @@ export async function refreshRecurringErrorProposalEvidence(
 			sourceMetadata: {
 				...base,
 				recurringError: isOwn
-					? evidence.recurringError
+					? {
+							...evidence.recurringError,
+							...(Array.isArray(
+								storedRecurringError.openBugCheck,
+							) &&
+							evidence.recurringError.openBugCheck === undefined
+								? {
+										openBugCheck:
+											storedRecurringError.openBugCheck,
+									}
+								: {}),
+						}
 					: base.recurringError,
 				recurringErrorEvidence: own,
 				relatedErrors: related.map((entry) => ({ ...entry })),
@@ -528,4 +563,57 @@ export async function refreshRecurringErrorProposalEvidence(
 		},
 	});
 	return updated.count > 0;
+}
+
+/** Record a complete log scan's absence without changing the stored evidence. */
+export async function recordRecurringErrorProposalAbsence(
+	projectId: string,
+	proposalId: string,
+	scannedAt: Date,
+): Promise<void> {
+	const where = {
+		id: proposalId,
+		projectId,
+		source: "LOG_MONITOR" as const,
+		status: "PENDING" as const,
+	};
+	const proposal = await db.pendingBacklogProposal.findFirst({
+		where,
+		select: { sourceMetadata: true },
+	});
+	if (!proposal || proposal.sourceMetadata === null) {
+		return;
+	}
+	const base = jsonObject(proposal.sourceMetadata);
+	const previous = jsonObject(base.recurringErrorAbsence);
+	const at = scannedAt.toISOString();
+	// Also ignore older overlapping scans. The metadata fence below prevents a
+	// stale absence read from overwriting a concurrent recurrence refresh.
+	if (
+		typeof previous.lastAbsentScanAt === "string" &&
+		previous.lastAbsentScanAt >= at
+	) {
+		return;
+	}
+	const valid =
+		typeof previous.firstAbsentScanAt === "string" &&
+		Number.isFinite(Date.parse(previous.firstAbsentScanAt)) &&
+		Number.isSafeInteger(previous.scans as number) &&
+		(previous.scans as number) > 0;
+	await db.pendingBacklogProposal.updateMany({
+		where: {
+			...where,
+			sourceMetadata: { equals: proposal.sourceMetadata },
+		},
+		data: {
+			sourceMetadata: {
+				...base,
+				recurringErrorAbsence: {
+					firstAbsentScanAt: valid ? previous.firstAbsentScanAt : at,
+					lastAbsentScanAt: at,
+					scans: valid ? (previous.scans as number) + 1 : 1,
+				},
+			},
+		},
+	});
 }

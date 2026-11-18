@@ -82,6 +82,9 @@ export type RoadmapFilters = {
 	priority: StoryPriority[];
 	stage: MaturationStatus[];
 	sync: SyncFilter[];
+	/** The linked ticket's PM-tool status (`story.pmTicketStatus`), matched
+	 * exactly. Single-select; a story with no PM status never matches. */
+	pmStatus: string | null;
 	source: StorySource[];
 	size: StorySize[];
 	tags: string[];
@@ -118,6 +121,7 @@ export const EMPTY_ROADMAP_FILTERS: RoadmapFilters = {
 	priority: [],
 	stage: [],
 	sync: [],
+	pmStatus: null,
 	source: [],
 	size: [],
 	tags: [],
@@ -156,6 +160,7 @@ export function hasActiveRoadmapFilters(filters: RoadmapFilters): boolean {
 		filters.priority.length > 0 ||
 		filters.stage.length > 0 ||
 		filters.sync.length > 0 ||
+		filters.pmStatus !== null ||
 		filters.source.length > 0 ||
 		filters.size.length > 0 ||
 		filters.tags.length > 0 ||
@@ -196,6 +201,9 @@ export function activeFilterGroupCount(filters: RoadmapFilters): number {
 		n++;
 	}
 	if (filters.sync.length > 0) {
+		n++;
+	}
+	if (filters.pmStatus !== null) {
 		n++;
 	}
 	if (filters.source.length > 0) {
@@ -255,6 +263,9 @@ export function activeFilterGroupCount(filters: RoadmapFilters): number {
 export function activeMoreFilterCount(filters: RoadmapFilters): number {
 	let n = 0;
 	if (filters.sync.length > 0) {
+		n++;
+	}
+	if (filters.pmStatus !== null) {
 		n++;
 	}
 	if (filters.source.length > 0) {
@@ -502,6 +513,14 @@ export function applyRoadmapFilters(
 			if (!syncFilter.has(status)) {
 				return false;
 			}
+		}
+		// Exact match on the value the "PM sync" column shows; a story with no
+		// PM status (null) never matches a selected status.
+		if (
+			filters.pmStatus !== null &&
+			story.pmTicketStatus !== filters.pmStatus
+		) {
+			return false;
 		}
 		const normalizedSource = normalizeStorySource(story.source);
 		if (sourceFilter && !sourceFilter.has(normalizedSource)) {

@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/integrations-runtime",
-	"version": "0.1.2",
+	"version": "0.1.3",
 	"description": "Plugin contract and runtime for Fabric integrations (Apache-2.0 attribution to Corsair)",
 	"keywords": [
 		"fabric",
@@ -42,7 +42,7 @@
 	},
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",
-		"tsdown": "^0.23.0",
+		"tsdown": "^0.23.7",
 		"typescript": "5.9.3"
 	}
 }

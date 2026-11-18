@@ -274,3 +274,22 @@ describe("formatIncompleteScanReason", () => {
 		expect(out?.split("\n").at(-1)).toBe("and 1 more repository");
 	});
 });
+
+it("anchors latest failures while retaining collector omission phrases", () => {
+	for (const [reason, incomplete] of [
+		["HTTP error: latest: lookup failed", true],
+		["latest: lookup failed", false],
+		["Skipped some latest-release lookups — time budget exhausted", false],
+		["2 release-note bodies omitted", false],
+	] as const) {
+		expect(
+			selectNewsletterReleases(
+				{
+					items: [],
+					failures: [{ repoFullName: "example-org/app", reason }],
+				},
+				start,
+			).incomplete,
+		).toBe(incomplete);
+	}
+});

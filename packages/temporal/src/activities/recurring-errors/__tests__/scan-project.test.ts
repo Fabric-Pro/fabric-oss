@@ -8,9 +8,10 @@
  * proposal shaping are the real implementations.
  */
 import type { RawErrorGroup } from "@repo/ai/lib/log-context";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const db = vi.hoisted(() => ({
+	recordRecurringErrorProposalAbsence: vi.fn(),
 	isRecurringErrorScanEnabled: vi.fn(),
 	findRecurringErrorSignatures: vi.fn(),
 	listRecurringErrorSignatures: vi.fn(),
@@ -27,6 +28,7 @@ const db = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	recordRecurringErrorProposalAbsence: db.recordRecurringErrorProposalAbsence,
 	CONFIDENCE_THRESHOLD: 0.7,
 	FABRIC_SYSTEM_USER_ID: "fabric-system",
 	db: { $transaction: db.transaction },
@@ -57,13 +59,22 @@ vi.mock("../incident-clusters", () => ({ findOpenBugClusters }));
 const draftRecurringBugReport = vi.hoisted(() => vi.fn());
 vi.mock("../draft-bug-report", () => ({ draftRecurringBugReport }));
 
+const matchingDegraded = vi.hoisted(() => ({ value: false }));
 const matchOpenBug = vi.hoisted(() => vi.fn());
 const rememberProposal = vi.hoisted(() => vi.fn());
 const createOpenBugMatcher = vi.hoisted(() => vi.fn());
 vi.mock("../match-open-bug", () => ({ createOpenBugMatcher }));
 
-vi.mock("@temporalio/activity", () => ({ heartbeat: () => {} }));
+vi.mock("@temporalio/activity", () => ({
+	heartbeat: () => {},
+	Context: {
+		current: () => ({
+			info: { scheduledTimestampMs: Date.parse("2026-11-13T10:00:00Z") },
+		}),
+	},
+}));
 
+import { fingerprintErrorGroup } from "../fingerprint";
 import { scanRecurringErrorsForProject } from "../scan-project";
 
 const INPUT = {
@@ -94,9 +105,10 @@ function signature(overrides: Record<string, unknown> = {}) {
 		projectId: "proj_1",
 		source: "LOG",
 		fingerprint: "fp",
-		sourceStoryIds: [],
+		sourceStoryIds: [] as string[],
 		pendingProposalId: null,
 		storyId: null,
+		storyClosedSeenAt: null as Date | null,
 		occurrenceCount: 6,
 		detectedAt: new Date("2026-10-20T00:00:00Z"),
 		firstSeenAt: new Date("2026-10-20T00:00:00Z"),
@@ -126,10 +138,14 @@ beforeEach(() => {
 		reach: "dedicated",
 		summarize,
 	});
-	summarize.mockResolvedValue([]);
+	summarize.mockResolvedValue(Object.assign([], { complete: true }));
 	findOpenBugClusters.mockResolvedValue([]);
 	matchOpenBug.mockResolvedValue({ match: null, checked: [] });
+	matchingDegraded.value = false;
 	createOpenBugMatcher.mockReturnValue({
+		get degraded() {
+			return matchingDegraded.value;
+		},
 		check: matchOpenBug,
 		remember: rememberProposal,
 	});
@@ -264,7 +280,11 @@ describe("scanRecurringErrorsForProject — filing", () => {
 		// The proposal and the signature's link to it commit together.
 		expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith(
 			"sig_1",
-			{ pendingProposalId: "prop_1", storyId: null },
+			{
+				pendingProposalId: "prop_1",
+				storyId: null,
+				storyClosedSeenAt: null,
+			},
 			expect.anything(),
 		);
 	});
@@ -398,6 +418,7 @@ describe("scanRecurringErrorsForProject — a recurrence is not a new ticket", (
 		expect(content).toContain("Last seen: 2026-10-22T08:00:00Z");
 		expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith("sig_1", {
 			storyId: "story_9",
+			storyClosedSeenAt: null,
 		});
 		// Followed by its link, not judged: there is no verdict to record.
 		expect(content).not.toContain("Judged the same problem");
@@ -456,6 +477,7 @@ describe("scanRecurringErrorsForProject — a recurrence is not a new ticket", (
 		// Later scans follow the bug, exactly as if a proposal had become it.
 		expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith("sig_1", {
 			storyId: "story_manual",
+			storyClosedSeenAt: null,
 		});
 		// The verdict that put the error here, against the project's bar.
 		const [{ content, metadata }] = db.createStoryComment.mock.calls[0];
@@ -538,6 +560,7 @@ describe("scanRecurringErrorsForProject — a recurrence is not a new ticket", (
 		expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith("sig_1", {
 			pendingProposalId: "prop_same",
 			storyId: null,
+			storyClosedSeenAt: null,
 		});
 	});
 
@@ -636,6 +659,8 @@ describe("scanRecurringErrorsForProject — a recurrence is not a new ticket", (
 		expect(result.suppressed).toBe(1);
 		expect(db.createPendingBacklogProposal).not.toHaveBeenCalled();
 		expect(db.createStoryComment).not.toHaveBeenCalled();
+		expect(matchOpenBug).not.toHaveBeenCalled();
+		expect(draftRecurringBugReport).not.toHaveBeenCalled();
 	});
 });
 
@@ -844,4 +869,613 @@ it("carries platform deploy-noise counts without counting them as declined signa
 	expect(result.platformNoiseByRule).toEqual({ "key-vault-canceled": 25 });
 	expect(result.suppressed).toBe(0);
 	expect(result.groupsAboveThreshold).toBe(0);
+});
+
+describe("scanRecurringErrorsForProject — quiet period after close", () => {
+	const now = new Date("2026-11-13T12:00:00Z");
+	const day = 24 * 60 * 60 * 1000;
+	let stored: ReturnType<typeof signature>;
+
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(now);
+		summarize.mockResolvedValue([group()]);
+		stored = signature({ storyId: "closed_story" });
+		db.findRecurringErrorSignatures.mockImplementation(
+			async (_p: string, _s: string, fps: string[]) => [
+				{ ...stored, fingerprint: fps[0] },
+			],
+		);
+		db.resolveSignatureTracking.mockResolvedValue({
+			state: "closed-story",
+		});
+	});
+
+	afterEach(() => vi.useRealTimers());
+
+	function expectSuppressed(
+		result: Awaited<ReturnType<typeof scanRecurringErrorsForProject>>,
+	) {
+		expect(result).toMatchObject({
+			suppressed: 1,
+			filed: 0,
+			grouped: 0,
+			notedOnStory: 0,
+			failures: 0,
+		});
+		expect(db.upsertRecurringErrorSignature).toHaveBeenCalled();
+		expect(matchOpenBug).not.toHaveBeenCalled();
+		expect(draftRecurringBugReport).not.toHaveBeenCalled();
+		expect(db.createPendingBacklogProposal).not.toHaveBeenCalled();
+		expect(db.refreshRecurringErrorProposalEvidence).not.toHaveBeenCalled();
+		expect(db.createStoryComment).not.toHaveBeenCalled();
+	}
+
+	it("stamps the first observation and suppresses without matching, drafting or filing", async () => {
+		expectSuppressed(await scanRecurringErrorsForProject(INPUT));
+		expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith("sig_1", {
+			storyClosedSeenAt: now,
+		});
+	});
+
+	it.each([0, 1, 6 * day, 7 * day - 1])(
+		"keeps the existing stamp on retry or within the quiet period (%i ms)",
+		async (elapsed) => {
+			stored.storyClosedSeenAt = new Date(now.getTime() - elapsed);
+			expectSuppressed(await scanRecurringErrorsForProject(INPUT));
+			expect(db.linkRecurringErrorSignature).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([7 * day, 8 * day])(
+		"files at or after seven days (%i ms) and clears the stamp in the link",
+		async (elapsed) => {
+			stored.storyClosedSeenAt = new Date(now.getTime() - elapsed);
+			const result = await scanRecurringErrorsForProject(INPUT);
+			expect(result).toMatchObject({
+				filed: 1,
+				suppressed: 0,
+				failures: 0,
+			});
+			expect(matchOpenBug).toHaveBeenCalledTimes(1);
+			expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith(
+				"sig_1",
+				{
+					pendingProposalId: "prop_1",
+					storyId: null,
+					storyClosedSeenAt: null,
+				},
+				expect.anything(),
+			);
+		},
+	);
+
+	it("refreshes a live pending proposal and clears a stale stamp in the link", async () => {
+		stored.storyClosedSeenAt = new Date(now.getTime() - day);
+		db.resolveSignatureTracking.mockResolvedValue({
+			state: "pending",
+			proposalId: "prop_live",
+		});
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result.refreshed).toBe(1);
+		expect(db.refreshRecurringErrorProposalEvidence).toHaveBeenCalled();
+		expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith("sig_1", {
+			pendingProposalId: "prop_live",
+			storyClosedSeenAt: null,
+		});
+	});
+
+	it.each([true, false])(
+		"clears a stale stamp when the linked bug is open (new evidence %s)",
+		async (hasNew) => {
+			stored.storyClosedSeenAt = new Date(now.getTime() - day);
+			if (!hasNew) {
+				stored.lastSeenAt = new Date(group().lastSeen);
+			}
+			db.resolveSignatureTracking.mockResolvedValue({
+				state: "open-story",
+				storyId: "story_live",
+				organizationId: "org_example",
+			});
+			const result = await scanRecurringErrorsForProject(INPUT);
+			expect(result.notedOnStory).toBe(1);
+			expect(db.createStoryComment).toHaveBeenCalledTimes(hasNew ? 1 : 0);
+			expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith(
+				"sig_1",
+				{ storyId: "story_live", storyClosedSeenAt: null },
+			);
+		},
+	);
+
+	it("clears the expired stamp when the matcher finds an open bug", async () => {
+		stored.storyClosedSeenAt = new Date(now.getTime() - 7 * day);
+		matchOpenBug.mockResolvedValue({
+			match: { kind: "story", storyId: "story_match", confidence: 0.9 },
+			checked: [],
+		});
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result.notedOnStory).toBe(1);
+		expect(db.createStoryComment.mock.calls[0][0].storyId).toBe(
+			"story_match",
+		);
+		expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith("sig_1", {
+			storyId: "story_match",
+			storyClosedSeenAt: null,
+		});
+		expect(db.createPendingBacklogProposal).not.toHaveBeenCalled();
+	});
+
+	it("clears the expired stamp when joining a pending proposal", async () => {
+		stored.storyClosedSeenAt = new Date(now.getTime() - 7 * day);
+		matchOpenBug.mockResolvedValue({
+			match: {
+				kind: "proposal",
+				proposalId: "prop_match",
+				confidence: 0.9,
+			},
+			checked: [],
+		});
+		db.refreshRecurringErrorProposalEvidence.mockResolvedValue(true);
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result.grouped).toBe(1);
+		expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith("sig_1", {
+			pendingProposalId: "prop_match",
+			storyId: null,
+			storyClosedSeenAt: null,
+		});
+		expect(db.createPendingBacklogProposal).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		null,
+		new Date(now.getTime() - day),
+		new Date(now.getTime() - 7 * day),
+	])(
+		"applies the same quiet period to incident clusters (stamp %s)",
+		async (stamp) => {
+			summarize.mockResolvedValue([]);
+			stored = signature({
+				source: "INCIDENT",
+				storyId: "closed_story",
+				sourceStoryIds: ["s1", "s2", "s3", "s4", "s5"],
+				storyClosedSeenAt: stamp,
+			});
+			db.listRecurringErrorSignatures.mockResolvedValue([stored]);
+			findOpenBugClusters.mockResolvedValue([
+				stored.sourceStoryIds.map((id: string) => ({
+					id,
+					identifier: `B-${id}`,
+					title: "Export fails",
+				})),
+			]);
+			const result = await scanRecurringErrorsForProject(INPUT);
+			expect(result.clusters).toBe(1);
+			if (stamp && now.getTime() - stamp.getTime() >= 7 * day) {
+				expect(result.filed).toBe(1);
+				expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith(
+					"sig_1",
+					expect.objectContaining({ storyClosedSeenAt: null }),
+					expect.anything(),
+				);
+			} else {
+				expectSuppressed(result);
+				if (!stamp) {
+					expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith(
+						"sig_1",
+						{ storyClosedSeenAt: now },
+					);
+				} else {
+					expect(
+						db.linkRecurringErrorSignature,
+					).not.toHaveBeenCalled();
+				}
+			}
+		},
+	);
+});
+
+describe("scanRecurringErrorsForProject — declined bugs can still match live tracking", () => {
+	beforeEach(() => {
+		summarize.mockResolvedValue([group()]);
+		db.findRecurringErrorSignatures.mockImplementation(
+			async (_p: string, _s: string, fps: string[]) => [
+				signature({
+					fingerprint: fps[0],
+					storyId: "story_declined",
+					storyClosedSeenAt: new Date("2026-11-12T00:00:00Z"),
+				}),
+			],
+		);
+		db.resolveSignatureTracking.mockResolvedValue({
+			state: "declined-story",
+			storyId: "story_declined",
+		});
+	});
+
+	it("notes on a matched open bug, clears the stamp and follows that bug on the next scan", async () => {
+		let stored = {
+			...signature(),
+			storyId: "story_declined",
+			storyClosedSeenAt: new Date("2026-11-12T00:00:00Z") as Date | null,
+		};
+		db.findRecurringErrorSignatures.mockImplementation(
+			async (_p: string, _s: string, fps: string[]) => [
+				{ ...stored, fingerprint: fps[0] },
+			],
+		);
+		db.resolveSignatureTracking.mockImplementation(
+			async (row: { storyId: string }) =>
+				row.storyId === "story_survivor"
+					? {
+							state: "open-story",
+							storyId: row.storyId,
+							organizationId: "org_example",
+						}
+					: { state: "declined-story", storyId: row.storyId },
+		);
+		db.linkRecurringErrorSignature.mockImplementationOnce(
+			async (
+				_id: string,
+				link: { storyId: string; storyClosedSeenAt: null },
+			) => {
+				stored = { ...stored, ...link };
+			},
+		);
+		matchOpenBug.mockResolvedValue({
+			match: {
+				kind: "story",
+				storyId: "story_survivor",
+				confidence: 0.9,
+			},
+			checked: [],
+		});
+
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result).toMatchObject({
+			notedOnStory: 1,
+			filed: 0,
+			failures: 0,
+		});
+		expect(matchOpenBug).toHaveBeenCalledTimes(1);
+		expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith("sig_1", {
+			storyId: "story_survivor",
+			storyClosedSeenAt: null,
+		});
+		expect(db.createStoryComment.mock.calls[0][0]).toMatchObject({
+			storyId: "story_survivor",
+			content: expect.stringContaining("matched these errors"),
+		});
+		expect(draftRecurringBugReport).not.toHaveBeenCalled();
+		expect(db.createPendingBacklogProposal).not.toHaveBeenCalled();
+
+		const next = await scanRecurringErrorsForProject(INPUT);
+		expect(next).toMatchObject({ notedOnStory: 1, filed: 0, failures: 0 });
+		expect(db.resolveSignatureTracking).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				storyId: "story_survivor",
+				storyClosedSeenAt: null,
+			}),
+		);
+		expect(matchOpenBug).toHaveBeenCalledTimes(1);
+		expect(db.createStoryComment.mock.calls[1][0]).toMatchObject({
+			storyId: "story_survivor",
+			content: expect.stringContaining("still recurring"),
+		});
+		expect(db.createPendingBacklogProposal).not.toHaveBeenCalled();
+	});
+
+	it("joins a matched pending proposal and clears the stamp without filing", async () => {
+		matchOpenBug.mockResolvedValue({
+			match: {
+				kind: "proposal",
+				proposalId: "prop_survivor",
+				confidence: 0.9,
+			},
+			checked: [],
+		});
+		db.refreshRecurringErrorProposalEvidence.mockResolvedValue(true);
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result).toMatchObject({ grouped: 1, filed: 0, failures: 0 });
+		expect(matchOpenBug).toHaveBeenCalledTimes(1);
+		expect(db.refreshRecurringErrorProposalEvidence).toHaveBeenCalledWith(
+			"prop_survivor",
+			expect.objectContaining({
+				recurringError: expect.objectContaining({
+					matchConfidence: 0.9,
+				}),
+			}),
+		);
+		expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith("sig_1", {
+			pendingProposalId: "prop_survivor",
+			storyId: null,
+			storyClosedSeenAt: null,
+		});
+		expect(draftRecurringBugReport).not.toHaveBeenCalled();
+		expect(db.createPendingBacklogProposal).not.toHaveBeenCalled();
+	});
+
+	it("suppresses an unmatched declined bug after checking live tracking", async () => {
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result).toMatchObject({ suppressed: 1, filed: 0, failures: 0 });
+		expect(matchOpenBug).toHaveBeenCalledTimes(1);
+		expect(db.upsertRecurringErrorSignature).toHaveBeenCalledTimes(1);
+		expect(db.linkRecurringErrorSignature).not.toHaveBeenCalled();
+		expect(draftRecurringBugReport).not.toHaveBeenCalled();
+		expect(db.createPendingBacklogProposal).not.toHaveBeenCalled();
+		expect(db.createStoryComment).not.toHaveBeenCalled();
+	});
+
+	it("records a matcher failure and suppresses without filing", async () => {
+		matchOpenBug.mockRejectedValue(new Error("matcher unavailable"));
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result).toMatchObject({
+			status: "completed-with-errors",
+			failures: 1,
+			suppressed: 1,
+			filed: 0,
+		});
+		expect(matchOpenBug).toHaveBeenCalledTimes(1);
+		expect(db.recordAudit).toHaveBeenCalledWith(
+			expect.objectContaining({
+				metadata: expect.objectContaining({ stage: "open-bug-match" }),
+			}),
+		);
+		expect(db.recordRecurringErrorScanOutcome).toHaveBeenCalledWith(
+			"proj_1",
+			expect.objectContaining({
+				error: expect.stringContaining("matcher unavailable"),
+			}),
+		);
+		expect(db.upsertRecurringErrorSignature).toHaveBeenCalledTimes(1);
+		expect(draftRecurringBugReport).not.toHaveBeenCalled();
+		expect(db.createPendingBacklogProposal).not.toHaveBeenCalled();
+	});
+
+	it("suppresses when the matched proposal is no longer pending", async () => {
+		matchOpenBug.mockResolvedValue({
+			match: {
+				kind: "proposal",
+				proposalId: "prop_reviewed",
+				confidence: 0.9,
+			},
+			checked: [],
+		});
+		db.refreshRecurringErrorProposalEvidence.mockResolvedValue(false);
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result).toMatchObject({
+			suppressed: 1,
+			filed: 0,
+			grouped: 0,
+			failures: 0,
+		});
+		expect(matchOpenBug).toHaveBeenCalledTimes(1);
+		expect(db.upsertRecurringErrorSignature).toHaveBeenCalledTimes(1);
+		expect(db.linkRecurringErrorSignature).not.toHaveBeenCalled();
+		expect(draftRecurringBugReport).not.toHaveBeenCalled();
+		expect(db.createPendingBacklogProposal).not.toHaveBeenCalled();
+	});
+});
+
+function expectNoAbsenceFailure() {
+	expect(
+		db.recordRecurringErrorScanOutcome.mock.calls.at(-1)?.[1].error ?? "",
+	).not.toContain("log-absence");
+}
+describe("log proposal absence", () => {
+	beforeEach(() => {
+		db.listRecurringErrorSignatures.mockImplementation(
+			async (_project, source) =>
+				source === "LOG"
+					? [signature({ pendingProposalId: "prop_1" })]
+					: [],
+		);
+		db.recordRecurringErrorProposalAbsence
+			.mockReset()
+			.mockResolvedValue(undefined);
+	});
+	it("marks a linked proposal after a clean empty read with a retry-stable scan time", async () => {
+		await scanRecurringErrorsForProject(INPUT);
+		await scanRecurringErrorsForProject(INPUT);
+		expect(db.recordRecurringErrorProposalAbsence).toHaveBeenCalledTimes(2);
+		expect(db.recordRecurringErrorProposalAbsence).toHaveBeenNthCalledWith(
+			1,
+			"proj_1",
+			"prop_1",
+			new Date("2026-11-13T10:00:00Z"),
+		);
+		expect(db.recordRecurringErrorProposalAbsence.mock.calls[1]).toEqual(
+			db.recordRecurringErrorProposalAbsence.mock.calls[0],
+		);
+	});
+	it("does not mark without a configured source", async () => {
+		resolveRecurringErrorSource.mockResolvedValue(null);
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result.status).toBe("completed");
+		expectNoAbsenceFailure();
+		expect(db.recordRecurringErrorProposalAbsence).not.toHaveBeenCalled();
+	});
+	it("skips absence when the log read throws", async () => {
+		summarize.mockRejectedValueOnce(new Error("read failed"));
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result.status).toBe("completed-with-errors");
+		expectNoAbsenceFailure();
+		expect(db.recordRecurringErrorProposalAbsence).not.toHaveBeenCalled();
+	});
+	it("does not mark when the raw source count reaches the cap even below threshold", async () => {
+		summarize.mockResolvedValueOnce(
+			Object.assign(
+				Array.from({ length: 25 }, () => group({ occurrences: 1 })),
+				{ complete: true },
+			),
+		);
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result.status).toBe("completed");
+		expectNoAbsenceFailure();
+		expect(db.recordRecurringErrorProposalAbsence).not.toHaveBeenCalled();
+	});
+	it("does not mark a proposal linked through a related fingerprint this scan", async () => {
+		matchOpenBug.mockResolvedValue({
+			match: {
+				kind: "proposal",
+				proposalId: "prop_1",
+				identifier: "Fix checkout",
+				confidence: 0.85,
+			},
+			checked: [],
+		});
+		db.refreshRecurringErrorProposalEvidence.mockResolvedValue(true);
+		summarize.mockResolvedValueOnce(
+			Object.assign([group()], { complete: true }),
+		);
+		let linked = false;
+		db.linkRecurringErrorSignature.mockImplementationOnce(
+			async (_id, link) => {
+				linked = link.pendingProposalId === "prop_1";
+			},
+		);
+		db.listRecurringErrorSignatures.mockImplementation(
+			async (_project, source) =>
+				source === "LOG"
+					? [
+							signature({
+								pendingProposalId: "prop_1",
+								fingerprint: "old-own",
+							}),
+							...(linked
+								? [
+										signature({
+											pendingProposalId: "prop_1",
+											fingerprint: fingerprintErrorGroup(
+												group(),
+											),
+										}),
+									]
+								: []),
+						]
+					: [],
+		);
+
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result.status).toBe("completed");
+		expectNoAbsenceFailure();
+		expect(result.grouped).toBe(1);
+		expect(db.linkRecurringErrorSignature).toHaveBeenCalledWith(
+			"sig_1",
+			expect.objectContaining({ pendingProposalId: "prop_1" }),
+		);
+		expect(db.recordRecurringErrorProposalAbsence).not.toHaveBeenCalled();
+	});
+	it("records absence-step failure without undoing the scan", async () => {
+		db.recordRecurringErrorProposalAbsence.mockRejectedValueOnce(
+			new Error("absence failed"),
+		);
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result.status).toBe("completed-with-errors");
+		expect(db.recordRecurringErrorScanOutcome).toHaveBeenCalledWith(
+			"proj_1",
+			expect.objectContaining({
+				error: expect.stringContaining("absence failed"),
+			}),
+		);
+	});
+});
+
+it("does not record absence after a group settlement failure", async () => {
+	summarize.mockResolvedValueOnce(
+		Object.assign([group()], { complete: true }),
+	);
+	db.upsertRecurringErrorSignature.mockRejectedValueOnce(
+		new Error("settle failed"),
+	);
+	db.listRecurringErrorSignatures.mockImplementation(
+		async (_project, source) =>
+			source === "LOG"
+				? [
+						signature({
+							pendingProposalId: "prop_absent",
+							fingerprint: "other",
+						}),
+					]
+				: [],
+	);
+	const result = await scanRecurringErrorsForProject(INPUT);
+	expect(result.status).toBe("completed-with-errors");
+	expectNoAbsenceFailure();
+	expect(db.recordRecurringErrorProposalAbsence).not.toHaveBeenCalled();
+});
+
+it.each([false, undefined])(
+	"settles groups while skipping absence for completeness %s",
+	async (complete) => {
+		summarize.mockResolvedValueOnce(Object.assign([group()], { complete }));
+		db.listRecurringErrorSignatures.mockImplementation(
+			async (_project, source) =>
+				source === "LOG"
+					? [
+							signature({
+								pendingProposalId: "prop_old",
+								fingerprint: "other",
+							}),
+						]
+					: [],
+		);
+		const result = await scanRecurringErrorsForProject(INPUT);
+		expect(result.status).toBe("completed");
+		expect(result.filed).toBe(1);
+		expect(db.createPendingBacklogProposal).toHaveBeenCalled();
+		expectNoAbsenceFailure();
+		expect(db.recordRecurringErrorProposalAbsence).not.toHaveBeenCalled();
+	},
+);
+it("settles groups while skipping absence after degraded matching", async () => {
+	summarize.mockResolvedValueOnce(
+		Object.assign([group()], { complete: true }),
+	);
+	matchOpenBug.mockImplementationOnce(async () => {
+		matchingDegraded.value = true;
+		return { match: null, checked: [] };
+	});
+	db.listRecurringErrorSignatures.mockImplementation(
+		async (_project, source) =>
+			source === "LOG"
+				? [
+						signature({
+							pendingProposalId: "prop_old",
+							fingerprint: "other",
+						}),
+					]
+				: [],
+	);
+	const result = await scanRecurringErrorsForProject(INPUT);
+	expect(result.status).toBe("completed");
+	expect(result.filed).toBe(1);
+	expectNoAbsenceFailure();
+	expect(db.recordRecurringErrorProposalAbsence).not.toHaveBeenCalled();
+});
+
+it("refreshes recurrence from an incomplete summary without recording absence", async () => {
+	summarize.mockResolvedValueOnce(
+		Object.assign([group()], { complete: false }),
+	);
+	db.findRecurringErrorSignatures.mockImplementation(
+		async (_project, _source, fingerprints) => [
+			signature({
+				fingerprint: fingerprints[0],
+				pendingProposalId: "prop_1",
+			}),
+		],
+	);
+	db.resolveSignatureTracking.mockResolvedValue({
+		state: "pending",
+		proposalId: "prop_1",
+	});
+	const result = await scanRecurringErrorsForProject(INPUT);
+	expect(result.status).toBe("completed");
+	expect(result.refreshed).toBe(1);
+	expect(db.refreshRecurringErrorProposalEvidence).toHaveBeenCalledWith(
+		"prop_1",
+		expect.any(Object),
+	);
+	expectNoAbsenceFailure();
+	expect(db.recordRecurringErrorProposalAbsence).not.toHaveBeenCalled();
 });

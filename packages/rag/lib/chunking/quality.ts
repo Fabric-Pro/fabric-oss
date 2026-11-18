@@ -90,10 +90,10 @@ export function sizeDistribution(sizes: number[]): SizeDistribution | null {
 const LIST_LINE = /^\s*(?:[-*+]|\d{1,4}[.)])\s+\S/;
 const TABLE_LINE = /^\s*\|.*\|\s*$/;
 /** A chunk ending like this ended at a natural boundary. */
-const CLEAN_END = /(?:[.!?:;)"'`\]*_]|\n)\s*$/;
+const CLEAN_END = /[.!?:;)"'`\]*_]$/;
 
 function lastLine(text: string): string {
-	const trimmed = text.replace(/\s+$/, "");
+	const trimmed = text.trimEnd();
 	return trimmed.slice(trimmed.lastIndexOf("\n") + 1);
 }
 
@@ -103,13 +103,24 @@ function firstLine(text: string): string {
 	return at === -1 ? trimmed : trimmed.slice(0, at);
 }
 
-const TABLE_SEPARATOR_LINE =
-	/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+function isTableSeparator(line: string): boolean {
+	const cells = line.trim().split("|");
+	if (cells[0] === "") {
+		cells.shift();
+	}
+	if (cells.at(-1) === "") {
+		cells.pop();
+	}
+	return (
+		cells.length > 0 &&
+		cells.every((cell) => /^:?-{2,}:?$/.test(cell.trim()))
+	);
+}
 
 /** A chunk that opens with a header row and its separator reads on its own. */
 function repeatsTableHeader(text: string): boolean {
 	const lines = text.replace(/^\s+/, "").split("\n", 2);
-	return TABLE_SEPARATOR_LINE.test(lines[1] ?? "");
+	return isTableSeparator(lines[1] ?? "");
 }
 
 /**
@@ -159,7 +170,14 @@ export function classifyBoundary(
 	) {
 		return "mid-list-item";
 	}
-	if (!CLEAN_END.test(previous) && /^[a-z]/.test(nextFirst.trim())) {
+	if (
+		!CLEAN_END.test(previous.trimEnd()) &&
+		!(
+			previous.includes("\n") &&
+			previous.slice(previous.lastIndexOf("\n") + 1).trim() === ""
+		) &&
+		/^[a-z]/.test(nextFirst.trim())
+	) {
 		return "mid-sentence";
 	}
 	return "clean";

@@ -72,6 +72,18 @@ function redactStderrLine(line: string): string {
 		: line.slice(0, STDERR_LINE_MAX_CHARS);
 }
 
+/**
+ * An argument with the user and password of any URL in it masked: a server
+ * that takes its database URL in argv (Postgres) would otherwise put that
+ * password in the start log.
+ */
+export function redactUrlCredentials(arg: string): string {
+	return arg.replace(
+		/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi,
+		"$1[REDACTED]@",
+	);
+}
+
 /** Console level for a child's stderr line: a JSON `level` is honoured, anything else stays an error. */
 export function stderrLogLevel(line: string): "info" | "warn" | "error" {
 	if (!line.startsWith("{")) {
@@ -131,6 +143,24 @@ export function summarizeNpmFailure(lines: readonly string[]): string | null {
 	}
 	return [code, message].filter(Boolean).join(": ");
 }
+/** How a child process ended, for the reason its pending requests get. */
+function describeExit(
+	npmFailure: string | null,
+	code: number | null,
+	signal: NodeJS.Signals | null,
+): string | null {
+	if (npmFailure) {
+		return `npm ${npmFailure}`;
+	}
+	if (signal) {
+		return `signal ${signal}`;
+	}
+	if (code !== null) {
+		return `exit code ${code}`;
+	}
+	return null;
+}
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 30 * 1000; // 30 seconds
 
 export class StdioRpcError extends Error {
@@ -182,7 +212,7 @@ export class StdioTransport {
 					!key.toLowerCase().includes("pat"),
 			);
 			console.log(
-				`[StdioTransport] Starting: ${this.config.command} ${this.config.args.join(" ")}`,
+				`[StdioTransport] Starting: ${this.config.command} ${this.config.args.map(redactUrlCredentials).join(" ")}`,
 			);
 			console.log(
 				`[StdioTransport] Environment keys (safe to log): ${safeEnvKeys.join(", ")}`,
@@ -233,7 +263,7 @@ export class StdioTransport {
 							`[StdioTransport] npm failed (exit ${code}): ${npmFailure}`,
 						);
 					}
-					this.handleProcessExit(npmFailure);
+					this.handleProcessExit(npmFailure, code, signal);
 				});
 
 				// Handle stderr for debugging. `npm error` lines are kept for
@@ -523,10 +553,18 @@ export class StdioTransport {
 	/**
 	 * Handle process exit.
 	 */
-	private handleProcessExit(npmFailure: string | null = null): void {
-		// Reject all pending requests
-		const reason = npmFailure
-			? `Process exited unexpectedly (npm ${npmFailure})`
+	private handleProcessExit(
+		npmFailure: string | null = null,
+		code: number | null = null,
+		signal: NodeJS.Signals | null = null,
+	): void {
+		// Reject all pending requests. The reason names how the process ended:
+		// the summarised npm error when npm failed, otherwise the exit code or
+		// signal. Other stderr lines stay out of it: the reason reaches the
+		// caller, and a line can hold a connection string the redaction misses.
+		const detail = describeExit(npmFailure, code, signal);
+		const reason = detail
+			? `Process exited unexpectedly (${detail})`
 			: "Process exited unexpectedly";
 		for (const [id, pending] of this.pendingRequests) {
 			clearTimeout(pending.timeout);

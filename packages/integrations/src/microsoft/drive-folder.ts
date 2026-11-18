@@ -10,6 +10,8 @@
  * works on a drive's root only, not on a folder inside it.
  */
 
+import { MICROSOFT_DOWNLOAD_TIMEOUT_MS } from "./config/limits";
+import { microsoftFetch } from "./request";
 import type { GraphFetch } from "./stream-transcript";
 
 /** Graph pages at most 200 children; a folder past this many is cut short. */
@@ -150,7 +152,6 @@ export async function downloadDriveItem(params: {
 	fetchImpl?: typeof fetch;
 }): Promise<DriveItemDownload> {
 	const { graphFetch, graphBaseUrl, driveId, itemId, maxBytes } = params;
-	const fetchImpl = params.fetchImpl ?? fetch;
 
 	const response = await graphFetch(
 		`${graphBaseUrl}/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}?$select=id,name,size,file,@microsoft.graph.downloadUrl`,
@@ -175,7 +176,14 @@ export async function downloadDriveItem(params: {
 		throw new Error("Microsoft Graph returned no usable download link.");
 	}
 
-	const download = await fetchImpl(downloadUrl, { redirect: "error" });
+	const download = await microsoftFetch(
+		downloadUrl.toString(),
+		{ redirect: "error" },
+		{
+			timeoutMs: MICROSOFT_DOWNLOAD_TIMEOUT_MS,
+			fetchImpl: params.fetchImpl,
+		},
+	);
 	if (!download.ok || !download.body) {
 		throw new Error(`OneDrive download failed: ${download.status}`);
 	}

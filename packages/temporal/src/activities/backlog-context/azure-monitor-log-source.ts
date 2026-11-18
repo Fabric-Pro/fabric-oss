@@ -142,7 +142,10 @@ const PLATFORM_EVENTS_NOT_FAILURES = ["Completed", "ScaledObjectDeleted"];
 export interface PlatformNoiseRule {
 	id: string;
 	failureReasons: readonly string[];
-	log?: { operator: "endswith" | "startswith"; value: string };
+	log?: {
+		operator: "endswith" | "startswith";
+		value: string | readonly string[];
+	};
 	key: "app" | "revision" | "replica";
 	proofs: readonly (
 		| {
@@ -235,6 +238,8 @@ export const PLATFORM_NOISE_RULES: readonly PlatformNoiseRule[] = [
 		failureReasons: [
 			"FailedGetExternalMetric",
 			"FailedComputeMetricsReplicas",
+			"FailedGetContainerResourceMetric",
+			"FailedGetResourceMetric",
 		],
 		key: "revision",
 		proofs: [
@@ -263,14 +268,23 @@ export const PLATFORM_NOISE_RULES: readonly PlatformNoiseRule[] = [
 			},
 		],
 	},
-	// A new replica has no CPU sample until the metrics service has scraped it,
-	// so the autoscaler cannot compute a target for its first moments. Only that
-	// message is set aside, and only right after a container started on the
-	// revision: every other CPU metric failure stays reported.
+	// CPU samples can be missing while a replica or its revision's autoscaler
+	// starts. Set aside either missing-sample ending only with a nearby container
+	// start (before or after) or preceding scaler start on the same revision.
 	{
 		id: "autoscaler-replica-start",
-		failureReasons: ["FailedComputeMetricsReplicas"],
-		log: { operator: "endswith", value: "(pods might be unready)" },
+		failureReasons: [
+			"FailedComputeMetricsReplicas",
+			"FailedGetContainerResourceMetric",
+			"FailedGetResourceMetric",
+		],
+		log: {
+			operator: "endswith",
+			value: [
+				"(pods might be unready)",
+				"no metrics returned from resource metrics API",
+			],
+		},
 		key: "revision",
 		proofs: [
 			{
@@ -278,14 +292,30 @@ export const PLATFORM_NOISE_RULES: readonly PlatformNoiseRule[] = [
 				direction: "before",
 				gapMinutes: 2,
 			},
+			{
+				reasons: ["ContainerStarted"],
+				direction: "at-or-after",
+				gapMinutes: 2,
+			},
+			{
+				reasons: ["KEDAScalersStarted"],
+				direction: "before",
+				gapMinutes: 2,
+			},
 		],
 	},
 	// `metrics-service-blip` for the CPU metrics API. A rule of its own, and
 	// limited to that API's failure message, so a replica start cannot pass as
-	// an outage and external-metric failures cannot supply the peer count.
+	// an outage and external-metric failures cannot supply the peer count. The
+	// autoscaler logs one gap under all three CPU metric reasons, so they share
+	// it, as they share autoscaler-replica-start.
 	{
 		id: "resource-metrics-blip",
-		failureReasons: ["FailedComputeMetricsReplicas"],
+		failureReasons: [
+			"FailedComputeMetricsReplicas",
+			"FailedGetContainerResourceMetric",
+			"FailedGetResourceMetric",
+		],
 		log: { operator: "endswith", value: "(get pods.metrics.k8s.io)" },
 		key: "app",
 		proofs: [
@@ -340,7 +370,16 @@ export const PLATFORM_NOISE_RULES: readonly PlatformNoiseRule[] = [
 ];
 
 function noisePredicate(rule: PlatformNoiseRule): string {
-	return `_reason in (${rule.failureReasons.map(kqlStringLiteral).join(", ")}) ${rule.log ? `and _log ${rule.log.operator} ${kqlStringLiteral(rule.log.value)}` : ""}`.trimEnd();
+	const reason = `_reason in (${rule.failureReasons.map(kqlStringLiteral).join(", ")})`;
+	if (!rule.log) {
+		return reason;
+	}
+	const { operator, value } = rule.log;
+	const values = typeof value === "string" ? [value] : value;
+	const log = values
+		.map((text) => `_log ${operator} ${kqlStringLiteral(text)}`)
+		.join(" or ");
+	return `${reason} and ${values.length > 1 ? `(${log})` : log}`;
 }
 
 function noiseClassification(): string[] {
@@ -659,7 +698,12 @@ function tableRecords(payload: unknown): Record<string, unknown>[] {
 	}
 	const records: Record<string, unknown>[] = [];
 	for (const table of tables) {
-		const columns = (table.columns ?? []).map((c) => c?.name ?? "");
+		if (!table || typeof table !== "object") {
+			continue;
+		}
+		const columns = (Array.isArray(table.columns) ? table.columns : []).map(
+			(c) => c?.name ?? "",
+		);
 		const rows = Array.isArray(table.rows) ? table.rows : [];
 		for (const row of rows) {
 			if (!Array.isArray(row)) {
@@ -958,17 +1002,48 @@ export function createAzureMonitorLogSourceAdapter(
 						options.operatorErrorScan !== true,
 				}),
 			);
+			// Completeness gates absence, while usable groups still file or refresh.
+			const envelope = payload as {
+				error?: unknown;
+				tables?: LogAnalyticsTable[];
+			} | null;
+			const malformed =
+				!envelope ||
+				!Array.isArray(envelope.tables) ||
+				envelope.tables.some(
+					(table) =>
+						!table ||
+						!Array.isArray(table.columns) ||
+						!Array.isArray(table.rows) ||
+						table.rows.some((row) => !Array.isArray(row)),
+				);
 			const {
 				groups,
 				platformNoiseSetAside,
 				platformNoiseApps,
 				platformNoiseByRule,
 			} = parseErrorGroupResponse(payload);
+			const errorRows = tableRecords(payload).filter(
+				(row) => row.Kind !== "platform-noise",
+			);
+			const incompleteReason =
+				envelope?.error !== undefined
+					? "error envelope"
+					: malformed
+						? "malformed table"
+						: errorRows.length !== groups.length
+							? "dropped rows"
+							: undefined;
+			const complete = incompleteReason === undefined;
 			logger.info(
 				"[RecurringErrors] Azure Monitor returned error groups",
 				{
 					workspaceId: options.workspaceId,
 					count: groups.length,
+					complete,
+					...(incompleteReason
+						? { absenceSkippedReason: incompleteReason }
+						: {}),
 					platformNoiseByRule,
 					platformNoiseSetAside,
 					platformNoiseApps,
@@ -976,6 +1051,7 @@ export function createAzureMonitorLogSourceAdapter(
 				},
 			);
 			return Object.assign(groups.slice(0, scope.maxGroups), {
+				complete,
 				platformNoiseByRule,
 				platformNoiseSetAside,
 				platformNoiseApps,

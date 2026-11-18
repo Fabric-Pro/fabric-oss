@@ -1,5 +1,11 @@
 # @fabricorg/sdk
 
+## 0.8.3
+
+### Patch Changes
+
+- e8fb586: Published SDK and integration declaration files now retain entry documentation comments.
+
 ## 0.8.2
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/sdk",
-	"version": "0.8.2",
+	"version": "0.8.3",
 	"description": "TypeScript SDK for the Fabric AI platform",
 	"keywords": [
 		"fabric",
@@ -41,7 +41,7 @@
 	},
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",
-		"tsdown": "^0.23.0",
+		"tsdown": "^0.23.7",
 		"typescript": "5.9.3",
 		"vitest": "^4.1.12"
 	}

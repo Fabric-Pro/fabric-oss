@@ -123,3 +123,106 @@ describe("parsePublishedPackages", () => {
 		expect(names).toEqual(["Acme.Cli", "acme-core", "github.com/acme/svc"]);
 	});
 });
+
+it("handles hostile manifest delimiters in linear time", () => {
+	const start = performance.now();
+	for (const [path, content] of [
+		["a.csproj", '<packagereference\tinclude="!"='.repeat(2000)],
+		["go.mod", `require(${"require(a".repeat(6000)}`],
+		["pom.xml", "<dependency>".repeat(4200)],
+	] as const) {
+		parseTechStack([{ path, content }]);
+	}
+	expect(performance.now() - start).toBeLessThan(100);
+});
+
+it("preserves Maven dependency names and optional versions", () => {
+	expect(
+		parseTechStack([
+			{
+				path: "pom.xml",
+				content:
+					"<dependency><artifactId>example-lib</artifactId><version>1.2.3</version></dependency><dependency><artifactId>other-lib</artifactId></dependency>",
+			},
+		]),
+	).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({ name: "example-lib", version: "1.2.3" }),
+			expect.objectContaining({ name: "other-lib", version: null }),
+		]),
+	);
+});
+
+for (const tag of ["PackageId", "AssemblyName"]) {
+	it(`bounds published ${tag} parsing`, () => {
+		const start = performance.now();
+		expect(
+			parsePublishedPackages([
+				{
+					path: "example.csproj",
+					content: `<${tag}>${" ".repeat(50000)}`,
+				},
+			]),
+		).toEqual(["example"]);
+		expect(
+			parsePublishedPackages([
+				{
+					path: "example.csproj",
+					content: `<${tag}>  Example.Library  </${tag}>`,
+				},
+			]),
+		).toEqual(["Example.Library"]);
+		expect(performance.now() - start).toBeLessThan(500);
+	});
+}
+for (const [name, path] of [
+	["go version", "go.mod"],
+	["single require", "go.mod"],
+	["gem", "Gemfile"],
+	["module", "go.mod"],
+] as const) {
+	it(`bounds multiline ${name} scanning`, () => {
+		// U+2028 is also a line end for `^` under the m flag.
+		const text = `${"\n".repeat(50000)}${"\u2028".repeat(50000)}x`;
+		const start = performance.now();
+		if (name === "module") {
+			expect(parsePublishedPackages([{ path, content: text }])).toEqual(
+				[],
+			);
+		} else {
+			expect(parseTechStack([{ path, content: text }])).toEqual([]);
+		}
+		expect(performance.now() - start).toBeLessThan(500);
+	});
+}
+
+it("preserves indented Go and Ruby declarations", () => {
+	expect(
+		parsePublishedPackages([
+			{ path: "go.mod", content: "\tmodule example.com/library\n" },
+		]),
+	).toEqual(["example.com/library"]);
+	expect(
+		parseTechStack([
+			{
+				path: "go.mod",
+				content: "\tgo 1.22\n\trequire example.com/library v1.2.3\n",
+			},
+		]),
+	).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({ name: "go", version: "1.22" }),
+			expect.objectContaining({
+				name: "example.com/library",
+				version: "v1.2.3",
+			}),
+		]),
+	);
+	expect(
+		parseTechStack([
+			{ path: "Gemfile", content: "\tgem 'example-lib', '1.2.3'\n" },
+		]),
+	).toEqual([
+		expect.objectContaining({ name: "example-lib", version: "1.2.3" }),
+	]);
+});

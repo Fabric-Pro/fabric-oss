@@ -31,6 +31,7 @@
  */
 
 import { resolveChannelIdentity } from "./channel-identity";
+import { microsoftFetch } from "./request";
 
 /** Injected `graphRequest` — carries token refresh and throttle backoff. */
 export type GraphFetch = (
@@ -524,7 +525,7 @@ async function acquireSharePointToken(
 		);
 	}
 
-	const response = await fetch(
+	const response = await microsoftFetch(
 		"https://login.microsoftonline.com/common/oauth2/v2.0/token",
 		{
 			method: "POST",
@@ -586,7 +587,7 @@ async function listStreamTranscripts(params: {
 	itemId: string;
 }): Promise<StreamMediaTranscript[]> {
 	const { sharePointToken, origin, sitePath, driveId, itemId } = params;
-	const res = await fetch(
+	const res = await microsoftFetch(
 		`${origin}${sitePath}/_api/v2.1/drives/${driveId}/items/${itemId}/media/transcripts`,
 		{ headers: { Authorization: `Bearer ${sharePointToken}` } },
 	);
@@ -832,7 +833,7 @@ export async function getRecordingTranscriptContent(
 	}
 
 	const separator = primary.temporaryDownloadUrl.includes("?") ? "&" : "?";
-	const res = await fetch(
+	const res = await microsoftFetch(
 		`${primary.temporaryDownloadUrl}${separator}format=json`,
 		{ headers: { Authorization: `Bearer ${sharePointToken}` } },
 	);

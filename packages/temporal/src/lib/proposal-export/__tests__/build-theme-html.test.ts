@@ -1104,7 +1104,7 @@ describe("buildThemeHtml: cover", () => {
 			"<div><dt>Risk &lt;i&gt;</dt><dd>&lt;script&gt;1&lt;/script&gt;</dd></div>",
 		);
 		expect(cover).toContain("<dd>&lt;b&gt;Example&lt;/b&gt; Org</dd>");
-		expect(cover).not.toMatch(/<(b|i|script)>/);
+		expect(cover).not.toMatch(/<(b|i|script)>/i);
 	});
 
 	const footerOf = (html: string) =>
@@ -3072,7 +3072,7 @@ describe("buildThemeHtml: cover details", () => {
 		expect(cover).toContain("<dd>&lt;i&gt;Example&lt;/i&gt; Harbor</dd>");
 		expect(cover).toContain("<dd>Example &amp; &#39;Studio&#39;</dd>");
 		expect(cover).toContain("Version &lt;1&gt; · Confidential");
-		expect(cover).not.toMatch(/<(b|i|script)>/);
+		expect(cover).not.toMatch(/<(b|i|script)>/i);
 	});
 
 	it("prints a refused cover fence as code, and the cover keeps its defaults", () => {

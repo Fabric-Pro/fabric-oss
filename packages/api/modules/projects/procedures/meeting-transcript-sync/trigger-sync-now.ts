@@ -8,6 +8,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { syncNowWorkflowId } from "./sync-now-workflow-id";
 
 /**
  * AUTHORIZATION: Uses canEditProject() - only project owners/editors can trigger sync.
@@ -86,7 +87,7 @@ export const triggerSyncNowProcedure = tenantProtectedProcedure
 		const { getTemporalClient } = await import("@repo/temporal");
 		const client = await getTemporalClient();
 
-		const workflowId = `meeting-transcript-sync-oneshot-${input.projectId}-${Date.now()}`;
+		const workflowId = syncNowWorkflowId(input.projectId);
 
 		await client.workflow.start(
 			"meetingTranscriptSyncWorkflow",

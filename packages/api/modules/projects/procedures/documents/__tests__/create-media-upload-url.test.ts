@@ -156,4 +156,44 @@ describe("createMediaUploadUrl", () => {
 
 		expect(result.s3Key).toMatch(/\.jpg$/);
 	});
+
+	it("builds storage keys without Math.random", async () => {
+		const random = vi.spyOn(Math, "random").mockImplementation(() => {
+			throw new Error("insecure randomness");
+		});
+		try {
+			vi.mocked(getDocumentById).mockResolvedValueOnce({
+				id: "doc-1",
+				project: { id: "proj-1" },
+			} as any);
+			mockGetSignedUploadUrl.mockResolvedValueOnce(
+				"https://s3.example.com/signed-upload",
+			);
+
+			const { createMediaUploadUrlProcedure } = await import(
+				"../create-media-upload-url"
+			);
+			const handler = (createMediaUploadUrlProcedure as any).handler;
+
+			const result = await handler({
+				input: {
+					projectId: "proj-1",
+					documentId: "doc-1",
+					filename: "photo.png",
+					mimeType: "image/png",
+					size: 2048,
+				},
+			});
+
+			expect(result.signedUploadUrl).toBe(
+				"https://s3.example.com/signed-upload",
+			);
+			expect(result.s3Key).toContain("document-media/proj-1/doc-1/");
+			expect(result.s3Key).toMatch(/\.png$/);
+			expect(result.useServerUpload).toBe(false);
+			expect(result.storageProvider).toBe("s3");
+		} finally {
+			random.mockRestore();
+		}
+	});
 });

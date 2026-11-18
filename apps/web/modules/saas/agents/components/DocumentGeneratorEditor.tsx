@@ -59,6 +59,7 @@ import { usePageAgent } from "@saas/shared/components/copilot/use-page-agent";
 import { useClarifyingQuestions } from "@saas/shared/components/copilot/useClarifyingQuestions";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { orpcClient } from "@shared/lib/orpc-client";
+import { useQueryClient } from "@tanstack/react-query";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
@@ -211,6 +212,7 @@ export function DocumentGeneratorEditor({
 	suggestions = DEFAULT_SUGGESTIONS,
 	AssistantMessage = CopilotAssistantMessageForDocumentGenerator,
 }: DocumentGeneratorEditorProps) {
+	const queryClient = useQueryClient();
 	const [documentType, setDocumentType] = useState<DocumentType>("general");
 	const [currentDocument, setCurrentDocument] = useState("");
 	const [viewMode, setViewMode] = useState<"rich" | "raw">("rich");
@@ -395,6 +397,9 @@ export function DocumentGeneratorEditor({
 							messages: [userMsg, assistantMsg],
 							metadata: { surface: "document-generator" },
 						});
+					void queryClient.invalidateQueries({
+						queryKey: ["agents", "conversations"],
+					});
 					setConversationId(created.id);
 					conversationIdRef.current = created.id;
 				} else {

@@ -423,6 +423,81 @@ describe("editor-markdown-save: a link left without text (Fizzy #2946)", () => {
 		expect(saved).toContain("![Team photo](https://example.com/team.png)");
 	});
 
+	it.each([
+		["text", false],
+		["image", false],
+		["text", true],
+		["image", true],
+	])(
+		"round-trips a %s link with backslashes (table cell: %s)",
+		(kind, inTable) => {
+			const href = String.raw`https://example.com/a\(b\)`;
+			const title = String.raw`x\" y\(z\)`;
+			const anchor = document.createElement("a");
+			anchor.setAttribute("href", href);
+			anchor.setAttribute("title", title);
+			anchor.innerHTML =
+				kind === "image"
+					? '<img src="https://example.com/i.png" alt="i">'
+					: "text";
+			const html = inTable
+				? `<table><tr><th>Link</th></tr><tr><td>${anchor.outerHTML}</td></tr></table>`
+				: anchor.outerHTML;
+			const saved = createTurndownService().turndown(html);
+			const reloaded = document.createElement("div");
+			reloaded.innerHTML = fromMarkdown(saved);
+			const link = reloaded.querySelector("a");
+			expect(link).not.toBeNull();
+			// markdown-it percent-encodes literal backslashes in URL attributes.
+			expect(decodeURI(link?.getAttribute("href") ?? "")).toBe(href);
+			expect(link?.getAttribute("title")).toBe(title);
+			expect(link?.querySelector("img") !== null).toBe(kind === "image");
+		},
+	);
+
+	it.each([
+		["text", false],
+		["image", false],
+		["text", true],
+		["image", true],
+	])(
+		"round-trips a %s link whose destination has an unbalanced escaped parenthesis (table cell: %s)",
+		(kind, inTable) => {
+			const href = String.raw`https://example.com/a\(b)`;
+			const anchor = document.createElement("a");
+			anchor.setAttribute("href", href);
+			anchor.innerHTML =
+				kind === "image"
+					? '<img src="https://example.com/i.png" alt="i">'
+					: "text";
+			const html = inTable
+				? `<table><tr><th>Link</th></tr><tr><td>${anchor.outerHTML}</td></tr></table>`
+				: anchor.outerHTML;
+			const saved = createTurndownService().turndown(html);
+			const reloaded = document.createElement("div");
+			reloaded.innerHTML = fromMarkdown(saved);
+			const link = reloaded.querySelector("a");
+			expect(link).not.toBeNull();
+			expect(decodeURI(link?.getAttribute("href") ?? "")).toBe(href);
+		},
+	);
+
+	it.each([false, true])(
+		"keeps ordinary text link Markdown unchanged (table cell: %s)",
+		(inTable) => {
+			const link =
+				'<a href="https://example.com/a(b)" title="Team &quot;A&quot;\n  plan">text</a>';
+			const html = inTable
+				? `<table><tr><th>Link</th></tr><tr><td>${link}</td></tr></table>`
+				: link;
+			expect(createTurndownService().turndown(html)).toBe(
+				inTable
+					? '| Link |\n| --- |\n| [text](https://example.com/a\\(b\\) "Team \\"A\\" plan") |'
+					: '[text](https://example.com/a\\(b\\) "Team \\"A\\"\nplan")',
+			);
+		},
+	);
+
 	it("drops an empty anchor but keeps one around an image, on both services", () => {
 		const turndown = createTurndownService();
 
@@ -1493,8 +1568,8 @@ describe("editor-markdown-save: a destination with raw or partly encoded markers
 			decodeURIComponent(ENC_DEL_END),
 		],
 		"partly encoded": [
-			ENC_DEL_START.replace("%C2%A0", NBSP),
-			ENC_DEL_END.replace("%C2%A0", NBSP),
+			ENC_DEL_START.replaceAll("%C2%A0", NBSP),
+			ENC_DEL_END.replaceAll("%C2%A0", NBSP),
 		],
 	};
 
@@ -2155,8 +2230,8 @@ describe("editor-markdown-save: a hidden host in a changed table, a raw anchor o
 		},
 		{
 			spelling: "partly encoded",
-			start: ENC_DEL_START.replace("%C2%A0", NBSP),
-			end: ENC_DEL_END.replace("%C2%A0", NBSP),
+			start: ENC_DEL_START.replaceAll("%C2%A0", NBSP),
+			end: ENC_DEL_END.replaceAll("%C2%A0", NBSP),
 		},
 	])(
 		"reviews the table link the save stores ($spelling)",
@@ -2170,7 +2245,9 @@ describe("editor-markdown-save: a hidden host in a changed table, a raw anchor o
 			);
 
 			expect(
-				hrefs.filter((href) => href.includes("trusted.example.com")),
+				hrefs.filter(
+					(href) => new URL(href).hostname === "trusted.example.com",
+				),
 			).toEqual([]);
 			expect(hrefs).toContain("https://evil.example/pay");
 			expect(saved).toContain(

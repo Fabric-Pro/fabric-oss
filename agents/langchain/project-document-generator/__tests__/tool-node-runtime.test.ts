@@ -799,3 +799,44 @@ describe("toolNode — logged failures on a Proposal run", () => {
 		});
 	});
 });
+
+it.each(["ok", "throw", "error"])(
+	"records one completed tool timing for %s",
+	async (mode) => {
+		const spy = vi.spyOn(logger, "info");
+		vi.stubGlobal(
+			"fetch",
+			mode === "throw"
+				? vi.fn().mockRejectedValue(new Error("Example failure"))
+				: mode === "error"
+					? vi.fn().mockResolvedValue({
+							ok: false,
+							status: 401,
+							text: async () => "",
+						})
+					: mockFetchOk(),
+		);
+		try {
+			await toolNode(
+				createMockState({
+					messages: [searchKnowledgeCall("example-call")],
+					projectId: "example-project",
+					userId: "example-user",
+				}),
+				{ configurable: { ai_token: "example-token" } },
+			);
+			const records = spy.mock.calls.filter(
+				(call) => call[0] === "[ToolNode] Tool completed",
+			);
+			expect(records).toHaveLength(1);
+			expect(records[0]?.[1]).toMatchObject({
+				toolName: "search_project_knowledge",
+				durationMs: expect.any(Number),
+				success: mode === "ok",
+			});
+		} finally {
+			spy.mockRestore();
+			vi.unstubAllGlobals();
+		}
+	},
+);

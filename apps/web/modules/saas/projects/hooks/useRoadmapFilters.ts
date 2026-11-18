@@ -51,6 +51,8 @@ const filterParsers = {
 	sync: parseAsArrayOf(
 		parseAsStringEnum<SyncFilter>([...FILTERABLE_SYNC_STATUSES]),
 	).withDefault([]),
+	// Free-form PM-tool status text (Fizzy #3532); not an enum.
+	pmStatus: parseAsString,
 	source: parseAsArrayOf(
 		parseAsStringEnum<StorySource>([...FILTERABLE_SOURCES]),
 	).withDefault([]),
@@ -112,6 +114,7 @@ export function useRoadmapFilters(projectId: string) {
 			priority: state.priority,
 			stage: state.stage,
 			sync: state.sync,
+			pmStatus: state.pmStatus,
 			source: state.source,
 			size: state.size,
 			tags: state.tags,
@@ -175,6 +178,7 @@ export function useRoadmapFilters(projectId: string) {
 			priority: [],
 			stage: [],
 			sync: [],
+			pmStatus: null,
 			source: [],
 			size: [],
 			tags: [],
@@ -230,6 +234,9 @@ export function useRoadmapFilters(projectId: string) {
 							? filters.sync.filter((s) => s !== value)
 							: [],
 					});
+					return;
+				case "pmStatus":
+					setState({ pmStatus: null });
 					return;
 				case "source":
 					setState({

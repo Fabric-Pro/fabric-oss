@@ -1,5 +1,13 @@
 # @fabricorg/sdk-mcp
 
+## 0.2.4
+
+### Patch Changes
+
+- e8fb586: Published SDK and integration declaration files now retain entry documentation comments.
+- Updated dependencies [e8fb586]
+  - @fabricorg/sdk@0.8.3
+
 ## 0.2.3
 
 ### Patch Changes

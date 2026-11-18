@@ -43,6 +43,8 @@ function limits(options?: { extraFirstChunkMs?: number }) {
 }
 
 beforeEach(() => {
+	vi.useFakeTimers();
+	vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
 	for (const name of ENV_NAMES) {
 		delete process.env[name];
 	}

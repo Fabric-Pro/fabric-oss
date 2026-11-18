@@ -5,6 +5,7 @@ import {
 	extractBacklogItems,
 	extractDecision,
 	repositoryDocumentPaths,
+	sectionText,
 } from "../src/repo-knowledge";
 
 const pad = (text: string) =>
@@ -223,4 +224,142 @@ describe("files that are not documents", () => {
 				.kind,
 		).toBe("skip");
 	});
+});
+
+it("handles long whitespace in repository documents promptly", () => {
+	const start = performance.now();
+	for (const prefix of ["title:", "#\t", "*\t[ ]\t", ""]) {
+		const text = `${prefix + "\t".repeat(50000)}\r`;
+		classifyRepositoryDocument({ path: "notes.md", text });
+		extractBacklogItems({ path: "notes.md", text });
+	}
+	expect(performance.now() - start).toBeLessThan(500);
+});
+
+function promptly(run: () => unknown): void {
+	const start = performance.now();
+	run();
+	expect(performance.now() - start).toBeLessThan(500);
+}
+// U+2028 is also a line end for `^` under the m flag, so attack both.
+const newlineAttack = `${"\n".repeat(50000)}${"\u2028".repeat(50000)}x`;
+const tabAttack = `${"\t".repeat(50000)}\r`;
+it("reaches frontmatter title matcher", () =>
+	promptly(() => {
+		classifyRepositoryDocument({
+			path: "notes.md",
+			text: `---\ntitle:${"\n".repeat(50000)}\n---\n${pad("Body")}`,
+		});
+	}));
+it("reaches title and heading collection matchers", () =>
+	promptly(() => {
+		classifyRepositoryDocument({
+			path: "notes.md",
+			text: pad(`#${"\n".repeat(50000)}x`),
+		});
+	}));
+it("bounds classification task counter", () =>
+	promptly(() => {
+		classifyRepositoryDocument({
+			path: "notes.md",
+			text: pad(newlineAttack),
+		});
+	}));
+it("bounds section heading matcher", () =>
+	promptly(() => {
+		expect(sectionText(`# ${tabAttack}`, "context")).toBeNull();
+	}));
+it("bounds backlog task collection", () =>
+	promptly(() => {
+		extractBacklogItems({ path: "notes.md", text: pad(newlineAttack) });
+	}));
+it("bounds backlog branch heading matcher", () =>
+	promptly(() => {
+		const tasks = "- [ ] First task\n- [ ] Second task\n- [ ] Third task";
+		expect(
+			extractBacklogItems({
+				path: "notes.md",
+				text: `${tasks}\n# ${tabAttack}`,
+			}),
+		).toHaveLength(3);
+	}));
+it("bounds backlog branch task matcher", () =>
+	promptly(() => {
+		const tasks = "- [ ] First task\n- [ ] Second task\n- [ ] Third task";
+		expect(
+			extractBacklogItems({
+				path: "notes.md",
+				text: `${tasks}\n- [ ] ${tabAttack}`,
+			}),
+		).toHaveLength(3);
+	}));
+it("reaches backlog description heading removal", () =>
+	promptly(() => {
+		extractBacklogItems({
+			path: "US-1.md",
+			text: pad(`#${"\n".repeat(50000)}x`),
+		});
+	}));
+it("bounds memory-file detection", () =>
+	promptly(() => {
+		classifyRepositoryDocument({
+			path: "notes.md",
+			text: `---\n${newlineAttack}\n---\n${pad("Body")}`,
+		});
+	}));
+it("bounds plan fence detection", () =>
+	promptly(() => {
+		classifyRepositoryDocument({
+			path: "notes.md",
+			text: `# Work\n- [ ] First\n- [ ] Second\n- [ ] Third\n${newlineAttack}`,
+		});
+	}));
+it("bounds decision status detection", () =>
+	promptly(() => {
+		expect(
+			extractDecision({
+				path: "adr-1.md",
+				text: `# Example\n## Decision\nUse it.\n${newlineAttack}`,
+			}),
+		).not.toBeNull();
+	}));
+it("bounds frontmatter finished-state detection", () =>
+	promptly(() => {
+		expect(
+			extractBacklogItems({
+				path: "US-1.md",
+				text: `---\n${newlineAttack}\n---\nBody`,
+			}),
+		).toHaveLength(1);
+	}));
+
+it("bounds dated heading counter", () =>
+	promptly(() => {
+		classifyRepositoryDocument({
+			path: "notes.md",
+			text: pad(`# ${tabAttack}`),
+		});
+	}));
+
+it("preserves indented metadata and finished notes", () => {
+	expect(
+		classifyRepositoryDocument({
+			path: "notes.md",
+			text: `---\n\ttype: user\n---\n${pad("Body")}`,
+		}),
+	).toMatchObject({ kind: "skip" });
+	for (const note of ["\t**Status:** Done", "\t> done"]) {
+		expect(
+			extractBacklogItems({
+				path: "US-1.md",
+				text: `# US-1 Example\n${note}`,
+			}),
+		).toEqual([]);
+	}
+	expect(
+		extractDecision({
+			path: "adr-1.md",
+			text: "# Example\n\tstatus: accepted\n## Decision\nUse it.",
+		}),
+	).toMatchObject({ status: "ACCEPTED" });
 });

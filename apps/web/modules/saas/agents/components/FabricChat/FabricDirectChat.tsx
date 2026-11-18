@@ -1,5 +1,8 @@
 "use client";
 
+import { LiveAnnouncerRegion } from "@saas/shared/components/LiveAnnouncer";
+import { sharedDocumentChat } from "./orchestrator/shared-document-chat";
+
 /**
  * FabricDirectChat - Direct chat component with streaming MCP tool execution
  *
@@ -42,7 +45,7 @@ import type { AttachedFile as CopilotAttachedFile } from "@saas/shared/component
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { SparklesIcon as GenieSparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
 import { orpcClient } from "@shared/lib/orpc-client";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -663,6 +666,9 @@ export const FabricDirectChat = forwardRef<
 	);
 
 	// Local state for UI
+	const [pendingSend, setPendingSend] = useState<string | null>(null);
+	const preparingSendRef = useRef(false);
+	const queryClient = useQueryClient();
 	const [input, setInput] = useState(initialInput ?? "");
 	const [conversationId, setConversationId] = useState<string | null>(null);
 	const [pendingTaskDraft, setPendingTaskDraft] =
@@ -1088,6 +1094,9 @@ export const FabricDirectChat = forwardRef<
 		(startedId: string) => {
 			savedConversationIdRef.current = startedId;
 			setConversationId(startedId);
+			void queryClient.invalidateQueries({
+				queryKey: ["agents", "conversations"],
+			});
 			onConversationCreated?.(startedId);
 			if (attachedProjectId) {
 				orpcClient.projects.conversations
@@ -1104,7 +1113,7 @@ export const FabricDirectChat = forwardRef<
 					});
 			}
 		},
-		[attachedProjectId, onConversationCreated, organizationId],
+		[attachedProjectId, onConversationCreated, organizationId, queryClient],
 	);
 
 	// Use the streaming hook for real-time responses
@@ -1169,8 +1178,8 @@ export const FabricDirectChat = forwardRef<
 	});
 
 	useEffect(() => {
-		onStreamingChange?.(isLoading);
-	}, [isLoading, onStreamingChange]);
+		onStreamingChange?.(isLoading || pendingSend !== null);
+	}, [isLoading, onStreamingChange, pendingSend]);
 
 	// Stable `onStop` for ChatInput — wraps the hook's `stop()` with the
 	// `"button"` trigger tag so cancel telemetry distinguishes the morph
@@ -1649,6 +1658,9 @@ export const FabricDirectChat = forwardRef<
 					// effect recognises this as our own write and leaves it be.
 					savedConversationIdRef.current = result.id;
 					setConversationId(result.id);
+					void queryClient.invalidateQueries({
+						queryKey: ["agents", "conversations"],
+					});
 					onConversationCreated?.(result.id);
 					return result.id;
 				} catch (error) {
@@ -1672,6 +1684,7 @@ export const FabricDirectChat = forwardRef<
 			selectedConversationMcpIds,
 			attachedProjectId,
 			onConversationCreated,
+			queryClient,
 		],
 	);
 
@@ -2328,163 +2341,221 @@ export const FabricDirectChat = forwardRef<
 		// IMPORTANT: Start with existing chatId to add new documents to the same chat
 		let aiChatId: string | undefined = currentDocumentChatId || undefined;
 
-		for (const attachedFile of pendingFiles) {
-			try {
-				// Update status to uploading
-				setAttachedFiles((prev) =>
-					prev.map((f) =>
-						f.id === attachedFile.id
-							? { ...f, status: "uploading" as const }
-							: f,
-					),
-				);
-
-				// Request signed upload URL - API auto-creates chat if needed
-				const {
-					documentId,
-					signedUploadUrl,
-					useServerUpload,
-					chatId: returnedChatId,
-				} = await orpcClient.ai.documents.createUploadUrl({
-					chatId: aiChatId, // Reuse the same chat for all documents
-					organizationId: organizationId || undefined,
-					filename: attachedFile.name,
-					mimeType: attachedFile.type || "application/octet-stream",
-					size: attachedFile.size,
-				});
-
-				// Store the chat ID for subsequent uploads and RAG retrieval
-				if (!aiChatId && returnedChatId) {
-					aiChatId = returnedChatId;
-					console.log(
-						"[FabricDirectChat] Got chatId for documents:",
-						aiChatId,
-					);
-					// Store locally for persistence in conversation metadata
-					setCurrentDocumentChatId(returnedChatId);
-					// Notify parent component so it can display documents in sidebar
-					onDocumentChatCreated?.(returnedChatId);
-				}
-
-				// Upload file - use presigned URL if available, otherwise server-side upload
-				if (signedUploadUrl) {
-					// Direct upload to S3 using presigned URL.
-					//
-					// `fetch` rejects only on a network-level failure: a 403 from
-					// an expired signature or a 500 from storage resolves
-					// normally. Without this check the catch below never fires,
-					// the chip advances to `ready`, and `toast.success` tells the
-					// user the file arrived when nothing was stored. The Feature
-					// Assistant and Nexus have both checked this all along — Loom
-					// was the one surface that did not.
-					const uploadResponse = await fetch(signedUploadUrl, {
-						method: "PUT",
-						body: attachedFile.file,
-						headers: {
-							"Content-Type":
-								attachedFile.type || "application/octet-stream",
-						},
-					});
-					if (!uploadResponse.ok) {
-						throw new Error(
-							`Upload failed with status ${uploadResponse.status}`,
-						);
-					}
-				} else if (useServerUpload) {
-					// Server-side upload for providers like Vercel Blob
-					// Convert file to base64
-					const arrayBuffer = await attachedFile.file.arrayBuffer();
-					const base64 = btoa(
-						new Uint8Array(arrayBuffer).reduce(
-							(data, byte) => data + String.fromCharCode(byte),
-							"",
+		const createUploadUrl = sharedDocumentChat(
+			(
+				input: Parameters<
+					typeof orpcClient.ai.documents.createUploadUrl
+				>[0],
+			) => orpcClient.ai.documents.createUploadUrl(input),
+			aiChatId,
+		);
+		await Promise.allSettled(
+			pendingFiles.map(async (attachedFile, index) => {
+				try {
+					// Update status to uploading
+					setAttachedFiles((prev) =>
+						prev.map((f) =>
+							f.id === attachedFile.id
+								? { ...f, status: "uploading" as const }
+								: f,
 						),
 					);
-					await orpcClient.ai.documents.upload({
+
+					// Request signed upload URL - API auto-creates chat if needed
+					const {
 						documentId,
-						fileData: base64,
+						signedUploadUrl,
+						useServerUpload,
+						chatId: returnedChatId,
+					} = await createUploadUrl({
+						chatId: aiChatId, // Reuse the same chat for all documents
+						organizationId: organizationId || undefined,
+						filename: attachedFile.name,
 						mimeType:
 							attachedFile.type || "application/octet-stream",
+						size: attachedFile.size,
 					});
-				} else {
-					throw new Error("No upload method available");
+
+					// Store the chat ID for subsequent uploads and RAG retrieval
+					if (!aiChatId && returnedChatId) {
+						aiChatId = returnedChatId;
+						console.log(
+							"[FabricDirectChat] Got chatId for documents:",
+							aiChatId,
+						);
+						// Store locally for persistence in conversation metadata
+						setCurrentDocumentChatId(returnedChatId);
+						// Notify parent component so it can display documents in sidebar
+						onDocumentChatCreated?.(returnedChatId);
+					}
+
+					// Upload file - use presigned URL if available, otherwise server-side upload
+					if (signedUploadUrl) {
+						// Direct upload to S3 using presigned URL.
+						//
+						// `fetch` rejects only on a network-level failure: a 403 from
+						// an expired signature or a 500 from storage resolves
+						// normally. Without this check the catch below never fires,
+						// the chip advances to `ready`, and `toast.success` tells the
+						// user the file arrived when nothing was stored. The Feature
+						// Assistant and Nexus have both checked this all along — Loom
+						// was the one surface that did not.
+						const uploadResponse = await fetch(signedUploadUrl, {
+							method: "PUT",
+							body: attachedFile.file,
+							headers: {
+								"Content-Type":
+									attachedFile.type ||
+									"application/octet-stream",
+							},
+						});
+						if (!uploadResponse.ok) {
+							throw new Error(
+								`Upload failed with status ${uploadResponse.status}`,
+							);
+						}
+					} else if (useServerUpload) {
+						// Server-side upload for providers like Vercel Blob
+						// Convert file to base64
+						const arrayBuffer =
+							await attachedFile.file.arrayBuffer();
+						const base64 = btoa(
+							new Uint8Array(arrayBuffer).reduce(
+								(data, byte) =>
+									data + String.fromCharCode(byte),
+								"",
+							),
+						);
+						await orpcClient.ai.documents.upload({
+							documentId,
+							fileData: base64,
+							mimeType:
+								attachedFile.type || "application/octet-stream",
+						});
+					} else {
+						throw new Error("No upload method available");
+					}
+
+					// Update status to processing and store chatId for RAG retrieval
+					setAttachedFiles((prev) =>
+						prev.map((f) =>
+							f.id === attachedFile.id
+								? {
+										...f,
+										status: "processing" as const,
+										documentId,
+										chatId: aiChatId,
+									}
+								: f,
+						),
+					);
+
+					// Trigger document processing.
+					//
+					// The return value was previously discarded. It carries both
+					// halves of what this surface was missing: the extracted text
+					// (which becomes the inline envelope) and the outcome (which is
+					// the only way the user learns a file was truncated, carried no
+					// readable text, or could not be read at all).
+					const processed = await orpcClient.ai.documents.process({
+						documentId,
+					});
+					// No budget applied here: `process` already bounds what it
+					// returns, and re-cutting client-side would report a second
+					// truncation the user was never subject to.
+					const contextEntry = buildAiChatAttachmentEntry(
+						attachedFile.name,
+						processed?.extractedContent ?? "",
+					);
+
+					// Update status to ready, carrying what was read
+					setAttachedFiles((prev) =>
+						prev.map((f) =>
+							f.id === attachedFile.id
+								? {
+										...f,
+										status: "ready" as const,
+										extraction: processed?.extraction,
+										contextEntry,
+									}
+								: f,
+						),
+					);
+
+					documentIds[index] = documentId;
+					inlineContexts[index] = contextEntry;
+					toast.success(`Uploaded ${attachedFile.name}`);
+				} catch (error) {
+					console.error("File upload error:", error);
+					setAttachedFiles((prev) =>
+						prev.map((f) =>
+							f.id === attachedFile.id
+								? {
+										...f,
+										status: "error" as const,
+										error:
+											error instanceof Error
+												? error.message
+												: "Upload failed",
+									}
+								: f,
+						),
+					);
+					toast.error(`Failed to upload ${attachedFile.name}`);
 				}
+			}),
+		);
 
-				// Update status to processing and store chatId for RAG retrieval
-				setAttachedFiles((prev) =>
-					prev.map((f) =>
-						f.id === attachedFile.id
-							? {
-									...f,
-									status: "processing" as const,
-									documentId,
-									chatId: aiChatId,
-								}
-							: f,
-					),
-				);
-
-				// Trigger document processing.
-				//
-				// The return value was previously discarded. It carries both
-				// halves of what this surface was missing: the extracted text
-				// (which becomes the inline envelope) and the outcome (which is
-				// the only way the user learns a file was truncated, carried no
-				// readable text, or could not be read at all).
-				const processed = await orpcClient.ai.documents.process({
-					documentId,
-				});
-				// No budget applied here: `process` already bounds what it
-				// returns, and re-cutting client-side would report a second
-				// truncation the user was never subject to.
-				const contextEntry = buildAiChatAttachmentEntry(
-					attachedFile.name,
-					processed?.extractedContent ?? "",
-				);
-
-				// Update status to ready, carrying what was read
-				setAttachedFiles((prev) =>
-					prev.map((f) =>
-						f.id === attachedFile.id
-							? {
-									...f,
-									status: "ready" as const,
-									extraction: processed?.extraction,
-									contextEntry,
-								}
-							: f,
-					),
-				);
-
-				documentIds.push(documentId);
-				inlineContexts.push(contextEntry);
-				toast.success(`Uploaded ${attachedFile.name}`);
-			} catch (error) {
-				console.error("File upload error:", error);
-				setAttachedFiles((prev) =>
-					prev.map((f) =>
-						f.id === attachedFile.id
-							? {
-									...f,
-									status: "error" as const,
-									error:
-										error instanceof Error
-											? error.message
-											: "Upload failed",
-								}
-							: f,
-					),
-				);
-				toast.error(`Failed to upload ${attachedFile.name}`);
-			}
-		}
-
-		return { documentIds, inlineContexts, chatId: aiChatId };
-	}, [attachedFiles, organizationId, onDocumentChatCreated]);
+		return {
+			documentIds: documentIds.filter(Boolean),
+			inlineContexts: inlineContexts.filter(Boolean),
+			chatId: aiChatId,
+		};
+	}, [
+		attachedFiles,
+		organizationId,
+		onDocumentChatCreated,
+		currentDocumentChatId,
+	]);
 
 	// `prompt` is set by an in-thread action such as Continue; the composer's
 	// Send passes its click event, which is not a string.
 	const sendMessage = async (prompt?: unknown) => {
+		const text = typeof prompt === "string" ? prompt : input;
+		if (!text.trim() || isLoading || preparingSendRef.current) {
+			return;
+		}
+		preparingSendRef.current = true;
+		setPendingSend(text.trim());
+		let handedOff = false;
+		const endPreparation = () => {
+			handedOff = true;
+			preparingSendRef.current = false;
+			setPendingSend(null);
+		};
+		try {
+			await performSendMessage(prompt, endPreparation);
+		} catch (error) {
+			if (handedOff) {
+				throw error;
+			}
+			if (typeof prompt !== "string") {
+				setInput(text);
+			}
+			toast.error("Failed to prepare message");
+			console.error("Message preparation failed:", error);
+		} finally {
+			if (!handedOff) {
+				preparingSendRef.current = false;
+				setPendingSend(null);
+			}
+		}
+	};
+
+	const performSendMessage = async (
+		prompt: unknown,
+		endPreparation: () => void,
+	) => {
 		const text = typeof prompt === "string" ? prompt : input;
 		if (!text.trim() || isLoading) {
 			return;
@@ -2604,6 +2675,8 @@ export const FabricDirectChat = forwardRef<
 
 		// Use streaming hook to send message with document IDs and chatId for RAG
 		// The chatId is critical - it tells the RAG system where to find the document chunks
+		// The transport installs its turn UI synchronously in this batch.
+		endPreparation();
 		await streamSendMessage(messageContent, history, {
 			forceNewChat: isFirstMessage,
 			attachedDocumentIds:
@@ -2645,7 +2718,8 @@ export const FabricDirectChat = forwardRef<
 		: ADVISOR_STARTERS;
 
 	// The landing is the empty, full-size chat: heading, composer, starters.
-	const isWelcome = messages.length === 0 && !compactMode;
+	const isWelcome =
+		pendingSend === null && messages.length === 0 && !compactMode;
 	const [composerFocused, setComposerFocused] = useState(false);
 	const typedPlaceholder = useTypewriterPlaceholder(
 		ADVISOR_PLACEHOLDERS,
@@ -3217,8 +3291,8 @@ export const FabricDirectChat = forwardRef<
 						value={input}
 						onChange={handleInputChange}
 						onSend={sendMessage}
-						onStop={handleStopFromButton}
-						isLoading={isLoading}
+						onStop={isLoading ? handleStopFromButton : undefined}
+						isLoading={isLoading || pendingSend !== null}
 						projectId={attachedProjectId ?? undefined}
 						enableFileMentions={!!attachedProjectId}
 						enableStoryMentions={!!attachedProjectId}
@@ -3631,8 +3705,15 @@ export const FabricDirectChat = forwardRef<
 	return (
 		<div className="flex h-full overflow-hidden">
 			<div className="flex min-w-0 flex-1 flex-col">
+				<LiveAnnouncerRegion
+					data-testid="send-preparation-status"
+					announcement={
+						pendingSend !== null ? "Preparing message…" : ""
+					}
+				/>
+
 				{/* Messages Area */}
-				{messages.length === 0 ? (
+				{messages.length === 0 && pendingSend === null ? (
 					compactMode ? (
 						/* The launcher's empty state: Databricks Genie style
 						   centered hero + structured starter rows, sized for a drawer. */
@@ -4936,6 +5017,23 @@ export const FabricDirectChat = forwardRef<
 										</MessageContent>
 									</Message>
 								)}
+							{pendingSend !== null && !isLoading && (
+								<div className="space-y-2 p-4">
+									<p className="whitespace-pre-wrap text-sm">
+										{pendingSend}
+									</p>
+									<div
+										aria-hidden="true"
+										className="flex items-center gap-2 text-sm text-muted-foreground"
+									>
+										<Loader2
+											className="h-4 w-4 animate-spin"
+											aria-hidden="true"
+										/>
+										Preparing message…
+									</div>
+								</div>
+							)}
 						</ConversationContent>
 						<ConversationScrollButton />
 

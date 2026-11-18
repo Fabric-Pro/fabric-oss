@@ -170,9 +170,12 @@ type Handler = (args: {
 	context: { user: { id: string; name?: string }; session: { id: string } };
 }) => Promise<unknown>;
 
+// Load the procedure once, before any test starts: the cold import takes
+// seconds, and inside `call()` it counted against the first test's timeout.
+const { updateProjectProcedure } = await import("../update-project");
+
 async function call(input: Record<string, unknown>, userId = "owner-1") {
-	const mod = await import("../update-project");
-	const { handler } = mod.updateProjectProcedure as unknown as {
+	const { handler } = updateProjectProcedure as unknown as {
 		handler: Handler;
 	};
 	return handler({
@@ -394,7 +397,6 @@ describe("the GitLab container's instance", () => {
 	// `requireProjectPermission` authorized), never one the input names.
 	it("reads the actor's GitLab connection in the project's organization, not the input's", async () => {
 		mocks.tables.project = [restGitLabRow()];
-		mocks.gitlabConnectionRead.mockClear();
 
 		await call({
 			id: "proj-rest",

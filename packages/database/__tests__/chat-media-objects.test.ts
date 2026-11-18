@@ -556,3 +556,22 @@ describe("buildChatMediaStorageKey", () => {
 		).toBe(`${ORG}/tts-audio/1794000000000-abc123xy.mp3`);
 	});
 });
+
+it("uses cryptographic entropy for default media keys", () => {
+	const random = vi.spyOn(Math, "random").mockImplementation(() => {
+		throw new Error("insecure randomness");
+	});
+	try {
+		const key = buildChatMediaStorageKey({
+			ownerPrefix: ORG,
+			kind: "chat-images",
+			extension: "png",
+			timestamp: 123,
+		});
+		expect(key).toMatch(
+			/^example-org\/chat-images\/123-[a-f0-9]{32}\.png$/,
+		);
+	} finally {
+		random.mockRestore();
+	}
+});

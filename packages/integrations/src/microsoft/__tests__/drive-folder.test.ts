@@ -4,8 +4,16 @@
  * transcript size limit whatever Graph reported.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { GRAPH_REQUEST_TIMEOUT_MS } from "../config/limits";
 import { downloadDriveItem, listDriveFolderChildren } from "../drive-folder";
+import { MicrosoftRequestTimeoutError } from "../request";
+
+afterEach(() => {
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
+});
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
@@ -112,6 +120,64 @@ describe("downloadDriveItem", () => {
 				"https://example-my.sharepoint.com/download.aspx?token=t",
 			...overrides,
 		});
+
+	it("bounds an injected hung download at 60 seconds, not the Graph deadline", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockRejectedValue(new Error("Default fetch must not be used")),
+		);
+		vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+			const controller = new AbortController();
+			setTimeout(
+				() =>
+					controller.abort(
+						new DOMException("Deadline", "TimeoutError"),
+					),
+				ms,
+			);
+			return controller.signal;
+		});
+		const fetchImpl = vi.fn(
+			(_url: string | URL | Request, options?: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					options?.signal?.addEventListener("abort", () =>
+						reject(options.signal?.reason),
+					);
+				}),
+		);
+		let outcome: unknown = "pending";
+		const result = downloadDriveItem({
+			graphFetch: async () => item(),
+			graphBaseUrl: GRAPH,
+			driveId: "drive-1",
+			itemId: "item-1",
+			maxBytes: 100,
+			fetchImpl: fetchImpl as typeof fetch,
+		}).then(
+			(value) => {
+				outcome = value;
+			},
+			(error) => {
+				outcome = error;
+			},
+		);
+		await vi.advanceTimersByTimeAsync(GRAPH_REQUEST_TIMEOUT_MS);
+		expect(outcome).toBe("pending");
+		await vi.advanceTimersByTimeAsync(
+			60_000 - GRAPH_REQUEST_TIMEOUT_MS - 1,
+		);
+		expect(outcome).toBe("pending");
+		await vi.advanceTimersByTimeAsync(1);
+		expect(outcome).toBeInstanceOf(MicrosoftRequestTimeoutError);
+		expect((outcome as Error).message).toBe(
+			"Microsoft Graph request timed out: GET /download.aspx",
+		);
+		await result;
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+	});
 
 	it("reads the file from its download link, sending no token", async () => {
 		const graphFetch = vi.fn(async (_url: string) => item());

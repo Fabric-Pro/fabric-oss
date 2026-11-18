@@ -147,7 +147,7 @@ describe("orchestrator memory regression", () => {
 			satisfactory: true,
 		});
 		activityStubs.recordExecution.mockResolvedValue(undefined);
-		activityStubs.embedAndStoreTrajectory.mockResolvedValue(undefined);
+		activityStubs.embedAndStoreTrajectory.mockResolvedValue(true);
 		activityStubs.saveTrajectory.mockResolvedValue(undefined);
 		activityStubs.createEpisodeFromExecutionActivity.mockResolvedValue(
 			undefined,
@@ -374,4 +374,54 @@ describe("orchestrator memory regression", () => {
 			}),
 		);
 	});
+
+	// Fizzy #3571: the activity returns false when it could not store the
+	// execution (a rejected embedding key, a Qdrant failure), and completion
+	// used to log "stored" regardless.
+	it.each([
+		[true, "info", "Execution stored in Qdrant semantic memory"],
+		[false, "warn", "Execution not stored in Qdrant semantic memory"],
+	] as const)(
+		"reports the execution as stored only when the activity stored it (%s)",
+		async (stored, level, message) => {
+			activityStubs.embedAndStoreTrajectory.mockResolvedValue(stored);
+
+			await orchestratorCompletionWorkflow({
+				executionId: "exec-3",
+				userId: "user-1",
+				organizationId: "org-1",
+				message: "Inspect the bug",
+				finalResponse: "I found the issue.",
+				executionMode: "default",
+				startTime: Date.now() - 2_000,
+				taskPlanSteps: [
+					{
+						id: "step-1",
+						description: "Inspect the bug",
+						status: "complete",
+						executor: "mcp_direct",
+					},
+				],
+				trajectorySteps: [],
+				toolCalls: [],
+				stepResults: [],
+				reflectionEnabled: false,
+				reflectionOnFinalOutput: false,
+			} as any);
+
+			const other = level === "info" ? "warn" : "info";
+			const otherMessage =
+				level === "info"
+					? "Execution not stored in Qdrant semantic memory"
+					: "Execution stored in Qdrant semantic memory";
+			expect(log[level]).toHaveBeenCalledWith(message, {
+				executionId: "exec-3",
+				outcome: "success",
+				stepCount: 1,
+			});
+			expect(
+				vi.mocked(log[other]).mock.calls.map(([logged]) => logged),
+			).not.toContain(otherMessage);
+		},
+	);
 });

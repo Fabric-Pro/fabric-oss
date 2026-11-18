@@ -1,3 +1,4 @@
+import { stripTrailingSlashes } from "@repo/utils/strip-trailing-slashes";
 /**
  * Model Factory - Core AI Model Creation Functions
  *
@@ -290,7 +291,7 @@ function endpointScopeFor(baseURL: string): string {
 	try {
 		const url = new URL(baseURL);
 		// Hash the resource's origin and path, omitting credentials, query and fragment.
-		resource = url.origin + url.pathname.replace(/\/+$/, "");
+		resource = url.origin + stripTrailingSlashes(url.pathname);
 	} catch {
 		// An unparseable base URL keeps failing at request time, as before; the
 		// raw string is only hashed, never stored or logged.
@@ -1097,7 +1098,7 @@ export function getModel(
 						`Invalid Custom / Remote Server URL: ${urlError}`,
 					);
 				}
-				const normalizedBaseUrl = rawBaseUrl.replace(/\/+$/, "");
+				const normalizedBaseUrl = stripTrailingSlashes(rawBaseUrl);
 				const configuredDeploymentName = context.deploymentName?.trim();
 				const customModelId =
 					configuredDeploymentName || modelWithoutPrefix;

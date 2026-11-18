@@ -58,3 +58,11 @@ reason = "MSAL 5.1.5 remains via Microsoft agents-hosting 1.8.1; Identity 4.14.1
 id = "GHSA-x8rm-f576-gq67"
 ignoreUntil = 2026-11-30
 reason = "graphql-scalars 1.25.0 via @copilotkit/runtime and type-graphql; their builds use GraphQLJSON, GraphQLJSONObject, GraphQLTimestamp and GraphQLDateTimeISO, not PhoneNumber. The fixed 2.0.1 is outside the type-graphql peer range. See SECURITY.md § Documented dismissals."
+
+# No fixed picomatch release exists; every version through 4.0.7 is affected.
+# The dependency-security check limits this ID-wide ignore to the reviewed
+# lockfile versions and fails if first-party source imports a glob compiler.
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"
+ignoreUntil = 2027-02-17
+reason = "picomatch 2.3.2/4.0.4/4.0.5 ReDoS needs an attacker-supplied glob pattern. First-party code imports no glob-compiling library; every consumer (build, test, watch and changeset tooling, next-intl's watcher, Vercel microfrontends config, Next.js's bundled copy for images.remotePatterns) compiles patterns from package code or repository config, not from request input (reviewed 2026-11-17). No fixed release exists. See SECURITY.md § Documented dismissals."

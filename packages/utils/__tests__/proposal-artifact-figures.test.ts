@@ -3249,3 +3249,20 @@ describe("figure outlines", () => {
 		expect(outside).toEqual([]);
 	});
 });
+
+it("parses adversarial figure lines without overlapping whitespace scans", () => {
+	const start = performance.now();
+	expect(FIGURE_LINE.test(`%%figure:${"\t".repeat(50_000)}x y`)).toBe(false);
+	expect(performance.now() - start).toBeLessThan(250);
+	for (const value of [
+		"%%figure:",
+		"%%figure: process",
+		"%% figure: PROCESS  ",
+		"%%figure: \t",
+		"%%figure: x y",
+	]) {
+		expect(FIGURE_LINE.test(value)).toBe(
+			/^%%\s*figure:\s*(\S*)\s*$/i.test(value),
+		);
+	}
+});

@@ -45,6 +45,8 @@ export type RoadmapFilterToolbarProps = {
 	lanesCount?: number;
 	/** View and sort controls beside the results summary. */
 	trailing?: React.ReactNode;
+	/** Distinct PM-tool statuses across the loaded work items. */
+	pmStatusOptions?: string[];
 };
 
 export function RoadmapFilterToolbar({
@@ -72,6 +74,7 @@ export function RoadmapFilterToolbar({
 	organizationId,
 	lanesCount,
 	trailing,
+	pmStatusOptions,
 }: RoadmapFilterToolbarProps) {
 	// "More filters" disclosure — defaults collapsed; remembered per browser.
 	const [moreExpanded, setMoreExpanded] = useState(false);
@@ -151,6 +154,7 @@ export function RoadmapFilterToolbar({
 			trailing={trailing}
 			lanesCount={lanesCount}
 			tagOptions={tagOptions}
+			pmStatusOptions={pmStatusOptions}
 		/>
 	);
 }

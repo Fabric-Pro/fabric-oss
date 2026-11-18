@@ -1,3 +1,4 @@
+import { stripTrailingSlashes } from "@repo/utils/strip-trailing-slashes";
 /**
  * LangChain Model Factory
  *
@@ -1877,7 +1878,7 @@ function createUninstrumentedProviderModel(
 				maxRetries,
 				timeout: GATEWAY_TIMEOUT_MS,
 				configuration: {
-					baseURL: rawBaseUrl.replace(/\/+$/, ""),
+					baseURL: stripTrailingSlashes(rawBaseUrl),
 					fetch: fetchAgentEndpointExtendedTimeout,
 				},
 			};

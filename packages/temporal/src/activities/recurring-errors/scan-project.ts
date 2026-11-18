@@ -1,6 +1,6 @@
 /**
  * Recurring-error scan for one project: find problems that keep happening and
- * put each one in the review inbox as a BUG proposal, once.
+ * put them in the review inbox as BUG proposals.
  *
  * Two sources feed it:
  *   - LOG: application errors grouped by the project's log source over the
@@ -13,7 +13,11 @@
  * its earlier filing became decides what a recurrence does:
  *   - still awaiting review   -> refresh that proposal's evidence;
  *   - approved, bug still open -> add the new occurrences to the bug as a note;
- *   - rejected or parked       -> nothing (a person already decided);
+ *   - proposal rejected or parked -> suppress;
+ *   - bug declined             -> add to matching live tracking, or suppress;
+ *     do not file a new proposal;
+ *   - bug otherwise no longer open -> wait seven days from the first scan that
+ *     observes it closed or deleted, then treat it as nothing open;
  *   - nothing open             -> draft and file a new proposal, unless the
  *     log error is already tracked (`match-open-bug.ts`): by an open bug
  *     someone filed, and then the occurrences go on that bug and the
@@ -23,9 +27,9 @@
  * Notes on open bugs are written once per bug at the end of the scan, so a
  * problem that logs several distinct messages makes one comment, not several.
  *
- * Failures are visible, never silent: each one writes an audit row and the
- * project's last-scan error, which the settings toggle shows. One failing
- * group does not stop the others.
+ * Caught step failures are logged and submitted to the audit log, and feed
+ * the project's last-scan error shown by the settings toggle. A failed group
+ * does not stop the others.
  */
 import { runWithAiJobType } from "@repo/ai/lib/job-context";
 import {
@@ -43,6 +47,7 @@ import {
 	type RecurringErrorObservation,
 	type RecurringErrorSignature,
 	recordAudit,
+	recordRecurringErrorProposalAbsence,
 	recordRecurringErrorScanOutcome,
 	refreshRecurringErrorProposalEvidence,
 	resolveSignatureTracking,
@@ -50,7 +55,7 @@ import {
 	upsertRecurringErrorSignature,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import { heartbeat } from "@temporalio/activity";
+import { Context, heartbeat } from "@temporalio/activity";
 import { type DraftSubject, draftRecurringBugReport } from "./draft-bug-report";
 import {
 	type BugReportDraft,
@@ -78,6 +83,9 @@ const RECURRING_ERROR_REPORTER_NAME = "Fabric recurring-error scan";
 
 /** Groups one scan may file or refresh — the most frequent first. */
 const MAX_GROUPS_PER_SCAN = 25;
+
+export const CLOSED_BUG_QUIET_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface ScanRecurringErrorsInput {
 	projectId: string;
@@ -121,6 +129,7 @@ type Outcome =
 interface ScanContext extends ScanRecurringErrorsInput {
 	similarityThreshold: number;
 	scannedAt: Date;
+	absenceScanAt: Date;
 	errors: string[];
 	platformNoiseSetAside?: number;
 	platformNoiseByRule?: Record<string, number>;
@@ -155,6 +164,7 @@ function failureReason(err: unknown): string {
 function recordFailure(
 	ctx: ScanContext,
 	stage:
+		| "log-absence"
 		| "log-source"
 		| "incidents"
 		| "proposal"
@@ -239,7 +249,10 @@ async function noteOnStory(
 	},
 ): Promise<"notedOnStory"> {
 	const signature = await upsert();
-	await linkRecurringErrorSignature(signature.id, { storyId: note.storyId });
+	await linkRecurringErrorSignature(signature.id, {
+		storyId: note.storyId,
+		storyClosedSeenAt: null,
+	});
 	if (note.comment) {
 		const queued = ctx.storyNotes.get(note.storyId) ?? {
 			organizationId: note.organizationId,
@@ -329,6 +342,7 @@ async function joinProposal(
 		await linkRecurringErrorSignature(signature.id, {
 			pendingProposalId: proposalId,
 			storyId: null,
+			storyClosedSeenAt: null,
 		});
 	}
 	return joined;
@@ -379,6 +393,28 @@ async function settleProblem(
 			client,
 		);
 
+	if (tracking.state === "closed-story") {
+		const seenAt = problem.existing?.storyClosedSeenAt ?? null;
+		const elapsed = seenAt ? ctx.scannedAt.getTime() - seenAt.getTime() : 0;
+		if (elapsed < CLOSED_BUG_QUIET_DAYS * DAY_MS) {
+			const signature = await upsert();
+			if (seenAt === null) {
+				await linkRecurringErrorSignature(signature.id, {
+					storyClosedSeenAt: ctx.scannedAt,
+				});
+			}
+			logger.info("[RecurringErrors] quiet period after close", {
+				projectId: ctx.projectId,
+				source: problem.source,
+				fingerprint: problem.fingerprint,
+				daysRemaining: Math.ceil(
+					CLOSED_BUG_QUIET_DAYS - elapsed / DAY_MS,
+				),
+			});
+			return "suppressed";
+		}
+	}
+
 	switch (tracking.state) {
 		case "pending": {
 			const signature = await upsert();
@@ -390,6 +426,7 @@ async function settleProblem(
 			});
 			await linkRecurringErrorSignature(signature.id, {
 				pendingProposalId: tracking.proposalId,
+				storyClosedSeenAt: null,
 			});
 			return "refreshed";
 		}
@@ -403,6 +440,8 @@ async function settleProblem(
 		case "declined":
 			await upsert();
 			return "suppressed";
+		case "declined-story":
+		case "closed-story":
 		case "none": {
 			const check = await findOpenBug(ctx, problem);
 			const match = check?.match;
@@ -432,6 +471,10 @@ async function settleProblem(
 				))
 			) {
 				return "grouped";
+			}
+			if (tracking.state === "declined-story") {
+				await upsert();
+				return "suppressed";
 			}
 			const draft =
 				(await draftRecurringBugReport({
@@ -487,7 +530,11 @@ async function settleProblem(
 				);
 				await linkRecurringErrorSignature(
 					signature.id,
-					{ pendingProposalId: pending.id, storyId: null },
+					{
+						pendingProposalId: pending.id,
+						storyId: null,
+						storyClosedSeenAt: null,
+					},
 					tx,
 				);
 				return pending.id;
@@ -561,6 +608,9 @@ async function scanLogs(
 ): Promise<{ configured: boolean; groups: number }> {
 	let source: Awaited<ReturnType<typeof resolveRecurringErrorSource>>;
 	let groups: ReturnType<typeof mergeErrorGroups>;
+	let truncated = false;
+	let complete = false;
+	const failuresBeforeLogs = ctx.errors.length;
 	try {
 		source = await resolveRecurringErrorSource(ctx);
 		if (!source) {
@@ -571,9 +621,21 @@ async function scanLogs(
 			minOccurrences: ctx.threshold,
 			maxGroups: MAX_GROUPS_PER_SCAN,
 		});
+		complete = rawGroups.complete === true;
+		if (rawGroups.complete === undefined) {
+			logger.info(
+				"[RecurringErrors] absence skipped: log read completeness unknown",
+				{
+					projectId: ctx.projectId,
+					reason: "completeness not reported",
+				},
+			);
+		}
 		ctx.platformNoiseByRule = rawGroups.platformNoiseByRule ?? {};
 		ctx.platformNoiseSetAside = rawGroups.platformNoiseSetAside ?? 0;
-		groups = mergeErrorGroups(rawGroups)
+		truncated = rawGroups.length >= MAX_GROUPS_PER_SCAN;
+		const merged = mergeErrorGroups(rawGroups);
+		groups = merged
 			// Merging can only raise a count, but the platform filter is not
 			// trusted to have applied the threshold: below it, nothing happens.
 			.filter((group) => group.occurrences >= ctx.threshold)
@@ -615,6 +677,44 @@ async function scanLogs(
 				source: "LOG",
 				fingerprint: group.fingerprint,
 			});
+		}
+	}
+	if (
+		complete &&
+		!truncated &&
+		ctx.errors.length === failuresBeforeLogs &&
+		!matcher.degraded
+	) {
+		try {
+			// Read links after settling: a newly joined related group protects the
+			// whole proposal, even when its original fingerprint was absent.
+			const signatures = await listRecurringErrorSignatures(
+				ctx.projectId,
+				"LOG",
+			);
+			const seen = new Set(groups.map((group) => group.fingerprint));
+			const proposals = new Map<string, boolean>();
+			for (const signature of signatures) {
+				if (!signature.pendingProposalId) {
+					continue;
+				}
+				proposals.set(
+					signature.pendingProposalId,
+					(proposals.get(signature.pendingProposalId) ?? false) ||
+						seen.has(signature.fingerprint),
+				);
+			}
+			for (const [proposalId, recurring] of proposals) {
+				if (!recurring) {
+					await recordRecurringErrorProposalAbsence(
+						ctx.projectId,
+						proposalId,
+						ctx.absenceScanAt,
+					);
+				}
+			}
+		} catch (err) {
+			recordFailure(ctx, "log-absence", err);
 		}
 	}
 	return { configured: true, groups: groups.length };
@@ -738,6 +838,8 @@ async function scan(
 		...input,
 		similarityThreshold: input.similarityThreshold ?? CONFIDENCE_THRESHOLD,
 		scannedAt: new Date(),
+		// Count one absence per scheduled activity, including its retries.
+		absenceScanAt: new Date(Context.current().info.scheduledTimestampMs),
 		errors: [],
 		storyNotes: new Map(),
 	};

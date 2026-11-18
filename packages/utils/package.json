@@ -10,6 +10,7 @@
 	"main": "./index.ts",
 	"type": "module",
 	"exports": {
+		"./strip-trailing-slashes": "./strip-trailing-slashes.ts",
 		"./notion-error-reasons": "./lib/notion-error-reasons.ts",
 		"./chat-event-cursor": "./lib/chat-event-cursor.ts",
 		"./conversation-turn-charge": {

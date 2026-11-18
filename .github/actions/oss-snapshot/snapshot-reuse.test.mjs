@@ -245,7 +245,6 @@ test("the repository's .dockerignore excludes only what Docker leaves out", () =
 		"tooling/tsgo/package.json",
 		"tooling/scripts/package.json",
 		"tooling/tailwind/package.json",
-		"tooling/tsdown/no-declaration-map-comments.mjs",
 	]) {
 		assert.ok(!ignored(path), path);
 	}

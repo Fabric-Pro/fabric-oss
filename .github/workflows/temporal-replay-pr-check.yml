@@ -44,7 +44,7 @@ jobs:
     # Only private pull requests use Namespace, by event allowlist. Pushes and
     # other events retain GitHub runners: their caches can be restored by other
     # branches, including secret-holding jobs. See unit-tests.yml vitest.
-    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd1' || 'ubuntu-24.04-arm' }}
     permissions:
       pull-requests: read
     outputs:
@@ -89,7 +89,7 @@ jobs:
     # Pure shell against env vars; no contributor code execution, and no
     # compiled binaries. Private PRs use Namespace amd64; other events keep
     # the GitHub arm64 label.
-    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd1' || 'ubuntu-24.04-arm' }}
     env:
       REPOSITORY: ${{ github.repository }}
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}

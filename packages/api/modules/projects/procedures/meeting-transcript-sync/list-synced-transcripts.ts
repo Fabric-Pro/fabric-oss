@@ -12,7 +12,9 @@ import {
  * AUTHORIZATION: Uses hasProjectAccess() - any project member can view synced transcripts.
  *
  * Lists synced meeting transcript records for a project, optionally filtered
- * by linked meeting ID.
+ * by linked meeting ID, newest meeting first. Ordered by when the meeting took
+ * place, not when it was stored: a sync that recovers missed meetings stores
+ * them all at once, after newer ones.
  */
 export const listSyncedTranscriptsProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_READ))
@@ -56,7 +58,10 @@ export const listSyncedTranscriptsProcedure = tenantProtectedProcedure
 					? { linkedMeetingId: input.linkedMeetingId }
 					: {}),
 			},
-			orderBy: { syncedAt: "desc" },
+			orderBy: [
+				{ meetingDate: { sort: "desc", nulls: "last" } },
+				{ syncedAt: "desc" },
+			],
 		});
 
 		return transcripts;

@@ -679,6 +679,148 @@ test("tracked first-party source does not import graphql-scalars", () => {
 	);
 });
 
+// GHSA-fc5q-39xc-vjpf: no fixed picomatch release exists (the advisory covers
+// every version through 4.0.7, the latest). The ignore is ID-wide, so pin it to
+// the reviewed resolutions: a new copy, including a later release, fails here
+// until it is reviewed and added.
+const reviewedPicomatchVersions = new Set(["2.3.2", "4.0.4", "4.0.5"]);
+
+function isReviewedPicomatchVersion(version) {
+	return reviewedPicomatchVersions.has(version);
+}
+
+function verifyPicomatchLockfile(text, yaml) {
+	assert.equal(typeof text, "string", "Missing readable lockfile text");
+	const lockfile = yaml.parse(text);
+	for (const section of ["packages", "snapshots"]) {
+		assert.ok(
+			lockfile?.[section] &&
+				typeof lockfile[section] === "object" &&
+				!Array.isArray(lockfile[section]),
+			`Missing lockfile ${section}`,
+		);
+		const entries = Object.keys(lockfile[section]).filter((key) =>
+			key.startsWith("picomatch@"),
+		);
+		assert.ok(
+			entries.length,
+			`No picomatch entries in lockfile ${section}`,
+		);
+		for (const key of entries) {
+			const version = key.slice("picomatch@".length).split("(")[0];
+			assert.ok(
+				isReviewedPicomatchVersion(version),
+				`Unreviewed picomatch resolution: ${key} (${section}); GHSA-fc5q-39xc-vjpf is dismissed only for reviewed versions`,
+			);
+		}
+	}
+}
+
+// The ReDoS needs an attacker-supplied glob pattern. First-party code passes
+// no patterns to picomatch because it names none of the libraries that compile
+// one; every remaining consumer gets its patterns from package code or
+// repository config. The search matches any quoted module specifier for those
+// packages, including subpaths, so an import split across lines, a re-export
+// or a require() is caught too; a similarly named package is not.
+const globCompilerSpecifier =
+	"[\"'](picomatch|micromatch|anymatch|fast-glob|tinyglobby|chokidar|fdir|readdirp)(/[^\"']*)?[\"']";
+
+test("picomatch exception permits only reviewed versions", () => {
+	for (const version of ["2.3.2", "4.0.4", "4.0.5"]) {
+		assert.equal(isReviewedPicomatchVersion(version), true);
+	}
+	for (const version of [
+		"2.3.1",
+		"4.0.3",
+		"4.0.6",
+		"4.0.7",
+		"4.0.8",
+		"5.0.0",
+		"4.0.5-beta.1",
+		"invalid",
+	]) {
+		assert.equal(isReviewedPicomatchVersion(version), false);
+	}
+});
+
+test("picomatch lockfile guard rejects missing and unreviewed entries", () => {
+	const yaml = installedConsumers("@changesets/parse", "1.0.0")[0].require(
+		"yaml",
+	);
+	const snippet = (version) =>
+		`packages:\n  'picomatch@${version}': {}\nsnapshots:\n  'picomatch@${version}': {}\n`;
+	assert.doesNotThrow(() => verifyPicomatchLockfile(snippet("4.0.5"), yaml));
+	assert.throws(
+		() => verifyPicomatchLockfile(snippet("4.0.7"), yaml),
+		/Unreviewed picomatch resolution/,
+	);
+	for (const text of [
+		"packages: [",
+		"",
+		"packages: {}\nsnapshots: {}",
+		"packages: {}",
+		"packages: null\nsnapshots: null",
+		"packages: []\nsnapshots: []",
+	]) {
+		assert.throws(() => verifyPicomatchLockfile(text, yaml));
+	}
+	const lockfile = readFileSync(join(root, "pnpm-lock.yaml"), "utf8");
+	verifyPicomatchLockfile(lockfile, yaml);
+	for (const section of ["packages", "snapshots"]) {
+		const mutated = yaml.parse(lockfile);
+		const current = Object.keys(mutated[section]).find((key) =>
+			key.startsWith("picomatch@"),
+		);
+		assert.ok(current);
+		mutated[section]["picomatch@4.0.7"] = mutated[section][current];
+		delete mutated[section][current];
+		assert.throws(
+			() => verifyPicomatchLockfile(yaml.stringify(mutated), yaml),
+			/Unreviewed picomatch resolution: picomatch@4\.0\.7/,
+		);
+	}
+});
+
+test("tracked first-party source names no glob-compiling library", () => {
+	assert.deepEqual(firstPartyMsalAuthCodeHits(globCompilerSpecifier), []);
+	assert.ok(
+		firstPartyMsalAuthCodeHits("[\"']nunjucks[\"']").length > 0,
+		"git grep found no first-party nunjucks import; the search is not reading first-party sources",
+	);
+	const artifacts = join(root, "artifacts");
+	mkdirSync(artifacts, { recursive: true });
+	const directory = mkdtempSync(join(artifacts, "glob-compilers-"));
+	const caught = [
+		["a.ts", 'import picomatch from "picomatch";'],
+		["b.mjs", "const fg = require('fast-glob');"],
+		["c.tsx", 'const m = await import("micromatch");'],
+		["d.ts", 'import parse from\n\t"picomatch";'],
+		["e.ts", 'import parse from "picomatch/lib/parse.js";'],
+		["f.ts", 'export { glob } from "tinyglobby";'],
+	];
+	try {
+		for (const [name, source] of [
+			...caught,
+			["g.ts", 'import x from "picomatch-extra";'],
+			["h.ts", 'import x from "my-micromatch";'],
+		]) {
+			writeFileSync(join(directory, name), source);
+		}
+		const hits = firstPartyMsalAuthCodeHits(
+			globCompilerSpecifier,
+			directory,
+			true,
+		);
+		assert.deepEqual(
+			[...new Set(hits.map((hit) => hit.split(":")[0]))].sort(),
+			caught.map(([name]) => name),
+			hits.join("\n"),
+		);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
 test("each immediate parent's original range accepts the locked security version", () => {
 	const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
 		"semver",

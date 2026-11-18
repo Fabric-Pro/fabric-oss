@@ -875,3 +875,14 @@ describe("revoking a project grant", () => {
 		]);
 	});
 });
+
+it("handles a resource origin with many trailing slashes promptly", async () => {
+	const start = performance.now();
+	const result = await verifyOAuthAccessToken(
+		PRESENTED,
+		{ ...MCP_RESOURCE, appUrl: `${RESOURCE.appUrl}${"/".repeat(50000)}!` },
+		NOW,
+	);
+	expect(result.valid).toBe(false);
+	expect(performance.now() - start).toBeLessThan(500);
+});

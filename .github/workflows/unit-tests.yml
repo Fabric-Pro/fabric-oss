@@ -134,7 +134,7 @@ jobs:
     # Architecture-neutral steps; private PRs use Namespace amd64,
     # while other events retain the GitHub arm64 label.
     # Private PRs alone use Namespace; see the vitest job in unit-tests.yml.
-    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd1' || 'ubuntu-24.04-arm' }}
     timeout-minutes: 10
     outputs:
       code: ${{ steps.filter.outputs.code }}
@@ -1052,7 +1052,7 @@ jobs:
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (always() && github.event_name != 'push')
     # Architecture-neutral steps; private PRs use Namespace amd64,
     # while other events retain the GitHub arm64 label.
-    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd2' || 'ubuntu-24.04-arm' }}
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd1' || 'ubuntu-24.04-arm' }}
     env:
       EVENT_NAME: ${{ github.event_name }}
       CHANGES_RESULT: ${{ needs.plan.outputs.filter_result }}

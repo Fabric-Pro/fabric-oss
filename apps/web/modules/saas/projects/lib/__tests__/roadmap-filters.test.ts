@@ -50,6 +50,7 @@ function makeStory(overrides: Partial<UserStory> & { id: string }): UserStory {
 		draftingStageUpdatedAt: overrides.draftingStageUpdatedAt ?? null,
 		lastSyncedAt: overrides.lastSyncedAt ?? null,
 		lastPmSyncStatus: overrides.lastPmSyncStatus ?? null,
+		pmTicketStatus: overrides.pmTicketStatus ?? null,
 		needsMoreInfo: overrides.needsMoreInfo ?? false,
 		blocked: overrides.blocked ?? false,
 		blockedReason: overrides.blockedReason ?? null,
@@ -1496,6 +1497,65 @@ describe("applyRoadmapFilters — maturation V2 stage edge cases", () => {
 			"legacy-todo",
 			"v2-done",
 			"v2-todo",
+		]);
+	});
+});
+
+describe("applyRoadmapFilters — PM status (Fizzy #3532)", () => {
+	const stories = [
+		makeStory({
+			id: "a",
+			pmTicketStatus: "In Progress",
+			priority: "P1_HIGH",
+		}),
+		makeStory({
+			id: "b",
+			pmTicketStatus: "In Progress",
+			priority: "P3_LOW",
+		}),
+		makeStory({ id: "c", pmTicketStatus: "Done", priority: "P1_HIGH" }),
+		makeStory({ id: "d", pmTicketStatus: null }),
+	];
+	const ids = (f: RoadmapFilters) =>
+		applyRoadmapFilters(stories, f).map((s) => s.id);
+
+	it("no PM status filter keeps every item", () => {
+		expect(ids(filters())).toEqual(["a", "b", "c", "d"]);
+	});
+
+	it("keeps only items with the selected status; items without one never match", () => {
+		expect(ids(filters({ pmStatus: "In Progress" }))).toEqual(["a", "b"]);
+		expect(ids(filters({ pmStatus: "Done" }))).toEqual(["c"]);
+	});
+
+	it("matches exactly (no case folding)", () => {
+		expect(ids(filters({ pmStatus: "done" }))).toEqual([]);
+	});
+
+	it("narrows alongside other filters rather than replacing them", () => {
+		expect(
+			ids(filters({ pmStatus: "In Progress", priority: ["P1_HIGH"] })),
+		).toEqual(["a"]);
+	});
+
+	it("yields an empty result when nothing matches", () => {
+		expect(ids(filters({ pmStatus: "QA/UAT" }))).toEqual([]);
+	});
+
+	it("counts as an active filter under More filters", () => {
+		const f = filters({ pmStatus: "Done" });
+		expect(hasActiveRoadmapFilters(f)).toBe(true);
+		expect(activeFilterGroupCount(f)).toBe(1);
+		expect(activeMoreFilterCount(f)).toBe(1);
+	});
+
+	it("does not modify the stories' PM status", () => {
+		ids(filters({ pmStatus: "Done" }));
+		expect(stories.map((s) => s.pmTicketStatus)).toEqual([
+			"In Progress",
+			"In Progress",
+			"Done",
+			null,
 		]);
 	});
 });

@@ -16,6 +16,7 @@ vi.mock("../prisma/client", () => ({
 
 import { RETIRED_SYSTEM_MCP_SERVER_KEYS } from "../prisma/curated-mcp-server-keys";
 import {
+	ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS,
 	HIDDEN_SYSTEM_MCP_SERVER_KEYS,
 	isHiddenSystemMcpServerKey,
 	isUnrunnableSystemMcpServer,
@@ -238,6 +239,7 @@ describe("isUnrunnableSystemMcpServer (#3531)", () => {
 		"turso",
 		"asana",
 		"browserbase",
+		"google-maps",
 	])(
 		"refuses the retired system %s server, whose command cannot start",
 		(key) => {
@@ -251,6 +253,44 @@ describe("isUnrunnableSystemMcpServer (#3531)", () => {
 		expect(
 			isUnrunnableSystemMcpServer({
 				key: "fetch",
+				isSystemProvided: false,
+			}),
+		).toBe(false);
+	});
+
+	it.each(ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS)(
+		"refuses the retired system %s server when the connection has no arguments (#3457)",
+		(key) => {
+			const server = { key, isSystemProvided: true };
+			expect(isUnrunnableSystemMcpServer(server)).toBe(true);
+			expect(isUnrunnableSystemMcpServer(server, null)).toBe(true);
+			expect(isUnrunnableSystemMcpServer(server, [])).toBe(true);
+			expect(isUnrunnableSystemMcpServer(server, ["  "])).toBe(true);
+		},
+	);
+
+	it("lets a retired server that needs an argument start when the connection has one", () => {
+		expect(
+			isUnrunnableSystemMcpServer(
+				{ key: "postgres", isSystemProvided: true },
+				["postgresql://db.example.com/app"],
+			),
+		).toBe(false);
+	});
+
+	it("refuses google-maps even with arguments, since its key cannot reach it", () => {
+		expect(
+			isUnrunnableSystemMcpServer(
+				{ key: "google-maps", isSystemProvided: true },
+				["--anything"],
+			),
+		).toBe(true);
+	});
+
+	it("leaves a tenant's own server keyed postgres alone", () => {
+		expect(
+			isUnrunnableSystemMcpServer({
+				key: "postgres",
 				isSystemProvided: false,
 			}),
 		).toBe(false);
@@ -274,8 +314,18 @@ describe("isUnrunnableSystemMcpServer (#3531)", () => {
 		// Retired, not merely hidden: the hidden list also holds servers that
 		// still run, such as memory, and none of those may be refused.
 		const retired: readonly string[] = RETIRED_SYSTEM_MCP_SERVER_KEYS;
-		for (const key of UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS) {
+		for (const key of [
+			...UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS,
+			...ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS,
+		]) {
 			expect(retired).toContain(key);
+		}
+	});
+
+	it("keeps a server in one refusal list only", () => {
+		const unrunnable: readonly string[] = UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS;
+		for (const key of ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS) {
+			expect(unrunnable).not.toContain(key);
 		}
 	});
 });

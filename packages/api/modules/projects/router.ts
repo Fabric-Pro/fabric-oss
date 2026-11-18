@@ -416,6 +416,7 @@ import {
 	setAutoAnalyzeProcedure,
 	setMeetingSyncActiveProcedure,
 	startTranscriptUploadIngestProcedure,
+	syncNowStatusProcedure,
 	triggerSyncNowProcedure,
 	unlinkMeetingProcedure,
 } from "./procedures/meeting-transcript-sync";
@@ -1291,6 +1292,7 @@ export const projectsRouter = {
 		getContext: getTranscriptContextProcedure,
 		getContent: getTranscriptContentProcedure,
 		triggerSync: triggerSyncNowProcedure,
+		syncNowStatus: syncNowStatusProcedure,
 		setAutoAnalyze: setAutoAnalyzeProcedure,
 		createUploadUrl: createTranscriptUploadUrlProcedure,
 		startUploadIngest: startTranscriptUploadIngestProcedure,

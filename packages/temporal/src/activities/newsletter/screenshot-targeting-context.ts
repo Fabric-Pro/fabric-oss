@@ -70,12 +70,22 @@ export function extractPullRequestRefs(
 	}
 	const urls = new Set<string>();
 	const numbers = new Set<number>();
-	for (const match of body.matchAll(
-		/https?:\/\/[^\s)<>"']+\/(?:pull|pull-requests|pullrequest|merge_requests)\/(\d+)/gi,
-	)) {
-		urls.add(match[0]);
-		if (isSameRepositoryUrl(match[0], repoFullName)) {
-			numbers.add(Number(match[1]));
+	// Consume each non-delimiter run once, so repeated schemes cannot restart
+	// a scan over the remainder of the same run.
+	for (const token of body.matchAll(/[^\s)<>"']+/g)) {
+		const start = token[0].search(/https?:\/\//i);
+		const url = token[0].slice(Math.max(0, start));
+		const match =
+			/^(https?:\/\/.+)\/(?:pull|pull-requests|pullrequest|merge_requests)\/(\d+)/i.exec(
+				url,
+			);
+		if (!match) {
+			continue;
+		}
+		const reference = match[0];
+		urls.add(reference);
+		if (isSameRepositoryUrl(reference, repoFullName)) {
+			numbers.add(Number(match[2]));
 		}
 	}
 	for (const match of body.matchAll(/(?:^|[\s(])#(\d{1,7})\b/g)) {

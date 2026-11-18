@@ -966,7 +966,7 @@ export type PendingBacklogProposalReviewEntryScalarFieldEnum = z.infer<typeof Pe
 
 // File: RecurringErrorSignatureScalarFieldEnum.schema.ts
 
-export const RecurringErrorSignatureScalarFieldEnumSchema = z.enum(['id', 'projectId', 'source', 'fingerprint', 'title', 'occurrenceCount', 'affectedUsers', 'components', 'firstSeenAt', 'lastSeenAt', 'detectedAt', 'lastScanAt', 'sampleExcerpts', 'sourceStoryIds', 'pendingProposalId', 'storyId', 'createdAt', 'updatedAt'])
+export const RecurringErrorSignatureScalarFieldEnumSchema = z.enum(['id', 'projectId', 'source', 'fingerprint', 'title', 'occurrenceCount', 'affectedUsers', 'components', 'firstSeenAt', 'lastSeenAt', 'detectedAt', 'lastScanAt', 'sampleExcerpts', 'sourceStoryIds', 'pendingProposalId', 'storyId', 'storyClosedSeenAt', 'createdAt', 'updatedAt'])
 
 export type RecurringErrorSignatureScalarFieldEnum = z.infer<typeof RecurringErrorSignatureScalarFieldEnumSchema>;
 
@@ -2004,7 +2004,7 @@ export type ApprovalTemplateScalarFieldEnum = z.infer<typeof ApprovalTemplateSca
 
 // File: AiUsageLogScalarFieldEnum.schema.ts
 
-export const AiUsageLogScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'projectId', 'providerConfigId', 'provider', 'modelCanonicalName', 'providerModelId', 'taskType', 'agentId', 'conversationId', 'frameId', 'workflowExecutionId', 'featureKey', 'promptVersionId', 'jobType', 'callPurpose', 'inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheCreationInputTokens', 'reasoningTokens', 'costCents', 'costMicroUsd', 'gatewayGenerationId', 'costIsActual', 'latencyMs', 'billingCategory', 'billingCustomerId', 'success', 'errorMessage', 'errorStatusCode', 'errorDetails', 'createdAt'])
+export const AiUsageLogScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'projectId', 'providerConfigId', 'provider', 'modelCanonicalName', 'providerModelId', 'taskType', 'agentId', 'conversationId', 'requestId', 'firstTokenMs', 'frameId', 'workflowExecutionId', 'featureKey', 'promptVersionId', 'jobType', 'callPurpose', 'inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheCreationInputTokens', 'reasoningTokens', 'costCents', 'costMicroUsd', 'gatewayGenerationId', 'costIsActual', 'latencyMs', 'billingCategory', 'billingCustomerId', 'success', 'errorMessage', 'errorStatusCode', 'errorDetails', 'createdAt'])
 
 export type AiUsageLogScalarFieldEnum = z.infer<typeof AiUsageLogScalarFieldEnumSchema>;
 
@@ -8385,6 +8385,7 @@ export const RecurringErrorSignatureSchema = z.object({
   sourceStoryIds: z.array(z.string()),
   pendingProposalId: z.string().nullish(),
   storyId: z.string().nullish(),
+  storyClosedSeenAt: z.date().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -12311,6 +12312,8 @@ export const AiUsageLogSchema = z.object({
   taskType: AiTaskTypeSchema.nullish(),
   agentId: z.string().nullish(),
   conversationId: z.string().nullish(),
+  requestId: z.string().nullish(),
+  firstTokenMs: z.number().int().nullish(),
   frameId: z.string().nullish(),
   workflowExecutionId: z.string().nullish(),
   featureKey: z.string().nullish(),
