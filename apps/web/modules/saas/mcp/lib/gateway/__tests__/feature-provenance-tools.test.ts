@@ -39,6 +39,7 @@ vi.mock("@repo/database", () => ({
 	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	getStoryById: mocks.getStoryById,
+	getVisibleStoryById: mocks.getStoryById,
 	getStorySummaryById: mocks.getStorySummaryById,
 	listDecisionLogThreads: mocks.listDecisionLogThreads,
 	getFeatureVersions: mocks.getFeatureVersions,

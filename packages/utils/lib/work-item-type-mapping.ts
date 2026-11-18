@@ -1,8 +1,6 @@
-// Fabric models exactly two story kinds: the "User Story" kind was retired
-// (DSU 2026-05-23) and its rows migrated to FEATURE, so the Prisma `StoryKind`
-// enum is `FEATURE | BUG`. Anything that isn't a bug must resolve to FEATURE —
-// emitting a third value makes `createStory` throw at the DB layer (#1305).
-export type StoryKindValue = "BUG" | "FEATURE";
+// Fabric's story kinds: FEATURE, BUG and INITIATIVE. A PM type maps to INITIATIVE only through
+// an explicit project mapping; every other non-bug type still resolves to FEATURE (#1305).
+export type StoryKindValue = "BUG" | "FEATURE" | "INITIATIVE";
 
 export type WorkItemTypeMapping = Partial<Record<StoryKindValue, string>>;
 
@@ -12,13 +10,22 @@ export interface ResolveWorkItemTypeOptions {
 	legacyFallback: string;
 }
 
-const STORY_KINDS: readonly StoryKindValue[] = ["BUG", "FEATURE"];
+const STORY_KINDS: readonly StoryKindValue[] = ["BUG", "FEATURE", "INITIATIVE"];
 
 export const DEFAULT_TYPE_PRIORITY: Record<StoryKindValue, readonly string[]> =
 	{
 		BUG: ["Bug", "Defect"],
 		FEATURE: ["Feature", "Epic", "User Story"],
+		INITIATIVE: ["Initiative", "Epic", "Feature"],
 	};
+
+/** PM type an Initiative uses when type mapping is off; other kinds keep the caller's fallback. */
+export function legacyWorkItemTypeFor(
+	kind: string | null | undefined,
+	fallback: string,
+): string {
+	return kind === "INITIATIVE" ? "Epic" : fallback;
+}
 
 export function resolveWorkItemType(
 	kind: StoryKindValue,
@@ -62,8 +69,8 @@ export function resolveKindFromPmType(
 	if (normalized === "bug" || normalized === "defect") {
 		return "BUG";
 	}
-	// Every non-bug PM type (User Story, Feature, Epic, Task, Issue, …) collapses
-	// to the single remaining non-bug kind.
+	// Every non-bug PM type (User Story, Feature, Epic, Task, Issue, …)
+	// collapses to FEATURE unless the project maps it to INITIATIVE.
 	return "FEATURE";
 }
 

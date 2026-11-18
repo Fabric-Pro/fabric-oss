@@ -178,6 +178,7 @@ export type AgentBuilderInitialValues = {
 	goal?: string;
 	maxIterations?: number;
 	isApiExposed?: boolean;
+	meetingExternalTools?: boolean;
 	starterMessages?: StarterMessage[];
 	workspaceDocumentFilters?: WorkspaceDocumentFilter[];
 	existingToolConnections?: Record<string, Record<string, unknown>>;
@@ -463,6 +464,9 @@ function AgentCreationForm({
 	// External API state
 	const [isApiExposed, setIsApiExposed] = useState(
 		initialValues?.isApiExposed ?? false,
+	);
+	const [meetingExternalTools, setMeetingExternalTools] = useState(
+		initialValues?.meetingExternalTools ?? false,
 	);
 	// Stable identifier for external API URLs (survives version updates)
 	const apiIdentifier = instanceSId || instanceId;
@@ -826,6 +830,7 @@ function AgentCreationForm({
 		goal,
 		maxIterations,
 		isApiExposed,
+		meetingExternalTools,
 		selectedSkillIds,
 	});
 	const initialDraft = useRef(draftFingerprint);
@@ -1037,6 +1042,7 @@ function AgentCreationForm({
 							? maxIterations
 							: undefined,
 					isApiExposed,
+					meetingExternalTools,
 					createNewVersion: true,
 				});
 
@@ -3216,6 +3222,59 @@ function AgentCreationForm({
 															)}
 														</div>
 													</div>
+
+													{isEditMode &&
+														instanceId && (
+															<div>
+																<Label className="text-sm font-medium mb-2 block">
+																	Meetings
+																</Label>
+																<div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-muted/40 p-4">
+																	<div>
+																		<p className="text-sm font-medium">
+																			Use
+																			external
+																			tools
+																			in
+																			meetings
+																		</p>
+																		<p className="text-xs text-muted-foreground">
+																			When
+																			off,
+																			Parlume
+																			answers
+																			with
+																			Fabric
+																			and
+																			this
+																			project
+																			only.
+																			Turn
+																			on
+																			to
+																			also
+																			use
+																			this
+																			agent's
+																			MCP
+																			servers,
+																			integrations
+																			and
+																			workspaces.
+																		</p>
+																	</div>
+																	<Switch
+																		aria-label="Use external tools in meetings"
+																		checked={
+																			meetingExternalTools
+																		}
+																		onCheckedChange={
+																			setMeetingExternalTools
+																		}
+																	/>
+																</div>
+															</div>
+														)}
 
 													{/* External API Access - only in edit mode */}
 													{isEditMode &&

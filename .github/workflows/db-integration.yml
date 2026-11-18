@@ -1062,6 +1062,53 @@ jobs:
           }
           EOF
 
+      - name: Run the recent time entry notes suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        # `recent-notes.integration.test.ts` is the only proof of what the
+        # recent-notes grouping returns: one note per text, dated by its
+        # latest save, newest first, without other people's, other projects'
+        # or confirmed suggestions' notes. The unit test mocks Prisma, so it
+        # can only pin the arguments the query sends.
+        run: |
+          pnpm --filter @repo/database exec vitest run             prisma/queries/time-tracking/__tests__/recent-notes.integration.test.ts             --passWithNoTests=false             --reporter=dot             --reporter=json --outputFile=recent-notes-results.json
+
+      - name: 'Guard: assert the recent time entry notes suite actually executed (zero skips)'
+        # The file self-skips via `describe.skipIf(!hasReachableDatabaseUrl())`,
+        # so a green step proves nothing on its own.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const path = "packages/database/recent-notes-results.json";
+          const report = JSON.parse(fs.readFileSync(path, "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped =
+            (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(
+            `recent-notes results: ${files} file(s), ${passed} passed, ${skipped} skipped`,
+          );
+          if (files !== 1) {
+            console.error(
+              `::error::Expected exactly 1 test file (recent-notes.integration.test.ts) to run, got ${files}.`,
+            );
+            process.exit(1);
+          }
+          if (skipped > 0) {
+            console.error(
+              `::error::${skipped} test(s) were skipped — the suite self-skipped instead of executing against Postgres, so a green run here would be a false pass.`,
+            );
+            process.exit(1);
+          }
+          // Bump this floor whenever the suite gains a test.
+          if (passed < 3) {
+            console.error(
+              `::error::Only ${passed} test(s) passed — expected at least 3. The suite failed to collect its full set.`,
+            );
+            process.exit(1);
+          }
+          EOF
+
       - name: Run the governed stage-request RLS suite against real Postgres
         env:
           RUN_DB_INTEGRATION: '1'

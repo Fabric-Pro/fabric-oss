@@ -7,7 +7,6 @@ const CURATED_SYSTEM_MCP_SERVER_KEYS = [
 	// ids (issue #2824).
 	"gitlab-official",
 	"playwright",
-	"filesystem",
 	"memory",
 	"google-drive",
 	"brave-search",
@@ -45,8 +44,10 @@ export const CURATED_SYSTEM_MCP_SERVER_KEY_SET: ReadonlySet<string> = new Set(
 // Registry cleanup deletes retired system rows only when they have no configs.
 // Referenced rows stay system-provided: the curated filter excludes them from
 // listings, and the hidden-key union refuses new configs. Existing configs keep
-// loading, running, and accepting edits through the system-server access path.
+// loading and accepting edits through the system-server access path. Runtime
+// availability is determined by the unrunnable key list.
 export const RETIRED_SYSTEM_MCP_SERVER_KEYS = [
+	"filesystem",
 	"sqlite",
 	"fetch",
 	"time",

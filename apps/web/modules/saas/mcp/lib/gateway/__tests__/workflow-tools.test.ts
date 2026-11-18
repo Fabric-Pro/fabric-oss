@@ -708,6 +708,28 @@ describe("reads", () => {
 			expect.any(Object),
 		);
 	});
+	// A meeting's pinned grant names workflows by id, never by project: the
+	// command must hold every read and run to the pinned project itself.
+	it("holds a pinned session's workflow commands to its project", async () => {
+		mocks.listWorkflowsCommand.mockResolvedValue({
+			workflows: [],
+			total: 0,
+			hasMore: false,
+		});
+		await executePlatformTool(
+			"fabric_list_workflows",
+			{},
+			sessionWith({ pinnedProjectId: PROJECT }),
+		);
+		expect(mocks.listWorkflowsCommand).toHaveBeenCalledWith(
+			expect.objectContaining({
+				...ACTOR,
+				projectRestrictionId: PROJECT,
+			}),
+			expect.any(Object),
+		);
+	});
+
 	const LISTED = {
 		id: "wf-1",
 		name: "Weekly report",

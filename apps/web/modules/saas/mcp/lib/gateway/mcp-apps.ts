@@ -557,7 +557,7 @@ function buildFabricMcpViewScript(options: {
               return ["#" + String(t), "ADO Assigned Work Item", "Assigned", "Snapshot ready"];
             }
             var keyStr = String(t.identifier || t.key || (t.id ? String(t.id).slice(0, 8) : ("#" + (idx + 1))));
-            var kindPrefix = t.kind === "BUG" ? "[BUG] " : (t.kind === "FEATURE" ? "[FEAT] " : "");
+            var kindPrefix = t.kind === "BUG" ? "[BUG] " : t.kind === "INITIATIVE" ? "[INIT] " : (t.kind === "FEATURE" ? "[FEAT] " : "");
             var statusStr = (t.status && t.status.name) ? t.status.name : String(t.status || t.state || t.draftingStage || "Open");
             var prioStr = String(t.priority || "P2").replace("_", " ");
             var taskInfo = t.taskCount != null ? (" · " + (t.completedTaskCount || 0) + "/" + t.taskCount + " tasks") : "";

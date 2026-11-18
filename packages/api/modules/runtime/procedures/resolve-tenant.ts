@@ -6,17 +6,17 @@
  */
 
 import { ORPCError } from "@orpc/server";
+import { canExecuteOrganizationAgents } from "@repo/database";
 import { z } from "zod";
+import { publicProcedure } from "../../../orpc/procedures";
 import {
-	Permissions,
-	publicProcedure,
-	requirePermission,
-} from "../../../orpc/procedures";
-import { hasAnyScope, validateApiKey } from "../lib/api-key-auth";
+	hasAnyScope,
+	requireOrganizationKeyPermission,
+	validateApiKey,
+} from "../lib/api-key-auth";
 import { TenantContextSchema } from "../types";
 
 export const resolveTenantProcedure = publicProcedure
-	.use(requirePermission(Permissions.AGENT_EXECUTE))
 	.route({
 		method: "POST",
 		path: "/runtime/resolve-tenant",
@@ -50,6 +50,11 @@ export const resolveTenantProcedure = publicProcedure
 				});
 			}
 		}
+
+		await requireOrganizationKeyPermission(
+			tenant,
+			canExecuteOrganizationAgents,
+		);
 
 		return tenant;
 	});

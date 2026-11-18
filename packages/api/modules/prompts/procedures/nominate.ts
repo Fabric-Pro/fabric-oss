@@ -38,7 +38,7 @@ import {
 const targetSchema = z.object({
 	targetKey: z.string().min(1),
 	documentType: z.string().min(1),
-	storyKind: z.enum(["FEATURE", "BUG"]).nullable().optional(),
+	storyKind: z.enum(["FEATURE", "BUG", "INITIATIVE"]).nullable().optional(),
 });
 
 /**

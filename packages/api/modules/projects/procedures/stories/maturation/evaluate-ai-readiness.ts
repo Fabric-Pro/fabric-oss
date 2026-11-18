@@ -50,11 +50,21 @@ FEATURE / USER STORY READINESS RUBRIC:
 - Do not require bug-only sections such as Steps to Reproduce, Expected Result, Actual Result, environment, or severity.
 `;
 
+const INITIATIVE_READINESS_RUBRIC = `
+INITIATIVE READINESS RUBRIC:
+- Assess whether the Initiative is clear enough to guide child Feature breakdown and roadmap planning, not sprint implementation.
+- The business problem and strategic goals are stated.
+- The scope boundary is clear: what is in and out.
+- Child Features are identified and roughly sequenced, with dependencies noted.
+- Ownership, required design input, technical feasibility and rollout dependencies are addressed or called out as open.
+- Do not penalise missing acceptance criteria, user flows or implementation detail; those belong to the child Features.
+`;
+
 const ENGINEERING_SECTION_PATTERN =
 	/^(?:dev(?:eloper)? investigation items?|dev notes?|engineering (?:notes?|tasks?|investigation)|technical (?:notes?|discovery)|spikes?)(?:\s*\([^)]*\))?$/i;
 
 const PRODUCT_SECTION_PATTERN =
-	/^(?:acceptance criteria|fix verification|feature narrative|feature story|overview|benefit hypothesis|scope|in scope|out of scope|key decisions|use cases?|requirements|functional requirements|business rules|user flows?|open questions?|assumptions|dependencies|data & validation rules|permissions(?: \/ roles)?|non-functional requirements|bug metadata|triage assessment|steps to reproduce|expected result|actual result|environment|attachments \/ evidence|impact assessment|original description from user|needs more info|supporting questions|context & related signals|likely root cause hypotheses|requirements ↔ code mismatch|pm\/ba blocking gaps|updates from re-analysis|release planning|release notes|source index)(?:\s*\([^)]*\))?$/i;
+	/^(?:acceptance criteria|fix verification|feature narrative|feature story|initiative narrative|initiative story|strategic goals|initiative requirements|child feature breakdown|dependencies & sequencing|overview|benefit hypothesis|scope|in scope|out of scope|key decisions|use cases?|requirements|functional requirements|business rules|user flows?|open questions?|assumptions|dependencies|data & validation rules|permissions(?: \/ roles)?|non-functional requirements|bug metadata|triage assessment|steps to reproduce|expected result|actual result|environment|attachments \/ evidence|impact assessment|original description from user|needs more info|supporting questions|context & related signals|likely root cause hypotheses|requirements ↔ code mismatch|pm\/ba blocking gaps|updates from re-analysis|release planning|release notes|source index)(?:\s*\([^)]*\))?$/i;
 
 type ReadinessQuestion = {
 	impactedSection: string | null;
@@ -316,9 +326,12 @@ export const evaluateAiReadinessProcedure = tenantProtectedProcedure
 			);
 
 			const isBug = story.kind === "BUG";
+			const isInitiative = story.kind === "INITIATIVE";
 			const readinessRubric = isBug
 				? BUG_READINESS_RUBRIC
-				: FEATURE_READINESS_RUBRIC;
+				: isInitiative
+					? INITIATIVE_READINESS_RUBRIC
+					: FEATURE_READINESS_RUBRIC;
 			const partitionedDescription = partitionReadinessSections(
 				story.description ?? "",
 			);
@@ -342,9 +355,17 @@ export const evaluateAiReadinessProcedure = tenantProtectedProcedure
 					: story.acceptanceCriteria
 				: "(None provided)";
 
+			const itemNoun = isBug
+				? "bug ticket"
+				: isInitiative
+					? "initiative"
+					: "user story specification";
+			const readinessTarget = isInitiative
+				? "child Feature breakdown and roadmap planning"
+				: "sprint execution";
 			const prompt = `
-You are an expert Agile Product Manager evaluating a software ${isBug ? "bug ticket" : "user story specification"}.
-Analyze the specification readiness for sprint execution based on the provided title, description, acceptance criteria, and decision log questions.
+You are an expert Agile Product Manager evaluating a software ${itemNoun}.
+Analyze the specification readiness for ${readinessTarget} based on the provided title, description, acceptance criteria, and decision log questions.
 
 Work Item Kind: ${story.kind}
 Work Item Title: ${story.title}

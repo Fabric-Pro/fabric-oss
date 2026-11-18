@@ -67,15 +67,21 @@ describe("toParlumeAutoJoinState", () => {
 describe("toConfigRows", () => {
 	beforeEach(() => vi.clearAllMocks());
 
-	it("maps id to linkedMeetingId and preserves subject and includedInDigest", () => {
+	it("maps id to linkedMeetingId and preserves subject, includedInDigest and confidential", () => {
 		const rows = toConfigRows(
 			[
 				{
 					id: "lm1",
 					subject: "Fabric Dev Sync",
 					includedInDigest: true,
+					confidential: false,
 				},
-				{ id: "lm2", subject: null, includedInDigest: false },
+				{
+					id: "lm2",
+					subject: null,
+					includedInDigest: false,
+					confidential: true,
+				},
 			],
 			new Map(),
 		);
@@ -85,12 +91,14 @@ describe("toConfigRows", () => {
 				linkedMeetingId: "lm1",
 				subject: "Fabric Dev Sync",
 				includedInDigest: true,
+				confidential: false,
 				lastMeetingDate: null,
 			},
 			{
 				linkedMeetingId: "lm2",
 				subject: null,
 				includedInDigest: false,
+				confidential: true,
 				lastMeetingDate: null,
 			},
 		]);
@@ -99,8 +107,18 @@ describe("toConfigRows", () => {
 	it("preserves input order", () => {
 		const rows = toConfigRows(
 			[
-				{ id: "z", subject: "Zzz", includedInDigest: false },
-				{ id: "a", subject: "Aaa", includedInDigest: true },
+				{
+					id: "z",
+					subject: "Zzz",
+					includedInDigest: false,
+					confidential: false,
+				},
+				{
+					id: "a",
+					subject: "Aaa",
+					includedInDigest: true,
+					confidential: false,
+				},
 			],
 			new Map(),
 		);
@@ -115,8 +133,18 @@ describe("toConfigRows", () => {
 	it("includes each series' latest meeting date, null when never synced", () => {
 		const rows = toConfigRows(
 			[
-				{ id: "lm1", subject: "DSU", includedInDigest: true },
-				{ id: "lm2", subject: "Retro", includedInDigest: true },
+				{
+					id: "lm1",
+					subject: "DSU",
+					includedInDigest: true,
+					confidential: false,
+				},
+				{
+					id: "lm2",
+					subject: "Retro",
+					includedInDigest: true,
+					confidential: false,
+				},
 			],
 			new Map([["lm1", new Date("2026-04-30T18:30:00Z")]]),
 		);

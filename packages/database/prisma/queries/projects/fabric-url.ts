@@ -42,10 +42,16 @@ export async function buildFabricStoryUrl(args: {
 
 /** The project tabs a link can open, by the id the project page reads from `?tab=`. */
 export type FabricProjectTab =
+	| "overview"
+	| "daily-brief"
+	| "meeting-digest"
+	| "release-notes"
+	| "test-cases"
 	| "stories"
 	| "decisions"
 	| "documents"
-	| "context";
+	| "context"
+	| "coding-instructions";
 
 /**
  * `/app/{slug}/projects/{id}` for an organization's project, `/app/projects/{id}`

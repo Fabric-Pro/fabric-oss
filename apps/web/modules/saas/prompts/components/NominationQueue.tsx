@@ -5,6 +5,7 @@ import {
 	listPromptActions,
 	promptActionId,
 	promptDocumentTypeLabel,
+	storyKindLabel,
 } from "@repo/utils/prompt-action-catalog";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
@@ -46,7 +47,7 @@ import { ActionMultiSelect } from "./ActionMultiSelect";
 type NominationTarget = {
 	targetKey: string;
 	documentType: string;
-	storyKind: "FEATURE" | "BUG" | null;
+	storyKind: "FEATURE" | "BUG" | "INITIATIVE" | null;
 };
 
 type Nomination = {
@@ -78,9 +79,8 @@ function proposedActionIds(nomination: Nomination): string[] {
 function actionLabel(target: NominationTarget): string {
 	const agent = findPromptAgentTarget(target.targetKey);
 	const doc = promptDocumentTypeLabel(target.documentType);
-	const kind = target.storyKind
-		? ` (${target.storyKind === "BUG" ? "Bug" : "Feature"})`
-		: "";
+	const label = storyKindLabel(target.storyKind);
+	const kind = label ? ` (${label})` : "";
 	return agent ? `${agent.label} — ${doc}${kind}` : `${doc}${kind}`;
 }
 

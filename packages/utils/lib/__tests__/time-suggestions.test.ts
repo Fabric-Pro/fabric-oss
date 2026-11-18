@@ -333,6 +333,26 @@ describe("groupTimeEvidence", () => {
 		expect(only.evidence).toHaveLength(2);
 	});
 
+	it("merges a calendar meeting with an overlapping meeting-agent session on the same project", () => {
+		const [only, ...rest] = group([
+			span("m-1", "2026-11-03T09:05Z", "2026-11-03T09:50Z"),
+			span("c-1", "2026-11-03T09:00Z", "2026-11-03T10:00Z", {
+				kind: "CALENDAR_EVENT",
+			}),
+		]);
+		expect(rest).toEqual([]);
+		expect(only).toMatchObject({
+			activity: "MEETINGS_COLLABORATION",
+			durationMinutes: 60,
+			startAt: at("2026-11-03T09:00Z"),
+			stopAt: at("2026-11-03T10:00Z"),
+		});
+		expect(only.evidence.map((item) => item.kind)).toEqual([
+			"MEETING_SESSION",
+			"CALENDAR_EVENT",
+		]);
+	});
+
 	it("gives separate spans their total only", () => {
 		const [only] = group([
 			span("m-1", "2026-11-03T09:00Z", "2026-11-03T10:00Z"),
@@ -477,6 +497,7 @@ describe("activityForEvidenceKind", () => {
 			"TESTING",
 			"TESTING",
 			"DEVELOPMENT",
+			"MEETINGS_COLLABORATION",
 		]);
 	});
 });
@@ -520,6 +541,29 @@ describe("wording", () => {
 	it("explains a suggestion by its evidence", () => {
 		expect(timeSuggestionExplanation(summaries)).toBe(
 			"Suggested from 1 meeting and 2 recorded test results.",
+		);
+	});
+
+	it("names calendar meetings apart from meeting-agent sessions", () => {
+		const calendar = summarizeTimeEvidence([
+			{
+				kind: "CALENDAR_EVENT",
+				occurredAt: at("2026-11-03T09:00Z"),
+				endAt: at("2026-11-03T09:30Z"),
+			},
+			{
+				kind: "CALENDAR_EVENT",
+				occurredAt: at("2026-11-03T10:00Z"),
+				endAt: at("2026-11-03T10:30Z"),
+			},
+			{
+				kind: "MEETING_SESSION",
+				occurredAt: at("2026-11-03T11:00Z"),
+				endAt: at("2026-11-03T11:45Z"),
+			},
+		]);
+		expect(timeSuggestionExplanation(calendar)).toBe(
+			"Suggested from 1 meeting and 2 calendar meetings.",
 		);
 	});
 

@@ -922,7 +922,6 @@ it.each(["Direct stream-route activity", "Parlume in-process"])(
 						history: [],
 						gathered: Promise.resolve([
 							{ mcpToolInfo: [] } as any,
-							{ context: "", memoryCount: 0 },
 							{ context: "", chunkCount: 0 },
 						]),
 					});

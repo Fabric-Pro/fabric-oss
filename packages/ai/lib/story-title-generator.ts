@@ -3,6 +3,7 @@ import { db, getBoundPromptForAgent } from "@repo/database";
 import { logger } from "@repo/logs";
 import { renderTemplate, type TemplateFormat } from "@repo/utils";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import { storyKindLabel } from "@repo/utils/prompt-action-catalog";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import {
@@ -36,7 +37,7 @@ export type StoryTitleSource =
 	| "description-fallback"
 	| "untitled-fallback";
 
-export type StoryKindForTitle = "FEATURE" | "BUG";
+export type StoryKindForTitle = "FEATURE" | "BUG" | "INITIATIVE";
 
 /**
  * Caller-supplied creation surface. Threaded into the Prompt Library template
@@ -345,7 +346,7 @@ export async function generateStoryTitleFromDescription(
 			format: renderFormat,
 			template: renderTemplateBody,
 			variables: {
-				work_item_type: kind === "BUG" ? "Bug" : "Feature",
+				work_item_type: storyKindLabel(kind) ?? "Feature",
 				project_name: context.projectName ?? "",
 				creation_source: context.creationSource ?? "UI",
 				description: truncatedDescription,

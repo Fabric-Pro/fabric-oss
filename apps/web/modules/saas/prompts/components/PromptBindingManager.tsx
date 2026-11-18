@@ -50,13 +50,13 @@ const getDocTypeLabel = promptDocumentTypeLabel;
 
 const AGENT_TARGETS = PROMPT_AGENT_TARGETS;
 
-type KindFilter = "ANY" | Extract<StoryKind, "FEATURE" | "BUG">;
+type KindFilter = "ANY" | StoryKind;
 
 /** Mirrors `PromptScope` — the tier a binding is written at. */
 type BindingScope = "SYSTEM" | "ORG" | "USER";
 
 /** The dialog's "ANY" maps to a non-stage binding, i.e. `storyKind IS NULL`. */
-function toStoryKind(kind: KindFilter): "FEATURE" | "BUG" | null {
+function toStoryKind(kind: KindFilter): StoryKind | null {
 	return kind === "ANY" ? null : kind;
 }
 
@@ -452,12 +452,15 @@ export function PromptBindingManager({
 									<SelectItem value="BUG">
 										Bug stage
 									</SelectItem>
+									<SelectItem value="INITIATIVE">
+										Initiative stage
+									</SelectItem>
 								</SelectContent>
 							</Select>
 							<p className="text-xs text-muted-foreground">
 								{nonStageAgent
 									? "This agent runs outside the per-kind stage flow, so it always uses a non-stage binding."
-									: "Stage bindings are scoped per kind so a Feature and a Bug at the same stage can use different prompts."}
+									: "Stage bindings are scoped per kind so a Feature, a Bug and an Initiative at the same stage can use different prompts."}
 							</p>
 						</div>
 

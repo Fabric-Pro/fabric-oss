@@ -30,6 +30,7 @@ vi.mock("@repo/database", () => ({
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	resolveProjectAccess: mocks.resolveProjectAccess,
 	getStoryById: mocks.getStoryById,
+	getVisibleStoryById: mocks.getStoryById,
 	moveStory: mocks.moveStory,
 	StoryMoveTargetNotFoundError: class StoryMoveTargetNotFoundError extends Error {},
 	hasPermission: (permissions: string[], required: string) =>

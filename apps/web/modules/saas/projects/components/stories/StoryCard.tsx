@@ -96,6 +96,7 @@ import {
 	summarizeTaskSessionVisibility,
 } from "../../lib/implementation-session-runtime";
 import { formatLastEditSource } from "../../lib/last-edit-source-copy";
+import { STORY_KIND_LABELS, storyKindNoun } from "../../lib/roadmap-filters";
 import {
 	getPendingStageRequest,
 	getReadinessErrorGaps,
@@ -562,13 +563,10 @@ function StoryCardImpl({
 			});
 		},
 		onError: (error) => {
-			toast.error(
-				`Failed to rename ${story.kind === "BUG" ? "bug" : "feature"}`,
-				{
-					description:
-						error instanceof Error ? error.message : String(error),
-				},
-			);
+			toast.error(`Failed to rename ${storyKindNoun(story.kind)}`, {
+				description:
+					error instanceof Error ? error.message : String(error),
+			});
 		},
 	});
 
@@ -755,7 +753,7 @@ function StoryCardImpl({
 			toast.error(
 				error instanceof Error
 					? error.message
-					: `Failed to update ${story.kind === "BUG" ? "bug" : "feature"}`,
+					: `Failed to update ${storyKindNoun(story.kind)}`,
 			);
 		},
 		onSuccess: (data, targetStage) => {
@@ -770,8 +768,8 @@ function StoryCardImpl({
 			}
 			toast.success(
 				targetStage === "CLOSED"
-					? `${story.kind === "BUG" ? "Bug" : "Feature"} hidden`
-					: `${story.kind === "BUG" ? "Bug" : "Feature"} unhidden`,
+					? `${STORY_KIND_LABELS[story.kind]} hidden`
+					: `${STORY_KIND_LABELS[story.kind]} unhidden`,
 			);
 		},
 		onSettled: () => {
@@ -1814,7 +1812,7 @@ function StoryCardImpl({
 								className="size-3.5 shrink-0"
 							/>
 							<span className="sr-only">
-								{tRow(story.kind === "BUG" ? "bug" : "feature")}
+								{tRow(storyKindNoun(story.kind))}
 							</span>
 							<span className="shrink-0 whitespace-nowrap tabular-nums">
 								<span aria-hidden>#</span>
@@ -1889,17 +1887,16 @@ function StoryCardImpl({
 														e.stopPropagation()
 													}
 													className="shrink-0 rounded p-0.5 opacity-0 group-hover/title:opacity-50 hover:!opacity-100 transition-opacity cursor-pointer text-muted-foreground"
-													aria-label={`Rename ${story.kind === "BUG" ? "bug" : "feature"}`}
+													aria-label={`Rename ${storyKindNoun(story.kind)}`}
 												>
 													<PencilIcon className="size-3" />
 												</button>
 											</TooltipTrigger>
 											<TooltipContent>
 												{tCommon("clickToRename", {
-													subject:
-														story.kind === "BUG"
-															? "bug"
-															: "feature",
+													subject: storyKindNoun(
+														story.kind,
+													),
 												})}
 											</TooltipContent>
 										</Tooltip>
@@ -2417,29 +2414,31 @@ function StoryCardImpl({
 
 									<DropdownMenuSeparator />
 									{/* F-171: convert-type — flip BUG ↔ FEATURE */}
-									<DropdownMenuItem
-										disabled={convertBlockedByDefer}
-										onClick={(e) => {
-											e.stopPropagation();
-											setConvertDialogOpen(true);
-										}}
-									>
-										<ArrowLeftRightIcon className="size-4 mr-2" />
-										<span className="flex flex-col">
-											<span>
-												{story.kind === "BUG"
-													? "Change to feature"
-													: "Change to bug"}
-											</span>
-											{convertBlockedByDefer ? (
-												<span className="max-w-56 text-muted-foreground text-xs">
-													{tConvert(
-														"deferredBlocked",
-													)}
+									{story.kind !== "INITIATIVE" && (
+										<DropdownMenuItem
+											disabled={convertBlockedByDefer}
+											onClick={(e) => {
+												e.stopPropagation();
+												setConvertDialogOpen(true);
+											}}
+										>
+											<ArrowLeftRightIcon className="size-4 mr-2" />
+											<span className="flex flex-col">
+												<span>
+													{story.kind === "BUG"
+														? "Change to feature"
+														: "Change to bug"}
 												</span>
-											) : null}
-										</span>
-									</DropdownMenuItem>
+												{convertBlockedByDefer ? (
+													<span className="max-w-56 text-muted-foreground text-xs">
+														{tConvert(
+															"deferredBlocked",
+														)}
+													</span>
+												) : null}
+											</span>
+										</DropdownMenuItem>
+									)}
 									<DropdownMenuItem
 										disabled={closeReopenMutation.isPending}
 										onClick={(e) => {
@@ -2455,12 +2454,8 @@ function StoryCardImpl({
 											<CircleSlashIcon className="size-4 mr-2" />
 										)}
 										{isClosed
-											? story.kind === "BUG"
-												? "Unhide bug"
-												: "Unhide feature"
-											: story.kind === "BUG"
-												? "Hide bug"
-												: "Hide feature"}
+											? `Unhide ${storyKindNoun(story.kind)}`
+											: `Hide ${storyKindNoun(story.kind)}`}
 									</DropdownMenuItem>
 									<DropdownMenuItem
 										onClick={(e) => {

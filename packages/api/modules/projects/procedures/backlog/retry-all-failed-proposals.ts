@@ -11,8 +11,11 @@ import {
 	inferDedupFamily,
 	listFailedProposals,
 	markProposalApplyDispatched,
+	readRejectedChangeIndexes,
 	recordProposalDuplicateResolution,
 	returnFailedProposalToReview,
+	settleCreatesOnlyApply,
+	sourceMetadataEquals,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
 import { describeSyncErrorForUser } from "@repo/temporal/pm-sync-user-error";
@@ -190,11 +193,14 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 							fresh.applyReviewId!,
 						)
 					: null;
+			// The source metadata holds the items moved to Rejected, so a
+			// claim also fails when an item was rejected after this read.
 			const retryWhere = {
 				id: fresh.id,
 				status: "FAILED" as const,
 				applyWorkflowId: fresh.applyWorkflowId ?? null,
 				applyReviewId: fresh.applyReviewId ?? null,
+				sourceMetadata: sourceMetadataEquals(fresh.sourceMetadata),
 			};
 			if (
 				fresh.source === "ROADMAP_RECOMMENDATION" ||
@@ -242,6 +248,9 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 			for (const index of fresh.appliedChangeIndexes ?? []) {
 				alreadyApplied.add(index);
 			}
+			const rejected = new Set(
+				readRejectedChangeIndexes(fresh.sourceMetadata),
+			);
 			const replayEntries = review
 				? review.entries
 						.filter((entry) => entry.selected)
@@ -302,7 +311,7 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 					});
 					continue proposalLoop;
 				}
-				if (alreadyApplied.has(i)) {
+				if (alreadyApplied.has(i) || rejected.has(i)) {
 					continue;
 				}
 
@@ -365,25 +374,38 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 					continue;
 				}
 				await recordDuplicates();
+				// The retry replays only the reviewer's selection: items nobody
+				// decided on yet send the row back to review.
+				const settled = await settleCreatesOnlyApply({
+					proposalId: fresh.id,
+					where: { status: "APPLIED" },
+				});
+				const backInReview = settled.status === "pending";
 				// This terminal flip bypasses the apply workflow's finalize
 				// activity, so finalize any session-history row directly (best-
 				// effort, no-op when none exists) to avoid a stuck APPLYING row.
-				try {
-					await finalizeBacklogUpdateSession({
-						pendingProposalId: fresh.id,
-						status: "APPLIED",
-					});
-				} catch {
-					// Non-fatal: a stuck session row only affects the history tab.
+				// A row back in review is not applied: its session stays open.
+				if (!backInReview) {
+					try {
+						await finalizeBacklogUpdateSession({
+							pendingProposalId: fresh.id,
+							status: "APPLIED",
+						});
+					} catch {
+						// Non-fatal: a stuck session row only affects the history tab.
+					}
 				}
+				const onRoadmap =
+					dedupCollisionCount > 0
+						? `${dedupCollisionCount} change(s) already on roadmap.`
+						: "Already on roadmap.";
 				results.push({
 					proposalId: fresh.id,
 					workflowId: null,
 					status: "dedup_only_applied",
-					message:
-						dedupCollisionCount > 0
-							? `${dedupCollisionCount} change(s) already on roadmap.`
-							: "Already on roadmap.",
+					message: backInReview
+						? `${onRoadmap} The remaining items are back in review.`
+						: onRoadmap,
 				});
 				continue;
 			}

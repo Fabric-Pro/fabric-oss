@@ -9,9 +9,11 @@
  *     budget, `INVALID_REQUEST` for bad props, `NO_MESSAGE` without a new
  *     user message, the route's own `FORBIDDEN`/`NOT_FOUND` for the agent
  *     being edited, `FORBIDDEN` for a registered agent of a deleted
- *     organization (which the route admits), and `FORBIDDEN` for a new
- *     agent, named by its id or its entity type, in
- *     an organization the caller is not a member of;
+ *     organization (which the route admits), the route's `NOT_FOUND` for an
+ *     instance of another organization than the one on screen, and the
+ *     route's `FORBIDDEN` for an instance or a new agent, named by its id or
+ *     its entity type, to a caller whose role there lacks
+ *     AGENT_TEMPLATE_MANAGE (a member, a viewer, or no membership);
  *   - an admitted turn runs the real Sidekick tools on the agent's own
  *     organization (an instance's, a registered agent's, the organization on
  *     screen for a new agent), billed as the route bills it, inside the
@@ -366,7 +368,8 @@ beforeEach(() => {
 		remaining: 19,
 		resetInSeconds: 60,
 	});
-	m.getOrganizationMembership.mockResolvedValue(membership());
+	// An admin: an instance and an unsaved agent need AGENT_TEMPLATE_MANAGE.
+	m.getOrganizationMembership.mockResolvedValue(membership(null, "admin"));
 	m.countPendingSuggestionsByKind.mockResolvedValue(0);
 	m.markRegisteredAgentSuggestionsOutdated.mockResolvedValue(undefined);
 	m.createRegisteredAgentSuggestions.mockResolvedValue([
@@ -659,14 +662,11 @@ describe("SidekickEngine turn", () => {
 		await verified(events);
 	});
 
-	it("serves an instance in another organization under that organization", async () => {
+	it("serves an instance of the organization on screen to an admin under that organization", async () => {
 		m.findInstance.mockResolvedValue({
 			userId: "user-example-9",
-			organizationId: "org-example-2",
+			organizationId: ORG,
 		});
-		m.getOrganizationMembership.mockResolvedValue(
-			membership(null, "viewer"),
-		);
 		useModel(suggestingModel());
 
 		const events = await run({
@@ -676,22 +676,66 @@ describe("SidekickEngine turn", () => {
 		});
 
 		expect(events.at(-1)).toMatchObject({ type: EventType.RUN_FINISHED });
-		expect(m.getOrganizationMembership).toHaveBeenCalledWith(
-			"org-example-2",
-			USER,
-		);
+		expect(m.getOrganizationMembership).toHaveBeenCalledWith(ORG, USER);
 		expect(m.getAIModelWithMetadata).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ organizationId: "org-example-2" }),
+			expect.objectContaining({ organizationId: ORG }),
 		);
 		expect(tools).toHaveBeenCalledWith(
 			expect.objectContaining({
 				agentId: "instance-example-1",
 				entityType: "instance",
-				organizationId: "org-example-2",
+				organizationId: ORG,
 			}),
 		);
 	});
+
+	it("refuses, as the route does, an instance of another organization than the one on screen", async () => {
+		m.findInstance.mockResolvedValue({
+			userId: "user-example-9",
+			organizationId: "org-example-2",
+		});
+		useModel(suggestingModel());
+
+		const events = await run({
+			agentId: "instance-example-1",
+			entityType: "instance",
+			formSnapshot: SNAPSHOT,
+		});
+
+		expect(events).toEqual(
+			refusal("NOT_FOUND", "Agent not found or access denied"),
+		);
+		expectNoModelCall();
+	});
+
+	it.each([
+		["a member", "member"],
+		["a viewer", "viewer"],
+	])(
+		"refuses, as the route does, an instance or a new agent to %s, whose role lacks AGENT_TEMPLATE_MANAGE",
+		async (_label, role) => {
+			m.getOrganizationMembership.mockResolvedValue(
+				membership(null, role),
+			);
+			m.findInstance.mockResolvedValue({
+				userId: USER,
+				organizationId: ORG,
+			});
+			useModel(suggestingModel());
+
+			const instance = await run({
+				agentId: "instance-example-1",
+				entityType: "instance",
+				formSnapshot: SNAPSHOT,
+			});
+			const unsaved = await run(NEW_AGENT);
+
+			expect(instance).toEqual(refusal("FORBIDDEN", "Forbidden"));
+			expect(unsaved).toEqual(refusal("FORBIDDEN", "Forbidden"));
+			expectNoModelCall();
+		},
+	);
 
 	it("serves a registered organization agent to a member under the agent's organization, saving its suggestions", async () => {
 		const agent = {
@@ -701,6 +745,9 @@ describe("SidekickEngine turn", () => {
 			userId: "user-example-9",
 		};
 		m.getRegisteredAgentById.mockResolvedValue(agent);
+		m.getOrganizationMembership.mockResolvedValue(
+			membership(null, "member"),
+		);
 		useModel(suggestingModel());
 
 		const events = await run({

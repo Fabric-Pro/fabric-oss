@@ -8,7 +8,8 @@
  * literals that match the `TimeEvidenceKind` enum in the Prisma schema.
  *
  * A duration only ever comes from evidence that carries a time span: a meeting
- * the member had the meeting agent join. A suggestion built only from single
+ * the meeting agent joined, or a Teams meeting in the member's own calendar
+ * that they organized, accepted or marked tentative. A suggestion built only from single
  * instants (an edit, a recorded result, a pull request push, a test run they
  * started, whose length is the machine's runtime) has no duration, and the
  * member enters one.
@@ -32,6 +33,7 @@ export const TIME_EVIDENCE_KIND_VALUES = [
 	"TEST_RESULT",
 	"TEST_CASE_ACTIVITY",
 	"PULL_REQUEST",
+	"CALENDAR_EVENT",
 ] as const;
 
 export type TimeEvidenceKind = (typeof TIME_EVIDENCE_KIND_VALUES)[number];
@@ -229,6 +231,7 @@ function totalMinutes(intervals: readonly TimeInterval[]): number {
 export function activityForEvidenceKind(kind: TimeEvidenceKind): TimeActivity {
 	switch (kind) {
 		case "MEETING_SESSION":
+		case "CALENDAR_EVENT":
 			return "MEETINGS_COLLABORATION";
 		case "TEST_RUN":
 		case "TEST_RESULT":
@@ -461,6 +464,7 @@ const EVIDENCE_NOUNS: Readonly<
 	TEST_RESULT: { one: "recorded test result", many: "recorded test results" },
 	TEST_CASE_ACTIVITY: { one: "test case change", many: "test case changes" },
 	PULL_REQUEST: { one: "pull request push", many: "pull request pushes" },
+	CALENDAR_EVENT: { one: "calendar meeting", many: "calendar meetings" },
 };
 
 /** `3 recorded test results`. */

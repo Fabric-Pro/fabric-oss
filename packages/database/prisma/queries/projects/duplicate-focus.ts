@@ -91,7 +91,7 @@ export type PairFocusKind = (typeof PAIR_FOCUS_KINDS)[number];
  * `StoryKind` enum; a row without one is treated as not-a-feature, so it
  * keeps the whole-document behaviour. */
 export type FocusStory = {
-	kind?: "FEATURE" | "BUG" | null;
+	kind?: "FEATURE" | "BUG" | "INITIATIVE" | null;
 	description?: string | null;
 	acceptanceCriteria?: string | null;
 };

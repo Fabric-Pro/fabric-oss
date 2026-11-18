@@ -48,11 +48,28 @@ function rangeStart(range: UsageRange): Date | null {
 	return d;
 }
 
-function buildUsageWhere(projectId: string, range: UsageRange): Prisma.Sql {
+/**
+ * A project's usage. `hiddenFeatureKey` leaves out one feature's calls, for a
+ * caller who may not see its spend.
+ */
+type UsageScope = {
+	projectId: string;
+	range: UsageRange;
+	hiddenFeatureKey?: string;
+};
+
+function buildUsageWhere({
+	projectId,
+	range,
+	hiddenFeatureKey,
+}: UsageScope): Prisma.Sql {
 	const since = rangeStart(range);
+	const hidden = hiddenFeatureKey
+		? Prisma.sql` AND "featureKey" IS DISTINCT FROM ${hiddenFeatureKey}`
+		: Prisma.empty;
 	return since
-		? Prisma.sql`WHERE "projectId" = ${projectId} AND "createdAt" >= ${since}`
-		: Prisma.sql`WHERE "projectId" = ${projectId}`;
+		? Prisma.sql`WHERE "projectId" = ${projectId} AND "createdAt" >= ${since}${hidden}`
+		: Prisma.sql`WHERE "projectId" = ${projectId}${hidden}`;
 }
 
 // Dashboard sums use costMicroUsd (1μ$ = $10^-6) instead of the Int cents
@@ -80,12 +97,9 @@ export interface ProjectUsageSummary {
 	byBillingCategory: Record<BillingBucketKey, UsageBucketTotals>;
 }
 
-export async function getProjectUsageSummary(params: {
-	projectId: string;
-	range: UsageRange;
-}): Promise<ProjectUsageSummary> {
-	const { projectId, range } = params;
-
+export async function getProjectUsageSummary(
+	params: UsageScope,
+): Promise<ProjectUsageSummary> {
 	const rows = await db.$queryRaw<
 		Array<{
 			billingCategory: AiUsageBillingCategory | null;
@@ -106,7 +120,7 @@ export async function getProjectUsageSummary(params: {
 			COALESCE(SUM("totalTokens"), 0)::bigint as "totalTokens",
 			COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0)::bigint as "successCalls"
 		FROM "ai_usage_log"
-		${buildUsageWhere(projectId, range)}
+		${buildUsageWhere(params)}
 		GROUP BY "billingCategory"
 	`);
 
@@ -161,12 +175,10 @@ export interface ProjectUsageBreakdownItem {
 	totalTokens: number;
 }
 
-export async function getProjectUsageBreakdown(params: {
-	projectId: string;
-	range: UsageRange;
-	groupBy: UsageGroupBy;
-}): Promise<ProjectUsageBreakdownItem[]> {
-	const { projectId, range, groupBy } = params;
+export async function getProjectUsageBreakdown(
+	params: UsageScope & { groupBy: UsageGroupBy },
+): Promise<ProjectUsageBreakdownItem[]> {
+	const { groupBy } = params;
 
 	const column: Record<UsageGroupBy, Prisma.Sql> = {
 		model: Prisma.sql`COALESCE("modelCanonicalName", "providerModelId")`,
@@ -190,7 +202,7 @@ export async function getProjectUsageBreakdown(params: {
 			COUNT(*)::bigint as calls,
 			COALESCE(SUM("totalTokens"), 0)::bigint as "totalTokens"
 		FROM "ai_usage_log"
-		${buildUsageWhere(projectId, range)}
+		${buildUsageWhere(params)}
 		GROUP BY ${column[groupBy]}
 		ORDER BY "costMicroUsd" DESC
 		LIMIT 50
@@ -218,12 +230,10 @@ export interface ProjectUsageTimeSeriesPoint {
 	calls: number;
 }
 
-export async function getProjectUsageTimeSeries(params: {
-	projectId: string;
-	range: UsageRange;
-	bucket: UsageBucket;
-}): Promise<ProjectUsageTimeSeriesPoint[]> {
-	const { projectId, range, bucket } = params;
+export async function getProjectUsageTimeSeries(
+	params: UsageScope & { bucket: UsageBucket },
+): Promise<ProjectUsageTimeSeriesPoint[]> {
+	const { range, bucket } = params;
 	// Force weekly buckets when range=all so old projects don't return
 	// hundreds of daily points.
 	const truncUnit = bucket === "week" || range === "all" ? "week" : "day";
@@ -242,7 +252,7 @@ export async function getProjectUsageTimeSeries(params: {
 			COALESCE(SUM("totalTokens"), 0)::bigint as "totalTokens",
 			COUNT(*)::bigint as calls
 		FROM "ai_usage_log"
-		${buildUsageWhere(projectId, range)}
+		${buildUsageWhere(params)}
 		GROUP BY "bucketStart"
 		ORDER BY "bucketStart" ASC
 	`);
@@ -282,12 +292,22 @@ export async function getProjectUsageRecent(params: {
 	projectId: string;
 	limit?: number;
 	cursor?: string;
+	hiddenFeatureKey?: string;
 }): Promise<{ items: ProjectUsageRecentItem[]; nextCursor: string | null }> {
-	const { projectId, limit = 25, cursor } = params;
+	const { projectId, limit = 25, cursor, hiddenFeatureKey } = params;
 	const safeLimit = Math.min(Math.max(limit, 1), 100);
 
 	const rows = await db.aiUsageLog.findMany({
-		where: { projectId },
+		// `not` alone would also drop calls with no feature key.
+		where: hiddenFeatureKey
+			? {
+					projectId,
+					OR: [
+						{ featureKey: null },
+						{ featureKey: { not: hiddenFeatureKey } },
+					],
+				}
+			: { projectId },
 		// Stable tie-breaker by id: rows created in the same timestamp bucket
 		// would otherwise have nondeterministic order across pages, so cursor
 		// pagination could skip or duplicate them.

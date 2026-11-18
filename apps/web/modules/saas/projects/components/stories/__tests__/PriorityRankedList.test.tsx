@@ -335,6 +335,24 @@ describe("bug / feature switcher", () => {
 		expect(screen.queryByText("A feature")).toBeNull();
 	});
 
+	it("does not count Initiatives as bugs in switcher counts", async () => {
+		renderList([
+			story({ id: "f1", kind: "FEATURE", title: "A feature" }),
+			story({ id: "b1", kind: "BUG", title: "A bug" }),
+			story({
+				id: "i1",
+				kind: "INITIATIVE",
+				title: "An initiative",
+			}),
+		]);
+
+		await waitFor(() => expect(screen.getByText("A feature")).toBeTruthy());
+		expect(
+			screen.getByRole("button", { name: /Features \(1\)/ }),
+		).toBeTruthy();
+		expect(screen.getByRole("button", { name: /Bugs \(1\)/ })).toBeTruthy();
+	});
+
 	it("offers the other kind when the selected one is empty", async () => {
 		renderList([story({ id: "f1", kind: "FEATURE", title: "A feature" })]);
 

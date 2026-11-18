@@ -23,6 +23,7 @@ vi.mock("@repo/database", () => ({
 		},
 		projectRepositoryIntegration: { findMany: vi.fn() },
 	},
+	findConfidentialTranscriptContextIds: async () => new Set<string>(),
 	getProjectRagSettings: vi.fn(),
 	getRetrievableContextById: vi.fn(),
 	getRetrievableConversationBundleById: vi.fn(),

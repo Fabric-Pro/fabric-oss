@@ -1,14 +1,12 @@
 import { ORPCError } from "@orpc/server";
-import {
-	getAppliedChangeIndexes,
-	getPendingBacklogProposal,
-} from "@repo/database";
+import { getPendingBacklogProposal } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { loadProposalItemOutcomes } from "../../lib/proposal-inbox-items";
 import { resolveTeamsChatSourceLink } from "../../lib/teams-chat-source-link";
 
 /**
@@ -21,7 +19,11 @@ import { resolveTeamsChatSourceLink } from "../../lib/teams-chat-source-link";
  * `createdChangeIndexes` lists the changes this proposal actually applied,
  * from the application table. It differs from the `appliedChangeIndexes`
  * mirror, which also counts a recommended feature skipped because its title
- * was already on the Roadmap.
+ * was already on the Roadmap. `applications` carries each applied change's
+ * entity, and `rejectedChangeIndexes` the items moved to Rejected one by one.
+ * `resolvedItems` and `remainingCount` are the server's per-item state, and
+ * `proposalRevision` is sent back by an approval (see
+ * `loadProposalItemOutcomes`).
  */
 export const getPendingProposalProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_READ))
@@ -48,10 +50,8 @@ export const getPendingProposalProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const createdChangeIndexes = Array.from(
-			await getAppliedChangeIndexes(proposal.id),
-		).sort((a, b) => a - b);
+		const outcomes = await loadProposalItemOutcomes(proposal);
 		const teamsChatSourceLink = await resolveTeamsChatSourceLink(proposal);
 
-		return { ...proposal, createdChangeIndexes, teamsChatSourceLink };
+		return { ...proposal, ...outcomes, teamsChatSourceLink };
 	});

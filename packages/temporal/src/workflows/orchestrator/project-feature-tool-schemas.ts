@@ -20,8 +20,8 @@ export const PROJECT_FEATURE_LIST_INPUT_SCHEMA = {
 		},
 		kind: {
 			type: "string",
-			enum: ["FEATURE", "BUG"],
-			description: "Filter by work-item type. Omit to return both.",
+			enum: ["FEATURE", "BUG", "INITIATIVE"],
+			description: "Filter by work-item type. Omit to return all.",
 		},
 		search: {
 			type: "string",

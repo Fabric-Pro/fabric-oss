@@ -5,8 +5,11 @@ import { isRecord } from "./parlume-stream-auth";
 // every post carries a short tag ("[P7]"), and the post counts as delivered
 // only once the meeting chat shows it back to the bridge.
 
-/** The most a post may hold, tag included. */
-const PARLUME_CHAT_MAX_CHARS = 4_000;
+/**
+ * The most a post may hold, tag included: about a screen of the meeting chat.
+ * A longer answer is shortened, with how to ask for the rest.
+ */
+const PARLUME_CHAT_MAX_CHARS = 1_500;
 /**
  * How long a post may take to appear in the meeting chat. Short posts echo
  * back in four to five seconds; a long one has taken over eight.
@@ -14,6 +17,9 @@ const PARLUME_CHAT_MAX_CHARS = 4_000;
 export const PARLUME_CHAT_CONFIRM_MS = 15_000;
 export const PARLUME_CHAT_UNAVAILABLE_LINE =
 	"I can't write in this meeting's chat. Guests may not have chat here.";
+/** The answer to `say`, `go` or `more` on a post Parlume no longer keeps. */
+export const PARLUME_CHAT_UNKNOWN_POST_LINE =
+	"This prepared answer is no longer available.";
 const MAX_TRACKED_POSTS = 50;
 const MAX_SEEN_MESSAGES = 200;
 const MAX_MESSAGE_ID_CHARS = 128;
@@ -136,29 +142,71 @@ export function normalizeParlumeChatTag(ref: string): string | null {
 }
 
 /**
- * The meeting chat receives a post as one typed line: Markdown shows as
- * literal asterisks and line breaks are lost. So emphasis and rules go, and
- * each line follows the one before it, a list item after a bullet.
+ * The meeting chat shows Markdown as literal asterisks, so emphasis, headings
+ * and rules go, a list item gets a bullet and a numbered item keeps "1.".
+ * Each line stays a line and a blank line stays one paragraph break: Fabric
+ * sends the post as HTML with a break per line, so a list reads one item per
+ * line instead of running together.
  */
 function plainParlumeChatText(body: string): string {
 	return body
 		.split(/\r?\n/)
 		.map((line) => line.trim())
-		.filter((line) => line && !/^([-*_])\1{2,}$/.test(line))
+		.filter((line) => !/^([-*_])\1{2,}$/.test(line))
 		.map((line) =>
 			line
 				.replace(/^#{1,6}\s+/, "")
 				.replace(/^[-*+]\s+/, "• ")
+				.replace(/^(\d{1,3})[.)]\s+/, "$1. ")
 				.replace(/(\*\*|__)(.+?)\1/g, "$2"),
 		)
-		.join(" ");
+		.join("\n")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
+/**
+ * Cuts text to `max` at the last paragraph, line, sentence or word break in
+ * its second half, so a shortened post never stops mid-word unless one word
+ * fills it.
+ */
+function shortenParlumeChatText(text: string, max: number): string {
+	const window = text.slice(0, max);
+	const cut = ["\n\n", "\n", ". ", " "]
+		.map((mark) => window.lastIndexOf(mark) + (mark === ". " ? 1 : 0))
+		.find((at) => at >= max / 2);
+	return window.slice(0, cut ?? max).trim();
+}
+
+/**
+ * The chat message for a post, and the part of its text a shortened post
+ * leaves out, which a "more" reply posts from the stored text.
+ */
+function splitParlumeChatMessage(
+	tag: string,
+	body: string,
+): { message: string; rest: string } {
+	const prefix = `[${tag}] `;
+	const text = plainParlumeChatText(body);
+	if (prefix.length + text.length <= PARLUME_CHAT_MAX_CHARS) {
+		return { message: `${prefix}${text}`, rest: "" };
+	}
+	const more = `\n\nShortened for the chat. Reply "more ${tag}" for the rest.`;
+	const room = PARLUME_CHAT_MAX_CHARS - prefix.length - more.length - 1;
+	const shown = shortenParlumeChatText(text, room);
+	return {
+		message: `${prefix}${shown}…${more}`,
+		rest: text.slice(shown.length).trim(),
+	};
 }
 
 export function composeParlumeChatMessage(tag: string, body: string): string {
-	const prefix = `[${tag}] `;
-	const room = PARLUME_CHAT_MAX_CHARS - prefix.length;
-	const text = plainParlumeChatText(body);
-	return `${prefix}${text.length > room ? `${text.slice(0, room - 1)}…` : text}`;
+	return splitParlumeChatMessage(tag, body).message;
+}
+
+/** What a shortened post left out of the chat; empty when it was posted whole. */
+export function parlumeChatPostRest(post: ParlumeChatPost): string {
+	return splitParlumeChatMessage(post.tag, post.text).rest;
 }
 
 export function findParlumeChatPost(
@@ -284,15 +332,34 @@ export function nextParlumeChatDeadline(
 }
 
 /**
- * A post read aloud: addresses become "the link", and the text is cut into
- * sentences the bridge's synthesizer accepts.
+ * A post as either voice reads it: a link says its title or "the link",
+ * formatting marks go, and each line ends as a sentence, so a list is read
+ * item by item rather than as one run-on line.
+ */
+export function parlumeSpokenPostText(text: string): string {
+	return text
+		.split(/\r?\n/)
+		.map((line) =>
+			line
+				.trim()
+				.replace(/\[([^\]\n]+)\]\(https?:\/\/[^\s)]+\)/gi, "$1")
+				.replace(/https?:\/\/\S+/gi, "the link")
+				.replace(/^#{1,6}\s+/, "")
+				.replace(/^(?:[-*+•]|\d{1,3}[.)])\s+/, "")
+				.replace(/\*\*|__|`/g, ""),
+		)
+		.filter((line) => line && !/^([-*_])\1{2,}$/.test(line))
+		.map((line) => (/[.!?:;,]$/.test(line) ? line : `${line}.`))
+		.join(" ")
+		.slice(0, MAX_SPOKEN_CHARS);
+}
+
+/**
+ * A post read aloud by the classic voice, cut into sentences the bridge's
+ * synthesizer accepts.
  */
 export async function* parlumeChatSpeech(text: string): AsyncGenerator<string> {
-	const spoken = text
-		.replace(/https?:\/\/\S+/gi, "the link")
-		.replace(/\s+/g, " ")
-		.trim()
-		.slice(0, MAX_SPOKEN_CHARS);
+	const spoken = parlumeSpokenPostText(text);
 	for (const match of spoken.matchAll(/[^.!?]+(?:[.!?]+|$)/g)) {
 		let sentence = match[0].trim();
 		while (sentence.length > MAX_SPOKEN_SENTENCE_CHARS) {

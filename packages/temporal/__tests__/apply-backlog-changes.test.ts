@@ -969,6 +969,24 @@ describe("applyBacklogChanges → duplicate-create guard", () => {
 // behavior that used to be the channel-monitor `forbidEpics: true` opt-in
 // (Bug 1429) is now the default and the flag is a deprecated no-op.
 
+// An open (non-terminal) work item row, as the apply-time update load reads it.
+function openStoryRow(
+	identifier: string,
+	title: string,
+	kind: "FEATURE" | "BUG" = "FEATURE",
+) {
+	return {
+		kind,
+		title,
+		identifier,
+		description: null,
+		acceptanceCriteria: null,
+		labels: [],
+		draftingStage: "DRAFT",
+		pmAutoHidden: false,
+	};
+}
+
 function makeEpicChange(overrides: Record<string, unknown> = {}) {
 	return {
 		action: "create" as const,
@@ -1110,7 +1128,12 @@ describe("applyBacklogChanges → unconditional epic→feature normalization", (
 			existingId: STORY_UUID,
 			existingIdentifier: "F-300",
 			title: { from: "Existing feature", to: "Renamed initiative" },
+			// Routing is under test here, not the apply-time body merge.
+			structurePreserved: true,
 		});
+		mocks.dbUserStoryFindFirst.mockResolvedValueOnce(
+			openStoryRow("F-300", "Existing feature"),
+		);
 
 		const result = await applyBacklogChanges({
 			projectId: "project-1",
@@ -1311,12 +1334,44 @@ describe("configuration refusal during apply", () => {
 	});
 });
 
+it("fails an update whose Fabric id loads no row with a specific reason", async () => {
+	const change = makeBugChange({
+		action: "update",
+		existingId: "22222222-2222-4222-8222-222222222222",
+		existingIdentifier: "F-404",
+		title: { to: "Updated missing bug" },
+	});
+
+	const result = await applyBacklogChanges({
+		projectId: "project-1",
+		userId: "user-1",
+		organizationId: "org-1",
+		approvedChanges: [change],
+		existingBacklog: EMPTY_BACKLOG,
+	});
+
+	expect(result.errors).toEqual([
+		expect.objectContaining({
+			error: "target ticket no longer exists in this project",
+		}),
+	]);
+	expect(mocks.updateStory).not.toHaveBeenCalled();
+	expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+	expect(result.updatedItems).toEqual([]);
+});
+
 it("continues ordinary updates after a create refusal", async () => {
 	const id = "11111111-1111-4111-8111-111111111111";
 	mocks.createStoryFromProposal.mockRejectedValueOnce(
 		Object.assign(new Error("auth detail"), {
 			name: "ChatGptPlanAuthError",
 		}),
+	);
+	mocks.dbUserStoryFindFirst.mockImplementation(
+		async ({ where }: { where: { id?: string } }) =>
+			where.id === id
+				? openStoryRow("F-200", "Existing bug", "BUG")
+				: null,
 	);
 	const result = await applyBacklogChanges({
 		projectId: "project-1",
@@ -1330,6 +1385,7 @@ it("continues ordinary updates after a create refusal", async () => {
 				existingId: id,
 				existingIdentifier: "F-200",
 				title: { to: "Updated existing bug" },
+				structurePreserved: true,
 			}),
 		],
 		existingBacklog: {

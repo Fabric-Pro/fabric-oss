@@ -30,6 +30,7 @@ function showCard(
 			session={liveSession({ joinedAt })}
 			joinedAt={joinedAt}
 			costMicroUsd={undefined}
+			showSpend
 			requests={[]}
 			requestsLoading={false}
 			canStop

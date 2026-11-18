@@ -15,6 +15,12 @@ vi.mock("@repo/database", () => ({
 	fetchCredentialsByProvider: mocks.credentials,
 	getSearchProviderConfig: mocks.searchProvider,
 }));
+vi.mock("@repo/utils/url-security", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@repo/utils/url-security")>()),
+	safeFetchOutbound: mocks.fetch,
+	safeFetchOutboundPinned: (url: URL, init: RequestInit) =>
+		mocks.fetch(url.toString(), init),
+}));
 vi.mock("@repo/utils", () => ({ decryptApiKey: (value: string) => value }));
 vi.mock("@repo/database/prisma/queries/workflows/integration-access", () => ({
 	resolveWorkflowIntegrationForProvider: mocks.resolve,

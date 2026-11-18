@@ -500,4 +500,68 @@ describe("createStoryProcedure — PM auto-sync default", () => {
 			);
 		});
 	});
+
+	describe("INITIATIVE gate and classifier bypass", () => {
+		it("refuses Initiative creation when initiativesEnabled is false", async () => {
+			mocks.projectFindUnique.mockResolvedValue({
+				projectManagementMcpConfigId: null,
+				projectManagementContainerId: null,
+				initiativesEnabled: false,
+			});
+
+			await expect(
+				handlers.create({
+					input: {
+						...baseInput,
+						title: "Quarterly Objective",
+						kind: "INITIATIVE",
+					},
+					context: ctx,
+				}),
+			).rejects.toThrow("Initiatives are turned off for this project.");
+
+			expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+		});
+
+		it("creates Initiative and sets skipClassifier when initiativesEnabled is true", async () => {
+			mocks.projectFindUnique.mockResolvedValue({
+				projectManagementMcpConfigId: null,
+				projectManagementContainerId: null,
+				initiativesEnabled: true,
+			});
+
+			await handlers.create({
+				input: {
+					...baseInput,
+					title: "Quarterly Objective",
+					kind: "INITIATIVE",
+				},
+				context: ctx,
+			});
+
+			expect(mocks.createStoryFromProposal).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "INITIATIVE",
+					skipClassifier: true,
+				}),
+			);
+		});
+
+		it("still runs the classifier for a Feature or Bug", async () => {
+			mocks.projectFindUnique.mockResolvedValue({
+				projectManagementMcpConfigId: null,
+				projectManagementContainerId: null,
+				initiativesEnabled: true,
+			});
+
+			await handlers.create({
+				input: { ...baseInput, title: "Login page" },
+				context: ctx,
+			});
+
+			expect(mocks.createStoryFromProposal).toHaveBeenCalledWith(
+				expect.objectContaining({ skipClassifier: undefined }),
+			);
+		});
+	});
 });

@@ -6,18 +6,17 @@
  */
 
 import { ORPCError } from "@orpc/server";
-import { db } from "@repo/database";
+import { canReadOrganizationAgents, db } from "@repo/database";
 import { z } from "zod";
+import { publicProcedure } from "../../../orpc/procedures";
 import {
-	Permissions,
-	publicProcedure,
-	requirePermission,
-} from "../../../orpc/procedures";
-import { hasScope, validateApiKey } from "../lib/api-key-auth";
+	hasScope,
+	requireOrganizationKeyPermission,
+	validateApiKey,
+} from "../lib/api-key-auth";
 import { AgentConfigSchema } from "../types";
 
 export const getAgentProcedure = publicProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
 	.route({
 		method: "POST",
 		path: "/runtime/get-agent",
@@ -45,11 +44,16 @@ export const getAgentProcedure = publicProcedure
 		}
 
 		// Check scope (agents:read or *)
-		if (!hasScope(tenant, "agents:read") && !hasScope(tenant, "*")) {
+		if (!hasScope(tenant, "agents:read")) {
 			throw new ORPCError("FORBIDDEN", {
 				message: "API key lacks 'agents:read' scope",
 			});
 		}
+
+		await requireOrganizationKeyPermission(
+			tenant,
+			canReadOrganizationAgents,
+		);
 
 		// Get agent with proper scoping
 		const agent = await db.agent.findFirst({

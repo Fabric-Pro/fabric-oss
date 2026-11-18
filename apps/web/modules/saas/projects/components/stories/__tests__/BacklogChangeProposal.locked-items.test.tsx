@@ -12,6 +12,7 @@ import {
 	BacklogChangeProposal,
 	type ChangeItem,
 } from "../BacklogChangeProposal";
+import type { LockedReason } from "../proposal-item-state";
 
 vi.mock("../../../../../shared/lib/orpc-client", () => ({
 	orpcClient: {
@@ -41,6 +42,15 @@ function feature(title: string): ChangeItem {
 
 const CHANGES = [feature("Alpha"), feature("Bravo"), feature("Charlie")];
 
+/** The batch with these items already accepted. */
+function acceptedAt(...indexes: number[]) {
+	return {
+		lockedReasons: new Map<number, LockedReason>(
+			indexes.map((index): [number, LockedReason] => [index, "accepted"]),
+		),
+	};
+}
+
 function renderBatch(
 	props: Partial<Parameters<typeof BacklogChangeProposal>[0]> = {},
 ) {
@@ -54,7 +64,7 @@ function renderBatch(
 			projectId="project_1"
 			onApprove={onApprove}
 			onReject={vi.fn()}
-			lockedIndexes={new Set([1])}
+			itemReview={acceptedAt(1)}
 			allowKindOverride={false}
 			allowInReviewDrafting={false}
 			{...props}
@@ -108,8 +118,12 @@ describe("BacklogChangeProposal — locked (already accepted) rows", () => {
 
 	it("labels a duplicate-skipped row 'Already on Roadmap', not 'Accepted'", () => {
 		renderBatch({
-			lockedIndexes: new Set([0, 1]),
-			lockedReasons: new Map([[1, "already-on-roadmap"]]),
+			itemReview: {
+				lockedReasons: new Map<number, LockedReason>([
+					[0, "accepted"],
+					[1, "already-on-roadmap"],
+				]),
+			},
 		});
 		expect(
 			screen.getByRole("checkbox", { name: "Alpha (already accepted)" }),
@@ -132,7 +146,7 @@ describe("BacklogChangeProposal — locked (already accepted) rows", () => {
 		);
 		renderBatch({
 			persistenceKey: "proposal:returned",
-			lockedIndexes: new Set([0]),
+			itemReview: acceptedAt(0),
 		});
 		expect(
 			screen.getByRole("checkbox", { name: "Toggle Bravo" }),
@@ -149,7 +163,7 @@ describe("BacklogChangeProposal — locked (already accepted) rows", () => {
 		);
 		renderBatch({
 			persistenceKey: "proposal:second-pass",
-			lockedIndexes: new Set([0]),
+			itemReview: acceptedAt(0),
 		});
 		expect(
 			screen.getByRole("checkbox", { name: "Toggle Bravo" }),
@@ -198,7 +212,7 @@ describe("BacklogChangeProposal — locked (already accepted) rows", () => {
 
 	it("keeps the Bug/Feature choice by default", () => {
 		renderBatch({
-			lockedIndexes: undefined,
+			itemReview: undefined,
 			allowKindOverride: undefined,
 			allowInReviewDrafting: undefined,
 		});

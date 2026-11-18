@@ -71,9 +71,12 @@ export function ParlumePage({
 	const liveSessionId = liveSession?.id;
 	const sessionsTotal = sessionsQuery.data?.pages[0]?.total ?? null;
 
+	// Spend is for the people who can invite Parlume, which is what incurs it;
+	// the usage procedure refuses everyone else, so others never ask for it.
 	const usageQuery = useQuery({
 		queryKey: [USAGE_QUERY_KEY, projectId],
 		queryFn: () => orpcClient.projects.parlume.usage({ projectId }),
+		enabled: canEdit,
 		retry: false,
 		refetchInterval: liveSessionId ? POLL_MS : false,
 	});
@@ -153,6 +156,7 @@ export function ParlumePage({
 								costMicroUsd={costBySessionId.get(
 									liveSession.id,
 								)}
+								showSpend={canEdit}
 								requests={liveActivityQuery.data?.items ?? []}
 								requestsLoading={liveActivityQuery.isLoading}
 								canStop={canEdit}
@@ -190,6 +194,7 @@ export function ParlumePage({
 						projectId={projectId}
 						projectBasePath={projectBasePath}
 						costBySessionId={costBySessionId}
+						showSpend={canEdit}
 						sessions={{
 							items: sessions,
 							total: sessionsTotal,
@@ -207,14 +212,16 @@ export function ParlumePage({
 					/>
 				</div>
 				<aside className="flex min-w-0 grow basis-[18.75rem] flex-col gap-6">
-					<ParlumeSpendCard
-						usage={usageQuery.data}
-						isLoading={usageQuery.isLoading}
-						isError={usageQuery.isError}
-						sessions={sessions}
-						sessionCount={sessionsTotal}
-						costBySessionId={costBySessionId}
-					/>
+					{canEdit && (
+						<ParlumeSpendCard
+							usage={usageQuery.data}
+							isLoading={usageQuery.isLoading}
+							isError={usageQuery.isError}
+							sessions={sessions}
+							sessionCount={sessionsTotal}
+							costBySessionId={costBySessionId}
+						/>
+					)}
 					<ParlumeHowItWorks />
 				</aside>
 			</div>

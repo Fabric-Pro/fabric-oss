@@ -129,6 +129,19 @@ describe("collectAgendaContextActivity", () => {
 		]);
 	});
 
+	it("reads no transcript or action item of a confidential series", async () => {
+		await collectAgendaContextActivity(TENANT);
+
+		expect(
+			dbMock.projectMeetingTranscript.findMany.mock.calls[0][0].where,
+		).toMatchObject({ linkedMeeting: { confidential: false } });
+		expect(
+			dbMock.projectMeetingActionItem.findMany.mock.calls[0][0].where,
+		).toMatchObject({
+			transcript: { linkedMeeting: { confidential: false } },
+		});
+	});
+
 	it("scopes personal-tenancy reads by userId AND null organizationId", async () => {
 		await collectAgendaContextActivity({ ...TENANT, organizationId: null });
 

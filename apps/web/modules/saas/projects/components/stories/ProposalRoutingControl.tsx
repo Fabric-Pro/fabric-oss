@@ -13,6 +13,7 @@
  * is already well past the size where another feature can be folded in.
  */
 
+import { useStoriesByLastEdit } from "@saas/projects/hooks/use-stories-by-last-edit";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -39,7 +40,9 @@ import {
 	MergeIcon,
 } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
+import type { BacklogProposalPanel } from "../../../../analytics/events/backlog-open-existing";
 import { ProposalDiffField } from "./ProposalDiffField";
+import { StoryNewTabLink } from "./StoryNewTabLink";
 
 /**
  * Drafting stages that mean a ticket is closed or archived. Mirrors
@@ -211,6 +214,8 @@ type Props = {
 	disabled?: boolean;
 	/** Used to label controls uniquely when several rows are on screen. */
 	itemTitle: string;
+	/** Which panel hosts the control, for the target link's analytics event. */
+	panel?: BacklogProposalPanel;
 };
 
 export function ProposalRoutingControl({
@@ -221,6 +226,7 @@ export function ProposalRoutingControl({
 	organizationId,
 	disabled,
 	itemTitle,
+	panel,
 }: Props) {
 	const [pickerOpen, setPickerOpen] = useState(false);
 	const [query, setQuery] = useState("");
@@ -239,13 +245,9 @@ export function ProposalRoutingControl({
 	// to fire before the reviewer thinks to look. One query key for the whole
 	// proposal, so several routed rows share a single request.
 	const isEnrich = effective?.decision === "enrich";
-	const { data, isLoading } = useQuery({
-		...orpc.projects.stories.board.queryOptions({
-			input: {
-				projectId: projectId ?? "",
-				organizationId: organizationId ?? null,
-			},
-		}),
+	const { stories, isLoading } = useStoriesByLastEdit({
+		projectId: projectId ?? "",
+		organizationId: organizationId ?? null,
 		enabled: (pickerOpen || isEnrich) && !!projectId,
 		staleTime: 60_000,
 	});
@@ -258,7 +260,7 @@ export function ProposalRoutingControl({
 		!override &&
 		isEnrich &&
 		routing.matchedStoryId &&
-		((data?.stories ?? []) as PickerStory[]).some(
+		stories.some(
 			(story) =>
 				story.id === routing.matchedStoryId &&
 				TERMINAL_STAGES.has(story.draftingStage ?? ""),
@@ -323,7 +325,7 @@ export function ProposalRoutingControl({
 	 * target last.
 	 */
 	const isClosedNow = (storyId: string): boolean =>
-		((data?.stories ?? []) as PickerStory[]).some(
+		stories.some(
 			(story) =>
 				story.id === storyId &&
 				TERMINAL_STAGES.has(story.draftingStage ?? ""),
@@ -335,7 +337,6 @@ export function ProposalRoutingControl({
 	);
 
 	const { suggested, others } = useMemo(() => {
-		const stories = (data?.stories ?? []) as PickerStory[];
 		const needle = query.trim().toLowerCase();
 		const matches = (story: PickerStory) =>
 			needle.length === 0 ||
@@ -349,17 +350,18 @@ export function ProposalRoutingControl({
 
 		// The backend shortlist leads, in its ranked order — it is the answer to
 		// "which ticket did the system think this was about", which is exactly
-		// what a reviewer overriding the target is looking for.
+		// what a reviewer overriding the target is looking for. The rest follow
+		// most recently edited first.
 		const byId = new Map(visible.map((story) => [story.id, story]));
 		const suggestedRows = (routing.alternatives ?? [])
 			.map((alt) => byId.get(alt.storyId))
-			.filter((story): story is PickerStory => story !== undefined);
+			.filter((story) => story !== undefined);
 
 		return {
 			suggested: suggestedRows,
 			others: visible.filter((story) => !suggestedIds.has(story.id)),
 		};
-	}, [data?.stories, query, showClosed, routing.alternatives, suggestedIds]);
+	}, [stories, query, showClosed, routing.alternatives, suggestedIds]);
 
 	const setDecision = (decision: "create" | "enrich") => {
 		if (decision === "create") {
@@ -401,6 +403,15 @@ export function ProposalRoutingControl({
 	};
 
 	const band = confidenceBand(routing.confidence);
+
+	// The merge target link follows the reviewer's pick. Only a ticket the
+	// loaded board lists gets one: a missing target (deleted, or the board
+	// not loaded yet) would open "Ticket not found".
+	const targetStoryId = effective?.targetStoryId;
+	const linkedTargetId =
+		targetStoryId && stories.some((story) => story.id === targetStoryId)
+			? targetStoryId
+			: null;
 
 	return (
 		<div className="mt-2 space-y-2 rounded-md border border-dashed bg-muted/30 p-2">
@@ -590,6 +601,14 @@ export function ProposalRoutingControl({
 								</Command>
 							</PopoverContent>
 						</Popover>
+						{linkedTargetId && projectId && (
+							<StoryNewTabLink
+								projectId={projectId}
+								storyId={linkedTargetId}
+								panel={panel}
+								label={`Open merge target ${effective?.targetIdentifier || "ticket"} for ${itemTitle} in a new tab`}
+							/>
+						)}
 					</div>
 
 					{routing.reasoning && !effective?.overridden && (

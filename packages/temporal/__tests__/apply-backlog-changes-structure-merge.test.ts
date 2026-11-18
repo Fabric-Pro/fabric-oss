@@ -340,6 +340,37 @@ describe("applyBacklogChanges → apply-time structure-preserving merge", () => 
 		expect(lastUpdateData().description).toBe(preMerged);
 	});
 
+	it("merges into the current body when the ticket changed since analysis", async () => {
+		const preMerged =
+			"## Steps to Reproduce\n1. x\n## Root Cause\nmerged against an older body\n## Original Description from User (Do Not Modify)\nlogin broken";
+		const merged = `${EXISTING_BUG_BODY}\n## Root Cause\nmerged against the current body`;
+		mocks.reanalyzeBodyByKind.mockResolvedValue({
+			description: merged,
+			acceptanceCriteria: undefined,
+			fallbackUsed: false,
+		});
+
+		await run(
+			makeUpdate({
+				structurePreserved: true,
+				description: {
+					from: "an older body edited since analysis",
+					to: preMerged,
+				},
+			}),
+		);
+
+		expect(mocks.reanalyzeBodyByKind).toHaveBeenCalledOnce();
+		expect(mocks.reanalyzeBodyByKind).toHaveBeenCalledWith(
+			expect.objectContaining({
+				existingDescription: EXISTING_BUG_BODY,
+				newInfo: expect.stringContaining(preMerged),
+			}),
+		);
+		// The stale analysis-time body is never written over the edit.
+		expect(lastUpdateData().description).toBe(merged);
+	});
+
 	it("safe-holds on fallback: keeps the existing body (no description write) + flags it", async () => {
 		mocks.reanalyzeBodyByKind.mockResolvedValue({
 			description: EXISTING_BUG_BODY,

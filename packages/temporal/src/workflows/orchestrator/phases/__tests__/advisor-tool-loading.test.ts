@@ -147,6 +147,9 @@ async function scenario(
 	if (!paging) {
 		mocks.off.add("orch-project-feature-detail-paging-v1");
 	}
+	// Likewise the create-story pre-registration, which adds a tool to the
+	// initial list; advisor-repository-tools.test.ts covers both of its states.
+	mocks.off.add("orch-project-create-story-tool-v1");
 	if (legacy) {
 		mocks.off.add("orch-final-initial-tool-catalog-v1");
 		mocks.off.add("orch-relevant-tool-search-v1");
@@ -787,9 +790,9 @@ it("retains baseline discovery and catalog bytes with both patches off", async (
 				.digest("hex"),
 		),
 	).toEqual([
-		"79c02e30510fd92bafef3c494c1f76403f1b31b5dac145350e664d3187ffa18b",
-		"8623b5fcfd388c798058e7ca80202f302757d8feda13f84a603af9a2af054db6",
-		"bec9f19ad884090df3bcdd1da17d27244b7902bc1cce489f7f23c2e72261c053",
+		"f8f6bf95fa89e646259dd67b9c97114ec00bc3ad6d75c3a77655073d8e82d07c",
+		"04bbcd91221342824fc7dbcb6d205bc53975c356befdf6b110357a07fa6cda56",
+		"da7932148a3ac5d35c0f3cd1a597ffed720b014601fea2e8b346814b6e669f9a",
 	]);
 });
 

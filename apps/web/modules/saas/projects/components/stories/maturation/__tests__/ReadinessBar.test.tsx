@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
 	calculateFeatureReadiness,
@@ -211,5 +211,32 @@ describe("ReadinessBar Component", () => {
 		expect(progressbar).toHaveAttribute("aria-valuenow", "85");
 		expect(screen.getByText("AI Readiness")).toBeInTheDocument();
 		expect(screen.getByText("85%")).toBeInTheDocument();
+	});
+
+	it("renders initiative tooltip items for Strategic Goals and Child Feature Breakdown", async () => {
+		render(
+			<ReadinessBar
+				signals={{
+					...defaultSignals,
+					storyKind: "INITIATIVE",
+				}}
+			/>,
+		);
+
+		const trigger = screen.getByRole("progressbar").closest("button");
+		expect(trigger).toBeInTheDocument();
+		if (!trigger) {
+			throw new Error("Trigger not found");
+		}
+		fireEvent.focus(trigger);
+
+		expect(
+			await screen.findAllByText("Strategic Goals present (+10%)"),
+		).not.toHaveLength(0);
+		expect(
+			await screen.findAllByText(
+				"Child Feature Breakdown present (+10%)",
+			),
+		).not.toHaveLength(0);
 	});
 });

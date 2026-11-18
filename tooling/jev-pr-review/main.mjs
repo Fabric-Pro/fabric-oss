@@ -134,6 +134,7 @@ export async function run({
 	readFiles = readDiffs,
 	load = loadDecision,
 	makeGithub = githubClient,
+	questionDetails,
 	report = (message) => {
 		console.log(message);
 		if (env.GITHUB_STEP_SUMMARY) {
@@ -174,6 +175,7 @@ export async function run({
 			model,
 			decide,
 			cutoff: parseCutoff(env.JEV_PR_REVIEW_CUTOFF),
+			questionDetails,
 		});
 	} catch {
 		return didNotRun(

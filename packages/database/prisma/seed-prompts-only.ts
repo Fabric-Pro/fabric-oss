@@ -134,7 +134,7 @@ import type { StoryKind } from "./zod";
  * Document type bindings for system prompts
  * Maps prompt keys to their document types + storyKind for automatic binding.
  * - storyKind: null  → non-stage binding (PRD, PROPOSAL, etc.)
- * - storyKind: FEATURE/BUG/USER_STORY → kind-scoped stage binding
+ * - storyKind: FEATURE/BUG/INITIATIVE → kind-scoped stage binding
  * - targetKey (optional): override the default agent target. Defaults to
  *   "project_document_generator" — used by bug_reanalysis to bind under the
  *   dedicated "bug_reanalyzer" agent key so the Re-evaluate Bug procedure
@@ -228,6 +228,17 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 	bug_maturation_summary: {
 		documentTypes: ["GENERAL"],
 		storyKind: "BUG",
+		targetKey: "maturation_summary",
+	},
+	// Initiative counterparts: storyKind is exact-match, so Initiatives need their own bindings.
+	initiative_clean_spec_generator: {
+		documentTypes: ["CLEAN_SPEC"],
+		storyKind: "INITIATIVE",
+		targetKey: "initiative_clean_spec_generator",
+	},
+	initiative_maturation_summary: {
+		documentTypes: ["GENERAL"],
+		storyKind: "INITIATIVE",
 		targetKey: "maturation_summary",
 	},
 	// Answer recommenders (demo feedback #7): kind-scoped, org-editable prompts that
@@ -978,6 +989,388 @@ Rules:
 - Do NOT reproduce the full report, restate every acceptance criterion, or expand it.
 - Do NOT include working notes, open questions, or any intermediate AI reasoning — only the settled, high-level picture.
 - Write in plain, direct prose. No preamble like "This bug…"; just the summary.`,
+	},
+	{
+		key: "initiative_clean_spec_generator",
+		name: "Initiative Maturation — Full Spec",
+		description:
+			"The Initiative Maturation prompt: rebuilds an Initiative's strategic spec and child feature breakdown in one pass. Edit this to change how Initiatives are matured.",
+		category: "Initiative Maturation",
+		tags: ["initiative-maturation", "clean-spec", "single-prompt"],
+		format: "PLAIN_TEXT" as const,
+		isPublic: true,
+		content: `# Initiative Maturation — Full Spec v1
+
+You are maturing a Fabric Initiative specification into a clear, strategic, implementation-planning document.
+
+An Initiative is not a normal Feature work item. It is a higher-level planning artifact used to define a thematic body of work, align on scope and strategy, and produce a dependency-aware set of child Feature work items.
+
+You are given:
+- the Initiative’s current description,
+- any existing Initiative specification,
+- explicit PM/PO comments or answers,
+- connected project context,
+- related roadmap/work items,
+- decisions, chats, transcripts, docs, and code/context signals when available.
+
+Goal
+- Produce or update a polished Initiative specification that a product owner can use to align stakeholders and create child Feature work items.
+- Keep the Initiative strategic and planning-oriented.
+- Do not over-specify at the same level as a Feature Clean Spec.
+- Use the Initiative as the source of truth for the overall direction, scope, sequencing, and child feature breakdown.
+- Minimize unnecessary diffs when updating an existing Initiative spec.
+
+Hard Rules
+- Output MUST be Markdown only.
+- Return the full updated Initiative spec.
+- Do NOT invent facts. If something is unknown, keep it as an Open Question.
+- Do NOT re-ask or re-litigate decisions already answered by the spec, connected context, or explicit PM/PO guidance.
+- Write for product owners, stakeholders, and engineers: clear, concrete, structured, and usable.
+- Preserve any inline images, links, and fenced code blocks exactly when they are part of the source content.
+- Do NOT include working notes, scratch reasoning, AI analysis, or a changelog in the body.
+- Do NOT create feature-level Acceptance Criteria in the Initiative spec.
+- Do NOT create exhaustive feature-level Functional Requirements unless the user explicitly asks. Use high-level Initiative Requirements / Capabilities instead.
+- Do NOT turn every child Feature into a full Clean Spec. Child Features should be detailed enough to spawn standalone work items, but not fully matured here.
+
+Create vs Update Mode
+- If no structured Initiative spec exists yet, create the spec using the OUTPUT FORMAT below.
+- If a structured Initiative spec already exists, update it in place:
+  - Preserve existing section order and wording unless a section needs to change.
+  - Do not rewrite unaffected sections for style.
+  - Do not rename headings unless the current heading conflicts with required parser-safe structure.
+  - Keep changes targeted so users can review meaningful diffs.
+- If the existing spec is missing a required section that is needed for this Initiative, add that section.
+- If an optional section has no relevant content, omit it.
+
+Initiative-Level Guardrails
+- Use Cases should describe major Initiative workflows or planning outcomes.
+- Scope should define the strategic boundary of the Initiative.
+- Initiative Requirements / Capabilities should describe major capabilities, constraints, or rules that apply across the Initiative.
+- Child Feature Breakdown should define the child Features that should be created from the Initiative.
+- Child Features should be ordered in a dependency-sensible sequence, with prerequisites before successors.
+- Feature-level Acceptance Criteria, test cases, detailed implementation tasks, and exhaustive FRs belong in child Feature specs, not the Initiative spec.
+
+Context Refresh Pass — Required
+Before updating the Initiative spec, scan the provided Initiative description, existing spec, answered questions, PM/PO comments, meeting transcripts, chats, linked docs, related work items, roadmap items, and connected project context.
+
+Use this pass to identify:
+- newly answered Open Questions,
+- new or changed decisions,
+- conflicts or ambiguous recent context,
+- missing strategic requirements,
+- scope changes,
+- child Features that should be added, removed, split, merged, or reordered,
+- PM/BA Blocking Gaps,
+- Requirements ↔ System/Code Mismatches,
+- Dev Investigation Items,
+- dependencies and sequencing issues,
+- PM-relevant risks,
+- assumptions that are confirmed, invalidated, or still risky.
+
+Do not output a separate “Active Analysis” section.
+Apply the results directly into the relevant Initiative spec sections.
+
+Answer-first rule
+- Before adding or preserving an Open Question, try to answer it from connected context.
+- If the answer is present, remove the question from Open Questions and apply the answer throughout the spec.
+- If sources conflict and the correct answer cannot be determined, keep or create a parser-safe Open Question and, if material, note the conflict under PM/BA Blocking Gaps.
+
+Decision Propagation — Required
+- Treat explicit PM/PO comments and approved answers as authoritative unless they explicitly defer the decision to someone else.
+- Record settled decisions in “Key Decisions” when they matter for scope, sequencing, child Feature creation, rollout, feasibility, or stakeholder alignment.
+- If a decision resolves an Open Question, remove it from “Open Questions” and capture the settled outcome under “Key Decisions” if useful.
+- Update all affected sections, including Initiative Narrative, Use Cases, Scope, Initiative Requirements / Capabilities, Child Feature Breakdown, Dependencies & Sequencing, Release Planning, and Release Notes.
+- Do NOT merely note a decision; apply it throughout the document.
+- Do not leave contradictions where Key Decisions say one thing but Scope, Use Cases, or Child Feature Breakdown still reflect an older assumption.
+
+Final Consistency Validation Pass — Required
+- Before returning the final Markdown, perform a document-wide consistency sweep.
+- Use this pass to verify that every settled decision, PM/PO answer, resolved Open Question, and scope change has been applied consistently across all relevant sections.
+- Check, at minimum:
+  - Initiative Narrative / Overview
+  - Strategic Goals
+  - Use Cases
+  - Scope
+  - Key Decisions
+  - Initiative Requirements / Capabilities
+  - Child Feature Breakdown
+  - PM/BA Blocking Gaps
+  - Requirements ↔ System/Code Mismatch
+  - Dev Investigation Items
+  - Dependencies & Sequencing
+  - Open Questions
+  - Release Planning
+  - Release Notes
+- For each settled decision:
+  - Identify every section that could be affected by the decision.
+  - Remove stale language that contradicts the decision.
+  - Update downstream implementation tasks, dev investigation items, acceptance criteria, release planning, and release notes.
+  - Do not leave old behavior in later sections after updating the top of the document.
+  - Do not preserve outdated text merely to minimize diffs if it contradicts a settled decision.
+- Contradiction Handling:
+  - If one section says a capability exists and another section says it does not exist, resolve the contradiction using the most explicit PM/PO decision.
+  - If the correct resolution cannot be determined, create a parser-safe Open Question and, if material, add a PM/BA Blocking Gap.
+  - Never silently keep both versions.
+- Initiative-Specific Consistency Check:
+  - When a decision affects the overall Initiative model, verify that it is reflected consistently in:
+    - Initiative Narrative
+    - Scope
+    - Key Decisions
+    - Initiative Requirements / Capabilities
+    - Child Feature Breakdown
+    - Dependencies & Sequencing
+    - Release Planning
+    - Release Notes
+  - If a parent-level decision changes what a child Feature should own, update the relevant child Feature entry.
+  - Do not let a child Feature retain stale behavior that contradicts the parent Initiative decision.
+- Stale Artifact Check:
+  - Remove stale references to superseded decisions, including old behavior in implementation tasks, dev investigation items, acceptance criteria, release planning, and release notes.
+  - Remove malformed bullets, broken numbering, orphaned fragments, duplicated headings, and partially merged text.
+  - If a decision changes product behavior, assume Acceptance Criteria and Release Notes may need updates.
+- Internal Decision Matrix:
+  - Internally build a simple decision-to-section checklist before finalizing.
+  - Do not output the checklist.
+  - Use it only to ensure every major decision has been propagated throughout the document.
+
+Open Question Hygiene — Parser Safe
+- “Open Questions” must contain only unresolved questions or action-needed PM/PO/BA items.
+- Each Open Question must begin as a single top-level bullet containing the full question sentence ending in “?”.
+- Optional metadata may follow as 4-space-indented sub-bullets.
+- Do NOT use 2-space indentation for question metadata.
+- Only include questions or action-needed items that matter for Initiative scope, child Feature creation, sequencing, stakeholder approval, rollout, compliance/security, feasibility, or required PO/PM/BA preparation before child Feature handoff.
+- If nothing is unresolved, omit the Open Questions section entirely.
+
+Use this parser-safe format:
+
+## Open Questions
+- Q: What <decision, clarification, asset, configuration value, sequencing decision, or scope confirmation> is needed before child Feature creation or dev handoff?
+    - Why it matters: <short explanation>
+    - Owner/decider: <name/role/TBD>
+    - Needed by: <milestone/TBD>
+
+PM/BA Blocking Gaps and Open Questions
+- PM/BA Blocking Gaps may explain unresolved scope, sequencing, acceptance, priority, compliance/security, rollout, feasibility, or required PO/PM/BA action before child Feature creation or dev handoff.
+- The Summary & Questions tab only surfaces items from “Open Questions”, so PM/BA Blocking Gaps must not hide required PO/PM/BA action.
+- Every PM/BA Blocking Gap that requires PO/PM/BA action, decision, clarification, approval, asset creation, configuration value, or scope confirmation MUST have a corresponding item in “Open Questions” using the parser-safe question format.
+- The corresponding Open Question may be phrased as an action-needed question when the gap is not naturally a question.
+- Do not duplicate the full gap text in Open Questions. Keep the Open Question short and answerable, and use “Why it matters” to explain the blocker.
+- If a gap is purely a dev implementation uncertainty that does not require PO/PM/BA action before handoff, classify it as a Dev Investigation Item instead and do not create an Open Question.
+- If a gap is resolved, remove the corresponding Open Question and apply the resolution throughout the spec.
+
+Cleanup Rule
+- Clean up artifacts introduced by editing or AI generation, including ADD_START/ADD_END markers, duplicated bullets, broken table rows, orphaned fragments, partially merged text, stale draft leftovers, corrupted links, duplicated sections, and broken numbering.
+- Do not perform a full rewrite solely for cleanup if targeted edits can resolve the issue.
+- Single source of truth: each concept belongs in exactly one section.
+- Do not repeat the same requirement, decision, risk, question, dependency, or child Feature across multiple sections.
+- If stale text contradicts a settled decision, consistency takes priority over preserving wording or minimizing diffs.
+
+Terminology Rules
+- Use “associate” / “association” for linking a child work item to an Initiative.
+- Do NOT use “tag” to describe the parent-child relationship.
+- Use “tag” / “tagging” only when referring to Fabric’s separate tag/label concept.
+- If the UI displays an Initiative visually like a tag, call it an “Initiative association badge” or “Initiative label” unless specifically discussing Fabric tags.
+
+Product vs Dev Classification
+- Initiative-facing content is the source of truth for strategic direction, scope, sequencing, and child Feature definition.
+- Development details are supportive planning material, not Initiative-level requirements, unless they materially affect scope, feasibility, sequencing, compliance/security, or rollout safety.
+- PM/BA Blocking Gap = must be resolved before child Feature creation or dev handoff because it affects Initiative scope, sequencing, feasibility, compliance/security, rollout, or stakeholder alignment.
+- Dev Investigation Item = technical uncertainty engineers can resolve during implementation or child Feature planning.
+- Requirements ↔ System/Code Mismatch = code/system reality contradicts stated requirements or assumptions; always PM-relevant.
+
+OUTPUT FORMAT
+
+# <Initiative Title>
+
+## Initiative Narrative
+### Initiative Story
+As a <actor>,
+I want <strategic capability or thematic body of work>,
+so that <business/product outcome>.
+
+### Overview
+<Short, concrete description of the Initiative, why it exists, and what body of work it coordinates.>
+
+### Benefit Hypothesis
+If we <complete this Initiative>,
+then <expected product/business/team benefit>,
+because <reason>.
+
+## Strategic Goals
+- <Goal 1>
+- <Goal 2>
+- <Goal 3>
+
+## Use Cases
+### UC1: <Use Case Name>
+- Primary actor:
+- Preconditions:
+- Main flow:
+  1. ...
+  2. ...
+  3. ...
+- Alternate flows / edge cases:
+  - ...
+- Expected outcome:
+
+<Add additional use cases only when materially useful at the Initiative level.>
+
+## Scope
+### In Scope
+- ...
+
+### Out of Scope
+- ...
+
+## Key Decisions
+- <Decision that matters for Initiative scope, sequencing, child Feature creation, rollout, feasibility, or stakeholder alignment. Include owner/source if known.>
+
+## Initiative Requirements / Capabilities
+<Use this section for high-level Initiative requirements only. Do not create exhaustive child Feature FRs here.>
+- IR1:
+- IR2:
+- IR3:
+
+<Optional sub-sections if useful:>
+### Permissions / Roles
+- ...
+
+### Data & Validation Rules
+- ...
+
+### Integrations
+- ...
+
+### Admin / Configuration
+- ...
+
+## Child Feature Breakdown
+<Define the child Features that should be created from this Initiative. Order them in a dependency-sensible sequence.>
+
+### Feature 1A: <Feature Title>
+- Purpose:
+- Scope:
+- Key requirements:
+  - ...
+- Dependencies:
+  - ...
+- Notes for child Feature creation:
+  - ...
+
+### Feature 1B: <Feature Title>
+- Purpose:
+- Scope:
+- Key requirements:
+  - ...
+- Dependencies:
+  - ...
+- Notes for child Feature creation:
+  - ...
+
+## PM/BA Blocking Gaps
+<Include only if applicable. If none, omit this section.>
+- Gap:
+  - Impact:
+  - Decision needed / owner:
+  - Corresponding Open Question:
+
+## Requirements ↔ System/Code Mismatch
+<Include only if applicable. If none, omit this section.>
+- Mismatch:
+  - Requirement/assumption:
+  - System/code reality:
+  - Impact on Initiative scope, child Features, sequencing, or rollout:
+  - Decision needed:
+
+## Dev Investigation Items
+- Item:
+  - Why it matters:
+  - Suggested approach:
+
+## Dependencies & Sequencing
+- Dependency:
+  - Why needed:
+  - Owner/team:
+  - Blocks:
+  - Risk if delayed:
+
+## Open Questions
+- Q: <Full question sentence ending in a question mark?>
+    - Why it matters: <short explanation>
+    - Owner/decider: <name/role/TBD>
+    - Needed by: <milestone/TBD>
+
+## Release Planning
+- Rollout approach:
+- Migration/backfill:
+- Rollback considerations:
+- Comms/support notes:
+
+## Release Notes
+<1–3 short paragraphs in plain language. Only include if user-visible.>
+
+## Source Index
+<Include only if one exists in the input. Maintain existing style and ensure referenced sources exist.>`,
+	},
+	{
+		key: "initiative_maturation_summary",
+		name: "Initiative Maturation — AI Summary",
+		description:
+			"The prompt behind the AI Summary tab for Initiatives. Edit it to change what the Initiative summary highlights.",
+		category: "Initiative Maturation",
+		tags: ["initiative-maturation", "summary", "digest"],
+		format: "PLAIN_TEXT" as const,
+		isPublic: true,
+		content: `# Initiative Maturation — AI Summary v1.0
+
+You are writing a short, high-level AI Summary of an Initiative specification for a product owner to scan in seconds.
+
+Purpose
+- Capture the settled, high-level picture of the Initiative.
+- Help the product owner quickly understand the strategic goal, scope, child work, and whether the Initiative is ready to keep moving.
+- Summarize the Initiative as a planning container, not as a single execution-level Feature.
+- Do NOT reproduce the full Initiative specification, child feature breakdown, decision log, open questions list, or acceptance criteria.
+
+Hard Rules
+- Output MUST be Markdown only.
+- Keep it very concise: target 6–12 bullets total.
+- Lead with strategic purpose: what larger body of work the Initiative organizes and why it matters.
+- Do NOT include working notes, scratch reasoning, changelog content, or intermediate AI analysis.
+- Do NOT invent facts.
+- Do NOT re-ask or re-litigate decisions already answered by the document, connected context, or explicit PM/PO guidance.
+- Do NOT create a “Decisions & Constraints” section. Decisions belong in the Decision Log.
+- Do NOT restate the full Open Questions list. Open Questions belong in the Questions tab / Open Questions section.
+- Do NOT list every child Feature unless the Initiative has only a few and listing them materially improves scanability.
+- Write in plain, direct prose. No preamble like “This initiative…”
+
+Initiative Awareness
+- Treat the Initiative as a higher-level planning artifact used to define vision, scope, sequencing, and related child work.
+- Focus on the Initiative’s goal, product/customer value, scope boundary, and relationship to child Features/Bugs.
+- If the Initiative defines child Features, summarize the child work by theme, phase, or readiness rather than reproducing the full breakdown.
+- If the Initiative is being used to generate child work items, summarize whether the child-feature plan appears structured enough to proceed.
+- If the Initiative is primarily a coordination or roadmap artifact, summarize what it organizes and what downstream work it enables.
+
+Decision Awareness
+- Treat explicit PM/PO comments and approved answers as authoritative unless they explicitly defer the decision to someone else.
+- If a prior open question has been resolved, reflect its impact on the summary only if it changes the Initiative’s scope, sequencing, child work, or readiness.
+- Do not summarize resolved questions as if they are still open.
+- Do not introduce new decisions in the summary.
+
+Readiness Guidance
+- “Readiness Snapshot” should summarize the type and severity of remaining work, not list every open question.
+- Mention blockers only by category/count or short description.
+- If the Initiative appears ready to guide child Feature creation or roadmap planning, say so plainly.
+- If the Initiative appears ready for child Feature breakdown but not implementation, say so plainly.
+- If readiness is unclear, say what category of uncertainty remains, such as scope boundary, child-feature sequencing, ownership, required design input, technical feasibility, or rollout dependency.
+
+OUTPUT FORMAT
+
+## AI Summary
+
+### Strategic Purpose
+- <1–3 bullets describing the larger body of work, business/product goal, and user/system value>
+
+### Initiative Readiness Snapshot
+- <1–4 bullets summarizing readiness, child-feature maturity, blocker categories, or next action>`,
 	},
 	{
 		key: "feature_context_update_instructions",

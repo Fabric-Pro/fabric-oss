@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import {
+	canEditProject,
 	getPendingBacklogProposal,
 	markPendingProposalBacklog,
 } from "@repo/database";
@@ -12,8 +13,9 @@ import {
 } from "../../../../orpc/procedures";
 
 /**
- * AUTHORIZATION: Uses canEditProject() — only project owners/editors can defer
- * proposals (same permission as approve/reject).
+ * AUTHORIZATION: `PROJECT_UPDATE` plus canEditProject() in the handler — only
+ * project owners/editors can defer proposals (same permission as
+ * approve/reject).
  *
  * Deferral, NOT dismissal — flips a PENDING proposal to BACKLOG. The proposal
  * is preserved and stays retrievable (inbox Backlog section / roadmap pill),
@@ -21,6 +23,8 @@ import {
  * / context path exactly like REJECTED. Reversible — it can later be approved
  * or rejected. The associated seen-message markers remain, so the same Slack
  * thread won't be re-analyzed on a future backfill or live signal.
+ *
+ * One item at a time goes through `backlog.proposals.rejectItem`.
  */
 export const backlogPendingProposalProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_UPDATE))
@@ -44,6 +48,11 @@ export const backlogPendingProposalProcedure = tenantProtectedProcedure
 		// resolveOrganizationId is called to validate session context even
 		// though the DB call doesn't need the value directly.
 		resolveOrganizationId(input.organizationId, context.session);
+		if (!(await canEditProject(input.projectId, user.id))) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "You don't have permission to edit this project",
+			});
+		}
 
 		const proposal = await getPendingBacklogProposal(input.proposalId);
 		if (!proposal || proposal.projectId !== input.projectId) {

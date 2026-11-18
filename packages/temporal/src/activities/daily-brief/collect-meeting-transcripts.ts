@@ -73,6 +73,9 @@ export async function collectMeetingTranscripts(
 		where: {
 			projectId,
 			project: { organizationId },
+			// A confidential series' transcripts stay out of the brief, as out of
+			// every recap.
+			linkedMeeting: { confidential: false },
 			OR: [
 				{ meetingDate: { gte: timeWindowStart, lte: timeWindowEnd } },
 				{ syncedAt: { gte: timeWindowStart, lte: timeWindowEnd } },

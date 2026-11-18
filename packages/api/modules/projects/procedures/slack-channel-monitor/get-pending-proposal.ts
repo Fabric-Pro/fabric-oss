@@ -6,10 +6,13 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { loadProposalItemOutcomes } from "../../lib/proposal-inbox-items";
 
 /**
  * Returns the full PendingBacklogProposal record (including the `proposal`
- * JSON) for rendering in the inbox's BacklogChangeProposal UI.
+ * JSON) for rendering in the inbox's BacklogChangeProposal UI, plus the
+ * per-item outcomes (`applications`, `createdChangeIndexes`,
+ * `rejectedChangeIndexes`).
  *
  * The projectId is verified against the stored record to prevent cross-project
  * access via guessed proposal IDs.
@@ -39,5 +42,5 @@ export const getPendingProposalProcedure = tenantProtectedProcedure
 			});
 		}
 
-		return proposal;
+		return { ...proposal, ...(await loadProposalItemOutcomes(proposal)) };
 	});

@@ -1,6 +1,7 @@
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
 import { connectorErrorMessage } from "../connector-error";
+import { fetchProviderStepOutbound } from "./outbound-request";
 import { interpolateTemplate } from "./utils";
 
 export async function executeZendeskCreateTicketStep(
@@ -58,7 +59,7 @@ export async function executeZendeskCreateTicketStep(
 			};
 		}
 
-		const response = await fetch(
+		const response = await fetchProviderStepOutbound(
 			`https://${credentials.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets.json`,
 			{
 				method: "POST",

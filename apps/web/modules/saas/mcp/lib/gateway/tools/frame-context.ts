@@ -4,7 +4,10 @@
  */
 
 import { db, type FrameSurface, getAccessibleFrameById } from "@repo/database";
-import { sessionMayReachProject } from "../project-binding";
+import {
+	sessionMayReachProject,
+	sessionProjectRestriction,
+} from "../project-binding";
 import type { GatewaySession } from "../types";
 
 export function nonEmptyString(value: unknown): string | undefined {
@@ -85,7 +88,7 @@ export async function accessibleFrame(
 		organizationId: session.organizationId,
 	});
 	return frame &&
-		(session.pageProjectId === undefined ||
+		(sessionProjectRestriction(session) === undefined ||
 			sessionMayReachProject(session, frame.projectId))
 		? frame
 		: null;

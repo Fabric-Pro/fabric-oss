@@ -482,6 +482,7 @@ describe("stored-result reuse in the real iterative loop", () => {
 			],
 			"[IterativeExecution] Pre-registered project_rag_query, fabric_list_meeting_transcripts, search_slack_messages, and search_teams_messages tools":
 				[
+					"projectCreateStory",
 					"projectDocumentTools",
 					"projectFeatureTools",
 					"projectId",

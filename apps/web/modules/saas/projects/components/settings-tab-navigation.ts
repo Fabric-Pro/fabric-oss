@@ -24,6 +24,17 @@ export const REPOSITORY_SETTINGS_ANCHOR_ID = "project-repository-settings";
 export const CODE_SEARCH_SETTINGS_ANCHOR_ID = "project-code-search-settings";
 /** The project-management settings block — the gates' "Choose a board". */
 export const PM_SETTINGS_ANCHOR_ID = "project-pm-settings";
+/** Automatic screenshots, nested under the newsletter's "Images in highlights". */
+export const NEWSLETTER_AUTO_CAPTURE_ANCHOR_ID =
+	"project-newsletter-auto-capture";
+
+/**
+ * Whether Project Settings has its Environments sub-tab, where the
+ * environments that QA and newsletter screenshots open are saved.
+ * `NEXT_PUBLIC_*` is inlined at build time, so this is a constant.
+ */
+export const ENVIRONMENT_SETTINGS_ENABLED =
+	process.env.NEXT_PUBLIC_FABRIC_FEATURE_TEST_CASES === "true";
 
 /** Mirrors `STORAGE_KEY_PREFIX` in `ProjectSettings.tsx`. */
 const SETTINGS_TAB_STORAGE_KEY_PREFIX = "fabric-project-settings-tab-";
@@ -47,13 +58,15 @@ export function navigateToProjectSettingsTab(
 		 * for a caller that means one control on a long page, not its top.
 		 */
 		anchorId?: string;
+		/** Also move keyboard focus to the anchor once it is in view. */
+		focus?: boolean;
 	},
 ) {
 	if (typeof window === "undefined") {
 		return;
 	}
 	if (options?.anchorId) {
-		scrollToWhenRendered(options.anchorId);
+		scrollToWhenRendered(options.anchorId, { focus: options.focus });
 	}
 	try {
 		sessionStorage.setItem(
@@ -84,7 +97,10 @@ const ANCHOR_WAIT_MS = 3_000;
  * called. Polled per frame for a bounded time; an anchor that never appears
  * (a sub-tab gated off for this viewer) leaves the viewer on the sub-tab.
  */
-export function scrollToWhenRendered(anchorId: string) {
+export function scrollToWhenRendered(
+	anchorId: string,
+	options?: { focus?: boolean },
+) {
 	const deadline = Date.now() + ANCHOR_WAIT_MS;
 	const attempt = () => {
 		const element =
@@ -94,6 +110,9 @@ export function scrollToWhenRendered(anchorId: string) {
 			);
 		if (element) {
 			element.scrollIntoView({ block: "start" });
+			if (options?.focus) {
+				element.focus({ preventScroll: true });
+			}
 			return;
 		}
 		if (Date.now() < deadline) {

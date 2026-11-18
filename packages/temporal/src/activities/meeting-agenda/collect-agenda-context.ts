@@ -194,7 +194,11 @@ export async function collectAgendaContextActivity(
 		db.projectMeetingActionItem.findMany({
 			where: {
 				completedAt: null,
-				transcript: { projectId, project: tenant },
+				transcript: {
+					projectId,
+					project: tenant,
+					linkedMeeting: { confidential: false },
+				},
 				// Prisma treats `notIn: []` as a real (always-true) filter rather
 				// than a no-op, so only narrow when something is actually carried.
 				...(carriedIds.length > 0 ? { id: { notIn: carriedIds } } : {}),

@@ -2552,6 +2552,8 @@ model Project {
   slackHuddleIngestIntervalMin          Int?
   slackHuddleIngestLastRun              DateTime?
   slackHuddleIngestWorkflowId           String?
+  // Initiatives work item type (opt-in per project).
+  initiativesEnabled                    Boolean                     @default(false)
   // GitHub Repository (default for code tasks in this project)
   repositoryUrl                         String? // Full URL: "https://github.com/owner/repo"
   repositoryOwner                       String? // GitHub owner extracted from URL
@@ -6733,10 +6735,12 @@ model ProjectLinkedMeeting {
   parlumeAutoJoinUserId             String?
   parlumeAutoJoinToolsReadOnly      Boolean                   @default(true)
   parlumeAutoJoinSuggestions        Boolean                   @default(true)
-  parlumeAutoJoinSuggestionAudience ParlumeSuggestionAudience @default(MEETING)
+  parlumeAutoJoinSuggestionAudience ParlumeSuggestionAudience @default(TEAM)
   /// Why the last automatic join could not happen, in words for the series' admins.
   parlumeAutoJoinError              String?
   parlumeAutoJoinErrorAt            DateTime?
+  /// The series' transcripts stay out of later answers, recaps and agendas.
+  confidential                      Boolean                   @default(false)
 
   project             Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   user                User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -6902,6 +6906,7 @@ enum TimeEvidenceKind {
   TEST_RESULT
   TEST_CASE_ACTIVITY
   PULL_REQUEST
+  CALENDAR_EVENT
 }
 
 enum TimeSuggestionRunStatus {
@@ -7314,7 +7319,7 @@ model ParlumeMeetingSession {
   /// Parlume may offer unprompted suggestions in the meeting chat.
   suggestionsEnabled           Boolean                     @default(true)
   /// Where those suggestions and the recap go: the meeting chat, or the Parlume page only.
-  suggestionAudience           ParlumeSuggestionAudience   @default(MEETING)
+  suggestionAudience           ParlumeSuggestionAudience   @default(TEAM)
   endReason                    ParlumeMeetingEndReason?
   lastError                    String?                     @db.Text
   joinedAt                     DateTime?
@@ -9658,6 +9663,7 @@ enum StorySize {
 enum StoryKind {
   FEATURE
   BUG
+  INITIATIVE
 }
 
 enum FeatureDraftingStage {
@@ -18706,6 +18712,10 @@ model AgentTemplateInstance {
   // External API exposure
   isApiExposed Boolean @default(false) // Toggle for external API access
   apiConfig    Json? // { rateLimitPerMinute?, inputSchema?, description?, exampleInput?, exampleOutput? }
+
+  /// Parlume meeting turns use this agent's MCP servers, integrations and
+  /// workspaces only when it opts in; otherwise only the meeting's project.
+  meetingExternalTools Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

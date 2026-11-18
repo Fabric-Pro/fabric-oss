@@ -77,6 +77,7 @@ import {
 	extractWebUrlFromLinks,
 	findBacklogsListTool,
 	getBaseUrl,
+	legacyWorkItemTypeFor,
 	normalizeUrl,
 	PM_ITEM_FIELDS,
 	parseWorkItemTypeMapping,
@@ -3721,15 +3722,13 @@ export async function syncStoryToPM(
 							format: "Html",
 						});
 					}
-					// A UserStory carries a `kind` (FEATURE / USER_STORY / BUG).
-					// Bugs must land in ADO as a "Bug" work item, not the
-					// project's default story type — mirrors the hierarchy-sync
-					// mapping (`ITEM_TYPE_TO_ADO_TYPE`, `bug → "Bug"`) so the
-					// manual per-story Push button agrees with the auto-push /
-					// AI-update path (which already derives `itemType: "bug"`
-					// from `kind`). Verified the official `@azure-devops/mcp`
-					// `wit_create_work_item` creates a "Bug" fine. Non-bug kinds
-					// keep the existing project-default behavior unchanged.
+					// Bugs push as "Bug" and Initiatives as "Epic"; other kinds use the project's default type.
+					const legacyType = legacyWorkItemTypeFor(
+						story.kind,
+						story.kind === "BUG"
+							? "Bug"
+							: (additionalContext?.workItemType ?? "User Story"),
+					);
 					const workItemType =
 						process.env.FEATURE_PM_TYPE_MAPPING === "true"
 							? resolveWorkItemType(
@@ -3740,17 +3739,10 @@ export async function syncStoryToPM(
 												| Record<string, unknown>
 												| undefined,
 										),
-										legacyFallback:
-											story.kind === "BUG"
-												? "Bug"
-												: (additionalContext?.workItemType ??
-													"User Story"),
+										legacyFallback: legacyType,
 									},
 								)
-							: story.kind === "BUG"
-								? "Bug"
-								: (additionalContext?.workItemType ??
-									"User Story");
+							: legacyType;
 					createArgs = {
 						[createTool.containerParam]: containerId,
 						[createTool.fieldsBased.workItemTypeParam]:
@@ -9258,6 +9250,20 @@ export async function createOrUpdateStoryFromPMItem(input: {
 				)
 			: undefined;
 
+	const initiativesEnabled =
+		importedKind === "INITIATIVE"
+			? ((
+					await db.project.findUnique({
+						where: { id: projectId },
+						select: { initiativesEnabled: true },
+					})
+				)?.initiativesEnabled ?? false)
+			: true;
+	const kind =
+		importedKind === "INITIATIVE" && !initiativesEnabled
+			? "FEATURE"
+			: importedKind;
+
 	// Create new story
 	const story = await createStory({
 		projectId,
@@ -9265,7 +9271,7 @@ export async function createOrUpdateStoryFromPMItem(input: {
 		description: finalDescription ?? undefined,
 		createdById: userId,
 		source: pmDetectedTypeToStorySource(caps?.detectedType),
-		...(importedKind ? { kind: importedKind as StoryKind } : {}),
+		...(kind ? { kind: kind as StoryKind } : {}),
 	});
 
 	// Stories created from an inbound PM item are PM-linked at birth, so they
@@ -10067,6 +10073,8 @@ export async function deleteStoriesNotInPMList(input: {
 		where: {
 			projectId,
 			externalId: { not: null },
+			// PM listings may not return Epics, so never prune Initiatives here; users delete them in Fabric.
+			kind: { not: "INITIATIVE" },
 			...(organizationId !== undefined
 				? { project: { organizationId } }
 				: {}),

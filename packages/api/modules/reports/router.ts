@@ -9,6 +9,7 @@ import { cancelExecutionProcedure } from "./procedures/instances/cancel-executio
 import { createInstanceProcedure } from "./procedures/instances/create";
 import { deleteInstanceProcedure } from "./procedures/instances/delete";
 import { executeInstanceProcedure } from "./procedures/instances/execute";
+import { findDuplicateInstancesProcedure } from "./procedures/instances/find-duplicates";
 import { generateFromTemplateProcedure } from "./procedures/instances/generate-from-template";
 import { getInstanceProcedure } from "./procedures/instances/get";
 import { listInstancesProcedure } from "./procedures/instances/list";
@@ -88,6 +89,8 @@ export const reportsRouter = {
 		execute: executeInstanceProcedure,
 		// "Generate report" on a template card: make the report and start its run
 		generateFromTemplate: generateFromTemplateProcedure,
+		// Before creating: reports with the same title or prompt
+		findDuplicates: findDuplicateInstancesProcedure,
 		// The create dialog's readiness, before a report exists
 		probeConnections: probeConnectionsProcedure,
 		cancelExecution: cancelExecutionProcedure,

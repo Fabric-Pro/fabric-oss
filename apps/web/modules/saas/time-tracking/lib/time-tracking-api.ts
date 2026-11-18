@@ -5,7 +5,8 @@ import type { TimeReport } from "./report-table";
 
 /**
  * Refresh every cached read of the caller's entries after a write: the week
- * and day views and any work item's section.
+ * and day views, any work item's section and the recent notes a new entry is
+ * offered.
  *
  * The filters are derived from the procedures' own `key()` prefixes rather
  * than written out, because `invalidateQueries` with a hand-built key that
@@ -20,6 +21,9 @@ export function invalidateTimeEntries(queryClient: QueryClient) {
 		}),
 		queryClient.invalidateQueries({
 			queryKey: orpc.timeTracking.listForStory.key(),
+		}),
+		queryClient.invalidateQueries({
+			queryKey: orpc.timeTracking.listRecentNotes.key(),
 		}),
 	]);
 }

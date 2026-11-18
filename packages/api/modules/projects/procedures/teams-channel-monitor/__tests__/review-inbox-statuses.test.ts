@@ -10,6 +10,7 @@ vi.mock("@repo/database", async () => {
 		REVIEW_INBOX_PROPOSAL_STATUSES,
 		countPendingBacklogProposals: mocks.count,
 		listPendingBacklogProposals: mocks.list,
+		listProposalItemStates: async () => [],
 	};
 });
 vi.mock("../../../../../../database/prisma/client", () => ({ db: {} }));

@@ -68,6 +68,10 @@ const ALLOWLIST: ReadonlyMap<string, string> = new Map([
 		"Teams calendar READ only (list_calendar_meetings: the planner's read per enabler and organization, and the re-read before each join); the join itself goes through the web app, which skips it while the project is in Read-only mode",
 	],
 	[
+		"packages/temporal/src/activities/time-suggestions/collect-time-suggestion-candidates.ts",
+		"Teams calendar READ only (list_calendar_time_evidence: the member's own calendar through their own connection, for time suggestions) — no write operations",
+	],
+	[
 		"packages/temporal/src/activities/search-project-teams-messages.ts",
 		"Teams message search — READ only",
 	],

@@ -184,6 +184,7 @@ function makeStory(overrides: Partial<UserStory> = {}): UserStory {
 		description: "Has content.",
 		acceptanceCriteria: "- ok",
 		statusId: "status-1",
+		kind: "FEATURE",
 		priority: "P2_MEDIUM",
 		size: null,
 		storyPoints: null,

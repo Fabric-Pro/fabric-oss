@@ -670,6 +670,46 @@ export function classifyTranscriptForbidden(errorBody: {
 }
 
 /**
+ * One Teams meeting of the caller's own calendar, as
+ * `list_calendar_time_evidence` returns it: no subject, organizer, attendees
+ * or body.
+ */
+export interface CalendarTimeEvidenceEvent {
+	id: string;
+	/** ISO-8601 UTC instants; null when Graph sent none. */
+	startAt: string | null;
+	endAt: string | null;
+	joinUrl: string;
+	isAllDay: boolean;
+	isCancelled: boolean;
+	/** Graph's `showAs`: free, tentative, busy, oof, workingElsewhere, unknown. */
+	showAs: string | null;
+	/**
+	 * Graph's `responseStatus.response`: organizer, accepted,
+	 * tentativelyAccepted, declined, notResponded or none.
+	 */
+	response: string | null;
+	isOrganizer: boolean;
+}
+
+const GRAPH_OFFSET_SUFFIX = /(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * A Graph `dateTimeTimeZone.dateTime` read as UTC. Requested with
+ * `Prefer: outlook.timezone="UTC"`, it carries no offset and is UTC
+ * wall-clock time; read without a zone it would parse as local time.
+ */
+function graphUtcInstant(value: string | undefined): string | null {
+	if (!value) {
+		return null;
+	}
+	const ms = Date.parse(
+		GRAPH_OFFSET_SUFFIX.test(value) ? value : `${value}Z`,
+	);
+	return Number.isNaN(ms) ? null : new Date(ms).toISOString();
+}
+
+/**
  * Execute a Microsoft Teams tool using Microsoft Graph API.
  * Uses credentials from the user's MICROSOFT_GRAPH integration.
  * Automatically refreshes token if expired.
@@ -2379,6 +2419,74 @@ export async function executeMicrosoftTeamsTool(
 				dateRange: { startDate, endDate },
 				tip: "Use get_meeting_by_join_url with the joinUrl to resolve the meeting ID needed for transcript access.",
 			};
+		}
+
+		// The member's own Teams meetings as time evidence. Reads no subject,
+		// organizer, attendees or body, and returns only what matching and a
+		// duration need. `signal` bounds the whole read for a caller with a
+		// deadline of its own.
+		case "list_calendar_time_evidence": {
+			const startDate = args.startDate;
+			const endDate = args.endDate;
+			if (typeof startDate !== "string" || typeof endDate !== "string") {
+				throw new Error(
+					"startDate and endDate are required for list_calendar_time_evidence.",
+				);
+			}
+			const signal =
+				args.signal instanceof AbortSignal ? args.signal : undefined;
+			type CalendarEvidenceEvent = {
+				id: string;
+				start?: { dateTime?: string };
+				end?: { dateTime?: string };
+				isAllDay?: boolean;
+				isCancelled?: boolean;
+				showAs?: string;
+				responseStatus?: { response?: string };
+				isOrganizer?: boolean;
+				onlineMeeting?: { joinUrl?: string } | null;
+			};
+			const events: CalendarTimeEvidenceEvent[] = [];
+			const pageSize = 50;
+			let nextUrl: string | null =
+				`${graphBaseUrl}/me/calendarView?startDateTime=${encodeURIComponent(startDate)}&endDateTime=${encodeURIComponent(endDate)}&$select=id,start,end,isAllDay,isCancelled,showAs,responseStatus,isOrganizer,onlineMeeting&$top=${pageSize}`;
+
+			// The cap list_calendar_meetings uses: 20 pages = 1000 raw events.
+			for (let page = 0; page < 20 && nextUrl; page++) {
+				signal?.throwIfAborted();
+				const res = await graphRequest(nextUrl, {
+					signal,
+					headers: { Prefer: 'outlook.timezone="UTC"' },
+				});
+				if (!res.ok) {
+					const error = await res.json().catch(() => ({}));
+					throw new Error(
+						`Microsoft Graph API error: ${res.status} ${res.statusText} - ${JSON.stringify(error)}`,
+					);
+				}
+				const data = await res.json();
+				const value = (data.value || []) as CalendarEvidenceEvent[];
+				for (const event of value) {
+					const joinUrl = event.onlineMeeting?.joinUrl;
+					if (!joinUrl) {
+						continue;
+					}
+					events.push({
+						id: event.id,
+						startAt: graphUtcInstant(event.start?.dateTime),
+						endAt: graphUtcInstant(event.end?.dateTime),
+						joinUrl,
+						isAllDay: event.isAllDay === true,
+						isCancelled: event.isCancelled === true,
+						showAs: event.showAs ?? null,
+						response: event.responseStatus?.response ?? null,
+						isOrganizer: event.isOrganizer === true,
+					});
+				}
+				nextUrl = data["@odata.nextLink"] || null;
+			}
+
+			return { events };
 		}
 
 		case "get_meeting_by_join_url": {

@@ -55,7 +55,7 @@ export interface ResolveStoryPromptResult {
 	/** The kind the SERVER read off the stored row — not what the caller thinks. */
 	kind: StoryKind;
 	/** Lowercase display word for that same kind. */
-	kindWord: "bug" | "feature";
+	kindWord: "bug" | "feature" | "initiative";
 }
 
 export const resolveStoryPromptProcedure = tenantProtectedProcedure

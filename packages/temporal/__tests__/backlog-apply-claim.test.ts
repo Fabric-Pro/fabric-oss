@@ -1,7 +1,7 @@
 /**
  * Plan §F3 — proposal apply claim protocol and idempotent application.
  *
- *   - `claimPendingProposalForApply` / `finalizeClaimedProposal`: compare-and-
+ *   - `claimPendingProposalForApply` / `finalizeProposalApply`: compare-and-
  *     swap on the proposal row so only one apply owns it.
  *   - `applyBacklogChanges` with a `proposalId`: every applied change is
  *     recorded in `pending_backlog_proposal_application`, already-recorded
@@ -27,6 +27,9 @@ const { mockDb, mocks } = vi.hoisted(() => {
 		pendingBacklogProposalApplication: {
 			findMany: vi.fn(),
 			create: vi.fn(),
+		},
+		pendingBacklogProposalDuplicateResolution: {
+			findMany: vi.fn(async (): Promise<{ changeIndex: number }[]> => []),
 		},
 		$transaction: vi.fn(),
 	};
@@ -93,9 +96,9 @@ vi.mock("@temporalio/activity", async (importOriginal) => ({
 
 import {
 	claimPendingProposalForApply,
-	finalizeClaimedProposal,
 	markProposalApplyDispatched,
 } from "../../database/prisma/queries/projects/pending-backlog-proposals";
+import { finalizeProposalApply } from "../../database/prisma/queries/projects/pending-proposal-item-state";
 import {
 	applyBacklogChanges,
 	type ChangeProposal,
@@ -103,6 +106,19 @@ import {
 } from "../src/activities/backlog-context/analyze-context";
 
 const emptyBacklog = { stories: [] };
+
+/** The finalize of an APPLYING claim, as the apply workflow's activity runs it. */
+function finalizeApplyingClaim({
+	applyWorkflowId,
+	...params
+}: Omit<Parameters<typeof finalizeProposalApply>[0], "claim"> & {
+	applyWorkflowId: string;
+}): Promise<boolean> {
+	return finalizeProposalApply({
+		...params,
+		claim: { status: "APPLYING", applyWorkflowId },
+	});
+}
 
 function featureChange(
 	title: string,
@@ -206,12 +222,18 @@ describe("claimPendingProposalForApply", () => {
 	});
 });
 
-describe("finalizeClaimedProposal", () => {
+describe("finalizeApplyingClaim", () => {
 	it("only lets the claimant flip APPLYING → APPLIED", async () => {
+		mockDb.pendingBacklogProposal.findUnique.mockResolvedValueOnce({
+			source: "TEAMS_CHANNEL",
+			changeCount: 1,
+			appliedChangeIndexes: [0],
+			sourceMetadata: null,
+		});
 		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
 			count: 1,
 		});
-		const ok = await finalizeClaimedProposal({
+		const ok = await finalizeApplyingClaim({
 			proposalId: "prop-1",
 			applyWorkflowId: "wf-1",
 			outcome: "applied",
@@ -226,11 +248,94 @@ describe("finalizeClaimedProposal", () => {
 		expect(call.data.status).toBe("APPLIED");
 	});
 
+	it("returns any source's proposal to PENDING while an item is undecided", async () => {
+		// Item 0 applied before, item 2 moved to Rejected, item 1 untouched.
+		mockDb.pendingBacklogProposal.findUnique.mockResolvedValueOnce({
+			source: "SLACK_CHANNEL",
+			changeCount: 3,
+			appliedChangeIndexes: [0],
+			sourceMetadata: { rejectedChangeIndexes: [2] },
+		});
+		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
+			count: 1,
+		});
+		const ok = await finalizeApplyingClaim({
+			proposalId: "prop-1",
+			applyWorkflowId: "wf-1",
+			outcome: "applied",
+		});
+		expect(ok).toBe(true);
+		const call = mockDb.pendingBacklogProposal.updateMany.mock.calls[0][0];
+		expect(call.where).toEqual({
+			id: "prop-1",
+			status: "APPLYING",
+			applyWorkflowId: "wf-1",
+		});
+		expect(call.data).toEqual({
+			status: "PENDING",
+			applyWorkflowId: null,
+			applyStartedAt: null,
+			applyError: null,
+			errorClass: null,
+			errorMessage: null,
+			failedAt: null,
+		});
+	});
+
+	it("closes as APPLIED once applied, duplicate and rejected items cover every change", async () => {
+		mockDb.pendingBacklogProposal.findUnique.mockResolvedValueOnce({
+			source: "TEAMS_CHAT",
+			changeCount: 3,
+			appliedChangeIndexes: [],
+			sourceMetadata: { rejectedChangeIndexes: [2] },
+		});
+		mockDb.pendingBacklogProposalApplication.findMany.mockResolvedValueOnce(
+			[{ changeIndex: 0 }],
+		);
+		const duplicates = mockDb.pendingBacklogProposalDuplicateResolution;
+		duplicates.findMany.mockResolvedValueOnce([{ changeIndex: 1 }]);
+		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
+			count: 1,
+		});
+		const ok = await finalizeApplyingClaim({
+			proposalId: "prop-1",
+			applyWorkflowId: "wf-1",
+			outcome: "applied",
+		});
+		expect(ok).toBe(true);
+		const call = mockDb.pendingBacklogProposal.updateMany.mock.calls[0][0];
+		expect(call.data.status).toBe("APPLIED");
+	});
+
+	it("keeps a failed non-recommendation apply FAILED even with undecided items", async () => {
+		mockDb.pendingBacklogProposal.findUnique.mockResolvedValueOnce({
+			source: "SLACK_CHANNEL",
+			changeCount: 3,
+			appliedChangeIndexes: [0],
+			sourceMetadata: null,
+		});
+		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
+			count: 1,
+		});
+		const ok = await finalizeApplyingClaim({
+			proposalId: "prop-1",
+			applyWorkflowId: "wf-1",
+			outcome: "failed",
+			errorMessage: "boom",
+		});
+		expect(ok).toBe(true);
+		const call = mockDb.pendingBacklogProposal.updateMany.mock.calls[0][0];
+		expect(call.data).toMatchObject({
+			status: "FAILED",
+			applyError: "boom",
+		});
+	});
+
 	it("refuses a non-claimant (CAS matches zero rows)", async () => {
 		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
 			count: 0,
 		});
-		const ok = await finalizeClaimedProposal({
+		const ok = await finalizeApplyingClaim({
 			proposalId: "prop-1",
 			applyWorkflowId: "wf-intruder",
 			outcome: "failed",
@@ -246,7 +351,7 @@ describe("finalizeClaimedProposal", () => {
 	});
 });
 
-describe("finalizeClaimedProposal — ROADMAP_RECOMMENDATION keep-open", () => {
+describe("finalizeApplyingClaim — ROADMAP_RECOMMENDATION keep-open", () => {
 	function recommendationRow(appliedChangeIndexes: number[] = []) {
 		mockDb.pendingBacklogProposal.findUnique.mockResolvedValueOnce({
 			source: "ROADMAP_RECOMMENDATION",
@@ -263,7 +368,7 @@ describe("finalizeClaimedProposal — ROADMAP_RECOMMENDATION keep-open", () => {
 		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
 			count: 1,
 		});
-		const ok = await finalizeClaimedProposal({
+		const ok = await finalizeApplyingClaim({
 			proposalId: "batch-1",
 			applyWorkflowId: "wf-1",
 			outcome: "applied",
@@ -294,7 +399,7 @@ describe("finalizeClaimedProposal — ROADMAP_RECOMMENDATION keep-open", () => {
 		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
 			count: 1,
 		});
-		const ok = await finalizeClaimedProposal({
+		const ok = await finalizeApplyingClaim({
 			proposalId: "batch-1",
 			applyWorkflowId: "wf-1",
 			outcome: "failed",
@@ -323,7 +428,7 @@ describe("finalizeClaimedProposal — ROADMAP_RECOMMENDATION keep-open", () => {
 		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
 			count: 1,
 		});
-		const ok = await finalizeClaimedProposal({
+		const ok = await finalizeApplyingClaim({
 			proposalId: "batch-1",
 			applyWorkflowId: "wf-1",
 			outcome: "applied",
@@ -341,7 +446,7 @@ describe("finalizeClaimedProposal — ROADMAP_RECOMMENDATION keep-open", () => {
 		mockDb.pendingBacklogProposal.updateMany.mockResolvedValueOnce({
 			count: 0,
 		});
-		const ok = await finalizeClaimedProposal({
+		const ok = await finalizeApplyingClaim({
 			proposalId: "batch-1",
 			applyWorkflowId: "wf-intruder",
 			outcome: "applied",
@@ -436,7 +541,7 @@ describe("markProposalApplyDispatched — late stamp guard", () => {
 			applyWorkflowId: "wf-1",
 		});
 		// A fast apply of one candidate reopens the batch before the stamp lands.
-		await finalizeClaimedProposal({
+		await finalizeApplyingClaim({
 			proposalId: "batch-1",
 			applyWorkflowId: "wf-1",
 			outcome: "applied",
@@ -466,7 +571,7 @@ describe("markProposalApplyDispatched — late stamp guard", () => {
 			reviewedBy: "u1",
 			applyWorkflowId: "wf-1",
 		});
-		await finalizeClaimedProposal({
+		await finalizeApplyingClaim({
 			proposalId: "batch-1",
 			applyWorkflowId: "wf-1",
 			outcome: "applied",

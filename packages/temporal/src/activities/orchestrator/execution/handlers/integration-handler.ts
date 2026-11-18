@@ -33,6 +33,11 @@ import {
 	rethrowIfDispatchStopped,
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
+import {
+	fetchStepOutbound,
+	StepDestinationNotAllowedError,
+	StepRedirectRefusedError,
+} from "../../../lib/steps/outbound-request";
 import { executeMicrosoftTeamsTool } from "../../../shared/oauth-tool-executors";
 import { guardToolWriteForReadOnly } from "../../../shared/read-only-gate";
 import type { ExecuteStepInput } from "../../types";
@@ -1986,27 +1991,40 @@ export class IntegrationHandler implements StepHandler {
 		}
 
 		const method = ((inputs.method as string) || "POST").toUpperCase();
-		const headers: Record<string, string> = {
+		const headers = new Headers({
 			"Content-Type": "application/json",
 			...(inputs.headers as Record<string, string>),
-		};
+		});
 
-		// Add secret if configured
-		if (credentials.WEBHOOK_SECRET) {
-			headers["X-Webhook-Secret"] = credentials.WEBHOOK_SECRET;
+		const storedOrigin = URL.parse(credentials.WEBHOOK_URL)?.origin;
+		if (URL.parse(webhookUrl)?.origin !== storedOrigin) {
+			headers.delete("X-Webhook-Secret");
+		} else if (credentials.WEBHOOK_SECRET) {
+			headers.set("X-Webhook-Secret", credentials.WEBHOOK_SECRET);
 		}
 
 		if (method !== "GET" && method !== "HEAD") {
 			throwIfDispatchStopped();
 		}
-		const response = await fetch(webhookUrl, {
-			method,
-			headers,
-			body:
-				method !== "GET"
-					? JSON.stringify(inputs.body || inputs.payload || {})
-					: undefined,
-		});
+		let response: Response;
+		try {
+			response = await fetchStepOutbound(webhookUrl, {
+				method,
+				headers,
+				body:
+					method !== "GET"
+						? JSON.stringify(inputs.body || inputs.payload || {})
+						: undefined,
+			});
+		} catch (error) {
+			if (
+				error instanceof StepDestinationNotAllowedError ||
+				error instanceof StepRedirectRefusedError
+			) {
+				return { success: false, error: error.message };
+			}
+			throw error;
+		}
 
 		const responseText = await response.text();
 		let responseData: unknown;

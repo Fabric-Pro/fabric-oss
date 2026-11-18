@@ -140,9 +140,12 @@ export interface FabricDocument extends FabricDocumentSummary {
 }
 
 // ---- Features ----
+export type FabricWorkItemKind = "FEATURE" | "BUG" | "INITIATIVE";
+
 export interface FabricFeature {
 	id: string;
 	identifier: string; // "F-001"
+	kind: FabricWorkItemKind;
 	title: string;
 	description: string | null;
 	acceptanceCriteria: string | null;

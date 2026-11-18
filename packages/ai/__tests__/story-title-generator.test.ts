@@ -797,6 +797,27 @@ describe("generateStoryTitleFromDescription", () => {
 		expect(callArg.prompt).toContain("creation_source: Slack");
 	});
 
+	it("renders work_item_type as Initiative for INITIATIVE kind", async () => {
+		mockGetBoundPromptForAgent.mockResolvedValue({
+			key: "story_title_generator",
+			format: "HANDLEBARS",
+			version: { content: "type: {{work_item_type}}" },
+		});
+		mockGenerateText.mockResolvedValue({
+			text: JSON.stringify({ title: "Title", is_insufficient: false }),
+			usage: STUB_USAGE,
+		});
+
+		await generateStoryTitleFromDescription(
+			"Long enough initiative description.",
+			"INITIATIVE",
+			STUB_CONTEXT,
+		);
+
+		const callArg = mockGenerateText.mock.calls[0][0] as { prompt: string };
+		expect(callArg.prompt).toContain("type: Initiative");
+	});
+
 	it("originContext is truncated to 2000 chars in the rendered prompt", async () => {
 		const longOrigin = "o".repeat(3000);
 		mockGetBoundPromptForAgent.mockResolvedValue({

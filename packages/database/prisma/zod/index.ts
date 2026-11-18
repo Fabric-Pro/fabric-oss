@@ -330,7 +330,7 @@ export type SDLCPipelineScalarFieldEnum = z.infer<typeof SDLCPipelineScalarField
 
 // File: ProjectScalarFieldEnum.schema.ts
 
-export const ProjectScalarFieldEnumSchema = z.enum(['id', 'name', 'instructionPluginName', 'description', 'heroEmojis', 'heroImageUrl', 'goals', 'techStack', 'features', 'projectTypes', 'status', 'projectPhase', 'expectedDevelopmentStartDate', 'tags', 'color', 'icon', 'userId', 'organizationId', 'projectManagementMcpServerId', 'projectManagementMcpConfigId', 'projectManagementContainerId', 'projectManagementContainerName', 'projectManagementAdditionalContext', 'logSourceProvider', 'logSourceConfig', 'adoStatePollActive', 'autoPushPmSync', 'syncAttachments', 'attachmentRetentionDays', 'attachmentRetentionDaysUpdatedAt', 'readOnlyMode', 'lastAdoStatePollAt', 'pmTerminalStatuses', 'pmAutoCloseEnabled', 'pmStatusSyncEnabled', 'pmStatusSyncSessionAt', 'pmStatusSyncLastRun', 'pmFieldMappingEnabled', 'prdSourceTitle', 'prdSourceUrl', 'prdSourceContextId', 'prdSourceSyncedAt', 'meetingTranscriptSyncEnabled', 'meetingTranscriptSyncIntervalMin', 'meetingTranscriptSyncLastRun', 'meetingTranscriptSyncWorkflowId', 'meetingTranscriptSyncUserId', 'meetingTranscriptAutoAnalyzeEnabled', 'actionItemRoutingEnabled', 'teamsChannelMonitorEnabled', 'teamsChannelMonitorIntervalMin', 'teamsChannelMonitorQuietWindowMin', 'teamsChannelMonitorLastRun', 'teamsChannelMonitorWorkflowId', 'teamsChannelMonitorUserId', 'teamsChatMonitorEnabled', 'teamsChatMonitorIntervalMin', 'teamsChatMonitorQuietWindowMin', 'teamsChatMonitorLastRun', 'teamsChatMonitorWorkflowId', 'teamsChatMonitorUserId', 'slackChannelMonitorEnabled', 'slackChannelMonitorWorkflowId', 'slackChannelMonitorLastRun', 'slackChannelMonitorDebounceMs', 'slackChannelMonitorMaxHoldMs', 'slackChannelMonitorUserId', 'slackHuddleIngestEnabled', 'slackHuddleIngestEnabledAt', 'slackHuddleIngestIntervalMin', 'slackHuddleIngestLastRun', 'slackHuddleIngestWorkflowId', 'repositoryUrl', 'repositoryOwner', 'repositoryName', 'defaultBranch', 'implementationDefaultChannel', 'implementationDefaultProvider', 'implementationDefaultWorkingDirectory', 'primaryWebsiteUrl', 'additionalWebsiteUrls', 'codeAnalysisStatus', 'codeAnalysisWorkflowId', 'draftKey', 'wizardState', 'nextStoryNumber', 'lastDuplicateScanAt', 'hiddenMaturationStatuses', 'clarifyingQuestionFrequency', 'qaStrategyLevel', 'generateManualTestCases', 'applyTddApproach', 'projectTabConfig', 'autoCreateBugsFromFailures', 'autoDetectRecurringErrors', 'recurringErrorThreshold', 'recurringErrorWindowHours', 'recurringErrorSimilarityThreshold', 'recurringErrorLastScanAt', 'recurringErrorLastScanError', 'billingModel', 'timeRequireStartStop', 'timeDefaultBillable', 'createdAt', 'updatedAt', 'engagementProfile', 'engagementProfileUpdatedAt', 'quotedPhases', 'enforceSpecifyGate', 'enforceSpikeGate', 'enforceDiscoveryGate', 'documentTiersAdvisory', 'visionPurpose', 'visionCoreActions', 'visionCycle', 'outcomesShareToken', 'publishedInstructionSnapshotId', 'instructionSettings', 'deletedAt', 'deletedBy', 'scheduledPermanentDeleteAt', 'deletionReminderSentAt'])
+export const ProjectScalarFieldEnumSchema = z.enum(['id', 'name', 'instructionPluginName', 'description', 'heroEmojis', 'heroImageUrl', 'goals', 'techStack', 'features', 'projectTypes', 'status', 'projectPhase', 'expectedDevelopmentStartDate', 'tags', 'color', 'icon', 'userId', 'organizationId', 'projectManagementMcpServerId', 'projectManagementMcpConfigId', 'projectManagementContainerId', 'projectManagementContainerName', 'projectManagementAdditionalContext', 'logSourceProvider', 'logSourceConfig', 'adoStatePollActive', 'autoPushPmSync', 'syncAttachments', 'attachmentRetentionDays', 'attachmentRetentionDaysUpdatedAt', 'readOnlyMode', 'lastAdoStatePollAt', 'pmTerminalStatuses', 'pmAutoCloseEnabled', 'pmStatusSyncEnabled', 'pmStatusSyncSessionAt', 'pmStatusSyncLastRun', 'pmFieldMappingEnabled', 'prdSourceTitle', 'prdSourceUrl', 'prdSourceContextId', 'prdSourceSyncedAt', 'meetingTranscriptSyncEnabled', 'meetingTranscriptSyncIntervalMin', 'meetingTranscriptSyncLastRun', 'meetingTranscriptSyncWorkflowId', 'meetingTranscriptSyncUserId', 'meetingTranscriptAutoAnalyzeEnabled', 'actionItemRoutingEnabled', 'teamsChannelMonitorEnabled', 'teamsChannelMonitorIntervalMin', 'teamsChannelMonitorQuietWindowMin', 'teamsChannelMonitorLastRun', 'teamsChannelMonitorWorkflowId', 'teamsChannelMonitorUserId', 'teamsChatMonitorEnabled', 'teamsChatMonitorIntervalMin', 'teamsChatMonitorQuietWindowMin', 'teamsChatMonitorLastRun', 'teamsChatMonitorWorkflowId', 'teamsChatMonitorUserId', 'slackChannelMonitorEnabled', 'slackChannelMonitorWorkflowId', 'slackChannelMonitorLastRun', 'slackChannelMonitorDebounceMs', 'slackChannelMonitorMaxHoldMs', 'slackChannelMonitorUserId', 'slackHuddleIngestEnabled', 'slackHuddleIngestEnabledAt', 'slackHuddleIngestIntervalMin', 'slackHuddleIngestLastRun', 'slackHuddleIngestWorkflowId', 'initiativesEnabled', 'repositoryUrl', 'repositoryOwner', 'repositoryName', 'defaultBranch', 'implementationDefaultChannel', 'implementationDefaultProvider', 'implementationDefaultWorkingDirectory', 'primaryWebsiteUrl', 'additionalWebsiteUrls', 'codeAnalysisStatus', 'codeAnalysisWorkflowId', 'draftKey', 'wizardState', 'nextStoryNumber', 'lastDuplicateScanAt', 'hiddenMaturationStatuses', 'clarifyingQuestionFrequency', 'qaStrategyLevel', 'generateManualTestCases', 'applyTddApproach', 'projectTabConfig', 'autoCreateBugsFromFailures', 'autoDetectRecurringErrors', 'recurringErrorThreshold', 'recurringErrorWindowHours', 'recurringErrorSimilarityThreshold', 'recurringErrorLastScanAt', 'recurringErrorLastScanError', 'billingModel', 'timeRequireStartStop', 'timeDefaultBillable', 'createdAt', 'updatedAt', 'engagementProfile', 'engagementProfileUpdatedAt', 'quotedPhases', 'enforceSpecifyGate', 'enforceSpikeGate', 'enforceDiscoveryGate', 'documentTiersAdvisory', 'visionPurpose', 'visionCoreActions', 'visionCycle', 'outcomesShareToken', 'publishedInstructionSnapshotId', 'instructionSettings', 'deletedAt', 'deletedBy', 'scheduledPermanentDeleteAt', 'deletionReminderSentAt'])
 
 export type ProjectScalarFieldEnum = z.infer<typeof ProjectScalarFieldEnumSchema>;
 
@@ -744,7 +744,7 @@ export type AtlasEdgeOverrideHistoryScalarFieldEnum = z.infer<typeof AtlasEdgeOv
 
 // File: ProjectLinkedMeetingScalarFieldEnum.schema.ts
 
-export const ProjectLinkedMeetingScalarFieldEnumSchema = z.enum(['id', 'projectId', 'joinUrl', 'source', 'subject', 'organizer', 'includedInDigest', 'linkedAt', 'deactivatedAt', 'deactivatedById', 'consecutiveFailures', 'lastErrorMessage', 'lastErrorAt', 'userId', 'organizationId', 'parlumeAutoJoin', 'parlumeAutoJoinUserId', 'parlumeAutoJoinToolsReadOnly', 'parlumeAutoJoinSuggestions', 'parlumeAutoJoinSuggestionAudience', 'parlumeAutoJoinError', 'parlumeAutoJoinErrorAt'])
+export const ProjectLinkedMeetingScalarFieldEnumSchema = z.enum(['id', 'projectId', 'joinUrl', 'source', 'subject', 'organizer', 'includedInDigest', 'linkedAt', 'deactivatedAt', 'deactivatedById', 'consecutiveFailures', 'lastErrorMessage', 'lastErrorAt', 'userId', 'organizationId', 'parlumeAutoJoin', 'parlumeAutoJoinUserId', 'parlumeAutoJoinToolsReadOnly', 'parlumeAutoJoinSuggestions', 'parlumeAutoJoinSuggestionAudience', 'parlumeAutoJoinError', 'parlumeAutoJoinErrorAt', 'confidential'])
 
 export type ProjectLinkedMeetingScalarFieldEnum = z.infer<typeof ProjectLinkedMeetingScalarFieldEnumSchema>;
 
@@ -2094,7 +2094,7 @@ export type AgentTemplateScalarFieldEnum = z.infer<typeof AgentTemplateScalarFie
 
 // File: AgentTemplateInstanceScalarFieldEnum.schema.ts
 
-export const AgentTemplateInstanceScalarFieldEnumSchema = z.enum(['id', 'templateId', 'userId', 'organizationId', 'sId', 'version', 'status', 'name', 'description', 'heroEmojis', 'heroImageUrl', 'customInstructions', 'toolConnections', 'triggers', 'modelOverride', 'modelConfig', 'workspaceIds', 'executionMode', 'goal', 'successCriteria', 'maxIterations', 'memoryAutoApprove', 'runCount', 'lastRunAt', 'isApiExposed', 'apiConfig', 'createdAt', 'updatedAt'])
+export const AgentTemplateInstanceScalarFieldEnumSchema = z.enum(['id', 'templateId', 'userId', 'organizationId', 'sId', 'version', 'status', 'name', 'description', 'heroEmojis', 'heroImageUrl', 'customInstructions', 'toolConnections', 'triggers', 'modelOverride', 'modelConfig', 'workspaceIds', 'executionMode', 'goal', 'successCriteria', 'maxIterations', 'memoryAutoApprove', 'runCount', 'lastRunAt', 'isApiExposed', 'apiConfig', 'meetingExternalTools', 'createdAt', 'updatedAt'])
 
 export type AgentTemplateInstanceScalarFieldEnum = z.infer<typeof AgentTemplateInstanceScalarFieldEnumSchema>;
 
@@ -3150,7 +3150,7 @@ export type TimeSuggestionStatus = z.infer<typeof TimeSuggestionStatusSchema>;
 
 // File: TimeEvidenceKind.schema.ts
 
-export const TimeEvidenceKindSchema = z.enum(['MEETING_SESSION', 'TEST_RUN', 'FEATURE_EDIT', 'TEST_RESULT', 'TEST_CASE_ACTIVITY', 'PULL_REQUEST'])
+export const TimeEvidenceKindSchema = z.enum(['MEETING_SESSION', 'TEST_RUN', 'FEATURE_EDIT', 'TEST_RESULT', 'TEST_CASE_ACTIVITY', 'PULL_REQUEST', 'CALENDAR_EVENT'])
 
 export type TimeEvidenceKind = z.infer<typeof TimeEvidenceKindSchema>;
 
@@ -3294,7 +3294,7 @@ export type StageTransitionRequestStatus = z.infer<typeof StageTransitionRequest
 
 // File: StoryKind.schema.ts
 
-export const StoryKindSchema = z.enum(['FEATURE', 'BUG'])
+export const StoryKindSchema = z.enum(['FEATURE', 'BUG', 'INITIATIVE'])
 
 export type StoryKind = z.infer<typeof StoryKindSchema>;
 
@@ -5729,6 +5729,7 @@ export const ProjectSchema = z.object({
   slackHuddleIngestIntervalMin: z.number().int().nullish(),
   slackHuddleIngestLastRun: z.date().nullish(),
   slackHuddleIngestWorkflowId: z.string().nullish(),
+  initiativesEnabled: z.boolean(),
   repositoryUrl: z.string().nullish(),
   repositoryOwner: z.string().nullish(),
   repositoryName: z.string().nullish(),
@@ -7533,9 +7534,10 @@ export const ProjectLinkedMeetingSchema = z.object({
   parlumeAutoJoinUserId: z.string().nullish(),
   parlumeAutoJoinToolsReadOnly: z.boolean().default(true),
   parlumeAutoJoinSuggestions: z.boolean().default(true),
-  parlumeAutoJoinSuggestionAudience: ParlumeSuggestionAudienceSchema.default("MEETING"),
+  parlumeAutoJoinSuggestionAudience: ParlumeSuggestionAudienceSchema.default("TEAM"),
   parlumeAutoJoinError: z.string().nullish(),
   parlumeAutoJoinErrorAt: z.date().nullish(),
+  confidential: z.boolean(),
 });
 
 export type ProjectLinkedMeetingType = z.infer<typeof ProjectLinkedMeetingSchema>;
@@ -7782,7 +7784,7 @@ export const ParlumeMeetingSessionSchema = z.object({
   wakePhrase: z.string().default("Hey Fabric"),
   toolsReadOnly: z.boolean().default(true),
   suggestionsEnabled: z.boolean().default(true),
-  suggestionAudience: ParlumeSuggestionAudienceSchema.default("MEETING"),
+  suggestionAudience: ParlumeSuggestionAudienceSchema.default("TEAM"),
   endReason: ParlumeMeetingEndReasonSchema.nullish(),
   lastError: z.string().nullish(),
   joinedAt: z.date().nullish(),
@@ -12695,6 +12697,7 @@ export const AgentTemplateInstanceSchema = z.object({
   lastRunAt: z.date().nullish(),
   isApiExposed: z.boolean(),
   apiConfig: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  meetingExternalTools: z.boolean(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });

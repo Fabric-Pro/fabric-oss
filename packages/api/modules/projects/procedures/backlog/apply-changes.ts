@@ -7,7 +7,7 @@ import {
 	createPendingBacklogProposal,
 	db,
 	finalizeBacklogUpdateSession,
-	finalizeClaimedProposal,
+	finalizeProposalApply,
 	getAppliedChangeIndexes,
 	getBoundPromptForAgent,
 	getPendingBacklogProposal,
@@ -35,6 +35,12 @@ import {
 	recordDecisionOverridesAccepted,
 	snapshotBacklogChange,
 } from "../../lib/decision-override-audit";
+import {
+	assertProposalItemsUnresolved,
+	assertProposalRevision,
+	assertUpdateTargetsInProject,
+	lostClaimConflict,
+} from "./proposal-approval-guards";
 import {
 	buildProposalReviewEntries,
 	buildSidebarReviewEntries,
@@ -180,6 +186,12 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			 * and passes the proposal id through so every change is recorded.
 			 */
 			proposalId: z.string().optional(),
+			/**
+			 * With `proposalId`: the `proposalRevision` of the detail the
+			 * reviewer approved from. A different stored revision is refused
+			 * with CONFLICT. Optional for older clients.
+			 */
+			expectedProposalRevision: z.string().max(128).optional(),
 			syncToPM: z.boolean().default(false),
 			pmConfig: z
 				.object({
@@ -484,6 +496,12 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				proposalId: null,
 			};
 		}
+		// Nothing is claimed or applied when an update names a work item that
+		// is not in this project.
+		await assertUpdateTargetsInProject(
+			input.projectId,
+			input.approvedChanges,
+		);
 		const sidebarEntries = !input.proposalId
 			? buildSidebarReviewEntries(
 					input.approvedChanges,
@@ -548,6 +566,10 @@ export const applyChangesProcedure = tenantProtectedProcedure
 					message: "Proposal not found",
 				});
 			}
+			assertProposalRevision(
+				existing.proposal,
+				input.expectedProposalRevision,
+			);
 			const proposalChanges = readProposalChanges(existing.proposal);
 			const indexes = resolveApprovedChangeIndexes(
 				proposalChanges,
@@ -564,6 +586,15 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			);
 			for (const index of existing.appliedChangeIndexes ?? [])
 				alreadyApplied.add(index);
+			// An item moved to Rejected on its own lives in its own row now.
+			// Applied items are skipped only on a FAILED proposal's retry; a
+			// stale client resubmitting them to a PENDING row gets CONFLICT.
+			assertProposalItemsUnresolved({
+				indexes,
+				applied: alreadyApplied,
+				sourceMetadata: existing.sourceMetadata,
+				allowApplied: existing.status === "FAILED",
+			});
 			const remaining = indexed.filter(
 				({ index }) => !alreadyApplied.has(index),
 			);
@@ -592,6 +623,8 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				proposalId: input.proposalId,
 				reviewedBy: user.id,
 				applyWorkflowId: workflowId,
+				expectedSourceMetadata: existing.sourceMetadata,
+				expectedProposal: existing.proposal,
 				syncToPM: input.syncToPM,
 				offeredListComplete: true,
 				pmConfig: input.pmConfig,
@@ -604,15 +637,17 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				...(isRecommendation ? { admitBacklog: true } : {}),
 			});
 			if (!claimed) {
-				throw new ORPCError("CONFLICT", {
-					message:
-						"Proposal is already being applied or was already reviewed",
-				});
+				throw await lostClaimConflict(
+					input.proposalId,
+					isRecommendation
+						? ["PENDING", "FAILED", "BACKLOG"]
+						: ["PENDING", "FAILED"],
+				);
 			}
 			if (remaining.length === 0) {
-				await finalizeClaimedProposal({
+				await finalizeProposalApply({
 					proposalId: input.proposalId,
-					applyWorkflowId: workflowId,
+					claim: { status: "APPLYING", applyWorkflowId: workflowId },
 					outcome: "applied",
 				});
 				return {
@@ -977,9 +1012,9 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			if (input.proposalId) {
 				// Release the claim (plan §F3) so the proposal is retryable
 				// from the inbox; the failure is recorded on the row.
-				await finalizeClaimedProposal({
+				await finalizeProposalApply({
 					proposalId: input.proposalId,
-					applyWorkflowId: workflowId,
+					claim: { status: "APPLYING", applyWorkflowId: workflowId },
 					outcome: "failed",
 					errorMessage:
 						error instanceof Error

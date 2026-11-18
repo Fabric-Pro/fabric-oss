@@ -15,6 +15,7 @@ vi.mock("../prisma/client", async (original) => ({
 }));
 
 import { Prisma } from "../prisma/client";
+import { withVisibleStories } from "../prisma/queries/projects/initiative-visibility";
 import {
 	getStoriesForBoard,
 	getStoriesForKanban,
@@ -58,7 +59,9 @@ it("selects all scalar columns except classified heavy/internal fields and omits
 	});
 	expect(query.select.codingRuns.take).toBe(1);
 	expect(query.select.tasks.include.codingRuns.take).toBe(1);
-	expect(query.where).toEqual({ projectId: "example-project" });
+	expect(query.where).toEqual(
+		withVisibleStories({ projectId: "example-project" }),
+	);
 	expect(query.orderBy).toEqual({ order: "asc" });
 	expect(result.stories[0]).toMatchObject({
 		hasDescription: true,

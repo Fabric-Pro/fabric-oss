@@ -108,10 +108,11 @@ describe("BacklogChangeProposal — clamped preview markdown strip", () => {
 			sourceContext: "teams_messages",
 		};
 		renderProposal({ changes: [markdownUpdate] });
-		// The DiffField compact preview must not leak ** for updates either.
+		// The DiffField compact preview must not leak ** for updates either,
+		// nor the change summary that quotes the added line above it.
 		expect(document.body.textContent ?? "").not.toContain("**");
 		expect(
-			screen.getByText(/Updated with a new requirement/),
-		).toBeDefined();
+			screen.getAllByText(/Updated with a new requirement/),
+		).toHaveLength(2);
 	});
 });

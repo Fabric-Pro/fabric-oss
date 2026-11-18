@@ -6,7 +6,16 @@
  * as the failed upload a 401 is: keep the original `src` and log the failure,
  * never read the body as an attachment record.
  */
+
+import { safeFetchOutboundPinned } from "@repo/utils/url-security";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@repo/utils/url-security", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@repo/utils/url-security")>()),
+	safeFetchOutboundPinned: vi.fn(),
+}));
+
+const fetchPinned = vi.mocked(safeFetchOutboundPinned);
 
 const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
 
@@ -46,11 +55,13 @@ function sourceImage() {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockFetch.mockReset();
+	fetchPinned.mockReset();
 });
 
 describe("uploadAdoImageAttachments — rejected PAT", () => {
 	it("rewrites the src to the attachment URL on a 201", async () => {
-		mockFetch.mockResolvedValueOnce(sourceImage()).mockResolvedValueOnce(
+		fetchPinned.mockResolvedValueOnce(sourceImage());
+		mockFetch.mockResolvedValueOnce(
 			new Response(JSON.stringify({ id: "a", url: ATTACHMENT_URL }), {
 				status: 201,
 			}),
@@ -59,11 +70,22 @@ describe("uploadAdoImageAttachments — rejected PAT", () => {
 		const out = await uploadAdoImageAttachments([image], target);
 
 		expect(out[0].src).toBe(ATTACHMENT_URL);
+		expect(fetchPinned).toHaveBeenCalledWith(image.src, expect.anything(), {
+			maxBytes: 10 * 1024 * 1024,
+			allowedContentTypes: [
+				"image/png",
+				"image/jpeg",
+				"image/gif",
+				"image/webp",
+				"image/svg+xml",
+			],
+		});
 	});
 
 	it("keeps the original src and logs a failed upload on ADO's 203 sign-in page", async () => {
 		// The body is a valid attachment record: only the status can reject it.
-		mockFetch.mockResolvedValueOnce(sourceImage()).mockResolvedValueOnce(
+		fetchPinned.mockResolvedValueOnce(sourceImage());
+		mockFetch.mockResolvedValueOnce(
 			new Response(JSON.stringify({ id: "a", url: ATTACHMENT_URL }), {
 				status: 203,
 				headers: { "content-type": "text/html" },
@@ -80,7 +102,8 @@ describe("uploadAdoImageAttachments — rejected PAT", () => {
 	});
 
 	it("does not read an HTML sign-in body (no 'Upload threw')", async () => {
-		mockFetch.mockResolvedValueOnce(sourceImage()).mockResolvedValueOnce(
+		fetchPinned.mockResolvedValueOnce(sourceImage());
+		mockFetch.mockResolvedValueOnce(
 			new Response("<html>sign in</html>", {
 				status: 203,
 				headers: { "content-type": "text/html" },
@@ -95,11 +118,10 @@ describe("uploadAdoImageAttachments — rejected PAT", () => {
 	});
 
 	it("a real 401 takes the same failed-upload path", async () => {
-		mockFetch
-			.mockResolvedValueOnce(sourceImage())
-			.mockResolvedValueOnce(
-				new Response("unauthorized", { status: 401 }),
-			);
+		fetchPinned.mockResolvedValueOnce(sourceImage());
+		mockFetch.mockResolvedValueOnce(
+			new Response("unauthorized", { status: 401 }),
+		);
 
 		const out = await uploadAdoImageAttachments([image], target);
 

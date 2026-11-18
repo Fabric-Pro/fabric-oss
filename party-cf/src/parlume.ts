@@ -110,6 +110,14 @@ interface PendingTurn {
 	chatMessageId?: string;
 }
 
+/** What Fabric said to a turn the bridge handed it. */
+interface PostedTurn {
+	accepted: boolean;
+	handoffMs: number;
+	/** Fabric's own steps, from when its handler started. */
+	timing: unknown;
+}
+
 interface WakeArm {
 	speakerKey: string;
 	expiresAt: number;
@@ -1641,28 +1649,25 @@ export class Parlume extends Server<Env> {
 			});
 			return;
 		}
-		const accepted =
+		const posted =
 			(await this.floor.flushPendingInterrupt()) &&
 			turn.voiceGeneration === this.floor.generation
-				? await this.postToFabric("/api/internal/parlume/turns", turn)
+				? await this.postTurn(turn, endpointedAt)
 				: null;
-		if (accepted) {
-			const handoffMs = Date.now() - endpointedAt;
-			const body: unknown = await accepted.json().catch(() => null);
-			log("info", "turn.dispatched", {
-				sessionId: turn.sessionId,
-				botId: turn.botId,
-				voiceGeneration: turn.voiceGeneration,
-				requestChars: turn.text.length,
-				// Wake phrase to the end of the request, then to Fabric's accept.
-				endpointMs: endpointedAt - this.wokeAt,
-				handoffMs,
-				// Fabric's own steps, from when its handler started.
-				fabricTiming:
-					isRecord(body) && isRecord(body.timing)
-						? body.timing
-						: null,
-			});
+		if (posted) {
+			if (posted.accepted) {
+				log("info", "turn.dispatched", {
+					sessionId: turn.sessionId,
+					botId: turn.botId,
+					voiceGeneration: turn.voiceGeneration,
+					requestChars: turn.text.length,
+					// Wake phrase to the end of the request, then to Fabric's accept.
+					endpointMs: endpointedAt - this.wokeAt,
+					handoffMs: posted.handoffMs,
+					// Fabric's own steps, from when its handler started.
+					fabricTiming: posted.timing,
+				});
+			}
 			return;
 		}
 		log("warn", "turn.deferred", {
@@ -1689,6 +1694,43 @@ export class Parlume extends Server<Env> {
 		await this.ctx.storage.setAlarm(Date.now() + TURN_RETRY_MS);
 	}
 
+	/**
+	 * Hands a turn to Fabric: null when Fabric could not be reached. Fabric
+	 * answers `accepted: false`, not an error, for a session that is no longer
+	 * live, a superseded generation or a duplicate request. That request is not
+	 * answered, so it is logged as not accepted, never as dispatched.
+	 */
+	private async postTurn(
+		turn: PendingTurn,
+		startedAt: number,
+	): Promise<PostedTurn | null> {
+		const response = await this.postToFabric(
+			"/api/internal/parlume/turns",
+			turn,
+		);
+		if (!response) {
+			return null;
+		}
+		const handoffMs = Date.now() - startedAt;
+		const body: unknown = await response.json().catch(() => null);
+		const accepted = !(isRecord(body) && body.accepted === false);
+		if (!accepted) {
+			log("warn", "turn.not_accepted", {
+				sessionId: turn.sessionId,
+				botId: turn.botId,
+				voiceGeneration: turn.voiceGeneration,
+				requestChars: turn.text.length,
+				handoffMs,
+			});
+		}
+		return {
+			accepted,
+			handoffMs,
+			timing:
+				isRecord(body) && isRecord(body.timing) ? body.timing : null,
+		};
+	}
+
 	private async flushPendingTurns(): Promise<boolean> {
 		if (!(await this.floor.flushPendingInterrupt())) {
 			return false;
@@ -1706,10 +1748,7 @@ export class Parlume extends Server<Env> {
 			if (turn && turn.voiceGeneration !== this.floor.generation) {
 				continue;
 			}
-			if (
-				!turn ||
-				!(await this.postToFabric("/api/internal/parlume/turns", turn))
-			) {
+			if (!turn || !(await this.postTurn(turn, Date.now()))) {
 				break;
 			}
 		}

@@ -132,7 +132,7 @@ describe("ParlumePage invitation", () => {
 				meetingUrl,
 				toolsReadOnly: true,
 				suggestionsEnabled: true,
-				suggestionAudience: "MEETING",
+				suggestionAudience: "TEAM",
 			}),
 		);
 	});
@@ -261,7 +261,7 @@ describe("ParlumePage invitation", () => {
 				meetingUrl,
 				toolsReadOnly: true,
 				suggestionsEnabled: true,
-				suggestionAudience: "MEETING",
+				suggestionAudience: "TEAM",
 			}),
 		);
 	});
@@ -379,15 +379,20 @@ describe("ParlumePage invitation", () => {
 		);
 	});
 
-	it("invites with suggestions for the team only, and says who sees each choice", async () => {
+	it("offers suggestions for the team only by default, and says who sees each choice", async () => {
 		showPage();
 		await readyToInvite();
 		expect(
 			screen.getByText(/external guests included/),
 		).toBeInTheDocument();
-		fireEvent.click(
+		expect(
 			screen.getByRole("radio", {
 				name: "Only your team (Parlume page)",
+			}),
+		).toBeChecked();
+		fireEvent.click(
+			screen.getByRole("radio", {
+				name: "Everyone in the meeting (chat)",
 			}),
 		);
 		fireEvent.click(inviteButton());
@@ -395,7 +400,7 @@ describe("ParlumePage invitation", () => {
 			expect(mocks.start).toHaveBeenCalledWith(
 				expect.objectContaining({
 					suggestionsEnabled: true,
-					suggestionAudience: "TEAM",
+					suggestionAudience: "MEETING",
 				}),
 			),
 		);

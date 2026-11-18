@@ -279,6 +279,18 @@ test("Flux's end of turn answers at once, ending the turn the session is still h
 	assert.equal(engine.requesterKey(), null);
 });
 
+test("a chat post read aloud in the realtime voice says 'the link' for each address", async () => {
+	const { engine, socket } = harness();
+	await engine.start();
+	socket().clear();
+	void engine.say(
+		"Roadmap: https://fabric.example/app/projects/p?tab=stories\nContext: https://fabric.example/app/projects/p?tab=context",
+	);
+	const text = systemTexts(socket()).at(-1) ?? "";
+	assert.match(text, /Roadmap: the link\. Context: the link\./);
+	assert.doesNotMatch(text, /https?:/);
+});
+
 test("Parlume's voice plays through the outlet, and a barge-in cancels and truncates to what was heard", async () => {
 	const h = harness();
 	await h.engine.start();

@@ -11,16 +11,15 @@
 import {
 	appendAppliedChangeIndexes,
 	clearTeamsChannelFailureState,
-	db,
 	finalizeBacklogUpdateSession,
-	finalizeClaimedProposal,
+	finalizeProposalApply,
 	getLinkedTeamsChannelsForMonitor,
 	getPendingBacklogProposal,
 	getTeamsLinkedChannelJobContext,
-	markPendingProposalApplied,
 	markPendingProposalFailed,
 	recordTeamsChannelFailure,
 	setTeamsChannelScanPageToken,
+	settleAppliedProposal,
 	updateTeamsChannelCursor,
 	updateTeamsChannelMonitorLastRun,
 } from "@repo/database";
@@ -211,17 +210,23 @@ export async function finalizePendingProposalActivity(
 			input.appliedChangeIndexes,
 		);
 	}
-	if (input.outcome === "applied") {
-		await markPendingProposalApplied(input.proposalId);
-	} else {
-		await markPendingProposalFailed(input.proposalId, {
-			errorClass: input.errorClass ?? "default",
-			errorMessage: input.errorMessage ?? "apply workflow failed",
-			rawApplyError: input.rawApplyError,
-		});
-	}
-
+	await finalizeUnclaimedProposal(input);
 	await mirrorProposalOutcomeOntoSession(input);
+}
+
+/** Unconditional terminal write for a proposal approved without a claim. */
+async function finalizeUnclaimedProposal(
+	input: FinalizePendingProposalInput,
+): Promise<void> {
+	if (input.outcome === "applied") {
+		await settleAppliedProposal({ proposalId: input.proposalId });
+		return;
+	}
+	await markPendingProposalFailed(input.proposalId, {
+		errorClass: input.errorClass ?? "default",
+		errorMessage: input.errorMessage ?? "apply workflow failed",
+		rawApplyError: input.rawApplyError,
+	});
 }
 
 /**
@@ -278,6 +283,21 @@ async function mirrorProposalOutcomeOntoSession(
 	}
 }
 
+/** The claim-checked finalize, for the claim status this workflow holds. */
+async function finalizeWithClaim(
+	input: FinalizeClaimedProposalInput,
+	status: "APPLYING" | "PENDING",
+): Promise<boolean> {
+	return await finalizeProposalApply({
+		proposalId: input.proposalId,
+		claim: { status, applyWorkflowId: input.applyWorkflowId },
+		outcome: input.outcome,
+		errorClass: input.errorClass,
+		errorMessage: input.errorMessage,
+		rawApplyError: input.rawApplyError,
+	});
+}
+
 export interface FinalizeClaimedProposalInput
 	extends FinalizePendingProposalInput {
 	/** `workflowInfo().workflowId` of the apply workflow that claimed the row. */
@@ -314,35 +334,7 @@ export async function finalizeClaimedProposalActivity(
 			input.appliedChangeIndexes,
 		);
 	}
-	const finalized = await finalizeClaimedProposal({
-		proposalId: input.proposalId,
-		applyWorkflowId: input.applyWorkflowId,
-		outcome: input.outcome,
-		errorMessage: input.errorMessage,
-		errorClass: input.errorClass,
-		rawApplyError: input.rawApplyError,
-	});
-	if (finalized) {
-		if (input.outcome === "failed") {
-			// The CAS wrote status + applyError; carry the classified error the
-			// inbox/banner copy reads, on the row this workflow still owns.
-			await db.pendingBacklogProposal.updateMany({
-				where: {
-					id: input.proposalId,
-					status: "FAILED",
-					applyWorkflowId: input.applyWorkflowId,
-				},
-				data: {
-					errorClass: (input.errorClass ?? "default").slice(0, 200),
-					errorMessage: (
-						input.errorMessage ?? "apply workflow failed"
-					).slice(0, 500),
-					...(input.rawApplyError
-						? { applyError: input.rawApplyError.slice(0, 4000) }
-						: {}),
-				},
-			});
-		}
+	if (await finalizeWithClaim(input, "APPLYING")) {
 		await mirrorProposalOutcomeOntoSession(input);
 		return { finalized: true, legacyFallback: false };
 	}
@@ -354,37 +346,7 @@ export async function finalizeClaimedProposalActivity(
 	) {
 		// Rolling deployment compatibility for dispatches from the previous API.
 		// Recheck ownership in the write so cancellation or re-claim wins safely.
-		const legacy = await db.pendingBacklogProposal.updateMany({
-			where: {
-				id: input.proposalId,
-				status: "PENDING",
-				applyWorkflowId: input.applyWorkflowId,
-			},
-			data:
-				input.outcome === "applied"
-					? {
-							status: "APPLIED",
-							appliedAt: new Date(),
-							applyError: null,
-						}
-					: {
-							status: "FAILED",
-							errorClass: (input.errorClass ?? "default").slice(
-								0,
-								200,
-							),
-							errorMessage: (
-								input.errorMessage ?? "apply workflow failed"
-							).slice(0, 500),
-							applyError: (
-								input.rawApplyError ??
-								input.errorMessage ??
-								"apply workflow failed"
-							).slice(0, 4000),
-							failedAt: new Date(),
-						},
-		});
-		if (legacy.count === 1) {
+		if (await finalizeWithClaim(input, "PENDING")) {
 			await mirrorProposalOutcomeOntoSession(input);
 			return { finalized: true, legacyFallback: true };
 		}
@@ -402,15 +364,7 @@ export async function finalizeClaimedProposalActivity(
 				applyWorkflowId: input.applyWorkflowId,
 			},
 		);
-		if (input.outcome === "applied") {
-			await markPendingProposalApplied(input.proposalId);
-		} else {
-			await markPendingProposalFailed(input.proposalId, {
-				errorClass: input.errorClass ?? "default",
-				errorMessage: input.errorMessage ?? "apply workflow failed",
-				rawApplyError: input.rawApplyError,
-			});
-		}
+		await finalizeUnclaimedProposal(input);
 		await mirrorProposalOutcomeOntoSession(input);
 		return { finalized: true, legacyFallback: true };
 	}

@@ -2,7 +2,6 @@
 
 import { useCopilotAction, useCopilotReadable } from "@copilotkit/react-core";
 import { useChatContext } from "@copilotkit/react-ui";
-import { MessageRole, TextMessage } from "@copilotkit/runtime-client-gql";
 import { featureKeyForAgentId } from "@repo/ai/lib/feature-keys";
 import {
 	type DraftVerdictRecorder,
@@ -44,7 +43,11 @@ import {
 	selectDocumentAssistantMessages,
 } from "../copilot/document-assistant-message-projection";
 import { HydratedMessagesProvider } from "../copilot/HydratedMessagesContext";
-import type { AiReadinessData } from "./maturation/ReadinessBar";
+import {
+	type AiReadinessData,
+	INITIATIVE_BREAKDOWN_PATTERN,
+	INITIATIVE_GOALS_PATTERN,
+} from "./maturation/ReadinessBar";
 import "@copilotkit/react-ui/styles.css";
 import "../DocumentEditor.css"; // Import diff highlighting styles
 import { isAiContextEligibleAttachmentMime } from "@repo/utils/story-attachment-ai-context";
@@ -166,6 +169,7 @@ import {
 	resolveStoryImageUrls,
 	uploadStoryImage,
 } from "../../lib/image-upload-utils";
+import { STORY_KIND_LABELS, storyKindNoun } from "../../lib/roadmap-filters";
 import {
 	createSignedMediaUrlRefresher,
 	type SignedMediaUrlRefresher,
@@ -198,7 +202,9 @@ import {
 	SIZE_OPTIONS,
 } from "../../lib/stories/types";
 import {
+	hasUnreviewedDraft,
 	isEditorDirty,
+	lastSavedAtRunStart,
 	shouldWarnBeforeUnload,
 } from "../../lib/stories/unsaved-changes-guard";
 import { storyAttachmentsQueryOptions } from "../../lib/story-attachments-query";
@@ -539,6 +545,12 @@ const DEFERRED_ACCEPT_SAVE_DELAY_MS = 1000;
 const REVIEW_RESOLUTION_SETTLE_GRACE_MS = DEFERRED_ACCEPT_SAVE_DELAY_MS + 250;
 
 /**
+ * How long after a run ends the editor waits for its review before it treats
+ * the run's remaining diff marks as a draft no review will resolve.
+ */
+const UNREVIEWED_DRAFT_CHECK_DELAY_MS = 1500;
+
+/**
  * The cross-tab review banner's own state machine (Fizzy #1929).
  *
  * `null` means the banner is a plain "a draft is waiting" notice. A non-null
@@ -755,6 +767,14 @@ export function StoryWorkspace({
 		}),
 		enabled: maturationV2,
 	});
+
+	const readinessText = [
+		maturationData?.summaryDigest,
+		story.description,
+		maturationData?.cleanSpec?.description,
+	]
+		.filter(Boolean)
+		.join("\n");
 
 	const maturationAnswerMutation = useMutation(
 		orpc.projects.stories.maturation.answerQuestion.mutationOptions({
@@ -1039,7 +1059,7 @@ export function StoryWorkspace({
 
 	// "Refresh Clean Spec" (#1/#4b/#6, #R1–R3) runs THROUGH the AI Feature Assistant
 	// chat (same path as stage Enhance) — the button's onClick resolves the
-	// kind-scoped Clean Spec prompt and appendMessage()s it so the agent applies via
+	// kind-scoped Clean Spec prompt and sendMessage()s it so the agent applies via
 	// write_document_local with the normal inline diff review. No standalone mutation.
 
 	// Restore a soft-closed (POSSIBLY_RESOLVED) question to OPEN (#5).
@@ -1653,11 +1673,11 @@ export function StoryWorkspace({
 	// not the Turndown shape every other writer of this ref uses
 	// (`getEditorMarkdownForSave` output, which may spell escapes, loose
 	// lists or a hard break differently). The two are not byte-equal for
-	// every document. This
-	// only matters for `handleReject`, the one reader that compares against
-	// this ref without another writer having overwritten it first; it fails
-	// safe (reports dirty, not clean) on a never-saved document, so no data
-	// loss — just a possible false "unsaved changes" right after a reject.
+	// every document. `handleReject` is the one reader that could compare
+	// against this shape, so Effect 1 re-bases the ref on the editor's own
+	// serialization when a run starts on a clean editor
+	// (`lastSavedAtRunStart`). Without that, a Reject read an untouched story
+	// as dirty, and the save that followed re-split its acceptance criteria.
 	if (lastSavedMarkdownRef.current === null) {
 		lastSavedMarkdownRef.current = buildInitialContent();
 	}
@@ -1712,7 +1732,7 @@ export function StoryWorkspace({
 	// required — separate per-handler latches would let Refresh fire during
 	// Enhance's prefetch window (and vice versa), still causing a second
 	// concurrent run. Each handler awaits network calls (bound-prompt fetch,
-	// context retrieval) before `appendMessage` actually starts the agent
+	// context retrieval) before `sendMessage` actually starts the agent
 	// run, so a double-click (or a click while a prior run is still
 	// streaming) fires a second concurrent run on the same thread — the
 	// server-side InMemoryAgentRunner then throws "Thread already running"
@@ -1807,7 +1827,7 @@ export function StoryWorkspace({
 	// The "AI is generating…" pill below IS a user-facing indicator, so it
 	// cannot tolerate a handshake-triggered flash: it gates on the explicit
 	// user-send signal from `useUserRunSignal`, marked by the chat input's
-	// `onUserSend` and the two programmatic `appendMessage` triggers below
+	// `onUserSend` and the two programmatic `sendMessage` triggers below
 	// (`handleRefreshCleanSpec`, the FeatureTransitionDialog enhance flow).
 	// See the hook's doc-comment for the transition-clear and
 	// reload-mid-run semantics.
@@ -1820,7 +1840,7 @@ export function StoryWorkspace({
 		(session) => session.isLoading,
 	);
 	const agent = useCopilotChatSessionSelector((session) => session.agent);
-	const { appendMessage } = useCopilotChatSessionActions();
+	const { sendMessage } = useCopilotChatSessionActions();
 	const { isUserGenerationActive, markUserRunInitiated, clearUserRunMark } =
 		useUserRunSignal(isAiLoading);
 
@@ -1991,23 +2011,22 @@ export function StoryWorkspace({
 				// from the chat input itself during the awaits above (the input only
 				// consults `agent.isRunning`, not our latch), so `isAgentRunActive()`
 				// can have flipped true after we set the latch above and after the
-				// pre-flush check ran. Re-checking right before `appendMessage`
+				// pre-flush check ran. Re-checking right before `sendMessage`
 				// catches that race (GH #2526).
 				if (isAgentRunActive()) {
 					isRefreshCleanSpecPendingRef.current = false;
 					// The shared scope rolls back the committed run state.
 					return;
 				}
-				// `appendMessage` awaits the full agent run, so the latch stays held
+				// `sendMessage` awaits the full agent run, so the latch stays held
 				// (via the outer `finally`) until the run actually completes.
 				markUserRunInitiated();
 				try {
-					await appendMessage(
-						new TextMessage({
-							role: MessageRole.User,
-							content: buildCleanSpecRefreshMessage(kindWord),
-						}),
-					);
+					await sendMessage({
+						id: crypto.randomUUID(),
+						role: "user",
+						content: buildCleanSpecRefreshMessage(kindWord),
+					});
 				} catch (error) {
 					// The user-run signal is shared across every send surface on
 					// this thread, so this handler may only clear a mark it set
@@ -2034,7 +2053,7 @@ export function StoryWorkspace({
 		organizationId,
 		projectId,
 		currentDocument,
-		appendMessage,
+		sendMessage,
 		markUserRunInitiated,
 		clearUserRunMark,
 		withDocumentRunPrompt,
@@ -2530,6 +2549,14 @@ export function StoryWorkspace({
 				// why the pending-decisions splice cannot read `baselineRef`
 				// here instead.
 				runStartBaselineRef.current = baseline;
+				// So a Reject that restores this text without a splice reads
+				// clean and does not save the story.
+				lastSavedMarkdownRef.current = lastSavedAtRunStart({
+					baseline,
+					lastSaved: lastSavedMarkdownRef.current,
+					hasUnsavedChanges: hasUnsavedChangesRef.current,
+					saveInFlight,
+				});
 				setCurrentDocument(baseline); // Keep state in sync
 			} else {
 				toast.error(
@@ -3491,7 +3518,7 @@ export function StoryWorkspace({
 			} else {
 				toast.success(
 					data?.aiEnhanced
-						? `${story.kind === "BUG" ? "Bug" : "Feature"} enhanced with AI`
+						? `${STORY_KIND_LABELS[story.kind]} enhanced with AI`
 						: "Drafting stage updated",
 				);
 			}
@@ -3552,7 +3579,7 @@ export function StoryWorkspace({
 				});
 			} else {
 				toast.success(
-					`${story.kind === "BUG" ? "Bug" : "Feature"} enhanced and stage updated`,
+					`${STORY_KIND_LABELS[story.kind]} enhanced and stage updated`,
 				);
 			}
 			triggerMaturationSeedAfterApply();
@@ -4741,6 +4768,49 @@ export function StoryWorkspace({
 	// See `resolvePendingReviewRef`'s declaration for why this is a render-body
 	// assignment and why the renderer above can rely on it.
 	resolvePendingReviewRef.current = resolvePendingReview;
+
+	// A run that fails or is stopped before its review leaves its draft's diff
+	// marks with no Accept or Reject, and the next save would keep the AI's
+	// partial text. Once the run is over, put back the pre-run text, which
+	// `baselineRef` still holds because Effect 4 does not sync while marks
+	// remain. The check waits a moment because the review renderer sets
+	// `confirmCallbacksRef` one render after the run's last event; if a
+	// review does arrive later, Accept re-applies the final draft (the race
+	// defense at the top of `handleAccept`).
+	useEffect(() => {
+		if (!editor || isAiLoading || isAwaitingConfirmation) {
+			return;
+		}
+		const timer = setTimeout(() => {
+			if (
+				!hasUnreviewedDraft({
+					hasDiffMarks: editorHasDiffMarks(editor),
+					isAiLoading: isAiLoadingRef.current,
+					isAwaitingConfirmation: isAwaitingConfirmationRef.current,
+					hasPendingReview: confirmCallbacksRef.current !== null,
+					isResolvingReview: resolvingReviewRef.current,
+					isContextUpdateActive: isContextUpdateActiveRef.current,
+				})
+			) {
+				return;
+			}
+			const restored = baselineRef.current;
+			isSyncingFromPropRef.current = true;
+			editor.commands.setContent(
+				fromMarkdown(restored, USER_CONTENT_MD_OPTIONS),
+			);
+			isSyncingFromPropRef.current = false;
+			setAgentState({ document: restored });
+			setHasUnsavedChanges(
+				isEditorDirty(restored, lastSavedMarkdownRef.current),
+			);
+			toast.info(
+				"The assistant stopped before its draft was ready for review. Your specification is unchanged.",
+			);
+		}, UNREVIEWED_DRAFT_CHECK_DELAY_MS);
+		return () => clearTimeout(timer);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [editor, isAiLoading, isAwaitingConfirmation]);
 
 	/**
 	 * Route to the diff. Approving a whole-spec rewrite from a tab that shows
@@ -7044,7 +7114,7 @@ export function StoryWorkspace({
 								  configurable Clean Spec prompt, run THROUGH the AI
 								  Feature Assistant chat (same path as stage Enhance):
 								  ask the server which kind-scoped prompt this item
-								  runs, then appendMessage so the agent applies via
+								  runs, then sendMessage so the agent applies via
 								  write_document_local with the normal inline diff
 								  review. Shown for features AND bugs; highlighted when
 								  questions were answered since the last rebuild. */}
@@ -7111,63 +7181,65 @@ export function StoryWorkspace({
 							  BUG ↔ FEATURE from the detail page without going
 							  back to the roadmap. Confirmation dialog handled
 							  below; mutation handles the API call. */}
-											<TooltipProvider>
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<Button
-															size="sm"
-															variant="outline"
-															onClick={() => {
-																// Focusable (aria-disabled, not disabled)
-																// so the tooltip can say why.
-																if (
-																	convertBlockedByDefer
-																) {
-																	return;
+											{story.kind !== "INITIATIVE" && (
+												<TooltipProvider>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Button
+																size="sm"
+																variant="outline"
+																onClick={() => {
+																	// Focusable (aria-disabled, not disabled)
+																	// so the tooltip can say why.
+																	if (
+																		convertBlockedByDefer
+																	) {
+																		return;
+																	}
+																	setConvertDialogOpen(
+																		true,
+																	);
+																}}
+																disabled={
+																	convertKindMutation.isPending
 																}
-																setConvertDialogOpen(
-																	true,
-																);
-															}}
-															disabled={
-																convertKindMutation.isPending
-															}
-															aria-disabled={
-																convertBlockedByDefer ||
-																undefined
-															}
-															className={cn(
-																"h-8 gap-1.5 text-xs",
-																convertBlockedByDefer &&
-																	"cursor-not-allowed opacity-50",
-															)}
-														>
-															<ArrowLeftRightIcon className="size-3" />
-															{story.kind ===
-															"BUG"
-																? "Change to feature"
-																: "Change to bug"}
-														</Button>
-													</TooltipTrigger>
-													<TooltipContent surface="popover">
-														<p>
-															Flip the work item
-															type
-														</p>
-														{/* Fizzy #2048 — this
-														    said "Card content
-														    stays as-is", which
-														    is no longer true. */}
-														<p className="text-xs text-muted-foreground">
-															{tConvertKind(
-																convertBlockedByDefer
-																	? "deferredBlocked"
-																	: "tooltipHint",
-															)}
-														</p>
-													</TooltipContent>
-												</Tooltip>
-											</TooltipProvider>
+																aria-disabled={
+																	convertBlockedByDefer ||
+																	undefined
+																}
+																className={cn(
+																	"h-8 gap-1.5 text-xs",
+																	convertBlockedByDefer &&
+																		"cursor-not-allowed opacity-50",
+																)}
+															>
+																<ArrowLeftRightIcon className="size-3" />
+																{story.kind ===
+																"BUG"
+																	? "Change to feature"
+																	: "Change to bug"}
+															</Button>
+														</TooltipTrigger>
+														<TooltipContent surface="popover">
+															<p>
+																Flip the work
+																item type
+															</p>
+															{/* Fizzy #2048 — this
+															    said "Card content
+															    stays as-is", which
+															    is no longer true. */}
+															<p className="text-xs text-muted-foreground">
+																{tConvertKind(
+																	convertBlockedByDefer
+																		? "deferredBlocked"
+																		: "tooltipHint",
+																)}
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												</TooltipProvider>
+											)}
 											<FocusModeToggle />
 										</div>
 									);
@@ -8266,59 +8338,33 @@ export function StoryWorkspace({
 													: null
 											}
 											hasAcceptanceCriteria={Boolean(
-												story.acceptanceCriteria?.trim() ||
-													/acceptance\s+criteria|\bgiven\b.*\bwhen\b.*\bthen\b/i.test(
-														[
-															maturationData?.summaryDigest,
-															story.description,
-															maturationData
-																?.cleanSpec
-																?.description,
-														]
-															.filter(Boolean)
-															.join("\n"),
-													),
+												story.kind === "INITIATIVE"
+													? INITIATIVE_GOALS_PATTERN.test(
+															readinessText,
+														)
+													: story.acceptanceCriteria?.trim() ||
+															/acceptance\s+criteria|\bgiven\b.*\bwhen\b.*\bthen\b/i.test(
+																readinessText,
+															),
 											)}
 											hasFunctionalRequirements={Boolean(
-												/functional\s+requirements|FR-\d+|FR\d+|\bFRs?\b/i.test(
-													[
-														maturationData?.summaryDigest,
-														story.description,
-														maturationData
-															?.cleanSpec
-															?.description,
-													]
-														.filter(Boolean)
-														.join("\n"),
-												),
+												story.kind === "INITIATIVE"
+													? INITIATIVE_BREAKDOWN_PATTERN.test(
+															readinessText,
+														)
+													: /functional\s+requirements|FR-\d+|FR\d+|\bFRs?\b/i.test(
+															readinessText,
+														),
 											)}
-											storyKind={
-												story.kind as "FEATURE" | "BUG"
-											}
+											storyKind={story.kind}
 											hasExpectedResult={Boolean(
 												/\bexpected\s+(result|behavior|outcome|output)|\bexpected\s*:/i.test(
-													[
-														maturationData?.summaryDigest,
-														story.description,
-														maturationData
-															?.cleanSpec
-															?.description,
-													]
-														.filter(Boolean)
-														.join("\n"),
+													readinessText,
 												),
 											)}
 											hasActualResult={Boolean(
 												/\bactual\s+(result|behavior|outcome|output)|\bactual\s*:/i.test(
-													[
-														maturationData?.summaryDigest,
-														story.description,
-														maturationData
-															?.cleanSpec
-															?.description,
-													]
-														.filter(Boolean)
-														.join("\n"),
+													readinessText,
 												),
 											)}
 											needsMoreInfo={Boolean(
@@ -8660,21 +8706,17 @@ export function StoryWorkspace({
 														// beside the prompt, and calling a bug a "feature"
 														// there contradicts the instructions being sent.
 														const kindNoun =
-															(resolvedKind ??
-																story.kind) ===
-															"BUG"
-																? "bug"
-																: "feature";
+															storyKindNoun(
+																resolvedKind ??
+																	story.kind,
+															);
 														markUserRunInitiated();
 														try {
-															await appendMessage(
-																new TextMessage(
-																	{
-																		role: MessageRole.User,
-																		content: `Enhance this ${kindNoun} to the "${stageLabel}" stage. Apply all changes using the write_document_local tool.`,
-																	},
-																),
-															);
+															await sendMessage({
+																id: crypto.randomUUID(),
+																role: "user",
+																content: `Enhance this ${kindNoun} to the "${stageLabel}" stage. Apply all changes using the write_document_local tool.`,
+															});
 														} catch (error) {
 															// A rejection before the run ever starts
 															// streaming would otherwise leave the mark

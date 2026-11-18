@@ -16,13 +16,12 @@
 
 import { REPORT_CONNECTION_REFUSAL_PREFIX } from "@repo/temporal/report-diagnostics";
 
-export type ReportErrorContext = "generate" | "save" | "delete" | "test";
+export type ReportErrorContext = "generate" | "save" | "test";
 
 const GENERIC: Record<ReportErrorContext, string> = {
 	generate:
 		"Something went wrong while generating this report. Please try again — and if it keeps failing, check your data source connection below.",
 	save: "Couldn’t save your changes. Please try again.",
-	delete: "Couldn’t delete this report instance. Please try again.",
 	test: "Couldn’t test the connection. Please try again in a moment.",
 };
 

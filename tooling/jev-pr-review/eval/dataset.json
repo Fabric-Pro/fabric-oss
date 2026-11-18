@@ -1,0 +1,686 @@
+[
+	{
+		"id": "live-94e126349",
+		"base": "1ebdaf4a402dab72356febc4251da353d58d7caa",
+		"head": "94e1263495a14286123ace0880bcc67bf6f6f159",
+		"question": "failure_success",
+		"label": "clean",
+		"note": "Reranking preserves the retrieved candidates and falls back to their existing scores in rankedPassages at packages/rag/lib/project-contexts/ranked-passages.ts:54. Supplied live score 0.81.",
+		"source": "live-finding"
+	},
+	{
+		"id": "live-728e2e67f",
+		"base": "bef14d6846b161231125bb20f121c46344e0ec62",
+		"head": "728e2e67f34155eb2d475280b6d9258e4c5bef7f",
+		"question": "secrets",
+		"label": "defect",
+		"note": "The new direct image provider path returns the raw caught provider exception at packages/temporal/src/activities/image-generation.ts:761. Supplied live score 0.83.",
+		"source": "live-finding"
+	},
+	{
+		"id": "live-73d098818",
+		"base": "908c0b4e65a264384513ba66369d6bca2075e88b",
+		"head": "73d098818e2dfcabf0a657fd5b23f0f8bb19d02b",
+		"question": "tenant_scope",
+		"label": "clean",
+		"note": "connectorMayImport checks the folder's project organization and connector access at packages/temporal/src/activities/transcript-folder-sync.ts:85, and importTranscriptFolderFile receives file IDs yielded by that folder's scoped pending-file query. Supplied live score 0.81.",
+		"source": "live-finding"
+	},
+	{
+		"id": "live-e614342ea",
+		"base": "cfad1487d1e6decb00bf5ff52eabf293c390c5e7",
+		"head": "e614342ea38fb9ed316546c5ef9f177de78f5474",
+		"question": "secrets",
+		"label": "defect",
+		"note": "The add-page error toast shows the unexpected error message through its description at apps/web/modules/saas/projects/components/IntegrationPageBrowser.tsx:390. Supplied live score 0.86.",
+		"source": "live-finding"
+	},
+	{
+		"id": "live-c224a64f1",
+		"base": "f5b6656a25aa0820d0b2c54291a3eee17adbffa9",
+		"head": "c224a64f146add2c3ca18f6c5d71b0f67c5d75f9",
+		"question": "tenant_scope",
+		"label": "clean",
+		"note": "The background workflow checks whether its own project exists by selecting only the project ID at packages/temporal/src/activities/monitored-project.ts:18. Supplied live score 0.90.",
+		"source": "live-finding"
+	},
+	{
+		"id": "live-e71530473",
+		"base": "357cd365066b5cc79413e23682064a938d3d03c2",
+		"head": "e71530473685f194ae385672b93839bc6bac8ef2",
+		"question": "failure_success",
+		"label": "defect",
+		"note": "The new catch returns an ordinary empty or partial missing-file list at packages/cli/src/lib/context-sync/missing-on-server.ts:44. The CLI passes that list to its report with no indication that verification failed. Supplied live score 0.87.",
+		"source": "live-finding"
+	},
+	{
+		"id": "live-0c498fd9c",
+		"base": "6fe32e352cc1c3e38315424de0c09bfa92338e56",
+		"head": "0c498fd9c46de1f33583077e4b7057708105e2e1",
+		"question": "tenant_scope",
+		"label": "clean",
+		"note": "The activity selects the workflow's context by ID at packages/temporal/src/activities/living-memory-decisions/extract-decisions.ts:80, checks its content hash, and takes project and organization scope from that context. Supplied live score 0.82.",
+		"source": "live-finding"
+	},
+	{
+		"id": "live-ff2802756",
+		"base": "fab550f7ce2c00d5ae9dac2d19faa0ac687288a3",
+		"head": "ff2802756aa3245dc088c1d8abb2137a24f122e3",
+		"question": "secrets",
+		"label": "defect",
+		"note": "The retry-analysis error toast exposes the raw mutation error at apps/web/modules/saas/projects/components/FailedCodeAnalysisNotice.tsx:39. Supplied live score 0.81.",
+		"source": "live-finding"
+	},
+	{
+		"id": "live-541fb9193",
+		"base": "b0b7922a5cce3ed41ba0545b3be69ef78ae00928",
+		"head": "541fb9193ceaeee63de79cab349f33ccac756d49",
+		"question": "failure_success",
+		"label": "clean",
+		"note": "The empty-embedding behavior at packages/rag/lib/project-contexts/retrieval.ts:251 was already present in the base and moved within the retrieval callback. Supplied live score 0.80.",
+		"source": "live-finding"
+	},
+	{
+		"id": "live-628fedf3e",
+		"base": "a58d771ee1ce1dbd3c3583288cf38cd84c822872",
+		"head": "628fedf3e2b35c7853138983f4d2f312288470d8",
+		"question": "tenant_scope",
+		"label": "clean",
+		"note": "The gateway tool verifies project access before passing the authorized project's organization into retrieval at apps/web/modules/saas/mcp/lib/gateway/project-rag-tools.ts:109. Supplied live score 0.81.",
+		"source": "live-finding"
+	},
+	{
+		"id": "live-c1ea6fc17",
+		"base": "64f77d05aefced45017e375427d3132ab6a1e4a7",
+		"head": "c1ea6fc1759458c344a438a7f2a7bc337b01266e",
+		"question": "failure_success",
+		"label": "clean",
+		"note": "Best-effort sign-out at apps/web/modules/saas/auth/components/ResetPasswordForm.tsx:74 follows a separately successful password reset and does not control the reset's outcome. Supplied live score 0.84.",
+		"source": "live-finding"
+	},
+	{
+		"id": "live-f32ff1824",
+		"base": "97d40d357c89a2bb8875fc2e1b6fa7d6ca4cddca",
+		"head": "f32ff1824f80e34c10977d862a2df8d0841acdf6",
+		"question": "authz",
+		"label": "defect",
+		"note": "The route checks a service token, then runs the operation for request-supplied project and repository IDs without record-level caller authorization at apps/web/app/api/internal/code-index/context-paths/route.ts:40. Supplied live score 0.82.",
+		"source": "live-finding"
+	},
+	{
+		"id": "history-authz-76c284d23",
+		"base": "a8cb498c318c960aeff3ea1fd03ccf557e5fc220",
+		"head": "76c284d23487c7296dd0b7146aed9c0611556490",
+		"question": "authz",
+		"label": "defect",
+		"note": "packages/api/modules/external-api/middleware/api-key-auth.ts:59 A write scope absent from the live-role gate map bypasses the key owner's current permission check. Fixed in 20b5950d81a6fe813f759434c1c2a4d976236702.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-authz-e9477d7a1",
+		"base": "85b8da2e8d8103a903c352c1aac4864eacf3d8a5",
+		"head": "e9477d7a19dbb414da4f420dbd7584978bad0164",
+		"question": "authz",
+		"label": "defect",
+		"note": "packages/api/modules/time-tracking/lib/project-access.ts:40 The time-entry permission helper falls back to organization role without proving access to the requested project. Fixed in bd3e6ed398d74b6500a842785b8f072049c3b290.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-authz-d3700afd6",
+		"base": "06ad4c4c8ada5cfd7af22402fd310a0f6eee8e33",
+		"head": "d3700afd66b8fb2a4b881ecc68f0f2516d9f680d",
+		"question": "authz",
+		"label": "defect",
+		"note": "packages/temporal/src/activities/publishing-blog-post/generate-blog-post.ts:122 The activity rechecks organization membership alone and can generate after the actor loses the required project permission. Fixed in 59eaf865a40f9f31697560a8b56bea291647392d.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-authz-dfd3514ca",
+		"base": "08da8e35cece0ebd2fe3abcc2a37f88d276223c6",
+		"head": "dfd3514caddb6fa218ed7e59428dabec176a2792",
+		"question": "authz",
+		"label": "defect",
+		"note": "packages/temporal/src/activities/deployment-execution.ts:173 The background activity passes workspaces through based on tenant equality without checking the deployment owner's current access to them. Fixed in a87d7c957b02278f603e2862f584c054c2d5038f.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-failure_success-e65a0408f",
+		"base": "c6b26d21417782be2414d6b95cde184e1a2b7138",
+		"head": "e65a0408f59b23006ebf892dd2c3c7dcb3f6e842",
+		"question": "failure_success",
+		"label": "defect",
+		"note": "apps/web/app/api/internal/mcp-tools/route.ts:177 The tool list responds with an ordinary server array after logging refused connections and dropping those servers. Fixed in 53cd58be22b531ddd81578b18edecef8e186dc5d.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-failure_success-cfc0c5c7a",
+		"base": "7f90121caa3acceb2a9175e37b0c41d6d37a14ba",
+		"head": "cfc0c5c7af2731a5eece07a385cbe9ecb19c59d8",
+		"question": "failure_success",
+		"label": "defect",
+		"note": "packages/connectors/src/code-search.ts:155 The new response classifier recognizes non-JSON upstream refusals, then sends them down the empty-results branch. Fixed in 35bd0df4352e8a734e940f090427bf043f650c79.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-failure_success-28c3b4a96",
+		"base": "b648a263d1f81fc68793965ebb7560e6c791cdee",
+		"head": "28c3b4a9673a10cbdff3d850fe21d1ac56037b30",
+		"question": "failure_success",
+		"label": "defect",
+		"note": "packages/temporal/src/activities/shared/frame-generation.ts:220 A refused outline-generation call falls through to unmarked placeholder slides. Fixed in 063560ec4a52a103ad7540d2d530e80bdbd12ee2.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-failure_success-fdb3c559d",
+		"base": "ac88b17e64ba0b5bd4dc8fb02f6204b45503d386",
+		"head": "fdb3c559dc5c610b2a8ddc5f63bca7b79bedea8c",
+		"question": "failure_success",
+		"label": "defect",
+		"note": "packages/temporal/src/activities/agent-execution-core/agent-executor.ts:400 The stream handler drops tool-error events, so a tool quota refusal can still produce a successful agent turn. Fixed in 063560ec4a52a103ad7540d2d530e80bdbd12ee2.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-failure_success-c1daf4a11",
+		"base": "49075af296aec85b1b9915a33d189727b82bdec8",
+		"head": "c1daf4a1104c8e01e765814bec4b2f2794723e5c",
+		"question": "failure_success",
+		"label": "defect",
+		"note": "packages/temporal/src/workflows/orchestrator/phases/iterative-execution.ts:2017 The synthesis caller keeps the text and drops the provider refusal signal, so fallback text reads as a completed answer. Fixed in a5053bdfa3d99f6a3df05b4f648a4c1c40947de2.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-failure_success-77ff2a374",
+		"base": "88b1d211d671d75380b07cc05eeb15e98f0a5d29",
+		"head": "77ff2a374668ec41a0aa03a5d07c9fed620f89e1",
+		"question": "failure_success",
+		"label": "defect",
+		"note": "agents/langchain/project-document-generator/nodes/tool-node.ts:1741 The document agent treats the internal proxy's empty result after an upstream code-search failure as a successful no-match search. Fixed in 35bd0df4352e8a734e940f090427bf043f650c79.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-failure_success-0f5a1e71d",
+		"base": "e78eff8ca4a9358b99c90619f81c5f68f5538662",
+		"head": "0f5a1e71d69e00229d7773080341177e1f50f9b0",
+		"question": "failure_success",
+		"label": "defect",
+		"note": "packages/sdk-mcp/src/mcp-apps.ts:357 The artifact card ignores the tool response, so a refused call leaves the card showing the previous results with no failure status. Fixed in 9037f32377d5a9da03dd2f7630c9fa231f07e0a1.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-failure_success-beed9ef4d",
+		"base": "bf0b28ecd4a0f1006d7fcb6d02d4f570b330ad3f",
+		"head": "beed9ef4dd6b0e38c450ba667c43e07eb2c9b28d",
+		"question": "failure_success",
+		"label": "defect",
+		"note": "apps/web/modules/saas/projects/components/DocumentAutoRefreshToggle.tsx:117 The auto-refresh settings control displays default Off after a failed settings request, with no indication that it could not read the settings. Fixed in 300d915955d1ae42907c89a6a3580beef66e8cc6.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-secrets-fba1872b0",
+		"base": "ef5273cc62c100310330e6b4fe35c5a91eec986e",
+		"head": "fba1872b07800f310300a794f031a378543e143a",
+		"question": "secrets",
+		"label": "defect",
+		"note": "packages/temporal/src/activities/qa-agentic-run/run-scripted-case.ts:502 URL assertion failures persist full navigated URLs, including credential-bearing query values. Fixed in 775d281f8095abb65285616635b037a3a9d3d865.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-secrets-bf9f328ec",
+		"base": "c984a32047df7e3db9ea5ed7a5050de4ff7235af",
+		"head": "bf9f328ec6d051ffc00d8226cabe5792d4d97a80",
+		"question": "secrets",
+		"label": "defect",
+		"note": "packages/temporal/src/activities/pm-integration/create-test-case-in-pm-with-claim.ts:705 When a database error lacks a recognized code, the sync activity puts its raw first line into the saved link failure. Fixed in 6f00e0533759a9183e08681f4ba838ab6f966289.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-secrets-1a8fc05b6",
+		"base": "1f1d4bbcda21f8f3b4b8e83f0b08fe2ca182e4d9",
+		"head": "1a8fc05b6ce5018b3424f0af1f82899e91cbee76",
+		"question": "secrets",
+		"label": "defect",
+		"note": "packages/temporal/src/lib/classify-analysis-error.ts:219 The classifier descends past structured-output error wrappers and falls back to displaying the raw validation detail. Fixed in 9e1ef8f555b18fb6e6cbf6b3efbd3a18aa916727.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-secrets-04a0f61d6",
+		"base": "138c757491e4a66a6981e685027377c86a879f77",
+		"head": "04a0f61d6f76b548590681f2516dd7409dc8c868",
+		"question": "secrets",
+		"label": "defect",
+		"note": "packages/temporal/src/activities/pm-integration/hierarchy-sync.ts:1766 The sync activity includes the raw database exception in the saved link failure readers see. Fixed in 6f00e0533759a9183e08681f4ba838ab6f966289.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-tenant_scope-aa52329b1",
+		"base": "bc31c20ffb93d934dde0cbedd7c3c70beb10653f",
+		"head": "aa52329b137b4abb3ad1bc494cecca9de587f897",
+		"question": "tenant_scope",
+		"label": "defect",
+		"note": "packages/api/modules/ai-config/lib/review-selector-options.ts:89 The review selector reads linked templates by ID without checking template visibility in the caller's organization. Fixed in 735c0b098857d09098d676cc139ee3da018dda08.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-tenant_scope-18e2e6964",
+		"base": "23f697824a744c089b428a0dc1e972fb0465d18f",
+		"head": "18e2e69642b9aca38f7433ab0c824d65d0d532b2",
+		"question": "tenant_scope",
+		"label": "defect",
+		"note": "packages/api/modules/mcp/procedures/configs.ts:352 The configuration writer loads a custom server by ID without checking whether the tenant owns it. Fixed in b1aa2a6c37b78e315ad23dd00179625325fa8548.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-tenant_scope-fca1e7a8f",
+		"base": "54d67ee6a4abb983ec3ba55b450da1d13cc0c38d",
+		"head": "fca1e7a8f5811ee9ee299fb304aeeeb312636d2f",
+		"question": "tenant_scope",
+		"label": "defect",
+		"note": "packages/temporal/src/activities/orchestrator/learning/qdrant-tool-store.ts:106 A vector filter matches the entire organization for private tool-call records that require the requesting user's scope as well. Fixed in 3b1a0aa7e32e5c66d40c3826af47afa11bc45106.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-tenant_scope-a3bf3cd75",
+		"base": "942404eeb8ff40f6474d6e76bf48c0d43079b6a6",
+		"head": "a3bf3cd751d9488a92f071cf4d834075a7022bd5",
+		"question": "tenant_scope",
+		"label": "defect",
+		"note": "packages/api/modules/projects/procedures/scan/trigger-scan.ts:117 The added scan capability lookup uses the request's organization rather than the organization of the project authorized by middleware. Fixed in 9eadb066f37874caa892e50814554dc88b349940.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-tenant_scope-19efde426",
+		"base": "33157de82c1e170568e462afabdef72720321a18",
+		"head": "19efde426f2b3fc6d126e3e1a8f7a83cc58b4728",
+		"question": "tenant_scope",
+		"label": "defect",
+		"note": "packages/temporal/src/activities/publishing-shared/contributor-names.ts:32 Prompt assembly reads saved contributor identities without checking their continued access to the project. Fixed in d09264d52eb214706d0c327df7a34af662e2862b.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-tenant_scope-bd9754247",
+		"base": "df9765b6aac1441e0e72cc5bb5ec7d8181ebab20",
+		"head": "bd9754247a0d85cf7d709780ec50d4350d6b4f31",
+		"question": "tenant_scope",
+		"label": "defect",
+		"note": "apps/web/modules/saas/settings/components/chatgpt-plan/chatgpt-plan-status.ts:28 The status query caches data for the session's previous tenant under the organization currently on screen. Fixed in 0d24299e02781c19413135ed11f3bb77224e9a12.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-tenant_scope-8a7a52423",
+		"base": "2556b1d2f431af4baf305bd79b25d3e88ce55f6b",
+		"head": "8a7a52423d1dc9ce1fb0e60e9acf2ea67ddb1d78",
+		"question": "tenant_scope",
+		"label": "defect",
+		"note": "apps/web/app/api/agents/fabric-ai/orchestrator-temporal/orchestrator-turn.ts:843 The new streaming route forwards caller-supplied image keys for storage reads without constraining them to accessible chat media. Fixed in 5df46aa62c12180ed59d67544c41d41b92bb6025.",
+		"source": "fix-history"
+	},
+	{
+		"id": "history-tenant_scope-28c3b4a96",
+		"base": "b648a263d1f81fc68793965ebb7560e6c791cdee",
+		"head": "28c3b4a9673a10cbdff3d850fe21d1ac56037b30",
+		"question": "tenant_scope",
+		"label": "defect",
+		"note": "packages/temporal/src/activities/shared/frame-service.ts:202 A new standalone page gets a public link without the creator requesting sharing. Fixed in 18cafecdd2a8e92515a5d32a1febce05073287d0.",
+		"source": "fix-history"
+	},
+	{
+		"id": "clean-c78fac47b",
+		"base": "2d0724875b6fc39d742213b250a3d2cb3b8d99b7",
+		"head": "c78fac47b2530b929c83db3259003d2b5a69b4b8",
+		"question": "all",
+		"label": "clean",
+		"note": "Keeps pending chat attachment previews visible until the existing message send settles.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-7ffa6e6de",
+		"base": "c164579391a87cd42c59e5e82137fc3b3af98801",
+		"head": "7ffa6e6def614bc51529219a255e00e353e2b9f3",
+		"question": "all",
+		"label": "clean",
+		"note": "Escapes backslashes when serializing editor link text.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-c16457939",
+		"base": "69c7eb8ba9522602eace8e0adc67feb202c2287a",
+		"head": "c164579391a87cd42c59e5e82137fc3b3af98801",
+		"question": "all",
+		"label": "clean",
+		"note": "Changes object key generation to use cryptographic randomness.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-69c7eb8ba",
+		"base": "f5b08cbb4ab84b7562dc1d1f22b20dff1a9cd465",
+		"head": "69c7eb8ba9522602eace8e0adc67feb202c2287a",
+		"question": "all",
+		"label": "clean",
+		"note": "Replaces costly regular-expression matches with bounded or linear parsing.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-889d0384e",
+		"base": "18d3115a4c8eb5fe62259870d1a6d081432b86b8",
+		"head": "889d0384ef066119f056fdc3cdbad83361c06042",
+		"question": "all",
+		"label": "clean",
+		"note": "Raises the timeout on the existing whole-graph transaction.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-18d3115a4",
+		"base": "f8ad18f1442e5a0abafacd03112948f578f413e5",
+		"head": "18d3115a4c8eb5fe62259870d1a6d081432b86b8",
+		"question": "all",
+		"label": "clean",
+		"note": "Reports an embedding write as stored only after the activity confirms it.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-f8ad18f14",
+		"base": "931726abf96279bd76694e8bd6a360fca12bf9de",
+		"head": "f8ad18f1442e5a0abafacd03112948f578f413e5",
+		"question": "all",
+		"label": "clean",
+		"note": "Adds request deadlines while leaving Graph request errors visible.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-1418239c5",
+		"base": "4af8b9dc221a29146cb8b09b948d52f32f510de4",
+		"head": "1418239c51c35560b4d31913814743d0327ebec3",
+		"question": "all",
+		"label": "clean",
+		"note": "Records request correlation and response timing at the assistant boundary.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-abaa5d5dd",
+		"base": "4931046326d5980d62ad55a0671ae7efbd72a162",
+		"head": "abaa5d5ddea725e17ffa36e2791a26d9e95a7fa5",
+		"question": "all",
+		"label": "clean",
+		"note": "Marks existing review proposals when their recurring-error counts fall below the threshold.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-a46214be6",
+		"base": "23b94eb6387f97fc1bd2519cd00aa127b51ab4fb",
+		"head": "a46214be6c856763dad92f7fea007a155d19ac19",
+		"question": "all",
+		"label": "clean",
+		"note": "Selects the newest transcript by meeting time.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-555c8feb4",
+		"base": "011862d312976915da4d2f07a1a426cac5ae9aa6",
+		"head": "555c8feb49150c59b2f16a407e4dd0fc445beb1f",
+		"question": "all",
+		"label": "clean",
+		"note": "Hides screenshot overlays and retries blocked browser clicks.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-011862d31",
+		"base": "d51ae95f282de0a06eadc2597f406db0a8014506",
+		"head": "011862d312976915da4d2f07a1a426cac5ae9aa6",
+		"question": "all",
+		"label": "clean",
+		"note": "Filters suggestion candidates by the project's billing mode.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-db1925a38",
+		"base": "460a1aa054e74ce40274a788ad330f48b26f1ad5",
+		"head": "db1925a381333ec68f661250010a2598bc4cf6fc",
+		"question": "all",
+		"label": "clean",
+		"note": "Uses singular text when one published image is removed.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-69542fb01",
+		"base": "f8d39cf58413af7f9f8432608170b07684eebb8a",
+		"head": "69542fb019931bf4cd1992a3949171edcf387020",
+		"question": "all",
+		"label": "clean",
+		"note": "Checks the existing timer while its tab is hidden.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-69e8ed72b",
+		"base": "4b09bf2e7e5a3663b36907f48a9f440e8e3c1d30",
+		"head": "69e8ed72bde46013d3385b4b0e4995fc0ba345e3",
+		"question": "all",
+		"label": "clean",
+		"note": "Avoids saving mode settings during initial hydration.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-44b2a8450",
+		"base": "d38b16731884a5bbffe9f411e799c1160cf1be05",
+		"head": "44b2a84509781c11e27b44ea5dbc36ddc070326a",
+		"question": "all",
+		"label": "clean",
+		"note": "Preserves a typed repository-unavailable error during token refresh.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-b416886d2",
+		"base": "7e360457396e1230aa8d3d9c37180f529a777419",
+		"head": "b416886d22763d7cb1f899669337da91e25c3652",
+		"question": "all",
+		"label": "clean",
+		"note": "Requires owner authority to remove or demote a project owner.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-d26df055b",
+		"base": "b98b37c87ad9c5ce8daeaaedfc2e6738f157668e",
+		"head": "d26df055b7893055de9fe7ff33448a0f954ea278",
+		"question": "all",
+		"label": "clean",
+		"note": "Keeps the existing search index available when replacement embedding fails.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-ad1945b33",
+		"base": "1ebdaf4a402dab72356febc4251da353d58d7caa",
+		"head": "ad1945b3314433031061b45c1a264ee8e5d40032",
+		"question": "all",
+		"label": "clean",
+		"note": "Adjusts prompt-cache retention for one-off model calls.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-a121fbfc4",
+		"base": "f704b93acb7711f59545b4f747e7ad7594501031",
+		"head": "a121fbfc4d25ea9af800e5951f0a9006b7225b67",
+		"question": "all",
+		"label": "clean",
+		"note": "Preserves the current page when browsing report send history.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-004dc4df1",
+		"base": "9483a9024ae74b5a6ea073cd03f9f7a3cb656055",
+		"head": "004dc4df1915a1663f9262ee94f0a66dfe64692a",
+		"question": "all",
+		"label": "clean",
+		"note": "Groups configured image and decision model choices by connection.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-fd6d33f78",
+		"base": "7be83b39910fa132fdf361e7676c35798d973985",
+		"head": "fd6d33f78b4d4ce56960d8202a3a40f42303c8a0",
+		"question": "all",
+		"label": "clean",
+		"note": "Requests fewer fields per pull request and issue during report generation.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-53ca22255",
+		"base": "e0bda7f8e0697ab2449ac5b6f0fc71eef1442748",
+		"head": "53ca22255c82e707b6bded295db55a2d902bb472",
+		"question": "all",
+		"label": "clean",
+		"note": "Defers loading password dictionaries, email templates, and provider SDKs until use.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-e2eeefcfb",
+		"base": "224eac5275377ec17063164fdbc26f89dcf6a339",
+		"head": "e2eeefcfb8eb464110684d8875010e7d72c79b57",
+		"question": "all",
+		"label": "clean",
+		"note": "Surfaces chunking analysis progress and prevents overlapping runs.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-c5c3a37ba",
+		"base": "ee5c18b719982226e14c3b5984c813aab844afa1",
+		"head": "c5c3a37ba54d00836fac0708a4422430b9669ca5",
+		"question": "all",
+		"label": "clean",
+		"note": "Uses the connected repository's default branch during project setup.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-4c898a9d1",
+		"base": "2c063dd98f4a04d3600922778ec9630dea0cc19a",
+		"head": "4c898a9d1c01b6b329bc183a3ea28e36f64b2f08",
+		"question": "all",
+		"label": "clean",
+		"note": "Confirms API key revocation in a labeled dialog.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-b10b6e314",
+		"base": "908c0b4e65a264384513ba66369d6bca2075e88b",
+		"head": "b10b6e314e5a164da366e86e89bb57935e71146f",
+		"question": "all",
+		"label": "clean",
+		"note": "Orders named deployment evidence first in the metrics rule.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-cd9a41a17",
+		"base": "5de1d113e9acd4a81ae20f7776eb15eefd199245",
+		"head": "cd9a41a1705fd237a9dd87916ff2142401f2d02c",
+		"question": "all",
+		"label": "clean",
+		"note": "Verifies access to the target organization for MCP execution, resource fetch and session creation.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-61f5dc0ec",
+		"base": "eef0cfafa046742f2ae1c24d9a7c06d7c1eb6eae",
+		"head": "61f5dc0ec239733ecbb20978f57171ef8ed43506",
+		"question": "all",
+		"label": "clean",
+		"note": "Counts only Notion sources toward the wiki readiness indicator.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-49b4f5fb7",
+		"base": "eec01b317dfce2d5c2437983a872aebcf71674cd",
+		"head": "49b4f5fb7a574a129fc4374c67a66280562821c3",
+		"question": "all",
+		"label": "clean",
+		"note": "Shrinks the cache used by idle workflow worker threads.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-1ac515571",
+		"base": "8dfb29d9618c0b2f28ac03a102dbcddd69bf9887",
+		"head": "1ac5155710a1873be1149db9091b7f3405489f3b",
+		"question": "all",
+		"label": "clean",
+		"note": "Explains the repository path length limit in the project UI.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-8dfb29d96",
+		"base": "f5b6656a25aa0820d0b2c54291a3eee17adbffa9",
+		"head": "8dfb29d9618c0b2f28ac03a102dbcddd69bf9887",
+		"question": "all",
+		"label": "clean",
+		"note": "Passes the Git subprocess environment through the integration's clone wrapper.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-5de1d113e",
+		"base": "1eeb5d021801977ecd4c2753fdeee647f22ff46b",
+		"head": "5de1d113e9acd4a81ae20f7776eb15eefd199245",
+		"question": "all",
+		"label": "clean",
+		"note": "Keeps report refinement controls clear of the assistant panel.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-0dbbcb540",
+		"base": "b0a02be6713598a545bf6c7f452c9013786832e5",
+		"head": "0dbbcb5404765d2dacb2e546a9d9c9e159d625df",
+		"question": "all",
+		"label": "clean",
+		"note": "Classifies unsupported URL source formats as an expected skip with a reason.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-395d1b0c4",
+		"base": "02772c3dc2cacc922f82d19fa0ecb38f17781974",
+		"head": "395d1b0c43c575d7ec6b1b1db59ceb85221a63c3",
+		"question": "all",
+		"label": "clean",
+		"note": "Skips vector keyword backfill for points whose text has no usable terms.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-bc847a9b5",
+		"base": "0607d27c5d2bef36801d7c0d126b1d2093f56e88",
+		"head": "bc847a9b59e941fb75075005ac52c41f32d5eed5",
+		"question": "all",
+		"label": "clean",
+		"note": "Reports the failed activity and its error cause in worker logs.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-b1bf4acfa",
+		"base": "48fada7d7347bb092a8d2f87528b1a32b5a1a591",
+		"head": "b1bf4acfa4e1c7b6323ff3eb5d2d1993b752d53a",
+		"question": "all",
+		"label": "clean",
+		"note": "Keeps owner roles visible in the member list.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-eb1468b57",
+		"base": "aa95b57c705869eb734386e4d544fa0f4bd8e2be",
+		"head": "eb1468b57396ee514ee24b52b3cc1ded492c1bd0",
+		"question": "all",
+		"label": "clean",
+		"note": "Includes the newest usage bucket in the AI usage chart.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-1a317ded6",
+		"base": "1fe845f80ef4cfc0c0bb794c0155b30e59aa0495",
+		"head": "1a317ded66eb68a51d96a39314cfa3c32d62a3f8",
+		"question": "all",
+		"label": "clean",
+		"note": "Finalizes the update history when a retry finds the prior writes already applied.",
+		"source": "clean-sample"
+	},
+	{
+		"id": "clean-6a559f732",
+		"base": "ef2ec551609ef2948bb8200891486816b0d07714",
+		"head": "6a559f73213d5bc6e113153c2bb526c3cb8ba221",
+		"question": "all",
+		"label": "clean",
+		"note": "Lists upcoming occurrences when choosing a meeting series to link.",
+		"source": "clean-sample"
+	}
+]

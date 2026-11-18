@@ -52,6 +52,7 @@ type InstanceWithTemplate = {
 	goal?: string | null;
 	maxIterations?: number | null;
 	isApiExposed?: boolean;
+	meetingExternalTools?: boolean;
 	sId?: string;
 	name: string;
 	description?: string | null;
@@ -180,6 +181,7 @@ export function AgentInstanceEdit({
 			goal: instance.goal ?? "",
 			maxIterations: instance.maxIterations ?? 10,
 			isApiExposed: instance.isApiExposed ?? false,
+			meetingExternalTools: instance.meetingExternalTools ?? false,
 			starterMessages,
 			workspaceDocumentFilters,
 			existingToolConnections: instance.toolConnections ?? {},

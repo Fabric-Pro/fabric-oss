@@ -480,7 +480,27 @@ test("a typed request asking to be said aloud is answered by voice", async () =>
 	assert.equal(meeting.turns[0]?.text, "tell everyone the release date");
 });
 
-test("say, go, more and stop act on tagged posts; an unknown tag and an unaddressed remark do nothing", async () => {
+test("more on a shortened post posts the rest from the stored answer, without asking the agent again", async () => {
+	const meeting = harness();
+	const line = `${"word ".repeat(39)}end.`;
+	const answer = Array.from({ length: 12 }, (_, index) =>
+		line.replace("end.", `end ${index}.`),
+	).join("\n");
+	await meeting.channel.send({ message: answer });
+
+	await meeting.channel.receive(chatMessage("more P1"));
+	await flush();
+
+	const [first, second] = meeting.posts().map((r) => String(r.body.message));
+	assert.ok(first?.endsWith('Reply "more P1" for the rest.'));
+	assert.ok(second?.startsWith("[P2] Rest of P1:\n\n"));
+	assert.ok(second?.includes("end 11."));
+	assert.ok(!first?.includes("end 11."));
+	assert.deepEqual(meeting.turns, []);
+	assert.equal(meeting.events("chat.more_rest")[0]?.meta.tag, "P1");
+});
+
+test("say, go, more and stop act on tagged posts; an unknown tag is answered, an unaddressed remark ignored", async () => {
 	const meeting = harness();
 	await meeting.channel.send({ message: "F-12 ships Friday." });
 
@@ -508,6 +528,34 @@ test("say, go, more and stop act on tagged posts; an unknown tag and an unaddres
 	assert.equal(
 		meeting.events("chat.command_unknown_post")[0]?.meta.tag,
 		"P9",
+	);
+	// The notice takes no tag: the next answer is still P2.
+	await meeting.channel.send({ message: "F-13 ships Monday." });
+	assert.deepEqual(
+		meeting.posts().map((post) => post.body.message),
+		[
+			"[P1] F-12 ships Friday.",
+			"P9: This prepared answer is no longer available.",
+			"[P2] F-13 ships Monday.",
+		],
+	);
+});
+
+test("the recap keeps its lines like any answer, with no one-paragraph form", async () => {
+	const meeting = harness();
+	await meeting.channel.send({
+		message: "Since last time\n- F-12 shipped.\n- F-13 is blocked.",
+		plain: true,
+	});
+
+	assert.deepEqual(
+		meeting.posts().map((post) => [post.body.message, post.body.plain]),
+		[
+			[
+				"[P1] Since last time\n• F-12 shipped.\n• F-13 is blocked.",
+				undefined,
+			],
+		],
 	);
 });
 
@@ -644,7 +692,7 @@ test("a suggestion pass asks Fabric only when due, posts one with its go handle,
 	});
 	assert.equal(
 		meeting.posts()[0]?.body.message,
-		'[P1] Suggestion on Roadmap export, re Sam: "we still need an export". F-12 already covers this. (reply "go P1" and I\'ll say it)',
+		'[P1] Suggestion on Roadmap export\nRe Sam: "we still need an export"\nF-12 already covers this.\nReply "go P1" and I\'ll say it.',
 	);
 	assert.deepEqual(records(meeting)[0]?.body, {
 		sessionId: "session-1",
@@ -790,8 +838,10 @@ test("a meeting suggestion is posted, then recorded with its tag; a missed quest
 
 	assert.equal(
 		meeting.posts()[0]?.body.message,
-		'[P1] Possibly missed question on Data migration, re Alex: "we move the data in March". Who signs off the migration? (reply "go P1" and I\'ll ask it)',
+		'[P1] Possibly missed question on Data migration\nRe Alex: "we move the data in March"\nWho signs off the migration?\nReply "go P1" and I\'ll ask it.',
 	);
+	// Fabric formats every post the same way; a suggestion's lines stay lines.
+	assert.equal(meeting.posts()[0]?.body.plain, undefined);
 	assert.equal(records(meeting)[0]?.body.chatTag, "P1");
 	// Fabric takes the audience from the session, not from the bridge.
 	assert.equal(records(meeting)[0]?.body.audience, undefined);

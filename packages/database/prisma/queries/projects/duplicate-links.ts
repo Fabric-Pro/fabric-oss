@@ -83,10 +83,16 @@ const STORY_SUMMARY_SELECT = {
 /** Stories eligible for duplicate detection: everything in the project that is
  * not already declined or closed. Equals the roadmap's default-visible set (see
  * the {@link INACTIVE_STAGES} invariant) so detection never considers — and a
- * chip never surfaces on — an item the user cannot see by default. */
+ * chip never surfaces on — an item the user cannot see by default.
+ * Initiatives are excluded: they group features, so they're never a duplicate
+ * or routing target. */
 export async function listActiveStoriesForDetection(projectId: string) {
 	return db.userStory.findMany({
-		where: { projectId, draftingStage: { notIn: INACTIVE_STAGES } },
+		where: {
+			projectId,
+			kind: { not: "INITIATIVE" },
+			draftingStage: { notIn: INACTIVE_STAGES },
+		},
 		select: {
 			id: true,
 			identifier: true,

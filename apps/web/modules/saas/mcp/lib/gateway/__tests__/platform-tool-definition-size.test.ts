@@ -80,6 +80,7 @@ import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 // folder's files) adds 81 net, after shortening the set list tool by 5: a
 // coding tool in one set's repository must know before the call that it can
 // narrow the list to that set.
+// The work-item kind on create (FEATURE/INITIATIVE) and INITIATIVE on the list filter add 69.
 const CONTEXT_QUALITY_BUDGETS: Readonly<Record<string, number>> = {
 	fabric_inspect_context_quality_source: 501,
 	fabric_evaluate_context_quality: 1_969,
@@ -103,7 +104,8 @@ const TOTAL_BUDGET =
 	794 +
 	189 +
 	1_492 +
-	81;
+	81 +
+	69;
 // The complete bounded sprint config makes configure-story-review the largest
 // pre-call schema at 2,334 characters. Other tools retain the original cap below.
 const PER_TOOL_BUDGET = 2_190;

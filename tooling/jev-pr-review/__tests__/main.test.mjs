@@ -35,6 +35,7 @@ async function exercise(overrides = {}) {
 	let reads = 0;
 	const code = await run({
 		env,
+		questionDetails: {},
 		readFiles: () => files,
 		load: () => ({ decide: async () => answer(0.1), model: "synthetic" }),
 		makeGithub: () => ({

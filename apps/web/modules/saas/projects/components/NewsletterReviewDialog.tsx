@@ -48,6 +48,10 @@ import {
 } from "./newsletter-review-content";
 import { useNewsletterReviewImages } from "./use-newsletter-review-images";
 
+/** Offered while images are added by hand only; leads to automatic capture. */
+export const AUTO_CAPTURE_LINK_TEXT =
+	"Want Fabric to capture screenshots automatically for you?";
+
 interface ReviewDecisionProps {
 	projectId: string;
 	organizationId: string | null;
@@ -62,6 +66,12 @@ interface ReviewDecisionProps {
 	onReject: () => void;
 	onRefetch: () => void;
 	onOpenChange: (open: boolean) => void;
+	/**
+	 * Opens the automatic-capture settings; runs once the review has closed.
+	 * Given only when images are on, automatic capture is off and the
+	 * reviewer may set it up, and the review then offers the link.
+	 */
+	onSetUpAutoCapture?: () => void;
 }
 
 /**
@@ -78,6 +88,9 @@ export function NewsletterReviewDialog({
 	// drag. The dialog's own Escape listener runs first (capture phase), so it
 	// must stand down while a drag is active or it closes the whole review.
 	const dragActive = useRef(false);
+	// Set by the automatic-capture link: once the review closes, focus goes to
+	// those settings instead of back to the Review button.
+	const setUpAutoCaptureOnClose = useRef(false);
 	return (
 		<Dialog open={send !== null} onOpenChange={props.onOpenChange}>
 			<DialogContent
@@ -87,6 +100,13 @@ export function NewsletterReviewDialog({
 						event.preventDefault();
 					}
 				}}
+				onCloseAutoFocus={(event) => {
+					if (setUpAutoCaptureOnClose.current) {
+						setUpAutoCaptureOnClose.current = false;
+						event.preventDefault();
+						props.onSetUpAutoCapture?.();
+					}
+				}}
 			>
 				{send ? (
 					<ReviewBody
@@ -94,6 +114,10 @@ export function NewsletterReviewDialog({
 						{...props}
 						onDragActiveChange={(active) => {
 							dragActive.current = active;
+						}}
+						onRequestAutoCapture={() => {
+							setUpAutoCaptureOnClose.current = true;
+							props.onOpenChange(false);
 						}}
 					/>
 				) : null}
@@ -126,9 +150,12 @@ function ReviewBody({
 	onRefetch,
 	onOpenChange,
 	onDragActiveChange,
+	onSetUpAutoCapture,
+	onRequestAutoCapture,
 }: ReviewDecisionProps & {
 	send: PendingNewsletterSend;
 	onDragActiveChange: (active: boolean) => void;
+	onRequestAutoCapture: () => void;
 }) {
 	const content = readReviewContent(send.content);
 	const highlights = content?.highlights ?? [];
@@ -323,6 +350,16 @@ function ReviewBody({
 						? "Tick what should go out. Drag to change the order within a release."
 						: "Tick what should go out."}
 				</DialogDescription>
+				{onSetUpAutoCapture ? (
+					<Button
+						type="button"
+						variant="link"
+						className="h-auto justify-start p-0"
+						onClick={onRequestAutoCapture}
+					>
+						{AUTO_CAPTURE_LINK_TEXT}
+					</Button>
+				) : null}
 			</DialogHeader>
 
 			<div

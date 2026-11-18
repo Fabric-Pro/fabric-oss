@@ -13,6 +13,7 @@
  */
 
 import { db, type Prisma } from "../client";
+import { withVisibleStories } from "./projects/initiative-visibility";
 import { storySemanticActivityAt } from "./projects/story-semantic-activity";
 
 const MY_WORK_STORY_SELECT = {
@@ -37,13 +38,16 @@ async function findRecentMyWorkStories(
 ): Promise<MyWorkStoryRow[]> {
 	const [edited, created] = await Promise.all([
 		db.userStory.findMany({
-			where: { ...where, lastEditedAt: { not: null } },
+			where: withVisibleStories({
+				...where,
+				lastEditedAt: { not: null },
+			}),
 			orderBy: { lastEditedAt: "desc" },
 			take: limit,
 			select: MY_WORK_STORY_SELECT,
 		}),
 		db.userStory.findMany({
-			where: { ...where, lastEditedAt: null },
+			where: withVisibleStories({ ...where, lastEditedAt: null }),
 			orderBy: { createdAt: "desc" },
 			take: limit,
 			select: MY_WORK_STORY_SELECT,

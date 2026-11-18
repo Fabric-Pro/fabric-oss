@@ -26,7 +26,16 @@ import {
 	refreshMcpOAuthAccessToken,
 } from "@repo/database";
 import { isUnrunnableSystemMcpServer } from "@repo/database/prisma/hidden-mcp-server-keys";
-import { stdioCredentialEnvVar } from "@repo/database/prisma/stdio-credential-env";
+import {
+	acceptsMcpCommandArgs,
+	validateMcpCommandArgs,
+} from "@repo/database/prisma/mcp-command-args";
+import {
+	GOOGLE_DRIVE_STDIO,
+	stdioCredentialEnvVar,
+	stdioPackageName,
+	TWILIO_STDIO,
+} from "@repo/database/prisma/stdio-credential-env";
 import {
 	GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
 	parseGitLabOrigin,
@@ -983,6 +992,8 @@ async function buildMcpClientForConfig(
 		name?: string;
 		transport?: string;
 		command?: string;
+		key?: string | null;
+		isSystemProvided?: boolean | null;
 	} | null;
 
 	// Determine transport type
@@ -1003,19 +1014,15 @@ async function buildMcpClientForConfig(
 			isAuthError: true,
 		});
 	}
-	// A retired system server that cannot start (Fizzy #3531, #3457): its
-	// package was never published, it needs more secrets than a STDIO
-	// connection carries, or it needs command-line arguments this connection
-	// does not have. Starting it only fails, and fails again on the next call.
-	// Refused here, before anything runs, with what the person can do about it.
+	// Refuse retired STDIO servers whose commands cannot start.
 	if (
 		transport === "STDIO" &&
-		isUnrunnableSystemMcpServer(mcpConfig.mcpServer, mcpConfig.commandArgs)
+		isUnrunnableSystemMcpServer(mcpConfig.mcpServer)
 	) {
 		const serverName =
 			mcpConfig.displayName || mcpServer?.name || undefined;
 		throw new McpClientError({
-			message: `"${serverName ?? "This MCP server"}" can no longer run: this retired server cannot start. Remove this connection in MCP Settings.`,
+			message: `"${serverName ?? "This MCP server"}" is retired and cannot run. Remove this connection in MCP Settings.`,
 			code: "SERVER_UNAVAILABLE",
 			serverName,
 		});
@@ -1965,14 +1972,14 @@ async function resolveGoogleDriveStdioCredentials(
 	// (see GDRIVE_STDIO_REFRESH_WINDOW_MS) and must not hold them.
 	return {
 		credentials: {
-			__GDRIVE_OAUTH_KEYS_JSON: JSON.stringify({
+			[GOOGLE_DRIVE_STDIO.credentialNames.oauthKeys]: JSON.stringify({
 				web: {
 					client_id: current.oauthClientId ?? "",
 					client_secret: "",
 					redirect_uris: ["http://localhost"],
 				},
 			}),
-			__GDRIVE_CREDENTIALS_JSON: JSON.stringify({
+			[GOOGLE_DRIVE_STDIO.credentialNames.credentials]: JSON.stringify({
 				access_token: accessToken,
 				refresh_token: "",
 				token_type: "Bearer",
@@ -2002,21 +2009,10 @@ interface CreateStdioMcpClientOptions {
 	mcpServer: {
 		name?: string;
 		command?: string;
+		key?: string | null;
+		isSystemProvided?: boolean | null;
 	} | null;
 }
-
-/**
- * Slack `auth.test` error codes that mean the bot token itself is unusable
- * (https://api.slack.com/methods/auth.test), as opposed to a transient
- * failure such as `ratelimited`.
- */
-const SLACK_AUTH_ERRORS = new Set([
-	"invalid_auth",
-	"not_authed",
-	"account_inactive",
-	"token_revoked",
-	"token_expired",
-]);
 
 const TWILIO_KEY = /^(AC[0-9a-fA-F]{32})\/(SK[0-9a-fA-F]{32}):(\S+)$/;
 
@@ -2035,9 +2031,9 @@ function parseTwilioCredentials(
 		});
 	}
 	return {
-		TWILIO_ACCOUNT_SID: match[1],
-		TWILIO_API_KEY: match[2],
-		TWILIO_API_SECRET: match[3],
+		[TWILIO_STDIO.credentialNames.accountSid]: match[1],
+		[TWILIO_STDIO.credentialNames.apiKey]: match[2],
+		[TWILIO_STDIO.credentialNames.apiSecret]: match[3],
 	};
 }
 
@@ -2089,89 +2085,16 @@ async function createStdioMcpClientForConfig(
 		});
 	}
 
-	// Get credentials (API key/PAT) for the server
+	const packageName = stdioPackageName(command);
+	const credentialEnvVar = stdioCredentialEnvVar(command);
+	const isTwilio = packageName === TWILIO_STDIO.packageName;
 	let credentials: Record<string, string> = {};
-	if (mcpConfig.encryptedApiKey) {
-		// Decrypt the API key
+	if (mcpConfig.encryptedApiKey && (credentialEnvVar || isTwilio)) {
 		const { decryptApiKey } = await import("@repo/utils");
 		const decryptedKey = decryptApiKey(mcpConfig.encryptedApiKey);
-
-		// Catalog packages name their variable in stdio-credential-env.ts.
-		// The command matches below serve legacy and tenant-defined servers.
-		const credentialEnvVar = stdioCredentialEnvVar(command);
-		if (credentialEnvVar) {
-			credentials = { [credentialEnvVar]: decryptedKey };
-		} else if (command.includes("azure-devops")) {
-			credentials = { ADO_MCP_AUTH_TOKEN: decryptedKey };
-		} else if (command.includes("github")) {
-			credentials = { GITHUB_TOKEN: decryptedKey };
-		} else if (command.includes("figma")) {
-			credentials = { FIGMA_API_KEY: decryptedKey };
-		} else if (
-			command.includes("server-slack") ||
-			command.includes("slack")
-		) {
-			// @modelcontextprotocol/server-slack exits at startup without
-			// SLACK_TEAM_ID, fetched here from Slack's auth.test API with the
-			// bot token. A client is not built without it: it would be cached
-			// for MCP_CLIENT_CACHE_TTL with credentials that differ from those
-			// of a working client, so the wrapper would start a new server for
-			// each of its calls, and each start would fail. Failing here keeps
-			// it out of the cache, so the next call looks the team id up again.
-			let teamId: string | undefined;
-			let slackError: string | undefined;
-			try {
-				const authResponse = await fetch(
-					"https://slack.com/api/auth.test",
-					{
-						method: "POST",
-						headers: {
-							"Content-Type": "application/x-www-form-urlencoded",
-							Authorization: `Bearer ${decryptedKey}`,
-						},
-					},
-				);
-				const authData = (await authResponse.json()) as {
-					ok: boolean;
-					team_id?: string;
-					error?: string;
-				};
-				if (authData.ok && authData.team_id) {
-					teamId = authData.team_id;
-				} else {
-					slackError = authData.error;
-				}
-			} catch (e) {
-				console.warn("[MCP Client] Failed to fetch Slack team_id:", {
-					error: e instanceof Error ? e.message : e,
-					stack: e instanceof Error ? e.stack : undefined,
-				});
-			}
-			if (!teamId) {
-				const isAuthError =
-					slackError !== undefined &&
-					SLACK_AUTH_ERRORS.has(slackError);
-				throw new McpClientError({
-					message: isAuthError
-						? `Slack rejected the bot token for "${serverName}". Please update it in MCP Settings.`
-						: `Could not look up the Slack workspace for "${serverName}". Please try again.`,
-					code: isAuthError
-						? "AUTH_FAILED"
-						: "SLACK_TEAM_ID_UNAVAILABLE",
-					serverName,
-					isAuthError,
-				});
-			}
-			credentials = {
-				SLACK_BOT_TOKEN: decryptedKey,
-				SLACK_TEAM_ID: teamId,
-			};
-		} else if (command.includes("@twilio-alpha/mcp")) {
-			credentials = parseTwilioCredentials(decryptedKey, serverName);
-		} else {
-			// API_KEY fallback for unknown, tenant-defined commands.
-			credentials = { API_KEY: decryptedKey };
-		}
+		credentials = credentialEnvVar
+			? { [credentialEnvVar]: decryptedKey }
+			: parseTwilioCredentials(decryptedKey, serverName);
 	}
 
 	// Google Drive OAuth2: the credential files are worked out again on every
@@ -2183,7 +2106,7 @@ async function createStdioMcpClientForConfig(
 		| undefined;
 	if (
 		mcpConfig.authType === "OAUTH2" &&
-		command.includes("server-gdrive") &&
+		packageName === GOOGLE_DRIVE_STDIO.packageName &&
 		mcpConfig.encryptedAccessToken
 	) {
 		const generation = mcpConfig.oauthGrantGeneration ?? 0;
@@ -2205,22 +2128,21 @@ async function createStdioMcpClientForConfig(
 		});
 	}
 
-	// Get command arguments (e.g., organization name for Azure DevOps)
-	let args = mcpConfig.commandArgs || [];
-
-	// For Azure DevOps with PAT auth, add --authentication envvar flag
-	// This prevents the server from launching a browser for interactive auth
-	if (command.includes("azure-devops") && mcpConfig.encryptedApiKey) {
-		// Only add if not already present
-		if (!args.includes("--authentication")) {
-			args = [...args, "--authentication", "envvar"];
-			if (process.env.NODE_ENV === "development") {
-				console.log(
-					"[MCP Client] Added --authentication envvar flag for Azure DevOps",
-				);
-			}
-		}
+	const storedArgs = mcpConfig.commandArgs ?? [];
+	const argumentPolicy = validateMcpCommandArgs(mcpServer, storedArgs);
+	if (!argumentPolicy.ok) {
+		throw new McpClientError({
+			message: argumentPolicy.reason,
+			code: "SERVER_UNAVAILABLE",
+			serverName,
+		});
 	}
+
+	// PAT authentication is selected by the client after validating stored arguments.
+	const args =
+		acceptsMcpCommandArgs(mcpServer) && mcpConfig.encryptedApiKey
+			? [...storedArgs, "--authentication", "envvar"]
+			: storedArgs;
 
 	// Create a wrapper client that routes calls to the HTTP wrapper service
 	const wrapperClient = createStdioWrapperClient({

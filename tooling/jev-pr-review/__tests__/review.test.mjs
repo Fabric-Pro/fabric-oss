@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { QUESTIONS } from "../questions.mjs";
+import {
+	QUESTION_DETAILS,
+	QUESTIONS,
+	validateQuestionCutoffs,
+} from "../questions.mjs";
 import {
 	commentBody,
 	evaluate,
@@ -27,10 +31,71 @@ test("cutoff boundary: exactly 0.8 fails and 0.79 passes", async () => {
 		[0.79, false],
 	]) {
 		const result = await evaluate({
+			questionDetails: {},
 			files: [file()],
 			decide: async () => answer(score),
 		});
 		assert.equal(result.rows[0].failed, failed);
+	}
+});
+
+test("question cutoff overrides the global cutoff only for that question", async () => {
+	const questionDetails = {
+		tenant_scope: { cutoff: 0.9 },
+	};
+	for (const [tenantScore, globalScore, failed] of [
+		[0.9, 0.85, true],
+		[0.899, 0.849, false],
+	]) {
+		const { rows } = await evaluate({
+			files: [file("a.ts"), file("b.ts")],
+			cutoff: 0.85,
+			questionDetails,
+			decide: async ({ state, questions }) => {
+				if (Object.keys(questions).length === 1) {
+					return answer(state.diff.includes("b/b.ts") ? 0.89 : 0.95);
+				}
+				const result = answer(0.1);
+				result.answers.tenant_scope.probability = tenantScore;
+				result.answers.authz.probability = globalScore;
+				return result;
+			},
+		});
+		assert.equal(
+			rows.find((row) => row.key === "tenant_scope").failed,
+			failed,
+		);
+		assert.equal(rows.find((row) => row.key === "authz").failed, failed);
+		assert.deepEqual(
+			rows.find((row) => row.key === "tenant_scope").others,
+			[],
+		);
+		assert.deepEqual(
+			rows.find((row) => row.key === "authz").others,
+			failed ? ["b.ts"] : [],
+		);
+	}
+});
+
+test("configured cutoffs are finite numbers in (0, 1]", () => {
+	assert.doesNotThrow(() => validateQuestionCutoffs(QUESTION_DETAILS));
+	assert.doesNotThrow(() =>
+		validateQuestionCutoffs({ tenant_scope: { cutoff: 1 } }),
+	);
+	for (const cutoff of [
+		"0.9",
+		undefined,
+		null,
+		Number.NaN,
+		Number.POSITIVE_INFINITY,
+		0,
+		-0.1,
+		1.01,
+	]) {
+		assert.throws(
+			() => validateQuestionCutoffs({ tenant_scope: { cutoff } }),
+			/Invalid cutoff for tenant_scope/,
+		);
 	}
 });
 
@@ -117,6 +182,7 @@ test("invalid probabilities are unevaluated and identify question/request", asyn
 		"0.9",
 	]) {
 		const result = await evaluate({
+			questionDetails: {},
 			files: [file()],
 			decide: async () => answer(score),
 		});
@@ -128,6 +194,7 @@ test("invalid probabilities are unevaluated and identify question/request", asyn
 test("a valid score does not hide an unanswered request", async () => {
 	let calls = 0;
 	const result = await evaluate({
+		questionDetails: {},
 		files: [file("a.ts", 30000), file("b.ts", 30000)],
 		decide: async () => (++calls === 1 ? answer(0.1) : { answers: {} }),
 	});
@@ -137,6 +204,7 @@ test("a valid score does not hide an unanswered request", async () => {
 test("localization chooses max score and lists other flagged files", async () => {
 	let calls = 0;
 	const result = await evaluate({
+		questionDetails: {},
 		files: [file("a.ts"), file("b.ts")],
 		decide: async ({ questions, maxRetries, abortSignal, state }) => {
 			assert.equal(maxRetries, 2);
@@ -168,6 +236,7 @@ test("localization chooses max score and lists other flagged files", async () =>
 
 test("localization error uses largest candidate file", async () => {
 	const result = await evaluate({
+		questionDetails: {},
 		files: [file("a.ts"), file("b.ts", 100)],
 		decide: async ({ questions }) => {
 			if (
@@ -193,7 +262,7 @@ test("comment includes marker, head, confidence, rule and fallback", () => {
 		"0.90",
 		"a.ts",
 		"could not be pinned down",
-		"reply why and resolve",
+		"This is an automated check by the Jev decision model and can be wrong. Before resolving the thread, reply `fixed` or `false positive` and give one line explaining why.",
 	]) {
 		assert.ok(body.includes(part), part);
 	}
@@ -205,6 +274,7 @@ test("split-file localization takes maximum across parts and visits each file on
 	const small = file("small.ts");
 	const visits = [];
 	const result = await evaluate({
+		questionDetails: {},
 		files: [large, small],
 		decide: async ({ questions, state }) => {
 			if (
@@ -238,6 +308,7 @@ test("split-file localization takes maximum across parts and visits each file on
 test("localization considers only files in failing requests", async () => {
 	const localized = [];
 	const result = await evaluate({
+		questionDetails: {},
 		files: [file("a.ts", 30000), file("b.ts", 30000)],
 		decide: async ({ questions, state }) => {
 			if (Object.keys(questions).length === 1) {
@@ -256,6 +327,7 @@ test("localization considers only files in failing requests", async () => {
 test("primary model error preserves localization of valid findings and reports affected request", async () => {
 	let count = 0;
 	const result = await evaluate({
+		questionDetails: {},
 		files: [file("a.ts", 30000), file("b.ts", 30000)],
 		decide: async () => {
 			if (++count === 2) {
@@ -276,6 +348,7 @@ test("generated Prisma Zod output is excluded", () => {
 test("primary requests stop at 20 and report skipped requests", async () => {
 	let calls = 0;
 	const result = await evaluate({
+		questionDetails: {},
 		files: Array.from({ length: 22 }, (_, i) => file(`f${i}.ts`, 30000)),
 		decide: async () => {
 			calls++;
@@ -293,6 +366,7 @@ test("primary requests stop at 20 and report skipped requests", async () => {
 test("localization has a global 20-call cap and marks fallback in the summary", async () => {
 	let localizationCalls = 0;
 	const result = await evaluate({
+		questionDetails: {},
 		files: Array.from({ length: 10 }, (_, i) => file(`f${i}.ts`, 10 + i)),
 		decide: async ({ questions }) => {
 			if (Object.keys(questions).length === 1) {
@@ -317,7 +391,11 @@ test("model calls use a 30-second timeout for both primary and localization", as
 		durations.push(ms);
 		return new AbortController().signal;
 	});
-	await evaluate({ files: [file()], decide: async () => answer(0.9) });
+	await evaluate({
+		questionDetails: {},
+		files: [file()],
+		decide: async () => answer(0.9),
+	});
 	assert.equal(durations.length, 1 + Object.keys(QUESTIONS).length);
 	assert.ok(durations.every((ms) => ms === 30000));
 });
@@ -332,6 +410,7 @@ test("truncation metadata remains on only the affected hunk parts", async () => 
 		[true, false],
 	);
 	const result = await evaluate({
+		questionDetails: {},
 		files: [file("large.ts", 70000), file("small.ts")],
 		decide: async () => answer(0.1),
 	});

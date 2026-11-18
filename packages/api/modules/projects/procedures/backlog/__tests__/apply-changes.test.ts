@@ -32,7 +32,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		getPendingBacklogProposal: vi.fn(),
 		getAppliedChangeIndexes: vi.fn(),
 		claimPendingProposalWithReview: vi.fn(),
-		finalizeClaimedProposal: vi.fn(),
+		finalizeProposalApply: vi.fn(),
 		getBoundPromptForAgent: vi.fn(),
 		markProposalApplyDispatched: vi.fn(),
 		callOrder: [] as string[],
@@ -59,8 +59,9 @@ vi.mock("@repo/database", () => ({
 	markProposalApplyDispatched: mocks.markProposalApplyDispatched,
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	getAppliedChangeIndexes: mocks.getAppliedChangeIndexes,
+	readRejectedChangeIndexes: () => [],
 	claimPendingProposalWithReview: mocks.claimPendingProposalWithReview,
-	finalizeClaimedProposal: mocks.finalizeClaimedProposal,
+	finalizeProposalApply: mocks.finalizeProposalApply,
 	getBoundPromptForAgent: mocks.getBoundPromptForAgent,
 	createPendingBacklogProposal: (...args: unknown[]) => {
 		mocks.callOrder.push("createPendingBacklogProposal");
@@ -839,7 +840,7 @@ describe("workflow start failure messages", () => {
 		});
 		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set<number>());
 		mocks.claimPendingProposalWithReview.mockResolvedValue(true);
-		mocks.finalizeClaimedProposal.mockResolvedValue(true);
+		mocks.finalizeProposalApply.mockResolvedValue(true);
 		mocks.workflowStart.mockRejectedValueOnce(
 			Object.assign(
 				new Error(
@@ -853,9 +854,9 @@ describe("workflow start failure messages", () => {
 			.applyChanges({ input: { ...baseInput, proposalId }, context: ctx })
 			.catch((error: unknown) => error);
 
-		expect.soft(mocks.finalizeClaimedProposal).toHaveBeenCalledWith({
+		expect.soft(mocks.finalizeProposalApply).toHaveBeenCalledWith({
 			proposalId,
-			applyWorkflowId: expect.any(String),
+			claim: { status: "APPLYING", applyWorkflowId: expect.any(String) },
 			outcome: "failed",
 			errorMessage: "database error P2024",
 		});
@@ -940,6 +941,7 @@ describe("review submission snapshots", () => {
 			id: "example-proposal",
 			projectId: baseInput.projectId,
 			source: "SCOPE_DOCUMENT",
+			status: "FAILED",
 			proposal: { changes: [baseChange, baseChange, baseChange] },
 			appliedChangeIndexes: [0],
 		});
@@ -970,6 +972,63 @@ describe("review submission snapshots", () => {
 			approvedChangeIndexes: [2],
 			pmSyncOverrides: { 0: { skip: true } },
 		});
+	});
+	it("refuses a stale client resubmitting an applied item of a PENDING proposal", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			id: "example-proposal",
+			projectId: baseInput.projectId,
+			source: "SCOPE_DOCUMENT",
+			status: "PENDING",
+			proposal: { changes: [baseChange, baseChange] },
+			appliedChangeIndexes: [0],
+		});
+		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set());
+		await expect(
+			handlers.applyChanges({
+				input: {
+					...baseInput,
+					proposalId: "example-proposal",
+					approvedChanges: [baseChange, baseChange],
+					approvedChangeIndexes: [0, 1],
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+		expect(mocks.claimPendingProposalWithReview).not.toHaveBeenCalled();
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+	});
+	it("claims against the metadata and proposal it read; a lost claim on an open row reports a changed proposal", async () => {
+		const sourceMetadata = { rejectedChangeIndexes: [1] };
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			id: "example-proposal",
+			projectId: baseInput.projectId,
+			source: "SCOPE_DOCUMENT",
+			status: "PENDING",
+			proposal: { changes: [baseChange, baseChange] },
+			appliedChangeIndexes: [],
+			sourceMetadata,
+		});
+		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set());
+		mocks.claimPendingProposalWithReview.mockResolvedValue(false);
+		await expect(
+			handlers.applyChanges({
+				input: {
+					...baseInput,
+					proposalId: "example-proposal",
+					approvedChangeIndexes: [0],
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message: expect.stringContaining("changed after you opened it"),
+		});
+		expect(mocks.claimPendingProposalWithReview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				expectedSourceMetadata: sourceMetadata,
+				expectedProposal: { changes: [baseChange, baseChange] },
+			}),
+		);
 	});
 	it.each([[3], [0, 0], []].map((indexes) => ({ indexes })))(
 		"rejects invalid explicit identity %j before claiming",

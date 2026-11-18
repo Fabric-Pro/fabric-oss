@@ -220,6 +220,31 @@ describe("convertStoryKindProcedure — the flip", () => {
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
 		expect(mocks.createBackgroundJob).not.toHaveBeenCalled();
 	});
+
+	it("refuses to convert an Initiative with BAD_REQUEST, and starts nothing", async () => {
+		mocks.userStoryFindUnique.mockResolvedValue({
+			id: "story-1",
+			kind: "INITIATIVE",
+			title: "Big Initiative",
+			draftingStage: "DRAFT",
+			deliveryTrack: "DEFAULT",
+			status: { id: "s1" },
+			tasks: [],
+		});
+
+		await expect(
+			handlers.convertKind({
+				input: baseInput,
+				context: baseContext,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: "Initiatives can't be converted.",
+		});
+		expect(mocks.updateStory).not.toHaveBeenCalled();
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+		expect(mocks.createBackgroundJob).not.toHaveBeenCalled();
+	});
 });
 
 /**

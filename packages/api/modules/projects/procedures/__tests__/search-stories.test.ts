@@ -37,6 +37,7 @@ vi.mock("@repo/database", () => ({
 	DB_GATEWAY_PROVIDERS: [],
 	normalizeStoryIdentifierQuery: (input: string) =>
 		input.replace(/^(F-|B-|US-|TASK-)/i, ""),
+	withVisibleStories: (where: unknown) => ({ AND: [where, "visible"] }),
 }));
 
 vi.mock(
@@ -121,12 +122,20 @@ describe("searchStoriesProcedure — fuzzy search", () => {
 		expect(result.stories).toHaveLength(2);
 		expect(mockRankStoryIds).toHaveBeenCalledWith(
 			expect.objectContaining({
-				projectId: "proj-1",
-				OR: expect.arrayContaining([
+				AND: [
 					expect.objectContaining({
-						title: { contains: "login", mode: "insensitive" },
+						projectId: "proj-1",
+						OR: expect.arrayContaining([
+							expect.objectContaining({
+								title: {
+									contains: "login",
+									mode: "insensitive",
+								},
+							}),
+						]),
 					}),
-				]),
+					"visible",
+				],
 			}),
 			10,
 		);
@@ -225,21 +234,26 @@ describe("searchStoriesProcedure — extended coverage", () => {
 
 		expect(mockRankStoryIds).toHaveBeenCalledWith(
 			expect.objectContaining({
-				projectId: "proj-1",
-				OR: expect.arrayContaining([
+				AND: [
 					expect.objectContaining({
-						externalId: {
-							contains: "maturation",
-							mode: "insensitive",
-						},
+						projectId: "proj-1",
+						OR: expect.arrayContaining([
+							expect.objectContaining({
+								externalId: {
+									contains: "maturation",
+									mode: "insensitive",
+								},
+							}),
+							expect.objectContaining({
+								description: {
+									contains: "maturation",
+									mode: "insensitive",
+								},
+							}),
+						]),
 					}),
-					expect.objectContaining({
-						description: {
-							contains: "maturation",
-							mode: "insensitive",
-						},
-					}),
-				]),
+					"visible",
+				],
 			}),
 			10,
 		);
@@ -257,9 +271,11 @@ describe("searchStoriesProcedure — extended coverage", () => {
 			context: ctx,
 		});
 
-		const where = mockRankStoryIds.mock.calls[0][0] as {
-			OR: Array<Record<string, { contains?: string }>>;
+		const callArg = mockRankStoryIds.mock.calls[0][0] as {
+			AND: [{ OR: Array<Record<string, { contains?: string }>> }, string];
 		};
+		expect(callArg.AND[1]).toBe("visible");
+		const where = callArg.AND[0];
 		const identifierNeedles = where.OR.filter(
 			(clause) => clause.identifier,
 		).map((clause) => clause.identifier?.contains);

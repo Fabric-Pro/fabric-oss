@@ -37,12 +37,14 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	findConfidentialTranscriptContextIds: async () => new Set(),
 	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	getProjectSummaryById: mocks.getProjectSummaryById,
 	getInstructionSummariesForProjects:
 		mocks.getInstructionSummariesForProjects,
 	getStoryById: mocks.getStoryById,
+	getVisibleStoryById: mocks.getStoryById,
 	getDocumentById: mocks.getDocumentById,
 	getContextById: mocks.getContextById,
 	listProjects: mocks.listProjects,

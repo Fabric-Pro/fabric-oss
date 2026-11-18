@@ -6,6 +6,7 @@
  * member runs.
  */
 
+export * from "./calendar-evidence";
 export * from "./github-identity";
 export * from "./time-entries";
 export * from "./time-evidence";

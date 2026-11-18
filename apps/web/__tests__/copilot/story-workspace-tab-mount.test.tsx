@@ -157,11 +157,6 @@ vi.mock("@copilotkit/react-ui", () => ({
 	),
 }));
 
-vi.mock("@copilotkit/runtime-client-gql", () => ({
-	MessageRole: { User: "user", Assistant: "assistant", System: "system" },
-	TextMessage: class {},
-}));
-
 // ---------------------------------------------------------------------------
 // Capture the live editor instance. `useRegisterTiptapEditor` is called at
 // StoryWorkspace's top level (outside the tab gate), which makes it the only

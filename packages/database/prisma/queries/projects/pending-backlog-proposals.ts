@@ -13,6 +13,8 @@ import type {
 	PendingBacklogProposalStatus,
 } from "../../generated/enums";
 import { advisoryObjectKey } from "../lib/refresh-lock-key";
+import { sourceMetadataEquals } from "./pending-proposal-item-state";
+import { readStoredProposalChanges } from "./proposal-changes";
 
 /** Statuses shown in the Roadmap review inbox and counted by its badge. */
 export const REVIEW_INBOX_PROPOSAL_STATUSES: readonly PendingBacklogProposalStatus[] =
@@ -44,30 +46,6 @@ export interface AttachmentWarningRecord {
 }
 
 /**
- * Extract a change's title, tolerating both the diff shape `{ from?, to }` and
- * a legacy plain-string title. Returns "" when no usable title is present.
- */
-function extractChangeTitle(change: unknown): string {
-	if (!change || typeof change !== "object") {
-		return "";
-	}
-	const title = (change as { title?: unknown }).title;
-	if (typeof title === "string") {
-		return title.trim();
-	}
-	if (title && typeof title === "object" && !Array.isArray(title)) {
-		const { to, from } = title as { to?: unknown; from?: unknown };
-		if (typeof to === "string" && to.trim()) {
-			return to.trim();
-		}
-		if (typeof from === "string") {
-			return from.trim();
-		}
-	}
-	return "";
-}
-
-/**
  * Headline for a proposal whose stored `summary` is empty.
  *
  * Monitored-source proposals (Teams channel/chat, Slack, meeting) are captured
@@ -78,14 +56,8 @@ function extractChangeTitle(change: unknown): string {
  * it from the first change that carries a title, annotating any others.
  */
 export function deriveProposalHeadline(proposal: unknown): string {
-	if (!proposal || typeof proposal !== "object" || Array.isArray(proposal)) {
-		return "";
-	}
-	const changes = (proposal as { changes?: unknown }).changes;
-	if (!Array.isArray(changes) || changes.length === 0) {
-		return "";
-	}
-	const title = changes.map(extractChangeTitle).find(Boolean) ?? "";
+	const changes = readStoredProposalChanges(proposal);
+	const title = changes.find((change) => change.title)?.title ?? "";
 	if (!title) {
 		return "";
 	}
@@ -242,6 +214,10 @@ export async function listPendingBacklogProposals(params: {
 			status: true,
 			summary: true,
 			changeCount: true,
+			// Read for the per-item titles the list procedures derive; they
+			// return a compact `items` summary, never this raw JSON.
+			proposal: true,
+			appliedChangeIndexes: true,
 			sourceMetadata: true,
 			applyError: true,
 			errorClass: true,
@@ -321,17 +297,6 @@ export async function markPendingProposalApproved(params: {
 			reviewedBy: params.reviewedBy,
 			applyWorkflowId: params.applyWorkflowId ?? null,
 			applyStartedAt: null,
-			applyError: null,
-		},
-	});
-}
-
-export async function markPendingProposalApplied(proposalId: string) {
-	return await db.pendingBacklogProposal.update({
-		where: { id: proposalId },
-		data: {
-			status: "APPLIED",
-			appliedAt: new Date(),
 			applyError: null,
 		},
 	});
@@ -789,13 +754,23 @@ export interface ProposalReviewEntryInput {
 	pmSyncOverride?: unknown;
 }
 
-/** Claim, insert the submission, and bind it to this attempt in one transaction. */
+/**
+ * Claim, insert the submission, and bind it to this attempt in one transaction.
+ * `expectedSourceMetadata` is the metadata the caller's per-item guard read:
+ * the claim also requires it unchanged, so a per-item Move to Rejected that
+ * commits in between (status stays PENDING) makes the claim lose.
+ * `expectedProposal` is the `proposal` JSON the caller read: a merge into an
+ * item that commits in between makes the claim lose too, so an approval never
+ * applies an item body older than the stored one.
+ */
 export async function claimPendingProposalWithReview(params: {
 	proposalId: string;
 	reviewedBy: string;
 	applyWorkflowId: string;
 	admitBacklog?: boolean;
 	claimWhere?: Prisma.PendingBacklogProposalWhereInput;
+	expectedSourceMetadata?: Prisma.JsonValue | null;
+	expectedProposal?: Prisma.JsonValue;
 	claimStatus?: "APPLYING" | "APPROVED";
 	reuseReviewForAttempt?: boolean;
 	offeredListComplete: boolean;
@@ -803,18 +778,37 @@ export async function claimPendingProposalWithReview(params: {
 	pmConfig?: unknown;
 	entries: ProposalReviewEntryInput[];
 }): Promise<boolean> {
+	const statusWhere: Prisma.PendingBacklogProposalWhereInput =
+		params.claimWhere ?? {
+			status: {
+				in: params.admitBacklog
+					? ["PENDING", "FAILED", "BACKLOG"]
+					: ["PENDING", "FAILED"],
+			},
+		};
+	const json = (value: unknown): Prisma.InputJsonValue =>
+		JSON.parse(JSON.stringify(value));
+	const unchanged: Prisma.PendingBacklogProposalWhereInput[] = [
+		...(params.expectedSourceMetadata === undefined
+			? []
+			: [
+					{
+						sourceMetadata: sourceMetadataEquals(
+							params.expectedSourceMetadata,
+						),
+					},
+				]),
+		...(params.expectedProposal === undefined
+			? []
+			: [{ proposal: { equals: json(params.expectedProposal) } }]),
+	];
+	const where: Prisma.PendingBacklogProposalWhereInput =
+		unchanged.length === 0
+			? { id: params.proposalId, ...statusWhere }
+			: { id: params.proposalId, AND: [statusWhere, ...unchanged] };
 	return db.$transaction(async (tx) => {
 		const result = await tx.pendingBacklogProposal.updateMany({
-			where: {
-				id: params.proposalId,
-				...(params.claimWhere ?? {
-					status: {
-						in: params.admitBacklog
-							? ["PENDING", "FAILED", "BACKLOG"]
-							: ["PENDING", "FAILED"],
-					},
-				}),
-			},
+			where,
 			data: {
 				status: params.claimStatus ?? "APPLYING",
 				reviewedAt: new Date(),
@@ -843,8 +837,6 @@ export async function claimPendingProposalWithReview(params: {
 		) {
 			return true;
 		}
-		const json = (value: unknown): Prisma.InputJsonValue =>
-			JSON.parse(JSON.stringify(value));
 		const review = await tx.pendingBacklogProposalReview.create({
 			data: {
 				proposalId: params.proposalId,
@@ -982,98 +974,6 @@ export async function recordProposalApplication(
 			},
 		});
 	}
-}
-
-/**
- * Claimant-checked terminal transitions. Only the workflow that claimed the
- * proposal (matching `applyWorkflowId`) may flip it out of APPLYING.
- * Returns false when the caller is not the claimant or the row moved on.
- */
-export async function finalizeClaimedProposal(params: {
-	proposalId: string;
-	applyWorkflowId: string;
-	outcome: "applied" | "failed";
-	errorMessage?: string;
-	errorClass?: string;
-	rawApplyError?: string;
-}): Promise<boolean> {
-	// Fizzy #2208 partial accept: a ROADMAP_RECOMMENDATION batch keeps its
-	// unaccepted candidates in review. While any change is unresolved the row
-	// returns to PENDING (claim released, watchdog clock cleared) instead of
-	// closing, whether this apply succeeded or failed: a retry door would
-	// replay every unapplied change, including candidates nobody selected.
-	const row = await db.pendingBacklogProposal.findUnique({
-		where: { id: params.proposalId },
-		select: { source: true, changeCount: true, appliedChangeIndexes: true },
-	});
-	if (row?.source === "ROADMAP_RECOMMENDATION") {
-		const applications =
-			await db.pendingBacklogProposalApplication.findMany({
-				where: { proposalId: params.proposalId },
-				select: { changeIndex: true },
-			});
-		const resolved = new Set([
-			...applications.map((a) => a.changeIndex),
-			...row.appliedChangeIndexes,
-		]);
-		if (resolved.size < row.changeCount) {
-			const failed = params.outcome === "failed";
-			const reopened = await db.pendingBacklogProposal.updateMany({
-				where: {
-					id: params.proposalId,
-					status: "APPLYING",
-					applyWorkflowId: params.applyWorkflowId,
-				},
-				data: {
-					status: "PENDING",
-					applyWorkflowId: null,
-					applyStartedAt: null,
-					...(failed
-						? {
-								applyError: (
-									params.rawApplyError ??
-									params.errorMessage ??
-									"apply workflow failed"
-								).slice(0, 4000),
-								errorClass: (
-									params.errorClass ?? "default"
-								).slice(0, 200),
-								errorMessage: (
-									params.errorMessage ??
-									"apply workflow failed"
-								).slice(0, 500),
-								failedAt: new Date(),
-							}
-						: {
-								applyError: null,
-								errorClass: null,
-								errorMessage: null,
-								failedAt: null,
-							}),
-				},
-			});
-			return reopened.count === 1;
-		}
-	}
-
-	const result = await db.pendingBacklogProposal.updateMany({
-		where: {
-			id: params.proposalId,
-			status: "APPLYING",
-			applyWorkflowId: params.applyWorkflowId,
-		},
-		data:
-			params.outcome === "applied"
-				? { status: "APPLIED", appliedAt: new Date(), applyError: null }
-				: {
-						status: "FAILED",
-						failedAt: new Date(),
-						applyError: (
-							params.errorMessage ?? "apply workflow failed"
-						).slice(0, 4000),
-					},
-	});
-	return result.count === 1;
 }
 
 /** Duplicate resolutions are separate from applications: existing items must not

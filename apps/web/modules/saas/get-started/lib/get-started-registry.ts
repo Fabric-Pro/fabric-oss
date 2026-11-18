@@ -1917,7 +1917,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "time-suggestions",
 				anchor: "time-suggestions",
 				title: "Time to confirm",
-				body: "Check my activity suggests time from your own meetings, test runs and work item edits, one line each. Type or keep the duration and press Confirm, or choose Not work time. Open a row to change its note, billable, activity or work item first.",
+				body: "Check my activity suggests time from your own meetings, calendar, test runs and work item edits, one line each. Type or keep the duration and press Confirm, or choose Not work time. Open a row to change its note, billable, activity or work item first.",
 				conditional: true,
 			},
 			{

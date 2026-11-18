@@ -129,6 +129,7 @@ import { uploadStoryImage } from "../../lib/image-upload-utils";
 import {
 	applyRoadmapFilters,
 	partitionByNameMatch,
+	STORY_KIND_LABELS,
 	selectHiddenMatches,
 } from "../../lib/roadmap-filters";
 import { isRoadmapPopulated } from "../../lib/roadmap-population";
@@ -199,6 +200,7 @@ import { PendingBacklogProposalsInbox } from "./PendingBacklogProposalsInbox";
 import { PullFromPMDialog } from "./PullFromPMDialog";
 import { ReviewCenterPanel } from "./pm-sync/review-center/ReviewCenterPanel";
 import { PriorityRankedList } from "./priority/PriorityRankedList";
+import { proposalDuplicateFlagsQueryKey } from "./proposal-inbox-client";
 import { RoadmapActionsMenu } from "./RoadmapActionsMenu";
 import type { RoadmapStats } from "./RoadmapContextStrip";
 import { RoadmapEmptyState } from "./RoadmapEmptyState";
@@ -961,6 +963,8 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 			input: { id: projectId, organizationId },
 		}),
 	);
+	const initiativesEnabled =
+		projectData?.project?.initiativesEnabled ?? false;
 
 	// Under EXPLORE an empty backlog opens straight into the chat (plan
 	// Slice 6). Once per mount so closing it stays closed.
@@ -1938,10 +1942,10 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 	// "Change to feature" labels so a deleted or synced Bug reads "Bug …" rather
 	// than "Feature …". Delete has no optimistic removal, so the row is still in
 	// `stories` when onSuccess runs.
-	const storyKindNoun = (storyId: string): "Bug" | "Feature" =>
-		stories.find((s) => s.id === storyId)?.kind === "BUG"
-			? "Bug"
-			: "Feature";
+	const storyKindLabel = (storyId: string): string =>
+		STORY_KIND_LABELS[
+			stories.find((s) => s.id === storyId)?.kind ?? "FEATURE"
+		];
 
 	const deleteStoryMutation = useMutation({
 		mutationFn: async (storyId: string) => {
@@ -1954,7 +1958,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 			queryClient.invalidateQueries({
 				queryKey: getStoriesQueryKey(projectId, organizationId),
 			});
-			toast.success(`${storyKindNoun(storyId)} deleted`);
+			toast.success(`${storyKindLabel(storyId)} deleted`);
 		},
 		onError: (error) => {
 			toast.error("Failed to delete story", {
@@ -1998,11 +2002,11 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 				)?.lifecycleAction;
 				const extra = pullLifecycleSuffix(lifecycleAction);
 				toast.success(
-					`${storyKindNoun(variables.storyId)} pulled from ${pmToolName}${extra}`,
+					`${storyKindLabel(variables.storyId)} pulled from ${pmToolName}${extra}`,
 				);
 			} else {
 				toast.success(
-					`${storyKindNoun(variables.storyId)} pushed to ${pmToolName}`,
+					`${storyKindLabel(variables.storyId)} pushed to ${pmToolName}`,
 				);
 			}
 		},
@@ -2292,13 +2296,13 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 	// delete only runs when the 8s undo window closes un-undone. Undo restores
 	// the cache (nothing was deleted server-side yet).
 	const applyBulkDelete = useCallback(() => {
-		const ids = Array.from(selectedStoryIds);
-		if (ids.length === 0) {
-			return;
-		}
 		const key = getStoriesQueryKey(projectId, organizationId);
 		const previous = queryClient.getQueryData(key);
 		const prev = previous as { stories?: UserStory[] } | undefined;
+		const ids = Array.from(selectedStoryIdsRef.current);
+		if (ids.length === 0) {
+			return;
+		}
 		if (prev?.stories) {
 			const idSet = new Set(ids);
 			queryClient.setQueryData(key, {
@@ -2442,6 +2446,13 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 		onSuccess: () => {
 			queryClient.invalidateQueries({
 				queryKey: getStoriesQueryKey(projectId, organizationId),
+			});
+			// A new ticket can be what an inbox item duplicates.
+			queryClient.invalidateQueries({
+				queryKey: proposalDuplicateFlagsQueryKey(
+					projectId,
+					organizationId,
+				),
 			});
 			// Dialog close is now driven by submitCreateStoryWithAttachments
 			// AFTER the deferred-upload + updateStory pipeline resolves. Closing
@@ -3249,6 +3260,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 					hasActiveFilters={hasActiveRoadmapFilters}
 					projectId={projectId}
 					organizationId={organizationId}
+					initiativesEnabled={initiativesEnabled}
 					trailing={
 						<>
 							{/* Sort has no effect on the Priority section's ranked
@@ -4052,6 +4064,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 					statusId={createDialogStatusId}
 					statuses={statuses}
 					projectId={projectId}
+					initiativesEnabled={initiativesEnabled}
 					onSubmit={async (data, files, docAttachments) => {
 						const result = await submitCreateStoryWithAttachments({
 							data,
@@ -4413,6 +4426,7 @@ function CreateStoryDialog({
 	statusId,
 	statuses: _statuses,
 	projectId,
+	initiativesEnabled,
 	onSubmit,
 	isSubmitting,
 	tCreate,
@@ -4422,6 +4436,7 @@ function CreateStoryDialog({
 	statusId: string | null;
 	statuses: StoryStatus[];
 	projectId: string;
+	initiativesEnabled: boolean;
 	/**
 	 * Caller drives the create mutation and resolves with the new row's
 	 * `titleSource` so the dialog can fire the loading / success / warning
@@ -4441,6 +4456,7 @@ function CreateStoryDialog({
 	tCreate: (key: string) => string;
 }) {
 	const [description, setDescription] = useState("");
+	const [asInitiative, setAsInitiative] = useState(false);
 	const [priority, setPriority] = useState<string>("P2_MEDIUM");
 	const [size, setSize] = useState<string>("");
 	const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -4528,6 +4544,7 @@ function CreateStoryDialog({
 
 	const resetFormState = () => {
 		setDescription("");
+		setAsInitiative(false);
 		setPriority("P2_MEDIUM");
 		setSize("");
 		setPendingFiles([]);
@@ -4552,12 +4569,13 @@ function CreateStoryDialog({
 		// the story workspace, where kind is known.
 
 		// Title is intentionally omitted — the server generates it from the
-		// description. F-171: `kind` is omitted too; the classifier in
-		// createStoryFromProposal decides BUG vs FEATURE from the description.
+		// description. `kind` is sent only for an Initiative; otherwise the
+		// classifier decides BUG vs FEATURE from the description.
 		const payload: CreateStoryInput = {
 			projectId,
 			statusId: statusId ?? undefined,
 			description: description.trim(),
+			...(asInitiative ? { kind: "INITIATIVE" as const } : {}),
 			priority: priority as CreateStoryInput["priority"],
 			size: size ? (size as CreateStoryInput["size"]) : undefined,
 			draftingStage,
@@ -4607,6 +4625,11 @@ function CreateStoryDialog({
 			return;
 		}
 
+		if (asInitiative) {
+			await runCreate(false);
+			return;
+		}
+
 		setIsCheckingDuplicate(true);
 		const outcome = await checkBeforeCreate(
 			duplicateCheckPrefetch.getCheckRun(description),
@@ -4629,9 +4652,9 @@ function CreateStoryDialog({
 				<DialogHeader>
 					<DialogTitle>Create work item</DialogTitle>
 					<DialogDescription>
-						Describe what's needed or what's broken — the system
-						classifies it as a feature or a bug and drafts the card
-						for you.
+						{asInitiative
+							? "Describe the bigger goal — the system drafts the Initiative spec from it."
+							: "Describe what's needed or what's broken — the system classifies it as a feature or a bug and drafts the card for you."}
 					</DialogDescription>
 				</DialogHeader>
 
@@ -4656,7 +4679,16 @@ function CreateStoryDialog({
 						}}
 						onCreateAnyway={() => {
 							setDuplicateResult(null);
-							void runCreate(false);
+							void runCreate(
+								duplicateResult.decision === "create" &&
+									duplicateResult.storyCheckFailed,
+							);
+						}}
+						onMergedIntoProposal={() => {
+							resetFormState();
+							setDuplicateResult(null);
+							duplicateCheckPrefetch.reset();
+							onOpenChange(false);
 						}}
 						onEnriched={(storyId) => {
 							queryClient.invalidateQueries({
@@ -4724,15 +4756,19 @@ function CreateStoryDialog({
 							value={description}
 							onChange={(e) => {
 								setDescription(e.target.value);
-								duplicateCheckPrefetch.onDescriptionChange(
-									e.target.value,
-								);
+								if (!asInitiative) {
+									duplicateCheckPrefetch.onDescriptionChange(
+										e.target.value,
+									);
+								}
 							}}
-							onBlur={(e) =>
-								duplicateCheckPrefetch.onDescriptionBlur(
-									e.target.value,
-								)
-							}
+							onBlur={(e) => {
+								if (!asInitiative) {
+									duplicateCheckPrefetch.onDescriptionBlur(
+										e.target.value,
+									);
+								}
+							}}
 							rows={3}
 							required
 						/>
@@ -4760,35 +4796,45 @@ function CreateStoryDialog({
 						}
 					/>
 
-					<div className="space-y-2">
-						<Label>Prompt (default for features)</Label>
-						{/* F-171: kind isn't known until the classifier runs server-side.
-				    This selector only manages the FEATURE-stage default
-				    binding (via "Bind as default") — it does NOT drive this
-				    particular submission. The server-side classifier picks
-				    the BUG or FEATURE prompt at submit time based on the
-				    description. Power-user prompt overrides for this story
-				    happen post-creation in the story workspace where kind is
-				    known. */}
-						<PromptSelector
-							agentName="project_document_generator"
-							projectId={projectId}
-							documentType={draftingStage}
-							storyKind="FEATURE"
-							value={selectedPromptId}
-							onValueChange={setSelectedPromptId}
-							onPromptVersionChange={setSelectedPromptVersionId}
-							disabled={isSubmitting}
-							placeholder="Use default prompt"
-							showBindAction
-							tooltipCollisionBoundaryRef={dialogContentRef}
-						/>
+					{asInitiative ? (
 						<p className="text-xs text-muted-foreground">
-							AI picks the appropriate prompt (bug vs feature)
-							from the description. Use this selector to manage
-							the default prompt for features at this stage.
+							Initiatives are drafted with the Initiative Full
+							Spec prompt. Change it under Prompts.
 						</p>
-					</div>
+					) : (
+						<div className="space-y-2">
+							<Label>Prompt (default for features)</Label>
+							{/* F-171: kind isn't known until the classifier runs server-side.
+					    This selector only manages the FEATURE-stage default
+					    binding (via "Bind as default") — it does NOT drive this
+					    particular submission. The server-side classifier picks
+					    the BUG or FEATURE prompt at submit time based on the
+					    description. Power-user prompt overrides for this story
+					    happen post-creation in the story workspace where kind is
+					    known. */}
+							<PromptSelector
+								agentName="project_document_generator"
+								projectId={projectId}
+								documentType={draftingStage}
+								storyKind="FEATURE"
+								value={selectedPromptId}
+								onValueChange={setSelectedPromptId}
+								onPromptVersionChange={
+									setSelectedPromptVersionId
+								}
+								disabled={isSubmitting}
+								placeholder="Use default prompt"
+								showBindAction
+								tooltipCollisionBoundaryRef={dialogContentRef}
+							/>
+							<p className="text-xs text-muted-foreground">
+								AI picks the appropriate prompt (bug vs feature)
+								from the description. Use this selector to
+								manage the default prompt for features at this
+								stage.
+							</p>
+						</div>
+					)}
 
 					<div className="space-y-2">
 						<Label htmlFor="create-stage">Stage</Label>
@@ -4828,6 +4874,34 @@ function CreateStoryDialog({
 							</SelectContent>
 						</Select>
 					</div>
+
+					{initiativesEnabled && (
+						<div className="space-y-2">
+							<Label htmlFor="create-work-item-type">Type</Label>
+							<Select
+								value={asInitiative ? "INITIATIVE" : "AUTO"}
+								onValueChange={(v) => {
+									const initiative = v === "INITIATIVE";
+									setAsInitiative(initiative);
+									if (initiative) {
+										duplicateCheckPrefetch.reset();
+									}
+								}}
+							>
+								<SelectTrigger id="create-work-item-type">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="AUTO">
+										Feature or Bug (detected automatically)
+									</SelectItem>
+									<SelectItem value="INITIATIVE">
+										Initiative
+									</SelectItem>
+								</SelectContent>
+							</Select>
+						</div>
+					)}
 
 					<div className="grid grid-cols-2 gap-4">
 						<div className="space-y-2">

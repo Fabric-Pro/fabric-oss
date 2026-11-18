@@ -24,9 +24,11 @@
 
 import { FRAME_SURFACES } from "@repo/database";
 import { FABRIC_FRAME_TOOL_DEFINITIONS } from "@repo/temporal/fabric-frame-tool-definitions";
+import { sessionProjectRestriction } from "../project-binding";
 import { errorResult, jsonResult } from "../tool-results";
 import type { GatewaySession, ToolCallResult } from "../types";
 import {
+	accessibleFrame,
 	legacyFrameIdOf,
 	nonEmptyString,
 	organizationSlug,
@@ -208,9 +210,7 @@ async function handleGetFrame(
 		userId: session.userId,
 		userEmail: session.email,
 		organizationId: session.organizationId || undefined,
-		...(session.pageProjectId !== undefined
-			? { projectRestrictionId: session.pageProjectId }
-			: {}),
+		projectRestrictionId: sessionProjectRestriction(session),
 	});
 	return "error" in result
 		? errorResult(String(result.error || "Unknown frame error"))
@@ -240,9 +240,7 @@ async function handleListFrames(
 		organizationId: session.organizationId || undefined,
 		surface,
 		projectId,
-		...(session.pageProjectId !== undefined
-			? { projectRestrictionId: session.pageProjectId }
-			: {}),
+		projectRestrictionId: sessionProjectRestriction(session),
 	});
 	const slug = await organizationSlug(session.organizationId);
 	return jsonResult({
@@ -269,6 +267,27 @@ async function handleShareFrame(
 }
 
 /**
+ * A change names its page by id, not by project: a session held to one
+ * project (a page call, or a meeting's pinned grant) may change only that
+ * project's pages.
+ */
+function heldToSessionProject(
+	handler: PlatformToolHandler,
+): PlatformToolHandler {
+	return async (args, session) => {
+		const frameId = legacyFrameIdOf(args, session);
+		if (
+			frameId &&
+			sessionProjectRestriction(session) !== undefined &&
+			!(await accessibleFrame(frameId, session))
+		) {
+			return errorResult("Page not found.");
+		}
+		return handler(args, session);
+	};
+}
+
+/**
  * The frame tools, registered like every other family. `pageMayDeclare` is the
  * table owner's answer to "may a page declare this tool": it knows the whole
  * platform table, which this module is part of and cannot import back.
@@ -280,11 +299,17 @@ export function createFrameTools(
 		FABRIC_FRAME_TOOL_DEFINITIONS,
 		new Map<string, PlatformToolHandler>([
 			["fabric_create_frame", handleCreateFrame(pageMayDeclare)],
-			["fabric_update_frame", handleUpdateFrame(pageMayDeclare)],
-			["fabric_edit_frame_block", handleEditFrameBlock],
+			[
+				"fabric_update_frame",
+				heldToSessionProject(handleUpdateFrame(pageMayDeclare)),
+			],
+			[
+				"fabric_edit_frame_block",
+				heldToSessionProject(handleEditFrameBlock),
+			],
 			["fabric_get_frame", handleGetFrame],
 			["fabric_list_frames", handleListFrames],
-			["fabric_share_frame", handleShareFrame],
+			["fabric_share_frame", heldToSessionProject(handleShareFrame)],
 			["fabric_create_slideshow", handleCreateSlideshow],
 		]),
 	);

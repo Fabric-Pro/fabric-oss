@@ -26,6 +26,10 @@ import {
 	updateMcpConfigEnabled,
 	upsertMcpConfig,
 } from "@repo/database";
+import {
+	McpConfigInputError,
+	validateMcpCommandArgs,
+} from "@repo/database/prisma/mcp-command-args";
 import { findUsableGitLabConnection } from "@repo/integrations/gitlab";
 import {
 	triggerMcpServerIngestion,
@@ -368,6 +372,18 @@ export const configProcedures = {
 				throw new ORPCError("NOT_FOUND", {
 					message: "MCP server not found",
 				});
+			}
+
+			if (input.commandArgs !== undefined || !existingConfig) {
+				const result = validateMcpCommandArgs(
+					serverKey,
+					input.commandArgs ?? [],
+				);
+				if (!result.ok) {
+					throw new ORPCError("BAD_REQUEST", {
+						message: result.reason,
+					});
+				}
 			}
 
 			// GitLab personal servers never take a credential here: their
@@ -888,21 +904,24 @@ export const configProcedures = {
 					include: { mcpServer: true },
 				});
 			} else {
-				record = forceCreate
-					? // Always create a new config
-						await createMcpConfig({
-							mcpServerId,
-							userId: tenantUserId,
-							organizationId,
-							data,
-						})
-					: // Default upsert behavior (backward compat for OAuth callbacks, etc.)
-						await upsertMcpConfig({
-							mcpServerId,
-							userId: tenantUserId,
-							organizationId,
-							data,
+				try {
+					const writeConfig = forceCreate
+						? createMcpConfig
+						: upsertMcpConfig;
+					record = await writeConfig({
+						mcpServerId,
+						userId: tenantUserId,
+						organizationId,
+						data,
+					});
+				} catch (error) {
+					if (error instanceof McpConfigInputError) {
+						throw new ORPCError(error.code, {
+							message: error.message,
 						});
+					}
+					throw error;
+				}
 				if (credentialChange) {
 					// A new row: it holds no earlier credential to retire.
 					await writeCredentials(

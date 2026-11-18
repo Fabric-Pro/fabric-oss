@@ -1826,12 +1826,15 @@ if (!isPublishMode)
 // This service enables STDIO-based MCP servers (like Azure DevOps) to be used
 // in a multi-user environment by wrapping them in an HTTP service.
 
+var mcpWrapperApiKey = isPublishMode ? builder.AddParameter("mcp-wrapper-api-key", secret: true) : null;
+IResourceBuilder<ContainerResource>? publishedMcpStdioWrapper = null;
 if (isPublishMode)
 {
     // Production: Pre-built image from ACR
-    var mcpStdioWrapper = builder.AddContainer("mcp-stdio-wrapper", GetAgentImage("mcp-stdio-wrapper"))
+    publishedMcpStdioWrapper = builder.AddContainer("mcp-stdio-wrapper", GetAgentImage("mcp-stdio-wrapper"))
         .WithHttpEndpoint(port: 3100, targetPort: 3100, name: "http")
         .WithEnvironment("NODE_ENV", "production")
+        .WithEnvironment("MCP_WRAPPER_API_KEY", mcpWrapperApiKey!)
         .WithEnvironment("MAX_PROCESSES", "50")
         .WithEnvironment("IDLE_TTL_MS", "60000")
         .WithHttpHealthCheck("/health");
@@ -1842,7 +1845,7 @@ else
     var mcpStdioWrapper = builder.AddExecutable("mcp-stdio-wrapper", "pnpm", "../../packages/mcp-stdio-wrapper", "run", "dev")
         .WithHttpEndpoint(port: 3100, env: "PORT", isProxied: false)
         .WithEnvironment("NODE_ENV", "development")
-        .WithEnvironment("ALLOW_EXTERNAL_ACCESS", "true")  // Allow localhost access for development
+        .WithEnvironment("ALLOW_EXTERNAL_ACCESS", "true")
         .WithEnvironment("MAX_PROCESSES", "10")  // Limit processes for local dev
         .WithEnvironment("IDLE_TTL_MS", "120000");  // 2 minutes TTL for dev
 
@@ -1869,6 +1872,8 @@ if (isPublishMode)
         .WithEnvironment("TEMPORAL_ADDRESS", temporalAddress)
         .WithEnvironment("TEMPORAL_NAMESPACE", temporalNamespace)
         .WithEnvironment("TEMPORAL_CLOUD_API_KEY", temporalApiKey)
+        .WithEnvironment("MCP_STDIO_WRAPPER_URL", publishedMcpStdioWrapper!.GetEndpoint("http"))
+        .WithEnvironment("MCP_WRAPPER_API_KEY", mcpWrapperApiKey!)
         .WithEnvironment("AGENT_API_KEY", agentApiKey)
         .WithEnvironment("AI_TOKEN_SECRET", aiTokenSecret);
 }

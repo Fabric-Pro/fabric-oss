@@ -22,6 +22,7 @@ vi.mock("../prisma/client", () => ({
 	Prisma: {},
 }));
 
+import { withVisibleStories } from "../prisma/queries/projects/initiative-visibility";
 import {
 	getStorySummaryById,
 	listStorySummaries,
@@ -101,7 +102,7 @@ describe("listStorySummaries", () => {
 		expect(first.total).toBe(3);
 		expect(storyFindMany).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { projectId: "proj-1" },
+				where: withVisibleStories({ projectId: "proj-1" }),
 				take: 1,
 				skip: 1,
 			}),
@@ -166,7 +167,7 @@ describe("getStorySummaryById", () => {
 		await getStorySummaryById("story-1", "proj-1");
 
 		expect(storyFindFirst).toHaveBeenCalledWith({
-			where: { id: "story-1", projectId: "proj-1" },
+			where: withVisibleStories({ id: "story-1", projectId: "proj-1" }),
 			select: { id: true, identifier: true, maturationStatus: true },
 		});
 	});

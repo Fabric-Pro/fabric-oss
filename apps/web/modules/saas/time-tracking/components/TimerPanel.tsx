@@ -10,7 +10,6 @@ import {
 	DropdownMenuItem,
 	DropdownMenuTrigger,
 } from "@ui/components/dropdown-menu";
-import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
 import {
 	Select,
@@ -41,11 +40,9 @@ import {
 import { todayInZone } from "../lib/zoned-time";
 import { EntryWarningQuestion } from "./EntryWarningQuestion";
 import { TimerDot } from "./TimerDot";
+import { TimerNote } from "./TimerNote";
 import { TimerStopQuestion } from "./TimerStopQuestion";
 import { WorkItemPicker } from "./WorkItemPicker";
-
-/** The API's limit on an entry's description, which a timer's note becomes. */
-const NOTE_MAX_LENGTH = 10_000;
 
 /**
  * The open widget of a running or paused timer: its state and time, what it
@@ -253,6 +250,10 @@ export function TimerPanel({
 					onCommit={(description) =>
 						update({ description: description || null })
 					}
+					projectId={timer.projectId}
+					// While the project changes, the shown notes are still the
+					// previous project's.
+					notesDisabled={actions.isChanging}
 				/>
 			</div>
 
@@ -368,42 +369,5 @@ export function TimerPanel({
 				</div>
 			)}
 		</div>
-	);
-}
-
-/** The timer's note, saved when it loses focus or on Enter. */
-function TimerNote({
-	id,
-	initial,
-	placeholder,
-	onCommit,
-}: {
-	id: string;
-	initial: string;
-	placeholder: string;
-	onCommit: (description: string) => void;
-}) {
-	const [value, setValue] = useState(initial);
-	const commit = () => {
-		const trimmed = value.trim();
-		if (trimmed !== initial.trim()) {
-			onCommit(trimmed);
-		}
-	};
-	return (
-		<Input
-			id={id}
-			value={value}
-			placeholder={placeholder}
-			maxLength={NOTE_MAX_LENGTH}
-			onChange={(event) => setValue(event.target.value)}
-			onBlur={commit}
-			onKeyDown={(event) => {
-				if (event.key === "Enter") {
-					event.preventDefault();
-					commit();
-				}
-			}}
-		/>
 	);
 }

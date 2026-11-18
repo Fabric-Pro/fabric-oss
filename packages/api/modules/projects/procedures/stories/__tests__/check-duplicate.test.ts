@@ -41,6 +41,7 @@ const {
 	mockListCacheRows,
 	mockUpsertCache,
 	mockGetBoundPrompt,
+	mockListInboxItems,
 	AiUsageLimitExceededError,
 } = vi.hoisted(() => {
 	class AiUsageLimitExceededError extends Error {
@@ -64,6 +65,7 @@ const {
 		mockListCacheRows: vi.fn(),
 		mockUpsertCache: vi.fn(),
 		mockGetBoundPrompt: vi.fn(),
+		mockListInboxItems: vi.fn(),
 	};
 });
 
@@ -138,6 +140,8 @@ vi.mock("@repo/database", async () => {
 		upsertStoryDuplicateEmbeddings: (...a: unknown[]) =>
 			mockUpsertCache(...a),
 		getBoundPromptForAgent: (...a: unknown[]) => mockGetBoundPrompt(...a),
+		listUnresolvedPendingProposalItems: (...a: unknown[]) =>
+			mockListInboxItems(...a),
 		GATEWAY_PROVIDERS: [],
 		DB_GATEWAY_PROVIDERS: [],
 	};
@@ -206,6 +210,14 @@ type CheckDuplicateResult = {
 		similarity: number;
 	}>;
 	error?: string;
+	proposalMatches: Array<{
+		proposalId: string;
+		changeIndex: number;
+		title: string;
+		summary: string;
+		source: string;
+		similarity: number;
+	}>;
 };
 
 const ctx = {
@@ -283,6 +295,8 @@ beforeEach(() => {
 	mockListCacheRows.mockResolvedValue([]);
 	mockUpsertCache.mockResolvedValue(undefined);
 	mockGetBoundPrompt.mockResolvedValue(null);
+	// An empty Proposal Inbox by default, so the inbox scan embeds nothing.
+	mockListInboxItems.mockResolvedValue([]);
 	// No decision model by default — every test below judges through the
 	// language model unless it opts in via `arrangeDecision`.
 	mockGetDecisionModel.mockRejectedValue(
@@ -660,4 +674,147 @@ it("keeps the manual-create fallback and explains an incompatible embedding mode
 	const result = await runCheck();
 	expect(result.decision).toBe("create");
 	expect(result.error).toBe(error.message);
+});
+
+describe("checkDuplicateProcedure — Proposal Inbox matches", () => {
+	const inboxItem = (
+		proposalId: string,
+		changeIndex: number,
+		title: string,
+	) => ({
+		proposalId,
+		changeIndex,
+		source: "SLACK_CHANNEL",
+		proposalSummary: `Summary of ${proposalId}`,
+		title,
+		description: "",
+	});
+
+	/** The description and "Queue exports" embed identically, "Throttle
+	 * exports" at cosine 0.8, anything else orthogonally. */
+	function arrangeInboxEmbeddings() {
+		mockGenerateEmbeddings.mockImplementation(async (texts: string[]) => ({
+			embeddings: texts.map((text) =>
+				text.startsWith("Rate limit") ||
+				text.startsWith("Queue exports")
+					? [1, 0]
+					: text.startsWith("Throttle exports")
+						? [0.8, 0.6]
+						: [0, 1],
+			),
+			model: "text-embedding-3-small",
+		}));
+	}
+
+	it("lists unresolved inbox items at or above the duplicate bar, strongest first, with their score", async () => {
+		mockListActiveStories.mockResolvedValue([]);
+		mockListInboxItems.mockResolvedValue([
+			inboxItem("p-old", 2, "Throttle exports"),
+			inboxItem("p-new", 0, "Queue exports"),
+			inboxItem("p-new", 1, "Dark mode"),
+		]);
+		arrangeInboxEmbeddings();
+
+		const result = await runCheck();
+
+		expect(result.decision).toBe("create");
+		expect(result.proposalMatches).toEqual([
+			{
+				proposalId: "p-new",
+				changeIndex: 0,
+				title: "Queue exports",
+				summary: "Summary of p-new",
+				source: "SLACK_CHANNEL",
+				similarity: expect.closeTo(1, 5),
+			},
+			expect.objectContaining({
+				proposalId: "p-old",
+				changeIndex: 2,
+				similarity: expect.closeTo(0.8, 5),
+			}),
+		]);
+		expect(mockListInboxItems).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "proj-1", maxItems: 150 }),
+		);
+	});
+
+	it("embeds the description and the inbox items in one batched request", async () => {
+		mockListActiveStories.mockResolvedValue([]);
+		mockListInboxItems.mockResolvedValue([
+			inboxItem("p-1", 0, "Queue exports"),
+		]);
+		arrangeInboxEmbeddings();
+
+		await runCheck();
+
+		expect(mockGenerateEmbeddings).toHaveBeenCalledTimes(1);
+		const [texts] = mockGenerateEmbeddings.mock.calls[0] as [string[]];
+		expect(texts).toHaveLength(2);
+		expect(texts[0]).toContain("Rate limit the export endpoint");
+		expect(texts[1]).toContain("Queue exports");
+	});
+
+	it("embeds the description once, in the ticket corpus request, beside the inbox items", async () => {
+		arrange({
+			decision: "enrich",
+			targetIdentifier: "F-12",
+			confidence: 0.92,
+		});
+		mockListInboxItems.mockResolvedValue([
+			inboxItem("p-1", 0, "Queue exports"),
+		]);
+
+		const result = await runCheck();
+
+		expect(mockGenerateEmbeddings).toHaveBeenCalledTimes(1);
+		const [texts] = mockGenerateEmbeddings.mock.calls[0] as [string[]];
+		const containing = (needle: string) =>
+			texts.filter((text) => text.includes(needle));
+		expect(containing("Rate limit the export endpoint")).toHaveLength(1);
+		expect(containing("Queue exports")).toHaveLength(1);
+		expect(result.matchedIdentifier).toBe("F-12");
+		expect(result.proposalMatches).toEqual([
+			expect.objectContaining({ proposalId: "p-1", changeIndex: 0 }),
+		]);
+	});
+
+	it("embeds nothing for an empty inbox", async () => {
+		mockListActiveStories.mockResolvedValue([]);
+
+		const result = await runCheck();
+
+		expect(result.proposalMatches).toEqual([]);
+		expect(mockGenerateEmbeddings).not.toHaveBeenCalled();
+	});
+
+	it("keeps the ticket result when the inbox scan fails", async () => {
+		arrange({
+			decision: "enrich",
+			targetIdentifier: "F-12",
+			confidence: 0.92,
+		});
+		mockListInboxItems.mockRejectedValue(new Error("db down"));
+
+		const result = await runCheck();
+
+		expect(result.decision).toBe("enrich");
+		expect(result.matchedIdentifier).toBe("F-12");
+		expect(result.error).toBeUndefined();
+		expect(result.proposalMatches).toEqual([]);
+	});
+
+	it("returns an empty inbox list within the request deadline when the inbox embedding never resolves", async () => {
+		process.env.DUPLICATE_CHECK_TIMEOUT_MS = "50";
+		mockListActiveStories.mockResolvedValue([]);
+		mockListInboxItems.mockResolvedValue([
+			inboxItem("p-1", 0, "Queue exports"),
+		]);
+		mockGenerateEmbeddings.mockImplementation(() => new Promise(() => {}));
+
+		const startedAt = Date.now();
+		const result = await runCheck();
+
+		expect(Date.now() - startedAt).toBeLessThan(2_000);
+		expect(result.proposalMatches).toEqual([]);
+	});
 });

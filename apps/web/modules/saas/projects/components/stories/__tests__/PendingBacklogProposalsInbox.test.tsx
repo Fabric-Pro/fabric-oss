@@ -212,7 +212,13 @@ vi.mock("@shared/lib/orpc-query-utils", async (importOriginal) => ({
 				queryKey: () => ["projects-get"],
 			},
 			stories: {
-				board: { queryKey: () => ["stories-list"] },
+				board: {
+					queryKey: () => ["stories-list"],
+					queryOptions: () => ({
+						queryKey: ["stories-board"],
+						queryFn: async () => ({ statuses: [], stories: [] }),
+					}),
+				},
 			},
 		},
 	},
@@ -277,6 +283,8 @@ function makeListRow(
 		status: overrides.status ?? "PENDING",
 		summary: overrides.summary ?? "Captured from a Slack thread",
 		changeCount: 1,
+		resolvedItems: [],
+		remainingCount: 1,
 		sourceMetadata: overrides.sourceMetadata ?? null,
 		applyError: overrides.applyError ?? null,
 		errorClass: overrides.errorClass ?? null,
@@ -307,6 +315,7 @@ function makeDetail(
 ) {
 	return {
 		...makeListRow(overrides),
+		createdChangeIndexes: [],
 		projectId: PROJECT_ID,
 		userId: "user_1",
 		organizationId: null,
@@ -1212,6 +1221,7 @@ describe("PendingBacklogProposalsInbox — failed AI Update sidebar rows", () =>
 function makeEpicDetail(source: RowSource) {
 	return {
 		...makeListRow({ source, summary: `Epic proposal from ${source}` }),
+		createdChangeIndexes: [],
 		projectId: PROJECT_ID,
 		userId: "user_1",
 		organizationId: null,
@@ -1505,6 +1515,7 @@ describe("PendingBacklogProposalsInbox — Roadmap recommendation batches", () =
 			createdChangeIndexes: number[];
 		}> = {},
 	) {
+		const applied = overrides.appliedChangeIndexes ?? [];
 		return {
 			...makeListRow({
 				source: "ROADMAP_RECOMMENDATION",
@@ -1517,10 +1528,15 @@ describe("PendingBacklogProposalsInbox — Roadmap recommendation batches", () =
 				},
 			}),
 			changeCount: 2,
-			appliedChangeIndexes: overrides.appliedChangeIndexes ?? [],
-			...(overrides.createdChangeIndexes
-				? { createdChangeIndexes: overrides.createdChangeIndexes }
-				: {}),
+			appliedChangeIndexes: applied,
+			// As the server sends them: every applied item is resolved, and
+			// unless told otherwise each one created its ticket.
+			createdChangeIndexes: overrides.createdChangeIndexes ?? applied,
+			resolvedItems: applied.map((changeIndex) => ({
+				changeIndex,
+				reason: "applied",
+			})),
+			remainingCount: 2 - applied.length,
 			projectId: PROJECT_ID,
 			userId: "user_1",
 			organizationId: null,

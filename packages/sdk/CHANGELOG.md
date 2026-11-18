@@ -1,5 +1,11 @@
 # @fabricorg/sdk
 
+## 0.8.4
+
+### Patch Changes
+
+- 1b48cc5: Projects can now use Initiatives, a new work item type for larger goals that project admins turn on in Project Settings; Initiatives can be created and listed from the roadmap, the API, the SDK, the CLI, MCP tools and AI chat, and hidden or deleted from the roadmap.
+
 ## 0.8.3
 
 ### Patch Changes

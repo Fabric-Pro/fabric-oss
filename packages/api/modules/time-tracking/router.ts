@@ -6,6 +6,7 @@ import { generateTimeSuggestionsProcedure } from "./procedures/generate-suggesti
 import { listTimeEntriesProcedure } from "./procedures/list-entries";
 import { listTimeEntriesForStoryProcedure } from "./procedures/list-for-story";
 import { listLoggableProjectsProcedure } from "./procedures/list-loggable-projects";
+import { listRecentTimeNotesProcedure } from "./procedures/list-recent-notes";
 import { listTimeSuggestionsProcedure } from "./procedures/list-suggestions";
 import {
 	exportOrganizationTimeReportCsvProcedure,
@@ -52,6 +53,7 @@ export const timeTrackingRouter = {
 	listLoggableProjects: listLoggableProjectsProcedure,
 	listEntries: listTimeEntriesProcedure,
 	listForStory: listTimeEntriesForStoryProcedure,
+	listRecentNotes: listRecentTimeNotesProcedure,
 	createEntry: createTimeEntryProcedure,
 	updateEntry: updateTimeEntryProcedure,
 	deleteEntry: deleteTimeEntryProcedure,

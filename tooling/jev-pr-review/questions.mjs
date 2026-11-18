@@ -1,7 +1,7 @@
 // Yes means a violation. These four are the defect classes that recur in this
 // repository's fix history and are visible in the diff that introduced them.
-// Re-run the offline PR review harness before changing a question's wording or
-// the default cutoff: wording can shift scores.
+// Run eval/run.mjs before and after changing wording or cutoffs. Wording can
+// shift scores.
 export const QUESTIONS = {
 	tenant_scope:
 		"Answer yes only if the added lines (starting with +) read or write tenant-owned records (projects, documents, agents, conversations, memories, integrations, credentials) without restricting them to the caller's organization or access: for example a lookup by id alone, a query missing organizationId, a filter written as organizationId ?? undefined so a missing organization drops the filter, rows with a scope field (SYSTEM, ORGANIZATION, USER) matched on organizationId alone, or a user arm and an organization arm combined with OR. Answer no if that scoping is present or the added lines do not touch such data.",
@@ -13,7 +13,14 @@ export const QUESTIONS = {
 };
 
 export const QUESTION_DETAILS = {
+	// Cutoffs below come from three runs of eval/run.mjs on eval/dataset.json
+	// (2026-11-17); see eval/README.md. A question without one uses
+	// JEV_PR_REVIEW_CUTOFF (default 0.8).
 	tenant_scope: {
+		// Live false alarms scored 0.80-0.92, above every history defect
+		// (0.71-0.77), so no cutoff separates them. 0.95 turns this question off in
+		// practice until a rewording measures better on eval/dataset.json.
+		cutoff: 0.95,
 		title: "Tenant scope",
 		rule: "Restrict tenant-owned data access to the caller’s organization or authorized project.",
 	},
@@ -22,11 +29,28 @@ export const QUESTION_DETAILS = {
 		rule: "Verify the caller’s current permission on the specific record at the API, tool, webhook, or activity boundary, including ids taken from input or stored configuration.",
 	},
 	secrets: {
+		// Live defects scored 0.79-0.86 and no clean case passed 0.56.
+		cutoff: 0.75,
 		title: "Secret and error exposure",
 		rule: "Keep secret values out of logs, audit records, error messages, and unintended recipients, and show users a fixed or deliberate message instead of raw error text from an unexpected failure.",
 	},
 	failure_success: {
+		// Live false alarms scored 0.78-0.84; the one live defect scored 0.86-0.88.
+		cutoff: 0.85,
 		title: "Failure reported as success",
 		rule: "Surface a failed or refused call to the caller as a failure, not as empty results, unmarked fallback content, or a success status.",
 	},
 };
+
+export function validateQuestionCutoffs(details) {
+	for (const [key, detail] of Object.entries(details)) {
+		if (Object.hasOwn(detail, "cutoff")) {
+			const { cutoff } = detail;
+			if (!Number.isFinite(cutoff) || cutoff <= 0 || cutoff > 1) {
+				throw new Error(
+					`Invalid cutoff for ${key}: expected a number in (0, 1]`,
+				);
+			}
+		}
+	}
+}

@@ -41,6 +41,7 @@ import type { LoggableProject, TimeEntry } from "../lib/time-entry-model";
 import { DurationShortcuts } from "./DurationShortcuts";
 import { EntryWarningQuestion } from "./EntryWarningQuestion";
 import { InfoHint } from "./InfoHint";
+import { RecentNotes } from "./RecentNotes";
 import { WorkItemPicker } from "./WorkItemPicker";
 
 /** The API's limit on an entry's description. */
@@ -52,8 +53,9 @@ const NOTE_MAX_LENGTH = 10_000;
  * Duration first; project and activity follow, then an optional work item
  * and the save button. A project (or an entry) that requires start and stop
  * swaps the duration for two times, a stop date (the work date or the next
- * day, for work past midnight) and the calculated duration. Note, billable and
- * time zone wait behind "More".
+ * day, for work past midnight) and the calculated duration. The note follows
+ * on its own line, with the caller's recent notes on the project to reuse for
+ * a new entry; billable and time zone wait behind "More".
  */
 export function TimeEntryForm({
 	organizationId,
@@ -97,6 +99,7 @@ export function TimeEntryForm({
 	const [moreOpen, setMoreOpen] = useState(editing);
 	const [problem, setProblem] = useState<DraftProblem | null>(null);
 	const firstFieldRef = useRef<HTMLInputElement>(null);
+	const noteRef = useRef<HTMLInputElement>(null);
 
 	/**
 	 * Empty the time and note of a new entry, keeping project, activity and
@@ -404,6 +407,32 @@ export function TimeEntryForm({
 				</div>
 			</div>
 
+			<div className="space-y-2">
+				<div className="flex min-w-0 items-center gap-2">
+					<Label htmlFor={`${id}-note`} className="shrink-0">
+						{t("note")}
+					</Label>
+					<Input
+						ref={noteRef}
+						id={`${id}-note`}
+						value={draft.description}
+						onChange={(event) =>
+							update({ description: event.target.value })
+						}
+						maxLength={NOTE_MAX_LENGTH}
+					/>
+				</div>
+				{editing || !draft.projectId ? null : (
+					<RecentNotes
+						projectId={draft.projectId}
+						onPick={(description) => {
+							update({ description });
+							noteRef.current?.focus();
+						}}
+					/>
+				)}
+			</div>
+
 			{problem ? (
 				<p role="alert" className="text-destructive text-xs">
 					{t(DRAFT_PROBLEM_KEYS[problem])}
@@ -457,21 +486,8 @@ export function TimeEntryForm({
 			{moreOpen ? (
 				<div
 					id={`${id}-more`}
-					className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center"
+					className="grid gap-3 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center"
 				>
-					<div className="flex min-w-0 items-center gap-2">
-						<Label htmlFor={`${id}-note`} className="shrink-0">
-							{t("note")}
-						</Label>
-						<Input
-							id={`${id}-note`}
-							value={draft.description}
-							onChange={(event) =>
-								update({ description: event.target.value })
-							}
-							maxLength={NOTE_MAX_LENGTH}
-						/>
-					</div>
 					<div className="flex items-center gap-2">
 						<Switch
 							id={`${id}-billable`}
@@ -484,7 +500,7 @@ export function TimeEntryForm({
 							{t("billable")}
 						</Label>
 					</div>
-					<div className="flex min-w-0 items-center gap-2 sm:col-span-3">
+					<div className="flex min-w-0 items-center gap-2">
 						<Label htmlFor={`${id}-timezone`} className="shrink-0">
 							{t("timeZone")}
 						</Label>

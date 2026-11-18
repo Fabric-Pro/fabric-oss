@@ -21,6 +21,7 @@ import {
 } from "@repo/temporal/agentic-workflow-preset";
 import { findPublishedFrameId } from "@repo/temporal/workflow-run-output";
 import { z } from "zod";
+import { sessionProjectRestriction } from "../project-binding";
 import { errorResult, jsonResult } from "../tool-results";
 import type { GatewaySession, ToolCallResult } from "../types";
 import { clampLimit } from "./frame-context";
@@ -187,12 +188,13 @@ async function asActor(
 		return errorResult(REQUIRES_ORGANIZATION);
 	}
 	const { WorkflowCommandError } = await contextModule();
+	const projectRestrictionId = sessionProjectRestriction(session);
 	try {
 		return await run({
 			userId: session.userId,
 			organizationId: session.organizationId,
-			...(session.pageProjectId !== undefined
-				? { projectRestrictionId: session.pageProjectId }
+			...(projectRestrictionId !== undefined
+				? { projectRestrictionId }
 				: {}),
 		});
 	} catch (error) {

@@ -14,7 +14,7 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
+import { createBaseChildEnv } from "./catalog-command";
 
 export interface ResolvedCommand {
 	executable: string;
@@ -32,10 +32,16 @@ const EXACT_VERSION =
 let globalNodeModules: Promise<string | null> | undefined;
 
 function getGlobalNodeModules(): Promise<string | null> {
-	globalNodeModules ??= promisify(execFile)("npm", ["root", "-g"]).then(
-		({ stdout }) => stdout.trim() || null,
-		() => null,
-	);
+	globalNodeModules ??= new Promise((resolve) => {
+		execFile(
+			"npm",
+			["root", "-g"],
+			{ env: createBaseChildEnv() },
+			(error, stdout) => {
+				resolve(error ? null : stdout.trim() || null);
+			},
+		);
+	});
 	return globalNodeModules;
 }
 

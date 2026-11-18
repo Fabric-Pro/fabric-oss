@@ -21,6 +21,7 @@ import {
 	type Prisma,
 	type ProjectContextSummary,
 } from "../client";
+import { findConfidentialTranscriptContextIds } from "./projects/meeting-transcripts";
 
 /** Project XOR tenancy, copied verbatim from the parent Project. */
 export type SummaryTenancy = {
@@ -349,8 +350,10 @@ export async function completeContextSummary(input: {
 			orderBy: { createdAt: "desc" },
 			select: { id: true },
 		});
-		await tx.projectContextSummary.update({
-			where: { id: input.id },
+		// A run cancelled meanwhile (by its owner, or because a series it read
+		// was marked confidential) stays cancelled and supersedes nothing.
+		const { count } = await tx.projectContextSummary.updateMany({
+			where: { id: input.id, status: { in: ["PENDING", "GENERATING"] } },
 			data: {
 				status: "COMPLETED",
 				content: input.content,
@@ -368,7 +371,7 @@ export async function completeContextSummary(input: {
 				error: null,
 			},
 		});
-		if (prior) {
+		if (count > 0 && prior) {
 			await tx.projectContextSummary.update({
 				where: { id: prior.id },
 				data: { supersededById: input.id },
@@ -645,6 +648,78 @@ export async function countRawContextChars(input: {
 	return rows.reduce((sum, r) => sum + (r.content?.length ?? 0), 0);
 }
 
+/** A summary never folds, or counts, a confidential series' transcript. */
+async function withoutConfidentialTranscripts(
+	projectId: string,
+): Promise<Prisma.ProjectContextWhereInput> {
+	const ids = await findConfidentialTranscriptContextIds({ projectId });
+	return ids.size > 0 ? { id: { notIn: [...ids] } } : {};
+}
+
+/**
+ * Marking a series confidential retires the project's current summary when it
+ * may already hold one of the series' transcripts: a run extends the previous
+ * summary rather than rebuilding it, so it would keep them. With no summary
+ * left, the next run rebuilds from every source, which leaves them out.
+ */
+export async function retireContextSummariesCoveringSeries(input: {
+	projectId: string;
+	linkedMeetingId: string;
+}): Promise<number> {
+	const { projectId, linkedMeetingId } = input;
+	const [transcripts, sessions] = await Promise.all([
+		db.projectMeetingTranscript.findMany({
+			where: { projectId, linkedMeetingId, contextId: { not: null } },
+			select: { contextId: true },
+		}),
+		db.parlumeMeetingSession.findMany({
+			where: {
+				projectId,
+				linkedMeetingId,
+				transcriptContextId: { not: null },
+			},
+			select: { transcriptContextId: true },
+		}),
+	]);
+	const contextIds = [
+		...transcripts.flatMap((row) => (row.contextId ? [row.contextId] : [])),
+		...sessions.flatMap((row) =>
+			row.transcriptContextId ? [row.transcriptContextId] : [],
+		),
+	];
+	if (contextIds.length === 0) {
+		return 0;
+	}
+	const retired = {
+		status: "CANCELLED" as const,
+		error: "Retired: a meeting series it covered was marked confidential.",
+	};
+	// A run in progress may already have read the series: it is cancelled
+	// too, and its completion then leaves it cancelled.
+	const running = await db.projectContextSummary.updateMany({
+		where: { projectId, status: { in: ["PENDING", "GENERATING"] } },
+		data: retired,
+	});
+	const earliest = await db.projectContext.findFirst({
+		where: { projectId, id: { in: contextIds } },
+		orderBy: { createdAt: "asc" },
+		select: { createdAt: true },
+	});
+	if (!earliest) {
+		return running.count;
+	}
+	const { count } = await db.projectContextSummary.updateMany({
+		where: {
+			projectId,
+			status: "COMPLETED",
+			supersededById: null,
+			coveredThrough: { gte: earliest.createdAt },
+		},
+		data: retired,
+	});
+	return running.count + count;
+}
+
 /**
  * Count of non-empty raw-context rows for a project within a tenancy, optionally
  * bounded by a created-at window. Used for eligible/deferred source counts.
@@ -660,6 +735,7 @@ export async function countRawContextRows(input: {
 			projectId: input.projectId,
 			content: { not: "" },
 			indexingExcluded: false,
+			...(await withoutConfidentialTranscripts(input.projectId)),
 			...sourceTenantWhere(input.tenancy),
 			...(input.lte || input.gt
 				? {
@@ -745,6 +821,7 @@ export async function fetchProjectContextBatch(input: {
 			projectId: input.projectId,
 			content: { not: "" },
 			indexingExcluded: false,
+			...(await withoutConfidentialTranscripts(input.projectId)),
 			...sourceTenantWhere(input.tenancy),
 			AND: [
 				{ createdAt: { lte: input.snapshotThrough } },
@@ -878,8 +955,10 @@ export async function listRoadmapItemsForSummary(input: {
 		       pss."name" AS status
 		FROM "user_story" us
 		LEFT JOIN "project_story_status" pss ON pss."id" = us."statusId"
+		JOIN "project" p ON p."id" = us."projectId"
 		WHERE us."projectId" = ${input.projectId}
 		  AND us."draftingStage"::text NOT IN ('DECLINED', 'CLOSED')
+		  AND NOT (us."kind"::text = 'INITIATIVE' AND p."initiativesEnabled" = false)
 		ORDER BY us."priority" ASC, us."roadmapOrder" ASC
 		LIMIT ${take}
 	`;

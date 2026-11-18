@@ -9,6 +9,7 @@ vi.mock("@repo/database", () => ({
 			findMany: vi.fn(),
 		},
 	},
+	findConfidentialTranscriptContextIds: async () => new Set<string>(),
 	getProjectRagSettings: vi.fn(),
 	getRetrievableContextById: vi.fn(),
 }));

@@ -163,7 +163,7 @@ describe("applyBacklogChanges — ROADMAP_RECOMMENDATION source", () => {
 		await apply([createChange("Saved searches")]);
 		expect(mockDb.pendingBacklogProposal.findUnique).toHaveBeenCalledWith({
 			where: { id: "batch-1" },
-			select: { source: true },
+			select: { source: true, summary: true },
 		});
 	});
 

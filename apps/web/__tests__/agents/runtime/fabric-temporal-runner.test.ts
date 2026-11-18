@@ -577,6 +577,33 @@ describe("FabricTemporalRunner — approvals", () => {
 	});
 });
 
+describe("FabricTemporalRunner — the rollout flag", () => {
+	it("refuses a new turn while COPILOTKIT_DIRECT_CHAT is off for the organization, and still follows and stops the turn already running", async () => {
+		w.state.onStart = () => ({ status: "RUNNING" });
+		await run(RUN_1, "Long question", { window: 0 });
+		w.state.flags.delete("COPILOTKIT_DIRECT_CHAT");
+
+		const refused = await run(RUN_2, "Another question");
+
+		expect(types(refused)).toEqual([EventType.RUN_ERROR]);
+		expect(errorCode(refused)).toBe("FEATURE_DISABLED");
+		expect(w.state.flagChecks.at(-1)).toEqual({
+			flag: "COPILOTKIT_DIRECT_CHAT",
+			organizationId: ORG,
+		});
+		expect(w.state.starts).toHaveLength(1);
+		expect(turnByKey(RUN_2)).toBeUndefined();
+		expect(await runnerFor(me).isRunning({ threadId: THREAD })).toBe(true);
+		expect(types(await connect({ window: 0 }))[0]).toBe(
+			EventType.MESSAGES_SNAPSHOT,
+		);
+		expect(
+			await runnerFor(me).stop({ threadId: THREAD, runId: RUN_1 }),
+		).toBe(true);
+		expect(turnByKey(RUN_1)?.status).toBe("CANCEL_REQUESTED");
+	});
+});
+
 describe("FabricTemporalRunner — stop", () => {
 	it("records the cancel on the turn, cancels the workflow and writes the audit", async () => {
 		w.state.onStart = () => ({ status: "RUNNING" });

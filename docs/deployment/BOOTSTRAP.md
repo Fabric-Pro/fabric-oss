@@ -344,11 +344,12 @@ aws secretsmanager put-secret-value \
     "LETTA_API_KEY":      "",
     "LANGGRAPH_API_KEY":  "",
     "FABRIC_AI_API_KEY":  "",
-    "FABRIC_SERVER_API_KEY": ""
+    "FABRIC_SERVER_API_KEY": "",
+    "MCP_WRAPPER_API_KEY": "<secret>"
   }'
 ```
 
-All optional. Empty strings are fine for now.
+Replace `<secret>` with a non-empty `MCP_WRAPPER_API_KEY` for the production wrapper and its callers. The other integration keys are optional.
 
 #### 1.1.5 `upstash` (Upstash REST credentials)
 

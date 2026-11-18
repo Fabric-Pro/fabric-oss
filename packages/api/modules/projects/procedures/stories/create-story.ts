@@ -7,6 +7,7 @@ import {
 import {
 	db,
 	FeatureDraftingStageSchema,
+	InitiativesDisabledError,
 	type StoryKind,
 	StoryKindSchema,
 	type StoryPriority,
@@ -101,12 +102,23 @@ export const createStoryProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
-		// F-171: `kind` from the caller is optional and acts as a hint only.
-		// The classifier in createStoryFromProposal decides the canonical kind
-		// from the user's text. The manual UI no longer sends `kind` at all
-		// (the split-button was removed); other callers that still pass it
-		// will see the classifier override logged when they disagree.
+		// `kind` is a hint the classifier can override, except INITIATIVE, which the
+		// dialog sends explicitly and the classifier cannot produce.
 		const callerKindHint: StoryKind | undefined = input.kind;
+
+		const pmProject = await db.project.findUnique({
+			where: { id: input.projectId },
+			select: {
+				projectManagementMcpConfigId: true,
+				projectManagementContainerId: true,
+				initiativesEnabled: true,
+			},
+		});
+		if (callerKindHint === "INITIATIVE" && !pmProject?.initiativesEnabled) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "Initiatives are turned off for this project.",
+			});
+		}
 
 		// Enforce the stage-for-kind invariant only when both the stage and a
 		// kind hint were provided. If the hint is absent we can't validate
@@ -136,7 +148,7 @@ export const createStoryProcedure = tenantProtectedProcedure
 			// upstream by `tenantProtectedProcedure` + `requireProjectPermission`.
 			const result = await generateStoryTitleFromDescription(
 				input.description?.trim() ?? "",
-				callerKindHint === "BUG" ? "BUG" : "FEATURE",
+				callerKindHint ?? "FEATURE",
 				{
 					userId: user.id,
 					organizationId: organizationId ?? undefined,
@@ -153,13 +165,6 @@ export const createStoryProcedure = tenantProtectedProcedure
 
 		// With a PM tool connected, new items start with auto-sync on and push
 		// their first ticket, like agent-created ones.
-		const pmProject = await db.project.findUnique({
-			where: { id: input.projectId },
-			select: {
-				projectManagementMcpConfigId: true,
-				projectManagementContainerId: true,
-			},
-		});
 		const pmConfigured =
 			!!pmProject?.projectManagementMcpConfigId &&
 			!!pmProject?.projectManagementContainerId;
@@ -200,11 +205,16 @@ export const createStoryProcedure = tenantProtectedProcedure
 				reporterSource: "MANUAL",
 				reporterSourceUrl: null,
 				enablePmAutoSync: pmConfigured ? true : undefined,
+				// The classifier only knows Feature and Bug; an Initiative is always chosen explicitly.
+				skipClassifier:
+					callerKindHint === "INITIATIVE" ? true : undefined,
 			});
 		} catch (error) {
-			if (error instanceof PromptKindMismatchError) {
-				// Passed through verbatim — it is written for the person who
-				// picked the prompt and is rendered as-is.
+			if (
+				error instanceof PromptKindMismatchError ||
+				error instanceof InitiativesDisabledError
+			) {
+				// Both are written for the user and passed through as-is.
 				throw new ORPCError("BAD_REQUEST", { message: error.message });
 			}
 			throw error;

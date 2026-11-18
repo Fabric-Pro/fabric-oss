@@ -8,6 +8,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { toProposalInboxRows } from "../../lib/proposal-inbox-items";
 
 /**
  * Source-agnostic list of PendingBacklogProposal rows for the project,
@@ -44,8 +45,9 @@ export const listPendingProposalsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input }) => {
-		return await listPendingBacklogProposals({
+		const rows = await listPendingBacklogProposals({
 			projectId: input.projectId,
 			status: input.status ?? REVIEW_INBOX_PROPOSAL_STATUSES,
 		});
+		return await toProposalInboxRows(rows);
 	});

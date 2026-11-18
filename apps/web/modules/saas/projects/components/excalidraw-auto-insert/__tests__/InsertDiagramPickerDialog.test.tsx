@@ -265,7 +265,7 @@ describe("<InsertDiagramPickerDialog /> -- row picking", () => {
 		expect(onOpenChange).toHaveBeenCalledWith(false);
 	});
 
-	it("switching to the Features tab renders features and excludes archived rows", async () => {
+	it("switching to the Features tab renders features most recently edited first and excludes archived rows", async () => {
 		listDocumentsMock.mockResolvedValue({
 			documents: [],
 			total: 0,
@@ -273,20 +273,31 @@ describe("<InsertDiagramPickerDialog /> -- row picking", () => {
 		});
 		listStoriesMock.mockResolvedValue({
 			statuses: [],
+			// Backlog order; the dialog ranks by `lastEditedAt ?? createdAt`.
 			stories: [
 				{
 					id: "story_1",
 					identifier: "F-001",
 					title: "Login flow",
-					updatedAt: "2026-05-23T10:00:00Z",
+					createdAt: new Date("2026-05-23T10:00:00Z"),
+					lastEditedAt: null,
 					status: { name: "In Progress", isArchived: false },
 				},
 				{
 					id: "story_2",
 					identifier: "F-002",
 					title: "Archived feature",
-					updatedAt: "2026-05-22T10:00:00Z",
+					createdAt: new Date("2026-05-22T10:00:00Z"),
+					lastEditedAt: new Date("2026-07-01T10:00:00Z"),
 					status: { name: "Archived", isArchived: true },
+				},
+				{
+					id: "story_3",
+					identifier: "F-003",
+					title: "Checkout",
+					createdAt: new Date("2026-04-01T10:00:00Z"),
+					lastEditedAt: new Date("2026-06-01T10:00:00Z"),
+					status: { name: "In Progress", isArchived: false },
 				},
 			],
 		});
@@ -308,6 +319,14 @@ describe("<InsertDiagramPickerDialog /> -- row picking", () => {
 				name: /Insert into F-001 Login flow/i,
 			}),
 		).toBeInTheDocument();
+		expect(
+			screen
+				.getAllByRole("option")
+				.map((option) => option.getAttribute("aria-label")),
+		).toEqual([
+			expect.stringMatching(/F-003 Checkout/),
+			expect.stringMatching(/F-001 Login flow/),
+		]);
 		expect(
 			screen.queryByRole("option", { name: /Archived feature/i }),
 		).not.toBeInTheDocument();

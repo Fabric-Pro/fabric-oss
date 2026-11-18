@@ -1,3 +1,20 @@
+export const GOOGLE_DRIVE_STDIO = {
+	packageName: "@modelcontextprotocol/server-gdrive",
+	credentialNames: {
+		oauthKeys: "__GDRIVE_OAUTH_KEYS_JSON",
+		credentials: "__GDRIVE_CREDENTIALS_JSON",
+	},
+} as const;
+
+export const TWILIO_STDIO = {
+	packageName: "@twilio-alpha/mcp",
+	credentialNames: {
+		accountSid: "TWILIO_ACCOUNT_SID",
+		apiKey: "TWILIO_API_KEY",
+		apiSecret: "TWILIO_API_SECRET",
+	},
+} as const;
+
 // Key by npm package: the variable belongs to the package, not the catalog row;
 // tenant-owned servers can reuse a catalog key with a different command.
 const STDIO_CREDENTIAL_ENV_BY_PACKAGE: Readonly<Record<string, string>> = {
@@ -10,9 +27,8 @@ const STDIO_CREDENTIAL_ENV_BY_PACKAGE: Readonly<Record<string, string>> = {
 	"figma-developer-mcp": "FIGMA_API_KEY",
 };
 
-// Flag and version handling mirror mcp-stdio-wrapper's preinstalled-command.ts.
-// Tokens are split on whitespace, not shell-quoted as the wrapper does, so a
-// quoted package spec finds no mapping and falls back to API_KEY.
+// This extracts the package for credential mapping. The wrapper validates
+// the catalog command's spelling, pin, and fixed flags before launch.
 const NPX_PASSTHROUGH_FLAGS = new Set(["-y", "--yes"]);
 
 export function stdioPackageName(command: string): string | null {

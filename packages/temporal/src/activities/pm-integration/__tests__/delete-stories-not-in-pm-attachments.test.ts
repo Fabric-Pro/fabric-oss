@@ -700,6 +700,7 @@ describe("deleteStoriesNotInPMList — link ownership", () => {
 			where: {
 				projectId: PROJECT_ID,
 				externalId: { not: null },
+				kind: { not: "INITIATIVE" },
 				project: { organizationId: ORG_ID },
 			},
 			select: {

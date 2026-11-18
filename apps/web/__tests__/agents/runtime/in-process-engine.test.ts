@@ -383,6 +383,11 @@ describe("InProcessEngine", () => {
 			EventType.RUN_FINISHED,
 		]);
 		await expect(verified(stream.events)).resolves.toHaveLength(5);
+		expect(stream.events.at(-1)).toEqual({
+			type: EventType.RUN_FINISHED,
+			threadId: THREAD,
+			runId: "run-example-0001",
+		});
 	});
 
 	it("does not start a turn when the response closes while admission is pending", async () => {
@@ -449,6 +454,15 @@ describe("InProcessEngine", () => {
 		await running;
 
 		expect(aborted).toBe(true);
+		expect(stream.events.at(-1)).toEqual({
+			type: EventType.RUN_FINISHED,
+			threadId: THREAD,
+			runId: "run-example-0001",
+			outcome: { type: "cancelled" },
+		});
+		await expect(verified(stream.events)).resolves.toHaveLength(
+			stream.events.length,
+		);
 		expect(await engine.isRunning(THREAD)).toBe(false);
 		expect(await engine.stop(THREAD)).toBe(false);
 	});

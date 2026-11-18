@@ -245,7 +245,7 @@ export interface TodoWorkItem {
 	storyId: string;
 	identifier: string;
 	title: string;
-	kind: "FEATURE" | "BUG";
+	kind: "FEATURE" | "BUG" | "INITIATIVE";
 	statusName: string | null;
 	isDone: boolean;
 	/**

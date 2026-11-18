@@ -28,7 +28,13 @@ import {
 	XIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import {
+	type KeyboardEvent,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import {
 	BACKLOG_OPEN_EXISTING_EVENT,
 	type BacklogProposalPanel,
@@ -45,6 +51,9 @@ import {
 } from "./BacklogChangeDetailDialog";
 import { DecisionConflictNote } from "./DecisionConflictNote";
 import { ProposalDiffField } from "./ProposalDiffField";
+import { ProposalDuplicateNote } from "./ProposalDuplicateNote";
+import { LockedRowStatus, ProposalItemActions } from "./ProposalItemActions";
+import { MergedOnApplyNote, TargetChangedNote } from "./ProposalItemNotes";
 import {
 	ProposalRoutingControl,
 	type RoutingAnnotation,
@@ -52,12 +61,30 @@ import {
 	resolveEffectiveRouting,
 	routingBlocker,
 } from "./ProposalRoutingControl";
+import { ProposalUpdateSummary } from "./ProposalUpdateSummary";
 import { PmSyncConflictBadge } from "./pm-sync/PmSyncConflictBadge";
 import { PmSyncDiffModal } from "./pm-sync/PmSyncDiffModal";
 import { PmSyncOutageRollup } from "./pm-sync/PmSyncOutageRollup";
 import type { PmSyncError } from "./pm-sync/pmSyncError";
+import {
+	duplicateRoutingAnnotation,
+	enrichOverrideFor,
+	type ProposalDuplicateStoryMatch,
+	withDuplicateRouting,
+} from "./proposal-duplicate-flags";
+import { LOCKED_REASON_COPY, type LockedReason } from "./proposal-item-state";
 import { isApplyInFlight } from "./proposal-status";
 import { usePersistedProposalDrafts } from "./use-persisted-proposal-drafts";
+import {
+	BOARD_NOT_CHECKED,
+	type BoardStoryIds,
+	canLinkBoardStory,
+	isMissingFromBoard,
+} from "./useBoardStoryIds";
+import {
+	type ProposalItemReview,
+	useProposalItemReview,
+} from "./useProposalItemReview";
 import {
 	hasVisionSuggestions,
 	type VisionSuggestions,
@@ -482,6 +509,12 @@ type Props = {
 	projectId?: string;
 	organizationId?: string | null;
 	/**
+	 * Inbox-only: the tickets on the project's board. An update's target gets
+	 * a new-tab link only while the board lists it. Absent (AI Update
+	 * sidebar): no board is checked and every resolved target links.
+	 */
+	boardStoryIds?: BoardStoryIds;
+	/**
 	 * Inbox-only: the PendingBacklogProposal id. When set, the in-review draft is
 	 * server-persisted + team-shared (generated once per kind, on explicit "Draft
 	 * with AI" request) instead of the in-memory per-session reformat. Absent for
@@ -590,18 +623,12 @@ type Props = {
 	 */
 	onBacklog?: () => void;
 	/**
-	 * Changes already accepted from this proposal (a batch that stays open
-	 * after a partial accept). They render as "Accepted", cannot be selected,
-	 * and are never submitted again — even from a stale persisted selection.
-	 * The `changes` array is NOT filtered: persisted review state is by index.
+	 * Inbox only: per-item review. Resolved items are locked, and each
+	 * unresolved one can be decided on its own (see `useProposalItemReview`).
 	 */
-	lockedIndexes?: ReadonlySet<number>;
-	/**
-	 * Why a locked row is locked, when it is not "accepted": a recommended
-	 * feature skipped because its title was already on the Roadmap. A locked
-	 * index missing here reads "Accepted".
-	 */
-	lockedReasons?: ReadonlyMap<number, LockedReason>;
+	itemReview?: ProposalItemReview;
+	/** The parent has a proposal action in flight: every action is disabled. */
+	actionsBusy?: boolean;
 	/** Shows a Select all / Deselect all control over the unlocked rows. */
 	showSelectAll?: boolean;
 	/** False hides the Bug/Feature choice (a source that only makes Features). */
@@ -613,22 +640,7 @@ type Props = {
 	allowInReviewDrafting?: boolean;
 };
 
-const NO_LOCKED_INDEXES: ReadonlySet<number> = new Set();
-
-export type LockedReason = "accepted" | "already-on-roadmap";
-
 const NO_LOCKED_REASONS: ReadonlyMap<number, LockedReason> = new Map();
-
-const LOCKED_REASON_COPY: Record<
-	LockedReason,
-	{ badge: string; ariaSuffix: string }
-> = {
-	accepted: { badge: "Accepted", ariaSuffix: "already accepted" },
-	"already-on-roadmap": {
-		badge: "Already on Roadmap",
-		ariaSuffix: "already on the Roadmap",
-	},
-};
 
 /**
  * The starting selection. A stored selection that holds a locked row was
@@ -693,6 +705,7 @@ export function BacklogChangeProposal({
 	defaultSyncToPM,
 	projectId,
 	organizationId,
+	boardStoryIds = BOARD_NOT_CHECKED,
 	proposalId,
 	approval,
 	applyProgressMsg,
@@ -708,17 +721,30 @@ export function BacklogChangeProposal({
 	onApprove,
 	onReject,
 	onBacklog,
-	lockedIndexes = NO_LOCKED_INDEXES,
-	lockedReasons = NO_LOCKED_REASONS,
+	itemReview,
+	actionsBusy = false,
 	showSelectAll = false,
 	allowKindOverride = true,
 	allowInReviewDrafting = true,
 }: Props) {
+	const lockedReasons = itemReview?.lockedReasons ?? NO_LOCKED_REASONS;
+	const lockedIndexes = useMemo(
+		() => new Set(lockedReasons.keys()),
+		[lockedReasons],
+	);
+	// Routing annotations for rows the reviewer re-routed from a duplicate note
+	// that came without one (see `proposal-duplicate-flags.ts`).
+	const [duplicateRoutingByIndex, setDuplicateRoutingByIndex] = useState<
+		ReadonlyMap<number, RoutingAnnotation>
+	>(() => new Map());
 	// Normalize changes — LLM tool args may pass title/description as plain
 	// strings instead of the expected { from?, to } object format. `forbidEpics`
 	// (channel-monitor inbox only) additionally maps epic → feature; the general
 	// AI Update flow leaves it false so epics are preserved (Codex P1).
-	const changes = rawChanges.map((raw) => normalizeChange(raw, forbidEpics));
+	const changes = withDuplicateRouting(
+		rawChanges.map((raw) => normalizeChange(raw, forbidEpics)),
+		duplicateRoutingByIndex,
+	);
 
 	// Async decision pre-check findings for the whole proposal, matched to each
 	// change below by `changeRef.index`. Only "conflicts" runs carry findings; an
@@ -802,6 +828,10 @@ export function BacklogChangeProposal({
 			"noopener,noreferrer",
 		);
 	};
+	// In the inbox an update's target is linked only once the board lists
+	// it: a deleted target reads as "Ticket not found".
+	const isLinkableTarget = (storyId: string | null | undefined): boolean =>
+		!!storyId && canLinkBoardStory(boardStoryIds, storyId);
 
 	const [selected, setSelected] = useState<Set<number>>(() =>
 		initialSelection(
@@ -810,6 +840,17 @@ export function BacklogChangeProposal({
 			lockedIndexes,
 		),
 	);
+	// An item resolved while this view is open (its own Approve, a partial
+	// Apply Selected, or another reviewer) leaves the selection; the other
+	// rows keep theirs. Persisted too, so a reopen does not read the stored
+	// selection as stale and reselect every remaining row.
+	useEffect(() => {
+		setSelected((prev) =>
+			Array.from(prev).some((i) => lockedIndexes.has(i))
+				? new Set(Array.from(prev).filter((i) => !lockedIndexes.has(i)))
+				: prev,
+		);
+	}, [lockedIndexes]);
 	// Inbox (channel-monitor proposals) passes `defaultSyncToPM={false}` so
 	// approvals default to Fabric-only; the AI Update flow omits the prop and
 	// keeps the pre-checked behavior when a PM tool is connected.
@@ -848,6 +889,7 @@ export function BacklogChangeProposal({
 	// badge in the list so the PM can pick up where they left off if
 	// they get interrupted mid-review (acceptance criterion #4).
 	const [detailIndex, setDetailIndex] = useState<number | null>(null);
+	const [detailLineReview, setDetailLineReview] = useState(false);
 	const [reviewedIndexes, setReviewedIndexes] = useState<Set<number>>(
 		() => initialPersisted.reviewed ?? new Set(),
 	);
@@ -924,6 +966,28 @@ export function BacklogChangeProposal({
 			}
 			return map;
 		});
+	};
+
+	// "Use as Enrich target" on a duplicate note: the same override a reviewer
+	// sets in the routing control, on an annotation synthesized when the row
+	// has none.
+	const enrichFromDuplicate = (
+		itemIndex: number,
+		match: ProposalDuplicateStoryMatch,
+	): void => {
+		const change = changes[itemIndex];
+		if (!change) {
+			return;
+		}
+		if (!change.routing) {
+			setDuplicateRoutingByIndex((prev) =>
+				new Map(prev).set(
+					itemIndex,
+					duplicateRoutingAnnotation(change, match),
+				),
+			);
+		}
+		setRoutingOverride(itemIndex, enrichOverrideFor(match));
 	};
 
 	// Persist any change to the four review-state structures so a
@@ -1129,8 +1193,10 @@ export function BacklogChangeProposal({
 		});
 	};
 
-	const openDetail = (index: number) => {
+	// `lineReview` opens an update straight into line-by-line review.
+	const openDetail = (index: number, lineReview = false) => {
 		setDetailIndex(index);
+		setDetailLineReview(lineReview);
 		// Sidebar (non-persisted) only: lazily draft the CREATE body through its
 		// kind's prompt on open, so the reviewer sees the proper draft (cached once
 		// per kind). The inbox (persisted) flow does NOT auto-draft — the reviewer
@@ -1163,22 +1229,51 @@ export function BacklogChangeProposal({
 	// If the selected proposal's persisted draft is still RUNNING, return its
 	// selected kind (so Apply can cancel it before creating to avoid a redundant
 	// spend); else null.
-	const selectedRunningDraftKind = (): ChangeItemKind | null => {
-		if (
-			!persistedDrafts.active ||
-			primaryDraftIndex < 0 ||
-			!selected.has(primaryDraftIndex)
-		) {
+	const runningDraftKindAt = (index: number): ChangeItemKind | null => {
+		if (!persistedDrafts.active || index !== primaryDraftIndex) {
 			return null;
 		}
-		const change = changes[primaryDraftIndex];
+		const change = changes[index];
 		if (!change) {
 			return null;
 		}
 		const kind =
-			kindOverridesByIndex.get(primaryDraftIndex) ??
-			deriveDefaultKind(change.type);
+			kindOverridesByIndex.get(index) ?? deriveDefaultKind(change.type);
 		return persistedDrafts.byKind[kind]?.status === "RUNNING" ? kind : null;
+	};
+	const selectedRunningDraftKind = (): ChangeItemKind | null =>
+		primaryDraftIndex >= 0 && selected.has(primaryDraftIndex)
+			? runningDraftKindAt(primaryDraftIndex)
+			: null;
+
+	// The change as the reviewer left it: routing folds in first (it decides
+	// create-vs-update, and the kind override only applies to creates), then
+	// the kind override, then the per-field skips.
+	const buildApprovedChange = (i: number): ChangeItem =>
+		applyFieldSkips(
+			applyKindOverride(
+				applyRoutingOverride(
+					buildEffectiveChange(i, changes[i]),
+					routingOverridesByIndex.get(i),
+				),
+				kindOverridesByIndex.get(i),
+			),
+			skippedFieldsByIndex.get(i),
+		);
+
+	const pmSyncOverrideFor = (
+		i: number,
+	): { pushAnyway?: boolean; skip?: boolean } | undefined => {
+		const entry: { pushAnyway?: boolean; skip?: boolean } = {};
+		if (pushAnywayByIndex[i]) {
+			entry.pushAnyway = true;
+		}
+		if (skipByIndex[i]) {
+			entry.skip = true;
+		}
+		return entry.pushAnyway !== undefined || entry.skip !== undefined
+			? entry
+			: undefined;
 	};
 
 	// Build + submit the approved changes. A COMPLETED persisted draft is created
@@ -1195,32 +1290,15 @@ export function BacklogChangeProposal({
 			.filter((i) => !lockedIndexes.has(i))
 			.sort((a, b) => a - b);
 		const approvedChanges = selectedIndexes.map((i) =>
-			applyFieldSkips(
-				applyKindOverride(
-					// Routing folds in first: it decides create-vs-update, and
-					// the kind override only applies to creates.
-					applyRoutingOverride(
-						buildEffectiveChange(i, changes[i]),
-						routingOverridesByIndex.get(i),
-					),
-					kindOverridesByIndex.get(i),
-				),
-				skippedFieldsByIndex.get(i),
-			),
+			buildApprovedChange(i),
 		);
 		setApprovedCount(approvedChanges.length);
 		setTotalCount(changes.length);
 		setResolved("approved");
 		const overrides: PmSyncOverrideMap = {};
 		selectedIndexes.forEach((origIdx, newIdx) => {
-			const entry: { pushAnyway?: boolean; skip?: boolean } = {};
-			if (pushAnywayByIndex[origIdx]) {
-				entry.pushAnyway = true;
-			}
-			if (skipByIndex[origIdx]) {
-				entry.skip = true;
-			}
-			if (entry.pushAnyway !== undefined || entry.skip !== undefined) {
+			const entry = pmSyncOverrideFor(origIdx);
+			if (entry) {
 				overrides[newIdx] = entry;
 			}
 		});
@@ -1231,6 +1309,24 @@ export function BacklogChangeProposal({
 			selectedIndexes,
 		);
 	};
+
+	const review = useProposalItemReview({
+		review: itemReview,
+		changes,
+		proposalStatus,
+		routingOverridesByIndex,
+		actionsBusy,
+		reformattingIndex,
+		syncToPM,
+		buildApprovedChange,
+		pmSyncOverrideFor,
+		cancelRunningDraft: (index) => {
+			const runningKind = runningDraftKindAt(index);
+			if (runningKind) {
+				void persistedDrafts.cancelDraft(runningKind);
+			}
+		},
+	});
 
 	const handleRetryOutage = async () => {
 		if (!projectId || !applyResult?.pmSyncOutage) {
@@ -1346,7 +1442,9 @@ export function BacklogChangeProposal({
 		});
 	};
 
-	const selectedCount = selected.size;
+	// Locked rows leave `selected` a render later (effect above).
+	const isUnlocked = (i: number) => !lockedIndexes.has(i);
+	const selectedCount = Array.from(selected).filter(isUnlocked).length;
 	const unlockedIndexes = changes
 		.map((_, i) => i)
 		.filter((i) => !lockedIndexes.has(i));
@@ -1365,6 +1463,9 @@ export function BacklogChangeProposal({
 	const routingBlockedIndexes = Array.from(selected)
 		.sort((a, b) => a - b)
 		.filter((index) => {
+			if (lockedIndexes.has(index)) {
+				return false;
+			}
 			const change = changes[index];
 			return (
 				change?.routing != null &&
@@ -1758,8 +1859,9 @@ export function BacklogChangeProposal({
 				</div>
 			)}
 
-			{/* Change Items */}
-			<div className="space-y-2 max-h-[400px] overflow-y-auto">
+			{/* Change Items. Below md the list flows in the page's own scroll
+			    rather than a short inner one. */}
+			<div className="space-y-2 md:max-h-[400px] md:overflow-y-auto">
 				{changes.map((change, index) => {
 					const checkboxId = `backlog-change-${index}`;
 					// Per-change findings resolve solely from the proposal-level
@@ -1784,11 +1886,12 @@ export function BacklogChangeProposal({
 					// that ticket's body. The routing control renders the
 					// accurate picture for an overridden row, so the row's own
 					// update-shaped chrome stands down rather than contradict it.
+					const effectiveRouting = resolveEffectiveRouting(
+						change.routing ?? undefined,
+						routingOverridesByIndex.get(index),
+					);
 					const routingOverridden =
-						resolveEffectiveRouting(
-							change.routing ?? undefined,
-							routingOverridesByIndex.get(index),
-						)?.overridden === true;
+						effectiveRouting?.overridden === true;
 					// An enrichment the reviewer sent back to "new ticket" IS a
 					// create from here on: it will be applied as one, so it must
 					// offer everything a create offers — the Bug/Feature choice
@@ -1808,6 +1911,31 @@ export function BacklogChangeProposal({
 						!routingOverridden &&
 						change.action === "update" &&
 						!isResolvedUpdate;
+					const targetOnBoard =
+						isResolvedUpdate && isLinkableTarget(change.existingId);
+					const targetMissing =
+						isResolvedUpdate &&
+						isMissingFromBoard(
+							boardStoryIds,
+							change.existingId ?? "",
+						);
+					const rowLockedReason = review.lockedReasonOf(index);
+					const showsUpdateSummary =
+						change.action === "update" && !routingOverridden;
+					// An applied update reads "As proposed", with the ticket
+					// whose Decision Log records what was written.
+					const rowApplied =
+						rowLockedReason && rowLockedReason !== "rejected"
+							? {
+									projectId,
+									storyId: review.lockedTargetOf(index),
+								}
+							: undefined;
+					// Re-routed to a ticket: merged into it at apply, so
+					// there is no change summary to show yet.
+					const mergedOnApply =
+						routingOverridden &&
+						effectiveRouting?.decision === "enrich";
 					return (
 						<div
 							key={index}
@@ -1824,10 +1952,10 @@ export function BacklogChangeProposal({
 									id={checkboxId}
 									checked={selected.has(index)}
 									onCheckedChange={() => toggleItem(index)}
-									disabled={lockedIndexes.has(index)}
+									disabled={rowLockedReason !== undefined}
 									aria-label={
-										lockedIndexes.has(index)
-											? `${change.title.to} (${LOCKED_REASON_COPY[lockedReasons.get(index) ?? "accepted"].ariaSuffix})`
+										rowLockedReason
+											? `${change.title.to} (${LOCKED_REASON_COPY[rowLockedReason].ariaSuffix})`
 											: `Toggle ${change.title.to}`
 									}
 									className="mt-0.5 shrink-0 cursor-pointer"
@@ -1845,23 +1973,16 @@ export function BacklogChangeProposal({
 										>
 											{effectiveAction}
 										</Badge>
-										{lockedIndexes.has(index) && (
-											<Badge
-												variant="outline"
-												className="gap-1 text-xs"
-											>
-												<CheckIcon
-													aria-hidden
-													className="size-3"
-												/>
-												{
-													LOCKED_REASON_COPY[
-														lockedReasons.get(
-															index,
-														) ?? "accepted"
-													].badge
-												}
-											</Badge>
+										{rowLockedReason && (
+											<LockedRowStatus
+												reason={rowLockedReason}
+												itemTitle={change.title.to}
+												projectId={projectId}
+												targetStoryId={review.lockedTargetOf(
+													index,
+												)}
+												panel={panel}
+											/>
 										)}
 										{effectiveAction === "create" &&
 										change.type !== "epic" &&
@@ -2018,7 +2139,7 @@ export function BacklogChangeProposal({
 													? ` — ${change.targetResolution?.resolvedTitle}`
 													: ""}
 											</span>
-											{isResolvedUpdate && (
+											{targetOnBoard && (
 												<TooltipProvider>
 													<Tooltip>
 														<TooltipTrigger asChild>
@@ -2071,9 +2192,10 @@ export function BacklogChangeProposal({
 
 									{/* Non-blocking "Ticket not found" note for
 									    an update whose target could not be
-									    resolved / was demoted / lost its id.
+									    resolved / was demoted / lost its id,
+									    or is no longer on the board.
 									    Create rows never reach this branch. */}
-									{isUnresolvedUpdate && (
+									{(isUnresolvedUpdate || targetMissing) && (
 										<span className="text-muted-foreground text-xs">
 											{t("ticketNotFound")}
 										</span>
@@ -2091,10 +2213,61 @@ export function BacklogChangeProposal({
 											}
 											projectId={projectId}
 											organizationId={organizationId}
-											disabled={!selected.has(index)}
+											// Per-item Approve asks for a target, so the
+											// picker works on any unresolved item there;
+											// otherwise it follows the selection.
+											disabled={
+												review.actionsEnabled
+													? review.isActionDisabled(
+															index,
+														)
+													: !selected.has(index)
+											}
 											itemTitle={change.title.to}
+											panel={panel}
 										/>
 									)}
+
+									{!rowLockedReason && (
+										<ProposalDuplicateNote
+											matches={review.duplicateMatchesOf(
+												index,
+											)}
+											itemTitle={change.title.to}
+											projectId={projectId}
+											organizationId={organizationId}
+											proposalId={proposalId}
+											enrichTargetStoryId={review.enrichTargetOf(
+												index,
+											)}
+											onUseAsEnrichTarget={
+												proposalStatus === "PENDING"
+													? (match) =>
+															enrichFromDuplicate(
+																index,
+																match,
+															)
+													: undefined
+											}
+											onOpenProposal={review.openProposal}
+											disabled={actionsBusy}
+											panel={panel}
+										/>
+									)}
+
+									{showsUpdateSummary &&
+										review.targetChanged(index) && (
+											<TargetChangedNote />
+										)}
+									{showsUpdateSummary && (
+										<ProposalUpdateSummary
+											change={change}
+											applied={rowApplied}
+											panel={panel}
+											className="mt-2"
+										/>
+									)}
+									{mergedOnApply && <MergedOnApplyNote />}
 
 									{/* Diff fields for updates */}
 									{change.action === "update" &&
@@ -2259,11 +2432,15 @@ export function BacklogChangeProposal({
 												</span>
 											)}
 									</div>
-									{change.reasoning && (
-										<p className="text-xs text-muted-foreground italic mt-0.5 line-clamp-2">
-											{stripMarkdown(change.reasoning)}
-										</p>
-									)}
+									{/* An update's reasoning is its summary's "Why". */}
+									{change.reasoning &&
+										!showsUpdateSummary && (
+											<p className="text-xs text-muted-foreground italic mt-0.5 line-clamp-2">
+												{stripMarkdown(
+													change.reasoning,
+												)}
+											</p>
+										)}
 
 									{/* Open the per-item detail dialog. The list
 									    only shows truncated previews; full review
@@ -2287,6 +2464,39 @@ export function BacklogChangeProposal({
 												: "Open full detail to review"}
 										</Button>
 									</div>
+									{review.actionsEnabled &&
+										!rowLockedReason && (
+											<ProposalItemActions
+												itemTitle={change.title.to}
+												onApprove={() =>
+													review.approveItem(index)
+												}
+												onMoveToRejected={() =>
+													review.rejectItem(index)
+												}
+												disabled={review.isActionDisabled(
+													index,
+												)}
+												approveBlockedReason={review.blockedReasonOf(
+													index,
+												)}
+												pendingAction={review.pendingActionOf(
+													index,
+												)}
+												onReviewLineByLine={
+													showsUpdateSummary
+														? () =>
+																openDetail(
+																	index,
+																	true,
+																)
+														: undefined
+												}
+												lineReviewBlockedReason={review.lineReviewBlockedReasonOf(
+													index,
+												)}
+											/>
+										)}
 								</div>
 							</div>
 						</div>
@@ -2326,6 +2536,7 @@ export function BacklogChangeProposal({
 						// else drafted at apply).
 						onClick={runApply}
 						disabled={
+							actionsBusy ||
 							selectedCount === 0 ||
 							routingBlockedIndexes.length > 0 ||
 							(reformattingIndex !== null &&
@@ -2355,6 +2566,7 @@ export function BacklogChangeProposal({
 								setResolved("backlog");
 								onBacklog();
 							}}
+							disabled={actionsBusy}
 							aria-label="Move this proposal to Rejected proposals"
 						>
 							<ArchiveIcon className="size-3.5 mr-1.5" />
@@ -2380,6 +2592,7 @@ export function BacklogChangeProposal({
 								setResolved("rejected");
 								onReject();
 							}}
+							disabled={actionsBusy}
 						>
 							{isRejectedProposal ? (
 								<Trash2Icon className="size-3.5 mr-1.5" />
@@ -2448,9 +2661,10 @@ export function BacklogChangeProposal({
 			{/* Per-item full-detail review dialog. Mounts only when an
 			    index is selected. Approve / Reject toggle the parent's
 			    `selected` set so the PM can stage decisions one by one
-			    without leaving the dialog. Prev / Next walk the list and
-			    auto-mark each visited item as reviewed (badge shows up
-			    in the list when this dialog closes). */}
+			    without leaving the dialog — except in the inbox, where they
+			    commit that item at once (`itemDecision`). Prev / Next walk
+			    the list and auto-mark each visited item as reviewed (badge
+			    shows up in the list when this dialog closes). */}
 			{detailIndex !== null &&
 				changes[detailIndex] &&
 				(() => {
@@ -2532,6 +2746,13 @@ export function BacklogChangeProposal({
 											)
 									: undefined
 							}
+							projectId={projectId}
+							linkableTarget={isLinkableTarget}
+							panel={panel}
+							resolution={review.resolutionOf(di)}
+							itemDecision={review.decisionOf(di)}
+							initialLineReview={detailLineReview}
+							targetChanged={review.targetChanged(di)}
 						/>
 					);
 				})()}

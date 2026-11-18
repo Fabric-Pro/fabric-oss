@@ -607,7 +607,6 @@ const PORTAL_SCOPES = [
 	"instructions:read",
 	"instructions:write",
 	"workspaces:read",
-	"chats:read",
 	"mcp:read",
 ];
 
@@ -704,6 +703,7 @@ describe("MCP gateway — a project-limited acting grant", () => {
 					"authority:write",
 					"authority:read",
 					"orgs:write",
+					"chats:read",
 					"chats:write",
 					"workflows:admin",
 					"made-up:scope",

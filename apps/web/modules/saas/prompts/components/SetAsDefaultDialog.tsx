@@ -65,7 +65,7 @@ const PERSONAL_DEFAULT_REFUSED_AGENTS: ReadonlySet<string> = new Set([
 type BoundAction = {
 	targetKey: string;
 	documentType: string;
-	storyKind: "FEATURE" | "BUG" | null;
+	storyKind: "FEATURE" | "BUG" | "INITIATIVE" | null;
 };
 
 type SetAsDefaultDialogProps = {

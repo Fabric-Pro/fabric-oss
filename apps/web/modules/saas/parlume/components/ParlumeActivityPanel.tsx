@@ -54,11 +54,14 @@ export function ParlumeActivityPanel({
 	projectBasePath,
 	sessions,
 	costBySessionId,
+	showSpend,
 }: {
 	projectId: string;
 	projectBasePath: string;
 	sessions: ParlumeSessionsView;
 	costBySessionId: ReadonlyMap<string, number>;
+	/** Whether this viewer may see spend. */
+	showSpend: boolean;
 }) {
 	const queryClient = useQueryClient();
 	const [tab, setTab] = useState<PanelTab>("sessions");
@@ -164,6 +167,7 @@ export function ParlumeActivityPanel({
 						projectId={projectId}
 						sessions={sessions.items}
 						costBySessionId={costBySessionId}
+						showSpend={showSpend}
 						projectBasePath={projectBasePath}
 						isLoading={sessions.isLoading}
 						isError={sessions.isError}

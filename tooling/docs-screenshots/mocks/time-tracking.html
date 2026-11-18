@@ -104,12 +104,15 @@ td{padding:10px 16px;border-top:1px solid var(--border);text-align:right;font-va
 .settings-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px}
 .settings-row + .settings-row{border-top:1px solid var(--border)}
 .settings-row.on{background:var(--muted)}
+.notes{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+.note-btn{display:inline-flex;align-items:center;height:28px;max-width:192px;padding:0 10px;border:1px solid var(--input);border-radius:999px;background:transparent;font-size:12px;line-height:16px;color:var(--foreground)}
+.note-btn span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .popover{width:340px;border:1px solid var(--border);border-radius:6px;background:var(--popover);box-shadow:0 8px 28px rgba(17,23,28,.12);padding:16px;display:flex;flex-direction:column;gap:12px}
 </style>
 </head>
 <body>
 
-<!-- My time: header, week strip, entry line with More open, the day's entries. Synthetic data. -->
+<!-- My time: header, week strip, entry line with the note and recent notes, More closed, the day's entries. Synthetic data. -->
 <section id="shot-my-time" class="shot">
   <div class="row" style="justify-content:space-between;margin-bottom:16px">
     <div class="row" style="gap:10px"><h1 class="h1">My time</h1><span class="icon-btn"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span></div>
@@ -139,9 +142,11 @@ td{padding:10px 16px;border-top:1px solid var(--border);text-align:right;font-va
       <span class="field select" style="flex:1">12 · Export the weekly summary<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span>
       <span class="btn btn-primary">Add</span>
     </div>
-    <span class="sm muted row" style="gap:4px">More<svg class="i s14" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></svg></span>
-    <div class="row" style="gap:10px"><span class="label" style="width:72px">Note</span><span class="field" style="flex:1">Wire the CSV download to the weekly summary</span><span class="switch"></span><span class="sm medium">Billable</span></div>
-    <div class="row" style="gap:10px"><span class="label" style="width:72px">Time zone</span><span class="field select" style="width:260px">Europe/Berlin<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span></div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div class="row" style="gap:8px"><span class="label">Note</span><span class="field" style="flex:1">Wire the CSV download to the weekly summary</span></div>
+      <div class="notes"><span class="note-btn"><span>Weekly summary query and tests</span></span><span class="note-btn"><span>Code review</span></span><span class="note-btn"><span>Sprint planning</span></span><span class="note-btn"><span>Pair session on the payout retry queue and its alerts</span></span><span class="note-btn"><span>Standup</span></span></div>
+    </div>
+    <div class="row" style="gap:4px"><span class="sm muted row" style="gap:4px">More<svg class="i s14" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span><span class="icon-btn"><svg class="i s14" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></span></div>
   </div>
   <div class="card" style="overflow:hidden">
     <div class="group-head"><span>Payments API</span><span>4h 45m</span></div>
@@ -180,6 +185,7 @@ td{padding:10px 16px;border-top:1px solid var(--border);text-align:right;font-va
     <div class="pfield"><span class="sm muted">Activity</span><span class="field select">Development<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span></div>
     <div class="pfield"><span class="sm muted">Work item</span><span class="field select">12 · Export the weekly summary<svg class="i s14" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg></span></div>
     <div class="pfield"><span class="sm muted">Note</span><span class="field placeholder">Add a note</span></div>
+    <div class="pfield"><span></span><div class="notes"><span class="note-btn"><span>Weekly summary query and tests</span></span><span class="note-btn"><span>Code review</span></span><span class="note-btn"><span>Sprint planning</span></span></div></div>
     <div class="row" style="gap:8px"><span class="btn btn-outline"><svg class="i" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>Pause</span><span class="btn btn-primary"><svg class="i" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>Stop and save</span><span class="btn btn-ghost" style="margin-left:auto">Discard</span></div>
   </div>
   <div class="row" style="justify-content:flex-end;margin-top:12px"><span class="chip"><span class="dot"></span><span class="tabular semibold">1:24:07</span><span class="muted">Payments API</span></span></div>

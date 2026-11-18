@@ -7,6 +7,7 @@ import type {
 	FabricFeature,
 	FabricProject,
 	FabricTask,
+	FabricWorkItemKind,
 	ListOptions,
 } from "../types.js";
 
@@ -101,6 +102,7 @@ export interface ListProjectsOptions extends ListOptions {
 
 export interface ListFeaturesOptions extends ListOptions {
 	priority?: "P0_CRITICAL" | "P1_HIGH" | "P2_MEDIUM" | "P3_LOW";
+	kind?: FabricWorkItemKind;
 	statusId?: string;
 	assigneeId?: string;
 }
@@ -121,6 +123,8 @@ export interface CreateFeatureOptions {
 	description?: string;
 	acceptanceCriteria?: string;
 	priority?: "P0_CRITICAL" | "P1_HIGH" | "P2_MEDIUM" | "P3_LOW";
+	/** Defaults to FEATURE. INITIATIVE is refused when the project has Initiatives off. */
+	kind?: "FEATURE" | "INITIATIVE";
 	org?: string;
 	personal?: boolean;
 }

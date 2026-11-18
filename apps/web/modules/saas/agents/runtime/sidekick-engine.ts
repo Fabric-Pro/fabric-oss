@@ -5,7 +5,7 @@ import {
 	type RunAgentInput,
 } from "@ag-ui/client";
 import { runWithAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
-import { getOrganizationMembership, isFeatureEnabled } from "@repo/database";
+import { isFeatureEnabled } from "@repo/database";
 import {
 	SIDEKICK_AGENT_ID,
 	type SidekickRunProps,
@@ -32,15 +32,9 @@ import { streamTextRunEvents } from "./stream-text-events";
  * UI message stream (`sidekick-turn.ts`), as AG-UI events. Served only while
  * `COPILOTKIT_SIDEKICK_CHAT` is on for the organization on screen, within
  * the route's rate limit, and for an agent the route would let the caller
- * edit; all of it is checked before any model call. The model, tools and
- * billing use the agent's own organization, as on the route. Nothing is
- * saved.
- *
- * An unsaved agent has no organization of its own, so it runs in the
- * organization on screen, and only for a member of it: the runtime admits
- * anyone with a tie to that organization (a project guest too), where the
- * route runs it in the session's active organization, which only a member
- * can hold.
+ * edit (`authorizeSidekickEntity`), all checked before any model call. The
+ * model, tools and billing use the agent's own organization, as on the
+ * route. Nothing is saved.
  */
 
 export { SIDEKICK_AGENT_ID };
@@ -98,11 +92,17 @@ export class SidekickEngine extends InProcessEngine<
 				message: "A run needs a new user message.",
 			};
 		}
+		// An instance must belong to the organization on screen, as the create
+		// page's panel names it to the route. A new agent runs in that
+		// organization anyway, and the registered-agent builder names none,
+		// so there the agent's own organization decides, as on the route.
 		const access = await authorizeSidekickEntity({
 			userId,
 			agentId: props.agentId,
 			entityType: props.entityType,
 			sessionOrganizationId: organizationId,
+			requestedOrganizationId:
+				props.entityType === "instance" ? organizationId : undefined,
 		});
 		if (!access.ok) {
 			return {
@@ -116,15 +116,6 @@ export class SidekickEngine extends InProcessEngine<
 		// should serve a run during its retention window.
 		if (access.organizationDeleted) {
 			return { ok: false, code: "FORBIDDEN", message: "Forbidden" };
-		}
-		if (access.entityType === "new") {
-			const membership = await getOrganizationMembership(
-				organizationId,
-				userId,
-			);
-			if (!membership || membership.organization.deletedAt) {
-				return { ok: false, code: "FORBIDDEN", message: "Forbidden" };
-			}
 		}
 		return {
 			ok: true,

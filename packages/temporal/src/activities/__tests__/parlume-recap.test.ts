@@ -103,6 +103,7 @@ beforeEach(() => {
 		linkedMeetingId: "lm1",
 		suggestionsEnabled: true,
 		suggestionAudience: "MEETING",
+		linkedMeeting: { confidential: false },
 	});
 	mocks.sessionFindMany.mockResolvedValue([]);
 	mocks.contextFindMany.mockResolvedValue([]);
@@ -372,6 +373,7 @@ describe("postParlumeSeriesRecap: the previous meeting", () => {
 		expect(query.where).toEqual({
 			projectId: "p1",
 			linkedMeetingId: "lm1",
+			linkedMeeting: { confidential: false },
 			project: { organizationId: "o1" },
 			meetingDate: { gte: new Date("2026-07-29T09:00:00.000Z"), lt: NOW },
 		});
@@ -478,6 +480,15 @@ describe("postParlumeSeriesRecap: the previous meeting", () => {
 			},
 			"suggestions_off",
 		],
+		[
+			"a series marked confidential",
+			{
+				linkedMeetingId: "lm1",
+				status: "ACTIVE",
+				linkedMeeting: { confidential: true },
+			},
+			"confidential",
+		],
 	])("posts nothing for %s", async (_label, session, reason) => {
 		mocks.sessionFindUnique.mockResolvedValue({
 			id: "s-now",
@@ -496,6 +507,7 @@ describe("postParlumeSeriesRecap: the previous meeting", () => {
 		expect(mocks.collectStories).not.toHaveBeenCalled();
 		expect(mocks.getModel).not.toHaveBeenCalled();
 		expect(mocks.postChat).not.toHaveBeenCalled();
+		expect(mocks.recordSuggestion).not.toHaveBeenCalled();
 		expect(mocks.log).toHaveBeenCalledWith(...skipped(reason));
 	});
 });

@@ -216,6 +216,18 @@ export async function canReadOrganizationAgents(
 	);
 }
 
+/** Checks the live permission behind the organization key’s model scopes. */
+export async function canResolveOrganizationAiModels(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.AI_MODEL_RESOLVE,
+	);
+}
+
 /** Matches the AI chat procedures' `requirePermission(AI_CHAT)` gate. */
 export async function canUseOrganizationAiChat(
 	userId: string,

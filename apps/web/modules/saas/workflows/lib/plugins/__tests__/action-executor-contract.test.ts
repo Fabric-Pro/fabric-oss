@@ -305,6 +305,7 @@ const NON_ACTION_STEPS = new Set([
 	"clerk-shared",
 	"gitlab-resolver",
 	"index",
+	"outbound-request",
 	"utils",
 ]);
 

@@ -6,13 +6,14 @@
  */
 
 import { ORPCError } from "@orpc/server";
+import { canResolveOrganizationAiModels } from "@repo/database";
 import { z } from "zod";
+import { publicProcedure } from "../../../orpc/procedures";
 import {
-	Permissions,
-	publicProcedure,
-	requirePermission,
-} from "../../../orpc/procedures";
-import { hasScope, validateApiKey } from "../lib/api-key-auth";
+	hasScope,
+	requireOrganizationKeyPermission,
+	validateApiKey,
+} from "../lib/api-key-auth";
 import {
 	modelUnavailableMessage,
 	resolveModelForTenant,
@@ -20,7 +21,6 @@ import {
 import { ResolvedModelConfigSchema, TaskTypeSchema } from "../types";
 
 export const resolveModelProcedure = publicProcedure
-	.use(requirePermission(Permissions.AGENT_EXECUTE))
 	.route({
 		method: "POST",
 		path: "/runtime/resolve-model",
@@ -48,11 +48,16 @@ export const resolveModelProcedure = publicProcedure
 		}
 
 		// Check required scope
-		if (!hasScope(tenant, "ai:models:resolve") && !hasScope(tenant, "*")) {
+		if (!hasScope(tenant, "ai:models:resolve")) {
 			throw new ORPCError("FORBIDDEN", {
 				message: "API key lacks 'ai:models:resolve' scope",
 			});
 		}
+
+		await requireOrganizationKeyPermission(
+			tenant,
+			canResolveOrganizationAiModels,
+		);
 
 		// Resolve model
 		const modelConfig = await resolveModelForTenant(tenant, input.taskType);

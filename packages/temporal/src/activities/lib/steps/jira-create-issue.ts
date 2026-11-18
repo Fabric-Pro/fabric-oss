@@ -1,5 +1,6 @@
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { fetchProviderStepOutbound } from "./outbound-request";
 import { interpolateTemplate } from "./utils";
 
 export async function executeJiraCreateIssueStep(
@@ -46,43 +47,46 @@ export async function executeJiraCreateIssueStep(
 	).toString("base64");
 
 	try {
-		const response = await fetch(`https://${domain}/rest/api/3/issue`, {
-			method: "POST",
-			headers: {
-				Authorization: `Basic ${auth}`,
-				"Content-Type": "application/json",
-				Accept: "application/json",
-			},
-			body: JSON.stringify({
-				fields: {
-					project: {
-						key: interpolateTemplate(projectKey, params.inputs),
-					},
-					summary: interpolateTemplate(summary, params.inputs),
-					issuetype: { name: issueType || "Task" },
-					description: description
-						? {
-								type: "doc",
-								version: 1,
-								content: [
-									{
-										type: "paragraph",
-										content: [
-											{
-												type: "text",
-												text: interpolateTemplate(
-													description,
-													params.inputs,
-												),
-											},
-										],
-									},
-								],
-							}
-						: undefined,
+		const response = await fetchProviderStepOutbound(
+			`https://${domain}/rest/api/3/issue`,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Basic ${auth}`,
+					"Content-Type": "application/json",
+					Accept: "application/json",
 				},
-			}),
-		});
+				body: JSON.stringify({
+					fields: {
+						project: {
+							key: interpolateTemplate(projectKey, params.inputs),
+						},
+						summary: interpolateTemplate(summary, params.inputs),
+						issuetype: { name: issueType || "Task" },
+						description: description
+							? {
+									type: "doc",
+									version: 1,
+									content: [
+										{
+											type: "paragraph",
+											content: [
+												{
+													type: "text",
+													text: interpolateTemplate(
+														description,
+														params.inputs,
+													),
+												},
+											],
+										},
+									],
+								}
+							: undefined,
+					},
+				}),
+			},
+		);
 
 		const result = await response.json();
 		if (!response.ok) {

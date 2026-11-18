@@ -842,40 +842,45 @@ describe("mcp.configs.upsert — GitLab tool ingestion follows the person's conn
 	});
 
 	describe("hidden server config creation guard", () => {
-		it("refuses a new connection to a retired global system row", async () => {
-			const server = {
-				id: "example-retired-server",
-				key: "github",
-				userId: null,
-				organizationId: null,
-				isSystemProvided: true,
-				transport: "STDIO",
-				command: "npx -y example-mcp-server@1.0.0",
-				authMethods: ["API_KEY"],
-			};
-			getMcpServerByIdMock.mockResolvedValue(server);
-			serverFindUniqueMock.mockResolvedValue(server);
-			getMcpConfigForTenantAndServerMock.mockResolvedValue(null);
-			upsertMcpConfigMock.mockResolvedValue({
-				id: "example-config",
-				authType: "API_KEY",
-				enabled: true,
-			});
+		it.each(["github", "filesystem"])(
+			"refuses a new connection to retired system %s",
+			async (key) => {
+				const server = {
+					id: "example-retired-server",
+					key,
+					userId: null,
+					organizationId: null,
+					isSystemProvided: true,
+					transport: "STDIO",
+					command: "npx -y example-mcp-server@1.0.0",
+					authMethods: ["API_KEY"],
+				};
+				getMcpServerByIdMock.mockResolvedValue(server);
+				serverFindUniqueMock.mockResolvedValue(server);
+				getMcpConfigForTenantAndServerMock.mockResolvedValue(null);
+				upsertMcpConfigMock.mockResolvedValue({
+					id: "example-config",
+					authType: "API_KEY",
+					enabled: true,
+				});
 
-			await expect(
-				handler({
-					input: {
-						mcpServerId: server.id,
-						authType: "API_KEY",
-						apiKey: "example-key",
-					},
-					context: { user: { id: "user_1" } },
-				}),
-			).rejects.toThrow("This MCP server is not available to configure.");
-			expect(createMcpConfigMock).not.toHaveBeenCalled();
-			expect(upsertMcpConfigMock).not.toHaveBeenCalled();
-			expect(updateManyMock).not.toHaveBeenCalled();
-		});
+				await expect(
+					handler({
+						input: {
+							mcpServerId: server.id,
+							authType: "API_KEY",
+							apiKey: "example-key",
+						},
+						context: { user: { id: "user_1" } },
+					}),
+				).rejects.toThrow(
+					"This MCP server is not available to configure.",
+				);
+				expect(createMcpConfigMock).not.toHaveBeenCalled();
+				expect(upsertMcpConfigMock).not.toHaveBeenCalled();
+				expect(updateManyMock).not.toHaveBeenCalled();
+			},
+		);
 
 		it.each([
 			[
@@ -1456,5 +1461,54 @@ describe("mcp.configs.upsert — OAuth credential binding", () => {
 			tokenEndpoint: "https://github.com/login/oauth/access_token",
 			source: "catalog",
 		});
+	});
+});
+
+describe("mcp.configs.upsert — command arguments", () => {
+	beforeEach(() => {
+		const server = {
+			id: "srv_1",
+			key: "azure-devops",
+			isSystemProvided: true,
+			transport: "STDIO",
+			command: "npx -y example-mcp-server@1.0.0",
+		};
+		getMcpServerByIdMock.mockResolvedValue(server);
+		serverFindUniqueMock.mockResolvedValue(server);
+		getMcpConfigByIdMock.mockResolvedValue(
+			condemnedOAuthConfig({
+				authType: "NONE",
+				commandArgs: ["-example"],
+			}),
+		);
+	});
+
+	it("refuses invalid arguments before writing settings", async () => {
+		await expect(
+			handler({
+				input: upsertInput({ commandArgs: ["-example"] }),
+				context: { user: { id: "user_1" } },
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: expect.stringContaining("Azure DevOps organization name"),
+		});
+		expect(updateManyMock).not.toHaveBeenCalled();
+	});
+
+	it("writes a valid organization name", async () => {
+		await handler({
+			input: upsertInput({ commandArgs: ["example-org"] }),
+			context: { user: { id: "user_1" } },
+		});
+		expect(writtenData()).toMatchObject({ commandArgs: ["example-org"] });
+	});
+
+	it("allows edits that omit legacy command arguments", async () => {
+		await handler({
+			input: upsertInput({ displayName: "Renamed connection" }),
+			context: { user: { id: "user_1" } },
+		});
+		expect(writtenData()).not.toHaveProperty("commandArgs");
 	});
 });

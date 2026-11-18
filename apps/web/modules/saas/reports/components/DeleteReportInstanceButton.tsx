@@ -12,9 +12,12 @@ import {
 	AlertDialogTrigger,
 } from "@ui/components/alert-dialog";
 import { Button } from "@ui/components/button";
-import { TrashIcon } from "lucide-react";
+import { Loader2Icon, TrashIcon } from "lucide-react";
 
-/** The report page's delete control, confirmed before anything is removed. */
+/**
+ * The report page's delete control, confirmed before anything is removed.
+ * While the deletion runs it says so in words, not only by being disabled.
+ */
 export function DeleteReportInstanceButton({
 	instanceName,
 	onDelete,
@@ -24,13 +27,23 @@ export function DeleteReportInstanceButton({
 	onDelete: () => void;
 	isDeleting: boolean;
 }) {
+	if (isDeleting) {
+		return (
+			<Button variant="ghost" size="sm" disabled>
+				<Loader2Icon
+					aria-hidden="true"
+					className="mr-2 h-4 w-4 motion-safe:animate-spin"
+				/>
+				<span role="status">Deleting…</span>
+			</Button>
+		);
+	}
 	return (
 		<AlertDialog>
 			<AlertDialogTrigger asChild>
 				<Button
 					variant="ghost"
 					size="icon"
-					disabled={isDeleting}
 					aria-label="Delete report instance"
 				>
 					<TrashIcon className="h-4 w-4 text-muted-foreground" />

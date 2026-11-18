@@ -1,14 +1,17 @@
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import { validateCatalogLaunch } from "../../mcp-stdio-wrapper/src/catalog-command";
 import {
 	CURATED_SYSTEM_MCP_SERVER_KEY_SET,
 	RETIRED_SYSTEM_MCP_SERVER_KEYS,
 } from "../prisma/curated-mcp-server-keys";
 
 import {
+	GOOGLE_DRIVE_STDIO,
 	stdioCredentialEnvVar,
 	stdioPackageName,
+	TWILIO_STDIO,
 } from "../prisma/stdio-credential-env";
 
 // These definitions feed the MCPServer writers checked below. Keep singleton
@@ -178,8 +181,45 @@ describe("seeded MCP catalog", () => {
 		});
 	}
 
-	// client.ts uses parseTwilioCredentials for this package's multi-field credentials.
-	const DEDICATED_CREDENTIAL_PACKAGES = ["@twilio-alpha/mcp"];
+	const stdioEntries = catalogs.flatMap(({ file, name, entries }) =>
+		entries
+			.filter(({ settings }) => settings.transport === "STDIO")
+			.map((entry) => ({ file, name, ...entry })),
+	);
+	it.each(stdioEntries)(
+		"$file/$name: $key runs through the wrapper catalog policy",
+		({ key, command }) => {
+			if (command === null) {
+				throw new Error(`Missing STDIO command for ${key}`);
+			}
+			const packageName = stdioPackageName(command);
+			const credentialName = stdioCredentialEnvVar(command);
+			let credentialNames: readonly string[] = [];
+			if (packageName === GOOGLE_DRIVE_STDIO.packageName) {
+				credentialNames = Object.values(
+					GOOGLE_DRIVE_STDIO.credentialNames,
+				);
+			} else if (packageName === TWILIO_STDIO.packageName) {
+				credentialNames = Object.values(TWILIO_STDIO.credentialNames);
+			} else if (credentialName) {
+				credentialNames = [credentialName];
+			}
+			const credentials = Object.fromEntries(
+				credentialNames.map((name) => [name, "example-value"]),
+			);
+			if (key === "azure-devops") {
+				validateCatalogLaunch({ command, args: ["example-org"] });
+				validateCatalogLaunch({
+					command,
+					args: ["example-org", "--authentication", "envvar"],
+					credentials,
+				});
+			} else {
+				validateCatalogLaunch({ command, args: [], credentials });
+			}
+		},
+	);
+
 	const apiKeyStdioEntries = catalogs.flatMap(({ file, name, entries }) =>
 		entries
 			.filter(
@@ -194,11 +234,7 @@ describe("seeded MCP catalog", () => {
 		"$file/$name: $key has a STDIO API-key credential mapping",
 		({ command }) => {
 			expect(command).not.toBeNull();
-			if (
-				DEDICATED_CREDENTIAL_PACKAGES.includes(
-					stdioPackageName(command ?? "") ?? "",
-				)
-			) {
+			if (stdioPackageName(command ?? "") === TWILIO_STDIO.packageName) {
 				return;
 			}
 			expect(stdioCredentialEnvVar(command ?? "")).toBeDefined();

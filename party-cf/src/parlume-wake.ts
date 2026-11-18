@@ -25,6 +25,10 @@ const FUSED_GREETING = /^(?:h?e+y?|h?a+y?|hi)(?=[fp])/i;
 const MISHEARD_GREETING = /^[\s"'“]*(?:a|ay|eh|ah|uh|he)\b[\s,]*/i;
 const SENTENCE_BOUNDARY = /[.?!]\s+/g;
 const FABRIC = new Set(["fbrk"]);
+// Overlapping speech clips the name: a second speaker's "Hey Fabric" said over
+// someone else arrived as "Hey, Fabry". After a spoken greeting the clipped
+// name still wakes; on its own it stays an ordinary word.
+const FABRIC_AFTER_GREETING = new Set([...FABRIC, "fbr"]);
 const PARLUME = new Set(["prlm", "prlmn"]);
 const SPOKEN_REFERENCE =
 	/^(?:please\s+)?(say|read|go(?:\s+(?:with|ahead\s+with))?|(?:tell\s+(?:me|us)\s+)?more(?:\s+(?:on|about))?)\s+(?:post\s+)?(?:p|pee)[\s.-]*(\d{1,6}|[a-z]+)[\s.!?]*$/i;
@@ -185,7 +189,7 @@ export function findParlumeWake(
 		}
 		const name = skeleton(first[1]);
 		let consumed = first[0].length;
-		if (FABRIC.has(name)) {
+		if (FABRIC_AFTER_GREETING.has(name)) {
 			const second = NEXT_WORD.exec(rest.slice(consumed));
 			if (second && PARLUME.has(skeleton(second[1]))) {
 				consumed += second[0].length;

@@ -3,8 +3,8 @@ import type { ConnectionTestResult as TestConnectionResult } from "@repo/integra
 import {
 	credentialGitLabOrigin,
 	GITLAB_DEFAULT_ORIGIN,
-	gitlabOutboundFetch,
 } from "@repo/integrations/gitlab";
+import { getBlockedOutboundReason } from "@repo/utils/url-security";
 import { z } from "zod";
 import {
 	Permissions,
@@ -12,6 +12,11 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { testDatabricksPlatformConnection } from "../../../context-quality/lib/platform-connection";
+import {
+	fetchConnectionProvider,
+	isProviderTenantLabel,
+	testWithGuardedFetch,
+} from "./connection-outbound";
 
 /**
  * Test connection procedure for workflow integrations
@@ -172,7 +177,7 @@ async function testJiraConnection(
 	const auth = Buffer.from(`${email}:${apiToken}`).toString("base64");
 
 	try {
-		const response = await fetch(
+		const response = await fetchConnectionProvider(
 			`https://${normalizedDomain}/rest/api/3/myself`,
 			{
 				headers: {
@@ -220,10 +225,17 @@ async function testZendeskConnection(
 		};
 	}
 
+	if (!isProviderTenantLabel(subdomain)) {
+		return {
+			success: false,
+			error: "Zendesk subdomain must be a single DNS label.",
+		};
+	}
+
 	const auth = Buffer.from(`${email}/token:${token}`).toString("base64");
 
 	try {
-		const response = await fetch(
+		const response = await fetchConnectionProvider(
 			`https://${subdomain}.zendesk.com/api/v2/users/me.json`,
 			{
 				headers: {
@@ -277,18 +289,21 @@ async function testGitLabConnection(
 	if (!origin.ok) {
 		return {
 			success: false,
-			error: `Invalid GitLab URL: ${origin.reason}`,
+			error: "Invalid GitLab URL.",
 		};
 	}
 	const baseUrl = origin.origin;
 
 	try {
-		const response = await gitlabOutboundFetch(`${baseUrl}/api/v4/user`, {
-			headers: {
-				Authorization: `Bearer ${apiToken}`,
-				Accept: "application/json",
+		const response = await fetchConnectionProvider(
+			`${baseUrl}/api/v4/user`,
+			{
+				headers: {
+					Authorization: `Bearer ${apiToken}`,
+					Accept: "application/json",
+				},
 			},
-		});
+		);
 
 		if (!response.ok) {
 			return {
@@ -464,12 +479,15 @@ async function testSalesforceConnection(
 		: `https://${domain.replace(/\/$/, "")}`;
 
 	try {
-		const response = await fetch(`${baseUrl}/services/data/v61.0/limits`, {
-			headers: {
-				Authorization: `Bearer ${accessToken}`,
-				Accept: "application/json",
+		const response = await fetchConnectionProvider(
+			`${baseUrl}/services/data/v61.0/limits`,
+			{
+				headers: {
+					Authorization: `Bearer ${accessToken}`,
+					Accept: "application/json",
+				},
 			},
-		});
+		);
 
 		if (!response.ok) {
 			return {
@@ -687,7 +705,7 @@ async function testMcpConnection(
 				headers.Authorization = `Bearer ${apiKey}`;
 			}
 
-			// Create client using shared factory (uses official MCP SDK transports)
+			// Use the shared client's outbound guard for both MCP transports.
 			const client = await createMcpClient({
 				serverUrl: baseUrl,
 				transport: (transport || "HTTP") as "HTTP" | "SSE",
@@ -715,6 +733,21 @@ async function testMcpConnection(
 				"MCP configuration exists. Use the MCP settings page to test stored configurations.",
 		};
 	} catch (error) {
+		const transportError =
+			error instanceof Error && "originalCause" in error
+				? error.originalCause
+				: error;
+		if (
+			getBlockedOutboundReason(transportError) ||
+			(error instanceof Error &&
+				"code" in error &&
+				(error.code === "BLOCKED_URL" || error.code === "INVALID_URL"))
+		) {
+			return {
+				success: false,
+				error: "MCP server address could not be resolved or is not allowed.",
+			};
+		}
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
 
@@ -932,15 +965,23 @@ async function testDatabricksSqlConnection(
 	const { verifyDatabricksSqlConnection } = await import(
 		"@repo/integrations"
 	);
-	return verifyDatabricksSqlConnection({
-		DATABRICKS_HOST: credentials.DATABRICKS_HOST || credentials.host || "",
-		DATABRICKS_CLIENT_ID:
-			credentials.DATABRICKS_CLIENT_ID || credentials.clientId || "",
-		DATABRICKS_CLIENT_SECRET:
-			credentials.DATABRICKS_CLIENT_SECRET ||
-			credentials.clientSecret ||
-			"",
-	});
+	return testWithGuardedFetch((fetchImpl) =>
+		verifyDatabricksSqlConnection(
+			{
+				DATABRICKS_HOST:
+					credentials.DATABRICKS_HOST || credentials.host || "",
+				DATABRICKS_CLIENT_ID:
+					credentials.DATABRICKS_CLIENT_ID ||
+					credentials.clientId ||
+					"",
+				DATABRICKS_CLIENT_SECRET:
+					credentials.DATABRICKS_CLIENT_SECRET ||
+					credentials.clientSecret ||
+					"",
+			},
+			fetchImpl,
+		),
+	);
 }
 
 async function testDatabricksVectorSearchConnection(
@@ -951,15 +992,23 @@ async function testDatabricksVectorSearchConnection(
 	);
 	// Form fields arrive under configKey names; the saved-credential path
 	// arrives under mapped env-var names. Accept both.
-	return verifyDatabricksVectorSearchConnection({
-		DATABRICKS_HOST: credentials.DATABRICKS_HOST || credentials.host || "",
-		DATABRICKS_CLIENT_ID:
-			credentials.DATABRICKS_CLIENT_ID || credentials.clientId || "",
-		DATABRICKS_CLIENT_SECRET:
-			credentials.DATABRICKS_CLIENT_SECRET ||
-			credentials.clientSecret ||
-			"",
-	});
+	return testWithGuardedFetch((fetchImpl) =>
+		verifyDatabricksVectorSearchConnection(
+			{
+				DATABRICKS_HOST:
+					credentials.DATABRICKS_HOST || credentials.host || "",
+				DATABRICKS_CLIENT_ID:
+					credentials.DATABRICKS_CLIENT_ID ||
+					credentials.clientId ||
+					"",
+				DATABRICKS_CLIENT_SECRET:
+					credentials.DATABRICKS_CLIENT_SECRET ||
+					credentials.clientSecret ||
+					"",
+			},
+			{ fetchImpl },
+		),
+	);
 }
 
 /**
@@ -1029,7 +1078,7 @@ async function testConfluenceConnection(
 			.replace(/\/$/, "");
 		const auth = Buffer.from(`${email}:${apiToken}`).toString("base64");
 
-		const response = await fetch(
+		const response = await fetchConnectionProvider(
 			`https://${cleanDomain}/wiki/rest/api/user/current`,
 			{
 				headers: {
@@ -1332,7 +1381,7 @@ async function testFreshserviceConnection(
 			.replace(/^https?:\/\//, "")
 			.replace(/\/$/, "");
 		const encoded = Buffer.from(`${apiKey}:X`).toString("base64");
-		const response = await fetch(
+		const response = await fetchConnectionProvider(
 			`https://${cleanDomain}/api/v2/agents/me`,
 			{
 				headers: {
@@ -1547,7 +1596,10 @@ const connectionTesters: Record<
 	CUSTOM_WEBHOOK: testWebhookConnection,
 	DATABASE: testDatabaseConnection,
 	DATABRICKS_SQL: testDatabricksSqlConnection,
-	DATABRICKS_PLATFORM: testDatabricksPlatformConnection,
+	DATABRICKS_PLATFORM: (credentials) =>
+		testWithGuardedFetch((fetchImpl) =>
+			testDatabricksPlatformConnection(credentials, fetchImpl),
+		),
 	DATABRICKS_VECTOR_SEARCH: testDatabricksVectorSearchConnection,
 	FAL: testFalConnection,
 	FIRECRAWL: testFirecrawlConnection,

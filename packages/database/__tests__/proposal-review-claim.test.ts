@@ -88,6 +88,51 @@ describe("atomic proposal claim and review", () => {
 			},
 		});
 	});
+	it("requires the metadata the per-item guard read to be unchanged", async () => {
+		const sourceMetadata = { rejectedChangeIndexes: [1] };
+		mocks.claim.mockResolvedValue({ count: 0 });
+		expect(
+			await claimPendingProposalWithReview({
+				...input,
+				expectedSourceMetadata: sourceMetadata,
+			}),
+		).toBe(false);
+		expect(mocks.claim).toHaveBeenCalledWith({
+			where: {
+				id: input.proposalId,
+				AND: [
+					{ status: { in: ["PENDING", "FAILED"] } },
+					{ sourceMetadata: { equals: sourceMetadata } },
+				],
+			},
+			data: expect.objectContaining({ status: "APPLYING" }),
+		});
+		expect(mocks.create).not.toHaveBeenCalled();
+	});
+	it("requires the proposal the approval was built from to be unchanged", async () => {
+		const sourceMetadata = { threadRootId: "example-thread" };
+		const proposal = { changes: [{ title: { to: "Merged text" } }] };
+		mocks.claim.mockResolvedValue({ count: 0 });
+		expect(
+			await claimPendingProposalWithReview({
+				...input,
+				expectedSourceMetadata: sourceMetadata,
+				expectedProposal: proposal,
+			}),
+		).toBe(false);
+		expect(mocks.claim).toHaveBeenCalledWith({
+			where: {
+				id: input.proposalId,
+				AND: [
+					{ status: { in: ["PENDING", "FAILED"] } },
+					{ sourceMetadata: { equals: sourceMetadata } },
+					{ proposal: { equals: proposal } },
+				],
+			},
+			data: expect.objectContaining({ status: "APPLYING" }),
+		});
+		expect(mocks.create).not.toHaveBeenCalled();
+	});
 	it("same keyed attempt reuses its review after winning the reentrant claim", async () => {
 		mocks.find.mockResolvedValue({
 			applyReviewId: "example-review",

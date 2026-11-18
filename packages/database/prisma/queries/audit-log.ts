@@ -284,6 +284,9 @@ export const AUDIT_ACTIONS = [
 	"project.invitation.widget_dismissed",
 	"project.meeting_digest.inclusion_changed",
 	"project.meeting_digest.action_item_toggled",
+	// A series marked confidential keeps its transcripts out of every later
+	// answer, recap and agenda; turning that off brings them back.
+	"project.meeting_digest.confidentiality_changed",
 	// Meeting context lifecycle (#2355). Unlinking destroys every transcript a
 	// meeting produced and the context extracted from them; a project lost ~200
 	// meetings that way with no record of who did it or when. These three are

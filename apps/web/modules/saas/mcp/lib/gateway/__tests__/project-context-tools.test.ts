@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => ({
 	recordAuditFromRequest: vi.fn(),
 	emitContextChange: vi.fn(),
 	upsertSyncedContext: vi.fn(),
+	findConfidentialTranscriptContextIds: vi.fn(),
 }));
 
 // The body reader is shared with the chat engines and runs for real here; only
@@ -62,6 +63,8 @@ vi.mock("@repo/database/prisma/queries/projects/conversation-bundles", () => ({
 }));
 
 vi.mock("@repo/database", async () => ({
+	findConfidentialTranscriptContextIds:
+		mocks.findConfidentialTranscriptContextIds,
 	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	listProjectContextSummaries: mocks.listProjectContextSummaries,
@@ -195,6 +198,7 @@ function metadataRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.findConfidentialTranscriptContextIds.mockResolvedValue(new Set());
 	mocks.getProjectAccessContext.mockResolvedValue({
 		organizationId: "org-1",
 	});
@@ -378,6 +382,28 @@ describe("fabric_get_project_context", () => {
 
 		expect(result.isError).toBe(true);
 		expect(payload(result).error).toMatch(/not found or access denied/i);
+	});
+
+	it("keeps a confidential series' transcript out of the answer", async () => {
+		mocks.findConfidentialTranscriptContextIds.mockResolvedValue(
+			new Set(["ctx-1"]),
+		);
+
+		const result = await executePlatformTool(
+			"fabric_get_project_context",
+			{ contextId: "ctx-1" },
+			session,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(payload(result)).toMatchObject({ code: "FORBIDDEN" });
+		expect(JSON.stringify(payload(result))).not.toContain("Alex");
+		expect(mocks.findConfidentialTranscriptContextIds).toHaveBeenCalledWith(
+			{
+				projectId: "proj-1",
+				contextIds: ["ctx-1"],
+			},
+		);
 	});
 
 	it("returns transcript text with the tenant's project access checked", async () => {

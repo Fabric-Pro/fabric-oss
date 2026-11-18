@@ -47,6 +47,7 @@ const EVIDENCE_KEYS: Record<TimeEvidenceKind, string> = {
 	TEST_RESULT: "evidence.testResults",
 	TEST_CASE_ACTIVITY: "evidence.testCaseChanges",
 	PULL_REQUEST: "evidence.pullRequestPushes",
+	CALENDAR_EVENT: "evidence.calendarMeetings",
 };
 
 /**

@@ -26,7 +26,10 @@ vi.mock("../../../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: chain,
 		requireProjectPermission: mocks.permission,
-		Permissions: { PROJECT_READ: "project:read" },
+		Permissions: {
+			PROJECT_READ: "project:read",
+			PROJECT_MEMBERS_MANAGE: "project:members:manage",
+		},
 	};
 });
 await import("../usage");
@@ -39,8 +42,9 @@ beforeEach(() => {
 });
 
 describe("Parlume project usage", () => {
-	it("requires project read permission and sums only this project's Parlume rows", async () => {
-		expect(mocks.permission).toHaveBeenCalledWith("project:read");
+	it("requires the permission that invites Parlume, not project read, and sums only this project's Parlume rows", async () => {
+		expect(mocks.permission).toHaveBeenCalledWith("project:members:manage");
+		expect(mocks.permission).not.toHaveBeenCalledWith("project:read");
 		mocks.groupBy.mockResolvedValue([
 			{
 				conversationId: "session-a",

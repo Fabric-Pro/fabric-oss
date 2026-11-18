@@ -88,8 +88,9 @@ vi.mock("@repo/database", () => ({
 		});
 		return true;
 	},
-	finalizeClaimedProposal: vi.fn(),
+	finalizeProposalApply: vi.fn(),
 	getAppliedChangeIndexes: vi.fn(),
+	readRejectedChangeIndexes: () => [],
 	getBoundPromptForAgent: vi.fn(),
 	getPendingBacklogProposal: vi.fn(),
 }));

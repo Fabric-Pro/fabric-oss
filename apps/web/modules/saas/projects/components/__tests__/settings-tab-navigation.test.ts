@@ -125,4 +125,26 @@ describe("navigateToProjectSettingsTab", () => {
 			target.remove();
 		}
 	});
+
+	it("moves focus to the anchor only when asked", () => {
+		const target = document.createElement("section");
+		target.id = "settings-auto-capture";
+		target.tabIndex = -1;
+		target.scrollIntoView = vi.fn();
+		document.body.appendChild(target);
+		vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+			cb(0);
+			return 1;
+		});
+
+		try {
+			scrollToWhenRendered("settings-auto-capture");
+			expect(document.activeElement).not.toBe(target);
+
+			scrollToWhenRendered("settings-auto-capture", { focus: true });
+			expect(document.activeElement).toBe(target);
+		} finally {
+			target.remove();
+		}
+	});
 });

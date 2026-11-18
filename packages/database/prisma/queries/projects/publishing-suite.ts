@@ -638,6 +638,8 @@ export async function countNewContextSince(
 			where: {
 				projectId,
 				project: { organizationId },
+				// The collector leaves a confidential series out; so must this count.
+				linkedMeeting: { confidential: false },
 				OR: [
 					{ syncedAt: { gt: after("transcripts") } },
 					{ insightsExtractedAt: { gt: after("transcripts") } },

@@ -12,6 +12,7 @@ import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import {
 	canCreateProjectStory,
 	db,
+	InitiativesDisabledError,
 	incrementOrganizationSearchProviderUsage,
 	incrementUserSearchProviderUsage,
 } from "@repo/database";
@@ -1294,13 +1295,18 @@ export async function createFabricTool(
 					// F-171: `kind` is now a soft hint, not a directive. The
 					// classifier in createStoryFromProposal decides the canonical
 					// kind from `request` and overrides this when warranted.
+					// INITIATIVE is kept as given (skipClassifier), like the app's Add dialog.
 					// Agents that have no opinion can simply omit it.
-					const kindHint: "FEATURE" | "BUG" | undefined =
-						args.kind === "BUG"
-							? "BUG"
-							: args.kind === "FEATURE"
-								? "FEATURE"
-								: undefined;
+					const kindHint:
+						| "FEATURE"
+						| "BUG"
+						| "INITIATIVE"
+						| undefined =
+						args.kind === "BUG" ||
+						args.kind === "FEATURE" ||
+						args.kind === "INITIATIVE"
+							? args.kind
+							: undefined;
 					const title =
 						typeof args.title === "string" ? args.title.trim() : "";
 					const request =
@@ -1311,6 +1317,18 @@ export async function createFabricTool(
 						return {
 							error: "`request` is required to create a story.",
 						};
+					}
+
+					if (kindHint === "INITIATIVE") {
+						const project = await db.project.findUnique({
+							where: { id: projectId },
+							select: { initiativesEnabled: true },
+						});
+						if (!project?.initiativesEnabled) {
+							return {
+								error: new InitiativesDisabledError().message,
+							};
+						}
 					}
 
 					const priority =
@@ -1451,7 +1469,11 @@ export async function createFabricTool(
 							existingIdentifier: collision.existingIdentifier,
 							existingId: collision.existingId,
 							message: `A ${
-								dedupFamily === "BUG" ? "bug" : "feature"
+								dedupFamily === "BUG"
+									? "bug"
+									: dedupFamily === "INITIATIVE"
+										? "initiative"
+										: "feature"
 							} titled "${resolvedTitle}" already exists in this project as ${
 								collision.existingIdentifier
 							}. Returned the existing item instead of creating a duplicate; update that row if changes are needed.`,
@@ -1509,6 +1531,9 @@ export async function createFabricTool(
 							// this, every agent-created story would be
 							// Fabric-only forever.
 							enablePmAutoSync: pmConfigured ? true : undefined,
+							...(kindHint === "INITIATIVE" && {
+								skipClassifier: true,
+							}),
 							...(deferDrafting && {
 								skipClassifier: true,
 								skipDrafting: true,

@@ -12,6 +12,7 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@ui/components/alert-dialog";
+import { Button } from "@ui/components/button";
 import { Checkbox } from "@ui/components/checkbox";
 import { Label } from "@ui/components/label";
 import {
@@ -23,6 +24,11 @@ import {
 } from "@ui/components/select";
 import { Switch } from "@ui/components/switch";
 import { useId, useState } from "react";
+import {
+	ENVIRONMENT_SETTINGS_ENABLED,
+	NEWSLETTER_AUTO_CAPTURE_ANCHOR_ID,
+	navigateToProjectSettingsTab,
+} from "./settings-tab-navigation";
 
 /** The select's value for "no automatic screenshots". */
 const NO_ENVIRONMENT = "none";
@@ -37,8 +43,9 @@ type NewsletterImagesChange =
 	| EnvironmentChange;
 
 /**
- * "Images in highlights", and where screenshots are captured from. Choosing
- * an environment asks for one confirmation: that it shows sample data only,
+ * "Images in highlights", with automatic screenshots nested under it: shown
+ * as soon as images are on, and still off until an environment is chosen.
+ * Choosing one asks for one confirmation: that it shows sample data only,
  * because its screens go out to external readers.
  */
 export function NewsletterImagesSetting({
@@ -64,8 +71,7 @@ export function NewsletterImagesSetting({
 						Images in highlights
 					</p>
 					<p className="break-words text-sm text-muted-foreground">
-						Add up to two images to each highlight. Choose an
-						environment to capture screenshots automatically.
+						Add up to two images to each highlight.
 					</p>
 				</div>
 				<Switch
@@ -79,7 +85,7 @@ export function NewsletterImagesSetting({
 			</div>
 
 			{screenshotsEnabled ? (
-				<CaptureFromPicker
+				<AutomaticScreenshots
 					projectId={projectId}
 					requireApproval={requireApproval}
 					screenshotEnvironmentId={screenshotEnvironmentId}
@@ -88,6 +94,80 @@ export function NewsletterImagesSetting({
 				/>
 			) : null}
 		</div>
+	);
+}
+
+/**
+ * The automatic-capture options under "Images in highlights", and what they
+ * need: an environment Fabric can open and sign in to. Other pages link here
+ * by its anchor, so it takes focus when they do.
+ */
+function AutomaticScreenshots({
+	projectId,
+	requireApproval,
+	screenshotEnvironmentId,
+	disabled,
+	onChange,
+}: {
+	projectId: string;
+	requireApproval: boolean;
+	screenshotEnvironmentId: string | null;
+	disabled: boolean;
+	onChange: (change: EnvironmentChange) => void;
+}) {
+	const headingId = useId();
+	return (
+		<section
+			id={NEWSLETTER_AUTO_CAPTURE_ANCHOR_ID}
+			tabIndex={-1}
+			aria-labelledby={headingId}
+			className="mt-4 scroll-mt-4 space-y-2 rounded-sm border-border border-l-2 pl-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+		>
+			<p id={headingId} className="font-medium text-foreground text-sm">
+				Automatic screenshots
+			</p>
+			<p className="break-words text-muted-foreground text-sm">
+				Fabric can capture a screenshot for each highlight, so you do
+				not have to add every image yourself. Images you add yourself
+				work without this.
+			</p>
+			{ENVIRONMENT_SETTINGS_ENABLED ? (
+				<>
+					<p className="break-words text-muted-foreground text-sm">
+						Automatic capture needs an environment Fabric can open:
+						one that shows sample data only, with its address and a
+						sign-in saved in Settings, Environments. Choose it under
+						Capture from. Until you do, nothing is captured.
+					</p>
+					<Button
+						type="button"
+						variant="link"
+						className="h-auto p-0"
+						onClick={() =>
+							navigateToProjectSettingsTab(
+								projectId,
+								"environments",
+							)
+						}
+					>
+						Set up an environment
+					</Button>
+				</>
+			) : (
+				<p className="break-words text-muted-foreground text-sm">
+					Automatic capture needs an environment Fabric can open, one
+					that shows sample data only. Adding environments is not
+					available here yet, so nothing is captured automatically.
+				</p>
+			)}
+			<CaptureFromPicker
+				projectId={projectId}
+				requireApproval={requireApproval}
+				screenshotEnvironmentId={screenshotEnvironmentId}
+				disabled={disabled}
+				onChange={onChange}
+			/>
+		</section>
 	);
 }
 
@@ -161,7 +241,9 @@ function CaptureFromPicker({
 						))}
 					</SelectContent>
 				</Select>
-				{environments.length === 0 && !environmentsQuery.isLoading ? (
+				{ENVIRONMENT_SETTINGS_ENABLED &&
+				environments.length === 0 &&
+				!environmentsQuery.isLoading ? (
 					<p className="text-muted-foreground text-xs">
 						Add an environment under Settings, Environments to
 						capture screenshots from it.

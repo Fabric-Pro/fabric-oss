@@ -148,6 +148,7 @@ export function ParlumeSessionRow({
 	projectId,
 	session,
 	cost,
+	showSpend,
 	now,
 	expanded,
 	onToggle,
@@ -157,6 +158,8 @@ export function ParlumeSessionRow({
 	projectId: string;
 	session: ParlumeSession;
 	cost: number | undefined;
+	/** Whether this viewer may see spend; the column is left out otherwise. */
+	showSpend: boolean;
 	now: number;
 	expanded: boolean;
 	onToggle: () => void;
@@ -213,14 +216,16 @@ export function ParlumeSessionRow({
 				<TableCell className="py-3.5">
 					<Outcome session={session} />
 				</TableCell>
-				<TableCell className="py-3.5 text-right tabular-nums">
-					{cost === undefined ? "—" : formatCost(cost)}
-					{cost !== undefined && isLiveSession(session) && (
-						<span className="block text-xs text-muted-foreground">
-							so far
-						</span>
-					)}
-				</TableCell>
+				{showSpend && (
+					<TableCell className="py-3.5 text-right tabular-nums">
+						{cost === undefined ? "—" : formatCost(cost)}
+						{cost !== undefined && isLiveSession(session) && (
+							<span className="block text-xs text-muted-foreground">
+								so far
+							</span>
+						)}
+					</TableCell>
+				)}
 				<TableCell className="w-10 py-3.5 pr-6">
 					{expandable && (
 						<ChevronRightIcon
@@ -232,7 +237,11 @@ export function ParlumeSessionRow({
 			</TableRow>
 			{expandable && expanded && (
 				<TableRow className="bg-muted/40 hover:bg-muted/40">
-					<TableCell id={detailsId} colSpan={6} className="p-0">
+					<TableCell
+						id={detailsId}
+						colSpan={showSpend ? 6 : 5}
+						className="p-0"
+					>
 						<SessionDetails
 							projectId={projectId}
 							session={session}

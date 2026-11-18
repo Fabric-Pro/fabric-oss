@@ -11,7 +11,7 @@ Fabric records the time you spend on a project, and optionally on one work item 
 
 ## Log time
 
-![My time on a day: the entry line with a duration, project, activity and work item, More open with a note, the Billable switch and the time zone, and the day's entries grouped by project with their totals](/images/docs/time-tracking/my-time.png)
+![My time on a day: the entry line with a duration, project, activity and work item, the note under it with five recent notes as buttons, More closed, and the day's entries grouped by project with their totals](/images/docs/time-tracking/my-time.png)
 
 <Steps>
   <Step>
@@ -23,7 +23,7 @@ Fabric records the time you spend on a project, and optionally on one work item 
   <Step>
     ### Choose the project, activity and work item
 
-    The project and activity start from your last entry. The work item is optional. The project list shows only the projects you can see and log time on.
+    The project and activity start from your last entry. The work item is optional; the list shows the most recently edited work items first. The project list shows only the projects you can see and log time on.
   </Step>
 
   <Step>
@@ -33,7 +33,9 @@ Fabric records the time you spend on a project, and optionally on one work item 
   </Step>
 </Steps>
 
-Open **More** to add a note, change **Billable**, or pick the entry's time zone. The time zone starts from the one in your profile, or from your browser's when your profile has none. Switch between **Day** and **Week** to see your time across projects; the strip above the entries shows each day's total.
+The **Note** field is always below the entry line. Under it, Fabric offers up to five of your most recent notes on the chosen project, from entries you logged yourself or with the timer. Select one to put its text in the note; you can change it before you press **Add**. Confirmed suggestions do not add to these notes, and nobody else's notes appear.
+
+Open **More** to change **Billable** or pick the entry's time zone. The time zone starts from the one in your profile, or from your browser's when your profile has none. Switch between **Day** and **Week** to see your time across projects; the strip above the entries shows each day's total.
 
 A work item page also shows **My time on this item**, with your own entries on it and a **Start timer** button.
 
@@ -59,9 +61,9 @@ Some errors cannot be overridden: a zero duration, missing start and stop times 
 
 Press **Start timer** on My time or on a work item. The timer is kept by Fabric, not by the browser tab, so every tab and device you are signed in on shows the same timer.
 
-![The timer panel above its corner chip: Running since 09:12 at 1:24:07, with the project, activity, work item and note fields and the Pause, Stop and save, and Discard buttons](/images/docs/time-tracking/timer-panel.png)
+![The timer panel above its corner chip: Running since 09:12 at 1:24:07, with the project, activity, work item and note fields, recent notes as buttons under the note, and the Pause, Stop and save, and Discard buttons](/images/docs/time-tracking/timer-panel.png)
 
-While a timer runs or is paused, a chip sits in the bottom-right corner of every page. Open it to change the project, activity, work item or note, or to:
+While a timer runs or is paused, a chip sits in the bottom-right corner of every page. Open it to change the project, activity, work item or note (your recent notes on the project are offered under the note; selecting one puts its text in the note, which is saved when you leave the field), or to:
 
 - **Pause** and **Resume** the timer;
 - **Stop and save** it as time entries;
@@ -91,6 +93,7 @@ The timer settings on My time turn the widget back on and turn on **Reminders**.
 **Check my activity** on My time collects evidence of your own work from the last few days and proposes entries under **To confirm**:
 
 - meetings you started and had the meeting agent join;
+- Teams meetings in your own calendar that you organized, accepted or marked tentative, when the meeting is linked to a project;
 - test runs, test results and test case work;
 - edits to a work item's description and acceptance criteria;
 - pull requests you authored on github.com.
@@ -106,6 +109,19 @@ Each row covers one project, work item and day. AI writes the note and picks the
 Fabric does not propose work you already logged. An entry on the same project and day covers that day's evidence for its work item, and an entry with no work item covers the whole project for that day.
 
 A suggestion that nobody confirms expires at the end of the following week.
+
+### Calendar meetings
+
+Fabric reads your own calendar through your own Microsoft 365 connection ([Microsoft Teams](/docs/integrations/teams)). It never uses a connection a teammate shared with the organization. A meeting counts when all of these hold:
+
+- you organized it, accepted it or marked it tentative, and it is not cancelled, all-day or shown as free;
+- it is a Teams meeting whose series is [linked to a project](/docs/features/channel-context#teams-meeting-transcripts) you can log time on. A meeting linked to none of your projects, or to more than one, is skipped.
+
+The row takes the meeting's scheduled start and end. Your calendar shows that you were invited and accepted, not that you joined, so check the time before you confirm.
+
+When the meeting agent was in the meeting, the agent's real join and end times are used instead. That also applies when the agent joined a recurring series on its own: every member whose calendar has that meeting as organized, accepted or tentative gets the row.
+
+Fabric keeps only the meeting's start and end times and a one-way fingerprint of its calendar id, so it doesn't propose the meeting again. It never keeps the meeting's title, organizer, attendees or link, and doesn't send them to AI. Without a Microsoft 365 connection, calendar meetings are left out and everything else works as before.
 
 ### Pull requests
 
@@ -159,3 +175,7 @@ Every export is recorded in the audit log as `time.report_exported`, with its sc
 ## Who can log time
 
 You can log time on a project when you can edit it. A project you cannot see answers **Project not found**, and nothing is saved. Guests on a project who are not members of the organization cannot log time.
+
+## Where time tracking is available
+
+Time tracking works in the Fabric app only. The Fabric API for API keys, the Fabric CLI and the MCP tools do not offer it yet.

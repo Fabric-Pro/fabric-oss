@@ -171,7 +171,7 @@ export interface CreateStoryFromProposalParams {
 	 * every story-creation path so kind is determined consistently regardless
 	 * of which caller invoked us. Pass `skipClassifier: true` only when the
 	 * caller has already classified or the kind comes from a deterministic
-	 * source (e.g., convert-type or a test fixture that fixes kind).
+	 * source (e.g., an explicitly chosen Initiative, convert-type, or a test fixture).
 	 */
 	skipClassifier?: boolean;
 
@@ -729,8 +729,8 @@ export async function createStoryFromProposal(
 	//
 	// This is the only point in the system where a TRUSTWORTHY kind and an
 	// explicit prompt id coexist. The api procedure that accepts `promptId`
-	// cannot do this: at that moment no row exists, `params.kind` is a hint the
-	// shipped create dialog deliberately never sends, and the classifier above
+	// cannot do this: at that moment no row exists, `params.kind` is a hint
+	// (the create dialog sends it only for an Initiative), and the classifier above
 	// is licensed to overrule it — so guarding the hint would pass a
 	// FEATURE-bound prompt for an item this function then drafts as a BUG.
 	// `effectiveKind`, never `params.kind`.

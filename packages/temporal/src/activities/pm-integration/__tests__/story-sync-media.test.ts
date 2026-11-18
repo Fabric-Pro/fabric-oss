@@ -7,7 +7,16 @@
  * Not Synced to PM Tools": every transform that runs during a Fabric →
  * PM-tool push.
  */
+import { safeFetchOutboundPinned } from "@repo/utils/url-security";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@repo/utils/url-security", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@repo/utils/url-security")>()),
+	safeFetchOutboundPinned: vi.fn(),
+}));
+
+const fetchPinned = vi.mocked(safeFetchOutboundPinned);
 
 // Mock @repo/storage so the async signed-URL resolver tests don't reach
 // the real S3 client.
@@ -1008,21 +1017,19 @@ describe("appendUnresolvedMediaNotice", () => {
 // =============================================================================
 
 describe("Base64 inline data URLs", () => {
-	const fetchMock = vi.fn();
+	const fetchMock = fetchPinned;
 	beforeEach(() => {
 		fetchMock.mockReset();
-		// Replace global fetch for these tests
-		vi.stubGlobal("fetch", fetchMock);
 	});
 
 	it("fetchImageAsBase64DataUrl returns a data: URL on success", async () => {
 		const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]); // PNG signature
-		fetchMock.mockResolvedValue({
-			ok: true,
-			status: 200,
-			arrayBuffer: async () => bytes.buffer,
-			headers: { get: () => "image/png" },
-		});
+		fetchMock.mockResolvedValue(
+			new Response(bytes, {
+				status: 200,
+				headers: { "content-type": "image/png" },
+			}),
+		);
 		const out = await fetchImageAsBase64DataUrl(
 			"https://example.com/x.png",
 		);
@@ -1032,12 +1039,12 @@ describe("Base64 inline data URLs", () => {
 	});
 
 	it("fetchImageAsBase64DataUrl trims charset/parameters off the content-type", async () => {
-		fetchMock.mockResolvedValue({
-			ok: true,
-			status: 200,
-			arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
-			headers: { get: () => "image/jpeg; charset=binary" },
-		});
+		fetchMock.mockResolvedValue(
+			new Response(new Uint8Array([1, 2, 3]), {
+				status: 200,
+				headers: { "content-type": "image/jpeg; charset=binary" },
+			}),
+		);
 		const out = await fetchImageAsBase64DataUrl(
 			"https://example.com/x.jpg",
 		);
@@ -1045,12 +1052,7 @@ describe("Base64 inline data URLs", () => {
 	});
 
 	it("fetchImageAsBase64DataUrl returns null on non-OK response", async () => {
-		fetchMock.mockResolvedValue({
-			ok: false,
-			status: 404,
-			arrayBuffer: async () => new Uint8Array().buffer,
-			headers: { get: () => null },
-		});
+		fetchMock.mockResolvedValue(new Response(null, { status: 404 }));
 		const out = await fetchImageAsBase64DataUrl(
 			"https://example.com/missing.png",
 		);
@@ -1073,12 +1075,13 @@ describe("Base64 inline data URLs", () => {
 	});
 
 	it("inlineImagesAsBase64DataUrls rewrites each src to a data: URL", async () => {
-		fetchMock.mockResolvedValue({
-			ok: true,
-			status: 200,
-			arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
-			headers: { get: () => "image/png" },
-		});
+		fetchMock.mockImplementation(
+			async () =>
+				new Response(new Uint8Array([1, 2, 3]), {
+					status: 200,
+					headers: { "content-type": "image/png" },
+				}),
+		);
 		const inlined = await inlineImagesAsBase64DataUrls([
 			{ src: "https://a.example/1.png", alt: "a", s3Key: null },
 			{ src: "https://b.example/2.png", alt: "b", s3Key: null },
@@ -1090,12 +1093,7 @@ describe("Base64 inline data URLs", () => {
 	});
 
 	it("inlineImagesAsBase64DataUrls leaves src in place when fetch fails", async () => {
-		fetchMock.mockResolvedValue({
-			ok: false,
-			status: 502,
-			arrayBuffer: async () => new Uint8Array().buffer,
-			headers: { get: () => null },
-		});
+		fetchMock.mockResolvedValue(new Response(null, { status: 502 }));
 		const original = {
 			src: "https://will-fail.example/x.png",
 			alt: "x",
@@ -1106,12 +1104,12 @@ describe("Base64 inline data URLs", () => {
 	});
 
 	it("rewriteInCellImagesToBase64DataUrls inlines <img> tags inside an HTML fragment", async () => {
-		fetchMock.mockResolvedValue({
-			ok: true,
-			status: 200,
-			arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
-			headers: { get: () => "image/png" },
-		});
+		fetchMock.mockResolvedValue(
+			new Response(new Uint8Array([1, 2, 3]), {
+				status: 200,
+				headers: { "content-type": "image/png" },
+			}),
+		);
 		const html =
 			'<td><p>before</p><img src="https://x.example/cell.png" alt="cell"></td>';
 		const out = await rewriteInCellImagesToBase64DataUrls(html);
@@ -1183,20 +1181,18 @@ describe("htmlTableToMarkdownTable inCellLineBreakSeparator", () => {
 // =============================================================================
 
 describe("inlineJiraMarkdownImagesAsBase64DataUrls", () => {
-	const fetchMock = vi.fn();
+	const fetchMock = fetchPinned;
 	beforeEach(() => {
 		fetchMock.mockReset();
-		vi.stubGlobal("fetch", fetchMock);
 	});
 
 	function mockSourceOk() {
-		fetchMock.mockResolvedValue({
-			ok: true,
-			status: 200,
-			arrayBuffer: async () =>
-				new Uint8Array([0x89, 0x50, 0x4e, 0x47]).buffer,
-			headers: { get: () => "image/png" },
-		});
+		fetchMock.mockResolvedValue(
+			new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), {
+				status: 200,
+				headers: { "content-type": "image/png" },
+			}),
+		);
 	}
 
 	it("rewrites markdown ![](url) to a data: URL on success", async () => {
@@ -1235,12 +1231,12 @@ describe("inlineJiraMarkdownImagesAsBase64DataUrls", () => {
 	it("skips data: URLs already inlined", async () => {
 		const md =
 			"![](data:image/png;base64,iVBORw0KGgo=) plus ![](https://example.com/x.png)";
-		fetchMock.mockResolvedValue({
-			ok: true,
-			status: 200,
-			arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
-			headers: { get: () => "image/png" },
-		});
+		fetchMock.mockResolvedValue(
+			new Response(new Uint8Array([1, 2, 3]), {
+				status: 200,
+				headers: { "content-type": "image/png" },
+			}),
+		);
 		const out = await inlineJiraMarkdownImagesAsBase64DataUrls(md);
 		expect(out).toContain("data:image/png;base64,iVBORw0KGgo=");
 		expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -1255,12 +1251,7 @@ describe("inlineJiraMarkdownImagesAsBase64DataUrls", () => {
 	});
 
 	it("leaves URL in place when fetch fails", async () => {
-		fetchMock.mockResolvedValue({
-			ok: false,
-			status: 404,
-			arrayBuffer: async () => new Uint8Array().buffer,
-			headers: { get: () => null },
-		});
+		fetchMock.mockResolvedValue(new Response(null, { status: 404 }));
 		const md = "![](https://will-404.example/x.png)";
 		const out = await inlineJiraMarkdownImagesAsBase64DataUrls(md);
 		expect(out).toBe(md);
@@ -1347,6 +1338,9 @@ describe("resolveFizzyImageEmbeds", () => {
 	beforeEach(() => {
 		fetchMock.mockReset();
 		vi.stubGlobal("fetch", fetchMock);
+		fetchPinned.mockImplementation((url, init) =>
+			fetchMock(String(url), init),
+		);
 	});
 
 	const target = {
@@ -1434,6 +1428,20 @@ describe("resolveFizzyImageEmbeds", () => {
 			'<action-text-attachment sgid="CORRECT-attachable-sgid"></action-text-attachment>',
 		);
 		expect(embeds[0]).not.toContain("WRONG-blob-id-sgid");
+		expect(fetchPinned).toHaveBeenCalledWith(
+			"https://example.com/a.png",
+			expect.anything(),
+			{
+				maxBytes: 10 * 1024 * 1024,
+				allowedContentTypes: [
+					"image/png",
+					"image/jpeg",
+					"image/gif",
+					"image/webp",
+					"image/svg+xml",
+				],
+			},
+		);
 	});
 
 	it("falls back to signed_id when attachable_sgid is absent (back-compat)", async () => {
@@ -1642,6 +1650,9 @@ describe("rewriteFizzyInCellImagesHybrid", () => {
 	beforeEach(() => {
 		fetchMock.mockReset();
 		vi.stubGlobal("fetch", fetchMock);
+		fetchPinned.mockImplementation((url, init) =>
+			fetchMock(String(url), init),
+		);
 	});
 
 	const target = { apiKey: "fake", accountSlug: "/000001" };
@@ -1909,6 +1920,12 @@ describe("uploadJiraImagesAndRewriteDescription", () => {
 	const site = { cloudId: "cid", siteUrl: "https://acme.atlassian.net" };
 
 	beforeEach(() => {
+		fetchPinned.mockImplementation(
+			async () =>
+				new Response(new Uint8Array([1, 2, 3]), {
+					headers: { "content-type": "image/png" },
+				}),
+		);
 		const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
 			if (init?.method === "POST") {
 				return {
@@ -1946,6 +1963,20 @@ describe("uploadJiraImagesAndRewriteDescription", () => {
 		);
 		expect(result.description).not.toContain(
 			"https://signed.example.com/a.png",
+		);
+		expect(fetchPinned).toHaveBeenCalledWith(
+			"https://signed.example.com/a.png",
+			expect.anything(),
+			{
+				maxBytes: 10 * 1024 * 1024,
+				allowedContentTypes: [
+					"image/png",
+					"image/jpeg",
+					"image/gif",
+					"image/webp",
+					"image/svg+xml",
+				],
+			},
 		);
 	});
 

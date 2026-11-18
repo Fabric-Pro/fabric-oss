@@ -32,7 +32,7 @@ import { unwrapPmSyncError } from "../../../workflows/pm-sync-error-unwrap";
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		markPendingProposalFailed: vi.fn(),
-		markPendingProposalApplied: vi.fn(),
+		settleAppliedProposal: vi.fn(),
 		appendAppliedChangeIndexes: vi.fn(),
 		finalizeBacklogUpdateSession: vi.fn(),
 	},
@@ -42,7 +42,7 @@ vi.mock("@repo/database", () => ({
 	appendAppliedChangeIndexes: mocks.appendAppliedChangeIndexes,
 	finalizeBacklogUpdateSession: mocks.finalizeBacklogUpdateSession,
 	getLinkedTeamsChannelsForMonitor: vi.fn(),
-	markPendingProposalApplied: mocks.markPendingProposalApplied,
+	settleAppliedProposal: mocks.settleAppliedProposal,
 	markPendingProposalFailed: mocks.markPendingProposalFailed,
 	recordTeamsChannelFailure: vi.fn(),
 	setTeamsChannelScanPageToken: vi.fn(),
@@ -63,23 +63,25 @@ import { finalizePendingProposalActivity } from "../fetch-channel-cursor";
 
 beforeEach(() => {
 	mocks.markPendingProposalFailed.mockReset();
-	mocks.markPendingProposalApplied.mockReset();
+	mocks.settleAppliedProposal.mockReset();
 	mocks.appendAppliedChangeIndexes.mockReset();
 	mocks.finalizeBacklogUpdateSession.mockReset();
 	mocks.markPendingProposalFailed.mockResolvedValue(undefined);
-	mocks.markPendingProposalApplied.mockResolvedValue(undefined);
+	mocks.settleAppliedProposal.mockResolvedValue(undefined);
 	mocks.appendAppliedChangeIndexes.mockResolvedValue(undefined);
 	mocks.finalizeBacklogUpdateSession.mockResolvedValue(0);
 });
 
 describe("finalizePendingProposalActivity — terminal-state writes", () => {
-	it("APPLIED outcome — calls markPendingProposalApplied and not markPendingProposalFailed", async () => {
+	it("APPLIED outcome — calls settleAppliedProposal and not markPendingProposalFailed", async () => {
 		await finalizePendingProposalActivity({
 			proposalId: "p-1",
 			outcome: "applied",
 			appliedChangeIndexes: [0, 1, 2],
 		});
-		expect(mocks.markPendingProposalApplied).toHaveBeenCalledWith("p-1");
+		expect(mocks.settleAppliedProposal).toHaveBeenCalledWith({
+			proposalId: "p-1",
+		});
 		expect(mocks.markPendingProposalFailed).not.toHaveBeenCalled();
 		expect(mocks.appendAppliedChangeIndexes).toHaveBeenCalledWith(
 			"p-1",
@@ -123,9 +125,9 @@ describe("finalizePendingProposalActivity — terminal-state writes", () => {
 			pmConflictCount: 3,
 		});
 		// Proposal row: APPLIED — a drifted PM push must never fail the proposal.
-		expect(mocks.markPendingProposalApplied).toHaveBeenCalledWith(
-			"p-conflict",
-		);
+		expect(mocks.settleAppliedProposal).toHaveBeenCalledWith({
+			proposalId: "p-conflict",
+		});
 		expect(mocks.markPendingProposalFailed).not.toHaveBeenCalled();
 		// Session: partial, fully-synced applied = 5 - 3 = 2, with the note.
 		const call = mocks.finalizeBacklogUpdateSession.mock.calls[0][0];
@@ -250,7 +252,9 @@ describe("finalizePendingProposalActivity — terminal-state writes", () => {
 			appliedChangeIndexes: [],
 		});
 		expect(mocks.appendAppliedChangeIndexes).not.toHaveBeenCalled();
-		expect(mocks.markPendingProposalApplied).toHaveBeenCalledWith("p-4");
+		expect(mocks.settleAppliedProposal).toHaveBeenCalledWith({
+			proposalId: "p-4",
+		});
 	});
 });
 

@@ -145,6 +145,12 @@ describe("inferDedupFamily", () => {
 		expect(inferDedupFamily({ type: "story" })).toBe("FEATURE");
 		expect(inferDedupFamily({ type: "epic" })).toBe("FEATURE");
 	});
+
+	it("returns INITIATIVE when kindOverride is INITIATIVE, regardless of type", () => {
+		expect(
+			inferDedupFamily({ kindOverride: "INITIATIVE", type: "bug" }),
+		).toBe("INITIATIVE");
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -246,6 +252,20 @@ describe("buildBacklogDedupGuard", () => {
 		expect(
 			guard.findCollision("FEATURE", "Mobile menu broken"),
 		).not.toBeNull();
+	});
+
+	it("does NOT cross INITIATIVE ↔ FEATURE: same title in opposite kind is not a collision", async () => {
+		findManyMock.mockResolvedValue([
+			{
+				id: "story-1",
+				identifier: "12",
+				title: "Enterprise SSO",
+				kind: "FEATURE",
+			},
+		]);
+		const guard = await buildBacklogDedupGuard("proj-1");
+		expect(guard.findCollision("INITIATIVE", "Enterprise SSO")).toBeNull();
+		expect(guard.findCollision("FEATURE", "Enterprise SSO")).not.toBeNull();
 	});
 
 	it("recordCreated catches same-batch duplicates on a subsequent findCollision", async () => {

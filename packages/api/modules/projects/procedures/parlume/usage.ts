@@ -8,8 +8,10 @@ import {
 import { PARLUME_FEATURE_KEY } from "../../lib/parlume-usage";
 import { requireParlumeProject } from "./sessions";
 
+// Spend is for the people who can invite and remove Parlume, which is what
+// incurs it. Project readers still see sessions, requests and suggestions.
 export const getParlumeUsageProcedure = tenantProtectedProcedure
-	.use(requireProjectPermission(Permissions.PROJECT_READ))
+	.use(requireProjectPermission(Permissions.PROJECT_MEMBERS_MANAGE))
 	.route({
 		method: "GET",
 		path: "/projects/{projectId}/parlume/usage",

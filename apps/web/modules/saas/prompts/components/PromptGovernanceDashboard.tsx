@@ -40,7 +40,7 @@ import { LoadFailure } from "./LoadFailure";
 type CatalogEntry = {
 	targetKey: string;
 	documentType: string;
-	storyKind: "FEATURE" | "BUG" | null;
+	storyKind: "FEATURE" | "BUG" | "INITIATIVE" | null;
 	effectiveScope: "SYSTEM" | "ORG" | "USER" | null;
 };
 

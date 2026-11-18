@@ -14,6 +14,7 @@
 import {
 	findPromptAgentTarget,
 	promptDocumentTypeLabel,
+	storyKindLabel,
 } from "@repo/utils/prompt-action-catalog";
 import { orpcClient } from "@shared/lib/orpc-client";
 
@@ -33,7 +34,7 @@ type Confirm = (
 type BoundAction = {
 	targetKey: string;
 	documentType: string;
-	storyKind: "FEATURE" | "BUG" | null;
+	storyKind: "FEATURE" | "BUG" | "INITIATIVE" | null;
 };
 
 /** Labels the current bindings consistently wherever an edit can save a body. */
@@ -41,9 +42,8 @@ function formatBoundActionLabels(actions: readonly BoundAction[]): string[] {
 	return actions.map((action) => {
 		const agent = findPromptAgentTarget(action.targetKey);
 		const docType = promptDocumentTypeLabel(action.documentType);
-		const kind = action.storyKind
-			? ` (${action.storyKind === "FEATURE" ? "Feature" : "Bug"})`
-			: "";
+		const label = storyKindLabel(action.storyKind);
+		const kind = label ? ` (${label})` : "";
 		return agent
 			? `${agent.label} — ${docType}${kind}`
 			: `${action.targetKey} — ${docType}${kind}`;

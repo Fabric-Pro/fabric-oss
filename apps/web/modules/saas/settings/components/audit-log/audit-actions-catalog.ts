@@ -946,6 +946,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"A project member checked or unchecked a Meeting Digest action item. `metadata.completed` carries the new state.",
 	},
 	{
+		key: "project.meeting_digest.confidentiality_changed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.meeting_digest.confidentiality_changed",
+		description:
+			"A project administrator marked a linked meeting series confidential, which keeps its transcripts out of later answers, recaps and agendas, or turned that off. `metadata.confidential` carries the new state.",
+	},
+	{
 		key: "project.meeting.deleted",
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.project.meeting.deleted",

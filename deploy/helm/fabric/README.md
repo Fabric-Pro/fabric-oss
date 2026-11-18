@@ -34,6 +34,14 @@ The chart assumes the following are already installed on the cluster:
 - An IRSA role for the `fabric` ServiceAccount (its ARN goes into
   `serviceAccount.roleArn` — populated by the Terraform module)
 
+Set `MCP_WRAPPER_API_KEY` in the `fabric/<env>/integrations` JSON secret.
+External Secrets Operator copies it into `fabric-app-secrets`, which supplies
+the same key to the wrapper, web, and Temporal worker. When
+`externalSecrets.enabled` is false, include this key in the namespace's
+operator-managed `fabric-app-secrets` Secret. Add the key before upgrading an
+existing release: in production the wrapper answers `/mcp/*` and `/stats` with
+503 until the key is set, while `/health` keeps reporting healthy.
+
 The 14 Fabric-built images (web, temporal-worker, mcp-stdio-wrapper, and the 11
 agents) must be pushed to the ECR registry referenced by `global.imageRegistry`
 and tagged with `global.imageTag`. Qdrant pulls the upstream `qdrant/qdrant`

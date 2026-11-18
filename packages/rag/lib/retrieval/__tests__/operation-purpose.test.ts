@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({ rows: vi.fn() }));
 vi.mock("@repo/database", () => ({
 	logAiUsageAsync: h.rows,
 	db: {},
+	findConfidentialTranscriptContextIds: async () => new Set<string>(),
 	getProjectRagSettings: async () => ({
 		topK: 5,
 		similarityThreshold: 0.1,

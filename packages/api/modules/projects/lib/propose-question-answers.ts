@@ -32,6 +32,7 @@ import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget
 import {
 	getBoundPromptForAgent,
 	type MaturationTenantFilter,
+	type StoryKind,
 	setDecisionMetadata,
 } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -90,9 +91,14 @@ const RecommendationSchema = z.object({
 });
 
 /** Fallback instruction used when no bound recommender prompt is configured. */
-function fallbackInstruction(kind: string): string {
-	const noun = kind === "BUG" ? "bug report" : "feature";
-	return `You are a senior product manager helping resolve the open questions on a ${noun}. For EACH open question, try to answer it using ONLY the provided spec and connected context.
+function fallbackInstruction(kind: StoryKind): string {
+	const noun =
+		kind === "BUG"
+			? "a bug report"
+			: kind === "INITIATIVE"
+				? "an initiative"
+				: "a feature";
+	return `You are a senior product manager helping resolve the open questions on ${noun}. For EACH open question, try to answer it using ONLY the provided spec and connected context.
 
 For each question, return between 1 and ${MAX_OPTIONS} candidate options — only those that are genuinely reasonable, popular, or logical given the context. Target about 2 on average. Do NOT pad to a fixed count.
 
@@ -105,7 +111,7 @@ Rules:
 }
 
 function buildUserPrompt(params: {
-	kind: string;
+	kind: StoryKind;
 	title: string;
 	spec: string;
 	context: string | null;
@@ -114,8 +120,7 @@ function buildUserPrompt(params: {
 	const numbered = params.questions
 		.map((q, i) => `${i + 1}. ${q}`)
 		.join("\n");
-	const noun = params.kind === "BUG" ? "BUG" : "FEATURE";
-	return `${noun}: ${params.title}
+	return `${params.kind}: ${params.title}
 
 SPEC:
 ${params.spec}
@@ -136,7 +141,7 @@ export interface ProposeQuestionAnswersParams {
 		id: string;
 		projectId: string;
 		title: string;
-		kind: string;
+		kind: StoryKind;
 		description: string | null;
 		acceptanceCriteria: string | null;
 	};
@@ -214,7 +219,7 @@ export async function proposeQuestionAnswers({
 		const boundPrompt = await getBoundPromptForAgent({
 			agentName,
 			documentType: "ANSWER_RECOMMENDATIONS",
-			storyKind: feature.kind as never,
+			storyKind: feature.kind,
 			userId: tenantFilter.userId,
 			organizationId: tenantFilter.organizationId ?? undefined,
 		});

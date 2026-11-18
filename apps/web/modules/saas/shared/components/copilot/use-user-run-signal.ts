@@ -12,7 +12,7 @@ const PENDING_RUN_START_TIMEOUT_MS = 15_000;
  * `messages` on every mount, so a message-count heuristic false-positives
  * on every page load of a thread that already has history. This hook gates
  * the "AI is generating…" pill on an explicit mark supplied by the send
- * surfaces (chat input `onSend`, programmatic `appendMessage` triggers,
+ * surfaces (chat input `onSend`, programmatic `sendMessage` triggers,
  * suggestion chips, and message regeneration) instead.
  *
  * The mark is cleared ONLY on the true→false transition of `isLoading`
@@ -23,12 +23,12 @@ const PENDING_RUN_START_TIMEOUT_MS = 15_000;
  * run-start gap and the pill would never show.
  *
  * A mark that is set but never turns into a run (`onBeforeSend` throws,
- * `onSend`/`appendMessage` rejects before streaming starts, or any other
+ * `onSend`/`sendMessage` rejects before streaming starts, or any other
  * unmarked failure between mark and run-start) would otherwise stay stuck
  * "on" and get surfaced as a false pill by a later, unrelated handshake.
  * Callers should clear deterministically at known failure points via
  * `clearUserRunMark` (see `CopilotSidebarInput`'s `onUserSendFailed` and
- * the `catch` blocks around programmatic `appendMessage` calls), but as a
+ * the `catch` blocks around programmatic `sendMessage` calls), but as a
  * self-healing backstop for paths that can't be wrapped in a try/catch
  * (e.g. CopilotKit-internal send failures on the suggestion/regenerate
  * entry points), a mark that never transitions `isLoading` to `true` within

@@ -1254,7 +1254,7 @@ describe("fabric_list_features — work-item kind", () => {
 		});
 	});
 
-	it("declares an optional FEATURE/BUG filter", () => {
+	it("declares an optional FEATURE/BUG/INITIATIVE filter", () => {
 		const definition = PLATFORM_TOOL_DEFINITIONS.find(
 			(t) => t.name === "fabric_list_features",
 		);
@@ -1262,7 +1262,11 @@ describe("fabric_list_features — work-item kind", () => {
 			properties: Record<string, { enum?: string[] }>;
 			required: string[];
 		};
-		expect(schema.properties.kind.enum).toEqual(["FEATURE", "BUG"]);
+		expect(schema.properties.kind.enum).toEqual([
+			"FEATURE",
+			"BUG",
+			"INITIATIVE",
+		]);
 		expect(schema.required).not.toContain("kind");
 	});
 
@@ -1310,6 +1314,20 @@ describe("fabric_list_features — work-item kind", () => {
 		);
 		expect(mocks.listStorySummaries).toHaveBeenCalledWith(
 			expect.objectContaining({ projectId: "proj-1", kind: "BUG" }),
+		);
+	});
+
+	it("accepts kind: 'INITIATIVE' and passes it to the summary query", async () => {
+		await executePlatformTool(
+			"fabric_list_features",
+			{ projectId: "proj-1", kind: "INITIATIVE" },
+			session,
+		);
+		expect(mocks.listStorySummaries).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "proj-1",
+				kind: "INITIATIVE",
+			}),
 		);
 	});
 

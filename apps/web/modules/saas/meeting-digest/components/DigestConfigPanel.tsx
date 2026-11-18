@@ -14,15 +14,22 @@ import type {
 	ParlumeAutoJoinSettings,
 	ParlumeAutoJoinState,
 } from "../hooks/use-meeting-digest";
+import { ConfidentialSeriesSwitch } from "./ConfidentialSeriesSwitch";
 import { ParlumeAutoJoinControl } from "./ParlumeAutoJoinControl";
 
 export interface ConfigMeeting {
 	linkedMeetingId: string;
 	subject: string | null;
 	includedInDigest: boolean;
+	confidential?: boolean;
 	// Date over the wire may arrive serialized — parse defensively when rendering.
 	lastMeetingDate: Date | string | null;
 	parlumeAutoJoin?: ParlumeAutoJoinState | null;
+}
+
+export interface ConfigPanelConfidential {
+	pendingIds: Set<string>;
+	onChange: (linkedMeetingId: string, confidential: boolean) => void;
 }
 
 /** Present only while both the Parlume and meeting agenda flags are on. */
@@ -42,6 +49,7 @@ export function DigestConfigPanel({
 	onAddMeeting,
 	addMeetingAction,
 	onUnlink,
+	confidential,
 	autoJoin,
 }: {
 	meetings: ConfigMeeting[];
@@ -59,6 +67,7 @@ export function DigestConfigPanel({
 	 */
 	addMeetingAction?: ReactNode;
 	onUnlink: (meeting: ConfigMeeting) => void;
+	confidential?: ConfigPanelConfidential;
 	autoJoin?: ConfigPanelAutoJoin;
 }) {
 	return (
@@ -146,6 +155,22 @@ export function DigestConfigPanel({
 									</DropdownMenu>
 								</div>
 							</div>
+							{confidential && (
+								<ConfidentialSeriesSwitch
+									linkedMeetingId={m.linkedMeetingId}
+									subject={m.subject}
+									checked={m.confidential ?? false}
+									pending={confidential.pendingIds.has(
+										m.linkedMeetingId,
+									)}
+									onChange={(value) =>
+										confidential.onChange(
+											m.linkedMeetingId,
+											value,
+										)
+									}
+								/>
+							)}
 							{autoJoin && (
 								<ParlumeAutoJoinControl
 									linkedMeetingId={m.linkedMeetingId}

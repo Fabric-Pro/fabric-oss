@@ -74,7 +74,7 @@ const startSessionInput = projectInput
 		suggestionsEnabled: z.boolean().default(true),
 		suggestionAudience: z
 			.enum(PARLUME_SUGGESTION_AUDIENCES)
-			.default("MEETING"),
+			.default("TEAM"),
 	})
 	.superRefine((input, context) => {
 		const agentKind = input.agentKind ?? TEMPLATE_INSTANCE_KIND;

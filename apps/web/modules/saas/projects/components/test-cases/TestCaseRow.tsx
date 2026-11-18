@@ -639,7 +639,12 @@ function CoverageLink({
 	const t = useTranslations("projects.testCases");
 	const { basePath } = useOrganizationContext();
 
-	const kind = story.kind === "BUG" ? t("row.kindBug") : t("row.kindFeature");
+	const kind =
+		story.kind === "BUG"
+			? t("row.kindBug")
+			: story.kind === "INITIATIVE"
+				? t("row.kindInitiative")
+				: t("row.kindFeature");
 
 	// The column header already says "Covers", and the kind + extra-link count
 	// are in the accessible name rather than on screen — at this density the row

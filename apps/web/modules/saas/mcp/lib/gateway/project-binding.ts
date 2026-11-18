@@ -182,6 +182,18 @@ export function pinnedProjectId(
 }
 
 /**
+ * The one project a workflow or page command is held to: the page's for a
+ * page call, else the pinned grant's. Undefined for an organization-wide
+ * session. Workflows and pages are named by id, not by project, so the
+ * commands themselves enforce it.
+ */
+export function sessionProjectRestriction(
+	session: Pick<GatewaySession, "pinnedProjectId" | "pageProjectId">,
+): string | undefined {
+	return session.pageProjectId ?? pinnedProjectId(session) ?? undefined;
+}
+
+/**
  * Whether this session may act on `projectId`. An organization-wide session may
  * as far as its other checks say; a bound or pinned one only on its own project.
  */
@@ -203,7 +215,7 @@ export function sessionMayReachProject(
 }
 
 /**
- * What a pinned service session may call: the 38 portal tools the runtime is
+ * What a pinned service session may call: the portal tools the runtime is
  * offered, and the families it always held, none of which a project's grant
  * takes away. Everything else, the authority tools, the memory tools and the
  * page-only tools included, is refused here whatever scopes the session holds.

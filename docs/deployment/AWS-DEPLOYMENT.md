@@ -328,7 +328,7 @@ Redirect URIs follow the pattern `<protocol>://<host>/api/auth/callback/<provide
 
 ### 3.4 `integrations`
 
-LangSmith, Letta, LangGraph Cloud, Vercel AI Gateway, etc. All optional in MVP:
+Set a non-empty `MCP_WRAPPER_API_KEY` for the production wrapper and its callers. The other integration keys are optional.
 
 ```bash
 aws secretsmanager put-secret-value \
@@ -338,7 +338,8 @@ aws secretsmanager put-secret-value \
     "LETTA_API_KEY":      "",
     "LANGGRAPH_API_KEY":  "",
     "FABRIC_AI_API_KEY":  "",
-    "FABRIC_SERVER_API_KEY": ""
+    "FABRIC_SERVER_API_KEY": "",
+    "MCP_WRAPPER_API_KEY": "<secret>"
   }'
 ```
 

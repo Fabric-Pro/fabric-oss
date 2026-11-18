@@ -129,6 +129,7 @@ import {
 	loadRoutingCorpus,
 	type ReadyRoutingCorpus,
 	resolveRoutingModels,
+	routingShortlist,
 } from "../backlog-routing-core";
 
 const BASE = {
@@ -395,6 +396,37 @@ describe("resolveRoutingModels", () => {
 		await expect(resolveRoutingModels(BASE)).rejects.toThrow(
 			"no COMPLEX model configured",
 		);
+	});
+});
+
+describe("routingShortlist", () => {
+	it("keeps the tickets over the shared floor, strongest first, with their rows", () => {
+		const shortlist = routingShortlist([1, 0], {
+			candidateVectors: [
+				{ id: TICKET_A.id, identifier: "F-1", embedding: [0.6, 0.8] },
+				{ id: TICKET_B.id, identifier: "F-2", embedding: [1, 0] },
+				{ id: "story-far", identifier: "F-3", embedding: [0, 1] },
+			],
+			storyById: new Map([
+				[TICKET_A.id, TICKET_A],
+				[TICKET_B.id, TICKET_B],
+			]),
+		});
+
+		expect(shortlist).toEqual([
+			{
+				storyId: "story-b",
+				identifier: "F-2",
+				title: "Rate limit sign-in",
+				similarity: 1,
+			},
+			{
+				storyId: "story-a",
+				identifier: "F-1",
+				title: "Export throttling",
+				similarity: expect.closeTo(0.6, 5),
+			},
+		]);
 	});
 });
 

@@ -58,7 +58,7 @@ const getBoundPromptProcedure = tenantProtectedProcedure
 			storyKind: StoryKindSchema.nullable()
 				.optional()
 				.describe(
-					"Kind discriminator for stage bindings. Pass FEATURE/BUG to scope to that kind's prompt; pass null for non-stage bindings; omit to match any kind (legacy behavior).",
+					"Kind discriminator for stage bindings. Pass FEATURE, BUG or INITIATIVE to scope to that kind's prompt; pass null for non-stage bindings; omit to match any kind (legacy behavior).",
 				),
 			organizationId: z
 				.string()
@@ -141,7 +141,7 @@ const listAvailablePromptsProcedure = tenantProtectedProcedure
 			storyKind: StoryKindSchema.nullable()
 				.optional()
 				.describe(
-					"Kind discriminator for stage bindings. Pass FEATURE/BUG to scope to that kind's prompts; pass null for non-stage bindings; omit to return all kinds.",
+					"Kind discriminator for stage bindings. Pass FEATURE, BUG or INITIATIVE to scope to that kind's prompts; pass null for non-stage bindings; omit to return all kinds.",
 				),
 			organizationId: z
 				.string()

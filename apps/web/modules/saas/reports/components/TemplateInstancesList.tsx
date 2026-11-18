@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffectiveOrganizationId } from "@saas/organizations/hooks";
+import { useDeleteReportInstance } from "@saas/reports/hooks/use-delete-report-instance";
 import { createReportExecutionRequests } from "@saas/reports/lib/report-execution-request";
 import { Pagination } from "@saas/shared/components/Pagination";
 import { Spinner } from "@shared/components/Spinner";
@@ -98,17 +99,7 @@ export function TemplateInstancesList({
 		}),
 	);
 
-	const deleteMutation = useMutation(
-		orpc.reports.instances.delete.mutationOptions({
-			onSuccess: () => {
-				toast.success("Instance deleted");
-				refetch();
-			},
-			onError: (error) => {
-				toast.error(error.message || "Failed to delete");
-			},
-		}),
-	);
+	const deleteMutation = useDeleteReportInstance();
 
 	const instances = data?.instances ?? [];
 	useEffect(() => {

@@ -65,6 +65,14 @@ export function buildProjectKnowledgeSearchQuery(
 		CASE WHEN jsonb_typeof(c.metadata->'sourceTitle') = 'string' THEN NULLIF(c.metadata->>'sourceTitle', '') END,
 		CASE WHEN jsonb_typeof(c.metadata->'filename') = 'string' THEN NULLIF(c.metadata->>'filename', '') END,
 		NULLIF(c."originalFilename", ''), 'Untitled context')`;
+	// A confidential series' transcripts, synced or from Parlume, stay out of
+	// later answers.
+	const notConfidentialTranscript = Prisma.sql`AND NOT EXISTS (SELECT 1 FROM project_meeting_transcript t
+     JOIN project_linked_meeting l ON l.id = t."linkedMeetingId"
+     WHERE t."contextId" = c.id AND l.confidential)
+    AND NOT EXISTS (SELECT 1 FROM parlume_meeting_session s
+     JOIN project_linked_meeting l ON l.id = s."linkedMeetingId"
+     WHERE s."transcriptContextId" = c.id AND l.confidential)`;
 	const continuation = after
 		? Prisma.sql`AND (rank < ${after.rank}::integer OR
     (rank = ${after.rank}::integer AND ("sourceKind" COLLATE "C", "sourceId" COLLATE "C") >
@@ -125,6 +133,7 @@ export function buildProjectKnowledgeSearchQuery(
    NULL, c.type::text, c."sourceUrl", c.content
    FROM project_context c WHERE c."projectId" = ${projectId} AND c."organizationId" = ${organizationId}
     AND NOT c."indexingExcluded"
+    ${notConfidentialTranscript}
     AND c.type::text NOT IN ('CODE_FILE', 'CODE_FILE_SUMMARY')
     AND (c.type::text <> 'LINK' OR c."urlScope"::text IS DISTINCT FROM 'PATH_PREFIX')
     AND NOT (c.type::text = 'INTEGRATION' AND EXISTS

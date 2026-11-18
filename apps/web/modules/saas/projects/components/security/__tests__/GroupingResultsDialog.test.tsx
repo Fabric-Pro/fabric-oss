@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -117,12 +117,25 @@ beforeAll(() => {
 	HTMLElement.prototype.scrollIntoView ??= () => {};
 });
 
-/** Open work items returned as reattach targets by the `stories.board` query. */
+/**
+ * Open work items returned as reattach targets by the `stories.board` query,
+ * in backlog order. The target was edited more recently, so it ranks first.
+ */
 const STORY_TARGETS = [
+	{
+		id: "story-older",
+		identifier: "70",
+		title: "Older open ticket",
+		createdAt: new Date("2026-10-01T00:00:00Z"),
+		lastEditedAt: null,
+		status: { isFinal: false },
+	},
 	{
 		id: "story-target",
 		identifier: "77",
 		title: "Existing accessibility ticket",
+		createdAt: new Date("2026-09-01T00:00:00Z"),
+		lastEditedAt: new Date("2026-11-01T00:00:00Z"),
 		status: { isFinal: false },
 	},
 ];
@@ -571,6 +584,12 @@ describe("GroupingResultsDialog — results mode", () => {
 
 		// Open the inline picker for the row.
 		await user.click(screen.getByRole("button", { name: /reattach/i }));
+		// Most recently edited first, whatever the backlog order.
+		expect(
+			within(screen.getByRole("combobox", { name: /target ticket/i }))
+				.getAllByRole("option")
+				.map((option) => option.getAttribute("value")),
+		).toEqual(["", "story-target", "story-older"]);
 		// Pick the target ticket (the mocked open story) and confirm.
 		await user.selectOptions(
 			screen.getByRole("combobox", { name: /target ticket/i }),

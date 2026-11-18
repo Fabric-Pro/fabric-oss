@@ -1,5 +1,6 @@
 "use client";
 
+import type { StoryKind } from "@repo/database";
 import { Switch } from "@ui/components/switch";
 import {
 	Tooltip,
@@ -12,20 +13,20 @@ import { Loader2Icon, SparklesIcon } from "lucide-react";
 export interface FeatureReadinessSignals {
 	/** True if Clean Spec / Description is present and non-empty */
 	hasFullSpec: boolean;
-	/** True if Acceptance Criteria section is present and non-empty */
+	/** True if Acceptance Criteria section is present and non-empty (Initiatives: Strategic Goals) */
 	hasAcceptanceCriteria: boolean;
 	/** Count of PM/BA blocking gaps (0 means no blocking gaps) */
 	blockingGapCount: number;
 	/** True if the spec has been recently updated / refreshed (within 15 days) */
 	isSpecRecentlyUpdated?: boolean;
-	/** True if Functional Requirements (FRs) are defined (for FEATUREs) */
+	/** True if Functional Requirements (FRs) are defined (for FEATUREs; Initiatives: Child Feature Breakdown) */
 	hasFunctionalRequirements: boolean;
 	/** Number of resolved question threads */
 	resolvedQuestionsCount: number;
 	/** Number of open question threads */
 	openQuestionsCount: number;
-	/** Kind of work item: "FEATURE" or "BUG" */
-	storyKind?: "FEATURE" | "BUG";
+	/** Kind of work item */
+	storyKind?: StoryKind;
 	/** True if Expected Result section/keywords are present (for BUGs) */
 	hasExpectedResult?: boolean;
 	/** True if Actual Result section/keywords are present (for BUGs) */
@@ -41,6 +42,10 @@ export interface AiReadinessData {
 	strengths: string[];
 	gaps: string[];
 }
+
+/** Initiatives score these in place of Acceptance Criteria / Functional Requirements. */
+export const INITIATIVE_GOALS_PATTERN = /strategic\s+goals/i;
+export const INITIATIVE_BREAKDOWN_PATTERN = /child\s+feature\s+breakdown/i;
 
 /**
  * Calculates feature or bug readiness percentage using a 50/50 Additive Model (Max 100%).
@@ -197,6 +202,7 @@ export function ReadinessBar({
 
 	const labelText = activeAiMode ? "AI Readiness" : "Spec Readiness";
 	const isBug = signals.storyKind === "BUG";
+	const isInitiative = signals.storyKind === "INITIATIVE";
 
 	return (
 		<div className={cn("flex items-center gap-2", className)}>
@@ -343,7 +349,9 @@ export function ReadinessBar({
 									<span>
 										{isBug
 											? "Fix Acceptance Criteria present (+10%)"
-											: "Acceptance Criteria present (+10%)"}
+											: isInitiative
+												? "Strategic Goals present (+10%)"
+												: "Acceptance Criteria present (+10%)"}
 									</span>
 								</li>
 
@@ -396,8 +404,9 @@ export function ReadinessBar({
 												: "◦"}
 										</span>
 										<span>
-											Functional Requirements present
-											(+10%)
+											{isInitiative
+												? "Child Feature Breakdown present (+10%)"
+												: "Functional Requirements present (+10%)"}
 										</span>
 									</li>
 								)}
@@ -514,8 +523,9 @@ export function ReadinessBar({
 						Switch to AI Readiness
 					</div>
 					<div className="mt-1 text-muted-foreground">
-						Analyzes feature clarity, requirement completeness, and
-						open questions to calculate the readiness score.
+						Analyzes {isInitiative ? "initiative" : "feature"}{" "}
+						clarity, requirement completeness, and open questions to
+						calculate the readiness score.
 					</div>
 					<div className="mt-1.5 font-medium text-highlight">
 						Uses AI tokens / API credits.

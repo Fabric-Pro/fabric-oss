@@ -7,6 +7,7 @@ import {
 /** Authentication test only; each project binding separately verifies resource access. */
 export async function testDatabricksPlatformConnection(
 	credentials: Record<string, string>,
+	fetchImpl: typeof fetch,
 ) {
 	try {
 		const host = validateDatabricksWorkspaceOrigin(
@@ -22,7 +23,8 @@ export async function testDatabricksPlatformConnection(
 			};
 		const client = new DatabricksApiClient({
 			host,
-			tokenProvider: createOAuthM2MProvider(host, id, secret),
+			tokenProvider: createOAuthM2MProvider(host, id, secret, fetchImpl),
+			fetchImpl,
 			maxRetries: 0,
 		});
 		await client.request("GET", "/api/2.0/preview/scim/v2/Me", undefined, {

@@ -1,7 +1,6 @@
 import { getAIModelWithMetadata, getAISpeechModel } from "@repo/ai";
 import { db } from "@repo/database";
 import { collectMcpToolsActivity } from "./direct-chat/mcp-tools";
-import { generateMemoryContextActivity } from "./direct-chat/memory-context";
 import { loadParlumeAgent } from "./parlume-agent";
 import { parlumeActivityLog } from "./parlume-log";
 import { loadFabricPlatformTools } from "./shared/fabric-platform-mcp";
@@ -12,8 +11,8 @@ import { TurnTimings } from "./shared/turn-timing";
  * admitted, so the first question does not pay for them: the agent and its
  * tool configuration are read from the database, the model and the speech
  * route are resolved (provider keys read and decrypted), the lazily loaded
- * project-context module is imported, the inviter's memory is searched once,
- * and Fabric's own tools are listed from Fabric MCP. It reads only. Nothing is
+ * project-context module is imported, and Fabric's own tools are listed from
+ * Fabric MCP. It reads only. Nothing is
  * cached for the turn to reuse, because a turn must see the agent's
  * configuration as it is when the question is asked.
  *
@@ -103,15 +102,6 @@ export async function warmParlumeSession(params: {
 				step(
 					"projectBlockImportMs",
 					() => import("./shared/project-context-block"),
-				),
-				// One embedding and one search for a fixed query: the inviter's
-				// memory search took two seconds on a meeting's first question.
-				step("memoryMs", () =>
-					generateMemoryContextActivity(
-						"meeting",
-						session.userId,
-						session.organizationId ?? undefined,
-					),
 				),
 			]);
 		}

@@ -15,11 +15,13 @@ interface FakeTranscriptRow {
 	insightsExtractedAt: Date | null;
 	projectId: string;
 	organizationId: string | null;
+	confidential?: boolean;
 }
 
 interface FakeWhere {
 	projectId: string;
 	project: { organizationId: string | null };
+	linkedMeeting: { confidential: false };
 	OR: Array<
 		| { syncedAt: { gte: Date; lte: Date } }
 		| { insightsExtractedAt: { gte: Date; lte: Date } }
@@ -49,6 +51,12 @@ const { seededRowsRef, findManyMock } = vi.hoisted(() => {
 					return false;
 				}
 				if (row.organizationId !== where.project.organizationId) {
+					return false;
+				}
+				if (
+					(row.confidential ?? false) !==
+					where.linkedMeeting.confidential
+				) {
 					return false;
 				}
 				return where.OR.some((clause) => {
@@ -131,6 +139,17 @@ beforeEach(() => {
 });
 
 describe("collectTranscripts", () => {
+	it("never collects a transcript of a confidential series", async () => {
+		seededRowsRef.current = [
+			row({ id: "t-open" }),
+			row({ id: "t-confidential", confidential: true }),
+		];
+
+		const result = await collectTranscripts(baseInput());
+
+		expect(result.items.map((i) => i.id)).toEqual(["t-open"]);
+		expect(result.qualifyingCount).toBe(1);
+	});
 	it("excludes transcripts with a null or whitespace-only summary from qualifyingCount", async () => {
 		seededRowsRef.current = [
 			row({ id: "t-1", summary: null }),

@@ -231,3 +231,25 @@ describe("generateMaturationSummary — usage attribution", () => {
 		);
 	});
 });
+
+describe("generateMaturationSummary — kind-scoped prompt resolution", () => {
+	it("resolves the summary prompt with storyKind INITIATIVE when the feature is an Initiative", async () => {
+		mocks.generateObject.mockResolvedValue({
+			object: { summary: "A concise summary." },
+		});
+		mocks.getProjectFunctionTagClause.mockResolvedValue("");
+
+		await generateMaturationSummary({
+			feature: { ...feature(), kind: "INITIATIVE" },
+			tenantFilter,
+		});
+
+		expect(mocks.getBoundPromptForAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				agentName: "maturation_summary",
+				documentType: "GENERAL",
+				storyKind: "INITIATIVE",
+			}),
+		);
+	});
+});

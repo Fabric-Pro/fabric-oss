@@ -78,6 +78,7 @@ export async function postParlumeSeriesRecap(input: {
 				linkedMeetingId: true,
 				suggestionsEnabled: true,
 				suggestionAudience: true,
+				linkedMeeting: { select: { confidential: true } },
 			},
 		});
 		// The "Suggestions and recap" switch is the consent for Parlume's
@@ -88,6 +89,10 @@ export async function postParlumeSeriesRecap(input: {
 		}
 		if (!session?.linkedMeetingId) {
 			skip("not_series");
+			return;
+		}
+		if (session.linkedMeeting?.confidential) {
+			skip("confidential");
 			return;
 		}
 		if (session.status !== "ACTIVE") {

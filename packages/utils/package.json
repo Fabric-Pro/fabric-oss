@@ -792,6 +792,11 @@
 			"types": "./lib/csv.ts",
 			"import": "./lib/csv.ts",
 			"default": "./lib/csv.ts"
+		},
+		"./proposal-update-summary": {
+			"types": "./lib/proposal-update-summary.ts",
+			"import": "./lib/proposal-update-summary.ts",
+			"default": "./lib/proposal-update-summary.ts"
 		}
 	},
 	"name": "@repo/utils",

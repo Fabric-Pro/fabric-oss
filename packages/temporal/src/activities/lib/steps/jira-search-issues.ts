@@ -1,5 +1,6 @@
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { fetchProviderStepOutbound } from "./outbound-request";
 import { interpolateTemplate } from "./utils";
 
 export async function executeJiraSearchIssuesStep(
@@ -40,7 +41,7 @@ export async function executeJiraSearchIssuesStep(
 	).toString("base64");
 
 	try {
-		const response = await fetch(
+		const response = await fetchProviderStepOutbound(
 			`https://${domain}/rest/api/3/search/jql`,
 			{
 				method: "POST",

@@ -201,10 +201,25 @@ Migration does not imply identical admission or lifetime behavior:
   20-runs/minute budget, a 240-second runtime limit versus the legacy 800-second
   allowance, restricted forwarded input, no remote images, and no conversation
   persistence. These are rollout decisions to review, not hidden parity claims.
+- Turning a Direct, Orchestrator or Research flag off is not a clean cut for
+  a turn that is already running on the runtime. A page opened afterwards
+  uses the legacy route, which never reconnects to that turn, so an answer
+  that ended while nobody watched is not written into the conversation.
+  The Orchestrator and Research engines also refuse a reconnect and a Stop
+  once their flag is off, so a page still open on the runtime cannot follow
+  or stop the turn after its response window ends. The Direct engine refuses
+  only a new turn once its flag is off; it still reconnects to, saves and
+  stops a turn that started before. A page mounted while a flag was on
+  keeps its transport, so its next new turn is refused `FEATURE_DISABLED`
+  until the page is reloaded. Finish or stop running turns before turning
+  these flags off.
 - Closing a runtime proxy propagates cancellation to Fabric's owned request.
   It does not prove an already-submitted remote graph/provider has stopped.
-- EOF without a terminal outcome is incomplete. Request-scoped engines do not
-  acquire Temporal's durable replay/idempotency merely by using the same SDK.
+- EOF without a terminal outcome is incomplete. A stopped turn ends with
+  `RUN_FINISHED` outcome `cancelled` on every engine, the request-scoped ones
+  included, so a Stop is never recorded as a completed answer. Request-scoped
+  engines do not acquire Temporal's durable replay/idempotency merely by using
+  the same SDK.
 
 ## Proposed phased follow-on plan
 
@@ -220,6 +235,59 @@ custom views and builds on already delivered adapters.
 | 3. Validate and select rollout | For each selected surface, exercise success, refusal, model identity, interruption, Stop, reset/reopen, billing/audit, and relevant resource permissions. Explicitly accept the documented Analyst differences before broad rollout. | Focused code and hosted evidence exist; QA activation is not permanent rollout. Approximately 1–2 days for a bounded rollout decision and its targeted verification, excluding external approvals. |
 | 4. Pilot API consistency | If approved as follow-on work, use one representative Editing Assistant consumer to consolidate mixed hook adapters. Preserve real-provider tool registration, diffs, review, collaboration, and save outcomes. | Proposed optional pilot, 2–4 days. Expand only if it removes maintenance work without changing domain behavior. |
 | 5. Reconsider deferred views | Revisit System-map Atlas or dedicated workflow templates only with a concrete product benefit and their own admission/ownership assessment. Retire rollback-only Nexus through its existing consolidation lifecycle. | Excluded from the recommended immediate migration. No current delivery estimate is committed beyond the assessment ranges above. |
+
+### Phase 4 pilot: story grooming Editing Assistant
+
+The pilot uses the story grooming Editing Assistant
+([StoryWorkspace](../../apps/web/modules/saas/projects/components/stories/StoryWorkspace.tsx)).
+Of the two project editors, it was the only one that still started turns with
+the deprecated v1 message API: `appendMessage(new TextMessage({ role:
+MessageRole.User }))` from `@copilotkit/runtime-client-gql`. The project
+document editor has no such call.
+
+| Surface | Before | After the pilot |
+| --- | --- | --- |
+| Programmatic turns (Update Full Spec, stage Enhance) | v1 `appendMessage` with a GQL `TextMessage` | AG-UI `sendMessage({ id, role: "user", content })` through the shared [session actions](../../apps/web/modules/saas/shared/components/copilot/CopilotChatSessionProvider.tsx) |
+| Session actions | `appendMessage`, `setMessages` | `sendMessage`, `setMessages` |
+| Page state and steps | v2 `useAgent` through `usePageAgent` | Unchanged |
+| Page context, `confirm_changes` approval | v1 `useCopilotReadable`, `useCopilotAction` with `renderAndWaitForResponse` | Unchanged |
+
+In 1.80.0, `appendMessage` converts the `TextMessage` to an AG-UI user message
+with the same id and content and then calls `sendMessage`. The pilot therefore
+keeps the run lifecycle: the same submit callback, the same message append, the
+same run, and the same wait for the whole run before the in-flight latch is
+released. The story editor no longer imports `@copilotkit/runtime-client-gql`.
+The registered document generator still uses `TextMessage` to restore history
+through `setMessages`; the pilot does not change it.
+
+The approval tool stays on `useCopilotAction`. Moving `confirm_changes` to v2
+`useHumanInTheLoop` changes how the review card waits for and returns its
+answer, so it needs its own baseline of accept, reject, stale proposals, write
+locks and the save outcome first. That is the next step if the pilot is
+extended. Page context can move to v2 `useAgentContext` at the same time.
+
+Pilot evidence (shared staging, revision `4ed6f2ffac`, a synthetic story in a
+scratch project, 2026-11-18):
+
+| Case | Result |
+| --- | --- |
+| Update Full Spec, assistant panel open and closed | The user message appears and the run starts; the review card appears with `confirm_changes` pending. |
+| Reject | The draft is discarded and the stored text is not the proposal. The reject handler then saved the pre-run text, because it treats restored text that differs from the last save as unsaved (see below). |
+| Approve, then reload | A version snapshot is written first; the approved text is stored and is still shown after a reload. |
+| Stage Enhance | Not reachable on staging: Maturation V2 hides the Enhance button. Covered by the component tests only. |
+
+Two findings are not caused by the pilot. First, a Reject could save the
+story. The editor compared the restored text with the stored markdown, which
+it does not always reproduce byte for byte, so an untouched story read as
+unsaved and was saved when the editor closed. On an older story whose
+description still contains its acceptance criteria while the
+acceptance-criteria column also holds them, that save moved the section into
+the column, which then held the criteria twice. A run that starts on a clean
+editor now records the editor's own text as the saved text, so a Reject
+without a pending-decisions splice no longer saves (`lastSavedAtRunStart`).
+A splice still saves at once, as it must to keep the answered decision.
+Second, opening such a story shows unsaved changes before any edit; this is
+tracked separately.
 
 ### Risks, mitigations, and acceptance gates
 

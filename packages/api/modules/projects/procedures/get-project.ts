@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/client";
 import {
+	countProjectInitiatives,
 	getProjectById,
 	getProjectRole,
 	hasProjectAccess,
@@ -110,6 +111,7 @@ export const getProjectProcedure = tenantProtectedProcedure
 			aiRecommendedLifecycleEnabled,
 			providerAvailable,
 			activePmSyncRow,
+			initiativeCount,
 		] = await Promise.all([
 			resolveEffectiveProjectPermissions(input.id, user.id),
 			hasProjectAccess(input.id, user.id),
@@ -126,6 +128,9 @@ export const getProjectProcedure = tenantProtectedProcedure
 				organizationId: projectOrganizationId,
 			}),
 			findActivePmStorySyncOrNull(project.id),
+			project.initiativesEnabled
+				? countProjectInitiatives(project.id)
+				: 0,
 		]);
 		const canPublish = hasPermission(
 			effective?.permissions ?? [],
@@ -205,6 +210,7 @@ export const getProjectProcedure = tenantProtectedProcedure
 		return {
 			project: {
 				...project,
+				initiativeCount,
 				userRole,
 				canEditSettings,
 				canUpdateProject,

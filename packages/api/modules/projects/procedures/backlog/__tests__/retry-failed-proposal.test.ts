@@ -24,13 +24,13 @@ const { handlers, mocks } = vi.hoisted(() => {
 		recordProposalDuplicateResolution: vi.fn(),
 		buildBacklogDedupGuard: vi.fn(),
 		inferDedupFamily: vi.fn(),
-		markPendingProposalApplied: vi.fn(),
 		markProposalApplyDispatched: vi.fn(),
 		projectFindFirst: vi.fn(),
 		proposalUpdate: vi.fn(),
 		getTemporalClient: vi.fn(),
 		workflowStart: vi.fn(),
 		returnFailedProposalToReview: vi.fn(),
+		settleCreatesOnlyApply: vi.fn(),
 		getPendingProposalReview: vi.fn(),
 		getAppliedChangeIndexes: vi.fn(),
 		finalizeBacklogUpdateSession: vi.fn(),
@@ -53,9 +53,12 @@ vi.mock("@repo/database", () => ({
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	buildBacklogDedupGuard: mocks.buildBacklogDedupGuard,
 	inferDedupFamily: mocks.inferDedupFamily,
-	markPendingProposalApplied: mocks.markPendingProposalApplied,
 	markProposalApplyDispatched: mocks.markProposalApplyDispatched,
+	readRejectedChangeIndexes: (meta: { rejectedChangeIndexes?: number[] }) =>
+		meta?.rejectedChangeIndexes ?? [],
 	returnFailedProposalToReview: mocks.returnFailedProposalToReview,
+	settleCreatesOnlyApply: mocks.settleCreatesOnlyApply,
+	sourceMetadataEquals: (value: unknown) => ({ equals: value }),
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -157,7 +160,10 @@ beforeEach(() => {
 	mocks.getTemporalClient.mockResolvedValue({
 		workflow: { start: mocks.workflowStart },
 	});
-	mocks.markPendingProposalApplied.mockResolvedValue(undefined);
+	mocks.settleCreatesOnlyApply.mockResolvedValue({
+		status: "applied",
+		remainingChangeCount: 0,
+	});
 	mocks.finalizeBacklogUpdateSession.mockResolvedValue(1);
 });
 
@@ -367,6 +373,36 @@ describe("retryFailedProposalProcedure — dedup-guard", () => {
 		expect(result.workflowId).toBeNull();
 		expect(result.message).toBe("Already on roadmap.");
 		expect(mocks.finalizeBacklogUpdateSession).toHaveBeenCalledTimes(1);
+	});
+
+	it("full-dedup short-circuit: undecided items back in review leave the history row open", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValue(baseProposal);
+		mocks.buildBacklogDedupGuard.mockResolvedValue({
+			findCollision: () => ({
+				existingIdentifier: "F-1",
+				existingId: "story-existing",
+			}),
+			recordCreated: () => undefined,
+		});
+		mocks.settleCreatesOnlyApply.mockResolvedValue({
+			status: "pending",
+			remainingChangeCount: 1,
+		});
+
+		const result = (await handlers.retry({
+			input: {
+				projectId: "project-1",
+				proposalId: "proposal-1",
+				organizationId: "org-1",
+			},
+			context: ctx,
+		})) as { workflowId: string | null; message: string };
+
+		expect(result.workflowId).toBeNull();
+		expect(result.message).toBe(
+			"Already on roadmap. The remaining items are back in review.",
+		);
+		expect(mocks.finalizeBacklogUpdateSession).not.toHaveBeenCalled();
 	});
 
 	it("partial dedup: only the non-colliding change is sent to the workflow", async () => {
@@ -1041,4 +1077,56 @@ it("a missing project after collision detection writes no duplicate outcome", as
 	});
 	expect(mocks.recordProposalDuplicateResolution).not.toHaveBeenCalled();
 	expect(mocks.proposalUpdate).not.toHaveBeenCalled();
+});
+
+describe("items moved to Rejected on a FAILED proposal", () => {
+	const sourceMetadata = {
+		...baseProposal.sourceMetadata,
+		rejectedChangeIndexes: [1],
+	};
+	const retry = () =>
+		handlers.retry({
+			input: {
+				projectId: "project-1",
+				proposalId: "proposal-1",
+				organizationId: "org-1",
+			},
+			context: ctx,
+		});
+
+	it("leaves a rejected item out of the replay and fences the claim on it", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			...baseProposal,
+			sourceMetadata,
+		});
+
+		await retry();
+
+		const args = mocks.workflowStart.mock.calls[0]?.[1].args[0];
+		expect(args.approvedChangeIndexes).toEqual([0]);
+		expect(args.approvedChanges).toEqual([
+			baseProposal.proposal.changes[0],
+		]);
+		expect(mocks.proposalUpdate.mock.calls[0]?.[0]).toMatchObject({
+			where: {
+				status: "FAILED",
+				sourceMetadata: { equals: sourceMetadata },
+			},
+			data: { status: "APPLYING" },
+		});
+	});
+
+	it("reports a claim lost to an item move on the still-FAILED row as a changed proposal", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			...baseProposal,
+			sourceMetadata,
+		});
+		mocks.proposalUpdate.mockResolvedValue({ count: 0 });
+
+		await expect(retry()).rejects.toMatchObject({
+			code: "CONFLICT",
+			message: expect.stringContaining("changed after you opened it"),
+		});
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+	});
 });

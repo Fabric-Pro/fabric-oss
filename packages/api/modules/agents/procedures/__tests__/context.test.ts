@@ -14,6 +14,7 @@ const {
 	mockGetLatestProjectScan,
 	mockScanFindingCount,
 	mockHasProjectAccess,
+	mockRankStoryIdsBySemanticActivity,
 } = vi.hoisted(() => ({
 	handlersByPath: new Map<string, (args: unknown) => unknown>(),
 	mockProjectFindFirst: vi.fn(),
@@ -26,6 +27,7 @@ const {
 	mockGetLatestProjectScan: vi.fn(),
 	mockScanFindingCount: vi.fn(),
 	mockHasProjectAccess: vi.fn(),
+	mockRankStoryIdsBySemanticActivity: vi.fn(),
 }));
 
 vi.mock("@repo/database/prisma/client", () => ({
@@ -72,6 +74,14 @@ vi.mock("@repo/database/prisma/queries/projects/scan", () => ({
 	getLatestProjectScan: (...a: unknown[]) => mockGetLatestProjectScan(...a),
 }));
 
+vi.mock(
+	"@repo/database/prisma/queries/projects/story-activity-ranking",
+	() => ({
+		rankStoryIdsBySemanticActivity: (...a: unknown[]) =>
+			mockRankStoryIdsBySemanticActivity(...a),
+	}),
+);
+
 vi.mock("../../../../orpc/procedures", () => {
 	function makeChainable() {
 		const c: Record<string, unknown> = {};
@@ -109,6 +119,7 @@ vi.mock("../../../../orpc/procedures", () => {
 });
 
 // Import AFTER mocks so vi.mock hoisting applies and handlers[] is populated.
+import { withVisibleStories } from "@repo/database/prisma/queries/projects/initiative-visibility";
 import "../context";
 
 describe("getAgentProjectContext — architecture decisions risk signal", () => {
@@ -146,6 +157,10 @@ describe("getAgentProjectContext — architecture decisions risk signal", () => 
 		mockListDecisionLogThreads.mockResolvedValue([]);
 		mockGetLatestProjectScan.mockResolvedValue(null);
 		mockScanFindingCount.mockResolvedValue(0);
+		mockRankStoryIdsBySemanticActivity.mockImplementation(async () => {
+			const stories = (await mockUserStoryFindMany()) ?? [];
+			return stories.map((s: { id: string }) => s.id);
+		});
 	});
 
 	function callProjectHandler(input: Record<string, unknown> = {}) {
@@ -487,5 +502,13 @@ describe("getAgentProjectContext — architecture decisions risk signal", () => 
 		expect(mockCountArchitectureDecisionsByStatus).not.toHaveBeenCalled();
 		expect(mockGetLatestProjectScan).not.toHaveBeenCalled();
 		expect(mockScanFindingCount).not.toHaveBeenCalled();
+	});
+
+	it("ranks recent stories using visibility-wrapped where clause", async () => {
+		await callProjectHandler();
+		expect(mockRankStoryIdsBySemanticActivity).toHaveBeenCalledWith(
+			withVisibleStories({ projectId: "project_1" }),
+			expect.any(Number),
+		);
 	});
 });

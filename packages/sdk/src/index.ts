@@ -398,6 +398,7 @@ export type {
 	FabricTelemetryEvent,
 	FabricUser,
 	FabricWorkflow,
+	FabricWorkItemKind,
 	FabricWorkspace,
 	FabricWorkspaceDetail,
 	ListOptions,

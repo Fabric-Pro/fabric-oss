@@ -16,7 +16,6 @@ vi.mock("../prisma/client", () => ({
 
 import { RETIRED_SYSTEM_MCP_SERVER_KEYS } from "../prisma/curated-mcp-server-keys";
 import {
-	ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS,
 	HIDDEN_SYSTEM_MCP_SERVER_KEYS,
 	isHiddenSystemMcpServerKey,
 	isUnrunnableSystemMcpServer,
@@ -44,7 +43,7 @@ describe("MCP Hidden Server Keys & Config Resolution", () => {
 		}
 	});
 
-	it.each(["upstash", "browserbase"])(
+	it.each(["upstash", "browserbase", "filesystem"])(
 		"retires %s while keeping it hidden",
 		(key) => {
 			expect(RETIRED_SYSTEM_MCP_SERVER_KEYS).toContain(key);
@@ -228,7 +227,7 @@ describe("MCP Hidden Server Keys & Config Resolution", () => {
 	});
 });
 
-describe("isUnrunnableSystemMcpServer (#3531)", () => {
+describe("isUnrunnableSystemMcpServer", () => {
 	it.each([
 		"fetch",
 		"time",
@@ -258,34 +257,14 @@ describe("isUnrunnableSystemMcpServer (#3531)", () => {
 		).toBe(false);
 	});
 
-	it.each(ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS)(
-		"refuses the retired system %s server when the connection has no arguments (#3457)",
+	it.each(["filesystem", "postgres", "obsidian", "upstash"])(
+		"refuses the retired system %s server because its required arguments are unsupported",
 		(key) => {
-			const server = { key, isSystemProvided: true };
-			expect(isUnrunnableSystemMcpServer(server)).toBe(true);
-			expect(isUnrunnableSystemMcpServer(server, null)).toBe(true);
-			expect(isUnrunnableSystemMcpServer(server, [])).toBe(true);
-			expect(isUnrunnableSystemMcpServer(server, ["  "])).toBe(true);
+			expect(
+				isUnrunnableSystemMcpServer({ key, isSystemProvided: true }),
+			).toBe(true);
 		},
 	);
-
-	it("lets a retired server that needs an argument start when the connection has one", () => {
-		expect(
-			isUnrunnableSystemMcpServer(
-				{ key: "postgres", isSystemProvided: true },
-				["postgresql://db.example.com/app"],
-			),
-		).toBe(false);
-	});
-
-	it("refuses google-maps even with arguments, since its key cannot reach it", () => {
-		expect(
-			isUnrunnableSystemMcpServer(
-				{ key: "google-maps", isSystemProvided: true },
-				["--anything"],
-			),
-		).toBe(true);
-	});
 
 	it("leaves a tenant's own server keyed postgres alone", () => {
 		expect(
@@ -296,10 +275,10 @@ describe("isUnrunnableSystemMcpServer (#3531)", () => {
 		).toBe(false);
 	});
 
-	it("leaves retired servers that still start alone", () => {
+	it("permits a hidden catalog server that was not retired", () => {
 		expect(
 			isUnrunnableSystemMcpServer({
-				key: "puppeteer",
+				key: "memory",
 				isSystemProvided: true,
 			}),
 		).toBe(false);
@@ -310,22 +289,15 @@ describe("isUnrunnableSystemMcpServer (#3531)", () => {
 		expect(isUnrunnableSystemMcpServer(undefined)).toBe(false);
 	});
 
-	it("names only servers that are already retired", () => {
-		// Retired, not merely hidden: the hidden list also holds servers that
-		// still run, such as memory, and none of those may be refused.
-		const retired: readonly string[] = RETIRED_SYSTEM_MCP_SERVER_KEYS;
-		for (const key of [
-			...UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS,
-			...ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS,
-		]) {
-			expect(retired).toContain(key);
-		}
+	it("covers the full retired system list for STDIO checks", () => {
+		expect(new Set(UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS)).toEqual(
+			new Set(RETIRED_SYSTEM_MCP_SERVER_KEYS),
+		);
 	});
 
-	it("keeps a server in one refusal list only", () => {
-		const unrunnable: readonly string[] = UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS;
-		for (const key of ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS) {
-			expect(unrunnable).not.toContain(key);
-		}
+	it("lists each unrunnable key once", () => {
+		expect(new Set(UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS).size).toBe(
+			UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS.length,
+		);
 	});
 });

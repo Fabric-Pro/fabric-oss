@@ -94,13 +94,14 @@ function gdriveConfig(overrides: Record<string, unknown> = {}) {
 		mcpServer: {
 			name: "Google Drive",
 			transport: "STDIO",
-			command: "npx -y @modelcontextprotocol/server-gdrive",
+			command: "npx -y @modelcontextprotocol/server-gdrive@2025.1.14",
 		},
 		...overrides,
 	};
 }
 
 type WrapperBody = {
+	args?: string[];
 	credentials: Record<string, string>;
 	credentialsVersion?: number[];
 };
@@ -670,113 +671,30 @@ describe("Google Drive STDIO in a stopped chat turn", () => {
 	});
 });
 
-describe("Slack STDIO credentials", () => {
-	function slackConfig() {
-		return {
-			id: "config_gd",
-			enabled: true,
-			needsReauth: false,
-			displayName: "Slack",
+it("refuses retired Slack STDIO before looking up a team ID or calling the wrapper", async () => {
+	mockGetMcpConfigById.mockResolvedValue({
+		id: "config_gd",
+		enabled: true,
+		displayName: "Slack",
+		transport: "STDIO",
+		authType: "API_KEY",
+		encryptedApiKey: "ENC:example-bot-token",
+		mcpServer: {
+			name: "Slack",
+			key: "slack",
+			isSystemProvided: true,
 			transport: "STDIO",
-			authType: "API_KEY",
-			encryptedApiKey: "ENC:example-bot-token",
-			mcpServer: {
-				name: "Slack",
-				transport: "STDIO",
-				command: "npx -y @modelcontextprotocol/server-slack",
-			},
-		};
-	}
-
-	/** Slack's auth.test answers with `authTest`; the wrapper answers OK. */
-	function stubFetch(authTest: () => Response | Promise<Response>) {
-		vi.mocked(fetch).mockImplementation(async (input, init) => {
-			if (String(input).startsWith("https://slack.com/api/auth.test")) {
-				events.push("auth.test");
-				return authTest();
-			}
-			events.push("post");
-			wrapperBodies.push(JSON.parse(String(init?.body)));
-			return new Response(
-				JSON.stringify({ success: true, result: { tools: [] } }),
-				{
-					status: 200,
-					headers: { "content-type": "application/json" },
-				},
-			);
-		});
-	}
-
-	const json = (body: unknown) =>
-		new Response(JSON.stringify(body), {
-			status: 200,
-			headers: { "content-type": "application/json" },
-		});
-
-	it("hands the wrapper the bot token and the team id", async () => {
-		mockGetMcpConfigById.mockResolvedValue(slackConfig());
-		stubFetch(() => json({ ok: true, team_id: "T-EXAMPLE" }));
-
-		const client = await buildClient();
-		await client.tools();
-
-		expect(wrapperBodies[0]?.credentials).toEqual({
-			SLACK_BOT_TOKEN: "example-bot-token",
-			SLACK_TEAM_ID: "T-EXAMPLE",
-		});
-	});
-
-	it.each([
-		[
-			"Slack refuses the lookup",
-			() => json({ ok: false, error: "ratelimited" }),
-		],
-		[
-			"the lookup fails",
-			() => {
-				throw new Error("network down");
-			},
-		],
-	])(
-		"builds no client and caches nothing when %s, so the next call looks the team id up again",
-		async (_label, failure) => {
-			mockGetMcpConfigById.mockResolvedValue(slackConfig());
-			mockGetGrantGeneration.mockResolvedValue(0);
-			stubFetch(failure);
-			const options = {
-				configId: "config_gd",
-				userId: "user_a",
-				organizationId: "org_a",
-			};
-
-			await expect(
-				getCachedMcpClientForConfig(options),
-			).rejects.toMatchObject({
-				code: "SLACK_TEAM_ID_UNAVAILABLE",
-				isAuthError: false,
-			});
-			expect(wrapperBodies).toHaveLength(0);
-
-			stubFetch(() => json({ ok: true, team_id: "T-EXAMPLE" }));
-			const next = await getCachedMcpClientForConfig(options);
-			expect(next.fromCache).toBe(false);
-			await (next.client as unknown as ToolsClient).tools();
-			expect(wrapperBodies.at(-1)?.credentials.SLACK_TEAM_ID).toBe(
-				"T-EXAMPLE",
-			);
+			command: "npx -y @modelcontextprotocol/server-slack",
 		},
-	);
-
-	it("reports a revoked bot token as an authentication failure", async () => {
-		mockGetMcpConfigById.mockResolvedValue(slackConfig());
-		stubFetch(() => json({ ok: false, error: "token_revoked" }));
-
-		await expect(buildClient()).rejects.toMatchObject({
-			code: "AUTH_FAILED",
-			isAuthError: true,
-		});
-		expect(wrapperBodies).toHaveLength(0);
 	});
+
+	await expect(buildClient()).rejects.toMatchObject({
+		code: "SERVER_UNAVAILABLE",
+		message: expect.stringContaining(
+			"Remove this connection in MCP Settings",
+		),
+	});
+	expect(fetch).not.toHaveBeenCalled();
 });
 
 describe("API-key STDIO clients in the client cache", () => {
@@ -792,6 +710,8 @@ describe("API-key STDIO clients in the client cache", () => {
 			commandArgs: ["example-org"],
 			mcpServer: {
 				name: "Azure DevOps",
+				key: "azure-devops",
+				isSystemProvided: true,
 				transport: "STDIO",
 				command: "npx -y @azure-devops/mcp",
 			},
@@ -1036,7 +956,13 @@ describe("API key STDIO credentials", () => {
 			"ADO_MCP_AUTH_TOKEN",
 		],
 		["Figma", "npx -y figma-developer-mcp@0.13.2 --stdio", "FIGMA_API_KEY"],
-		["Unknown", "node example-server.js", "API_KEY"],
+		[
+			"Brave Search",
+			"npx -y @brave/brave-search-mcp-server@2.1.4",
+			"BRAVE_API_KEY",
+		],
+		["Airtable", "npx -y airtable-mcp-server@1.14.0", "AIRTABLE_API_KEY"],
+		["Todoist", "npx -y @doist/todoist-mcp@13.6.0", "TODOIST_API_KEY"],
 	])(
 		"sends %s (%s) its API key under %s",
 		async (name, command, variable) => {
@@ -1048,20 +974,100 @@ describe("API key STDIO credentials", () => {
 				transport: "STDIO",
 				authType: "API_KEY",
 				encryptedApiKey: "ENC:example-api-key",
-				mcpServer: { name, transport: "STDIO", command },
+				commandArgs:
+					variable === "ADO_MCP_AUTH_TOKEN" ? ["example-org"] : [],
+				mcpServer: {
+					name,
+					transport: "STDIO",
+					command,
+					...(variable === "ADO_MCP_AUTH_TOKEN" && {
+						key: "azure-devops",
+						isSystemProvided: true,
+					}),
+				},
 			});
 			const client = await buildClient();
 			await client.tools();
 			expect(wrapperBodies[0]?.credentials).toEqual({
 				[variable]: "example-api-key",
 			});
-			if (variable !== "API_KEY") {
-				expect(wrapperBodies[0]?.credentials).not.toHaveProperty(
-					"API_KEY",
-				);
+			if (variable === "ADO_MCP_AUTH_TOKEN") {
+				expect(wrapperBodies[0]?.args).toEqual([
+					"example-org",
+					"--authentication",
+					"envvar",
+				]);
 			}
 		},
 	);
+});
+
+it.each([
+	["Memory", "npx -y @modelcontextprotocol/server-memory@1.0.0"],
+	["Everything", "npx -y @modelcontextprotocol/server-everything@1.0.0"],
+	[
+		"Sequential Thinking",
+		"npx -y @modelcontextprotocol/server-sequential-thinking@1.0.0",
+	],
+	[
+		"Playwright",
+		"npx -y @playwright/mcp@0.0.76 --browser chromium --headless --no-sandbox --isolated",
+	],
+	["Google Drive", "npx -y @modelcontextprotocol/server-gdrive@2025.1.14"],
+])(
+	"omits a stored API key for %s without an API-key mapping",
+	async (name, command) => {
+		mockGetMcpConfigById.mockResolvedValue({
+			id: "config_gd",
+			enabled: true,
+			displayName: name,
+			transport: "STDIO",
+			authType: "API_KEY",
+			encryptedApiKey: "ENC:example-api-key",
+			mcpServer: {
+				name,
+				transport: "STDIO",
+				command,
+				isSystemProvided: true,
+			},
+		});
+		const client = await buildClient();
+		await client.tools();
+		expect(wrapperBodies[0]?.credentials).toEqual({});
+	},
+);
+
+it("sends exactly the two OAuth credential names for Google Drive even with a stored API key", async () => {
+	mockGetMcpConfigById.mockResolvedValue(
+		gdriveConfig({ encryptedApiKey: "ENC:example-api-key" }),
+	);
+	const client = await buildClient();
+	await client.tools();
+	expect(wrapperBodies[0]?.credentials).toEqual({
+		__GDRIVE_OAUTH_KEYS_JSON: expect.any(String),
+		__GDRIVE_CREDENTIALS_JSON: expect.any(String),
+	});
+});
+
+it("sends just the organization to Azure DevOps without a PAT", async () => {
+	mockGetMcpConfigById.mockResolvedValue({
+		id: "config_gd",
+		enabled: true,
+		transport: "STDIO",
+		authType: "NONE",
+		commandArgs: ["example-org"],
+		mcpServer: {
+			name: "Azure DevOps",
+			key: "azure-devops",
+			isSystemProvided: true,
+			transport: "STDIO",
+			command: "npx -y @azure-devops/mcp@2.8.0",
+		},
+	});
+	const client = await buildClient();
+	await client.tools();
+	expect(wrapperBodies[0]?.args).toEqual(["example-org"]);
+	expect(wrapperBodies[0]?.credentials).toEqual({});
 });
 
 describe("STDIO wrapper JSON-RPC failure responses", () => {

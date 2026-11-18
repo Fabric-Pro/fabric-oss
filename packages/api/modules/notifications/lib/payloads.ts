@@ -401,7 +401,7 @@ const promptDefaultUpdatedPayload = z.object({
 	scope: z.enum(["SYSTEM", "ORG"]),
 	targetKey: z.string(),
 	documentType: z.string(),
-	storyKind: z.enum(["FEATURE", "BUG"]).nullable(),
+	storyKind: z.enum(["FEATURE", "BUG", "INITIATIVE"]).nullable(),
 	informationalOnly: z.boolean(),
 });
 

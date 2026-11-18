@@ -94,11 +94,12 @@ export async function prepareWorkspaceChatTurn(args: {
 	workspace: WorkspaceChatWorkspace;
 	message: string;
 	history: ReadonlyArray<{ role: ChatRole; content: string }>;
-	ragSettings?: { topK: number; similarityThreshold: number };
+	/** The workspace's effective search settings (`getEffectiveRagSettings`). */
+	ragSettings: { topK: number; similarityThreshold: number };
 }): Promise<PreparedWorkspaceChatTurn> {
 	const { userId, workspace, message } = args;
-	const topK = args.ragSettings?.topK ?? 8;
-	const minSimilarity = args.ragSettings?.similarityThreshold ?? 0.2;
+	const topK = args.ragSettings.topK;
+	const minSimilarity = args.ragSettings.similarityThreshold;
 	const workspaceId = workspace.id;
 	// Use the workspace's actual organizationId (null for personal workspaces)
 	const effectiveOrgId = workspace.organizationId || undefined;

@@ -38,6 +38,8 @@ const chat = loadParlumeModule("./parlume-chat.ts", fetch) as {
 	): { expired: Array<{ tag: string }>; becameUnavailable: boolean };
 	nextParlumeChatDeadline(state: unknown): number | null;
 	parlumeChatSpeech(text: string): AsyncGenerator<string>;
+	parlumeSpokenPostText(text: string): string;
+	parlumeChatPostRest(post: { tag: string; text: string }): string;
 };
 const commands = loadParlumeModule("./parlume-chat-commands.ts", fetch) as {
 	parseParlumeChatCommand(
@@ -148,13 +150,18 @@ test("posts are numbered per session and tagged within the chat's limit", () => 
 	assert.equal(second.tag, "P2");
 	assert.equal(chat.composeParlumeChatMessage("P2", "Two"), "[P2] Two");
 	const long = chat.composeParlumeChatMessage("P2", "x".repeat(5_000));
-	assert.equal(long.length, 4_000);
-	assert.ok(long.startsWith("[P2] x") && long.endsWith("…"));
+	assert.ok(long.length <= 1_500);
+	assert.ok(long.startsWith("[P2] x"));
+	assert.ok(
+		long.endsWith(
+			'…\n\nShortened for the chat. Reply "more P2" for the rest.',
+		),
+	);
 	assert.equal(chat.parlumeChatTag("[P12] Here you go"), "P12");
 	assert.equal(chat.parlumeChatTag("I mean [P12]"), null);
 });
 
-test("a post reaches the chat as one readable line, without Markdown", () => {
+test("a post keeps its lines and loses its Markdown", () => {
 	// The shape of a real answer that showed literal asterisks and lost its
 	// line breaks in a Teams meeting.
 	const body = [
@@ -169,8 +176,47 @@ test("a post reaches the chat as one readable line, without Markdown", () => {
 
 	assert.equal(
 		chat.composeParlumeChatMessage("P2", body),
-		"[P2] There is one feature on the project roadmap. Verify edits keep references • Status: Backlog • Priority: Medium Keeps `[S1]` and [S2] intact.",
+		[
+			"[P2] There is one feature on the project roadmap.",
+			"",
+			"Verify edits keep references",
+			"• Status: Backlog",
+			"• Priority: Medium",
+			"Keeps `[S1]` and [S2] intact.",
+		].join("\n"),
 	);
+});
+
+test("a numbered list keeps its numbers, and blank lines stay one paragraph break", () => {
+	assert.equal(
+		chat.composeParlumeChatMessage(
+			"P3",
+			"Two steps:\n\n\n\n1) Export the board\n2. Share it",
+		),
+		"[P3] Two steps:\n\n1. Export the board\n2. Share it",
+	);
+});
+
+test("a long answer is shortened at a line, never mid-word, and says how to get the rest", () => {
+	const line = `${"word ".repeat(39)}end.`;
+	const body = Array.from({ length: 12 }, () => line).join("\n");
+
+	const post = chat.composeParlumeChatMessage("P4", body);
+
+	assert.ok(post.length <= 1_500);
+	const [shown, pointer] = post.split("\n\n");
+	assert.ok(shown.endsWith("end.…"));
+	assert.equal(
+		pointer,
+		'Shortened for the chat. Reply "more P4" for the rest.',
+	);
+	const rest = chat.parlumeChatPostRest({ tag: "P4", text: body });
+	assert.equal(
+		`${shown.slice("[P4] ".length, -1)}\n${rest}`,
+		body,
+		"the shown part and the rest together are the whole answer",
+	);
+	assert.equal(chat.parlumeChatPostRest({ tag: "P4", text: line }), "");
 });
 
 test("a post is confirmed by its own tag coming back, and keeps fifty at most", () => {
@@ -278,9 +324,25 @@ test("a post read aloud says 'the link' for an address and is cut into sentences
 		spoken.push(sentence);
 	}
 	assert.deepEqual(spoken, [
-		"F-12 · Export — the link It ships Friday.",
+		"F-12 · Export — the link.",
+		"It ships Friday.",
 		"Ask Sam!",
 	]);
+});
+
+test("a post read aloud never reads its formatting: titles for links, items as sentences", () => {
+	assert.equal(
+		chat.parlumeSpokenPostText(
+			[
+				"## Release plan",
+				"- **F-12** ships `Friday`",
+				"2) See the [release notes](https://fabric.example/notes?a=1)",
+				"---",
+				"Done!",
+			].join("\n"),
+		),
+		"Release plan. F-12 ships Friday. See the release notes. Done!",
+	);
 });
 
 test("chat commands: tags are handles, anything else must be addressed", () => {
@@ -421,7 +483,7 @@ test("a suggestion is read leniently, names the remark it answers, and a near-du
 	);
 	assert.equal(
 		suggestions.formatParlumeSuggestion("P4", roadmapExport),
-		'Suggestion on Roadmap export, re Sam: "we still need an export". F-12 already covers the roadmap export. (reply "go P4" and I\'ll say it)',
+		'Suggestion on Roadmap export\nRe Sam: "we still need an export"\nF-12 already covers the roadmap export.\nReply "go P4" and I\'ll say it.',
 	);
 	assert.equal(
 		suggestions.spokenParlumeSuggestion(roadmapExport),
@@ -454,7 +516,7 @@ test("a missed question is posted and spoken as a question to ask", () => {
 
 	assert.equal(
 		suggestions.formatParlumeSuggestion("P3", missed),
-		'Possibly missed question on Data migration, re Alex: "we move the data in March". Who signs off the data migration before go-live? (reply "go P3" and I\'ll ask it)',
+		'Possibly missed question on Data migration\nRe Alex: "we move the data in March"\nWho signs off the data migration before go-live?\nReply "go P3" and I\'ll ask it.',
 	);
 	assert.equal(
 		suggestions.spokenParlumeSuggestion(missed),

@@ -1,6 +1,6 @@
 import { type AGUIEvent, EventType, type RunAgentInput } from "@ag-ui/client";
 import { streamText } from "@repo/ai";
-import { isFeatureEnabled } from "@repo/database";
+import { getEffectiveRagSettings, isFeatureEnabled } from "@repo/database";
 import {
 	LIBRARY_CHAT_AGENT_ID,
 	LIBRARY_CHAT_EVENT,
@@ -27,7 +27,9 @@ import {
  * in one JSON reply (`workspace-chat-turn.ts`), streamed. Served only while
  * `COPILOTKIT_LIBRARY_CHAT` is on for the caller's organization, and only
  * for a workspace `hasWorkspaceAccess` lets the caller read; both are
- * checked before any model call. Nothing is saved.
+ * checked before any model call. Retrieval uses the workspace's search
+ * settings, as on the route. Nothing is saved: the route keeps the dialog's
+ * history, the runtime does not.
  */
 
 export { LIBRARY_CHAT_AGENT_ID };
@@ -99,6 +101,7 @@ export class LibraryChatEngine extends InProcessEngine<
 			workspace,
 			message: question,
 			history,
+			ragSettings: await getEffectiveRagSettings(workspace.id),
 		});
 		yield {
 			type: EventType.CUSTOM,

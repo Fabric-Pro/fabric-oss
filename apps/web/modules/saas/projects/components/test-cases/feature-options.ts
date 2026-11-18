@@ -8,7 +8,7 @@
  * contract, and nothing more.
  */
 
-type FeatureKind = "FEATURE" | "BUG";
+type FeatureKind = "FEATURE" | "BUG" | "INITIATIVE";
 
 /** A pickable work item. */
 export type FeatureOption = {

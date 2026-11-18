@@ -1,5 +1,6 @@
 "use client";
 
+import type { StoryKind } from "@repo/database";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Markdown } from "@ui/components/markdown";
@@ -22,8 +23,12 @@ import {
 	mentionedMemberIds,
 	QuestionMentionTextarea,
 } from "./QuestionMentionTextarea";
-import type { AiReadinessData } from "./ReadinessBar";
-import { ReadinessBar } from "./ReadinessBar";
+import {
+	type AiReadinessData,
+	INITIATIVE_BREAKDOWN_PATTERN,
+	INITIATIVE_GOALS_PATTERN,
+	ReadinessBar,
+} from "./ReadinessBar";
 import { SuggestedAnswerOptions } from "./SuggestedAnswerOptions";
 import type {
 	AnswerSource,
@@ -195,7 +200,7 @@ type Props = {
 	isSpecRecentlyUpdated?: boolean;
 	hasFunctionalRequirements?: boolean;
 	resolvedQuestionsCount?: number;
-	storyKind?: "FEATURE" | "BUG";
+	storyKind?: StoryKind;
 	hasExpectedResult?: boolean;
 	hasActualResult?: boolean;
 	needsMoreInfo?: boolean;
@@ -610,9 +615,13 @@ export function SummaryQuestionsPanel({
 							hasAcceptanceCriteria: Boolean(
 								hasAcceptanceCriteria ??
 									(summaryDigest &&
-										/acceptance\s+criteria|\bgiven\b.*\bwhen\b.*\bthen\b/i.test(
-											summaryDigest,
-										)),
+										(storyKind === "INITIATIVE"
+											? INITIATIVE_GOALS_PATTERN.test(
+													summaryDigest,
+												)
+											: /acceptance\s+criteria|\bgiven\b.*\bwhen\b.*\bthen\b/i.test(
+													summaryDigest,
+												))),
 							),
 							blockingGapCount:
 								blockingGapCount ??
@@ -633,9 +642,13 @@ export function SummaryQuestionsPanel({
 							hasFunctionalRequirements: Boolean(
 								hasFunctionalRequirements ??
 									(summaryDigest &&
-										/functional\s+requirements|FR-\d+|FR\d+|\bFRs?\b/i.test(
-											summaryDigest,
-										)),
+										(storyKind === "INITIATIVE"
+											? INITIATIVE_BREAKDOWN_PATTERN.test(
+													summaryDigest,
+												)
+											: /functional\s+requirements|FR-\d+|FR\d+|\bFRs?\b/i.test(
+													summaryDigest,
+												))),
 							),
 							resolvedQuestionsCount: resolvedQuestionsCount ?? 0,
 							openQuestionsCount: openQuestions.length,

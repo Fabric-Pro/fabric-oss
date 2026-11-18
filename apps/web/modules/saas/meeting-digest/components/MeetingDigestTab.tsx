@@ -133,6 +133,7 @@ export function MeetingDigestTab({
 		isError,
 		setIncluded,
 		setParlumeAutoJoin,
+		setConfidential,
 		onActionItemToggled,
 		generateSummary,
 		generatingRefs,
@@ -271,6 +272,35 @@ export function MeetingDigestTab({
 			}
 		},
 		[setParlumeAutoJoin],
+	);
+
+	const [pendingConfidentialIds, setPendingConfidentialIds] = useState<
+		Set<string>
+	>(new Set());
+	const handleSetConfidential = useCallback(
+		async (linkedMeetingId: string, confidential: boolean) => {
+			setPendingConfidentialIds((prev) =>
+				new Set(prev).add(linkedMeetingId),
+			);
+			try {
+				await setConfidential(linkedMeetingId, confidential);
+			} catch (error) {
+				console.error(
+					"Failed to update meeting confidentiality",
+					error,
+				);
+				toast.error("The series' confidentiality was not changed", {
+					description: "Please try again.",
+				});
+			} finally {
+				setPendingConfidentialIds((prev) => {
+					const next = new Set(prev);
+					next.delete(linkedMeetingId);
+					return next;
+				});
+			}
+		},
+		[setConfidential],
 	);
 
 	// FIX 4 (#1898 final review): the confirmation dialog stays open and
@@ -745,6 +775,10 @@ export function MeetingDigestTab({
 							: undefined
 					}
 					onUnlink={handleUnlink}
+					confidential={{
+						pendingIds: pendingConfidentialIds,
+						onChange: handleSetConfidential,
+					}}
 					autoJoin={
 						parlumeEnabled && meetingAgendaEnabled && organizationId
 							? {

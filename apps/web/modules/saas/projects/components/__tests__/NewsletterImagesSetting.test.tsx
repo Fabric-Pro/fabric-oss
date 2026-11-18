@@ -10,8 +10,17 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { queryData } = vi.hoisted(() => ({
+const { queryData, flags } = vi.hoisted(() => ({
 	queryData: { environments: [] as unknown[] },
+	flags: { environmentSettings: true },
+}));
+
+// The flag is inlined at build time; a getter lets each test choose it.
+vi.mock("../settings-tab-navigation", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../settings-tab-navigation")>()),
+	get ENVIRONMENT_SETTINGS_ENABLED() {
+		return flags.environmentSettings;
+	},
 }));
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
@@ -70,6 +79,7 @@ vi.mock("@ui/components/select", () => ({
 }));
 
 import { NewsletterImagesSetting } from "../NewsletterImagesSetting";
+import { NEWSLETTER_AUTO_CAPTURE_ANCHOR_ID } from "../settings-tab-navigation";
 
 const onChange = vi.fn();
 
@@ -91,6 +101,7 @@ function renderSetting(
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	flags.environmentSettings = true;
 	queryData.environments = [
 		{ id: "env-1", name: "Staging", type: "STAGING" },
 	];
@@ -103,6 +114,62 @@ describe("NewsletterImagesSetting", () => {
 		expect(
 			screen.queryByRole("combobox", { name: "Capture from" }),
 		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("region", { name: "Automatic screenshots" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("nests automatic screenshots under images, with what they need", () => {
+		renderSetting();
+
+		const nested = screen.getByRole("region", {
+			name: "Automatic screenshots",
+		});
+		expect(nested).toHaveAttribute("id", NEWSLETTER_AUTO_CAPTURE_ANCHOR_ID);
+		expect(nested).toHaveTextContent(
+			"Fabric can capture a screenshot for each highlight",
+		);
+		expect(nested).toHaveTextContent("Images you add yourself");
+		expect(nested).toHaveTextContent(
+			"needs an environment Fabric can open",
+		);
+		expect(nested).toHaveTextContent("Settings, Environments");
+		expect(
+			within(nested).getByRole("button", {
+				name: "Set up an environment",
+			}),
+		).toBeInTheDocument();
+		expect(
+			within(nested).getByRole("combobox", { name: "Capture from" }),
+		).toHaveValue("none");
+	});
+
+	it("does not send people to environment settings this build lacks", () => {
+		flags.environmentSettings = false;
+		queryData.environments = [];
+		renderSetting();
+
+		const nested = screen.getByRole("region", {
+			name: "Automatic screenshots",
+		});
+		expect(nested).toHaveTextContent(
+			"Adding environments is not available here yet",
+		);
+		expect(nested).not.toHaveTextContent("Settings, Environments");
+		expect(
+			screen.queryByRole("button", { name: "Set up an environment" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("turns images on without turning automatic capture on", () => {
+		renderSetting({ screenshotsEnabled: false });
+
+		fireEvent.click(
+			screen.getByRole("switch", { name: "Images in highlights" }),
+		);
+
+		expect(onChange).toHaveBeenCalledTimes(1);
+		expect(onChange).toHaveBeenCalledWith({ screenshotsEnabled: true });
 	});
 
 	it("lists the project's environments to capture from", () => {

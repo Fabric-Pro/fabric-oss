@@ -26,6 +26,8 @@ import {
 	type Prisma,
 	publicReportParametersSchema,
 	reportEvidenceConfigSchema,
+	reportInstructions,
+	templateUserPrompt,
 	updateTemplateInstance,
 } from "@repo/database";
 import {
@@ -490,36 +492,6 @@ async function loadReachableReport(
 		throw new ReportGenerationError("NOT_FOUND", REPORT_NOT_FOUND_MESSAGE);
 	}
 	return instance;
-}
-
-function templateUserPrompt(definition: Prisma.JsonValue): string {
-	return isJsonObject(definition) && typeof definition.userPrompt === "string"
-		? definition.userPrompt
-		: "";
-}
-
-/**
- * The instructions the report runs with: the ones a person wrote for it
- * (`promptOverrideSource: "user"`), else its template's. An unmarked override
- * is a copy of an older template prompt, which a run does not add to its tasks.
- */
-function reportInstructions(instance: {
-	connections: Prisma.JsonValue;
-	template: { definition: Prisma.JsonValue };
-}): { instructions: string; instructionsSource: "report" | "template" } {
-	const connections: Prisma.JsonObject = isJsonObject(instance.connections)
-		? instance.connections
-		: {};
-	const override =
-		typeof connections.promptOverride === "string"
-			? connections.promptOverride.trim()
-			: "";
-	return override && connections.promptOverrideSource === "user"
-		? { instructions: override, instructionsSource: "report" }
-		: {
-				instructions: templateUserPrompt(instance.template.definition),
-				instructionsSource: "template",
-			};
 }
 
 /** The report's own AI task prompts, keyed as the report page saves them. */

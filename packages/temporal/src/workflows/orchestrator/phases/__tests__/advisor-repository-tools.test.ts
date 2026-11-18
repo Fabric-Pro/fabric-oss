@@ -9,6 +9,7 @@
  * Runs the real `executeIterativePhase` with a scripted model.
  */
 
+import { patched } from "@temporalio/workflow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
@@ -49,6 +50,7 @@ vi.mock("@temporalio/workflow", () => ({
 }));
 
 import { getFabricAiTools } from "../../../../activities/orchestrator/tools/fabric-ai-tools";
+import { FABRIC_AI_SERVER_CONFIG_ID } from "../../fabric-catalog-access";
 import { TOOLS } from "../../orchestrator-config";
 import {
 	FILE_TEXT,
@@ -73,6 +75,7 @@ const READ_FILE = {
 
 beforeEach(() => {
 	installDefaultStubs(mocks);
+	vi.mocked(patched).mockClear();
 });
 
 describe("repository reads in a project chat", () => {
@@ -170,4 +173,140 @@ describe("repository reads in a project chat", () => {
 		}
 		expect(seen[0].systemPrompt).not.toContain("code_tree, ");
 	});
+});
+
+describe("story creation in a project chat", () => {
+	const name = "fabric_create_story";
+	const marker = "orch-project-create-story-tool-v1";
+	const options = {
+		message: "File an example bug.",
+		enabledMcpConfigIds: ["cfg-example"],
+		preload: preloaded(
+			Array.from(
+				{ length: TOOLS.eagerLoadThreshold + 1 },
+				(_, i) => `example_tool_${i}`,
+			),
+			"cfg-example",
+			"Example Server",
+		),
+		steps: [{ answer: "Done." }],
+	};
+	const getAttachedSentence = (prompt: string) =>
+		prompt.match(
+			/Tools NOT in the catalog .* without a search_tools roundtrip\./,
+		)?.[0];
+
+	it.each([undefined, [name]])(
+		"sends the catalog definition on the first request with enabled Fabric tools %j",
+		async (enabledFabricToolIds) => {
+			const catalogEntry = getFabricAiTools().find(
+				(tool) => tool.name === name,
+			);
+			expect(catalogEntry).toBeDefined();
+			const { seen } = await runTurn(mocks, {
+				...options,
+				enabledFabricToolIds,
+			});
+
+			expect(patched).toHaveBeenCalledWith(marker);
+			expect(
+				mocks.stub("runAgentIteration").mock.calls[0][0].availableTools[
+					name
+				],
+			).toEqual({
+				description: catalogEntry?.description,
+				inputSchema: catalogEntry?.inputSchema,
+			});
+			expect(getAttachedSentence(seen[0].systemPrompt)).toContain(
+				`${name}, `,
+			);
+			expect(mocks.stub("searchAvailableTools")).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		{ projectId: null },
+		{ enabledFabricToolIds: ["code_tree"] },
+		{ enabledFabricToolIds: [] },
+	])("skips registration and the patch marker for %j", async (overrides) => {
+		const { seen } = await runTurn(mocks, { ...options, ...overrides });
+		expect(seen[0].tools).not.toContain(name);
+		expect(getAttachedSentence(seen[0].systemPrompt)).not.toContain(name);
+		expect(patched).not.toHaveBeenCalledWith(marker);
+	});
+
+	it("keeps the old history's attached-tool sentence and omits the story schema", async () => {
+		mocks.off.add(marker);
+		const { seen } = await runTurn(mocks, options);
+		expect(patched).toHaveBeenCalledWith(marker);
+		expect(seen[0].tools).not.toContain(name);
+		const oldSentence = getAttachedSentence(seen[0].systemPrompt);
+		expect(oldSentence).toBeDefined();
+
+		installDefaultStubs(mocks);
+		const current = await runTurn(mocks, options);
+		expect(oldSentence).toBe(
+			getAttachedSentence(current.seen[0].systemPrompt)?.replace(
+				`${name}, `,
+				"",
+			),
+		);
+		expect(oldSentence).not.toContain(name);
+	});
+
+	it.each([undefined, "call_tool"])(
+		"routes the first request's story tool to write approval in %s mode",
+		async (toolLoadingMode) => {
+			const args = { request: options.message };
+			const execute = mocks.stub("executeMcpTool").mockResolvedValue({
+				success: false,
+				output: {},
+				authorityRequired: {
+					pendingSessionId: "example-session",
+					providerKey: "fabric",
+					providerDisplayName: "Fabric",
+					accessLevel: "WRITE",
+					toolName: name,
+				},
+			});
+			const { seen } = await runTurn(mocks, {
+				...options,
+				input: { toolLoadingMode, conversationId: "example-chat" },
+				approval: { approved: false },
+				steps: [
+					{
+						calls: [
+							toolLoadingMode
+								? {
+										name: "call_tool",
+										args: { name, arguments: args },
+									}
+								: { name, args },
+						],
+					},
+					...options.steps,
+				],
+			});
+			expect(seen[0].tools).toContain(name);
+			expect(execute).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({
+					toolName: name,
+					args,
+					mcpConfigId: FABRIC_AI_SERVER_CONFIG_ID,
+					requestRuntimeAuthority: true,
+				}),
+			);
+			expect(
+				mocks.stub("denyAuthoritySessionActivity"),
+			).toHaveBeenCalledWith(
+				expect.objectContaining({
+					authoritySessionId: "example-session",
+				}),
+			);
+			expect(toolMessage(seen, 1, "call-1-0")).toContain(
+				"The user declined WRITE access",
+			);
+			expect(mocks.stub("searchAvailableTools")).not.toHaveBeenCalled();
+		},
+	);
 });

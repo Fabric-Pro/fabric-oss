@@ -1,5 +1,6 @@
 import { getProjectUsageSummary } from "@repo/database";
 import {
+	hiddenUsageFeatureKey,
 	projectScopeSchema,
 	projectUsageProcedure,
 	USAGE_ROUTE_TAGS,
@@ -16,9 +17,13 @@ export const getUsageSummaryProcedure = projectUsageProcedure
 			"Returns totals (cost, tokens, calls) and a breakdown by billing category for a project.",
 	})
 	.input(projectScopeSchema.extend({ range: usageRangeSchema }))
-	.handler(async ({ input }) => {
+	.handler(async ({ input, context }) => {
 		return getProjectUsageSummary({
 			projectId: input.projectId,
 			range: input.range,
+			hiddenFeatureKey: await hiddenUsageFeatureKey(
+				input.projectId,
+				context.user.id,
+			),
 		});
 	});

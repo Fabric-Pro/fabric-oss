@@ -123,11 +123,19 @@ it("keeps page actions stable while delegating to the latest session", () => {
 		<CopilotChatSessionProvider>{child}</CopilotChatSessionProvider>,
 	);
 	const setMessages = vi.fn();
-	useCopilotChatInternalMock.mockReturnValue({ ...SESSION, setMessages });
+	const sendMessage = vi.fn(async () => {});
+	useCopilotChatInternalMock.mockReturnValue({
+		...SESSION,
+		setMessages,
+		sendMessage,
+	});
 	view.rerender(
 		<CopilotChatSessionProvider>{child}</CopilotChatSessionProvider>,
 	);
 	expect(seen).toHaveLength(1);
 	seen[0].setMessages([]);
 	expect(setMessages).toHaveBeenCalledWith([]);
+	const message = { id: "u2", role: "user" as const, content: "again" };
+	void seen[0].sendMessage(message);
+	expect(sendMessage).toHaveBeenCalledWith(message);
 });

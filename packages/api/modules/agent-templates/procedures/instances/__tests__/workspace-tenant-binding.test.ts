@@ -445,4 +445,24 @@ describe("unavailable implementation publication boundaries", () => {
 			}),
 		);
 	});
+	it.each([true, false])(
+		"saves the meeting external-tools choice %s on the new version",
+		async (meetingExternalTools) => {
+			await updateHandler({
+				input: {
+					id: "instance-1",
+					organizationId: ORG_A,
+					createNewVersion: true,
+					meetingExternalTools,
+				},
+				context,
+			});
+			expect(mockUpdateAgentTemplateInstance).toHaveBeenCalledWith(
+				expect.objectContaining({
+					createNewVersion: true,
+					meetingExternalTools,
+				}),
+			);
+		},
+	);
 });

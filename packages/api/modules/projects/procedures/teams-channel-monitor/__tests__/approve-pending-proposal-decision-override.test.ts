@@ -15,7 +15,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 	const mocks = {
 		getPendingBacklogProposal: vi.fn(),
 		markPendingProposalApproved: vi.fn(),
-		markPendingProposalApplied: vi.fn(),
+		settleCreatesOnlyApply: vi.fn(),
 		markPendingProposalFailed: vi.fn(),
 		appendAppliedChangeIndexes: vi.fn(),
 		markProposalApplyDispatched: vi.fn(),
@@ -32,6 +32,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 
 vi.mock("@repo/database", () => ({
 	getAppliedChangeIndexes: vi.fn(async () => new Set<number>()),
+	readRejectedChangeIndexes: () => [],
 	claimPendingProposalWithReview: vi.fn(async () => true),
 
 	recordProposalApplication: vi.fn(),
@@ -47,7 +48,7 @@ vi.mock("@repo/database", () => ({
 	},
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	inferDedupFamily: () => "FEATURE",
-	markPendingProposalApplied: mocks.markPendingProposalApplied,
+	settleCreatesOnlyApply: mocks.settleCreatesOnlyApply,
 	markPendingProposalApproved: mocks.markPendingProposalApproved,
 	markPendingProposalFailed: mocks.markPendingProposalFailed,
 	setPendingProposalAttachmentResult:
@@ -221,7 +222,10 @@ beforeEach(() => {
 		projectManagementContainerId: null,
 	});
 	mocks.markPendingProposalApproved.mockResolvedValue(undefined);
-	mocks.markPendingProposalApplied.mockResolvedValue(undefined);
+	mocks.settleCreatesOnlyApply.mockResolvedValue({
+		status: "applied",
+		remainingChangeCount: 0,
+	});
 	mocks.appendAppliedChangeIndexes.mockResolvedValue(undefined);
 	mocks.resolveMeetingTranscriptForProposal.mockResolvedValue(null);
 	mocks.triggerDuplicateDetection.mockResolvedValue({ workflowId: "dup" });

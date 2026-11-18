@@ -149,4 +149,97 @@ describe("DigestConfigPanel", () => {
 		fireEvent.click(await screen.findByText(/unlink meeting/i));
 		expect(onUnlink).toHaveBeenCalledWith(base);
 	});
+
+	describe("Confidential switch", () => {
+		it("shows each series' state, with or without auto-join", () => {
+			render(
+				<DigestConfigPanel
+					meetings={[
+						{ ...base, confidential: true },
+						{
+							...base,
+							linkedMeetingId: "lm2",
+							subject: "Retro",
+							confidential: false,
+						},
+					]}
+					onSetIncluded={vi.fn()}
+					onAddMeeting={vi.fn()}
+					onUnlink={vi.fn()}
+					confidential={{ pendingIds: new Set(), onChange: vi.fn() }}
+				/>,
+			);
+
+			const dsu = screen.getByRole("switch", {
+				name: /^Confidential for DSU$/,
+			});
+			expect(dsu).toBeChecked();
+			expect(dsu).toHaveAccessibleDescription(
+				"Keep this series' transcripts out of later answers, recaps and agendas.",
+			);
+			expect(
+				screen.getByRole("switch", {
+					name: /^Confidential for Retro$/,
+				}),
+			).not.toBeChecked();
+			expect(
+				screen.queryByRole("switch", {
+					name: /Parlume joins automatically/,
+				}),
+			).not.toBeInTheDocument();
+		});
+
+		it("sends the series and the new state", async () => {
+			const onChange = vi.fn();
+			render(
+				<DigestConfigPanel
+					meetings={[{ ...base, confidential: false }]}
+					onSetIncluded={vi.fn()}
+					onAddMeeting={vi.fn()}
+					onUnlink={vi.fn()}
+					confidential={{ pendingIds: new Set(), onChange }}
+				/>,
+			);
+
+			await userEvent.click(
+				screen.getByRole("switch", { name: /Confidential for DSU/ }),
+			);
+
+			expect(onChange).toHaveBeenCalledWith("lm1", true);
+		});
+
+		it("is disabled while that series' change is in flight", () => {
+			render(
+				<DigestConfigPanel
+					meetings={[base]}
+					onSetIncluded={vi.fn()}
+					onAddMeeting={vi.fn()}
+					onUnlink={vi.fn()}
+					confidential={{
+						pendingIds: new Set(["lm1"]),
+						onChange: vi.fn(),
+					}}
+				/>,
+			);
+
+			expect(
+				screen.getByRole("switch", { name: /Confidential for DSU/ }),
+			).toBeDisabled();
+		});
+
+		it("is absent when the panel is given no confidential handler", () => {
+			render(
+				<DigestConfigPanel
+					meetings={[base]}
+					onSetIncluded={vi.fn()}
+					onAddMeeting={vi.fn()}
+					onUnlink={vi.fn()}
+				/>,
+			);
+
+			expect(
+				screen.queryByRole("switch", { name: /Confidential/ }),
+			).not.toBeInTheDocument();
+		});
+	});
 });

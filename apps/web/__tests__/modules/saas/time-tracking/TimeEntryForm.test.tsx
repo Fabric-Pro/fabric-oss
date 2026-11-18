@@ -6,6 +6,9 @@
  * warning acknowledged, and "No, skip" must not save anything: a new entry
  * drops what was typed for it, and an edit is abandoned as Cancel does. A
  * project that requires start and stop swaps the duration for two times.
+ *
+ * The note is always on screen, and a new entry offers the caller's recent
+ * notes on its project: a pick fills the note and saves nothing.
  */
 
 import { parseDurationInput } from "@repo/utils/time-tracking";
@@ -14,19 +17,24 @@ import type {
 	TimeEntry,
 } from "@saas/time-tracking/lib/time-entry-model";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockCreate, mockUpdate, mockToastSuccess, mockToastError } = vi.hoisted(
-	() => ({
-		mockCreate: vi.fn(),
-		mockUpdate: vi.fn(),
-		mockToastSuccess: vi.fn(),
-		mockToastError: vi.fn(),
-	}),
-);
+const {
+	mockCreate,
+	mockUpdate,
+	mockRecentNotes,
+	mockToastSuccess,
+	mockToastError,
+} = vi.hoisted(() => ({
+	mockCreate: vi.fn(),
+	mockUpdate: vi.fn(),
+	mockRecentNotes: vi.fn(),
+	mockToastSuccess: vi.fn(),
+	mockToastError: vi.fn(),
+}));
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
@@ -35,6 +43,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 			updateEntry: { call: mockUpdate },
 			listEntries: { key: () => [["timeTracking", "listEntries"], {}] },
 			listForStory: { key: () => [["timeTracking", "listForStory"], {}] },
+			listRecentNotes: {
+				key: () => [["timeTracking", "listRecentNotes"], {}],
+				queryOptions: (options: { input: { projectId: string } }) => ({
+					queryKey: [
+						["timeTracking", "listRecentNotes"],
+						{ input: options.input, type: "query" },
+					],
+					queryFn: () => mockRecentNotes(options.input),
+				}),
+			},
 		},
 		projects: {
 			stories: {
@@ -134,6 +152,8 @@ function renderForm(
 beforeEach(() => {
 	mockCreate.mockReset();
 	mockUpdate.mockReset();
+	mockRecentNotes.mockReset();
+	mockRecentNotes.mockResolvedValue({ notes: [] });
 	mockToastSuccess.mockReset();
 	mockToastError.mockReset();
 });
@@ -418,5 +438,128 @@ describe("TimeEntryForm", () => {
 			"time",
 		);
 		expect(screen.getByLabelText("stopDate")).toBeInTheDocument();
+	});
+});
+
+describe("TimeEntryForm note", () => {
+	it("shows the note without opening More", () => {
+		renderForm();
+
+		const more = screen.getByRole("button", { name: "more" });
+		expect(more).toHaveAttribute("aria-expanded", "false");
+		expect(screen.getByLabelText("note")).toBeVisible();
+	});
+
+	it("fills the note from a recent note without saving, and saves the edited text", async () => {
+		mockRecentNotes.mockResolvedValue({ notes: ["REQS", "Development"] });
+		mockCreate.mockResolvedValue({
+			status: "saved",
+			entry: { ...existing, id: "entry-2" },
+			warnings: [],
+		});
+		renderForm();
+
+		const group = await screen.findByRole("group", { name: "recentNotes" });
+		const options = within(group).getAllByRole("button");
+		expect(options.map((option) => option.textContent)).toEqual([
+			"REQS",
+			"Development",
+		]);
+		expect(mockRecentNotes).toHaveBeenCalledWith({
+			projectId: "project-a",
+		});
+
+		await userEvent.click(options[1]);
+
+		const note = screen.getByLabelText("note");
+		expect(note).toHaveValue("Development");
+		expect(note).toHaveFocus();
+		expect(mockCreate).not.toHaveBeenCalled();
+
+		await userEvent.type(note, " review");
+		await userEvent.type(screen.getByLabelText("duration"), "1h{Enter}");
+
+		await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
+		expect(mockCreate.mock.calls[0][0]).toMatchObject({
+			description: "Development review",
+		});
+	});
+
+	it("keeps a long note whole behind its shortened label", async () => {
+		const long = `Requirements and project management ${"x".repeat(300)}`;
+		mockRecentNotes.mockResolvedValue({ notes: [long] });
+		renderForm();
+
+		const option = await screen.findByRole("button", {
+			name: `useRecentNote ${JSON.stringify({ note: long })}`,
+		});
+		expect(option).toHaveAttribute("title", long);
+		expect(option.firstElementChild).toHaveClass("truncate");
+
+		await userEvent.click(option);
+
+		expect(screen.getByLabelText("note")).toHaveValue(long);
+	});
+
+	it("offers no recent notes when there are none, and the note can still be typed", async () => {
+		mockCreate.mockResolvedValue({
+			status: "saved",
+			entry: { ...existing, id: "entry-2" },
+			warnings: [],
+		});
+		renderForm();
+
+		await waitFor(() => expect(mockRecentNotes).toHaveBeenCalled());
+		expect(screen.queryByRole("group", { name: "recentNotes" })).toBeNull();
+
+		await userEvent.type(screen.getByLabelText("note"), "Pairing");
+		await userEvent.type(screen.getByLabelText("duration"), "30m{Enter}");
+
+		await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
+		expect(mockCreate.mock.calls[0][0]).toMatchObject({
+			description: "Pairing",
+		});
+	});
+
+	it("offers the newly chosen project's notes, never the previous one's", async () => {
+		let releaseBeta: (value: { notes: string[] }) => void = () => {};
+		mockRecentNotes.mockImplementation(({ projectId }) => {
+			if (projectId === "project-a") {
+				return Promise.resolve({ notes: ["Alpha note"] });
+			}
+			return new Promise((resolve) => {
+				releaseBeta = resolve;
+			});
+		});
+		renderForm([project, { ...project, id: "project-b", name: "Beta" }]);
+
+		await screen.findByRole("button", { name: /Alpha note/ });
+
+		await userEvent.click(
+			screen.getByRole("combobox", { name: "project" }),
+		);
+		await userEvent.click(screen.getByRole("option", { name: "Beta" }));
+
+		// While Beta's notes load, Alpha's are no longer offered.
+		await waitFor(() =>
+			expect(mockRecentNotes).toHaveBeenCalledWith({
+				projectId: "project-b",
+			}),
+		);
+		expect(screen.queryByRole("button", { name: /Alpha note/ })).toBeNull();
+
+		releaseBeta({ notes: ["Beta note"] });
+
+		await screen.findByRole("button", { name: /Beta note/ });
+		expect(screen.queryByRole("button", { name: /Alpha note/ })).toBeNull();
+	});
+
+	it("does not offer recent notes when editing an entry", async () => {
+		mockRecentNotes.mockResolvedValue({ notes: ["REQS"] });
+		renderForm([project], { entry: existing });
+
+		expect(screen.getByLabelText("note")).toBeVisible();
+		expect(mockRecentNotes).not.toHaveBeenCalled();
+		expect(screen.queryByRole("group", { name: "recentNotes" })).toBeNull();
 	});
 });

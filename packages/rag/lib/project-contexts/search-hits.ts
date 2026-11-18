@@ -1,5 +1,6 @@
 import {
 	db,
+	findConfidentialTranscriptContextIds,
 	getRetrievableContextById,
 	getRetrievableConversationBundleById,
 } from "@repo/database";
@@ -7,6 +8,7 @@ import { logger } from "@repo/logs";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { boundQueryForEmbedding } from "../embedding/query-bound";
 import { generateSparseVector } from "../embedding/sparse";
+import { extractBaseContextId } from "../utils/chunk-id";
 import { searchSimilarProjectContexts } from "./store";
 import type {
 	ProjectContextSearchOptions,
@@ -55,6 +57,25 @@ export async function searchProjectContextHits(
 		queryEmbedding,
 		querySparseVector,
 	});
+}
+
+/** Drop hits on a transcript of one of the project's confidential series. */
+export async function withoutConfidentialTranscripts(
+	hits: ProjectRetrievalResult[],
+	projectId: string,
+): Promise<ProjectRetrievalResult[]> {
+	const contextIds = [
+		...new Set(hits.map((hit) => extractBaseContextId(hit.contextId))),
+	];
+	const confidential = await findConfidentialTranscriptContextIds({
+		projectId,
+		contextIds,
+	});
+	return confidential.size === 0
+		? hits
+		: hits.filter(
+				(hit) => !confidential.has(extractBaseContextId(hit.contextId)),
+			);
 }
 
 /**

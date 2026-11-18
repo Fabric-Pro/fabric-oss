@@ -94,6 +94,7 @@ export function ParlumeLiveCard({
 	session,
 	joinedAt,
 	costMicroUsd,
+	showSpend,
 	requests,
 	requestsLoading,
 	canStop,
@@ -103,6 +104,8 @@ export function ParlumeLiveCard({
 	session: ParlumeSession;
 	joinedAt: Date | string;
 	costMicroUsd: number | undefined;
+	/** Whether this viewer may see spend; the card leaves it out otherwise. */
+	showSpend: boolean;
 	requests: ParlumeRequest[];
 	requestsLoading: boolean;
 	canStop: boolean;
@@ -221,18 +224,20 @@ export function ParlumeLiveCard({
 						{modeLabel(session.toolsReadOnly)}
 					</dd>
 				</div>
-				<div className="min-w-0 space-y-0.5 border-l border-border px-6 py-3.5">
-					<dt className={MONO_LABEL}>Spend so far</dt>
-					<dd className="text-sm tabular-nums">
-						{costMicroUsd === undefined
-							? "—"
-							: formatCost(costMicroUsd)}
-					</dd>
-					<dd className="text-xs text-muted-foreground">
-						Bot and transcription time are added when the meeting
-						ends.
-					</dd>
-				</div>
+				{showSpend && (
+					<div className="min-w-0 space-y-0.5 border-l border-border px-6 py-3.5">
+						<dt className={MONO_LABEL}>Spend so far</dt>
+						<dd className="text-sm tabular-nums">
+							{costMicroUsd === undefined
+								? "—"
+								: formatCost(costMicroUsd)}
+						</dd>
+						<dd className="text-xs text-muted-foreground">
+							Bot and transcription time are added when the
+							meeting ends.
+						</dd>
+					</div>
+				)}
 			</dl>
 			<LiveActivity requests={requests} isLoading={requestsLoading} />
 		</Card>

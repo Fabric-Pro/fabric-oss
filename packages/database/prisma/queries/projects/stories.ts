@@ -31,6 +31,10 @@ import {
 	type TrackSetBy,
 } from "../../client";
 import { buildFabricStoryUrl, placeFabricBackLink } from "./fabric-url";
+import {
+	InitiativesDisabledError,
+	withVisibleStories,
+} from "./initiative-visibility";
 import { recordPriorityMove } from "./priority-history";
 
 /**
@@ -466,9 +470,10 @@ export async function listStories(options: {
 			: {}),
 	};
 
+	const visibleWhere = withVisibleStories(where);
 	const [stories, total] = await Promise.all([
 		db.userStory.findMany({
-			where,
+			where: visibleWhere,
 			include: {
 				status: true,
 				tasks: {
@@ -491,7 +496,7 @@ export async function listStories(options: {
 			take: limit,
 			skip: offset,
 		}),
-		db.userStory.count({ where }),
+		db.userStory.count({ where: visibleWhere }),
 	]);
 
 	return { stories, total };
@@ -597,12 +602,13 @@ export async function listStorySummaries(options: {
 			: {}),
 	};
 
+	const visibleWhere = withVisibleStories(where);
 	const [stories, total] =
 		orderBy === "identifier"
-			? await loadSummaryPageByIdentifier(where, limit, offset)
+			? await loadSummaryPageByIdentifier(visibleWhere, limit, offset)
 			: await Promise.all([
 					db.userStory.findMany({
-						where,
+						where: visibleWhere,
 						select: STORY_SUMMARY_SELECT,
 						orderBy:
 							orderBy === "updated"
@@ -611,7 +617,7 @@ export async function listStorySummaries(options: {
 						take: limit,
 						skip: offset,
 					}),
-					db.userStory.count({ where }),
+					db.userStory.count({ where: visibleWhere }),
 				]);
 
 	const taskCounts = stories.length
@@ -685,7 +691,7 @@ export async function getStoriesForKanban(projectId: string) {
 			orderBy: { order: "asc" },
 		}),
 		db.userStory.findMany({
-			where: { projectId },
+			where: withVisibleStories({ projectId }),
 			include: {
 				status: true,
 				tags: {
@@ -785,7 +791,7 @@ export async function getStoriesForBoard(projectId: string) {
 			orderBy: { order: "asc" },
 		}),
 		db.userStory.findMany({
-			where: { projectId },
+			where: withVisibleStories({ projectId }),
 			select: {
 				...boardScalars(),
 				status: true,
@@ -880,7 +886,10 @@ export async function searchStoryDescriptions(
  ) AS needles
  FROM (
    SELECT s.id, lower(s.description) AS d FROM "user_story" s
-   WHERE s."projectId" = ${projectId} OFFSET 0
+   JOIN "project" p ON p."id" = s."projectId"
+   WHERE s."projectId" = ${projectId}
+     AND NOT (s."kind"::text = 'INITIATIVE' AND p."initiativesEnabled" = false)
+   OFFSET 0
  ) descriptions OFFSET 0
  ) matches WHERE cardinality(needles) > 0 ORDER BY id`);
 }
@@ -977,10 +986,18 @@ export async function getStoryById(storyId: string, projectId: string) {
 	});
 }
 
+/** getStoryById for user-facing reads: Initiatives in switched-off projects return null. */
+export async function getVisibleStoryById(storyId: string, projectId: string) {
+	return await db.userStory.findFirst({
+		where: withVisibleStories({ id: storyId, projectId }),
+		include: getStoryByIdInclude,
+	});
+}
+
 /** Metadata-only story lookup for callers that do not render its full body. */
 export async function getStorySummaryById(storyId: string, projectId: string) {
 	return await db.userStory.findFirst({
-		where: { id: storyId, projectId },
+		where: withVisibleStories({ id: storyId, projectId }),
 		select: { id: true, identifier: true, maturationStatus: true },
 	});
 }
@@ -999,7 +1016,7 @@ export async function getStoryByIdWithSourceMeeting(
 	projectId: string,
 ) {
 	return await db.userStory.findFirst({
-		where: { id: storyId, projectId },
+		where: withVisibleStories({ id: storyId, projectId }),
 		include: {
 			...getStoryByIdInclude,
 			sourceMeetingTranscript: {
@@ -1031,7 +1048,7 @@ export async function listStoriesForDownload(
 		return [];
 	}
 	return await db.userStory.findMany({
-		where: { projectId, id: { in: storyIds } },
+		where: withVisibleStories({ projectId, id: { in: storyIds } }),
 		select: {
 			id: true,
 			identifier: true,
@@ -1119,6 +1136,16 @@ export async function createStory(data: {
 	dependsOnRefs?: string[];
 	dependsOnPhases?: string[];
 }) {
+	if (data.kind === "INITIATIVE") {
+		const project = await db.project.findUnique({
+			where: { id: data.projectId },
+			select: { initiativesEnabled: true },
+		});
+		if (!project?.initiativesEnabled) {
+			throw new InitiativesDisabledError();
+		}
+	}
+
 	// Inside an Advisor chat turn (the ambient dispatch guard), every write
 	// below is preceded immediately by the turn's stop check, after every
 	// await before it, so nothing is created once the turn has stopped or
@@ -2641,10 +2668,10 @@ export async function getStoriesForDownload(
 		return [] as const;
 	}
 	return await db.userStory.findMany({
-		where: {
+		where: withVisibleStories({
 			projectId,
 			id: { in: [...storyIds] },
-		},
+		}),
 		include: {
 			tasks: {
 				orderBy: { order: "asc" },

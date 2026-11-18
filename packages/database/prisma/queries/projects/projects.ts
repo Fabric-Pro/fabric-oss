@@ -824,6 +824,7 @@ export type UpdateProjectData = {
 	// Project-level Read-only mode: blocks outbound writes
 	// to connected external sources while enabled
 	readOnlyMode?: boolean;
+	initiativesEnabled?: boolean;
 	// Per-project attachment-sync opt-in (Fizzy #1746)
 	syncAttachments?: boolean;
 	// PM terminal-status auto-close (card #1360 Phase A)

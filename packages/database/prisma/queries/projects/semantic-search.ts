@@ -7,6 +7,7 @@
  */
 
 import { db } from "../../client";
+import { withVisibleStories } from "./initiative-visibility";
 
 /**
  * Every project story that can participate in a roadmap search: DECLINED items
@@ -21,7 +22,10 @@ import { db } from "../../client";
  */
 export async function listSearchableStories(projectId: string) {
 	return db.userStory.findMany({
-		where: { projectId, draftingStage: { not: "DECLINED" } },
+		where: withVisibleStories({
+			projectId,
+			draftingStage: { not: "DECLINED" },
+		}),
 		// Deterministic order matters beyond tidiness: when a cold backlog
 		// exceeds the per-request inline-embed cap, the cap slices THIS
 		// ordering — most recently updated first, so repeated searches warm

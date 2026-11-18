@@ -24,6 +24,7 @@ export interface ConfigMeeting {
 	linkedMeetingId: string;
 	subject: string | null;
 	includedInDigest: boolean;
+	confidential: boolean;
 	lastMeetingDate: Date | string | null;
 	parlumeAutoJoin?: ParlumeAutoJoinState | null;
 }
@@ -121,6 +122,25 @@ export function useMeetingDigest({
 				organizationId,
 				linkedMeetingId,
 				...settings,
+			});
+			await queryClient.invalidateQueries({
+				queryKey: [
+					"projects.meetingDigest.listConfigurable",
+					projectId,
+					organizationId,
+				],
+			});
+		},
+		[projectId, organizationId, queryClient],
+	);
+
+	const setConfidential = useCallback(
+		async (linkedMeetingId: string, confidential: boolean) => {
+			await orpcClient.projects.meetingDigest.setConfidential({
+				projectId,
+				organizationId,
+				linkedMeetingId,
+				confidential,
 			});
 			await queryClient.invalidateQueries({
 				queryKey: [
@@ -405,6 +425,7 @@ export function useMeetingDigest({
 		isError,
 		setIncluded,
 		setParlumeAutoJoin,
+		setConfidential,
 		unlinkMeeting,
 		refreshAfterLink,
 		onActionItemToggled,

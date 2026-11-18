@@ -19,7 +19,7 @@ const { handlers, mocks, schemas } = vi.hoisted(() => {
 		workflowStart: vi.fn(),
 		getPendingBacklogProposal: vi.fn(),
 		markPendingProposalApproved: vi.fn(),
-		markPendingProposalApplied: vi.fn(),
+		settleCreatesOnlyApply: vi.fn(),
 		markPendingProposalFailed: vi.fn(),
 		appendAppliedChangeIndexes: vi.fn(),
 		recordProposalApplication: vi.fn(),
@@ -47,7 +47,8 @@ vi.mock("@repo/database", () => ({
 	markPendingProposalApproved: mocks.markPendingProposalApproved,
 	claimPendingProposalWithReview: mocks.markPendingProposalApproved,
 	getAppliedChangeIndexes: vi.fn(async () => new Set<number>()),
-	markPendingProposalApplied: mocks.markPendingProposalApplied,
+	readRejectedChangeIndexes: () => [],
+	settleCreatesOnlyApply: mocks.settleCreatesOnlyApply,
 	markPendingProposalFailed: mocks.markPendingProposalFailed,
 	appendAppliedChangeIndexes: mocks.appendAppliedChangeIndexes,
 	recordProposalApplication: mocks.recordProposalApplication,
@@ -222,7 +223,10 @@ beforeEach(() => {
 	mocks.featureFindFirst.mockResolvedValue(null);
 	mocks.appendAppliedChangeIndexes.mockResolvedValue(undefined);
 	mocks.markPendingProposalApproved.mockResolvedValue(true);
-	mocks.markPendingProposalApplied.mockResolvedValue(undefined);
+	mocks.settleCreatesOnlyApply.mockResolvedValue({
+		status: "applied",
+		remainingChangeCount: 0,
+	});
 	mocks.markPendingProposalFailed.mockResolvedValue(undefined);
 
 	mocks.createStoryFromProposal.mockImplementation(
@@ -642,7 +646,7 @@ describe("approve dispatch clock", () => {
 		mocks.workflowStart.mockImplementationOnce(async (_name, options) => ({
 			workflowId: options.workflowId,
 		}));
-		await handlers.approve({
+		const result = await handlers.approve({
 			input: {
 				projectId: PROJECT_ID,
 				organizationId: ORG_ID,
@@ -653,6 +657,11 @@ describe("approve dispatch clock", () => {
 			context: APPROVAL_CTX,
 		});
 		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
+		// The workflow settles the proposal, so nothing is counted yet.
+		expect(result).toMatchObject({
+			status: "dispatched",
+			remainingChangeCount: null,
+		});
 		const workflowId = mocks.workflowStart.mock.calls[0][1].workflowId;
 		expect(mocks.markPendingProposalApproved).toHaveBeenCalledWith(
 			expect.objectContaining({

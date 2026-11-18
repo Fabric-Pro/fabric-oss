@@ -20,6 +20,7 @@ import {
 import { stripFailedMediaPlaceholders } from "@repo/integrations/pm/pull-image-ingest";
 import { logger } from "@repo/logs";
 import {
+	legacyWorkItemTypeFor,
 	parseWorkItemTypeMapping,
 	READ_ONLY_MODE_MESSAGE,
 	resolveWorkItemType,
@@ -1232,6 +1233,10 @@ export async function syncWorkItemToPM(
 		}
 	}
 
+	const legacyType = legacyWorkItemTypeFor(
+		item.kind,
+		ITEM_TYPE_TO_ADO_TYPE[itemType],
+	);
 	const workItemType =
 		process.env.FEATURE_PM_TYPE_MAPPING === "true" && item.kind
 			? resolveWorkItemType(item.kind as StoryKindValue, {
@@ -1240,9 +1245,9 @@ export async function syncWorkItemToPM(
 							| Record<string, unknown>
 							| undefined,
 					),
-					legacyFallback: ITEM_TYPE_TO_ADO_TYPE[itemType],
+					legacyFallback: legacyType,
 				})
-			: ITEM_TYPE_TO_ADO_TYPE[itemType];
+			: legacyType;
 
 	logger.info("[Hierarchy Sync] Starting sync", {
 		itemType,

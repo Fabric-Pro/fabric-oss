@@ -81,12 +81,8 @@ beforeEach(() => {
 		await sleep(40);
 		return { mcpToolInfo: [] };
 	});
-	mocks.memory.mockImplementation(async () => {
-		await sleep(10);
-		return { context: "Memory" };
-	});
 	mocks.workspaceKnowledge.mockImplementation(async () => {
-		await sleep(10);
+		await sleep(20);
 		return { context: "Workspace" };
 	});
 	mocks.builtin.mockResolvedValue({ success: true, responseText: "Answer" });
@@ -94,7 +90,7 @@ beforeEach(() => {
 });
 
 describe("Parlume agent timing", () => {
-	it("times the built-in agent's MCP collection, memory and workspace lookups and their total", async () => {
+	it("times the built-in agent's MCP collection and workspace lookups and their total, with no memory recall", async () => {
 		const values = await measure(() =>
 			executeParlumeAgent({
 				...input,
@@ -104,7 +100,6 @@ describe("Parlume agent timing", () => {
 		expect(Object.keys(values).sort()).toEqual([
 			"agent.gatherMs",
 			"agent.mcpCollectMs",
-			"agent.memoryMs",
 			"agent.workspaceMs",
 		]);
 		expect(values["agent.mcpCollectMs"]).toBeGreaterThanOrEqual(35);
@@ -112,10 +107,9 @@ describe("Parlume agent timing", () => {
 			values["agent.mcpCollectMs"] - 2,
 		);
 		expect(values["agent.gatherMs"]).toBeLessThan(
-			values["agent.mcpCollectMs"] +
-				values["agent.memoryMs"] +
-				values["agent.workspaceMs"],
+			values["agent.mcpCollectMs"] + values["agent.workspaceMs"],
 		);
+		expect(mocks.memory).not.toHaveBeenCalled();
 	});
 
 	it("uses lookups the turn started earlier instead of repeating them", async () => {
@@ -125,7 +119,7 @@ describe("Parlume agent timing", () => {
 			"Question",
 		);
 		await executeParlumeAgent({ ...input, agent: builtIn, gathered });
-		expect(mocks.memory).toHaveBeenCalledTimes(1);
+		expect(mocks.workspaceKnowledge).toHaveBeenCalledTimes(1);
 		expect(mocks.mcp).toHaveBeenCalledTimes(1);
 		expect(mocks.builtin).toHaveBeenCalledTimes(1);
 	});
