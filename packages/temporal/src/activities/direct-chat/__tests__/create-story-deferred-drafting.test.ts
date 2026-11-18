@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 	createStory: vi.fn(),
 	triggerDraft: vi.fn(),
 	triggerDuplicates: vi.fn(),
+	projectFindUnique: vi.fn(),
 }));
 
 vi.mock("@repo/database", async (original) => ({
@@ -26,10 +27,7 @@ vi.mock("@repo/database", async (original) => ({
 			findUnique: vi.fn(async () => ({ slug: "example-org" })),
 		},
 		project: {
-			findUnique: vi.fn(async () => ({
-				projectManagementMcpConfigId: null,
-				projectManagementContainerId: null,
-			})),
+			findUnique: mocks.projectFindUnique,
 		},
 		userStory: { update: vi.fn(async () => ({})) },
 	},
@@ -77,6 +75,10 @@ async function createStory(args: Record<string, unknown>, defer: boolean) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.projectFindUnique.mockResolvedValue({
+		projectManagementMcpConfigId: null,
+		projectManagementContainerId: null,
+	});
 	mocks.createStory.mockResolvedValue({
 		story: {
 			id: "story-1",
@@ -175,5 +177,53 @@ describe("fabric_create_story when drafting is not deferred", () => {
 		expect(params).not.toHaveProperty("bodyAlreadyDrafted");
 		expect(mocks.triggerDraft).not.toHaveBeenCalled();
 		expect(result).not.toHaveProperty("draftingInBackground");
+	});
+
+	it("skips the classifier when kind is INITIATIVE", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: null,
+			initiativesEnabled: true,
+		});
+		await createStory(
+			{
+				title: "Strategic goal",
+				request: "An initiative item",
+				kind: "INITIATIVE",
+			},
+			false,
+		);
+
+		const [params] = mocks.createStory.mock.calls[0] ?? [];
+		expect(params).toMatchObject({
+			title: "Strategic goal",
+			description: "An initiative item",
+			kind: "INITIATIVE",
+			skipClassifier: true,
+		});
+		expect(params).not.toHaveProperty("skipDrafting");
+		expect(params).not.toHaveProperty("bodyAlreadyDrafted");
+	});
+
+	it("returns an error and does not create story when Initiatives are disabled", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: null,
+			initiativesEnabled: false,
+		});
+
+		const result = await createStory(
+			{
+				title: "Strategic goal",
+				request: "An initiative item",
+				kind: "INITIATIVE",
+			},
+			false,
+		);
+
+		expect(result).toMatchObject({
+			error: "Initiatives are turned off for this project.",
+		});
+		expect(mocks.createStory).not.toHaveBeenCalled();
 	});
 });

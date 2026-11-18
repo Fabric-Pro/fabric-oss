@@ -1658,6 +1658,56 @@ describe("syncWorkItemToPM", () => {
 			)[0].args;
 			expect(createArgs.workItemType).toBe("User Story");
 		});
+
+		it("kind='INITIATIVE' → wit_create_work_item receives 'Epic' with flag off, or flag on without mapping", async () => {
+			vi.mocked(getStoryById).mockResolvedValue(
+				makeStory({
+					externalId: null,
+					externalUrl: null,
+					externalMcpServerId: null,
+					lastSyncedPmHash: null,
+					kind: "INITIATIVE",
+				}) as never,
+			);
+
+			// Flag off gives "Epic"
+			const resultOff = await syncWorkItemToPM({
+				...baseInput,
+				containerName: "MyProject",
+			});
+			expect(resultOff.status).toBe("SUCCESS");
+			let createCall = vi
+				.mocked(executeMcpTool)
+				.mock.calls.find(
+					([arg]) =>
+						(arg as { toolName: string }).toolName ===
+						"wit_create_work_item",
+				);
+			expect(
+				(createCall as [{ args: Record<string, unknown> }])[0].args
+					.workItemType,
+			).toBe("Epic");
+
+			// Flag on with no mapping also gives "Epic"
+			vi.clearAllMocks();
+			process.env.FEATURE_PM_TYPE_MAPPING = "true";
+			const resultOn = await syncWorkItemToPM({
+				...baseInput,
+				containerName: "MyProject",
+			});
+			expect(resultOn.status).toBe("SUCCESS");
+			createCall = vi
+				.mocked(executeMcpTool)
+				.mock.calls.find(
+					([arg]) =>
+						(arg as { toolName: string }).toolName ===
+						"wit_create_work_item",
+				);
+			expect(
+				(createCall as [{ args: Record<string, unknown> }])[0].args
+					.workItemType,
+			).toBe("Epic");
+		});
 	});
 });
 

@@ -1,9 +1,11 @@
 /**
  * Unit tests for `backlogPendingProposalProcedure`.
  *
- * The procedure mirrors reject: load the proposal, verify it belongs to the
- * project, then compare-and-set it to BACKLOG. Covered surfaces:
+ * The procedure mirrors reject: check the caller may edit the project, load
+ * the proposal, verify it belongs to the project, then compare-and-set it to
+ * BACKLOG. Covered surfaces:
  *   - Happy path: PENDING proposal → markPendingProposalBacklog → success.
+ *   - FORBIDDEN for a caller who cannot edit the project.
  *   - NOT_FOUND when the proposal is missing or belongs to another project.
  *   - CONFLICT when the compare-and-set matches 0 rows (the proposal was
  *     already actioned / is no longer PENDING).
@@ -16,6 +18,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { handlers, mocks } = vi.hoisted(() => {
 	const handlers: Record<string, (...args: unknown[]) => unknown> = {};
 	const mocks = {
+		canEdit: vi.fn(),
 		getProposal: vi.fn(),
 		markBacklog: vi.fn(),
 	};
@@ -23,6 +26,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 });
 
 vi.mock("@repo/database", () => ({
+	canEditProject: mocks.canEdit,
 	getPendingBacklogProposal: mocks.getProposal,
 	markPendingProposalBacklog: mocks.markBacklog,
 }));
@@ -57,6 +61,8 @@ await import("../backlog-pending-proposal");
 const ctx = { user: { id: "user-1" }, session: {} };
 
 beforeEach(() => {
+	mocks.canEdit.mockReset();
+	mocks.canEdit.mockResolvedValue(true);
 	mocks.getProposal.mockReset();
 	mocks.markBacklog.mockReset();
 });
@@ -80,10 +86,28 @@ describe("backlogPendingProposalProcedure", () => {
 		})) as { success: boolean };
 
 		expect(result).toEqual({ success: true });
+		expect(mocks.canEdit).toHaveBeenCalledWith("project-1", "user-1");
 		expect(mocks.markBacklog).toHaveBeenCalledWith({
 			proposalId: "prop-1",
 			reviewedBy: "user-1",
 		});
+	});
+
+	it("throws FORBIDDEN for a caller who cannot edit the project", async () => {
+		mocks.canEdit.mockResolvedValue(false);
+
+		await expect(
+			handlers.backlog({
+				input: {
+					projectId: "project-1",
+					organizationId: "org-1",
+					proposalId: "prop-1",
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(mocks.getProposal).not.toHaveBeenCalled();
+		expect(mocks.markBacklog).not.toHaveBeenCalled();
 	});
 
 	it("throws NOT_FOUND when the proposal does not exist", async () => {

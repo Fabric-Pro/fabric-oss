@@ -1,6 +1,7 @@
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
 import { connectorErrorMessage } from "../connector-error";
+import { fetchProviderStepOutbound } from "./outbound-request";
 import { interpolateTemplate } from "./utils";
 
 export async function executeZendeskSearchTicketsStep(
@@ -37,7 +38,7 @@ export async function executeZendeskSearchTicketsStep(
 	);
 
 	try {
-		const response = await fetch(
+		const response = await fetchProviderStepOutbound(
 			`https://${credentials.ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json?query=${searchQuery}`,
 			{
 				headers: {

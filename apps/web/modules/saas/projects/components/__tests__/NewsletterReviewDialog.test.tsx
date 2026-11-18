@@ -12,7 +12,7 @@ import {
 	waitFor,
 	within,
 } from "@testing-library/react";
-import type { ComponentProps } from "react";
+import { type ComponentProps, useState } from "react";
 import {
 	afterEach,
 	beforeEach,
@@ -51,7 +51,10 @@ vi.mock("../../lib/newsletter-image-prepare", () => ({
 }));
 
 import { reviewFocusFallback } from "../../lib/newsletter-review-focus";
-import { NewsletterReviewDialog } from "../NewsletterReviewDialog";
+import {
+	AUTO_CAPTURE_LINK_TEXT,
+	NewsletterReviewDialog,
+} from "../NewsletterReviewDialog";
 
 type DialogProps = ComponentProps<typeof NewsletterReviewDialog>;
 type Send = NonNullable<DialogProps["send"]>;
@@ -940,5 +943,65 @@ describe("NewsletterReviewDialog — captured screenshots", () => {
 			),
 		);
 		expect(props.onOpenChange).not.toHaveBeenCalled();
+	});
+});
+
+describe("NewsletterReviewDialog — the automatic-capture link", () => {
+	it("is offered while images are added by hand only", () => {
+		const { dialog } = renderDialog({ onSetUpAutoCapture: vi.fn() });
+
+		expect(
+			within(dialog).getByRole("button", {
+				name: AUTO_CAPTURE_LINK_TEXT,
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("is not offered once automatic capture is on, or to someone who cannot set it up", () => {
+		const { dialog } = renderDialog({ onSetUpAutoCapture: undefined });
+
+		expect(
+			within(dialog).queryByRole("button", {
+				name: AUTO_CAPTURE_LINK_TEXT,
+			}),
+		).toBeNull();
+	});
+
+	it("closes the review, then opens the automatic-capture settings", async () => {
+		const onSetUpAutoCapture = vi.fn();
+		function Harness() {
+			const [open, setOpen] = useState(true);
+			return (
+				<NewsletterReviewDialog
+					send={open ? send([image()]) : null}
+					projectId="p-1"
+					organizationId={null}
+					removed={new Set<number>()}
+					order={[0, 1]}
+					reviewInFlight={false}
+					onToggle={vi.fn()}
+					onOrderChange={vi.fn()}
+					onApprove={vi.fn()}
+					onReject={vi.fn()}
+					onRefetch={vi.fn()}
+					onOpenChange={(next) => setOpen(next)}
+					onSetUpAutoCapture={onSetUpAutoCapture}
+				/>
+			);
+		}
+		render(
+			<QueryClientProvider client={new QueryClient()}>
+				<Harness />
+			</QueryClientProvider>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: AUTO_CAPTURE_LINK_TEXT }),
+		);
+
+		await waitFor(() =>
+			expect(onSetUpAutoCapture).toHaveBeenCalledTimes(1),
+		);
+		expect(screen.queryByRole("dialog")).toBeNull();
 	});
 });

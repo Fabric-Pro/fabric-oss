@@ -785,6 +785,33 @@ export type RoutingJudgement =
 	  }
 	| { kind: "failed"; alternatives: RoutingAlternative[]; error: string };
 
+/**
+ * The tickets an item is compared with, strongest first: the SAME shortlist
+ * the meeting-digest linker uses (same cosine floor, same per-item cap, same
+ * ranking), with each ticket's row. The judge decides over it; an advisory
+ * surface with no judge shows it as is.
+ */
+export function routingShortlist(
+	itemEmbedding: number[],
+	corpus: Pick<ReadyRoutingCorpus, "candidateVectors" | "storyById">,
+): RoutingAlternative[] {
+	return selectCandidates(itemEmbedding, corpus.candidateVectors).flatMap(
+		(scored) => {
+			const story = corpus.storyById.get(scored.storyId);
+			return story
+				? [
+						{
+							storyId: story.id,
+							identifier: story.identifier,
+							title: story.title,
+							similarity: scored.similarity,
+						},
+					]
+				: [];
+		},
+	);
+}
+
 export interface JudgeRoutingItemParams {
 	/** Detection-style text for the item being judged — the SAME text that was
 	 * embedded into `itemEmbedding` by `loadRoutingCorpus`. */
@@ -844,27 +871,14 @@ export async function judgeRoutingItem(
 		abortSignal,
 	} = params;
 
-	// The SAME shortlist the meeting-digest linker uses: same cosine floor,
-	// same per-item cap, same ranking.
-	const shortlist = selectCandidates(itemEmbedding, candidateVectors);
-
 	// The ranked shortlist is retained whatever the verdict — an override
 	// picker offers it as "suggested tickets".
-	const alternatives: RoutingAlternative[] = shortlist.flatMap((scored) => {
-		const story = storyById.get(scored.storyId);
-		return story
-			? [
-					{
-						storyId: story.id,
-						identifier: story.identifier,
-						title: story.title,
-						similarity: scored.similarity,
-					},
-				]
-			: [];
+	const alternatives = routingShortlist(itemEmbedding, {
+		candidateVectors,
+		storyById,
 	});
 
-	if (shortlist.length === 0) {
+	if (alternatives.length === 0) {
 		return {
 			kind: "create",
 			confidence: 1,

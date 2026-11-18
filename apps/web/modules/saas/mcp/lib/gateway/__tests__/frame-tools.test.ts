@@ -789,6 +789,21 @@ describe("fabric_list_frames", () => {
 			}),
 		);
 	});
+	it("holds a pinned session's frame get and list to its project", async () => {
+		const pinned = { ...session, pinnedProjectId: "project-1" };
+		await executePlatformTool(
+			"fabric_get_frame",
+			{ frameId: "frame-2" },
+			pinned,
+		);
+		await executePlatformTool("fabric_list_frames", {}, pinned);
+		expect(mocks.getFirstClassFrame).toHaveBeenCalledWith(
+			expect.objectContaining({ projectRestrictionId: "project-1" }),
+		);
+		expect(mocks.listFirstClassFrames).toHaveBeenCalledWith(
+			expect.objectContaining({ projectRestrictionId: "project-1" }),
+		);
+	});
 	it("lists the caller's own frames when told nothing else", async () => {
 		await executePlatformTool(
 			"fabric_list_frames",

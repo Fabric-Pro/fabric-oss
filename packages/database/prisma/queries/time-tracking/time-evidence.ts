@@ -34,6 +34,21 @@
  *    reviews are left out: their author label is not a login a github.com
  *    credential proves.
  *
+ * Two more sources are read by the time-suggestion worker from the member's
+ * own Microsoft 365 calendar, never a connection shared with the organization
+ * (`calendar-evidence.ts` holds their database reads):
+ *
+ *  - CALENDAR_EVENT: a Teams meeting the member organized, accepted or marked
+ *    tentative, whose join URL is the series linked to exactly one of the
+ *    member's projects, from its start to its end. Only a SHA-256 of the
+ *    calendar event id is kept as the source id; the subject, organizer,
+ *    attendees and join URL never leave the worker's read.
+ *  - MEETING_SESSION of a session the agent joined on its own (trigger AUTO):
+ *    credited to each member whose calendar shows they organized or accepted
+ *    that occurrence, from the agent's join to its end, in place of the
+ *    calendar meeting. The member who enabled automatic joining is treated
+ *    like everyone else.
+ *
  * Document versions are not a source: a `DocumentVersion` row snapshots the
  * content that was live before an edit, so its `changedBy` names the author
  * of that earlier content while its time is when someone superseded it.
@@ -332,21 +347,31 @@ export async function collectUnclaimedTimeEvidence(params: {
 			}),
 		),
 	];
-	if (collected.length === 0) {
+	return filterUnclaimedTimeEvidence(userId, collected);
+}
+
+/**
+ * `evidence` without what any suggestion of the member, whatever its status,
+ * has already claimed. For evidence read here and for evidence built outside
+ * the database, such as the member's calendar meetings.
+ */
+export async function filterUnclaimedTimeEvidence<
+	T extends Pick<CollectedTimeEvidence, "kind" | "sourceId">,
+>(userId: string, evidence: readonly T[]): Promise<T[]> {
+	if (evidence.length === 0) {
 		return [];
 	}
-
 	const claimed = await db.timeSuggestionEvidence.findMany({
 		where: {
 			userId,
-			sourceId: { in: collected.map((evidence) => evidence.sourceId) },
+			sourceId: { in: evidence.map((item) => item.sourceId) },
 		},
 		select: { kind: true, sourceId: true },
 	});
 	const claimedKeys = new Set(
 		claimed.map((row) => `${row.kind}:${row.sourceId}`),
 	);
-	return collected.filter(
-		(evidence) => !claimedKeys.has(`${evidence.kind}:${evidence.sourceId}`),
+	return evidence.filter(
+		(item) => !claimedKeys.has(`${item.kind}:${item.sourceId}`),
 	);
 }

@@ -34,6 +34,7 @@ import {
 	isFabricChatTool,
 } from "../../../lib/fabric-gateway-tools";
 import {
+	FABRIC_MEETING_WITHHELD_TOOL_NAMES,
 	FABRIC_PORTAL_EXCLUDED_TOOL_NAMES,
 	FABRIC_PORTAL_TOOL_NAMES,
 	foreignProjectId,
@@ -95,6 +96,12 @@ const BASE_LISTING = FABRIC_CHAT_TOOL_DEFINITIONS.map((tool) => ({
 	annotations: tool.annotations,
 }));
 
+/** A meeting turn never gets the inviter's own workspaces. */
+const offeredInMeeting = (name: string) =>
+	!FABRIC_MEETING_WITHHELD_TOOL_NAMES.includes(name);
+const MEETING_PORTAL_TOOL_COUNT =
+	FABRIC_PORTAL_TOOL_NAMES.filter(offeredInMeeting).length;
+
 const PORTAL_TURN = { portal: { offer: true } };
 const PORTAL_TURN_WITHOUT_SCHEMAS = { portal: { offer: false } };
 
@@ -153,8 +160,9 @@ describe("which portal tools the model is given", () => {
 			"fabric_update_instruction_set",
 			"fabric_delete_instruction_set",
 		];
+		// Two later tools, less the inviter's chat and connected-server lists.
 		expect(FABRIC_PORTAL_TOOL_NAMES).toHaveLength(
-			41 + savedEvaluationTools.length + 2 + instructionSetTools.length,
+			41 + savedEvaluationTools.length + instructionSetTools.length,
 		);
 		for (const name of instructionSetTools) {
 			expect(FABRIC_PORTAL_TOOL_NAMES).toContain(name);
@@ -180,7 +188,20 @@ describe("which portal tools the model is given", () => {
 		expect(FABRIC_PORTAL_TOOL_NAMES).toContain("fabric_create_bug");
 	});
 
-	it("covers identity, organizations, projects, features, tasks, documents, contexts, instructions, knowledge search, workspaces, chats and connected servers", () => {
+	it("never offers the inviter's own chats or connected servers, which every attendee would hear", () => {
+		expect(FABRIC_PORTAL_TOOL_NAMES).not.toContain("fabric_list_chats");
+		expect(FABRIC_PORTAL_TOOL_NAMES).not.toContain(
+			"fabric_list_connected_servers",
+		);
+		expect(FABRIC_PORTAL_EXCLUDED_TOOL_NAMES).toEqual(
+			expect.arrayContaining([
+				"fabric_list_chats",
+				"fabric_list_connected_servers",
+			]),
+		);
+	});
+
+	it("covers identity, organizations, projects, features, tasks, documents, contexts, instructions, knowledge search and workspaces", () => {
 		expect(FABRIC_PORTAL_TOOL_NAMES).toEqual(
 			expect.arrayContaining([
 				"fabric_get_identity",
@@ -188,8 +209,6 @@ describe("which portal tools the model is given", () => {
 				"fabric_switch_organization",
 				"fabric_list_projects",
 				"fabric_create_project",
-				"fabric_list_chats",
-				"fabric_list_connected_servers",
 				"fabric_list_features",
 				"fabric_get_feature",
 				"fabric_update_feature_status",
@@ -225,13 +244,14 @@ describe("when the portal schemas ride on a turn", () => {
 			Object.keys(platform?.tools ?? {}).filter(isFabricPortalTool),
 		).toEqual(
 			FABRIC_CHAT_TOOL_DEFINITIONS.map((tool) => tool.name).filter(
-				isFabricPortalTool,
+				(name) => isFabricPortalTool(name) && offeredInMeeting(name),
 			),
 		);
 		expect(Object.keys(platform?.tools ?? {}).sort()).toEqual(
 			FABRIC_CHAT_TOOL_DEFINITIONS.filter(
 				(tool) =>
-					!FABRIC_PORTAL_EXCLUDED_TOOL_NAMES.includes(tool.name),
+					!FABRIC_PORTAL_EXCLUDED_TOOL_NAMES.includes(tool.name) &&
+					offeredInMeeting(tool.name),
 			)
 				.map((tool) => tool.name)
 				.sort(),
@@ -264,8 +284,23 @@ describe("when the portal schemas ride on a turn", () => {
 
 		expect(
 			Object.keys(platform?.tools ?? {}).filter(isFabricPortalTool),
-		).toHaveLength(FABRIC_PORTAL_TOOL_NAMES.length);
+		).toHaveLength(MEETING_PORTAL_TOOL_COUNT);
 	});
+
+	it.each(FABRIC_MEETING_WITHHELD_TOOL_NAMES)(
+		"never offers the inviter's workspace tool %s in a meeting, though a chat keeps it",
+		async (name) => {
+			const meeting = await loadFabricPlatformTools(ACTOR, PORTAL_TURN);
+			expect(meeting?.tools).not.toHaveProperty(name);
+			await expect(meeting?.callAuthorized(name, {})).resolves.toEqual({
+				error: `${name} is not available`,
+			});
+
+			resetFabricPlatformMcpCache();
+			const chat = await loadFabricPlatformTools(ACTOR);
+			expect(chat?.tools).toHaveProperty(name);
+		},
+	);
 
 	it("gives an ordinary chat only the six selected portal reads", async () => {
 		const platform = await loadFabricPlatformTools(ACTOR);
@@ -288,7 +323,7 @@ describe("when the portal schemas ride on a turn", () => {
 		expect(mocks.listTools).toHaveBeenCalledTimes(2);
 		expect(
 			Object.keys(meeting?.tools ?? {}).filter(isFabricPortalTool),
-		).toHaveLength(FABRIC_PORTAL_TOOL_NAMES.length);
+		).toHaveLength(MEETING_PORTAL_TOOL_COUNT);
 	});
 
 	it("measures the weight a turn does not carry", async () => {
@@ -323,12 +358,9 @@ describe("telling a read from a change", () => {
 			fabric_get_feature: "READ",
 			fabric_search_project_knowledge: "READ",
 			fabric_instruction_checks: "READ",
-			fabric_query_workspace: "READ",
 			fabric_get_identity: "READ",
 			fabric_list_organizations: "READ",
 			fabric_list_projects: "READ",
-			fabric_list_chats: "READ",
-			fabric_list_connected_servers: "READ",
 			fabric_switch_organization: "WRITE",
 			fabric_create_project: "WRITE",
 			fabric_update_project: "WRITE",
@@ -373,8 +405,6 @@ describe("needsFabricPortalTools", () => {
 		"which projects do we have",
 		"create a new project for the pilot",
 		"which organizations am I in",
-		"show me my recent chats",
-		"which connected servers are there",
 		"create a set for the web and api repos",
 		"add the ios repository to the mobile set",
 		"rename the rule set",

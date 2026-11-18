@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
 	timeEntry: {
 		findMany: vi.fn(),
 		findFirst: vi.fn(),
+		groupBy: vi.fn(),
 		create: vi.fn(),
 		update: vi.fn(),
 		deleteMany: vi.fn(),
@@ -46,6 +47,7 @@ const {
 	findTimeEntryForAuthor,
 	listAuthorLoggedTime,
 	listAuthorTimeEntriesOnWorkDate,
+	listRecentTimeEntryNotes,
 	listTimeAccessRows,
 	listTimeEntriesForAuthor,
 	listTimeEntriesForAuthorStory,
@@ -332,6 +334,51 @@ describe("the author's name is saved with the entry", () => {
 		expect(mocks.timeEntry.update.mock.calls[0][0].data).toMatchObject({
 			userNameSnapshot: "Ada Renamed",
 		});
+	});
+});
+
+describe("listRecentTimeEntryNotes", () => {
+	it("reads only the author's own logged notes on the one project", async () => {
+		mocks.timeEntry.groupBy.mockResolvedValue([]);
+
+		await listRecentTimeEntryNotes({
+			organizationId: "org-1",
+			projectId: "project-a",
+			userId: "user-1",
+			limit: 5,
+		});
+
+		const query = mocks.timeEntry.groupBy.mock.calls[0][0];
+		expect(query.where).toEqual({
+			organizationId: "org-1",
+			projectId: "project-a",
+			userId: "user-1",
+			sourceSuggestionId: null,
+			description: { not: null },
+		});
+		expect(query.by).toEqual(["description"]);
+	});
+
+	it("returns distinct notes by their latest save, newest first, up to the limit", async () => {
+		mocks.timeEntry.groupBy.mockResolvedValue([
+			{ description: "Development", _max: { updatedAt: new Date() } },
+			{ description: "REQS", _max: { updatedAt: new Date() } },
+		]);
+
+		const notes = await listRecentTimeEntryNotes({
+			organizationId: "org-1",
+			projectId: "project-a",
+			userId: "user-1",
+			limit: 5,
+		});
+
+		const query = mocks.timeEntry.groupBy.mock.calls[0][0];
+		expect(query.orderBy).toEqual([
+			{ _max: { updatedAt: "desc" } },
+			{ description: "asc" },
+		]);
+		expect(query.take).toBe(5);
+		expect(notes).toEqual(["Development", "REQS"]);
 	});
 });
 

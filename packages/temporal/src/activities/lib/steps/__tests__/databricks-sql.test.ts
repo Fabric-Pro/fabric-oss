@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	createOAuthM2MProvider,
+	DatabricksTokenTimeoutError,
+} from "@repo/databricks";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	credentials: vi.fn(),
@@ -8,9 +12,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	fetchCredentialsByIdAndProviderInTenant: mocks.credentials,
 }));
-vi.mock("@repo/integrations", () => ({
+vi.mock("@repo/integrations", async () => ({
 	executeDatabricksSql: mocks.execute,
-	DatabricksSqlError: class extends Error {},
+	DatabricksSqlError: (
+		await import("../../../../../../integrations/src/databricks-sql")
+	).DatabricksSqlError,
 }));
 vi.mock("../../activity-liveness", () => ({
 	activityCancellationSignal: mocks.signal,
@@ -47,6 +53,7 @@ beforeEach(() => {
 		truncated: false,
 	});
 });
+afterEach(() => vi.unstubAllGlobals());
 describe("Databricks workflow steps", () => {
 	it("pins the exact selected provider and actor, never a provider fallback", async () => {
 		const result = await executeDatabricksSqlStep(base);
@@ -65,6 +72,107 @@ describe("Databricks workflow steps", () => {
 				truncated: false,
 			},
 		});
+	});
+	it("reports a refused Databricks token redirect through the SQL client", async () => {
+		const { executeDatabricksSql } = await import(
+			"../../../../../../integrations/src/databricks-sql"
+		);
+		const transport = vi.fn(async () =>
+			Response.redirect("https://example.com/", 302),
+		);
+		vi.stubGlobal("fetch", transport);
+		mocks.credentials.mockResolvedValueOnce({
+			DATABRICKS_HOST: "https://example.cloud.databricks.com",
+			DATABRICKS_CLIENT_ID: "example-client",
+			DATABRICKS_CLIENT_SECRET: "example-secret",
+		});
+		mocks.execute.mockImplementationOnce(executeDatabricksSql);
+
+		expect(await executeDatabricksSqlStep(base)).toMatchObject({
+			success: false,
+			error: "Request failed: the server responded with a redirect, and redirects are not followed.",
+		});
+		expect(transport).toHaveBeenCalledExactlyOnceWith(
+			"https://example.cloud.databricks.com/oidc/v1/token",
+			expect.objectContaining({
+				dispatcher: expect.anything(),
+				redirect: "manual",
+			}),
+		);
+	});
+	it("reports a refused Databricks destination without sending a request", async () => {
+		const transport = vi.fn();
+		vi.stubGlobal("fetch", transport);
+		mocks.execute.mockImplementationOnce(
+			async (_credentials, { fetchImpl }) =>
+				fetchImpl("https://127.0.0.1/"),
+		);
+
+		expect(await executeDatabricksSqlStep(base)).toMatchObject({
+			success: false,
+			error: "Request blocked: destination is not allowed.",
+		});
+		expect(transport).not.toHaveBeenCalled();
+	});
+
+	it("preserves the OAuth token timeout class through the workflow transport", async () => {
+		const timeout = new DOMException(
+			"Example token timeout",
+			"TimeoutError",
+		);
+		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(timeout));
+		let tokenFailure: unknown;
+		mocks.execute.mockImplementationOnce(
+			async (credentials, { fetchImpl }) => {
+				const provider = createOAuthM2MProvider(
+					credentials.DATABRICKS_HOST,
+					"example-client",
+					"example-secret",
+					fetchImpl,
+				);
+				try {
+					return await provider.getToken();
+				} catch (error) {
+					tokenFailure = error;
+					throw error;
+				}
+			},
+		);
+
+		expect(await executeDatabricksSqlStep(base)).toMatchObject({
+			success: false,
+			error: "Databricks SQL could not run. Check the selected connection.",
+		});
+		expect(tokenFailure).toBeInstanceOf(DatabricksTokenTimeoutError);
+	});
+
+	it("keeps the SQL connection guidance when the warehouse transport fails", async () => {
+		const { executeDatabricksSql } = await import(
+			"../../../../../../integrations/src/databricks-sql"
+		);
+		const error = new TypeError("Example connection failed");
+		const transport = vi
+			.fn()
+			.mockResolvedValueOnce(
+				Response.json({
+					access_token: "example-token",
+					expires_in: 3600,
+				}),
+			)
+			.mockRejectedValueOnce(error);
+		vi.stubGlobal("fetch", transport);
+		mocks.credentials.mockResolvedValueOnce({
+			DATABRICKS_HOST: "https://example.cloud.databricks.com",
+			DATABRICKS_CLIENT_ID: "example-client",
+			DATABRICKS_CLIENT_SECRET: "example-secret",
+		});
+		mocks.execute.mockImplementationOnce(executeDatabricksSql);
+
+		expect(await executeDatabricksSqlStep(base)).toMatchObject({
+			success: false,
+			error: "Databricks SQL request failed. Check the selected connection and warehouse permissions.",
+		});
+		expect(transport).toHaveBeenCalledTimes(2);
 	});
 	it("keeps hostile upstream values in bound parameters rather than SQL source", async () => {
 		await executeDatabricksSqlStep(base);

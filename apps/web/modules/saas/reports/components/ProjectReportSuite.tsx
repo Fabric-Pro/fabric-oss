@@ -3,11 +3,16 @@
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { ProjectSectionHero } from "@saas/projects/components/ProjectSectionHero";
+import {
+	type ReportCandidate,
+	useLikelyDuplicateGuard,
+} from "@saas/reports/hooks/use-likely-duplicate-guard";
 import { useOneClickReport } from "@saas/reports/hooks/use-one-click-report";
 import {
 	type ProjectReportsTab,
 	pickDefaultProjectReportsTab,
 } from "@saas/reports/lib/project-report-suite";
+import { parseTemplateDefinition } from "@saas/reports/lib/report-template-definition";
 import { Pagination } from "@saas/shared/components/Pagination";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -18,10 +23,13 @@ import { cn } from "@ui/lib";
 import { RotateCcwIcon, SparklesIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { CreateInstanceDialog } from "./CreateInstanceDialog";
+import { LikelyDuplicateReportDialog } from "./LikelyDuplicateReportDialog";
 import { ProjectReportInstancesList } from "./ProjectReportInstancesList";
 import { ProjectReportTemplatesList } from "./ProjectReportTemplatesList";
 
 const REPORTS_PER_PAGE = 20;
+
+type AcknowledgedOneClick = ReportCandidate & { templateId: string };
 
 // A report the project's list shows: running, or set up and waiting for a source.
 const LISTED_REPORT_STATUSES: Array<"ACTIVE" | "DRAFT"> = ["ACTIVE", "DRAFT"];
@@ -109,6 +117,38 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 		reportTemplatesPath,
 		onNeedsSetup: setStartingFrom,
 	});
+	const duplicateGuard = useLikelyDuplicateGuard({
+		organizationId,
+		projectId,
+	});
+	const [checkingTemplateId, setCheckingTemplateId] = useState<string | null>(
+		null,
+	);
+	// A one-click report the person chose to generate despite a warning: the
+	// setup dialog that may follow does not warn about it again.
+	const [acknowledged, setAcknowledged] =
+		useState<AcknowledgedOneClick | null>(null);
+	// One-click names the report as the create dialog does, from its template.
+	const generateUnlessDuplicate = async (template: TemplateRow) => {
+		if (checkingTemplateId || generatingTemplateId) {
+			return;
+		}
+		setCheckingTemplateId(template.id);
+		const candidate = {
+			name: `My ${template.name}`,
+			prompt:
+				parseTemplateDefinition(template.definition).userPrompt ?? "",
+		};
+		await duplicateGuard.guard(candidate, (continuedPastWarning) => {
+			setAcknowledged(
+				continuedPastWarning
+					? { ...candidate, templateId: template.id }
+					: null,
+			);
+			generate(template);
+		});
+		setCheckingTemplateId(null);
+	};
 
 	const instances = instancesData?.instances ?? [];
 	const templates = templatesData?.templates ?? [];
@@ -278,13 +318,21 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 								onShowArchivedChange={setShowArchived}
 								showUnproven={showUnproven}
 								onShowUnprovenChange={setShowUnproven}
-								onGenerate={generate}
-								generatingTemplateId={generatingTemplateId}
+								onGenerate={generateUnlessDuplicate}
+								generatingTemplateId={
+									generatingTemplateId ?? checkingTemplateId
+								}
 							/>
 						)}
 					</TabsContent>
 				</Tabs>
 			)}
+
+			<LikelyDuplicateReportDialog
+				{...duplicateGuard.dialogProps}
+				reportTemplatesPath={reportTemplatesPath}
+				continueLabel="Generate anyway"
+			/>
 
 			{startingFrom && (
 				<CreateInstanceDialog
@@ -292,6 +340,11 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 					organizationId={organizationId}
 					projectId={projectId}
 					basePath={reportTemplatesPath}
+					acknowledgedDuplicate={
+						acknowledged?.templateId === startingFrom.id
+							? acknowledged
+							: undefined
+					}
 					onClose={() => setStartingFrom(null)}
 				/>
 			)}

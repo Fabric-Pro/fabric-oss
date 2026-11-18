@@ -1161,8 +1161,12 @@ async function runDirectChatTurnBody(
 		? {}
 		: createWorkflowTools(userId, organizationId);
 	// The Advisor's view of itself and the workspace: recent sessions,
-	// agents, connections. Backs the "Improve Fabric" starter.
-	const advisorTools = createAdvisorTools(userId, organizationId);
+	// agents, connections. Backs the "Improve Fabric" starter. They list what
+	// belongs to the user alone, so a meeting, where anyone who speaks asks
+	// with the inviter's access, does not get them.
+	const advisorTools = isVoiceTurn(input.featureKey)
+		? {}
+		: createAdvisorTools(userId, organizationId);
 
 	// Create built-in tools (web search, etc.)
 	const inProcessBuiltInTools = await timeTurnStep(

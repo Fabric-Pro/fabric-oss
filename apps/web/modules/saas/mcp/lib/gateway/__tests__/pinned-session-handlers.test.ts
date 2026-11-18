@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	findConfidentialTranscriptContextIds: async () => new Set(),
 	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	getDocumentById: mocks.getDocumentById,

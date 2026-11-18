@@ -8,7 +8,14 @@ import {
 	DEFAULT_PROJECT_MANAGEMENT_KEYS,
 	PM_SERVER_ID_KEY_SENTINEL_PREFIX,
 } from "../default-pm-tool-keys";
-import { HIDDEN_SYSTEM_MCP_SERVER_KEYS } from "../hidden-mcp-server-keys";
+import {
+	HIDDEN_SYSTEM_MCP_SERVER_KEYS,
+	isHiddenSystemMcpServerKey,
+} from "../hidden-mcp-server-keys";
+import {
+	McpConfigInputError,
+	validateMcpCommandArgs,
+} from "../mcp-command-args";
 import {
 	GITLAB_PERSONAL_MCP_SERVER_KEYS,
 	isGitLabPersonalMcpServerKey,
@@ -1263,6 +1270,30 @@ export async function resolveReportMcpConfig({
 	return null;
 }
 
+async function assertMcpConfigCommandArgs(
+	mcpServerId: string,
+	args: readonly string[],
+	creating: boolean,
+) {
+	const server = await db.mCPServer.findUnique({
+		where: { id: mcpServerId },
+		select: { key: true, isSystemProvided: true },
+	});
+	if (
+		creating &&
+		server?.isSystemProvided &&
+		isHiddenSystemMcpServerKey(server.key)
+	) {
+		throw new McpConfigInputError(
+			"This MCP server is not available to configure.",
+		);
+	}
+	const result = validateMcpCommandArgs(server, args);
+	if (!result.ok) {
+		throw new McpConfigInputError(result.reason);
+	}
+}
+
 /**
  * Create a new MCP config (always creates, never upserts).
  * Use this when the user explicitly wants a second config for the same server
@@ -1300,6 +1331,9 @@ export async function createMcpConfig({
 		);
 	}
 
+	const commandArgs = data.commandArgs ?? [];
+	await assertMcpConfigCommandArgs(mcpServerId, commandArgs, true);
+
 	const createData = {
 		mcpServerId,
 		userId,
@@ -1311,7 +1345,7 @@ export async function createMcpConfig({
 		apiKeyMethod: data.apiKeyMethod ?? ("BEARER" as MCPApiKeyMethod),
 		encryptedApiKey: data.encryptedApiKey ?? null,
 		scopes: data.scopes ?? [],
-		commandArgs: data.commandArgs ?? [],
+		commandArgs,
 		enabled: data.enabled ?? true,
 		status: "HEALTHY" as MCPStatus,
 		description: data.description ?? null,
@@ -1367,6 +1401,13 @@ export async function upsertMcpConfig({
 
 	const existing = await db.mCPConfig.findFirst({ where: tenantFilter });
 	if (existing) {
+		if (data.commandArgs !== undefined) {
+			await assertMcpConfigCommandArgs(
+				mcpServerId,
+				data.commandArgs,
+				false,
+			);
+		}
 		// Filter out null apiKeyMethod since it's not a valid update value
 		const { apiKeyMethod, ...restData } = data;
 		const updateData =
@@ -1382,25 +1423,7 @@ export async function upsertMcpConfig({
 		});
 	}
 
-	const createData = {
-		...tenantFilter,
-		displayName: data.displayName ?? null,
-		baseUrl: data.baseUrl ?? null,
-		transport: data.transport ?? null,
-		authType: data.authType ?? ("NONE" as MCPAuthType),
-		apiKeyMethod: data.apiKeyMethod ?? ("BEARER" as MCPApiKeyMethod),
-		encryptedApiKey: data.encryptedApiKey ?? null,
-		scopes: data.scopes ?? [],
-		commandArgs: data.commandArgs ?? [],
-		enabled: data.enabled ?? true,
-		status: "HEALTHY" as MCPStatus,
-		// Semantic server routing metadata
-		description: data.description ?? null,
-		domainKeywords: data.domainKeywords ?? [],
-		exampleQueries: data.exampleQueries ?? [],
-	};
-
-	return db.mCPConfig.create({ data: createData });
+	return createMcpConfig({ mcpServerId, userId, organizationId, data });
 }
 
 export async function deleteMcpConfig(id: string) {

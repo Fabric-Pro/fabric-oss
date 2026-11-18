@@ -26,6 +26,7 @@ import type { RerankerProviderType } from "../reranking/types";
 import {
 	hydrateProjectContextHits,
 	searchProjectContextHits,
+	withoutConfidentialTranscripts,
 } from "./search-hits";
 import { applyContextSummary } from "./summary-injection";
 
@@ -227,7 +228,7 @@ export async function retrieveProjectContexts(
 			}`,
 		);
 
-		const searchResults = await searchProjectContextHits({
+		const allSearchResults = await searchProjectContextHits({
 			query,
 			embedQuery: async (boundedQuery) => {
 				const result = await runWithAiCallPurpose(
@@ -264,6 +265,10 @@ export async function retrieveProjectContexts(
 			minSimilarity: similarityThreshold,
 			contextIds,
 		});
+		const searchResults = await withoutConfidentialTranscripts(
+			allSearchResults,
+			projectId,
+		);
 
 		if (searchResults.length === 0) {
 			logger.info("[Retrieval] No similar contexts found");

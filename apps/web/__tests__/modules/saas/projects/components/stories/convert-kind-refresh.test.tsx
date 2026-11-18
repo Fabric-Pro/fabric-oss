@@ -380,18 +380,6 @@ vi.mock("@copilotkit/react-ui", () => ({
 	),
 }));
 
-vi.mock("@copilotkit/runtime-client-gql", () => ({
-	MessageRole: { User: "user", Assistant: "assistant", System: "system" },
-	TextMessage: class {
-		role: string;
-		content: string;
-		constructor(props: { role: string; content: string }) {
-			this.role = props.role;
-			this.content = props.content;
-		}
-	},
-}));
-
 vi.mock("@saas/projects/components/copilot/CopilotSidebarHeader", () => ({
 	createCopilotSidebarHeader: () => () => null,
 }));

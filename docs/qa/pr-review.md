@@ -274,9 +274,16 @@ workspace AI SDK and AI Gateway credential to ask four decision questions about
 added source lines: tenant scope, record permissions, secret and raw error text
 exposure, and a failure reported as success. They are the defect classes that
 recur in this repository's fix history and show in the diff that introduced
-them. A score of 0.8 or more is a finding (`JEV_PR_REVIEW_CUTOFF` overrides it).
-Findings become file-level review threads; the staging
-thread-resolution ruleset requires developers to resolve them before merging.
+them. A score at or above the question's cutoff is a finding. Set a question's
+cutoff in `QUESTION_DETAILS` in
+[questions.mjs](../../tooling/jev-pr-review/questions.mjs). Questions without
+one use `JEV_PR_REVIEW_CUTOFF`, which defaults to 0.8. Use the
+[evaluation harness](../../tooling/jev-pr-review/eval/README.md) before and
+after changing the wording or cutoffs.
+Findings become file-level review threads. The check asks developers to reply
+with `fixed` or `false positive` and a one-line reason before resolving. The
+staging thread-resolution ruleset requires developers to resolve threads
+before merging.
 Missing credentials are reported as not run. Incomplete evaluations identify the
 questions and requests not evaluated, while valid findings from other requests
 are still posted. A failure to deliver a finding makes the check red; model and

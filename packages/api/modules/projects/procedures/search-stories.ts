@@ -1,4 +1,9 @@
-import { db, normalizeStoryIdentifierQuery, type Prisma } from "@repo/database";
+import {
+	db,
+	normalizeStoryIdentifierQuery,
+	type Prisma,
+	withVisibleStories,
+} from "@repo/database";
 import { rankStoryIdsBySemanticActivity } from "@repo/database/prisma/queries/projects/story-activity-ranking";
 import { z } from "zod";
 import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
@@ -86,7 +91,7 @@ export const searchStoriesProcedure = tenantProtectedProcedure
 		// matching body on an autocomplete keystroke. Rank ids under a cap first,
 		// then read only the rows actually returned.
 		const rankedIds = await rankStoryIdsBySemanticActivity(
-			where,
+			withVisibleStories(where),
 			SEARCH_RESULT_LIMIT,
 		);
 		if (rankedIds.length === 0) {

@@ -363,7 +363,12 @@ describe("audit.taxonomy handler", () => {
 		// + 3 project.instructions.{set_created, set_updated, set_deleted}
 		// (a Coding Instructions set created, changed or deleted; slugs and
 		// repository counts only) = 268.
-		expect(result.actions).toHaveLength(268);
+		// + 1 project.meeting_digest.confidentiality_changed (a linked series
+		// marked confidential or not; the new state only) = 269.
+		expect(result.actions).toHaveLength(269);
+		expect(result.actions).toContain(
+			"project.meeting_digest.confidentiality_changed",
+		);
 		expect(result.actions).toContain("project.instructions.set_created");
 		expect(result.actions).toContain("newsletter.screenshots.changed");
 		expect(result.actions).toContain(

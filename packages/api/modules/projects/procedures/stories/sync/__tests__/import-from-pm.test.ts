@@ -6,7 +6,7 @@
  * is true, and creation path for new stories.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	fixtureTarget,
 	mutablePmSettings,
@@ -180,14 +180,26 @@ vi.mock("@repo/logs", () => ({
 vi.mock("@repo/utils", () => ({
 	COMMON_URL_FIELDS: ["url", "link", "webUrl", "web_url", "html_url"],
 	normalizeUrl: (raw: string | null) => raw ?? undefined,
-	resolveKindFromPmType: (pmType: string | null | undefined) => {
+	resolveKindFromPmType: (
+		pmType: string | null | undefined,
+		mapping?: Record<string, string> | null,
+	) => {
 		const n = (pmType ?? "").trim().toLowerCase();
+		if (mapping) {
+			for (const [kind, mapped] of Object.entries(mapping)) {
+				if (mapped && mapped.trim().toLowerCase() === n) {
+					return kind;
+				}
+			}
+		}
 		if (n === "bug" || n === "defect") {
 			return "BUG";
 		}
 		return "FEATURE";
 	},
-	parseWorkItemTypeMapping: () => ({}),
+	parseWorkItemTypeMapping: (
+		ctx: Record<string, unknown> | null | undefined,
+	) => (ctx?.workItemTypeMapping as Record<string, string>) ?? {},
 }));
 
 vi.mock("../../../../../../orpc/procedures", () => {
@@ -1744,6 +1756,10 @@ describe("importFromPMProcedure", () => {
 	});
 
 	describe("FEATURE_PM_TYPE_MAPPING — kind on create", () => {
+		afterEach(() => {
+			vi.unstubAllEnvs();
+		});
+
 		it("flag on + ADO 'Bug' → createStory called with kind:'BUG'", async () => {
 			process.env.FEATURE_PM_TYPE_MAPPING = "true";
 			defaultSetup();
@@ -1795,6 +1811,78 @@ describe("importFromPMProcedure", () => {
 				unknown
 			>;
 			expect(callArg).not.toHaveProperty("kind");
+		});
+
+		it("flag on + mapped Initiative in project with initiatives off → created as FEATURE", async () => {
+			vi.stubEnv("FEATURE_PM_TYPE_MAPPING", "true");
+			defaultSetup();
+			vi.mocked(db.project.findFirst).mockResolvedValue({
+				id: "proj-1",
+				organizationId: null,
+				initiativesEnabled: false,
+				projectManagementMcpServerId: "mcp-server-1",
+				projectManagementMcpConfigId: "mcp-cfg-1",
+				projectManagementContainerId: "container-1",
+				projectManagementAdditionalContext: {
+					workItemTypeMapping: { INITIATIVE: "Initiative" },
+				},
+			} as never);
+			mockParsePMItemFromGetOutput.mockReturnValue({
+				workItemType: "Initiative",
+			});
+			vi.mocked(db.userStory.findFirst).mockResolvedValue(null as never);
+			mockCreateStory.mockResolvedValue({ id: "story-new", title: "x" });
+			vi.mocked(db.userStory.update).mockResolvedValue({
+				id: "story-new",
+				status: null,
+				tasks: [],
+			} as never);
+
+			const handler = await loadProcedureHandler();
+			await handler({
+				input: { projectId: "proj-1", externalId: "42" },
+				context: baseCtx,
+			});
+
+			expect(mockCreateStory).toHaveBeenCalledWith(
+				expect.objectContaining({ kind: "FEATURE" }),
+			);
+		});
+
+		it("flag on + mapped Initiative in project with initiatives on → created as INITIATIVE", async () => {
+			vi.stubEnv("FEATURE_PM_TYPE_MAPPING", "true");
+			defaultSetup();
+			vi.mocked(db.project.findFirst).mockResolvedValue({
+				id: "proj-1",
+				organizationId: null,
+				initiativesEnabled: true,
+				projectManagementMcpServerId: "mcp-server-1",
+				projectManagementMcpConfigId: "mcp-cfg-1",
+				projectManagementContainerId: "container-1",
+				projectManagementAdditionalContext: {
+					workItemTypeMapping: { INITIATIVE: "Initiative" },
+				},
+			} as never);
+			mockParsePMItemFromGetOutput.mockReturnValue({
+				workItemType: "Initiative",
+			});
+			vi.mocked(db.userStory.findFirst).mockResolvedValue(null as never);
+			mockCreateStory.mockResolvedValue({ id: "story-new", title: "x" });
+			vi.mocked(db.userStory.update).mockResolvedValue({
+				id: "story-new",
+				status: null,
+				tasks: [],
+			} as never);
+
+			const handler = await loadProcedureHandler();
+			await handler({
+				input: { projectId: "proj-1", externalId: "42" },
+				context: baseCtx,
+			});
+
+			expect(mockCreateStory).toHaveBeenCalledWith(
+				expect.objectContaining({ kind: "INITIATIVE" }),
+			);
 		});
 	});
 });

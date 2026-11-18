@@ -115,7 +115,7 @@ export const generateTimeSuggestionsProcedure = tenantProtectedProcedure
 		tags: ["Time tracking"],
 		summary: "Generate the caller's time suggestions",
 		description:
-			"Starts building suggested time entries from the caller's own meetings, test runs, feature edits and test work over at most 14 days (default: the 7 days ending today in `timezone`). Returns started:false with in-progress while a run is already going, or unavailable when the background worker cannot be reached. With mode `automatic` it reads only time and materials projects over the default range, and returns fresh when the caller's newest run started less than 12 hours ago or no-projects when none of their projects is time and materials.",
+			"Starts building suggested time entries from the caller's own meetings, Teams meetings on linked series in their own Microsoft 365 calendar, test runs, feature edits, test work and pull requests over at most 14 days (default: the 7 days ending today in `timezone`). Returns started:false with in-progress while a run is already going, or unavailable when the background worker cannot be reached. With mode `automatic` it reads only time and materials projects over the default range, and returns fresh when the caller's newest run started less than 12 hours ago or no-projects when none of their projects is time and materials.",
 	})
 	.input(generateTimeSuggestionsInputSchema)
 	.handler(

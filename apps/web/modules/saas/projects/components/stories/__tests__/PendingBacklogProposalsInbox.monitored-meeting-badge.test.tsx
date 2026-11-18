@@ -146,7 +146,13 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				queryKey: () => ["projects-get"],
 			},
 			stories: {
-				board: { queryKey: () => ["stories-list"] },
+				board: {
+					queryKey: () => ["stories-list"],
+					queryOptions: () => ({
+						queryKey: ["stories-board"],
+						queryFn: async () => ({ statuses: [], stories: [] }),
+					}),
+				},
 			},
 		},
 	},

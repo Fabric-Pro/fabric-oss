@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	legacyWorkItemTypeFor,
 	parseWorkItemTypeMapping,
 	resolveKindFromPmType,
 	resolveWorkItemType,
@@ -70,6 +71,34 @@ describe("resolveWorkItemType", () => {
 			}),
 		).toBe("Defect");
 	});
+
+	it("resolves INITIATIVE to Epic when availableTypes contains Epic and Feature", () => {
+		expect(
+			resolveWorkItemType("INITIATIVE", {
+				availableTypes: ["Epic", "Feature"],
+				legacyFallback: "X",
+			}),
+		).toBe("Epic");
+	});
+
+	it("resolves INITIATIVE to Initiative when availableTypes has Initiative", () => {
+		expect(
+			resolveWorkItemType("INITIATIVE", {
+				availableTypes: ["Initiative", "Epic"],
+				legacyFallback: "X",
+			}),
+		).toBe("Initiative");
+	});
+
+	it("honors an explicit INITIATIVE mapping over availableTypes", () => {
+		expect(
+			resolveWorkItemType("INITIATIVE", {
+				mapping: { INITIATIVE: "Portfolio Epic" },
+				availableTypes: ["Initiative"],
+				legacyFallback: "X",
+			}),
+		).toBe("Portfolio Epic");
+	});
 });
 
 describe("resolveKindFromPmType", () => {
@@ -111,6 +140,16 @@ describe("resolveKindFromPmType", () => {
 			"BUG",
 		);
 	});
+
+	it("resolves Epic with no mapping to FEATURE", () => {
+		expect(resolveKindFromPmType("Epic")).toBe("FEATURE");
+	});
+
+	it("resolves Initiative with explicit mapping to INITIATIVE", () => {
+		expect(
+			resolveKindFromPmType("Initiative", { INITIATIVE: "Initiative" }),
+		).toBe("INITIATIVE");
+	});
 });
 
 describe("parseWorkItemTypeMapping", () => {
@@ -120,6 +159,14 @@ describe("parseWorkItemTypeMapping", () => {
 				workItemTypeMapping: { BUG: "Bug", FEATURE: "Epic" },
 			}),
 		).toEqual({ BUG: "Bug", FEATURE: "Epic" });
+	});
+
+	it("keeps the INITIATIVE entry when present", () => {
+		expect(
+			parseWorkItemTypeMapping({
+				workItemTypeMapping: { INITIATIVE: "Epic" },
+			}),
+		).toEqual({ INITIATIVE: "Epic" });
 	});
 
 	it("does NOT seed from legacy single workItemType", () => {
@@ -139,5 +186,22 @@ describe("parseWorkItemTypeMapping", () => {
 				workItemTypeMapping: { BUG: "  Bug  ", FEATURE: "Epic " },
 			}),
 		).toEqual({ BUG: "Bug", FEATURE: "Epic" });
+	});
+});
+
+describe("legacyWorkItemTypeFor", () => {
+	it("maps INITIATIVE to Epic", () => {
+		expect(legacyWorkItemTypeFor("INITIATIVE", "User Story")).toBe("Epic");
+	});
+
+	it("keeps the fallback for FEATURE and BUG", () => {
+		expect(legacyWorkItemTypeFor("FEATURE", "User Story")).toBe(
+			"User Story",
+		);
+		expect(legacyWorkItemTypeFor("BUG", "Bug")).toBe("Bug");
+		expect(legacyWorkItemTypeFor(null, "User Story")).toBe("User Story");
+		expect(legacyWorkItemTypeFor(undefined, "User Story")).toBe(
+			"User Story",
+		);
 	});
 });

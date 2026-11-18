@@ -149,9 +149,13 @@ export async function listDatabricksSqlWarehouses(
 }
 export async function verifyDatabricksSqlConnection(
 	credentials: DatabricksSqlCredentials,
+	fetchImpl?: typeof fetch,
 ) {
 	try {
-		const warehouses = await listDatabricksSqlWarehouses(credentials);
+		const warehouses = await listDatabricksSqlWarehouses(
+			credentials,
+			fetchImpl,
+		);
 		return {
 			success: true,
 			message: `Connected — ${warehouses.length} SQL warehouses visible`,

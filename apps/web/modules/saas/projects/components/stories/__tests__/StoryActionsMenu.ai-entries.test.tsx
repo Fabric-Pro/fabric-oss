@@ -160,6 +160,29 @@ describe("StoryActionsMenu — AI entry eligibility", () => {
 	});
 });
 
+async function renderAndOpenMenu(
+	target: UserStory,
+	onDelete?: (id: string) => void,
+) {
+	const user = userEvent.setup();
+	render(
+		<StoryActionsMenu
+			story={target}
+			projectId="p-1"
+			organizationId={null}
+			onDelete={onDelete}
+		/>,
+		{
+			wrapper: ({ children }: { children: ReactNode }) => (
+				<QueryClientProvider client={new QueryClient()}>
+					{children}
+				</QueryClientProvider>
+			),
+		},
+	);
+	await user.click(screen.getByRole("button"));
+}
+
 /**
  * The type conversion snaps the stage to DRAFT, which a deferred item may not
  * do — the server refuses it. The entry stays visible but disabled, with the
@@ -167,22 +190,7 @@ describe("StoryActionsMenu — AI entry eligibility", () => {
  */
 describe("StoryActionsMenu — Change to bug on a deferred item", () => {
 	async function openMenu(target: UserStory) {
-		const user = userEvent.setup();
-		render(
-			<StoryActionsMenu
-				story={target}
-				projectId="p-1"
-				organizationId={null}
-			/>,
-			{
-				wrapper: ({ children }: { children: ReactNode }) => (
-					<QueryClientProvider client={new QueryClient()}>
-						{children}
-					</QueryClientProvider>
-				),
-			},
-		);
-		await user.click(screen.getByRole("button"));
+		await renderAndOpenMenu(target);
 		return screen.findByRole("menuitem", { name: /change to bug/i });
 	}
 
@@ -200,5 +208,34 @@ describe("StoryActionsMenu — Change to bug on a deferred item", () => {
 			story({ deliveryTrack: "SPECIFY", draftingStage: "PLACEHOLDER" }),
 		);
 		expect(item).not.toHaveAttribute("data-disabled");
+	});
+
+	it("hides the convert-type option but offers Delete for an Initiative", async () => {
+		await renderAndOpenMenu(story({ kind: "INITIATIVE" }), vi.fn());
+		expect(await screen.findByText(/hide initiative/i)).toBeInTheDocument();
+		expect(
+			screen.queryByText(/Change to (bug|feature)/),
+		).not.toBeInTheDocument();
+		expect(screen.getByText("Delete")).toBeInTheDocument();
+	});
+});
+
+describe("StoryActionsMenu — Hide / Unhide initiative label", () => {
+	it("renders 'Hide initiative' for an active initiative", async () => {
+		await renderAndOpenMenu(
+			story({ kind: "INITIATIVE", draftingStage: "ACTIVE_ANALYSIS" }),
+		);
+		expect(
+			await screen.findByRole("menuitem", { name: "Hide initiative" }),
+		).toBeInTheDocument();
+	});
+
+	it("renders 'Unhide initiative' for a closed initiative", async () => {
+		await renderAndOpenMenu(
+			story({ kind: "INITIATIVE", draftingStage: "CLOSED" }),
+		);
+		expect(
+			await screen.findByRole("menuitem", { name: "Unhide initiative" }),
+		).toBeInTheDocument();
 	});
 });

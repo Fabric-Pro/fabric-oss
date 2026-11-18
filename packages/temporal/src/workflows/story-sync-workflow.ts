@@ -10,6 +10,7 @@
  */
 
 import {
+	legacyWorkItemTypeFor,
 	parseWorkItemTypeMapping,
 	resolveWorkItemType,
 	type StoryKindValue,
@@ -1762,8 +1763,10 @@ export async function storySyncWorkflow(
 										.replace(/\//g, "\\"),
 								});
 							}
-							const legacyWorkItemType =
-								additionalContext?.workItemType ?? "User Story";
+							const legacyWorkItemType = legacyWorkItemTypeFor(
+								story.kind,
+								additionalContext?.workItemType ?? "User Story",
+							);
 							const workItemType =
 								input.enableTypeMapping && story.kind
 									? resolveWorkItemType(

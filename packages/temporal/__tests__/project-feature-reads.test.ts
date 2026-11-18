@@ -14,6 +14,8 @@ const h = vi.hoisted(() => ({
 	getProjectAccessContext: vi.fn(),
 	listStorySummaries: vi.fn(),
 	getStoryById: vi.fn(),
+	getVisibleStoryById: vi.fn(),
+	withVisibleStories: vi.fn((w: unknown) => ({ AND: [w, "visible"] })),
 	statusFindMany: vi.fn(),
 	storyFindMany: vi.fn(),
 	storyFindFirst: vi.fn(),
@@ -23,6 +25,8 @@ vi.mock("@repo/database", () => ({
 	getProjectAccessContext: h.getProjectAccessContext,
 	listStorySummaries: h.listStorySummaries,
 	getStoryById: h.getStoryById,
+	getVisibleStoryById: h.getVisibleStoryById,
+	withVisibleStories: h.withVisibleStories,
 	db: {
 		projectStoryStatus: { findMany: h.statusFindMany },
 		userStory: { findMany: h.storyFindMany, findFirst: h.storyFindFirst },
@@ -110,6 +114,7 @@ describe("access", () => {
 		expect(h.getProjectAccessContext).toHaveBeenCalledWith("p-1", "u-1");
 		expect(h.listStorySummaries).not.toHaveBeenCalled();
 		expect(h.getStoryById).not.toHaveBeenCalled();
+		expect(h.getVisibleStoryById).not.toHaveBeenCalled();
 		expect(h.storyFindMany).not.toHaveBeenCalled();
 	});
 
@@ -297,7 +302,7 @@ describe("listProjectFeatures", () => {
 
 describe("getProjectFeature", () => {
 	it("resolves a typed identifier within the project and returns full detail", async () => {
-		h.getStoryById.mockImplementation(async (id: string) =>
+		h.getVisibleStoryById.mockImplementation(async (id: string) =>
 			id === "s-1" ? story : null,
 		);
 		h.storyFindMany.mockResolvedValue([
@@ -306,10 +311,14 @@ describe("getProjectFeature", () => {
 
 		const res = await getProjectFeature({ feature: "f40" }, CTX);
 
-		expect(h.getStoryById).toHaveBeenNthCalledWith(1, "f40", "p-1");
+		expect(h.getVisibleStoryById).toHaveBeenNthCalledWith(1, "f40", "p-1");
 		const where = h.storyFindMany.mock.calls[0][0].where;
-		expect(where.projectId).toBe("p-1");
-		expect(h.getStoryById).toHaveBeenLastCalledWith("s-1", "p-1");
+		expect(where).toEqual(
+			expect.objectContaining({
+				AND: [expect.objectContaining({ projectId: "p-1" }), "visible"],
+			}),
+		);
+		expect(h.getVisibleStoryById).toHaveBeenLastCalledWith("s-1", "p-1");
 		expect(res).toMatchObject({
 			identifier: "F-040",
 			status: "In Review",
@@ -323,7 +332,7 @@ describe("getProjectFeature", () => {
 	});
 
 	it("marks an item the roadmap shows as on the roadmap", async () => {
-		h.getStoryById.mockResolvedValue(story);
+		h.getVisibleStoryById.mockResolvedValue(story);
 
 		const res = await getProjectFeature({ feature: "s-1" }, CTX);
 
@@ -333,7 +342,7 @@ describe("getProjectFeature", () => {
 	});
 
 	it("says a declined item exists but is never on the roadmap", async () => {
-		h.getStoryById.mockResolvedValue({
+		h.getVisibleStoryById.mockResolvedValue({
 			...story,
 			identifier: "B-001",
 			kind: "BUG",
@@ -352,7 +361,10 @@ describe("getProjectFeature", () => {
 	});
 
 	it("says a closed item exists and where the roadmap shows it", async () => {
-		h.getStoryById.mockResolvedValue({ ...story, draftingStage: "CLOSED" });
+		h.getVisibleStoryById.mockResolvedValue({
+			...story,
+			draftingStage: "CLOSED",
+		});
 
 		const res = await getProjectFeature({ feature: "F-040" }, CTX);
 
@@ -364,7 +376,7 @@ describe("getProjectFeature", () => {
 	});
 
 	it("says the feature is missing rather than guessing", async () => {
-		h.getStoryById.mockResolvedValue(null);
+		h.getVisibleStoryById.mockResolvedValue(null);
 		h.storyFindMany.mockResolvedValue([]);
 		const res = await getProjectFeature({ feature: "F-999" }, CTX);
 		expect(res).toMatchObject({ error: expect.stringContaining("F-999") });
@@ -375,7 +387,7 @@ describe("getProjectFeature", () => {
 		rows: Array<{ id: string; identifier: string; kind: string }>,
 	) {
 		h.storyFindMany.mockResolvedValue(rows);
-		h.getStoryById.mockImplementation(async (id: string) => {
+		h.getVisibleStoryById.mockImplementation(async (id: string) => {
 			const row = rows.find((r) => r.id === id);
 			return row ? { ...story, ...row } : null;
 		});
@@ -440,7 +452,7 @@ describe("getProjectFeature", () => {
 	});
 
 	it("refuses a task identifier instead of mapping it to a feature number", async () => {
-		h.getStoryById.mockResolvedValue(null);
+		h.getVisibleStoryById.mockResolvedValue(null);
 		const res = await getProjectFeature({ feature: "TASK-005" }, CTX);
 		expect(res).toMatchObject({
 			error: expect.stringContaining("task identifier"),
@@ -568,7 +580,7 @@ describe("compact feature results", () => {
 					description: "Task implementation details. ".repeat(30),
 				})),
 			};
-			h.getStoryById.mockResolvedValue(fixture);
+			h.getVisibleStoryById.mockResolvedValue(fixture);
 			const result = (await getProjectFeature(
 				{ feature: "s-1" },
 				CTX,
@@ -629,7 +641,7 @@ describe("compact feature results", () => {
 		},
 	);
 	it("preserves a small feature detail exactly", async () => {
-		h.getStoryById.mockResolvedValue(story);
+		h.getVisibleStoryById.mockResolvedValue(story);
 		expect(await getProjectFeature({ feature: "s-1" }, CTX)).toEqual({
 			id: story.id,
 			identifier: story.identifier,
@@ -669,7 +681,7 @@ describe("compact feature results", () => {
 
 it("retains feature identity when task metadata and cut markers nearly fill the budget", async () => {
 	for (const count of [50, 62, 80, 160]) {
-		h.getStoryById.mockResolvedValue({
+		h.getVisibleStoryById.mockResolvedValue({
 			...story,
 			description: "Requirement ".repeat(250),
 			acceptanceCriteria: "Acceptance ".repeat(250),
@@ -715,7 +727,7 @@ describe("feature detail continuation", () => {
 			const text = "A launch requirement with emoji 🚀.\n"
 				.repeat(900)
 				.trim();
-			h.getStoryById.mockResolvedValue({
+			h.getVisibleStoryById.mockResolvedValue({
 				...story,
 				[section]: text,
 				tasks: [],
@@ -751,7 +763,7 @@ describe("feature detail continuation", () => {
 
 	it("returns a section remainder that fits whole, without a further page", async () => {
 		const criteria = "- a\n- b\n- c";
-		h.getStoryById.mockResolvedValue({
+		h.getVisibleStoryById.mockResolvedValue({
 			...story,
 			acceptanceCriteria: criteria,
 			tasks: [],
@@ -771,7 +783,7 @@ describe("feature detail continuation", () => {
 			identifier: `TASK-${i}`,
 			description: "Implementation detail. ".repeat(80),
 		}));
-		h.getStoryById.mockResolvedValue({ ...story, tasks });
+		h.getVisibleStoryById.mockResolvedValue({ ...story, tasks });
 		const overview = (await getProjectFeature(
 			{ feature: "s-1" },
 			CTX,
@@ -812,7 +824,7 @@ describe("feature detail continuation", () => {
 	});
 
 	it("gives a section continuation when overview metadata alone exceeds the budget", async () => {
-		h.getStoryById.mockResolvedValue({
+		h.getVisibleStoryById.mockResolvedValue({
 			...story,
 			title: "Metadata ".repeat(2000),
 		});
@@ -844,7 +856,7 @@ describe("feature detail continuation", () => {
 	});
 
 	it("gives a concrete task and UI action for a task too large to page by index", async () => {
-		h.getStoryById.mockResolvedValue({
+		h.getVisibleStoryById.mockResolvedValue({
 			...story,
 			tasks: [
 				{ ...story.tasks[0], description: "Huge task ".repeat(3000) },
@@ -862,7 +874,7 @@ describe("feature detail continuation", () => {
 });
 
 it("keeps recovery arguments in error text for the Advisor's string-only error projection", async () => {
-	h.getStoryById.mockResolvedValue({
+	h.getVisibleStoryById.mockResolvedValue({
 		...story,
 		title: "Metadata ".repeat(2000),
 	});
@@ -881,7 +893,7 @@ it("keeps recovery arguments in error text for the Advisor's string-only error p
 		'fabric_get_project_feature({"feature":"s-1","section":"description","offset":0})',
 	);
 	expect(list.error).toContain("offset=1");
-	h.getStoryById.mockResolvedValue({
+	h.getVisibleStoryById.mockResolvedValue({
 		...story,
 		tasks: [
 			{ ...story.tasks[0], description: "Huge task ".repeat(3000) },
@@ -905,7 +917,7 @@ it("aggregates task description omissions without spending the main text budget 
 		identifier: `TASK-${i}`,
 		description: "T".repeat(900),
 	}));
-	h.getStoryById.mockResolvedValue({
+	h.getVisibleStoryById.mockResolvedValue({
 		...story,
 		description: "D".repeat(2500),
 		acceptanceCriteria: "A".repeat(1000),
@@ -931,7 +943,7 @@ it("aggregates task description omissions without spending the main text budget 
 
 it("uses Unicode characters for the task description opening cap", async () => {
 	const description = `😀${"x".repeat(400)}`;
-	h.getStoryById.mockResolvedValue({
+	h.getVisibleStoryById.mockResolvedValue({
 		...story,
 		tasks: [{ ...story.tasks[1], description }],
 	});
@@ -949,7 +961,7 @@ it("reconstructs overview text with an astral character exactly across the cut",
 		acceptanceCriteria: null,
 		tasks: [],
 	};
-	h.getStoryById.mockResolvedValue(fixture);
+	h.getVisibleStoryById.mockResolvedValue(fixture);
 	const baseline = (await getProjectFeature(
 		{ feature: "s-1" },
 		CTX,
@@ -962,7 +974,7 @@ it("reconstructs overview text with an astral character exactly across the cut",
 	}
 	const boundary = baselineCut.shown;
 	const text = `${"x".repeat(boundary - 1)}😀${"y".repeat(18000 - boundary)}`;
-	h.getStoryById.mockResolvedValue({ ...fixture, description: text });
+	h.getVisibleStoryById.mockResolvedValue({ ...fixture, description: text });
 	const overview = (await getProjectFeature(
 		{ feature: "s-1" },
 		CTX,
@@ -990,7 +1002,7 @@ it("reconstructs overview text with an astral character exactly across the cut",
 });
 
 it("starts the grouped task continuation at the first affected index", async () => {
-	h.getStoryById.mockResolvedValue({
+	h.getVisibleStoryById.mockResolvedValue({
 		...story,
 		tasks: [
 			{ ...story.tasks[1], description: "Short" },

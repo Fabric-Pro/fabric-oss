@@ -13,7 +13,9 @@ vi.mock("@repo/config", () => ({
 	},
 }));
 vi.mock("@repo/storage", () => ({ getStorageProvider: vi.fn() }));
-vi.mock("../../../../lib/audit", () => ({ recordAuditFromRequest: vi.fn() }));
+vi.mock("../../../../../lib/audit", () => ({
+	recordAuditFromRequest: vi.fn(),
+}));
 vi.mock("../../../../../orpc/procedures", () => {
 	const chain: Record<string, unknown> = {};
 	for (const m of ["use", "route", "input", "output"]) {
@@ -38,8 +40,11 @@ import { db, deleteStory } from "@repo/database";
 import { getStorageProvider } from "@repo/storage";
 import { deleteStoryProcedure } from "../delete-story";
 
-const handler = (deleteStoryProcedure as unknown as { handler: Function })
-	.handler;
+const handler = (
+	deleteStoryProcedure as unknown as {
+		handler: (...args: any[]) => Promise<any>;
+	}
+).handler;
 const ctx = { user: { id: "u1" }, session: {} };
 const input = { projectId: "p1", storyId: "s1", organizationId: null };
 let deleteFile: ReturnType<typeof vi.fn>;

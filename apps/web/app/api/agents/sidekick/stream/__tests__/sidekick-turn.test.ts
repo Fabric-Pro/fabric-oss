@@ -5,8 +5,10 @@
  *   - `authorizeSidekickEntity` answers a refusal as `{ok: false, status,
  *     error}` with the route's exact messages, and admits a registered agent
  *     in its own organization, not the session's;
- *   - an unsaved agent looks nothing up and runs in the session's
- *     organization as "new";
+ *   - an instance, and an unsaved agent (run in the session's organization
+ *     as "new"), need AGENT_TEMPLATE_MANAGE in their organization;
+ *   - an agent of another organization than the one the caller named is
+ *     refused 404;
  *   - `streamSidekickTurn` puts the form in front of the last user message
  *     only, strips the copies earlier turns carried, and passes an abort
  *     signal to the model call only when given one.
@@ -19,6 +21,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
 	agent: vi.fn(),
+	instance: vi.fn(),
 	membership: vi.fn(),
 	authorize: vi.fn(),
 	model: vi.fn(),
@@ -33,10 +36,13 @@ vi.mock("@repo/api/lib/rate-limit", () => ({
 }));
 vi.mock("@repo/api/orpc/procedures", () => ({
 	authorizeInputOrganization: h.authorize,
-	Permissions: { AGENT_TEMPLATE_READ: "agent-template:read" },
+	Permissions: {
+		AGENT_TEMPLATE_READ: "agent-template:read",
+		AGENT_TEMPLATE_MANAGE: "agent-template:manage",
+	},
 }));
 vi.mock("@repo/database", () => ({
-	db: {},
+	db: { agentTemplateInstance: { findUnique: h.instance } },
 	getOrganizationMembership: h.membership,
 	getRegisteredAgentById: h.agent,
 }));
@@ -52,6 +58,7 @@ vi.mock("@repo/ai", async () => {
 });
 vi.mock("@repo/ai/sidekick", () => ({ createSidekickTools: h.tools }));
 
+import { ORPCError } from "@orpc/client";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { authorizeSidekickEntity, streamSidekickTurn } from "../sidekick-turn";
 
@@ -107,14 +114,32 @@ beforeEach(() => {
 function authorize(
 	entityType: "registered" | "instance" | "new" = "registered",
 	agentId = "agent-example-1",
+	requestedOrganizationId?: string,
 ) {
 	return authorizeSidekickEntity({
 		userId: USER_ID,
 		agentId,
 		entityType,
 		sessionOrganizationId: SESSION_ORG,
+		requestedOrganizationId,
 	});
 }
+
+const MANAGE_IN = (organizationId: string) => [
+	"agent-template:manage",
+	organizationId,
+	{
+		user: { id: USER_ID },
+		session: { activeOrganizationId: organizationId },
+	},
+	{ requireOrganization: true },
+];
+
+const OTHER_ORGANIZATION = {
+	ok: false,
+	status: 404,
+	error: "Agent not found or access denied",
+};
 
 describe("authorizeSidekickEntity", () => {
 	it("registered: missing agent is 404 Agent not found", async () => {
@@ -246,7 +271,44 @@ describe("authorizeSidekickEntity", () => {
 		},
 	);
 
-	it("entityType new and agentId 'new' with entityType registered both skip lookups and use the session organization, entityType 'new'", async () => {
+	it("refuses a registered agent of another organization than the named one as 404, with no role check", async () => {
+		h.agent.mockResolvedValue({
+			scope: "ORGANIZATION",
+			userId: "user-example-other",
+			organizationId: AGENT_ORG,
+		});
+
+		await expect(
+			authorize("registered", "agent-example-1", SESSION_ORG),
+		).resolves.toEqual(OTHER_ORGANIZATION);
+		await expect(
+			authorize("registered", "agent-example-1", AGENT_ORG),
+		).resolves.toMatchObject({ ok: true, organizationId: AGENT_ORG });
+		expect(h.authorize).not.toHaveBeenCalled();
+	});
+});
+
+describe("authorizeSidekickEntity — instances and unsaved agents", () => {
+	beforeEach(() => {
+		h.authorize.mockResolvedValue(undefined);
+		h.instance.mockResolvedValue({ organizationId: AGENT_ORG });
+	});
+
+	it("admits an instance in its own organization with AGENT_TEMPLATE_MANAGE there", async () => {
+		await expect(authorize("instance")).resolves.toEqual({
+			ok: true,
+			organizationId: AGENT_ORG,
+			entityType: "instance",
+			organizationDeleted: false,
+		});
+		expect(h.instance).toHaveBeenCalledWith({
+			where: { id: "agent-example-1" },
+			select: { organizationId: true },
+		});
+		expect(h.authorize).toHaveBeenCalledWith(...MANAGE_IN(AGENT_ORG));
+	});
+
+	it("admits an unsaved agent, named by id or entity type, in the session organization with AGENT_TEMPLATE_MANAGE there", async () => {
 		const admitted = {
 			ok: true,
 			organizationId: SESSION_ORG,
@@ -260,8 +322,61 @@ describe("authorizeSidekickEntity", () => {
 		await expect(authorize("registered", "new")).resolves.toEqual(admitted);
 		await expect(authorize("instance", "new")).resolves.toEqual(admitted);
 		expect(h.agent).not.toHaveBeenCalled();
-		expect(h.membership).not.toHaveBeenCalled();
+		expect(h.instance).not.toHaveBeenCalled();
+		expect(h.authorize).toHaveBeenCalledTimes(3);
+		expect(h.authorize).toHaveBeenCalledWith(...MANAGE_IN(SESSION_ORG));
+	});
+
+	it("refuses a missing instance as 404 with no role check", async () => {
+		h.instance.mockResolvedValue(null);
+
+		await expect(authorize("instance")).resolves.toEqual({
+			ok: false,
+			status: 404,
+			error: "Agent not found",
+		});
 		expect(h.authorize).not.toHaveBeenCalled();
+	});
+
+	it("refuses a caller whose role lacks AGENT_TEMPLATE_MANAGE as 403", async () => {
+		h.authorize.mockRejectedValue(new ORPCError("FORBIDDEN"));
+
+		for (const entityType of ["instance", "new"] as const) {
+			await expect(authorize(entityType)).resolves.toEqual({
+				ok: false,
+				status: 403,
+				error: "Forbidden",
+			});
+		}
+	});
+
+	it("refuses an instance of another organization than the named one as 404", async () => {
+		await expect(
+			authorize("instance", "agent-example-1", SESSION_ORG),
+		).resolves.toEqual(OTHER_ORGANIZATION);
+		await expect(
+			authorize("instance", "agent-example-1", AGENT_ORG),
+		).resolves.toMatchObject({ ok: true, organizationId: AGENT_ORG });
+	});
+
+	it("refuses an unsaved agent with no organization as 404 with no role check", async () => {
+		await expect(
+			authorizeSidekickEntity({
+				userId: USER_ID,
+				agentId: "new",
+				entityType: "new",
+				sessionOrganizationId: undefined,
+			}),
+		).resolves.toEqual(OTHER_ORGANIZATION);
+		expect(h.authorize).not.toHaveBeenCalled();
+	});
+
+	it("rethrows an unexpected authorization failure", async () => {
+		h.authorize.mockRejectedValue(new Error("Example lookup failure"));
+
+		await expect(authorize("instance")).rejects.toThrow(
+			"Example lookup failure",
+		);
 	});
 });
 

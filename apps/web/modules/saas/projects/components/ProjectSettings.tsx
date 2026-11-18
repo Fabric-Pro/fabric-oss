@@ -43,6 +43,7 @@ import { ProjectDatabricksKnowledgeSettings } from "./ProjectDatabricksKnowledge
 import { ProjectEngagementSettings } from "./ProjectEngagementSettings";
 import { ProjectGeneralSettings } from "./ProjectGeneralSettings";
 import { ProjectImplementationDefaultsSettings } from "./ProjectImplementationDefaultsSettings";
+import { ProjectInitiativesSettings } from "./ProjectInitiativesSettings";
 import { ProjectManagementSettings } from "./ProjectManagementSettings";
 import { ProjectMembersSettings } from "./ProjectMembersSettings";
 import { ProjectNewsletterSettings } from "./ProjectNewsletterSettings";
@@ -56,6 +57,7 @@ import { TestingSettingsPanel } from "./qa-settings/TestingSettingsPanel";
 import { RagSettingsForm } from "./RagSettingsForm";
 import { SlackChannelMonitorSettings } from "./SlackChannelMonitorSettings";
 import {
+	ENVIRONMENT_SETTINGS_ENABLED,
 	NAVIGATE_TO_SETTINGS_TAB_EVENT,
 	type NavigateToSettingsTabDetail,
 	PM_SETTINGS_ANCHOR_ID,
@@ -133,6 +135,8 @@ type Project = {
 	canPublish?: boolean;
 	hiddenMaturationStatuses?: string[] | null;
 	readOnlyMode?: boolean | null;
+	initiativesEnabled?: boolean | null;
+	initiativeCount?: number;
 	clarifyingQuestionFrequency?: ClarifyingQuestionFrequency | null;
 	canManageGovernance?: boolean;
 	// Engagement profile, governance flags, vision (Slice 0)
@@ -209,18 +213,12 @@ function resolveRequestedSettingsTab(
 	return resolveStoredSettingsTab(effective, gates);
 }
 
-// The QA project tab is gated on this flag (`ProjectDetails.tsx`), and both QA
-// settings pages configure that tab and nothing else — `ProjectEnvironment` has
-// no non-QA consumer. Read once at module scope: `NEXT_PUBLIC_*` is inlined at
-// build time, so this is a constant, not a runtime lookup.
-const QA_SETTINGS_ENABLED =
-	process.env.NEXT_PUBLIC_FABRIC_FEATURE_TEST_CASES === "true";
-
 // Publishing Suite is scoped to named organizations, so — unlike
-// `QA_SETTINGS_ENABLED` above — it cannot be a module constant: `NEXT_PUBLIC_*`
-// is inlined at build time and one build serves every organization. The value
-// is read inside the component from the nearest FeatureFlagProvider, which the
-// organization layout mounts resolved for that organization.
+// `ENVIRONMENT_SETTINGS_ENABLED` — it cannot be a module constant:
+// `NEXT_PUBLIC_*` is inlined at build time and one build serves every
+// organization. The value is read inside the component from the nearest
+// FeatureFlagProvider, which the organization layout mounts resolved for that
+// organization.
 
 function useSettingsTab(projectId: string, gates: SettingsTabGates) {
 	const [tab, setTabState] = useState<SettingsTab>(() => {
@@ -310,7 +308,7 @@ export function ProjectSettings({
 	const gates = useMemo<SettingsTabGates>(
 		() => ({
 			pmFieldMappingEnabled,
-			qaEnabled: QA_SETTINGS_ENABLED,
+			qaEnabled: ENVIRONMENT_SETTINGS_ENABLED,
 			publishingEnabled: publishingSuiteEnabled,
 			timeTrackingEnabled,
 		}),
@@ -481,7 +479,7 @@ export function ProjectSettings({
 				}
 				showDanger={canDelete}
 				showProjectManagement={pmFieldMappingEnabled}
-				showQa={QA_SETTINGS_ENABLED}
+				showQa={ENVIRONMENT_SETTINGS_ENABLED}
 				showPublishing={publishingSuiteEnabled}
 				showTimeTracking={timeTrackingEnabled}
 			/>
@@ -513,7 +511,7 @@ export function ProjectSettings({
 						project={project}
 						canEdit={canEditSettings}
 						onOpenTestingSettings={
-							QA_SETTINGS_ENABLED
+							ENVIRONMENT_SETTINGS_ENABLED
 								? () => setSettingsTab("testing")
 								: undefined
 						}
@@ -543,6 +541,10 @@ export function ProjectSettings({
 						<ProjectStageVisibilitySettings
 							project={project}
 							canEdit={canEditStageVisibility}
+						/>
+						<ProjectInitiativesSettings
+							project={project}
+							canEdit={canEditSettings}
 						/>
 					</div>
 				)}
@@ -683,7 +685,7 @@ export function ProjectSettings({
 							<ProjectRepositoryIntegrationSettings
 								project={project}
 								currentUserId={currentUserId}
-								qaEnabled={QA_SETTINGS_ENABLED}
+								qaEnabled={ENVIRONMENT_SETTINGS_ENABLED}
 							/>
 						)}
 					</div>

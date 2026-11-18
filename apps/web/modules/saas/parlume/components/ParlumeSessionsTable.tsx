@@ -22,6 +22,7 @@ export function ParlumeSessionsTable({
 	projectId,
 	sessions,
 	costBySessionId,
+	showSpend,
 	projectBasePath,
 	isLoading,
 	isError,
@@ -35,6 +36,8 @@ export function ParlumeSessionsTable({
 	projectId: string;
 	sessions: ParlumeSession[];
 	costBySessionId: ReadonlyMap<string, number>;
+	/** Whether this viewer may see spend; the Cost column is left out otherwise. */
+	showSpend: boolean;
 	projectBasePath: string;
 	isLoading: boolean;
 	isError: boolean;
@@ -94,9 +97,11 @@ export function ParlumeSessionsTable({
 							Length
 						</TableHead>
 						<TableHead className={HEAD_CLASS}>Outcome</TableHead>
-						<TableHead className={`${HEAD_CLASS} text-right`}>
-							Cost
-						</TableHead>
+						{showSpend && (
+							<TableHead className={`${HEAD_CLASS} text-right`}>
+								Cost
+							</TableHead>
+						)}
 						<TableHead className="w-10 pr-6">
 							<span className="sr-only">Details</span>
 						</TableHead>
@@ -109,6 +114,7 @@ export function ParlumeSessionsTable({
 							projectId={projectId}
 							session={session}
 							cost={costBySessionId.get(session.id)}
+							showSpend={showSpend}
 							now={now}
 							expanded={expandedId === session.id}
 							onToggle={() =>

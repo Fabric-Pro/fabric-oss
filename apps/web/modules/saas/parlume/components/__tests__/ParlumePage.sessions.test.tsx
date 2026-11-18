@@ -199,6 +199,25 @@ describe("ParlumePage sessions table", () => {
 		expect(second.getByText("—", { selector: "td" })).toBeInTheDocument();
 	});
 
+	it("shows a viewer who cannot invite Parlume the sessions without any spend", async () => {
+		mocks.listSessions.mockResolvedValue(
+			page([
+				liveSession({ id: "live", agentLabel: "Live assistant" }),
+				session({ id: "a", agentLabel: "Assistant A" }),
+			]),
+		);
+		showPage(false);
+		const table = within(await sessionsTable());
+
+		expect(
+			table.getAllByRole("columnheader").map((cell) => cell.textContent),
+		).toEqual(["Session", "Mode", "Length", "Outcome", "Details"]);
+		expect(rowOf("Assistant A")).toBeInTheDocument();
+		expect(screen.queryByText("Spend so far")).toBeNull();
+		expect(screen.queryByText("Costliest sessions")).toBeNull();
+		expect(mocks.usage).not.toHaveBeenCalled();
+	});
+
 	it("puts the live session first and does not expand it", async () => {
 		mocks.listSessions.mockResolvedValue(
 			page([

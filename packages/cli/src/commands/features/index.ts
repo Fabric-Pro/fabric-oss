@@ -17,6 +17,26 @@ import {
 	printSuccess,
 } from "../../lib/output.js";
 
+const LIST_KINDS = ["FEATURE", "BUG", "INITIATIVE"] as const;
+const CREATE_KINDS = ["FEATURE", "INITIATIVE"] as const;
+
+function parseKind<T extends readonly string[]>(
+	raw: string | undefined,
+	allowed: T,
+): T[number] | undefined {
+	if (!raw) {
+		return undefined;
+	}
+	const kind = raw.toUpperCase();
+	if (!allowed.includes(kind as T[number])) {
+		printError(
+			`--kind must be one of: ${allowed.join(", ").toLowerCase()}`,
+			1,
+		);
+	}
+	return kind as T[number];
+}
+
 export function buildFeaturesCommand(): Command {
 	const features = new Command("features").description(
 		"Manage project features",
@@ -33,6 +53,7 @@ export function buildFeaturesCommand(): Command {
 			"--priority <priority>",
 			"Filter: P0_CRITICAL|P1_HIGH|P2_MEDIUM|P3_LOW",
 		)
+		.option("--kind <kind>", "Filter: feature|bug|initiative")
 		.option("--search <query>", "Search by title")
 		.option("--limit <n>", "Max results (default 50)", "50")
 		.option(
@@ -47,6 +68,7 @@ export function buildFeaturesCommand(): Command {
 				org?: string;
 				personal?: boolean;
 				priority?: string;
+				kind?: string;
 				search?: string;
 				limit: string;
 				format: string;
@@ -61,6 +83,7 @@ export function buildFeaturesCommand(): Command {
 						priority: opts.priority as
 							| FabricFeature["priority"]
 							| undefined,
+						kind: parseKind(opts.kind, LIST_KINDS),
 						search: opts.search,
 						limit: Number(opts.limit),
 					});
@@ -77,7 +100,13 @@ export function buildFeaturesCommand(): Command {
 
 				printOutput(list, {
 					format: opts.format as "table" | "json" | "yaml" | "csv",
-					columns: ["identifier", "title", "priority", "createdAt"],
+					columns: [
+						"identifier",
+						"title",
+						"priority",
+						"createdAt",
+						"kind",
+					],
 				});
 			},
 		);
@@ -148,6 +177,10 @@ export function buildFeaturesCommand(): Command {
 			"--priority <priority>",
 			"Priority: P0_CRITICAL|P1_HIGH|P2_MEDIUM|P3_LOW (default: P2_MEDIUM)",
 		)
+		.option(
+			"--kind <kind>",
+			"Work item type: feature|initiative (default: feature)",
+		)
 		.option("--format <format>", "Output format: table|json|yaml", "table")
 		.action(
 			async (
@@ -158,6 +191,7 @@ export function buildFeaturesCommand(): Command {
 					personal?: boolean;
 					description?: string;
 					priority?: string;
+					kind?: string;
 					format: string;
 				},
 			) => {
@@ -173,6 +207,7 @@ export function buildFeaturesCommand(): Command {
 							priority: opts.priority as
 								| FabricFeature["priority"]
 								| undefined,
+							kind: parseKind(opts.kind, CREATE_KINDS),
 							org: ctx?.type === "org" ? ctx.slug : undefined,
 						},
 					);
@@ -186,10 +221,13 @@ export function buildFeaturesCommand(): Command {
 					return;
 				}
 
-				printSuccess(`Feature ${feature.identifier} created`);
+				printSuccess(
+					`${feature.kind === "INITIATIVE" ? "Initiative" : "Feature"} ${feature.identifier} created`,
+				);
 				printRecord({
 					ID: feature.id,
 					Identifier: feature.identifier,
+					Kind: feature.kind,
 					Title: feature.title,
 					Priority: feature.priority,
 					Project: feature.projectId,

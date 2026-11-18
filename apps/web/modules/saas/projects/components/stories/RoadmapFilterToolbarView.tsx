@@ -215,6 +215,7 @@ export type RoadmapFilterToolbarViewProps = {
 	lanesCount?: number;
 	/** Distinct project tags for the tag facet (empty until loaded / flag off). */
 	tagOptions?: string[];
+	initiativesEnabled?: boolean;
 	/** Distinct PM-tool statuses across the loaded work items. */
 	pmStatusOptions?: string[];
 };
@@ -248,6 +249,7 @@ export function RoadmapFilterToolbarView({
 	trailing,
 	lanesCount,
 	tagOptions,
+	initiativesEnabled,
 	pmStatusOptions,
 }: RoadmapFilterToolbarViewProps) {
 	const t = useTranslations("projects.stories.roadmapUi");
@@ -318,6 +320,7 @@ export function RoadmapFilterToolbarView({
 					tier="primary"
 					filters={filters}
 					onChange={onFiltersChange}
+					initiativesEnabled={initiativesEnabled}
 				/>
 				<Button
 					type="button"
@@ -357,6 +360,7 @@ export function RoadmapFilterToolbarView({
 						filters={filters}
 						onChange={onFiltersChange}
 						tagOptions={tagOptions}
+						initiativesEnabled={initiativesEnabled}
 						pmStatusOptions={pmStatusOptions}
 					/>
 				</div>

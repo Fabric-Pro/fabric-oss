@@ -17,13 +17,16 @@
 import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/server";
 import type { AIProvider, AiTaskType } from "@repo/database";
-import { db, getAiProviderApiKey, getModelForTask } from "@repo/database";
-import { z } from "zod";
 import {
-	Permissions,
-	publicProcedure,
-	requirePermission,
-} from "../../../../orpc/procedures";
+	canResolveOrganizationAiModels,
+	db,
+	getAiProviderApiKey,
+	getModelForTask,
+	verifyOrganizationApiKey,
+} from "@repo/database";
+import { z } from "zod";
+import { publicProcedure } from "../../../../orpc/procedures";
+import { requireOrganizationKeyPermission } from "../../../runtime/lib/api-key-auth";
 
 const TaskTypeSchema = z.enum([
 	"SIMPLE",
@@ -65,25 +68,8 @@ async function verifyApiKey(apiKey: string): Promise<{
 	}
 
 	// Try organization API key
-	const orgApiKey = await db.organizationApiKey.findFirst({
-		where: {
-			keyHash,
-			isActive: true,
-			OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-		},
-		select: {
-			id: true,
-			organizationId: true,
-			createdByUserId: true,
-			scopes: true,
-		},
-	});
-
+	const orgApiKey = await verifyOrganizationApiKey(keyHash);
 	if (orgApiKey) {
-		await db.organizationApiKey.update({
-			where: { id: orgApiKey.id },
-			data: { lastUsedAt: new Date(), usageCount: { increment: 1 } },
-		});
 		return {
 			userId: orgApiKey.createdByUserId,
 			organizationId: orgApiKey.organizationId,
@@ -101,7 +87,6 @@ function hasScope(scopes: string[], requiredScope: string): boolean {
 }
 
 export const resolveModelForAgentProcedure = publicProcedure
-	.use(requirePermission(Permissions.ORG_AI_CONFIG_EDIT))
 	.route({
 		method: "POST",
 		path: "/ai-config/resolve-for-agent",
@@ -147,6 +132,11 @@ export const resolveModelForAgentProcedure = publicProcedure
 					"API key does not have ai:models:resolve or ai:models:read scope",
 			});
 		}
+
+		await requireOrganizationKeyPermission(
+			context,
+			canResolveOrganizationAiModels,
+		);
 
 		const { userId, organizationId } = context;
 

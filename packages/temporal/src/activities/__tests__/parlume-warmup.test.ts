@@ -83,11 +83,8 @@ describe("Parlume session warm-up", () => {
 			userId: "user",
 			organizationId: "org",
 		});
-		expect(mocks.memory).toHaveBeenCalledWith(
-			expect.any(String),
-			"user",
-			"org",
-		);
+		// A meeting turn recalls no memories, so there is no memory search to warm.
+		expect(mocks.memory).not.toHaveBeenCalled();
 		const log = warmLog();
 		expect(log).toMatchObject({
 			sessionId: "session",
@@ -97,7 +94,6 @@ describe("Parlume session warm-up", () => {
 		expect(Object.keys(log?.timings as object).sort()).toEqual(
 			[
 				"agentLoadMs",
-				"memoryMs",
 				"modelResolveMs",
 				"projectBlockImportMs",
 				"sessionLoadMs",

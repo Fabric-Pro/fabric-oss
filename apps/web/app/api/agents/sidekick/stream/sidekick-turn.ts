@@ -70,109 +70,152 @@ export type SidekickEntityAccess =
 	  }
 	| { ok: false; status: 403 | 404; error: string };
 
+const OTHER_ORGANIZATION = {
+	ok: false,
+	status: 404,
+	error: "Agent not found or access denied",
+} as const;
+
 /**
  * Whether `userId` may work on the agent with the Sidekick, and under which
- * organization. A registered agent and an instance are checked against
- * their own organization (an instance's must not be deleted); an unsaved
- * agent ("new", or the builder's `NEW_AGENT_ID` for any entity type) has
- * nothing to look up and runs in `sessionOrganizationId`. An unexpected
- * lookup failure is thrown.
+ * organization: the one check its stream route and the agent runtime share.
+ * The tenant is the edited agent's own organization, not the session's.
+ *
+ * - A registered agent: its owner (USER scope) or a member of its
+ *   organization (ORGANIZATION scope).
+ * - An instance, or an unsaved agent ("new", or the builder's `NEW_AGENT_ID`
+ *   for any entity type, which runs in `sessionOrganizationId`): a role with
+ *   AGENT_TEMPLATE_MANAGE in its organization, which must not be deleted.
+ * - Whenever the caller names an organization, the agent's must be that one,
+ *   so a turn never bills or discovers connections in another tenant.
+ *
+ * An unexpected lookup failure is thrown.
  */
 export async function authorizeSidekickEntity({
 	userId,
 	agentId,
 	entityType,
 	sessionOrganizationId,
+	requestedOrganizationId,
 }: {
 	userId: string;
 	agentId: string;
 	entityType: "registered" | "instance" | "new";
 	sessionOrganizationId: string | undefined;
+	/** The organization the caller named, when it named one. */
+	requestedOrganizationId?: string;
 }): Promise<SidekickEntityAccess> {
-	// Resolve tenant from the *entity being edited*, not from the
-	// session's active organization. A user can open an instance from a
-	// different org than their active one; we must
-	// run model/tool resolution against that tenant, not the session's.
-	let organizationId: string | undefined = sessionOrganizationId;
-	let organizationDeleted = false;
-
-	// Verify the user has access to the target entity before streaming.
-	// Branches by entityType so Sidekick can assist both RegisteredAgent
-	// config editing and AgentTemplateInstance form editing.
-	const isNewAgent = entityType === "new" || agentId === NEW_AGENT_ID;
-	if (!isNewAgent) {
-		if (entityType === "registered") {
-			const agent = await getRegisteredAgentById(agentId);
-			if (!agent) {
-				return { ok: false, status: 404, error: "Agent not found" };
-			}
-			if (agent.scope === "SYSTEM") {
-				return {
-					ok: false,
-					status: 403,
-					error: "System agents cannot be modified via Sidekick",
-				};
-			}
-			if (agent.scope === "USER" && agent.userId !== userId) {
-				return { ok: false, status: 403, error: "Forbidden" };
-			}
-			if (agent.scope === "ORGANIZATION") {
-				if (!agent.organizationId) {
-					return { ok: false, status: 403, error: "Forbidden" };
-				}
-				const membership = await getOrganizationMembership(
-					agent.organizationId,
-					userId,
-				);
-				if (!membership) {
-					return { ok: false, status: 403, error: "Forbidden" };
-				}
-				organizationDeleted =
-					membership.organization.deletedAt !== null;
-			}
-			// The registered agent's tenant wins over the session's active org.
-			organizationId = agent.organizationId ?? undefined;
-		} else {
-			// authorizeInputOrganization checks membership, organization liveness,
-			// and AGENT_TEMPLATE_READ in the instance's organization, including for its creator.
-			const instance = await db.agentTemplateInstance.findUnique({
-				where: { id: agentId },
-				select: { userId: true, organizationId: true },
-			});
-			if (!instance || !instance.organizationId) {
-				return { ok: false, status: 404, error: "Agent not found" };
-			}
-			try {
-				await authorizeInputOrganization(
-					Permissions.AGENT_TEMPLATE_READ,
-					instance.organizationId,
-					{
-						user: { id: userId },
-						session: {
-							activeOrganizationId: sessionOrganizationId ?? null,
-						},
-					},
-					{ requireOrganization: true },
-				);
-			} catch (error) {
-				if (
-					!(error instanceof ORPCError) ||
-					(error.code !== "FORBIDDEN" &&
-						error.code !== "UNAUTHORIZED")
-				) {
-					throw error;
-				}
-				return { ok: false, status: 403, error: "Forbidden" };
-			}
-			organizationId = instance.organizationId;
+	if (entityType === "new" || agentId === NEW_AGENT_ID) {
+		return admitTemplateBuilder({
+			userId,
+			organizationId: sessionOrganizationId,
+			entityType: "new",
+			requestedOrganizationId,
+		});
+	}
+	if (entityType === "instance") {
+		const instance = await db.agentTemplateInstance.findUnique({
+			where: { id: agentId },
+			select: { organizationId: true },
+		});
+		if (!instance?.organizationId) {
+			return { ok: false, status: 404, error: "Agent not found" };
 		}
+		return admitTemplateBuilder({
+			userId,
+			organizationId: instance.organizationId,
+			entityType: "instance",
+			requestedOrganizationId,
+		});
+	}
+	const agent = await getRegisteredAgentById(agentId);
+	if (!agent) {
+		return { ok: false, status: 404, error: "Agent not found" };
+	}
+	if (agent.scope === "SYSTEM") {
+		return {
+			ok: false,
+			status: 403,
+			error: "System agents cannot be modified via Sidekick",
+		};
+	}
+	if (agent.scope === "USER" && agent.userId !== userId) {
+		return { ok: false, status: 403, error: "Forbidden" };
+	}
+	let organizationDeleted = false;
+	if (agent.scope === "ORGANIZATION") {
+		if (!agent.organizationId) {
+			return { ok: false, status: 403, error: "Forbidden" };
+		}
+		const membership = await getOrganizationMembership(
+			agent.organizationId,
+			userId,
+		);
+		if (!membership) {
+			return { ok: false, status: 403, error: "Forbidden" };
+		}
+		organizationDeleted = membership.organization.deletedAt !== null;
+	}
+	const organizationId = agent.organizationId ?? undefined;
+	if (
+		requestedOrganizationId !== undefined &&
+		requestedOrganizationId !== organizationId
+	) {
+		return OTHER_ORGANIZATION;
 	}
 	return {
 		ok: true,
 		organizationId,
-		entityType: isNewAgent ? "new" : entityType,
+		entityType: "registered",
 		organizationDeleted,
 	};
+}
+
+/**
+ * An instance's or unsaved agent's admission: AGENT_TEMPLATE_MANAGE in the
+ * agent's organization (which also requires membership and refuses a
+ * deleted organization), then the organization the caller named.
+ */
+async function admitTemplateBuilder({
+	userId,
+	organizationId,
+	entityType,
+	requestedOrganizationId,
+}: {
+	userId: string;
+	organizationId: string | undefined;
+	entityType: "instance" | "new";
+	requestedOrganizationId: string | undefined;
+}): Promise<SidekickEntityAccess> {
+	if (!organizationId) {
+		return OTHER_ORGANIZATION;
+	}
+	try {
+		await authorizeInputOrganization(
+			Permissions.AGENT_TEMPLATE_MANAGE,
+			organizationId,
+			{
+				user: { id: userId },
+				session: { activeOrganizationId: organizationId },
+			},
+			{ requireOrganization: true },
+		);
+	} catch (error) {
+		if (
+			!(error instanceof ORPCError) ||
+			(error.code !== "FORBIDDEN" && error.code !== "UNAUTHORIZED")
+		) {
+			throw error;
+		}
+		return { ok: false, status: 403, error: "Forbidden" };
+	}
+	if (
+		requestedOrganizationId !== undefined &&
+		requestedOrganizationId !== organizationId
+	) {
+		return OTHER_ORGANIZATION;
+	}
+	return { ok: true, organizationId, entityType, organizationDeleted: false };
 }
 
 /**

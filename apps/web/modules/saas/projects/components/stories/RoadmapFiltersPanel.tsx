@@ -48,6 +48,7 @@ import {
 	EyeOffIcon,
 	FileTextIcon,
 	HelpCircleIcon,
+	LayersIcon,
 	ListChecksIcon,
 	OctagonXIcon,
 	PuzzleIcon,
@@ -442,6 +443,8 @@ const KIND_OPTIONS: ToggleOption<StoryKind>[] = FILTERABLE_KINDS.map(
 		leading:
 			value === "BUG" ? (
 				<BugIcon className="size-3.5 text-destructive" />
+			) : value === "INITIATIVE" ? (
+				<LayersIcon className="size-3.5 text-primary" />
 			) : (
 				<PuzzleIcon className="size-3.5 text-muted-foreground" />
 			),
@@ -560,6 +563,7 @@ export type RoadmapFiltersPanelProps = {
 	tier: "primary" | "more";
 	/** Distinct project tags for the tag facet (empty until loaded / flag off). */
 	tagOptions?: string[];
+	initiativesEnabled?: boolean;
 	/** Distinct PM-tool statuses across the loaded work items. */
 	pmStatusOptions?: string[];
 };
@@ -569,6 +573,7 @@ export function RoadmapFiltersPanel({
 	onChange,
 	tier,
 	tagOptions = [],
+	initiativesEnabled = false,
 	pmStatusOptions = [],
 }: RoadmapFiltersPanelProps) {
 	const tRange = useTranslations("common.dateRangePicker");
@@ -596,12 +601,16 @@ export function RoadmapFiltersPanel({
 		});
 	};
 
+	const kindOptions = initiativesEnabled
+		? KIND_OPTIONS
+		: KIND_OPTIONS.filter((o) => o.value !== "INITIATIVE");
+
 	if (tier === "primary") {
 		return (
 			<div className="flex flex-wrap items-center gap-2">
 				<FacetMultiSelect
 					label={t("type")}
-					options={KIND_OPTIONS}
+					options={kindOptions}
 					selected={filters.kind}
 					onChange={(kind) => onChange({ kind })}
 				/>

@@ -9,6 +9,7 @@ vi.mock("@repo/database", () => ({
 			findUnique: vi.fn().mockResolvedValue({ organizationId: "org1" }),
 		},
 	},
+	findConfidentialTranscriptContextIds: async () => new Set<string>(),
 	getProjectRagSettings: vi.fn(),
 	getRetrievableContextById: vi.fn(),
 }));

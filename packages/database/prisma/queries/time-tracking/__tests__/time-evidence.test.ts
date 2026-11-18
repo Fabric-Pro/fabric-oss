@@ -29,7 +29,8 @@ vi.mock("../../../client", async (importOriginal) => {
 	return { ...actual, db: mocks };
 });
 
-const { collectUnclaimedTimeEvidence } = await import("../time-evidence");
+const { collectUnclaimedTimeEvidence, filterUnclaimedTimeEvidence } =
+	await import("../time-evidence");
 
 const FROM = new Date("2026-11-02T00:00:00.000Z");
 const TO = new Date("2026-11-09T00:00:00.000Z");
@@ -371,5 +372,39 @@ describe("collectUnclaimedTimeEvidence", () => {
 
 			expect(evidence.map((item) => item.sourceId)).toEqual(["review-2"]);
 		});
+	});
+});
+
+describe("filterUnclaimedTimeEvidence", () => {
+	it("drops evidence built outside the database that the member's suggestions claimed, by kind and source", async () => {
+		mocks.timeSuggestionEvidence.findMany.mockResolvedValue([
+			{ kind: "CALENDAR_EVENT", sourceId: "hash-1" },
+			{ kind: "MEETING_SESSION", sourceId: "hash-2" },
+		]);
+
+		const kept = await filterUnclaimedTimeEvidence("user-1", [
+			{ kind: "CALENDAR_EVENT", sourceId: "hash-1" },
+			{ kind: "CALENDAR_EVENT", sourceId: "hash-2" },
+			{ kind: "MEETING_SESSION", sourceId: "session-1" },
+		]);
+
+		expect(kept).toEqual([
+			{ kind: "CALENDAR_EVENT", sourceId: "hash-2" },
+			{ kind: "MEETING_SESSION", sourceId: "session-1" },
+		]);
+		expect(mocks.timeSuggestionEvidence.findMany).toHaveBeenCalledWith({
+			where: {
+				userId: "user-1",
+				sourceId: { in: ["hash-1", "hash-2", "session-1"] },
+			},
+			select: { kind: true, sourceId: true },
+		});
+	});
+
+	it("reads nothing for no evidence", async () => {
+		const kept = await filterUnclaimedTimeEvidence("user-1", []);
+
+		expect(kept).toEqual([]);
+		expect(mocks.timeSuggestionEvidence.findMany).not.toHaveBeenCalled();
 	});
 });

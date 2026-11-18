@@ -17,7 +17,10 @@ import {
 	resolveRequestedOrganization,
 } from "@repo/api/lib/requested-organization";
 import { stripRemoteCodingRunSummary } from "@repo/api/modules/projects/lib/strip-internal-story-fields";
-import { getAgentTemplateInstanceForExecution } from "@repo/database";
+import {
+	getAgentTemplateInstanceForExecution,
+	withVisibleStories,
+} from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import {
 	type ActivityHeartbeatDetails,
@@ -35,6 +38,7 @@ import type { DirectStreamInput } from "@saas/agents/lib/direct-stream-protocol"
 import { encodeDirectStreamEvent } from "@saas/agents/lib/direct-stream-protocol";
 import { ProgressPhaseTracker } from "@saas/agents/lib/progress-phase-tracker";
 import { getSession } from "@saas/auth/lib/server";
+import { STORY_KIND_LABELS } from "@saas/projects/lib/roadmap-filters";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { seedCarriedOverHistory } from "../carried-over-context";
@@ -196,7 +200,7 @@ async function buildAgentContextSystemPrompt({
 				},
 			}),
 			db.userStory.findMany({
-				where: { projectId },
+				where: withVisibleStories({ projectId }),
 				// Mirrors the roadmap Priority layout's ranking (see
 				// `comparePriorityRank` in
 				// modules/saas/projects/lib/priority-ranking.ts) so "what should I
@@ -296,6 +300,7 @@ async function buildAgentContextSystemPrompt({
 					select: {
 						identifier: true,
 						title: true,
+						kind: true,
 						description: true,
 						acceptanceCriteria: true,
 						status: { select: { name: true } },
@@ -311,7 +316,7 @@ async function buildAgentContextSystemPrompt({
 				});
 				if (story) {
 					focusedBlock = [
-						`## Currently viewing — Feature ${story.identifier}: ${story.title} (FULL content)`,
+						`## Currently viewing — ${STORY_KIND_LABELS[story.kind]} ${story.identifier}: ${story.title} (FULL content)`,
 						"This is the exact item the user is looking at; treat it as the primary subject. Quote and reason over its sections directly — never say you cannot see it.",
 						`Status: ${story.status.name}`,
 						story.description

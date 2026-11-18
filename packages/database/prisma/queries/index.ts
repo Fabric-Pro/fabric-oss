@@ -177,6 +177,7 @@ export * from "./registered-agents";
 export * from "./repo-integration-notifications";
 export * from "./report-execution-email";
 export * from "./report-execution-notification";
+export * from "./report-instance-lookups";
 export * from "./report-template-overrides";
 export * from "./report-template-samples";
 export * from "./reports";

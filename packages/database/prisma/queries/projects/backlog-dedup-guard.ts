@@ -37,12 +37,12 @@ export type SkippedDuplicate = {
 };
 
 /**
- * Title-dedup is per-family: bugs only dedup against bugs, features /
- * user-stories against each other. Cross-kind dedup is intentionally NOT
- * done here — matches the AI Update sidebar guard so both flows produce
- * the same equivalence class.
+ * Title-dedup is per-family: bugs against bugs, Initiatives against
+ * Initiatives, features / user-stories against each other. Cross-kind dedup
+ * is intentionally NOT done here — matches the AI Update sidebar guard so both
+ * flows produce the same equivalence class.
  */
-export type DedupFamily = "BUG" | "FEATURE";
+export type DedupFamily = "BUG" | "FEATURE" | "INITIATIVE";
 
 // ECMAScript's WhiteSpace + LineTerminator set. PostgreSQL btrim's one-argument
 // form removes only ordinary spaces, which would drift from normalizeBacklogTitle.
@@ -156,9 +156,13 @@ export async function buildBacklogDedupGuard(
 	>([
 		["BUG", new Map()],
 		["FEATURE", new Map()],
+		["INITIATIVE", new Map()],
 	]);
 	for (const story of existing) {
-		const family: DedupFamily = story.kind === "BUG" ? "BUG" : "FEATURE";
+		const family: DedupFamily =
+			story.kind === "BUG" || story.kind === "INITIATIVE"
+				? story.kind
+				: "FEATURE";
 		index.get(family)?.set(normalizeBacklogTitle(story.title), {
 			id: story.id,
 			identifier: story.identifier,
@@ -203,7 +207,10 @@ export function inferDedupFamily(change: {
 	type: string;
 }): DedupFamily {
 	if (change.kindOverride) {
-		return change.kindOverride === "BUG" ? "BUG" : "FEATURE";
+		return change.kindOverride === "BUG" ||
+			change.kindOverride === "INITIATIVE"
+			? change.kindOverride
+			: "FEATURE";
 	}
 	return change.type === "bug" ? "BUG" : "FEATURE";
 }

@@ -11,6 +11,9 @@ const READ_ONLY =
 const ACTIONS =
 	"You may make the changes a participant asks for, using the inviter's permissions; a change takes effect as soon as you call its tool. Make only the change that was asked for. When a tool returns, say in one short sentence what happened, naming a created item's identifier and title, and never claim a change succeeded when the result shows an error or no outcome.";
 
+const LINKS =
+	"When a link helps, or a participant asks for one (a work item, document, source, project tab such as Coding Instructions, or the Coding Instructions repository), call get_meeting_links and put each address exactly as it returns on its own line. Never build an address yourself.";
+
 /**
  * Where a turn's answer goes: spoken by the classic voice, posted to the
  * meeting chat, or handed back to the realtime voice that asked for it.
@@ -34,13 +37,13 @@ function channelInstructions(
 			return [
 				`You are answering, through Parlume, a request a participant typed in the meeting chat. Your reply is posted to the chat as you write it. ${SHARED_CONTEXT}`,
 				mode,
-				`Write plain text that reads well as a chat message: short paragraphs or simple lists, no markdown headings. Make the answer as long as the request needs, within ${PARLUME_CHAT_POST_CHARS.toLocaleString("en-US")} characters. Include links where they help, with identifiers (e.g. F-123), exactly as you have them. Do not call post_to_meeting_chat for this reply, and do not announce a tool before you call it.`,
+				`Write plain text that reads well as a chat message: open with the answer in one short line, then short lines or a simple list, no markdown headings. Keep it within ${PARLUME_CHAT_POST_CHARS.toLocaleString("en-US")} characters; a longer reply is shortened in the chat. ${LINKS} Do not call post_to_meeting_chat for this reply, and do not announce a tool before you call it.`,
 			];
 		case "REALTIME":
 			return [
 				`You are answering a request that Parlume's realtime voice passed to you during a meeting. The voice tells the meeting your answer in its own words, and a long answer is also posted to the meeting chat. ${SHARED_CONTEXT}`,
 				mode,
-				"Write plain text: lead with the outcome in one or two sentences, then only the detail that matters, such as identifiers and titles of what you created or found. Include links with identifiers (e.g. F-123) exactly as you have them. Do not call post_to_meeting_chat for this answer, and do not announce a tool before you call it.",
+				`Write plain text: lead with the outcome in one or two sentences, then only the detail that matters, such as identifiers and titles of what you created or found. ${LINKS} Do not call post_to_meeting_chat for this answer, and do not announce a tool before you call it.`,
 			];
 		default: {
 			const unreachable: never = replyChannel;

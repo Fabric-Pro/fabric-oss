@@ -968,10 +968,10 @@ export function createFabricMcpServer(
 					.optional()
 					.describe("Optional priority filter."),
 				kind: z
-					.enum(["FEATURE", "BUG"])
+					.enum(["FEATURE", "BUG", "INITIATIVE"])
 					.optional()
 					.describe(
-						"Optional ticket kind filter ('FEATURE' or 'BUG').",
+						"Optional ticket kind filter ('FEATURE', 'BUG' or 'INITIATIVE').",
 					),
 			},
 			_meta: withFabricApp("ui://fabric/agent-delegation"),

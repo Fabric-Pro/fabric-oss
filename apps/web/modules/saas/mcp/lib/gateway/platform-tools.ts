@@ -373,8 +373,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				},
 				kind: {
 					type: "string",
-					enum: ["FEATURE", "BUG"],
-					description: "Omit for both",
+					enum: ["FEATURE", "BUG", "INITIATIVE"],
+					description: "Omit for all",
 				},
 				search: {
 					type: "string",
@@ -634,6 +634,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					enum: ["XS", "S", "M", "L", "XL"],
 					description: "Omit unless you have a real basis for it",
 				},
+				kind: { type: "string", enum: ["FEATURE", "INITIATIVE"] },
 			},
 			required: ["projectId", "title"],
 		},
@@ -2314,7 +2315,7 @@ async function handleListFeatures(
 		!STORY_KINDS.includes(args.kind as StoryKindValue)
 	) {
 		return errorResult(
-			`kind must be one of ${STORY_KINDS.join(", ")} (received ${JSON.stringify(args.kind)}). Omit it to return both.`,
+			`kind must be one of ${STORY_KINDS.join(", ")} (received ${JSON.stringify(args.kind)}). Omit it to return all.`,
 		);
 	}
 
@@ -2622,7 +2623,7 @@ async function handleGetFeature(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { getStoryById } = await import("@repo/database");
+	const { getVisibleStoryById } = await import("@repo/database");
 
 	const featureId = args.featureId as string;
 	const projectId = args.projectId as string;
@@ -2637,7 +2638,7 @@ async function handleGetFeature(
 		return errorResult("Project not found or access denied");
 	}
 
-	const story = await getStoryById(featureId, projectId);
+	const story = await getVisibleStoryById(featureId, projectId);
 	if (!story) {
 		return errorResult("Feature not found");
 	}
@@ -3155,7 +3156,7 @@ type StoryPriorityValue = (typeof STORY_PRIORITIES)[number];
 const STORY_SIZES = ["XS", "S", "M", "L", "XL"] as const;
 type StorySizeValue = (typeof STORY_SIZES)[number];
 
-const STORY_KINDS = ["FEATURE", "BUG"] as const;
+const STORY_KINDS = ["FEATURE", "BUG", "INITIATIVE"] as const;
 type StoryKindValue = (typeof STORY_KINDS)[number];
 
 /**
@@ -3836,15 +3837,15 @@ async function handleCreateBug(
 }
 
 /**
- * `fabric_create_feature` — file a FEATURE work item, deduped by title.
+ * `fabric_create_feature` — file a FEATURE or INITIATIVE work item, deduped by title.
  *
  * Deliberately much thinner than {@link handleCreateBug}. A bug report carries
  * an error signature, so the bug tool can dedupe on a caller-supplied
  * fingerprint and treat re-reporting as routine. A feature request has no such
  * machine key — a "fingerprint" of a capability request is just its title — so
  * this tool has exactly ONE dedup layer: a direct normalized-title lookup with
- * family FEATURE (per-project, per-family,
- * non-terminal rows only). Feature titles are never matched against bugs, and a
+ * the requested family (FEATURE or INITIATIVE) (per-project, per-family,
+ * non-terminal rows only). Titles are never matched across kinds, and a
  * closed or declined item never blocks a new filing.
  *
  * A hit is still success-shaped (`created: false`, `dedupedBy: "title"`) rather
@@ -3926,16 +3927,40 @@ async function handleCreateFeature(
 	}
 	const size = args.size as StorySizeValue | undefined;
 
+	if (
+		args.kind !== undefined &&
+		args.kind !== "FEATURE" &&
+		args.kind !== "INITIATIVE"
+	) {
+		return errorResult(
+			`kind must be FEATURE or INITIATIVE (received ${JSON.stringify(args.kind)})`,
+		);
+	}
+	const kind =
+		(args.kind as "FEATURE" | "INITIATIVE" | undefined) ?? "FEATURE";
+	const noun = kind === "INITIATIVE" ? "initiative" : "feature";
+
 	// Reach → tenant XOR → STORY_CREATE.
 	const resolved = await resolveProjectForStoryWrite(projectId, session);
 	if (!resolved.ok) {
 		return resolved.error;
 	}
 
-	// ── Normalized-title dedup, FEATURE family only ──
+	if (kind === "INITIATIVE") {
+		const { db, InitiativesDisabledError } = await import("@repo/database");
+		const project = await db.project.findUnique({
+			where: { id: projectId },
+			select: { initiativesEnabled: true },
+		});
+		if (!project?.initiativesEnabled) {
+			return errorResult(new InitiativesDisabledError().message);
+		}
+	}
+
+	// ── Normalized-title dedup, FEATURE or INITIATIVE family ──
 	const collision = await findOpenBacklogTitleCollision(
 		projectId,
-		"FEATURE",
+		kind,
 		title,
 	);
 	if (collision) {
@@ -3946,26 +3971,35 @@ async function handleCreateFeature(
 			id: collision.existingId,
 			identifier: collision.existingIdentifier,
 			title,
-			message: `A feature titled "${title}" already exists in this project as ${collision.existingIdentifier}. Returned it instead of filing a duplicate. If you have details it does not cover, attach them with fabric_create_feature_task rather than resending with a reworded title.`,
+			message: `A ${noun} titled "${title}" already exists in this project as ${collision.existingIdentifier}. Returned it instead of filing a duplicate. If you have details it does not cover, attach them with fabric_create_feature_task rather than resending with a reworded title.`,
 		});
 	}
 	const { createStoryFromProposal } = await import("@repo/temporal");
-
-	const { story, aiDrafted } = await createStoryFromProposal({
-		projectId,
-		organizationId: session.organizationId,
-		createdById: session.userId,
-		title,
-		description,
-		kind: "FEATURE",
-		// The tool contract IS the kind declaration — see the doc comment.
-		skipClassifier: true,
-		priority,
-		size,
-		draftingStage: "PLACEHOLDER",
-		source: "CUSTOM_AGENT",
-		...deferredDraftingOptions(session),
-	});
+	let created: Awaited<ReturnType<typeof createStoryFromProposal>>;
+	try {
+		created = await createStoryFromProposal({
+			projectId,
+			organizationId: session.organizationId,
+			createdById: session.userId,
+			title,
+			description,
+			kind,
+			// The tool contract IS the kind declaration — see the doc comment.
+			skipClassifier: true,
+			priority,
+			size,
+			draftingStage: "PLACEHOLDER",
+			source: "CUSTOM_AGENT",
+			...deferredDraftingOptions(session),
+		});
+	} catch (error) {
+		const { InitiativesDisabledError } = await import("@repo/database");
+		if (error instanceof InitiativesDisabledError) {
+			return errorResult(error.message);
+		}
+		throw error;
+	}
+	const { story, aiDrafted } = created;
 
 	await startDeferredDraft(session, projectId, story);
 	announceStoryCreated({
@@ -4151,6 +4185,8 @@ async function handleListDocuments(
  */
 const DOCUMENT_UNAVAILABLE = "Document not found or access denied";
 const CONTEXT_UNAVAILABLE = "Context not found or access denied";
+const CONFIDENTIAL_TRANSCRIPT =
+	"This transcript belongs to a confidential meeting series, so it is kept out of answers. Project members can still read it in the Meeting Digest.";
 
 async function handleGetDocument(
 	args: Record<string, unknown>,
@@ -4676,9 +4712,11 @@ async function handleGetProjectContext(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { getContextById, readProjectContextBodyPage } = await import(
-		"@repo/database"
-	);
+	const {
+		findConfidentialTranscriptContextIds,
+		getContextById,
+		readProjectContextBodyPage,
+	} = await import("@repo/database");
 
 	const contextId = args.contextId as string;
 	if (!contextId) {
@@ -4706,6 +4744,15 @@ async function handleGetProjectContext(
 		return errorResult(CONTEXT_UNAVAILABLE);
 	}
 	const hostOrganizationId = access.organizationId || null;
+	// A confidential series' transcript stays out of later answers. The reader
+	// can open the project, so saying why tells them nothing new.
+	const confidential = await findConfidentialTranscriptContextIds({
+		projectId: ctx.projectId,
+		contextIds: [ctx.id],
+	});
+	if (confidential.size > 0) {
+		return errorResult(CONFIDENTIAL_TRANSCRIPT, { code: "FORBIDDEN" });
+	}
 
 	const offset = (args.offset as number | undefined) ?? 0;
 	const maxLength =

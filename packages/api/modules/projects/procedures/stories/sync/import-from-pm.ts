@@ -939,6 +939,7 @@ export const importFromPMProcedure = tenantProtectedProcedure
 			select: {
 				id: true,
 				organizationId: true,
+				initiativesEnabled: true,
 				projectManagementMcpServerId: true,
 				projectManagementMcpConfigId: true,
 				projectManagementContainerId: true,
@@ -1229,6 +1230,11 @@ export const importFromPMProcedure = tenantProtectedProcedure
 						)
 					: undefined;
 
+			const kind =
+				importedKind === "INITIATIVE" && !project.initiativesEnabled
+					? "FEATURE"
+					: importedKind;
+
 			// Create the story
 			const story = await createStory({
 				projectId: input.projectId,
@@ -1236,7 +1242,7 @@ export const importFromPMProcedure = tenantProtectedProcedure
 				description: description ?? undefined,
 				createdById: user.id,
 				source,
-				...(importedKind ? { kind: importedKind as StoryKind } : {}),
+				...(kind ? { kind: kind as StoryKind } : {}),
 			});
 
 			// Pull-and-store any ADO images now that we have the story id (the

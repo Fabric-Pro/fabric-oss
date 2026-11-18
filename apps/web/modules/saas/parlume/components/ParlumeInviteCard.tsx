@@ -79,7 +79,7 @@ export function ParlumeInviteCard({
 	const [toolsReadOnly, setToolsReadOnly] = useState(true);
 	const [suggestionsEnabled, setSuggestionsEnabled] = useState(true);
 	const [suggestionAudience, setSuggestionAudience] =
-		useState<ParlumeSuggestionAudience>("MEETING");
+		useState<ParlumeSuggestionAudience>("TEAM");
 	const [error, setError] = useState<string | null>(null);
 	const [isInviting, setIsInviting] = useState(false);
 	const agentsQuery = useQuery({
@@ -129,7 +129,7 @@ export function ParlumeInviteCard({
 			setMeetingUrl("");
 			setToolsReadOnly(true);
 			setSuggestionsEnabled(true);
-			setSuggestionAudience("MEETING");
+			setSuggestionAudience("TEAM");
 			await Promise.all([
 				queryClient.invalidateQueries({
 					queryKey: [SESSIONS_QUERY_KEY, projectId],

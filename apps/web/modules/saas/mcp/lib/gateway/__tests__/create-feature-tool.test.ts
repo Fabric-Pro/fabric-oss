@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
 	isOrganizationMember: vi.fn(),
 	updateMany: vi.fn(),
 	storyFindUnique: vi.fn(),
+	projectFindUnique: vi.fn(),
 	findOpenBacklogTitleCollision: vi.fn(),
 	listStories: vi.fn(),
 	createStoryFromProposal: vi.fn(),
@@ -40,22 +41,34 @@ vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
 		.mockResolvedValue({ availability: "UPLOAD", readState: "DIRECT" }),
 }));
 
-vi.mock("@repo/database", () => ({
-	db: {
-		userStory: {
-			findFirst: mocks.findFirst,
-			findUnique: mocks.storyFindUnique,
-			updateMany: mocks.updateMany,
+vi.mock("@repo/database", () => {
+	class InitiativesDisabledError extends Error {
+		constructor(message = "Initiatives are turned off for this project.") {
+			super(message);
+			this.name = "InitiativesDisabledError";
+		}
+	}
+	return {
+		db: {
+			project: {
+				findUnique: mocks.projectFindUnique,
+			},
+			userStory: {
+				findFirst: mocks.findFirst,
+				findUnique: mocks.storyFindUnique,
+				updateMany: mocks.updateMany,
+			},
 		},
-	},
-	isOrganizationMember: mocks.isOrganizationMember,
-	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
-	getProjectAccessContext: mocks.getProjectAccessContext,
-	canCreateProjectStory: mocks.canCreateProjectStory,
-	findOpenBacklogTitleCollision: mocks.findOpenBacklogTitleCollision,
-	listStories: mocks.listStories,
-	TERMINAL_DRAFTING_STAGES: ["DECLINED", "CLOSED"],
-}));
+		isOrganizationMember: mocks.isOrganizationMember,
+		isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
+		getProjectAccessContext: mocks.getProjectAccessContext,
+		canCreateProjectStory: mocks.canCreateProjectStory,
+		findOpenBacklogTitleCollision: mocks.findOpenBacklogTitleCollision,
+		listStories: mocks.listStories,
+		TERMINAL_DRAFTING_STAGES: ["DECLINED", "CLOSED"],
+		InitiativesDisabledError,
+	};
+});
 
 vi.mock("@repo/temporal", () => ({
 	createStoryFromProposal: mocks.createStoryFromProposal,
@@ -145,7 +158,7 @@ describe("fabric_create_feature — declaration", () => {
 		expect(definition?._gateway_source).toBe("platform");
 	});
 
-	it("requires projectId + title and accepts description/priority/size", () => {
+	it("requires projectId + title and accepts description/priority/size/kind", () => {
 		const schema = definition?.inputSchema as {
 			properties: Record<string, { enum?: string[] }>;
 			required: string[];
@@ -153,6 +166,7 @@ describe("fabric_create_feature — declaration", () => {
 		expect(schema.required).toEqual(["projectId", "title"]);
 		expect(Object.keys(schema.properties).sort()).toEqual([
 			"description",
+			"kind",
 			"priority",
 			"projectId",
 			"size",
@@ -171,6 +185,7 @@ describe("fabric_create_feature — declaration", () => {
 			"L",
 			"XL",
 		]);
+		expect(schema.properties.kind.enum).toEqual(["FEATURE", "INITIATIVE"]);
 	});
 
 	it("declares no fingerprint input — that is a bug-only concept", () => {
@@ -726,5 +741,111 @@ describe("fabric_create_feature — validation and permissions", () => {
 		expect(result.isError).toBe(true);
 		expect(payload(result).error).toContain("No permission");
 		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+	});
+
+	it("passes kind: 'INITIATIVE' to duplicate check and createStoryFromProposal", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			initiativesEnabled: true,
+		});
+		mocks.createStoryFromProposal.mockResolvedValue({
+			story: {
+				id: "init-1",
+				identifier: "I-01",
+				title: "Enterprise SSO",
+				kind: "INITIATIVE",
+				priority: "P2_MEDIUM",
+				draftingStage: "PLACEHOLDER",
+			},
+			aiDrafted: false,
+		});
+
+		const result = await executePlatformTool(
+			"fabric_create_feature",
+			{
+				projectId: "proj-1",
+				title: "Enterprise SSO",
+				kind: "INITIATIVE",
+			},
+			session,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(mocks.findOpenBacklogTitleCollision).toHaveBeenCalledWith(
+			"proj-1",
+			"INITIATIVE",
+			"Enterprise SSO",
+		);
+		expect(mocks.createStoryFromProposal).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "INITIATIVE",
+				skipClassifier: true,
+			}),
+		);
+	});
+
+	it("returns an error and creates nothing when kind is EPIC", async () => {
+		const result = await executePlatformTool(
+			"fabric_create_feature",
+			{
+				projectId: "proj-1",
+				title: "Enterprise SSO",
+				kind: "EPIC",
+			},
+			session,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toContain(
+			'kind must be FEATURE or INITIATIVE (received "EPIC")',
+		);
+		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+	});
+
+	it("returns an error and does not check duplicates when Initiatives are disabled", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			initiativesEnabled: false,
+		});
+
+		const result = await executePlatformTool(
+			"fabric_create_feature",
+			{
+				projectId: "proj-1",
+				title: "Enterprise SSO",
+				kind: "INITIATIVE",
+			},
+			session,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toBe(
+			"Initiatives are turned off for this project.",
+		);
+		expect(mocks.findOpenBacklogTitleCollision).not.toHaveBeenCalled();
+		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+	});
+
+	it("returns the Initiatives turned off message as a tool error", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			initiativesEnabled: true,
+		});
+		const { InitiativesDisabledError } = await import("@repo/database");
+		mocks.createStoryFromProposal.mockRejectedValue(
+			new InitiativesDisabledError(),
+		);
+
+		const result = await executePlatformTool(
+			"fabric_create_feature",
+			{
+				projectId: "proj-1",
+				title: "Enterprise SSO",
+				kind: "INITIATIVE",
+			},
+			session,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toBe(
+			"Initiatives are turned off for this project.",
+		);
 	});
 });

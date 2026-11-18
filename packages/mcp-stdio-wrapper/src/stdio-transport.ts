@@ -14,21 +14,68 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInterface, type Interface } from "node:readline";
+import { fileURLToPath } from "node:url";
+import {
+	CatalogLaunchError,
+	type CatalogLaunchRequest,
+	createBaseChildEnv,
+	validateCatalogLaunch,
+} from "./catalog-command";
+import { resolvePreinstalledCommand } from "./preinstalled-command";
 
-export interface StdioTransportConfig {
-	/** The command to run (e.g., 'npx') */
-	command: string;
-	/** Arguments for the command (e.g., ['@azure-devops/mcp', 'myorg']) */
-	args: string[];
-	/** Environment variables to set (credentials go here) */
-	env?: Record<string, string>;
-	/** Working directory for the process */
-	cwd?: string;
+export interface StdioTransportConfig extends CatalogLaunchRequest {
 	/** Timeout for process startup in milliseconds (default: 30000) */
 	startupTimeoutMs?: number;
 	/** Timeout for requests in milliseconds (default: 30000) */
 	requestTimeoutMs?: number;
+}
+
+const TWILIO_PACKAGE = "@twilio-alpha/mcp";
+const TWILIO_LAUNCHER = fileURLToPath(
+	new URL("./launchers/twilio.cjs", import.meta.url),
+);
+
+/** Google Drive reads credential files on the wrapper's filesystem. */
+async function materializeCredentialFiles(credentials: Record<string, string>) {
+	const {
+		__GDRIVE_OAUTH_KEYS_JSON: oauthKeysJson,
+		__GDRIVE_CREDENTIALS_JSON: credentialsJson,
+		...env
+	} = credentials;
+	if (!oauthKeysJson && !credentialsJson) {
+		return { env };
+	}
+
+	// A separate private directory for each transport keeps overlapping launches independent.
+	const directory = await mkdtemp(join(tmpdir(), "gdrive-mcp-"));
+	try {
+		if (oauthKeysJson) {
+			const path = join(directory, "gcp-oauth.keys.json");
+			await writeFile(path, oauthKeysJson, { mode: 0o600 });
+			env.GDRIVE_OAUTH_PATH = path;
+		}
+		if (credentialsJson) {
+			const path = join(directory, "credentials.json");
+			await writeFile(path, credentialsJson, { mode: 0o600 });
+			env.GDRIVE_CREDENTIALS_PATH = path;
+		}
+		return { env, directory };
+	} catch (error) {
+		await removeCredentialDirectory(directory);
+		throw error;
+	}
+}
+
+async function removeCredentialDirectory(
+	directory: string | undefined,
+): Promise<void> {
+	if (directory) {
+		await rm(directory, { recursive: true, force: true }).catch(() => {});
+	}
 }
 
 interface JsonRpcRequest {
@@ -178,7 +225,9 @@ export class StdioTransport {
 	private readline: Interface | null = null;
 	private requestId = 0;
 	private pendingRequests = new Map<number | string, PendingRequest>();
+	private started = false;
 	private isClosing = false;
+	private credentialDirectory?: string;
 	/** Recent stderr lines (redacted), to explain a failed exit. */
 	private stderrTail: string[] = [];
 	private readonly config: StdioTransportConfig;
@@ -197,27 +246,68 @@ export class StdioTransport {
 	 * Start the MCP server process.
 	 */
 	async start(): Promise<void> {
-		if (this.process) {
-			throw new Error("Process already started");
+		if (this.started || this.isClosing) {
+			throw new Error("Transport already started or closed");
 		}
 
-		return new Promise((resolve, reject) => {
-			// SECURITY: Never log credentials
-			const safeEnvKeys = Object.keys(this.config.env ?? {}).filter(
-				(key) =>
-					!key.toLowerCase().includes("key") &&
-					!key.toLowerCase().includes("token") &&
-					!key.toLowerCase().includes("secret") &&
-					!key.toLowerCase().includes("password") &&
-					!key.toLowerCase().includes("pat"),
+		// Direct transports and pool factories use the same policy. Snapshot the
+		// validated values before asynchronous package lookup or file creation.
+		const launch = validateCatalogLaunch(this.config);
+		this.started = true;
+		try {
+			const preinstalled = await resolvePreinstalledCommand(
+				launch.commandParts,
 			);
-			console.log(
-				`[StdioTransport] Starting: ${this.config.command} ${this.config.args.map(redactUrlCredentials).join(" ")}`,
-			);
-			console.log(
-				`[StdioTransport] Environment keys (safe to log): ${safeEnvKeys.join(", ")}`,
-			);
+			let executable = "npx";
+			let args = launch.commandParts.slice(1);
+			if (preinstalled) {
+				executable = preinstalled.executable;
+				args = preinstalled.args;
+				console.log(
+					`[StdioTransport] Running preinstalled ${preinstalled.packageName}@${preinstalled.version} instead of npx`,
+				);
+			}
+			if (launch.packageName === TWILIO_PACKAGE) {
+				// Twilio reads credential arguments from argv inside the launcher.
+				if (!preinstalled) {
+					throw new CatalogLaunchError(
+						`MCP server ${TWILIO_PACKAGE} is not available.`,
+					);
+				}
+				args = [TWILIO_LAUNCHER, ...args];
+			}
 
+			const materialized = await materializeCredentialFiles(
+				launch.credentials,
+			);
+			if (this.isClosing) {
+				await removeCredentialDirectory(materialized.directory);
+				throw new Error("Transport closed during startup");
+			}
+			this.credentialDirectory = materialized.directory;
+			await this.#spawnProcess(
+				executable,
+				[...args, ...launch.requestArgs],
+				{
+					...createBaseChildEnv(),
+					...materialized.env,
+				},
+			);
+		} catch (error) {
+			await this.close().catch(() => {});
+			throw error;
+		}
+	}
+
+	#spawnProcess(
+		executable: string,
+		args: string[],
+		env: NodeJS.ProcessEnv,
+	): Promise<void> {
+		console.log(
+			`[StdioTransport] Starting: ${executable} ${args.map(redactUrlCredentials).join(" ")}`,
+		);
+		return new Promise((resolve, reject) => {
 			const startupTimeout = setTimeout(() => {
 				reject(
 					new Error(
@@ -228,12 +318,8 @@ export class StdioTransport {
 			}, this.startupTimeoutMs);
 
 			try {
-				this.process = spawn(this.config.command, this.config.args, {
-					cwd: this.config.cwd,
-					env: {
-						...process.env,
-						...this.config.env,
-					},
+				this.process = spawn(executable, args, {
+					env,
 					stdio: ["pipe", "pipe", "pipe"],
 				});
 
@@ -462,6 +548,7 @@ export class StdioTransport {
 			this.process = null;
 		}
 
+		await removeCredentialDirectory(this.credentialDirectory);
 		console.log("[StdioTransport] Transport closed");
 	}
 

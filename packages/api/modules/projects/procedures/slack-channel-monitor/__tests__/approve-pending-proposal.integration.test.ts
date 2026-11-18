@@ -39,7 +39,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		// DB queries
 		getPendingBacklogProposal: vi.fn(),
 		claimPendingProposalWithReview: vi.fn(),
-		markPendingProposalApplied: vi.fn(),
+		settleCreatesOnlyApply: vi.fn(),
 		markPendingProposalFailed: vi.fn(),
 		appendAppliedChangeIndexes: vi.fn(),
 		markProposalApplyDispatched: vi.fn(),
@@ -72,7 +72,8 @@ vi.mock("@repo/database", () => ({
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	claimPendingProposalWithReview: mocks.claimPendingProposalWithReview,
 	getAppliedChangeIndexes: vi.fn(async () => new Set<number>()),
-	markPendingProposalApplied: mocks.markPendingProposalApplied,
+	readRejectedChangeIndexes: () => [],
+	settleCreatesOnlyApply: mocks.settleCreatesOnlyApply,
 	markPendingProposalFailed: mocks.markPendingProposalFailed,
 	recordProposalApplication: vi.fn(),
 	recordProposalDuplicateResolution: vi.fn(),
@@ -436,7 +437,10 @@ beforeEach(() => {
 	mocks.featureFindMany.mockResolvedValue([]);
 	mocks.appendAppliedChangeIndexes.mockResolvedValue(undefined);
 	mocks.claimPendingProposalWithReview.mockResolvedValue(true);
-	mocks.markPendingProposalApplied.mockResolvedValue(undefined);
+	mocks.settleCreatesOnlyApply.mockResolvedValue({
+		status: "applied",
+		remainingChangeCount: 0,
+	});
 	mocks.markPendingProposalFailed.mockResolvedValue(undefined);
 	mocks.markPendingProposalRejected.mockResolvedValue({ updated: true });
 	mocks.setPendingProposalAttachmentResult.mockResolvedValue(undefined);

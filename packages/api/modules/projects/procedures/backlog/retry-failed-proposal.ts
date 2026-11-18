@@ -10,8 +10,11 @@ import {
 	getPendingProposalReview,
 	inferDedupFamily,
 	markProposalApplyDispatched,
+	readRejectedChangeIndexes,
 	recordProposalDuplicateResolution,
 	returnFailedProposalToReview,
+	settleCreatesOnlyApply,
+	sourceMetadataEquals,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
 import { describeSyncErrorForUser } from "@repo/temporal/pm-sync-user-error";
@@ -25,6 +28,7 @@ import {
 } from "../../../../orpc/procedures";
 import { isChannelMonitorSource } from "../../lib/channel-monitor-source";
 import type { PmSyncOverride } from "./change-item-schema";
+import { lostClaimConflict } from "./proposal-approval-guards";
 
 /**
  * Minimal shape of a stored proposal change. The stored JSON came from the
@@ -123,11 +127,14 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 						proposal.applyReviewId!,
 					)
 				: null;
+		// The source metadata holds the items moved to Rejected, so a claim
+		// also fails when an item was rejected after this read.
 		const retryWhere = {
 			id: proposal.id,
 			status: "FAILED" as const,
 			applyWorkflowId: proposal.applyWorkflowId ?? null,
 			applyReviewId: proposal.applyReviewId ?? null,
+			sourceMetadata: sourceMetadataEquals(proposal.sourceMetadata),
 		};
 		if (
 			proposal.source === "ROADMAP_RECOMMENDATION" ||
@@ -174,6 +181,9 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 		for (const index of proposal.appliedChangeIndexes ?? []) {
 			alreadyApplied.add(index);
 		}
+		const rejected = new Set(
+			readRejectedChangeIndexes(proposal.sourceMetadata),
+		);
 		const replayEntries = review
 			? review.entries
 					.filter((entry) => entry.selected)
@@ -230,7 +240,7 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 						"Selected review entry has no stored change or index",
 				});
 			}
-			if (alreadyApplied.has(i)) {
+			if (alreadyApplied.has(i) || rejected.has(i)) {
 				continue;
 			}
 
@@ -290,11 +300,23 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 				},
 			});
 			if (finalized.count !== 1) {
-				throw new ORPCError("CONFLICT", {
-					message: "This proposal is no longer failed.",
-				});
+				throw await lostClaimConflict(input.proposalId, ["FAILED"]);
 			}
 			await recordDuplicates();
+			// The retry replays only the reviewer's selection: items nobody
+			// decided on yet send the row back to review.
+			const settled = await settleCreatesOnlyApply({
+				proposalId: input.proposalId,
+				where: { status: "APPLIED" },
+			});
+			if (settled.status === "pending") {
+				return {
+					workflowId: null,
+					dedupCollisionCount,
+					message:
+						"Already on roadmap. The remaining items are back in review.",
+				};
+			}
 			// This terminal flip bypasses the apply workflow's finalize
 			// activity, so finalize any session-history row directly (best-
 			// effort, no-op when none exists) so it doesn't stay FAILED.
@@ -360,9 +382,7 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 		});
 
 		if (claimed.count !== 1) {
-			throw new ORPCError("CONFLICT", {
-				message: "This proposal is no longer failed.",
-			});
+			throw await lostClaimConflict(input.proposalId, ["FAILED"]);
 		}
 
 		await recordDuplicates();

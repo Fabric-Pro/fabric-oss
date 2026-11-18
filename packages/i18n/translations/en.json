@@ -1826,7 +1826,8 @@
 					},
 					"meeting_digest": {
 						"inclusion_changed": "Meeting digest inclusion changed",
-						"action_item_toggled": "Meeting action item completion toggled"
+						"action_item_toggled": "Meeting action item completion toggled",
+						"confidentiality_changed": "Meeting series confidentiality changed"
 					},
 					"meeting": {
 						"deleted": "Meeting deleted",
@@ -4685,6 +4686,7 @@
 				"actions": "Actions",
 				"bug": "Bug",
 				"feature": "Feature",
+				"initiative": "Initiative",
 				"track": "Track",
 				"estimate": "Estimate",
 				"size": "Size",
@@ -5030,7 +5032,23 @@
 					"createAnyway": "Create new anyway",
 					"addTo": "Add to {identifier}",
 					"updateTo": "Update {identifier}",
-					"updateError": "Could not update the item. Try again, or create a new one instead."
+					"updateError": "Could not update the item. Try again, or create a new one instead.",
+					"inboxOnlyTitle": "This may already be waiting for review",
+					"inboxOnlyBody": "Similar work is waiting in the Proposal Inbox. Review it below before creating a new item.",
+					"inbox": {
+						"title": "Similar items waiting in the Proposal Inbox",
+						"body": "These items have not been reviewed yet. Nothing changes unless you choose an action.",
+						"attachmentsNotMerged": "Merging adds your text only. Attached files are not added to the proposal item.",
+						"similarity": "{percent}% similar",
+						"merge": "Merge into this proposal",
+						"mergeLabel": "Merge your text into the proposal item {title}",
+						"mergedToast": "Added your text to {title} in the Proposal Inbox. It is waiting for review.",
+						"mergeError": "Could not merge into this proposal item. It may have been reviewed already. Try again, or create a new item instead.",
+						"reject": "Move proposal item to Rejected",
+						"rejectLabel": "Move the proposal item {title} to Rejected",
+						"rejectedStatus": "Moved {title} to Rejected. You can restore it from the Rejected list.",
+						"rejectError": "Could not move this proposal item. It may have been reviewed already."
+					}
 				},
 				"attachments": {
 					"dropHint": "Drop images here",
@@ -6474,6 +6492,7 @@
 				"unassigned": "Unassigned",
 				"kindFeature": "Feature",
 				"kindBug": "Bug",
+				"kindInitiative": "Initiative",
 				"coversAria": "Open {kind} {identifier}: {title}",
 				"coversMore": "{count, plural, one {+# more} other {+# more}}",
 				"automated": "Automated",
@@ -6976,6 +6995,7 @@
 				"includeBugsAndClosed": "Include bugs & closed",
 				"selectedCount": "{count} selected",
 				"bug": "Bug",
+				"initiative": "Initiative",
 				"closed": "Closed",
 				"coverageCount": "{count, plural, =0 {No cases} one {# case} other {# cases}}"
 			},
@@ -11479,6 +11499,8 @@
 			"aboutDuration": "Type 1h 30m, 1.5 or 90m and press Enter. Project and activity start from your last entry.",
 			"aboutStartStop": "This project needs start and stop times, and Fabric calculates the duration. For work past midnight, choose the next day as the stop date. The entry counts toward the day it started.",
 			"note": "Note",
+			"recentNotes": "Recent notes",
+			"useRecentNote": "Use note: {note}",
 			"billable": "Billable",
 			"timeZone": "Time zone",
 			"added": "Time logged",
@@ -11502,7 +11524,7 @@
 		"suggestions": {
 			"title": "To confirm",
 			"aboutTitle": "About To confirm",
-			"about": "Time Fabric suggests from your own meetings, test runs, test work and work item edits. A duration is filled in only when a real start and stop are known; otherwise type how long you worked. Confirm or press Enter to log it, or choose Not work time. Open a row to change its note, billable, activity or work item first. On time and materials projects the list fills on its own after your meetings and when you open this page; on fixed bid projects, choose Check my activity. Suggestions expire at the end of the following week.",
+			"about": "Time Fabric suggests from your own meetings, linked Teams meetings in your calendar, test runs, test work and work item edits. A duration is filled in only when a real start and stop are known; otherwise type how long you worked. Confirm or press Enter to log it, or choose Not work time. Open a row to change its note, billable, activity or work item first. On time and materials projects the list fills on its own after your meetings and when you open this page; on fixed bid projects, choose Check my activity. Suggestions expire at the end of the following week.",
 			"check": "Check my activity",
 			"checking": "Checking…",
 			"confirm": "Confirm",
@@ -11528,7 +11550,8 @@
 				"workItemEdits": "{count, plural, one {# work item edit} other {# work item edits}}",
 				"testResults": "{count, plural, one {# recorded test result} other {# recorded test results}}",
 				"testCaseChanges": "{count, plural, one {# test case change} other {# test case changes}}",
-				"pullRequestPushes": "{count, plural, one {# pull request push} other {# pull request pushes}}"
+				"pullRequestPushes": "{count, plural, one {# pull request push} other {# pull request pushes}}",
+				"calendarMeetings": "{count, plural, one {# calendar meeting} other {# calendar meetings}}"
 			}
 		},
 		"entry": {

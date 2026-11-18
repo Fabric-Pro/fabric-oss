@@ -48,7 +48,7 @@ const DETAIL_TEXT_CHARS = 12_000;
 const TASK_DESCRIPTION_CHARS = 300;
 
 const PRIORITIES = ["P0_CRITICAL", "P1_HIGH", "P2_MEDIUM", "P3_LOW"] as const;
-const KINDS = ["FEATURE", "BUG"] as const;
+const KINDS = ["FEATURE", "BUG", "INITIATIVE"] as const;
 
 type Priority = (typeof PRIORITIES)[number];
 type Kind = (typeof KINDS)[number];
@@ -425,17 +425,17 @@ export async function resolveProjectFeatureRef(
 ): Promise<
 	{ id: string; identifier: string; kind: string; title: string } | undefined
 > {
-	const { db } = await import("@repo/database");
+	const { db, withVisibleStories } = await import("@repo/database");
 	const candidates = featureIdentifierCandidates(ref);
 	const rows = await db.userStory.findMany({
-		where: {
+		where: withVisibleStories({
 			projectId,
 			OR: [...new Set(candidates.map((c) => c.identifier))].map(
 				(identifier) => ({
 					identifier: { equals: identifier, mode: "insensitive" },
 				}),
 			),
-		},
+		}),
 		select: { id: true, identifier: true, kind: true, title: true },
 	});
 	return pickByCandidateOrder(rows, candidates);
@@ -487,11 +487,11 @@ export async function getProjectFeature(
 	}
 	const offset = typeof args.offset === "number" ? args.offset : 0;
 
-	const { getStoryById } = await import("@repo/database");
-	let story = await getStoryById(ref, projectId);
+	const { getVisibleStoryById } = await import("@repo/database");
+	let story = await getVisibleStoryById(ref, projectId);
 	if (!story) {
 		const picked = await resolveProjectFeatureRef(ref, projectId);
-		story = picked ? await getStoryById(picked.id, projectId) : null;
+		story = picked ? await getVisibleStoryById(picked.id, projectId) : null;
 	}
 	if (!story) {
 		return {

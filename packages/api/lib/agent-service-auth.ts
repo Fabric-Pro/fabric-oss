@@ -91,7 +91,6 @@ export const PARLUME_GRANT_SCOPES: readonly string[] = [
 	"instructions:read",
 	"instructions:write",
 	"workspaces:read",
-	"chats:read",
 	"mcp:read",
 	"workflows:read",
 	"workflows:write",

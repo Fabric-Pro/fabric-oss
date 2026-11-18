@@ -10,8 +10,8 @@
  */
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { useStoriesByLastEdit } from "@saas/projects/hooks/use-stories-by-last-edit";
 import { orpcClient } from "@shared/lib/orpc-client";
-import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Label } from "@ui/components/label";
 import {
@@ -67,12 +67,12 @@ export function WeaveDashboard({
 	const repoUrl =
 		propRepoUrl || (projectData as any)?.project?.repositoryUrl || "";
 
-	// Fetch features (user stories) for linking plans
-	const { data: storiesData } = useQuery(
-		orpc.projects.stories.board.queryOptions({
-			input: { projectId, organizationId: organizationId ?? null },
-		}),
-	);
+	// Features to link a plan to, most recently edited first
+	const { stories } = useStoriesByLastEdit({
+		projectId,
+		organizationId: organizationId ?? null,
+		enabled: true,
+	});
 
 	// Fetch plans
 	const { data: plansData, isLoading: isLoadingPlans } = useQuery({
@@ -152,7 +152,6 @@ export function WeaveDashboard({
 		},
 	});
 
-	const stories = storiesData?.stories || [];
 	const plans = plansData?.plans || [];
 	const planStats = {
 		total: plans.length,
@@ -323,7 +322,7 @@ export function WeaveDashboard({
 										<SelectItem value="none">
 											No feature — standalone plan
 										</SelectItem>
-										{stories.map((story: any) => (
+										{stories.map((story) => (
 											<SelectItem
 												key={story.id}
 												value={story.id}

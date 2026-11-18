@@ -33,6 +33,7 @@ import {
 
 export * from "./lib/report-access";
 export * from "./lib/report-evidence";
+export * from "./lib/report-instructions";
 export * from "./lib/report-template-catalog";
 export * from "./reports-project-knowledge";
 
@@ -2198,6 +2199,9 @@ export async function getTemplateInstanceArtifact(
 							name: true,
 							userId: true,
 							organizationId: true,
+							// A report bound to its project by this column alone is
+							// still checked for that project.
+							projectId: true,
 							fabricConfig: true,
 						},
 					},

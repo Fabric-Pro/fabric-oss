@@ -468,6 +468,50 @@ describe("evaluateAiReadinessProcedure", () => {
 				),
 			}),
 		);
+
+		const call = mocks.generateObject.mock.calls.at(-1)?.[0] as {
+			prompt: string;
+		};
+		expect(call.prompt).toContain("user story specification");
+		expect(call.prompt).toContain("sprint execution");
+	});
+
+	it("applies the initiative rubric and frames readiness for child feature breakdown without sprint execution", async () => {
+		mocks.hasProjectAccess.mockResolvedValue(true);
+		mocks.userStoryFindFirst.mockResolvedValue({
+			id: "initiative-rubric",
+			kind: "INITIATIVE",
+			title: "Workspace Redesign",
+			description:
+				"## Strategic Goals\nImprove productivity\n## Child Feature Breakdown\n- Feature A\n- Feature B",
+			acceptanceCriteria: null,
+			createdAt: new Date(),
+			lastEditedAt: null,
+			decisionLogEntries: [],
+		});
+		mocks.getAIModelWithMetadata.mockResolvedValue(MODEL_WITH_METADATA);
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				aiReadinessScore: 90,
+				rationale: "Clear initiative breakdown.",
+				strengths: [],
+				gaps: [],
+			},
+		});
+
+		await evaluateAiReadiness({
+			input: { projectId: "proj-1", storyId: "initiative-rubric" },
+			context: { user: { id: "user-1" }, session: {} },
+		});
+
+		const call = mocks.generateObject.mock.calls.at(-1)?.[0] as {
+			prompt: string;
+		};
+		expect(call.prompt).toContain("INITIATIVE READINESS RUBRIC:");
+		expect(call.prompt).toContain(
+			"child Feature breakdown and roadmap planning",
+		);
+		expect(call.prompt).not.toContain("sprint execution");
 	});
 
 	it("explicitly excludes dev investigation items and engineering deferrals from gaps", async () => {

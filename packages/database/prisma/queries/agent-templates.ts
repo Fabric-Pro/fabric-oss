@@ -807,6 +807,8 @@ export interface UpdateAgentTemplateInstanceParams {
 	// External API exposure
 	isApiExposed?: boolean;
 	apiConfig?: Prisma.InputJsonValue;
+	/** Parlume meeting turns may use the agent's MCP servers, integrations and workspaces. */
+	meetingExternalTools?: boolean;
 	/**
 	 * If true, creates a new version instead of updating in place.
 	 * The old version will be archived, and a new version with incremented
@@ -1075,6 +1077,9 @@ export async function updateAgentTemplateInstance(
 					apiConfig: jsonOrDbNull(
 						data.apiConfig ?? current.apiConfig,
 					),
+					meetingExternalTools:
+						data.meetingExternalTools ??
+						current.meetingExternalTools,
 					// Reset usage stats for new version
 					runCount: 0,
 					lastRunAt: null,
@@ -1716,8 +1721,10 @@ export async function restoreInstanceVersion(
 				maxIterations: archived.maxIterations,
 				memoryAutoApprove: archived.memoryAutoApprove,
 				apiConfig: archived.apiConfig ?? Prisma.DbNull,
-				// Restoring declaration does not reactivate an external API endpoint.
+				// Restoring declaration does not reactivate an external API endpoint,
+				// nor external tools in meetings.
 				isApiExposed: false,
+				meetingExternalTools: false,
 				runCount: 0,
 				lastRunAt: null,
 			},

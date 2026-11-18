@@ -636,6 +636,48 @@ export async function markMeetingTranscriptAnalysisFailed(
 	});
 }
 
+/**
+ * The project contexts that hold a transcript of one of the project's
+ * confidential series: a synced transcript's context, or the transcript of a
+ * Parlume session of the series. Later answers, recaps and summaries leave
+ * these out. With `contextIds`, only those candidates are checked.
+ */
+export async function findConfidentialTranscriptContextIds(params: {
+	projectId: string;
+	contextIds?: string[];
+}): Promise<Set<string>> {
+	const { projectId, contextIds } = params;
+	if (contextIds?.length === 0) {
+		return new Set();
+	}
+	const [transcripts, sessions] = await Promise.all([
+		db.projectMeetingTranscript.findMany({
+			where: {
+				projectId,
+				contextId: contextIds ? { in: contextIds } : { not: null },
+				linkedMeeting: { confidential: true },
+			},
+			select: { contextId: true },
+		}),
+		db.parlumeMeetingSession.findMany({
+			where: {
+				projectId,
+				transcriptContextId: contextIds
+					? { in: contextIds }
+					: { not: null },
+				linkedMeeting: { confidential: true },
+			},
+			select: { transcriptContextId: true },
+		}),
+	]);
+	return new Set([
+		...transcripts.flatMap((row) => (row.contextId ? [row.contextId] : [])),
+		...sessions.flatMap((row) =>
+			row.transcriptContextId ? [row.transcriptContextId] : [],
+		),
+	]);
+}
+
 /** Filters for {@link listMeetingTranscriptsByDate}. */
 export interface MeetingTranscriptDateQuery {
 	projectId: string;
@@ -682,6 +724,9 @@ export interface MeetingTranscriptDateResult {
  * helpers — callers verify access with `hasProjectAccess` first. Rows predating
  * the tenant columns carry NULL there, so filtering on them here would silently
  * hide real transcripts.
+ *
+ * A confidential series' transcripts are left out: this listing feeds agent
+ * answers, which must not read them.
  */
 export async function listMeetingTranscriptsByDate(
 	params: MeetingTranscriptDateQuery,
@@ -691,6 +736,7 @@ export async function listMeetingTranscriptsByDate(
 
 	const where = {
 		projectId,
+		linkedMeeting: { confidential: false },
 		...(from || to
 			? {
 					meetingDate: {

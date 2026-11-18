@@ -41,11 +41,11 @@ const mockRegistryServers = [
 	},
 	{
 		id: "server-stdio",
-		key: "filesystem",
-		name: "Local Filesystem",
+		key: "example-local",
+		name: "Local Example",
 		description: "Local files via CLI",
 		transport: "STDIO",
-		docsUrl: "https://example.com/docs/filesystem",
+		docsUrl: "https://example.com/docs/local",
 	},
 ];
 
@@ -278,7 +278,7 @@ describe("McpServersView — initialRegistrySearch handoff (#2612)", () => {
 		renderWithClient(
 			<McpServersView
 				organizationId={MOCK_ORG_ID}
-				initialRegistrySearch="filesystem"
+				initialRegistrySearch="example-local"
 				onServerParamConsumed={onConsumed}
 			/>,
 		);
@@ -297,6 +297,64 @@ describe("McpServersView — initialRegistrySearch handoff (#2612)", () => {
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 		expect(onConsumed).toHaveBeenCalledTimes(1);
 	});
+
+	it.each([true, false])(
+		"only offers command arguments for system Azure DevOps (system=%s)",
+		async (isSystemProvided) => {
+			mockListRegistry.mockResolvedValue([
+				{
+					id: "server-example",
+					key: "azure-devops",
+					name: "Example MCP",
+					transport: "STDIO",
+					command: "npx -y example-azure-devops@1.0.0",
+					authMethods: ["NONE"],
+					isSystemProvided,
+				},
+			]);
+			renderWithClient(
+				<McpServersView
+					organizationId={MOCK_ORG_ID}
+					initialRegistrySearch="Example MCP"
+					onServerParamConsumed={vi.fn()}
+				/>,
+			);
+			const dialog = within(
+				await screen.findByRole("dialog", { name: /add example mcp/i }),
+			);
+			const input = dialog.queryByPlaceholderText(
+				"e.g., contoso or mycompany",
+			);
+			if (isSystemProvided) {
+				expect(input).toBeInTheDocument();
+				fireEvent.change(
+					dialog.getByPlaceholderText("e.g., contoso or mycompany"),
+					{
+						target: { value: "-example" },
+					},
+				);
+			} else {
+				expect(input).not.toBeInTheDocument();
+			}
+
+			const refusal = "Provide a valid Azure DevOps organization name.";
+			mockUpsertConfig.mockRejectedValueOnce(new Error(refusal));
+			fireEvent.click(dialog.getByRole("button", { name: "Save" }));
+			await waitFor(() => {
+				expect(mockUpsertConfig).toHaveBeenCalledWith(
+					expect.objectContaining({
+						commandArgs: isSystemProvided
+							? ["-example"]
+							: undefined,
+					}),
+				);
+				expect(mockToastError).toHaveBeenCalledWith(
+					"Failed to save MCP server",
+					{ description: refusal },
+				);
+			});
+		},
+	);
 
 	it("matches server by id", async () => {
 		const onConsumed = vi.fn();

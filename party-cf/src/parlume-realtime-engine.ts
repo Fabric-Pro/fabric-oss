@@ -1,4 +1,5 @@
 import type { ParlumeAuraOutlet } from "./parlume-aura";
+import { parlumeSpokenPostText } from "./parlume-chat";
 import {
 	PARLUME_REALTIME_SAMPLE_RATE,
 	ParlumeRealtimeClient,
@@ -368,13 +369,16 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 		]);
 	}
 
-	/** Reads a chat post aloud, in Parlume's realtime voice. */
+	/**
+	 * Reads a chat post aloud, in Parlume's realtime voice. Given the raw post,
+	 * it read each address out character by character on staging.
+	 */
 	say(text: string): Promise<boolean> {
 		this.requester = null;
 		return this.respond("say", [
 			{
 				role: "system",
-				text: `Read this meeting chat post aloud, as written:\n${fence("chat_post", "", text)}`,
+				text: `Read this meeting chat post aloud, as written:\n${fence("chat_post", "", parlumeSpokenPostText(text))}`,
 			},
 		]);
 	}

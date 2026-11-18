@@ -117,11 +117,6 @@ vi.mock("@copilotkit/react-ui", () => ({
 	),
 }));
 
-vi.mock("@copilotkit/runtime-client-gql", () => ({
-	MessageRole: { User: "user", Assistant: "assistant", System: "system" },
-	TextMessage: class {},
-}));
-
 // ---------------------------------------------------------------------------
 // Mock the three components under test so we can capture props.
 // ---------------------------------------------------------------------------

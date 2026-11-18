@@ -55,6 +55,7 @@ const ORIGINAL_DESCRIPTION_HEADER =
 const REANALYZER_AGENT_KEY: Record<StoryKind, string> = {
 	BUG: "bug_reanalyzer",
 	FEATURE: "feature_reanalyzer",
+	INITIATIVE: "feature_reanalyzer", // no Initiative re-analysis prompt is bound, so this falls back
 };
 
 const ReanalyzedBugSchema = z.object({

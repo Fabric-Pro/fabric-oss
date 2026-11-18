@@ -49,7 +49,7 @@ const DEFAULT_STATE: ParlumeAutoJoinState = {
 	enabled: false,
 	toolsReadOnly: true,
 	suggestionsEnabled: true,
-	suggestionAudience: "MEETING",
+	suggestionAudience: "TEAM",
 	enabledBy: null,
 	error: null,
 	errorAt: null,

@@ -11,6 +11,7 @@ import { useSession } from "@saas/auth/hooks/use-session";
 import { gitlabStatusQueryOptions } from "@saas/data-connections/lib/gitlab-status-query";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
+import { useDeleteReportInstance } from "@saas/reports/hooks/use-delete-report-instance";
 import { useReportConnectionTest } from "@saas/reports/hooks/use-report-connection-test";
 import {
 	findConfigsForSource,
@@ -170,12 +171,18 @@ import {
 } from "./OwnerOnlyGenerate";
 import { ReportArtifactContent } from "./ReportArtifactContent";
 import { ReportConfigBanner } from "./ReportConfigBanner";
+import { ReportDetailHeading } from "./ReportDetailHeading";
 import { ReportEvidenceSettings } from "./ReportEvidenceSettings";
 import { ReportPromptCard } from "./ReportPromptCard";
 import { ReportReadinessRail } from "./ReportReadinessRail";
 import { ReportSystemPromptCard } from "./ReportSystemPromptCard";
 import { ReportTabContent } from "./ReportTabContent";
 import { ReportTemplatePreview } from "./ReportTemplatePreview";
+import {
+	ReportViewAction,
+	VIEW_LATEST_REPORT_PARAM,
+	VIEW_LATEST_REPORT_VALUE,
+} from "./ReportViewAction";
 import { RunDiagnosticsPanel } from "./RunDiagnosticsPanel";
 import { SaveReportConfigurationMenu } from "./SaveReportConfigurationMenu";
 import { SendArtifactEmailDialog } from "./SendArtifactEmailDialog";
@@ -732,21 +739,14 @@ export function TemplateInstanceDetail({
 		return () => clearInterval(interval);
 	}, [hasActiveExecution, executionInProgress, refetch]);
 
-	const deleteMutation = useMutation(
-		orpc.reports.instances.delete.mutationOptions({
-			onSuccess: () => {
-				toast.success("Instance deleted");
-				router.push(
-					reportSuite && instance?.projectId
-						? `${projectsPath}/${instance.projectId}?tab=reports`
-						: basePath,
-				);
-			},
-			onError: (error) => {
-				showReportError(error.message, "delete");
-			},
-		}),
-	);
+	// Where the report's page returns to: its project's Reports, else the templates.
+	const reportsHomePath =
+		reportSuite && instance?.projectId
+			? `${projectsPath}/${instance.projectId}?tab=reports`
+			: basePath;
+	const deleteMutation = useDeleteReportInstance({
+		onDeleted: () => router.push(reportsHomePath),
+	});
 
 	// With the report suite, the owner's saved connections are tested on
 	// their own; another viewer's test would run on their own connections.
@@ -1148,6 +1148,50 @@ export function TemplateInstanceDetail({
 		}
 	};
 
+	// View opens the newest successful run, never a newer failed or unfinished one.
+	const latestSuccess = instance?.latestSuccessfulReport ?? null;
+	const viewLatestReport = () => {
+		if (latestSuccess) {
+			void handleViewArtifact(
+				latestSuccess.artifactId,
+				latestSuccess.artifactName,
+			);
+		}
+	};
+
+	// A card's View lands here with `?view=latest`: open that report once, then
+	// drop the parameter so a reload or a tab change does not reopen it.
+	const opensLatestReport =
+		searchParams.get(VIEW_LATEST_REPORT_PARAM) === VIEW_LATEST_REPORT_VALUE;
+	const openedLatestReport = useRef(false);
+	useEffect(() => {
+		if (!opensLatestReport || !instance || openedLatestReport.current) {
+			return;
+		}
+		openedLatestReport.current = true;
+		viewLatestReport();
+		const params = new URLSearchParams(searchParams.toString());
+		params.delete(VIEW_LATEST_REPORT_PARAM);
+		router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+	}, [opensLatestReport, instance]);
+
+	// Rename opens Settings and puts the cursor in the name field.
+	const [renameRequested, setRenameRequested] = useState(false);
+	const nameFieldRef = useRef<HTMLInputElement>(null);
+	const renameReport = () => {
+		goToTab("overview");
+		setRenameRequested(true);
+	};
+	useEffect(() => {
+		const nameField = nameFieldRef.current;
+		if (!renameRequested || activeTab !== "overview" || !nameField) {
+			return;
+		}
+		nameField.scrollIntoView({ block: "center" });
+		nameField.focus();
+		setRenameRequested(false);
+	}, [renameRequested, activeTab]);
+
 	// Helper: Check if a parameter is used in template sections
 	const isUsedInTemplateOutput = (paramKey: string): boolean => {
 		const sections = definition?.sections || [];
@@ -1502,18 +1546,32 @@ export function TemplateInstanceDetail({
 			/>
 
 			{/* Header */}
-			<div className="flex items-start justify-between">
-				<div>
-					<div className="flex items-center gap-2">
-						<span className="text-2xl">{emoji}</span>
-						<h1 className="text-2xl font-bold">{instance.name}</h1>
-					</div>
-					<p className="text-muted-foreground mt-1">
-						{instance.template.description ||
-							`Based on ${instance.template.name}`}
-					</p>
-				</div>
-				<div className="flex items-center gap-2">
+			<div className="flex flex-wrap items-start justify-between gap-4">
+				<ReportDetailHeading
+					emoji={emoji}
+					name={instance.name}
+					description={
+						instance.template.description ||
+						`Based on ${instance.template.name}`
+					}
+					backHref={reportsHomePath}
+					backLabel={
+						reportsHomePath === basePath
+							? "Back to Report Templates"
+							: "Back to Project Reports"
+					}
+					onRename={readOnly ? undefined : renameReport}
+				/>
+				<div className="flex flex-wrap items-start gap-2">
+					<ReportViewAction
+						size="default"
+						hasSuccessfulReport={latestSuccess !== null}
+						onView={viewLatestReport}
+						isOpening={
+							latestSuccess !== null &&
+							loadingArtifact === latestSuccess.artifactId
+						}
+					/>
 					{hasChanges && !readOnly && (
 						<Button
 							variant="outline"
@@ -1577,7 +1635,10 @@ export function TemplateInstanceDetail({
 						<DeleteReportInstanceButton
 							instanceName={instance.name}
 							onDelete={handleDelete}
-							isDeleting={deleteMutation.isPending}
+							isDeleting={
+								deleteMutation.isPending ||
+								deleteMutation.isSuccess
+							}
 						/>
 					)}
 				</div>
@@ -1888,6 +1949,7 @@ export function TemplateInstanceDetail({
 											Instance Name
 										</Label>
 										<Input
+											ref={nameFieldRef}
 											id="instance-name"
 											disabled={readOnly}
 											value={instanceName}

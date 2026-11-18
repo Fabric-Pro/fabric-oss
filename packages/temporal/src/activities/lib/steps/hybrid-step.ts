@@ -18,6 +18,7 @@ import {
 	navigateToUrl,
 } from "../../browser-automation";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { fetchStepOutbound } from "./outbound-request";
 import { interpolateTemplate } from "./utils";
 
 // =============================================================================
@@ -77,7 +78,7 @@ async function executeApiStep(
 		const controller = new AbortController();
 		const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-		const response = await fetch(url, {
+		const response = await fetchStepOutbound(url, {
 			method,
 			headers: {
 				"Content-Type": "application/json",
@@ -85,9 +86,7 @@ async function executeApiStep(
 			},
 			body: config.body ? JSON.stringify(config.body) : undefined,
 			signal: controller.signal,
-		});
-
-		clearTimeout(timeoutId);
+		}).finally(() => clearTimeout(timeoutId));
 
 		const text = await response.text();
 		let data: unknown;

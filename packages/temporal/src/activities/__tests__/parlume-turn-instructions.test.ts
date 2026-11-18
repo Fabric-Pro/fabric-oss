@@ -27,14 +27,27 @@ describe("Parlume turn instructions", () => {
 
 		expect(text).toContain("typed in the meeting chat");
 		expect(text).toContain("no markdown headings");
-		expect(text).toContain("within 3,990 characters");
-		expect(text).toContain("exactly as you have them");
+		expect(text).toContain("open with the answer in one short line");
+		expect(text).toContain("within 1,490 characters");
+		expect(text).toContain("call get_meeting_links");
 		expect(text).toContain("cannot make changes");
 		expect(text).toContain(UNTRUSTED);
 		expect(text).not.toContain("Before you call any tool");
 		expect(text).not.toContain("one or two short");
 		expect(text).not.toContain("exactly ---");
 		expect(text).not.toContain("Never read URLs aloud.");
+	});
+
+	// A typed or realtime answer is posted by Parlume itself, so the agent
+	// looks addresses up instead of posting them.
+	it("has a realtime answer look up links rather than post them", () => {
+		const text = parlumeTurnInstructions({
+			replyChannel: "REALTIME",
+			toolsReadOnly: true,
+		});
+
+		expect(text).toContain("call get_meeting_links");
+		expect(text).toContain("Do not call post_to_meeting_chat");
 	});
 
 	it("gives both channels the same read-only and actions paragraphs", () => {

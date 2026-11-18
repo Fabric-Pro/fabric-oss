@@ -33,13 +33,13 @@ export const SERVICE_CREDENTIAL_SCOPES: readonly string[] = [
  * names, and only when the grant also names the one project they are for. It
  * is every scope the portal tools need and nothing beyond: never `mcp:write`
  * (which is what requesting or revoking delegated authority and calling a
- * connected server's changes need) and never a wildcard. `mcp:read` is there
- * for `fabric_list_connected_servers` and satisfies any read, so what holds a
- * session to its tools is the named list in `./project-binding`, not the scope.
+ * connected server's changes need), never `chats:read` (a meeting is not
+ * given the inviter's chats) and never a wildcard. `mcp:read` is in the base
+ * set and satisfies any read, so what holds a session to its tools is the named
+ * list in `./project-binding`, not the scope.
  */
 export const SERVICE_GRANT_MAX_SCOPES: readonly string[] = [
 	"orgs:read",
-	"chats:read",
 	"mcp:read",
 	"projects:read",
 	"projects:write",

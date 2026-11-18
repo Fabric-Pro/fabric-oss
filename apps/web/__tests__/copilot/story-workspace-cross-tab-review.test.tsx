@@ -184,7 +184,7 @@ const {
 	 */
 	stageEnhance: {
 		resolvePrompt: vi.fn(),
-		appendMessage: vi.fn(),
+		sendMessage: vi.fn(),
 	},
 }));
 
@@ -229,7 +229,7 @@ vi.mock("@copilotkit/react-core", () => ({
 		],
 		isLoading: copilotStore.isLoading,
 		setMessages: vi.fn(),
-		appendMessage: stageEnhance.appendMessage,
+		sendMessage: stageEnhance.sendMessage,
 	}),
 	useCopilotReadable: vi.fn(),
 }));
@@ -253,11 +253,6 @@ vi.mock("@copilotkit/react-ui", () => ({
 			{children}
 		</div>
 	),
-}));
-
-vi.mock("@copilotkit/runtime-client-gql", () => ({
-	MessageRole: { User: "user", Assistant: "assistant", System: "system" },
-	TextMessage: class {},
 }));
 
 vi.mock(
@@ -929,7 +924,7 @@ async function pendingStageReview(): Promise<void> {
 	await click(await screen.findByRole("menuitem", { name: "Draft" }));
 	await click(screen.getByRole("button", { name: /^enhance$/i }));
 	await click(await screen.findByTestId("transition-enhance"));
-	await waitFor(() => expect(stageEnhance.appendMessage).toHaveBeenCalled());
+	await waitFor(() => expect(stageEnhance.sendMessage).toHaveBeenCalled());
 
 	await runAgent(rerender, current);
 	await arriveAtConfirmation();
@@ -1670,8 +1665,8 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 				content: "Enhance the feature to the next stage.",
 				kind: "FEATURE",
 			});
-			stageEnhance.appendMessage.mockReset();
-			stageEnhance.appendMessage.mockResolvedValue(undefined);
+			stageEnhance.sendMessage.mockReset();
+			stageEnhance.sendMessage.mockResolvedValue(undefined);
 		});
 
 		it("records nothing while the save is in flight, then that it was saved", async () => {

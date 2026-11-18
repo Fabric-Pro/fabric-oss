@@ -22,12 +22,12 @@ const { handlers, mocks } = vi.hoisted(() => {
 		recordProposalDuplicateResolution: vi.fn(),
 		buildBacklogDedupGuard: vi.fn(),
 		inferDedupFamily: vi.fn(),
-		markPendingProposalApplied: vi.fn(),
 		markProposalApplyDispatched: vi.fn(),
 		proposalUpdate: vi.fn(),
 		getTemporalClient: vi.fn(),
 		workflowStart: vi.fn(),
 		returnFailedProposalToReview: vi.fn(),
+		settleCreatesOnlyApply: vi.fn(),
 		getPendingProposalReview: vi.fn(),
 		getAppliedChangeIndexes: vi.fn(),
 	};
@@ -49,9 +49,12 @@ vi.mock("@repo/database", () => ({
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	buildBacklogDedupGuard: mocks.buildBacklogDedupGuard,
 	inferDedupFamily: mocks.inferDedupFamily,
-	markPendingProposalApplied: mocks.markPendingProposalApplied,
 	markProposalApplyDispatched: mocks.markProposalApplyDispatched,
+	readRejectedChangeIndexes: (meta: { rejectedChangeIndexes?: number[] }) =>
+		meta?.rejectedChangeIndexes ?? [],
 	returnFailedProposalToReview: mocks.returnFailedProposalToReview,
+	settleCreatesOnlyApply: mocks.settleCreatesOnlyApply,
+	sourceMetadataEquals: (value: unknown) => ({ equals: value }),
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -147,7 +150,10 @@ beforeEach(() => {
 	mocks.getAppliedChangeIndexes.mockResolvedValue(new Set());
 	mocks.returnFailedProposalToReview.mockResolvedValue(true);
 	mocks.markProposalApplyDispatched.mockResolvedValue(1);
-	mocks.markPendingProposalApplied.mockResolvedValue(undefined);
+	mocks.settleCreatesOnlyApply.mockResolvedValue({
+		status: "applied",
+		remainingChangeCount: 0,
+	});
 	mocks.inferDedupFamily.mockReturnValue("FEATURE");
 	mocks.buildBacklogDedupGuard.mockResolvedValue({
 		findCollision: () => null,
@@ -294,6 +300,36 @@ describe("retryAllFailedProposalsProcedure — mixed-result aggregation", () => 
 				}),
 			}),
 		);
+	});
+
+	it("says the remaining items are back in review when a dedup-only retry reopens the row", async () => {
+		const row = rowFor("dedup-row");
+		mocks.listFailedProposals.mockResolvedValue([row]);
+		mocks.getPendingBacklogProposal.mockResolvedValue(row);
+		mocks.buildBacklogDedupGuard.mockResolvedValue({
+			findCollision: () => ({
+				existingIdentifier: "F-1",
+				existingId: "story-existing",
+			}),
+			recordCreated: () => undefined,
+		});
+		mocks.settleCreatesOnlyApply.mockResolvedValue({
+			status: "pending",
+			remainingChangeCount: 1,
+		});
+
+		const result = (await handlers.retryAll({
+			input: { projectId: "project-1", organizationId: "org-1" },
+			context: ctx,
+		})) as { results: Array<{ status: string; message: string }> };
+
+		expect(result.results).toEqual([
+			expect.objectContaining({
+				status: "dedup_only_applied",
+				message:
+					"1 change(s) already on roadmap. The remaining items are back in review.",
+			}),
+		]);
 	});
 });
 

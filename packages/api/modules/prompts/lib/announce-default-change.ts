@@ -4,6 +4,7 @@ import {
 	listPromptDefaultAudience,
 	markOwnOverrides,
 	type PromptDefaultAudience,
+	type StoryKind,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
@@ -152,7 +153,7 @@ async function announceForAction(
 			promptActionId(
 				targetKey,
 				documentType,
-				(storyKind as "FEATURE" | "BUG" | null) ?? null,
+				(storyKind as StoryKind | null) ?? null,
 			),
 		)}`,
 		actorUserId: context.actorUserId,

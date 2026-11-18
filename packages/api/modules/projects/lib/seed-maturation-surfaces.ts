@@ -79,7 +79,7 @@ export async function seedMaturationSurfaces({
 	let summaryGenerated = false;
 	const summaryInstructions = await resolveSummaryInstructions({
 		tenantFilter,
-		storyKind: feature.kind === "BUG" ? "BUG" : "FEATURE",
+		storyKind: feature.kind,
 	});
 	const summaryHash = specHash(`${spec}\0${summaryInstructions}`);
 	const needsSummary =

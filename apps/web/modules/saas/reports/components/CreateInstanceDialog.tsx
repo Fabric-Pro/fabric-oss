@@ -10,6 +10,10 @@ import { useEffectiveOrganizationId } from "@saas/organizations/hooks";
 import { useDialogFocusReturn } from "@saas/reports/hooks/use-dialog-focus-return";
 import { useInstanceDataSourceSetup } from "@saas/reports/hooks/use-instance-data-source-setup";
 import {
+	type ReportCandidate,
+	useLikelyDuplicateGuard,
+} from "@saas/reports/hooks/use-likely-duplicate-guard";
+import {
 	generateProblem,
 	useReportSuiteCreation,
 } from "@saas/reports/hooks/use-report-suite-creation";
@@ -57,6 +61,7 @@ import {
 	InstanceDataSourcePicker,
 } from "./InstanceDataSourceFields";
 import { InstanceNameField } from "./InstanceNameField";
+import { LikelyDuplicateReportDialog } from "./LikelyDuplicateReportDialog";
 import { RefinePromptButton } from "./RefinePromptButton";
 import { ReportEvidenceSettings } from "./ReportEvidenceSettings";
 import { ReportParameterFields } from "./ReportParameterFields";
@@ -94,6 +99,8 @@ type Props = {
 	onClose: () => void;
 	onSuccess?: (instanceId: string) => void;
 	basePath?: string;
+	/** A title and prompt the person already chose to create despite a warning. */
+	acknowledgedDuplicate?: ReportCandidate;
 };
 
 export function CreateInstanceDialog({
@@ -103,6 +110,7 @@ export function CreateInstanceDialog({
 	onClose,
 	onSuccess,
 	basePath = "/app/report-templates",
+	acknowledgedDuplicate,
 }: Props) {
 	const router = useRouter();
 	const queryClient = useQueryClient();
@@ -217,7 +225,15 @@ export function CreateInstanceDialog({
 		}),
 	);
 
-	const isWorking = createMutation.isPending || creation.isStarting;
+	const duplicateGuard = useLikelyDuplicateGuard({
+		organizationId,
+		projectId: suiteProjectId,
+		acknowledged: acknowledgedDuplicate,
+	});
+	const isWorking =
+		createMutation.isPending ||
+		creation.isStarting ||
+		duplicateGuard.isChecking;
 	const generateOff =
 		isWorking ||
 		(requiresProjectKnowledge && !reporting?.projectId) ||
@@ -263,27 +279,37 @@ export function CreateInstanceDialog({
 		const { mcpConfigs, mcpBindings, resourceBindings, context } =
 			setup.buildConnections();
 
-		createMutation.mutate({
-			templateId: template.id,
-			reporting,
-			name: name.trim(),
-			description: description.trim() || undefined,
-			organizationId,
-			projectId: suiteProjectId,
-			...(suite ? { parameterDefaults: creation.parameters.toSave } : {}),
-			connections: {
-				mcpConfigs,
-				mcpBindings,
-				resourceBindings,
-				context, // Human-readable context for AI
-				...promptOverrideFields(promptOverride, templateUserPrompt),
-				workflows: [],
-				agents: [],
-				workspaces: selectedWorkspaces,
-				integrations: [],
-				integrationBindings: {},
+		const create = () =>
+			createMutation.mutate({
+				templateId: template.id,
+				reporting,
+				name: name.trim(),
+				description: description.trim() || undefined,
+				organizationId,
+				projectId: suiteProjectId,
+				...(suite
+					? { parameterDefaults: creation.parameters.toSave }
+					: {}),
+				connections: {
+					mcpConfigs,
+					mcpBindings,
+					resourceBindings,
+					context, // Human-readable context for AI
+					...promptOverrideFields(promptOverride, templateUserPrompt),
+					workflows: [],
+					agents: [],
+					workspaces: selectedWorkspaces,
+					integrations: [],
+					integrationBindings: {},
+				},
+			});
+		void duplicateGuard.guard(
+			{
+				name: name.trim(),
+				prompt: promptOverride.trim() || templateUserPrompt || "",
 			},
-		});
+			create,
+		);
 	};
 
 	const emoji = template.heroEmojis?.[0] || "📊";
@@ -576,6 +602,13 @@ export function CreateInstanceDialog({
 						</Button>
 					</DialogFooter>
 				</div>
+				<LikelyDuplicateReportDialog
+					{...duplicateGuard.dialogProps}
+					reportTemplatesPath={basePath}
+					continueLabel={
+						generates ? "Generate anyway" : "Create anyway"
+					}
+				/>
 			</DialogContent>
 		</Dialog>
 	);

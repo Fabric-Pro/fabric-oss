@@ -5,6 +5,7 @@
 
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { fetchProviderStepOutbound } from "./outbound-request";
 import { interpolateTemplate } from "./utils";
 
 export async function executeFreshserviceCreateTicketStep(
@@ -64,14 +65,17 @@ export async function executeFreshserviceCreateTicketStep(
 		const apiKey = credentials.FRESHSERVICE_API_KEY;
 		const encoded = Buffer.from(`${apiKey}:X`).toString("base64");
 
-		const response = await fetch(`https://${domain}/api/v2/tickets`, {
-			method: "POST",
-			headers: {
-				Authorization: `Basic ${encoded}`,
-				"Content-Type": "application/json",
+		const response = await fetchProviderStepOutbound(
+			`https://${domain}/api/v2/tickets`,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Basic ${encoded}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(body),
 			},
-			body: JSON.stringify(body),
-		});
+		);
 
 		const result = (await response.json()) as {
 			ticket?: { id: number };

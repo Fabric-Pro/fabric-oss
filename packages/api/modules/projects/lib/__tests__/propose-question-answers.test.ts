@@ -206,6 +206,20 @@ describe("proposeQuestionAnswers", () => {
 		);
 	});
 
+	it("uses initiative fallback instruction when no bound prompt is present for INITIATIVE", async () => {
+		mocks.generateObject.mockResolvedValue({
+			object: { recommendations: [] },
+		});
+		await proposeQuestionAnswers({
+			feature: { ...feature(), kind: "INITIATIVE" },
+			questions: [{ rootId: "dec-1", question: "Key milestones?" }],
+			tenantFilter,
+		});
+		expect(mocks.generateObject.mock.calls[0][0].instructions).toContain(
+			"open questions on an initiative",
+		);
+	});
+
 	it("skips a question whose options are all unjustified", async () => {
 		mocks.generateObject.mockResolvedValue({
 			object: {

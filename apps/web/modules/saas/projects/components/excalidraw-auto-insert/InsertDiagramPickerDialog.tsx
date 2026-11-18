@@ -38,6 +38,8 @@
  */
 
 import { useAnalytics } from "@analytics";
+import { storySemanticActivityAt } from "@repo/database/prisma/queries/projects/story-semantic-activity";
+import { useStoriesByLastEdit } from "@saas/projects/hooks/use-stories-by-last-edit";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -150,11 +152,11 @@ export function InsertDiagramPickerDialog({
 		enabled: open,
 	});
 
-	// Stories ("features") tab -- same enabled gating.
-	const storiesQuery = useQuery({
-		...orpc.projects.stories.board.queryOptions({
-			input: { projectId, organizationId },
-		}),
+	// Stories ("features") tab -- same enabled gating, most recently edited
+	// first.
+	const storiesQuery = useStoriesByLastEdit({
+		projectId,
+		organizationId,
 		enabled: open,
 	});
 
@@ -198,72 +200,31 @@ export function InsertDiagramPickerDialog({
 			.filter((row): row is PickerRow => row !== null);
 	}, [documentsQuery.data]);
 
-	const features = useMemo<PickerRow[]>(() => {
-		const data = storiesQuery.data as
-			| {
-					stories?: Array<{
-						id?: unknown;
-						title?: unknown;
-						identifier?: unknown;
-						createdAt?: unknown;
-						lastEditedAt?: unknown;
-						status?: {
-							name?: unknown;
-							isArchived?: unknown;
-						} | null;
-					}>;
-			  }
-			| undefined;
-		const rows = data?.stories ?? [];
-		return rows
-			.filter((story) => {
-				// Filter out archived statuses per task E1 acceptance check.
-				// Explicit `isArchived` flag is the authoritative signal;
-				// the status-name heuristic catches the canonical
-				// "Archived" / "Cancelled" labels for seeds without the
-				// boolean flag set.
-				if (story.status?.isArchived === true) {
-					return false;
-				}
-				const statusName =
-					typeof story.status?.name === "string"
-						? story.status.name.toLowerCase()
-						: "";
-				if (statusName === "archived" || statusName === "cancelled") {
-					return false;
-				}
-				return true;
-			})
-			.map((story): PickerRow | null => {
-				if (typeof story.id !== "string") {
-					return null;
-				}
-				const identifier =
-					typeof story.identifier === "string"
-						? story.identifier
-						: "";
-				const titleText =
-					typeof story.title === "string" && story.title.length > 0
-						? story.title
-						: "Untitled feature";
-				const composedTitle =
-					identifier.length > 0
-						? `${identifier} ${titleText}`
-						: titleText;
-				const activityAt = story.lastEditedAt ?? story.createdAt;
-				return {
-					kind: "feature",
-					id: story.id,
-					title: composedTitle,
-					updatedAt:
-						activityAt instanceof Date ||
-						typeof activityAt === "string"
-							? activityAt
-							: null,
-				};
-			})
-			.filter((row): row is PickerRow => row !== null);
-	}, [storiesQuery.data]);
+	const features = useMemo<PickerRow[]>(
+		() =>
+			storiesQuery.stories
+				.filter((story) => {
+					// Filter out archived statuses per task E1 acceptance check.
+					// A board status has no archived flag, so the canonical
+					// "Archived" / "Cancelled" names are the signal.
+					const statusName = story.status?.name.toLowerCase() ?? "";
+					return (
+						statusName !== "archived" && statusName !== "cancelled"
+					);
+				})
+				.map((story): PickerRow => {
+					const titleText = story.title || "Untitled feature";
+					return {
+						kind: "feature",
+						id: story.id,
+						title: story.identifier
+							? `${story.identifier} ${titleText}`
+							: titleText,
+						updatedAt: storySemanticActivityAt(story),
+					};
+				}),
+		[storiesQuery.stories],
+	);
 
 	// Apply search filter + the 100-entry render cap.
 	const filteredDocuments = useMemo(

@@ -3,8 +3,8 @@
  * a turn needs their schemas.
  *
  * These are the gateway's platform tools: identity, organizations, projects,
- * features, tasks, bugs, documents, contexts, instructions, knowledge search,
- * workspaces, chats and connected servers. Fabric's agent runtime
+ * features, tasks, bugs, documents, contexts, instructions, knowledge search
+ * and workspaces. Fabric's agent runtime
  * reaches them only through an acting grant the web app mints for one
  * meeting's project, and the gateway holds that session to this list, to the
  * grant's organization and to that project. The worker offers the model the
@@ -71,9 +71,9 @@ export const FABRIC_PORTAL_PROJECT_TOOL_NAMES = [
 
 /**
  * The tools that have no project to pin: they answer for the person in the
- * grant's organization (who they are, which organizations, a new project, their
- * workspaces, chats and connected servers). The gateway holds them to that
- * user and organization, and refuses a switch to another organization.
+ * grant's organization (who they are, which organizations, a new project and
+ * their workspaces). The gateway holds them to that user and organization, and
+ * refuses a switch to another organization.
  */
 export const FABRIC_PORTAL_TENANT_TOOL_NAMES = [
 	"fabric_get_identity",
@@ -84,13 +84,24 @@ export const FABRIC_PORTAL_TENANT_TOOL_NAMES = [
 	"fabric_get_workspace",
 	"fabric_get_workspace_document",
 	"fabric_query_workspace",
-	"fabric_list_chats",
-	"fabric_list_connected_servers",
 ] as const;
 
 export const FABRIC_PORTAL_TOOL_NAMES: readonly string[] = [
 	...FABRIC_PORTAL_PROJECT_TOOL_NAMES,
 	...FABRIC_PORTAL_TENANT_TOOL_NAMES,
+];
+
+/**
+ * The inviter's own workspaces. The gateway serves them to a session pinned to
+ * a project, as listed above, but a meeting turn is never offered them: a
+ * meeting answer draws on the meeting's project, and anyone who can speak in
+ * the meeting would hear what the inviter's workspaces hold.
+ */
+export const FABRIC_MEETING_WITHHELD_TOOL_NAMES: readonly string[] = [
+	"fabric_list_workspaces",
+	"fabric_get_workspace",
+	"fabric_get_workspace_document",
+	"fabric_query_workspace",
 ];
 
 /**
@@ -100,6 +111,10 @@ export const FABRIC_PORTAL_TOOL_NAMES: readonly string[] = [
  * the gateway adds belongs in this list or in the two above.
  */
 export const FABRIC_PORTAL_EXCLUDED_TOOL_NAMES: readonly string[] = [
+	// The inviter's own AI chats and connected servers: anyone who can speak in
+	// the meeting would hear them, and the meeting needs neither.
+	"fabric_list_chats",
+	"fabric_list_connected_servers",
 	"fabric_link_workspace_document",
 	"fabric_unlink_workspace_document",
 	// Caller-owned exports and saved-run controls need an explicit user connection;
@@ -212,8 +227,6 @@ const PORTAL_REQUEST_PATTERNS: readonly RegExp[] = [
 	/\b(?:feature|task|subtask)\s+(?:history|versions?|decisions?)\b/i,
 	/\b(?:which|what|list|show|open|archive|rename|update)\b[^.?!]{0,30}\bprojects\b|\b(?:create|start|set up)\b[^.?!]{0,30}\b(?:new )?project\b/i,
 	/\b(?:organi[sz]ations?|who am i|which account|my (?:role|identity|account))\b/i,
-	/\b(?:my|previous|recent|past|ai) chats?\b|\bchat history\b/i,
-	/\b(?:connected|available) (?:servers?|integrations?|tools?)\b|\bmcp servers?\b/i,
 ];
 
 export function needsFabricPortalTools(

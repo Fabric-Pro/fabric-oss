@@ -17,6 +17,7 @@ vi.mock("@repo/database", () => ({
 	getProjectAccessContext: mocks.access,
 	searchProjectKnowledge: mocks.search,
 	getStoryById: mocks.getStory,
+	getVisibleStoryById: mocks.getStory,
 }));
 
 import {

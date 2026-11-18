@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import {
+	getLatestSuccessfulReports,
 	getProjectReportSetupReason,
 	listTemplateInstances,
 } from "@repo/database";
@@ -12,6 +13,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { serializeLatestSuccess } from "../../lib/latest-successful-report";
 import {
 	canReachProjectReports,
 	reportGenerationChecker,
@@ -85,6 +87,11 @@ export const listInstancesProcedure = tenantProtectedProcedure
 		});
 
 		const mayGenerate = reportGenerationChecker(context.user);
+		const latestSuccesses = await getLatestSuccessfulReports({
+			instances: result.instances,
+			userId: context.user.id,
+			organizationId,
+		});
 		return {
 			instances: await Promise.all(
 				result.instances.map(async (instance) => {
@@ -117,6 +124,9 @@ export const listInstancesProcedure = tenantProtectedProcedure
 						latestExecutionStatus: latestExec?.status || null,
 						latestExecutionStartedAt:
 							latestExec?.startedAt?.toISOString() || null,
+						latestSuccessfulReport: serializeLatestSuccess(
+							latestSuccesses.get(instance.id),
+						),
 						createdAt: instance.createdAt.toISOString(),
 						updatedAt: instance.updatedAt.toISOString(),
 					};

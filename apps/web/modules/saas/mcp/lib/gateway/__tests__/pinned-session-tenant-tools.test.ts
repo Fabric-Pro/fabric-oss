@@ -2,8 +2,9 @@
  * The portal tools that name no project, on a service session limited to a
  * meeting's project. Whatever they are asked, they answer for the grant's user
  * in the grant's organization: a session cannot be walked into another
- * organization, listed another's memberships, or made to read another's chats,
- * workspaces or connected servers.
+ * organization, listed another's memberships, or made to read another's
+ * workspaces. The portal's lists of the inviter's own chats and connected
+ * servers are not offered at all: every attendee would hear them.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -160,11 +161,12 @@ describe("fabric_switch_organization on a pinned session", () => {
 			{ organizationId: "org-2" },
 			session,
 		);
-		await executePlatformTool("fabric_list_chats", {}, session);
+		await executePlatformTool("fabric_list_workspaces", {}, session);
 
-		expect(mocks.aiChatFindMany).toHaveBeenCalledWith(
+		expect(mocks.listWorkspaces).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { organizationId: "org-1", userId: "user-1" },
+				userId: "user-1",
+				organizationId: "org-1",
 			}),
 		);
 	});
@@ -292,19 +294,17 @@ describe("fabric_create_project on a pinned session", () => {
 });
 
 describe("the tenant-wide reads on a pinned session", () => {
-	it("lists chats of the grant's user in the grant's organization only", async () => {
-		await executePlatformTool(
-			"fabric_list_chats",
-			{ userId: "user-2", organizationId: "org-2" },
-			pinned(),
-		);
+	it.each(["fabric_list_chats", "fabric_list_connected_servers"])(
+		"refuses %s, which would read the inviter's own chats or servers to the meeting",
+		async (tool) => {
+			const result = await executePlatformTool(tool, {}, pinned());
 
-		expect(mocks.aiChatFindMany).toHaveBeenCalledWith(
-			expect.objectContaining({
-				where: { organizationId: "org-1", userId: "user-1" },
-			}),
-		);
-	});
+			expect(result.isError).toBe(true);
+			expect(result.content[0]?.text).toContain("not available");
+			expect(mocks.aiChatFindMany).not.toHaveBeenCalled();
+			expect(mocks.listMcpConfigsForTenant).not.toHaveBeenCalled();
+		},
+	);
 
 	it("lists workspaces of the grant's user in the grant's organization only", async () => {
 		await executePlatformTool(
@@ -319,18 +319,5 @@ describe("the tenant-wide reads on a pinned session", () => {
 				organizationId: "org-1",
 			}),
 		);
-	});
-
-	it("lists connected servers of the grant's user in the grant's organization only", async () => {
-		await executePlatformTool(
-			"fabric_list_connected_servers",
-			{ organizationId: "org-2" },
-			pinned(),
-		);
-
-		expect(mocks.listMcpConfigsForTenant).toHaveBeenCalledWith({
-			userId: "user-1",
-			organizationId: "org-1",
-		});
 	});
 });

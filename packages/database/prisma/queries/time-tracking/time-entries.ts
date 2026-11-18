@@ -305,6 +305,35 @@ export async function listTimeEntriesForAuthorStory(params: {
 	return rows.map(toTimeEntryRow);
 }
 
+/**
+ * The author's distinct notes on one project, most recently saved first, for
+ * a new entry to reuse. Only entries the author logged themselves count: an
+ * entry confirmed from a suggestion (`sourceSuggestionId` set) does not, even
+ * after its note was edited. Identical notes collapse into one, dated by
+ * their latest save; equal dates fall back to the note's text.
+ */
+export async function listRecentTimeEntryNotes(params: {
+	organizationId: string;
+	projectId: string;
+	userId: string;
+	limit: number;
+}): Promise<string[]> {
+	const rows = await db.timeEntry.groupBy({
+		by: ["description"],
+		where: {
+			organizationId: params.organizationId,
+			projectId: params.projectId,
+			userId: params.userId,
+			sourceSuggestionId: null,
+			description: { not: null },
+		},
+		_max: { updatedAt: true },
+		orderBy: [{ _max: { updatedAt: "desc" } }, { description: "asc" }],
+		take: params.limit,
+	});
+	return rows.flatMap((row) => (row.description ? [row.description] : []));
+}
+
 /** One of the author's entries, or null when it is not theirs or not there. */
 export async function findTimeEntryForAuthor(params: {
 	id: string;

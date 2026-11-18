@@ -27,16 +27,19 @@ export const STORY_SIZE_LABELS: Record<StorySize, string> = {
 	XL: "XL",
 };
 
-// Fabric supports exactly two work-item types — Feature and Bug. "User Story"
-// was retired entirely (the StoryKind enum no longer has USER_STORY; legacy
-// rows were migrated to FEATURE), so both the Type filter and the label map
-// carry only the two live kinds.
-export const FILTERABLE_KINDS: StoryKind[] = ["FEATURE", "BUG"];
+// Every work-item type; the panel hides Initiative when the project has it off.
+export const FILTERABLE_KINDS: StoryKind[] = ["FEATURE", "BUG", "INITIATIVE"];
 
 export const STORY_KIND_LABELS: Record<StoryKind, string> = {
 	FEATURE: "Feature",
 	BUG: "Bug",
+	INITIATIVE: "Initiative",
 };
+
+/** Lowercase noun for toasts and aria text: "bug", "feature", "initiative". */
+export function storyKindNoun(kind: StoryKind): string {
+	return STORY_KIND_LABELS[kind].toLowerCase();
+}
 
 export type SyncFilter = "synced" | "unsynced";
 

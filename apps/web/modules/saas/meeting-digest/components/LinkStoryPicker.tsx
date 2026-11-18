@@ -1,7 +1,6 @@
 "use client";
 
-import { orpc } from "@shared/lib/orpc-query-utils";
-import { useQuery } from "@tanstack/react-query";
+import { useStoriesByLastEdit } from "@saas/projects/hooks/use-stories-by-last-edit";
 import { Button } from "@ui/components/button";
 import {
 	Dialog,
@@ -11,12 +10,6 @@ import {
 } from "@ui/components/dialog";
 import { Input } from "@ui/components/input";
 import { useMemo, useState } from "react";
-
-type PickableStory = {
-	id: string;
-	identifier: string | null;
-	title: string;
-};
 
 /**
  * Pick a work item to link an action item to (#1902 FR4/AC7).
@@ -28,7 +21,8 @@ type PickableStory = {
  * The backlog is fetched lazily on open (never on digest render) and filtered
  * client-side: a project's active backlog is a few hundred items at most, and
  * the existing `projects.stories.board` already serves exactly this shape for the
- * roadmap, so this needs no new endpoint.
+ * roadmap, so this needs no new endpoint. It is ranked most recently edited
+ * first before the 50-item cap.
  *
  * Work items already linked to this action item are excluded rather than shown
  * disabled — re-picking one would be a no-op upsert, and a list that offers
@@ -55,10 +49,9 @@ export function LinkStoryPicker({
 	const [pendingId, setPendingId] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
-	const storiesQuery = useQuery({
-		...orpc.projects.stories.board.queryOptions({
-			input: { projectId, organizationId },
-		}),
+	const storiesQuery = useStoriesByLastEdit({
+		projectId,
+		organizationId,
 		// Only pay for the backlog when the user actually opens the picker.
 		enabled: open,
 	});
@@ -66,19 +59,16 @@ export function LinkStoryPicker({
 	const excluded = useMemo(() => new Set(excludeStoryIds), [excludeStoryIds]);
 
 	const matches = useMemo(() => {
-		const all = (storiesQuery.data?.stories ?? []) as PickableStory[];
 		const term = search.trim().toLowerCase();
-		return all
+		return storiesQuery.stories
 			.filter((s) => !excluded.has(s.id))
 			.filter((s) =>
 				term.length === 0
 					? true
-					: `${s.identifier ?? ""} ${s.title}`
-							.toLowerCase()
-							.includes(term),
+					: `${s.identifier} ${s.title}`.toLowerCase().includes(term),
 			)
 			.slice(0, 50);
-	}, [storiesQuery.data, search, excluded]);
+	}, [storiesQuery.stories, search, excluded]);
 
 	const pick = async (storyId: string) => {
 		setPendingId(storyId);

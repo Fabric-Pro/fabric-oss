@@ -13,6 +13,7 @@
  *    "reattach theme" action on real tickets and "Re-add" on declined ones.
  */
 
+import { useStoriesByLastEdit } from "@saas/projects/hooks/use-stories-by-last-edit";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -825,25 +826,21 @@ function ResultsView({
 	const [reattachingKey, setReattachingKey] = useState<string | null>(null);
 	const canReattach = !!projectId;
 
-	const storiesQuery = useQuery(
-		orpc.projects.stories.board.queryOptions({
-			input: {
-				projectId: projectId ?? "",
-				organizationId: organizationId ?? null,
-			},
-			enabled: canReattach && !!reattachingKey,
-		}),
-	);
+	const { stories } = useStoriesByLastEdit({
+		projectId: projectId ?? "",
+		organizationId: organizationId ?? null,
+		enabled: canReattach && !!reattachingKey,
+	});
 	const targetStories = useMemo(
 		() =>
-			(storiesQuery.data?.stories ?? [])
+			stories
 				.filter((s) => !s.status?.isFinal)
 				.map((s) => ({
 					id: s.id,
 					identifier: s.identifier,
 					title: s.title,
 				})),
-		[storiesQuery.data],
+		[stories],
 	);
 
 	const reattachMutation = useMutation(

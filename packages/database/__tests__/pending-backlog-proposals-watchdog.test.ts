@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../prisma/client", () => ({ db: { pendingBacklogProposal: mocks } }));
 
 import * as queries from "../prisma/queries/projects/pending-backlog-proposals";
+import { finalizeProposalApply } from "../prisma/queries/projects/pending-proposal-item-state";
 
 const cutoff = new Date("2026-10-21T12:00:00Z");
 const old = new Date("2026-10-21T11:00:00Z");
@@ -247,9 +248,12 @@ describe("claimed failure timestamp", () => {
 					return { count: 1 };
 				});
 				expect(
-					await queries.finalizeClaimedProposal({
+					await finalizeProposalApply({
 						proposalId: "example-proposal",
-						applyWorkflowId: "example-workflow",
+						claim: {
+							status: "APPLYING",
+							applyWorkflowId: "example-workflow",
+						},
 						outcome: "failed",
 						errorMessage: "Example failure",
 					}),

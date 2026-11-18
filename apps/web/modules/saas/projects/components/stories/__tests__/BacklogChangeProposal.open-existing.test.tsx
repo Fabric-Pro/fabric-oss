@@ -383,3 +383,36 @@ describe("BacklogChangeProposal — open existing ticket affordance", () => {
 		}
 	});
 });
+
+describe("BacklogChangeProposal — inbox target still on the board", () => {
+	it("links a target the loaded board lists", () => {
+		renderProposal({
+			boardStoryIds: { status: "ready", ids: new Set(["story_1"]) },
+		});
+
+		expect(
+			screen.getByRole("button", { name: RESOLVED_LABEL }),
+		).toBeInTheDocument();
+		expect(screen.queryByText("Ticket not found")).not.toBeInTheDocument();
+	});
+
+	it("shows 'Ticket not found' and no link for a target the board no longer lists", () => {
+		renderProposal({
+			boardStoryIds: { status: "ready", ids: new Set(["story_other"]) },
+		});
+
+		expect(
+			screen.queryByRole("button", OPEN_BUTTON),
+		).not.toBeInTheDocument();
+		expect(screen.getByText("Ticket not found")).toBeInTheDocument();
+	});
+
+	it("offers no link and no note while the board loads", () => {
+		renderProposal({ boardStoryIds: { status: "loading" } });
+
+		expect(
+			screen.queryByRole("button", OPEN_BUTTON),
+		).not.toBeInTheDocument();
+		expect(screen.queryByText("Ticket not found")).not.toBeInTheDocument();
+	});
+});

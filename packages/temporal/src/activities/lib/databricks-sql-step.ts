@@ -7,6 +7,11 @@ import {
 import { z } from "zod";
 import type { NodeExecutionResult, StepParams } from "../types";
 import { activityCancellationSignal } from "./activity-liveness";
+import {
+	fetchStepOutbound,
+	StepDestinationNotAllowedError,
+	StepRedirectRefusedError,
+} from "./steps/outbound-request";
 import { interpolateTemplateWithDiagnostics } from "./steps/utils";
 
 const common = z.object({
@@ -127,6 +132,16 @@ export async function executeDatabricksStatementStep(
 			parameters,
 			rowLimit,
 			signal: activityCancellationSignal(),
+			fetchImpl: (url, init) =>
+				fetchStepOutbound(String(url), init).catch((error: unknown) => {
+					if (
+						error instanceof StepDestinationNotAllowedError ||
+						error instanceof StepRedirectRefusedError
+					) {
+						throw new DatabricksSqlError(error.message);
+					}
+					throw error;
+				}),
 		});
 		return {
 			success: true,

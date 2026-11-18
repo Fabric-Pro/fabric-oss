@@ -79,6 +79,11 @@ import {
 	hasExpiredRepoIntegrations,
 	isSendsListKeyForProject,
 } from "./newsletter-send-status";
+import {
+	ENVIRONMENT_SETTINGS_ENABLED,
+	NEWSLETTER_AUTO_CAPTURE_ANCHOR_ID,
+	navigateToProjectSettingsTab,
+} from "./settings-tab-navigation";
 
 type Props = {
 	projectId: string;
@@ -748,6 +753,19 @@ export function ProjectNewsletterSettings({
 		canEdit === false ||
 		settingsQuery.isLoading ||
 		updateSettings.isPending;
+	// The review offers automatic capture only to someone who can set it up:
+	// images on, no environment chosen, edit rights, and a build where
+	// environments can be added.
+	const canSetUpAutoCapture =
+		screenshotsEnabled &&
+		!s?.screenshotEnvironmentId &&
+		canEdit !== false &&
+		ENVIRONMENT_SETTINGS_ENABLED;
+	const setUpAutoCapture = () =>
+		navigateToProjectSettingsTab(projectId, "newsletter", {
+			anchorId: NEWSLETTER_AUTO_CAPTURE_ANCHOR_ID,
+			focus: true,
+		});
 
 	// Persisted chat delivery targets (F3 re-validates these server-side against
 	// the live linked-channel set on every save, so a stale entry here is
@@ -1866,6 +1884,9 @@ export function ProjectNewsletterSettings({
 					onApprove={(request) => approveSend.mutate(request)}
 					onReject={(sendId) => rejectSend.mutate(sendId)}
 					onRefetch={() => pendingQuery.refetch()}
+					onSetUpAutoCapture={
+						canSetUpAutoCapture ? setUpAutoCapture : undefined
+					}
 				/>
 
 				<div className="mt-5">

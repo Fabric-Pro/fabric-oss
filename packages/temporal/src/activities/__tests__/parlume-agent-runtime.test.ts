@@ -3,7 +3,6 @@ import { executeParlumeAgent, loadParlumeAgent } from "../parlume-agent";
 
 const mocks = vi.hoisted(() => ({
 	preferences: vi.fn(),
-	defaults: vi.fn(),
 	instance: vi.fn(),
 	workspaces: vi.fn(),
 	context: vi.fn(),
@@ -15,9 +14,6 @@ const mocks = vi.hoisted(() => ({
 	workspaceKnowledge: vi.fn(),
 	connections: vi.fn(),
 	integrations: vi.fn(),
-}));
-vi.mock("@repo/agent-core/backend", () => ({
-	getDefaultEnabledMcpConfigIds: mocks.defaults,
 }));
 vi.mock("@repo/database", () => ({
 	db: {
@@ -61,7 +57,6 @@ const session = {
 };
 beforeEach(() => {
 	vi.resetAllMocks();
-	mocks.defaults.mockResolvedValue(["default-server"]);
 	mocks.preferences.mockResolvedValue(null);
 	mocks.workspaces.mockResolvedValue({ allowed: [], dropped: [] });
 	mocks.connections.mockResolvedValue([]);
@@ -74,67 +69,48 @@ beforeEach(() => {
 	});
 });
 describe("Parlume canonical agent adapters", () => {
-	it("invalidates a proposal when the same connection points at a different destination", async () => {
+	it("never gives the Fabric Agent the inviter's external servers or workspaces in a meeting", async () => {
 		mocks.preferences.mockResolvedValue({
-			enabledMcpConfigIds: ["server"],
-			enabledWorkspaceIds: [],
+			enabledMcpConfigIds: ["selected-server"],
+			enabledWorkspaceIds: ["workspace"],
 		});
-		mocks.connections.mockResolvedValue([
-			{ id: "server", baseUrl: "https://first.example" },
-		]);
-		const before = await loadParlumeAgent(session);
-		mocks.connections.mockResolvedValue([
-			{ id: "server", baseUrl: "https://second.example" },
-		]);
-		const after = await loadParlumeAgent(session);
-		expect(after.revision).not.toBe(before.revision);
-		expect(mocks.connections).toHaveBeenCalledWith(
+
+		const agent = await loadParlumeAgent(session);
+		await executeParlumeAgent({
+			agent,
+			session,
+			turnId: "turn",
+			message: "Question",
+			voiceInstructions: "Voice",
+			knowledgeContext: "Project",
+			history: [],
+		});
+
+		expect(agent).toMatchObject({
+			enabledMcpConfigIds: [],
+			workspaceIds: [],
+		});
+		expect(mocks.workspaces).not.toHaveBeenCalled();
+		expect(mocks.connections).not.toHaveBeenCalled();
+		expect(mocks.mcp).toHaveBeenCalledWith("user", "org", []);
+		expect(mocks.builtin).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: {
-					id: { in: ["server", "default-server"] },
-					userId: "user",
-					organizationId: "org",
-				},
+				enabledMcpConfigIds: [],
+				workspaceIds: [],
 			}),
+			[],
+			"",
+			"",
 		);
 	});
 	it.each(["deep", "planner"])(
-		"honors saved %s reasoning and connected workspace preferences",
+		"honors saved %s reasoning",
 		async (reasoningMode) => {
-			mocks.preferences.mockResolvedValue({
-				reasoningMode,
-				enabledMcpConfigIds: ["selected-server"],
-				enabledWorkspaceIds: ["workspace", "other-tenant"],
-			});
-			mocks.workspaces.mockResolvedValue({
-				allowed: ["workspace"],
-				dropped: ["other-tenant"],
-			});
+			mocks.preferences.mockResolvedValue({ reasoningMode });
+
 			const agent = await loadParlumeAgent(session);
-			expect(agent).toMatchObject({
-				reasoningMode: "pro",
-				enabledMcpConfigIds: ["selected-server", "default-server"],
-				workspaceIds: ["workspace"],
-			});
-			await executeParlumeAgent({
-				agent,
-				session,
-				turnId: "turn",
-				message: "Question",
-				voiceInstructions: "Voice",
-				knowledgeContext: "Project",
-				history: [],
-			});
-			expect(mocks.builtin).toHaveBeenCalledWith(
-				expect.objectContaining({
-					reasoningMode: "pro",
-					workspaceIds: ["workspace"],
-					ragContext: "Project\n\nWorkspace knowledge",
-				}),
-				[],
-				"Agent memory",
-				"",
-			);
+
+			expect(agent).toMatchObject({ reasoningMode: "pro" });
 		},
 	);
 	it.each([
@@ -153,18 +129,7 @@ describe("Parlume canonical agent adapters", () => {
 			});
 		},
 	);
-	it("reads two workspace passages and a bounded memory for a spoken turn", async () => {
-		mocks.preferences.mockResolvedValue({
-			enabledMcpConfigIds: [],
-			enabledWorkspaceIds: ["workspace"],
-		});
-		mocks.workspaces.mockResolvedValue({
-			allowed: ["workspace"],
-			dropped: [],
-		});
-		mocks.memory.mockResolvedValue({
-			context: `- ${"Remembered fact. ".repeat(10)}\n`.repeat(20),
-		});
+	it("recalls no memory for a meeting turn", async () => {
 		const agent = await loadParlumeAgent(session);
 
 		await executeParlumeAgent({
@@ -177,17 +142,8 @@ describe("Parlume canonical agent adapters", () => {
 			history: [],
 		});
 
-		expect(mocks.workspaceKnowledge).toHaveBeenCalledWith(
-			"Question",
-			"user",
-			"org",
-			["workspace"],
-			undefined,
-			2,
-		);
-		const memory = mocks.builtin.mock.calls[0]?.[2] as string;
-		expect(memory.length).toBeLessThanOrEqual(1_500);
-		expect(memory.endsWith("Remembered fact.")).toBe(true);
+		expect(mocks.memory).not.toHaveBeenCalled();
+		expect(mocks.builtin.mock.calls[0]?.[2]).toBe("");
 	});
 	it("hands an explicit empty server list, not an unset one, to the chat engine", async () => {
 		const agent = await loadParlumeAgent(session);
@@ -237,13 +193,99 @@ describe("Parlume canonical agent adapters", () => {
 			"enabledFabricToolIds",
 		);
 	});
-	it("reloads the current active custom version and forwards its complete canonical tool configuration", async () => {
+	it("gives a project agent that has not opted in no external servers, integrations or workspaces in a meeting", async () => {
+		const customSession = {
+			...session,
+			agentKind: "TEMPLATE_INSTANCE" as const,
+			agentInstanceSId: "stable-agent",
+		};
+		const instance = {
+			id: "current-version",
+			name: "Current",
+			description: "Current instructions",
+			template: { id: "template" },
+			customInstructions: {},
+			modelOverride: null,
+			modelConfig: {},
+			toolConnections: { "project-context": { projectId: "project" } },
+			workspaceIds: ["workspace"],
+			mcpServerConfigurations: [{ mcpConfigId: "server" }],
+			integrationConfigurations: [
+				{
+					integrationId: "integration",
+					integrationType: "github",
+					allowedResources: [],
+				},
+			],
+		};
+		mocks.instance.mockResolvedValue({
+			...instance,
+			meetingExternalTools: false,
+		});
+		mocks.workspaces.mockResolvedValue({
+			allowed: ["workspace"],
+			dropped: [],
+		});
+		// What the built context finds in the agent's legacy tool connections.
+		mocks.context.mockResolvedValue({
+			projectId: "project",
+			agentInstanceId: "current-version",
+			systemPrompt: "Current instructions",
+			mcpConfigIds: ["legacy-server"],
+			integrationConfigurations: [{ integrationId: "integration" }],
+			builtInToolNames: [],
+			model: "model",
+		});
+		mocks.knowledge.mockResolvedValue({ chunks: [] });
+		mocks.custom.mockResolvedValue({ success: true, response: "Done" });
+
+		const agent = await loadParlumeAgent(customSession);
+		await executeParlumeAgent({
+			agent,
+			session: customSession,
+			turnId: "turn",
+			message: "Question",
+			voiceInstructions: "Voice",
+			knowledgeContext: "Project",
+			history: [],
+		});
+
+		expect(mocks.workspaces).not.toHaveBeenCalled();
+		expect(mocks.context).toHaveBeenCalledWith(
+			expect.objectContaining({
+				config: expect.objectContaining({
+					mcpConfigIds: [],
+					integrationConfigurations: [],
+					workspaceIds: [],
+				}),
+			}),
+		);
+		expect(mocks.custom).toHaveBeenCalledWith(
+			expect.objectContaining({
+				mcpConfigIds: [],
+				integrationConfigurations: [],
+				workspaceIds: [],
+			}),
+		);
+
+		mocks.instance.mockResolvedValue({
+			...instance,
+			meetingExternalTools: true,
+		});
+		const optedIn = await loadParlumeAgent(customSession);
+		expect(optedIn.revision).not.toBe(agent.revision);
+		expect(optedIn).toMatchObject({
+			config: { mcpConfigIds: ["server"], workspaceIds: ["workspace"] },
+		});
+	});
+	it("reloads the current active custom version and forwards its complete canonical tool configuration when it opts in", async () => {
 		const customSession = {
 			...session,
 			agentKind: "TEMPLATE_INSTANCE" as const,
 			agentInstanceSId: "stable-agent",
 		};
 		mocks.instance.mockResolvedValue({
+			meetingExternalTools: true,
 			id: "current-version",
 			name: "Current",
 			description: "Current instructions",
@@ -268,7 +310,7 @@ describe("Parlume canonical agent adapters", () => {
 			systemPrompt: "Current instructions",
 			mcpConfigIds: ["server"],
 			integrationConfigurations: [{ integrationId: "integration" }],
-			builtInToolNames: ["future-builtin"],
+			builtInToolNames: ["future-builtin", "agent-memory"],
 			model: "selected-model",
 		});
 		mocks.knowledge.mockResolvedValue({ chunks: [] });
@@ -293,6 +335,11 @@ describe("Parlume canonical agent adapters", () => {
 				},
 				orderBy: { version: "desc" },
 			}),
+		);
+		// The agent's memory is neither loaded into the prompt nor offered as a
+		// tool on a meeting turn.
+		expect(mocks.context).toHaveBeenCalledWith(
+			expect.objectContaining({ loadAgentMemory: false }),
 		);
 		expect(mocks.custom).toHaveBeenCalledWith(
 			expect.objectContaining({

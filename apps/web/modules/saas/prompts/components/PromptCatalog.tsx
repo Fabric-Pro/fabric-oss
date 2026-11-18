@@ -8,6 +8,7 @@ import {
 	type PromptFeatureTypeKey,
 	promptActionId,
 	promptDocumentTypeLabel,
+	storyKindLabel,
 } from "@repo/utils/prompt-action-catalog";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -45,7 +46,7 @@ import { PromptDefaultBadge } from "./PromptDefaultBadge";
 type CatalogEntry = {
 	targetKey: string;
 	documentType: string;
-	storyKind: "FEATURE" | "BUG" | null;
+	storyKind: "FEATURE" | "BUG" | "INITIATIVE" | null;
 	effectiveScope: "SYSTEM" | "ORG" | "USER" | null;
 	prompts: Array<{
 		promptId: string;
@@ -97,10 +98,8 @@ function unlistedOverrides(
 		) {
 			continue;
 		}
-		const kind =
-			entry.storyKind === null
-				? ""
-				: ` (${entry.storyKind === "FEATURE" ? "Feature" : "Bug"})`;
+		const label = storyKindLabel(entry.storyKind);
+		const kind = label ? ` (${label})` : "";
 		rows.push({
 			id,
 			targetKey: entry.targetKey,

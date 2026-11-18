@@ -1,7 +1,6 @@
 "use client";
 
-import { orpc } from "@shared/lib/orpc-query-utils";
-import { useQuery } from "@tanstack/react-query";
+import { useStoriesByLastEdit } from "@saas/projects/hooks/use-stories-by-last-edit";
 import { Button } from "@ui/components/button";
 import {
 	Command,
@@ -28,9 +27,9 @@ const MAX_OPTIONS = 50;
 /**
  * Optional single work item for an entry, from the entry's project.
  *
- * Reads the project's existing board (`projects.stories.board`, the source
- * the meeting digest's link picker uses) only once the list is opened, and
- * filters it here: a project's backlog is a few hundred items at most.
+ * Reads the project's board, most recently edited first, only once the list
+ * is opened, and filters it here: a project's backlog is a few hundred items
+ * at most, and the ranking covers all of them before the cap.
  */
 export function WorkItemPicker({
 	projectId,
@@ -49,17 +48,16 @@ export function WorkItemPicker({
 	const [open, setOpen] = useState(false);
 	const [search, setSearch] = useState("");
 
-	const { data, isLoading, isError } = useQuery({
-		...orpc.projects.stories.board.queryOptions({
-			input: { projectId, organizationId },
-		}),
+	const { stories, isLoading, isError } = useStoriesByLastEdit({
+		projectId,
+		organizationId,
 		enabled: open,
 		staleTime: 60_000,
 	});
 
 	const matches = useMemo(() => {
 		const term = search.trim().toLowerCase();
-		return (data?.stories ?? [])
+		return stories
 			.filter((story) =>
 				term === ""
 					? true
@@ -68,7 +66,7 @@ export function WorkItemPicker({
 							.includes(term),
 			)
 			.slice(0, MAX_OPTIONS);
-	}, [data, search]);
+	}, [stories, search]);
 
 	return (
 		<div className="flex min-w-0 flex-1 basis-56 items-center gap-1">

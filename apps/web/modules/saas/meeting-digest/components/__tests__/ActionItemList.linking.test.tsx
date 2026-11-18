@@ -94,9 +94,22 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	listStories.mockResolvedValue({
 		statuses: [],
+		// Backlog order puts F-2 first; F-1 was edited more recently.
 		stories: [
-			{ id: "s1", identifier: "F-1", title: "Digest download" },
-			{ id: "s2", identifier: "F-2", title: "Agenda generation" },
+			{
+				id: "s2",
+				identifier: "F-2",
+				title: "Agenda generation",
+				createdAt: new Date("2026-11-10T00:00:00Z"),
+				lastEditedAt: null,
+			},
+			{
+				id: "s1",
+				identifier: "F-1",
+				title: "Digest download",
+				createdAt: new Date("2026-11-01T00:00:00Z"),
+				lastEditedAt: new Date("2026-11-12T00:00:00Z"),
+			},
 		],
 	});
 	addActionItemLink.mockResolvedValue({ linkId: "new-link" });
@@ -162,6 +175,22 @@ describe("manual linking (FR4/AC7)", () => {
 			await screen.findByRole("button", { name: /F-2/ }),
 		).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: /F-1/ })).toBeNull();
+	});
+
+	it("lists the most recently edited work item first", async () => {
+		renderList();
+		fireEvent.click(screen.getByRole("button", { name: "Link work item" }));
+
+		const edited = await screen.findByRole("button", {
+			name: /F-1 Digest download/,
+		});
+		const created = screen.getByRole("button", {
+			name: /F-2 Agenda generation/,
+		});
+		expect(
+			edited.compareDocumentPosition(created) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 	});
 
 	it("keeps the dialog open and explains when the save fails", async () => {

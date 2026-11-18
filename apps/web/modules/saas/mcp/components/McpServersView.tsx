@@ -1,5 +1,6 @@
 "use client";
 
+import { acceptsMcpCommandArgs } from "@repo/database/prisma/mcp-command-args";
 import { isGitLabPersonalMcpServerKey } from "@repo/database/prisma/queries/lib/gitlab-personal-keys";
 import { invalidateGitLabConnectionViews } from "@saas/data-connections/lib/gitlab-status-query";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
@@ -1171,16 +1172,11 @@ export function McpServersView({
 				);
 			}
 
-			// Validate command args for STDIO servers that require them
-			const cmdStr =
-				selectedServer?.command ||
-				editingConfig?.mcpServer?.command ||
-				"";
-			if (cmdStr.includes("azure-devops") && commandArgs.length === 0) {
-				throw new Error(
-					"Organization name is required for Azure DevOps",
-				);
-			}
+			const argumentServer = editingConfig?.mcpServer ?? selectedServer;
+			const commandArgsChanged =
+				!editingConfig ||
+				(commandArgs.length > 0 &&
+					commandArgs !== editingConfig.commandArgs);
 
 			// Replace {YOUR_API_KEY} placeholder in base URL with actual API key
 			let finalBaseUrl = baseUrl;
@@ -1201,7 +1197,10 @@ export function McpServersView({
 				organizationId,
 				displayName: displayName.trim() || undefined,
 				baseUrl: finalBaseUrl || undefined, // Optional for STDIO servers
-				commandArgs: commandArgs.length > 0 ? commandArgs : undefined,
+				commandArgs:
+					acceptsMcpCommandArgs(argumentServer) && commandArgsChanged
+						? commandArgs
+						: undefined,
 				authType: authType,
 				apiKeyMethod: authType === "API_KEY" ? apiKeyMethod : undefined,
 				apiKey: apiKey || undefined,
@@ -1569,8 +1568,9 @@ export function McpServersView({
 									selectedServer?.command ||
 									editingConfig?.mcpServer?.command ||
 									"";
-								const isAzureDevOps =
-									cmdStr.includes("azure-devops");
+								const isAzureDevOps = acceptsMcpCommandArgs(
+									editingConfig?.mcpServer ?? selectedServer,
+								);
 
 								return (
 									<div className="space-y-4">
@@ -1583,7 +1583,8 @@ export function McpServersView({
 											</p>
 											<code className="mt-2 block bg-muted p-2 rounded text-xs font-mono">
 												{cmdStr}
-												{commandArgs.length > 0
+												{isAzureDevOps &&
+												commandArgs.length > 0
 													? ` ${commandArgs.join(" ")}`
 													: ""}
 											</code>

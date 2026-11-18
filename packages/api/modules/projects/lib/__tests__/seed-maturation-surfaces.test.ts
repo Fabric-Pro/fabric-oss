@@ -236,4 +236,15 @@ describe("seedMaturationSurfaces", () => {
 		expect(mocks.generateMaturationSummary).toHaveBeenCalledTimes(1);
 		expect(mocks.setSummaryDigest).toHaveBeenCalledTimes(1);
 	});
+
+	it("resolves the Summary prompt for the work item's own kind", async () => {
+		await seedMaturationSurfaces({
+			feature: feature({ kind: "INITIATIVE" }),
+			tenantFilter,
+		});
+
+		expect(mocks.resolveSummaryInstructions).toHaveBeenCalledWith(
+			expect.objectContaining({ storyKind: "INITIATIVE" }),
+		);
+	});
 });

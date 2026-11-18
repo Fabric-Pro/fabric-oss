@@ -53,6 +53,7 @@ import {
 	hasActiveCodingRunOnStory,
 	hasActiveStoryLevelCodingRun,
 } from "../../lib/coding-run-visibility";
+import { STORY_KIND_LABELS } from "../../lib/roadmap-filters";
 import {
 	buildRoadmapReturnRoute,
 	readRoadmapQuery,
@@ -625,7 +626,7 @@ export function StoryWorkspacePage({
 							<div
 								role="img"
 								className="flex items-center gap-2 shrink-0 h-8 px-2"
-								aria-label={`${story.kind === "BUG" ? "Bug" : "Feature"} ${story.identifier}, priority ${priorityLabel}`}
+								aria-label={`${STORY_KIND_LABELS[story.kind]} ${story.identifier}, priority ${priorityLabel}`}
 							>
 								<StoryKindIcon
 									kind={story.kind}
@@ -639,7 +640,7 @@ export function StoryWorkspacePage({
 						</TooltipTrigger>
 						<TooltipContent>
 							<p className="font-medium">
-								{story.kind === "BUG" ? "Bug" : "Feature"} ID —{" "}
+								{STORY_KIND_LABELS[story.kind]} ID —{" "}
 								{story.identifier}
 							</p>
 						</TooltipContent>

@@ -1,14 +1,4 @@
-/**
- * A connection to a retired system server whose package was never published
- * (Fizzy #3531).
- *
- * The Fetch, Time and SQLite reference servers are Python packages, so the
- * `npx @modelcontextprotocol/server-…` command the catalog once offered for
- * them asks npm for a package that does not exist. A connection made before
- * they were retired went on doing that on every call, and every call failed
- * the same way. It is now refused before the wrapper runs anything, with what
- * the person can do about it; a tenant's own server of the same key is not.
- */
+// Retired system STDIO servers are refused before a wrapper client is returned.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockGetMcpConfigById = vi.fn();
@@ -42,10 +32,7 @@ vi.mock("@repo/utils/url-security", () => ({
 	}),
 }));
 
-import {
-	ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS,
-	UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS,
-} from "@repo/database/prisma/hidden-mcp-server-keys";
+import { RETIRED_SYSTEM_MCP_SERVER_KEYS } from "@repo/database/prisma/curated-mcp-server-keys";
 import { createMcpClientForConfig, McpClientError } from "../client";
 
 function stdioConfig(
@@ -81,21 +68,23 @@ async function errorOf(promise: Promise<unknown>): Promise<unknown> {
 	return undefined;
 }
 
-describe("createMcpClientForConfig — servers that can never start", () => {
+describe("createMcpClientForConfig — retired STDIO servers", () => {
 	beforeEach(() => {
+		vi.restoreAllMocks();
 		mockGetMcpConfigById.mockReset();
 	});
 
-	it.each([
-		...UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS,
-		...ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS,
-	])(
+	it.each(RETIRED_SYSTEM_MCP_SERVER_KEYS)(
 		"refuses the retired system %s server without calling the wrapper",
 		async (key) => {
 			mockGetMcpConfigById.mockResolvedValue(
 				stdioConfig({ key, isSystemProvided: true }),
 			);
-			const fetchSpy = vi.spyOn(global, "fetch");
+			const fetchSpy = vi
+				.spyOn(global, "fetch")
+				.mockImplementation(async () => {
+					throw new Error("Unexpected outbound request");
+				});
 
 			const error = await errorOf(
 				createMcpClientForConfig({
@@ -138,46 +127,60 @@ describe("createMcpClientForConfig — servers that can never start", () => {
 		);
 	});
 
-	it("leaves a retired server that still starts alone", async () => {
-		mockGetMcpConfigById.mockResolvedValue(
-			stdioConfig({ key: "puppeteer", isSystemProvided: true }),
-		);
-
-		const error = await errorOf(
-			createMcpClientForConfig({
-				configId: "config_fetch",
-				userId: "user_a",
-				organizationId: "org_a",
-			}),
-		);
-
-		expect((error as { code?: string } | undefined)?.code).not.toBe(
-			"SERVER_UNAVAILABLE",
-		);
+	it("refuses invalid stored arguments before returning a STDIO client", async () => {
+		vi.stubEnv("MCP_STDIO_WRAPPER_URL", "http://localhost:3100");
+		try {
+			mockGetMcpConfigById.mockResolvedValue(
+				stdioConfig(
+					{ key: "azure-devops", isSystemProvided: true },
+					{ commandArgs: ["-example"] },
+				),
+			);
+			await expect(
+				createMcpClientForConfig({
+					configId: "config_fetch",
+					userId: "user_a",
+					organizationId: "org_a",
+				}),
+			).rejects.toMatchObject({
+				code: "SERVER_UNAVAILABLE",
+				message: expect.stringContaining(
+					"Azure DevOps organization name",
+				),
+			});
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 
-	it("starts a retired server that needs an argument when the connection has one", async () => {
-		mockGetMcpConfigById.mockResolvedValue(
-			stdioConfig(
-				{
-					key: "postgres",
-					isSystemProvided: true,
-					command: "npx -y @modelcontextprotocol/server-postgres",
-				},
-				{ commandArgs: ["postgresql://db.example.com/app"] },
-			),
-		);
+	it.each(["filesystem", "postgres", "obsidian", "upstash", "google-maps"])(
+		"refuses retired system %s even when stored arguments are present",
+		async (key) => {
+			mockGetMcpConfigById.mockResolvedValue(
+				stdioConfig(
+					{
+						key,
+						isSystemProvided: true,
+						command: "npx -y example-mcp-server@1.0.0",
+					},
+					{ commandArgs: ["example-argument"] },
+				),
+			);
 
-		const error = await errorOf(
-			createMcpClientForConfig({
-				configId: "config_fetch",
-				userId: "user_a",
-				organizationId: "org_a",
-			}),
-		);
+			const error = await errorOf(
+				createMcpClientForConfig({
+					configId: "config_fetch",
+					userId: "user_a",
+					organizationId: "org_a",
+				}),
+			);
 
-		expect((error as { code?: string } | undefined)?.code).not.toBe(
-			"SERVER_UNAVAILABLE",
-		);
-	});
+			expect(error).toMatchObject({
+				code: "SERVER_UNAVAILABLE",
+				message: expect.stringContaining(
+					"Remove this connection in MCP Settings",
+				),
+			});
+		},
+	);
 });

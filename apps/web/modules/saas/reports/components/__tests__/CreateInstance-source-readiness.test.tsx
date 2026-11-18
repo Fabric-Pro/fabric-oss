@@ -1,5 +1,5 @@
 import type { ReportEvidenceConfig } from "@repo/database/prisma/queries/lib/report-evidence";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => {
@@ -7,6 +7,7 @@ const m = vi.hoisted(() => {
 	return {
 		template: { value },
 		mutate: vi.fn(),
+		findDuplicates: vi.fn(),
 		reportSuite: { on: false },
 		setupOptions: vi.fn(),
 	};
@@ -45,7 +46,11 @@ vi.mock("@saas/projects/lib/pm-tool-analyzer", () => ({
 	analyzePMToolCapabilities: vi.fn(),
 	fetchContainersWithHierarchy: vi.fn(),
 }));
-vi.mock("@shared/lib/orpc-client", () => ({ orpcClient: {} }));
+vi.mock("@shared/lib/orpc-client", () => ({
+	orpcClient: {
+		reports: { instances: { findDuplicates: m.findDuplicates } },
+	},
+}));
 vi.mock("@shared/lib/orpc-query-utils", () => {
 	const query = (key: string) => ({
 		queryOptions: () => ({ queryKey: [key] }),
@@ -134,6 +139,8 @@ function template(sources: (typeof projectSource)[]) {
 
 beforeEach(() => {
 	m.mutate.mockClear();
+	m.findDuplicates.mockReset();
+	m.findDuplicates.mockResolvedValue({ duplicates: [] });
 	m.setupOptions.mockClear();
 	m.reportSuite.on = false;
 });
@@ -155,6 +162,58 @@ describe.each([false, true])("with the report suite %s", (reportSuite) => {
 		expect(m.setupOptions).toHaveBeenCalledWith(
 			expect.objectContaining({ autoDetect: reportSuite }),
 		);
+	});
+});
+
+describe("a one-click report continued past a duplicate warning", () => {
+	it("does not warn again when its setup dialog creates it unchanged", async () => {
+		const value = template([projectSource]);
+		m.template.value = value;
+		render(
+			<CreateInstanceDialog
+				template={value}
+				organizationId="example-org"
+				acknowledgedDuplicate={{
+					name: "My Example delivery",
+					prompt: "",
+				}}
+				onClose={vi.fn()}
+			/>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Choose example project" }),
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Create report", exact: true }),
+		);
+
+		await waitFor(() => expect(m.mutate).toHaveBeenCalledTimes(1));
+		expect(m.findDuplicates).not.toHaveBeenCalled();
+		expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+	});
+
+	it("still checks a title the person did not continue past", async () => {
+		const value = template([projectSource]);
+		m.template.value = value;
+		render(
+			<CreateInstanceDialog
+				template={value}
+				organizationId="example-org"
+				acknowledgedDuplicate={{ name: "Another title", prompt: "" }}
+				onClose={vi.fn()}
+			/>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Choose example project" }),
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Create report", exact: true }),
+		);
+
+		await waitFor(() => expect(m.mutate).toHaveBeenCalledTimes(1));
+		expect(m.findDuplicates).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -196,7 +255,7 @@ describe.each(["form", "dialog"])("%s source readiness", (surface) => {
 			screen.queryByRole("region", { name: "AI Analysis prompt" }),
 		).not.toBeInTheDocument();
 	});
-	it("offers creation of a ready Project knowledge report with an accurate shared source scope", () => {
+	it("offers creation of a ready Project knowledge report with an accurate shared source scope", async () => {
 		show([projectSource]);
 		const create = screen.getByRole("button", {
 			name: "Create report",
@@ -210,22 +269,100 @@ describe.each(["form", "dialog"])("%s source readiness", (surface) => {
 			screen.getByText(/Imported files and private notes are excluded/),
 		).toBeInTheDocument();
 		fireEvent.click(create);
-		expect(m.mutate).toHaveBeenCalledWith(
+		await waitFor(() =>
+			expect(m.mutate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					templateId: "example-template",
+					organizationId: "example-org",
+					reporting: expect.objectContaining({
+						projectId: "example-project",
+						publication: "draft",
+					}),
+					connections: expect.objectContaining({
+						mcpConfigs: [],
+						workspaces: [],
+					}),
+				}),
+			),
+		);
+		expect(m.findDuplicates).toHaveBeenCalledWith(
 			expect.objectContaining({
-				templateId: "example-template",
 				organizationId: "example-org",
-				reporting: expect.objectContaining({
-					projectId: "example-project",
-					publication: "draft",
-				}),
-				connections: expect.objectContaining({
-					mcpConfigs: [],
-					workspaces: [],
-				}),
+				name: "My Example delivery",
 			}),
 		);
 	});
-	it("leaves the template's own prompt out of the report, so template edits still reach it", () => {
+	it("warns of a likely duplicate and creates nothing until told to continue", async () => {
+		m.findDuplicates.mockResolvedValue({
+			duplicates: [
+				{
+					id: "existing-report",
+					name: "My Example delivery",
+					templateName: "Example delivery",
+					status: "ACTIVE",
+					isActive: true,
+					ownedByCaller: false,
+					createdAt: "2026-11-01T00:00:00.000Z",
+					lastRunAt: null,
+					sameTitle: true,
+					samePrompt: false,
+				},
+			],
+		});
+		show([projectSource]);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Create report", exact: true }),
+		);
+		const warning = await screen.findByRole("alertdialog");
+		expect(warning).toHaveTextContent("A similar report already exists");
+		expect(warning).toHaveTextContent("Same title");
+		expect(warning).toHaveTextContent("Another member's");
+		expect(
+			screen.getByRole("link", { name: "Open My Example delivery" }),
+		).toHaveAttribute(
+			"href",
+			"/app/report-templates/instances/existing-report",
+		);
+		expect(m.mutate).not.toHaveBeenCalled();
+
+		fireEvent.click(screen.getByRole("button", { name: "Create anyway" }));
+
+		expect(m.mutate).toHaveBeenCalledTimes(1);
+	});
+	it("creates nothing when the duplicate warning is cancelled", async () => {
+		m.findDuplicates.mockResolvedValue({
+			duplicates: [
+				{
+					id: "existing-report",
+					name: "Another title",
+					templateName: "Example delivery",
+					status: "DRAFT",
+					isActive: true,
+					ownedByCaller: true,
+					createdAt: "2026-11-01T00:00:00.000Z",
+					lastRunAt: null,
+					sameTitle: false,
+					samePrompt: true,
+				},
+			],
+		});
+		show([projectSource]);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Create report", exact: true }),
+		);
+		expect(await screen.findByRole("alertdialog")).toHaveTextContent(
+			"Same prompt",
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+		await waitFor(() =>
+			expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(),
+		);
+		expect(m.mutate).not.toHaveBeenCalled();
+	});
+	it("leaves the template's own prompt out of the report, so template edits still reach it", async () => {
 		const value = {
 			...template([projectSource]),
 			definition: {
@@ -256,7 +393,12 @@ describe.each(["form", "dialog"])("%s source readiness", (surface) => {
 		fireEvent.click(
 			screen.getByRole("button", { name: "Create report", exact: true }),
 		);
-		expect(m.mutate).toHaveBeenCalledTimes(1);
+		await waitFor(() => expect(m.mutate).toHaveBeenCalledTimes(1));
+		expect(m.findDuplicates).toHaveBeenCalledWith(
+			expect.objectContaining({
+				prompt: "Summarize delivery for the period.",
+			}),
+		);
 		const [{ connections }] = m.mutate.mock.calls[0];
 		expect(connections).not.toHaveProperty("promptOverride");
 		expect(connections).not.toHaveProperty("promptOverrideSource");

@@ -160,6 +160,7 @@ function buildStory(overrides: Partial<UserStory> = {}): UserStory {
 		description: null,
 		acceptanceCriteria: null,
 		statusId: "status_1",
+		kind: "FEATURE",
 		priority: "P1_HIGH",
 		size: "M",
 		storyPoints: 5,

@@ -66,7 +66,7 @@ describe("ParlumeAutoJoinControl", () => {
 			enabled: true,
 			toolsReadOnly: true,
 			suggestionsEnabled: true,
-			suggestionAudience: "MEETING",
+			suggestionAudience: "TEAM",
 		});
 	});
 

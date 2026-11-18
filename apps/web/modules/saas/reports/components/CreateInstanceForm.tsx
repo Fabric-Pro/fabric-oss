@@ -8,6 +8,7 @@ import {
 } from "@repo/database/prisma/queries/lib/report-evidence";
 import { useOrganizationContext } from "@saas/organizations/hooks";
 import { useInstanceDataSourceSetup } from "@saas/reports/hooks/use-instance-data-source-setup";
+import { useLikelyDuplicateGuard } from "@saas/reports/hooks/use-likely-duplicate-guard";
 import {
 	generateProblem,
 	useReportSuiteCreation,
@@ -56,6 +57,7 @@ import {
 	InstanceDataSourcePicker,
 } from "./InstanceDataSourceFields";
 import { InstanceNameField } from "./InstanceNameField";
+import { LikelyDuplicateReportDialog } from "./LikelyDuplicateReportDialog";
 import { RefinePromptButton } from "./RefinePromptButton";
 import { ReportEvidenceSettings } from "./ReportEvidenceSettings";
 import { ReportParameterFields } from "./ReportParameterFields";
@@ -206,7 +208,14 @@ export function CreateInstanceForm({
 		}),
 	);
 
-	const isWorking = createMutation.isPending || creation.isStarting;
+	const duplicateGuard = useLikelyDuplicateGuard({
+		organizationId,
+		projectId,
+	});
+	const isWorking =
+		createMutation.isPending ||
+		creation.isStarting ||
+		duplicateGuard.isChecking;
 	const generateOff =
 		isWorking ||
 		(requiresProjectKnowledge && !reporting?.projectId) ||
@@ -252,28 +261,41 @@ export function CreateInstanceForm({
 		const { mcpConfigs, mcpBindings, resourceBindings, context } =
 			setup.buildConnections();
 
-		createMutation.mutate({
-			templateId,
-			name: name.trim(),
-			description: description.trim() || undefined,
-			organizationId,
-			projectId,
-			reporting,
-			...(suite ? { parameterDefaults: creation.parameters.toSave } : {}),
-			connections: {
-				mcpConfigs,
-				mcpBindings,
-				resourceBindings,
-				context,
-				...promptOverrideFields(promptOverride, definition.userPrompt),
-				maxIterations: maxIterations || undefined,
-				workflows: [],
-				agents: [],
-				workspaces: selectedWorkspaces,
-				integrations: [],
-				integrationBindings: {},
+		const create = () =>
+			createMutation.mutate({
+				templateId,
+				name: name.trim(),
+				description: description.trim() || undefined,
+				organizationId,
+				projectId,
+				reporting,
+				...(suite
+					? { parameterDefaults: creation.parameters.toSave }
+					: {}),
+				connections: {
+					mcpConfigs,
+					mcpBindings,
+					resourceBindings,
+					context,
+					...promptOverrideFields(
+						promptOverride,
+						definition.userPrompt,
+					),
+					maxIterations: maxIterations || undefined,
+					workflows: [],
+					agents: [],
+					workspaces: selectedWorkspaces,
+					integrations: [],
+					integrationBindings: {},
+				},
+			});
+		void duplicateGuard.guard(
+			{
+				name: name.trim(),
+				prompt: promptOverride.trim() || definition.userPrompt || "",
 			},
-		});
+			create,
+		);
 	};
 
 	if (!orgContextLoaded || templateLoading) {
@@ -681,6 +703,11 @@ export function CreateInstanceForm({
 					</Card>
 				</div>
 			</div>
+			<LikelyDuplicateReportDialog
+				{...duplicateGuard.dialogProps}
+				reportTemplatesPath={basePath}
+				continueLabel={generates ? "Generate anyway" : "Create anyway"}
+			/>
 		</div>
 	);
 }

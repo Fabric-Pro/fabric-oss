@@ -49,18 +49,26 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						queryKey: ["stories.board", opts],
 						queryFn: async () => ({
 							statuses: [],
+							// Backlog order puts F-20 first; F-12 was edited
+							// more recently.
 							stories: [
-								{
-									id: "story-1",
-									identifier: "F-12",
-									title: "Export throttling",
-									draftingStage: storyStages["story-1"],
-								},
 								{
 									id: "story-2",
 									identifier: "F-20",
 									title: "Bulk export UX",
 									draftingStage: storyStages["story-2"],
+									createdAt: new Date("2026-11-10T00:00:00Z"),
+									lastEditedAt: null,
+								},
+								{
+									id: "story-1",
+									identifier: "F-12",
+									title: "Export throttling",
+									draftingStage: storyStages["story-1"],
+									createdAt: new Date("2026-11-01T00:00:00Z"),
+									lastEditedAt: new Date(
+										"2026-11-12T00:00:00Z",
+									),
 								},
 							],
 						}),
@@ -255,6 +263,26 @@ describe("BacklogChangeProposal — Create/Enrich routing row", () => {
 		expect(
 			screen.getByText(/Select the ticket to enrich before approving/i),
 		).toBeInTheDocument();
+	});
+
+	it("lists the tickets most recently edited first", async () => {
+		const user = userEvent.setup();
+		renderProposal({ changes: [createChange()] });
+
+		await user.click(
+			screen.getByRole("button", { name: "Enrich existing" }),
+		);
+		await user.click(
+			screen.getByRole("combobox", {
+				name: /Choose the ticket to enrich for/,
+			}),
+		);
+
+		const options = (await screen.findAllByRole("option")).map(
+			(option) => option.textContent ?? "",
+		);
+		expect(options.findIndex((text) => text.includes("F-12"))).toBe(0);
+		expect(options.findIndex((text) => text.includes("F-20"))).toBe(1);
 	});
 
 	it("re-enables Apply once the reviewer switches back to a new ticket", async () => {
@@ -485,5 +513,56 @@ describe("a rejected enrichment is drafted through the work-item prompt", () => 
 		expect(reformat).toHaveBeenCalledWith(
 			expect.objectContaining({ projectId: "proj-1", kind: "BUG" }),
 		);
+	});
+});
+
+describe("BacklogChangeProposal — the merge target link", () => {
+	it("opens the chosen target in a new tab and goes away with the target", async () => {
+		const user = userEvent.setup();
+		renderProposal();
+
+		const link = await screen.findByRole("link", {
+			name: "Open merge target F-12 for Export throttling in a new tab",
+		});
+		expect(link).toHaveAttribute(
+			"href",
+			"/app/acme/projects/proj-1/stories/story-1",
+		);
+		expect(link).toHaveAttribute("target", "_blank");
+		expect(link).toHaveAttribute("rel", "noopener noreferrer");
+
+		await user.click(screen.getByRole("button", { name: "New ticket" }));
+
+		expect(
+			screen.queryByRole("link", { name: /Open merge target/ }),
+		).not.toBeInTheDocument();
+	});
+
+	it("offers no link for a target the ticket list does not have", async () => {
+		const missing = enrichChange({
+			existingId: "story-gone",
+			existingIdentifier: "F-99",
+			title: { from: "Gone ticket", to: "Gone ticket" },
+			routing: {
+				decision: "enrich",
+				confidence: 0.9,
+				matchedStoryId: "story-gone",
+				matchedIdentifier: "F-99",
+				matchedTitle: "Gone ticket",
+				reasoning: "Same work as a ticket deleted since.",
+				proposedTitle: "Gone ticket",
+				proposedDescription: "Deleted after analysis.",
+				alternatives: [],
+			},
+		});
+		renderProposal({ changes: [enrichChange(), missing] });
+
+		// The listed target's link proves the ticket list has loaded.
+		await screen.findByRole("link", {
+			name: "Open merge target F-12 for Export throttling in a new tab",
+		});
+		expect(
+			screen.queryByRole("link", { name: /Open merge target F-99/ }),
+		).not.toBeInTheDocument();
 	});
 });

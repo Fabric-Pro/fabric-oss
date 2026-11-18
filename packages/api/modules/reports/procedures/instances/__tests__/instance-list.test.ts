@@ -17,11 +17,13 @@ const m = vi.hoisted(() => ({
 	hasProjectAccess: vi.fn(),
 	isPlatformAdmin: vi.fn(),
 	isProjectSoftDeleted: vi.fn(),
+	latestSuccesses: vi.fn(),
 	list: vi.fn(),
 	membership: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
+	getLatestSuccessfulReports: m.latestSuccesses,
 	getOrganizationMembership: m.membership,
 	getProjectReportSetupReason: () => undefined,
 	hasProjectAccess: m.hasProjectAccess,
@@ -123,6 +125,7 @@ beforeEach(() => {
 	m.isPlatformAdmin.mockResolvedValue(false);
 	m.isProjectSoftDeleted.mockResolvedValue(false);
 	m.list.mockResolvedValue({ instances: [], total: 0 });
+	m.latestSuccesses.mockResolvedValue(new Map());
 });
 
 describe("reports.instances.list with a project", () => {
@@ -190,6 +193,50 @@ describe("reports.instances.list with a project", () => {
 		).toEqual([
 			["own", true],
 			["other", false],
+		]);
+	});
+
+	it("gives each report the newest successful run its View action opens", async () => {
+		holdsRole("member", "EDITOR");
+		m.list.mockResolvedValue({
+			instances: [report({ id: "viewed" }), report({ id: "never-run" })],
+			total: 2,
+		});
+		m.latestSuccesses.mockResolvedValue(
+			new Map([
+				[
+					"viewed",
+					{
+						executionId: "example-run",
+						completedAt: null,
+						artifactId: "example-artifact",
+						artifactName: "report.md",
+					},
+				],
+			]),
+		);
+
+		const { instances } = (await call()) as unknown as {
+			instances: Array<{
+				id: string;
+				latestSuccessfulReport: { artifactId: string } | null;
+			}>;
+		};
+
+		expect(m.latestSuccesses).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: context.user.id,
+				organizationId: ORG,
+			}),
+		);
+		expect(
+			instances.map(({ id, latestSuccessfulReport }) => [
+				id,
+				latestSuccessfulReport?.artifactId ?? null,
+			]),
+		).toEqual([
+			["viewed", "example-artifact"],
+			["never-run", null],
 		]);
 	});
 

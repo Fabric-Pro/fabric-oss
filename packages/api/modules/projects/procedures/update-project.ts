@@ -25,7 +25,6 @@ import {
 	QaStrategyLevelSchema,
 } from "@repo/database/prisma/zod";
 import { readLabelStatusMap } from "@repo/integrations/pm";
-import { hasPermission } from "@repo/permissions";
 import { getTemporalClient } from "@repo/temporal";
 import {
 	MAX_ATTACHMENT_RETENTION_DAYS,
@@ -35,7 +34,7 @@ import { countDocumentWords } from "@repo/utils/document-word-count";
 import { isPmAttachmentSyncEnabled } from "@repo/utils/feature-flag";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../lib/audit";
-import { resolveEffectiveProjectPermissions } from "../../../lib/effective-project-permissions";
+import { canEditProjectAdminSettings } from "../../../lib/project-admin-settings";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import { INPUT_BOUNDS, labelArray } from "../../..//lib/zod-bounds";
 import {
@@ -160,6 +159,7 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			// Project-level Read-only mode — blocks outbound
 			// writes to connected sources. Admin/owner only (checked in handler).
 			readOnlyMode: z.boolean().optional(),
+			initiativesEnabled: z.boolean().optional(),
 			// Per-project attachment-sync opt-in (Fizzy #1746)
 			syncAttachments: z.boolean().optional(),
 			// Attachment retention window in days (Fizzy #1749). null clears the
@@ -405,6 +405,8 @@ export const updateProjectProcedure = tenantProtectedProcedure
 		> = {
 			readOnlyMode:
 				"Only project admins or owners can change Read-only mode.",
+			initiativesEnabled:
+				"Only project admins or owners can turn Initiatives on or off.",
 			// Enabling this starts pushing every story's attachments to the
 			// linked PM tool (Fizzy #1746).
 			syncAttachments:
@@ -444,23 +446,11 @@ export const updateProjectProcedure = tenantProtectedProcedure
 				"Only project admins or owners can change the label → status map while status sync is on.",
 			);
 		}
-		if (adminOnlyMessages.length > 0) {
-			const access = await resolveEffectiveProjectPermissions(
-				input.id,
-				user.id,
-			);
-			const canToggle =
-				access?.source === "owner" ||
-				(access != null &&
-					hasPermission(
-						access.permissions,
-						Permissions.PROJECT_SETTINGS_EDIT,
-					));
-			if (!canToggle) {
-				throw new ORPCError("FORBIDDEN", {
-					message: adminOnlyMessages[0],
-				});
-			}
+		if (
+			adminOnlyMessages.length > 0 &&
+			!(await canEditProjectAdminSettings(input.id, user.id))
+		) {
+			throw new ORPCError("FORBIDDEN", { message: adminOnlyMessages[0] });
 		}
 
 		// After the permission check, so an unauthorized caller still gets
@@ -780,6 +770,9 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			// admin/owner enforcement happened above)
 			...(input.readOnlyMode !== undefined
 				? { readOnlyMode: input.readOnlyMode }
+				: {}),
+			...(input.initiativesEnabled !== undefined
+				? { initiativesEnabled: input.initiativesEnabled }
 				: {}),
 			// Attachment-sync opt-in (Fizzy #1746, pass through when provided).
 			// A disconnect/archive (shouldDeactivatePoll) always wins over the

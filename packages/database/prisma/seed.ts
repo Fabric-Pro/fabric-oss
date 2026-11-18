@@ -406,22 +406,6 @@ async function seedMcpServers() {
 		},
 
 		{
-			key: "filesystem",
-			name: "Filesystem",
-			description:
-				"Secure file operations with configurable access controls. Runs locally via npx.",
-			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-filesystem@1.0.0",
-			docsUrl:
-				"https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
-			transport: "STDIO" as any,
-			authMethods: ["NONE"] as any,
-			iconUrl: "https://cdn-icons-png.flaticon.com/512/716/716784.png",
-			author: "Anthropic",
-			repositoryUrl: "https://github.com/modelcontextprotocol/servers",
-			category: "Developer Tools",
-		},
-		{
 			key: "memory",
 			name: "Memory",
 			description:

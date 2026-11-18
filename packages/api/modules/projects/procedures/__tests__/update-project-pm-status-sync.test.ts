@@ -149,6 +149,9 @@ vi.mock("../../lib/governance", async (importOriginal) => ({
 
 vi.mock("@repo/permissions", () => ({
 	hasPermission: (perms: string[], p: string) => perms.includes(p),
+	Permissions: {
+		PROJECT_SETTINGS_EDIT: "PROJECT_SETTINGS_EDIT",
+	},
 }));
 
 vi.mock("../../../../orpc/procedures", () => {

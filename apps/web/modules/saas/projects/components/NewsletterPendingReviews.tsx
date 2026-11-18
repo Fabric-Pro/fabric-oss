@@ -33,6 +33,7 @@ export function NewsletterPendingReviews({
 	onApprove,
 	onReject,
 	onRefetch,
+	onSetUpAutoCapture,
 }: {
 	sends: PendingNewsletterSend[];
 	projectId: string;
@@ -41,6 +42,8 @@ export function NewsletterPendingReviews({
 	onApprove: (request: NewsletterApproveRequest) => void;
 	onReject: (sendId: string) => void;
 	onRefetch: () => void;
+	/** Given when the review should offer to set up automatic capture. */
+	onSetUpAutoCapture?: () => void;
 }) {
 	// Per-send set of highlight indexes the reviewer has marked for removal
 	// before approving — keyed by send id so switching between multiple
@@ -250,6 +253,7 @@ export function NewsletterPendingReviews({
 						setReviewingSendId(null);
 					}
 				}}
+				onSetUpAutoCapture={onSetUpAutoCapture}
 			/>
 		</div>
 	);

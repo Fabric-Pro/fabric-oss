@@ -45,11 +45,7 @@ import {
 	buildStoryDecisionLogRoute,
 	buildStoryDetailsRoute,
 } from "../../../lib/stories/routes";
-import type {
-	StoryKind,
-	StoryPriority,
-	UserStory,
-} from "../../../lib/stories/types";
+import type { StoryPriority, UserStory } from "../../../lib/stories/types";
 import { Segmented } from "../Segmented";
 import { PriorityHelp } from "./PriorityHelp";
 import { PriorityRow } from "./PriorityRow";
@@ -59,6 +55,9 @@ import {
 	ReprioritizeScopeDialog,
 } from "./ReprioritizeScopeDialog";
 import { useSetStoryPriority } from "./useSetStoryPriority";
+
+/** The Priority view ranks Features and Bugs only; Initiatives aren't shown here. */
+type RankedKind = "FEATURE" | "BUG";
 
 /**
  * Mirrors the batched procedure's own limit. Anything past this is ranked as if
@@ -124,7 +123,7 @@ export function PriorityRankedList({
 }: Props) {
 	const t = useTranslations("projects.stories.priority");
 	const queryClient = useQueryClient();
-	const [kind, setKind] = useState<StoryKind>("FEATURE");
+	const [kind, setKind] = useState<RankedKind>("FEATURE");
 	const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(
 		() => new Set(),
 	);
@@ -473,12 +472,15 @@ export function PriorityRankedList({
 	// click doesn't walk the whole list several times over.
 	const { featureCount, bugCount } = useMemo(() => {
 		let features = 0;
+		let bugs = 0;
 		for (const story of stories) {
 			if (story.kind === "FEATURE") {
 				features += 1;
+			} else if (story.kind === "BUG") {
+				bugs += 1;
 			}
 		}
-		return { featureCount: features, bugCount: stories.length - features };
+		return { featureCount: features, bugCount: bugs };
 	}, [stories]);
 
 	const isPinned = useMemo(() => hasManualOrder(ranked), [ranked]);
@@ -549,7 +551,7 @@ export function PriorityRankedList({
 		<div className="p-3">
 			<div className="mb-3 flex flex-wrap items-end justify-between gap-3">
 				<div className="w-full sm:w-[260px]">
-					<Segmented<StoryKind>
+					<Segmented<RankedKind>
 						label={t("typeLabel")}
 						value={kind}
 						onChange={setKind}

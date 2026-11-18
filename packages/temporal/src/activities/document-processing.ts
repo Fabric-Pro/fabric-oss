@@ -14,6 +14,8 @@ import {
 	storeChunk,
 } from "@repo/rag";
 
+import { withHeartbeatTicker } from "./lib/activity-liveness";
+
 /**
  * Sanitize text content by removing null bytes and other problematic characters
  * that PostgreSQL cannot store in text fields (UTF8 encoding issues)
@@ -297,174 +299,191 @@ export async function processAndStoreChunks(
 	extractionTime?: number;
 	cost?: number;
 }> {
-	console.log(`[Activity] Processing document end-to-end: ${documentId}`);
-	console.log(`[Activity] chatId: ${chatId}`);
-	console.log(`[Activity] userId: ${userId}`);
-	console.log(`[Activity] organizationId: ${organizationId}`);
-	console.log(`[Activity] extractionStrategy: ${extractionStrategy}`);
-
-	try {
-		// Tenant-scoped lookup — a forged documentId from another tenant
-		// must not resolve here.
-		console.log("[Activity] Downloading document from S3");
-		const document = await db.chatDocument.findFirst({
-			where: {
-				id: documentId,
-				...tenantWhere(userId, organizationId),
-			},
-		});
-
-		if (!document) {
-			throw new Error(
-				`Document not found or not accessible for this tenant: ${documentId}`,
-			);
-		}
-
-		const bucketName =
-			process.env.NEXT_PUBLIC_CHAT_DOCUMENTS_BUCKET_NAME ||
-			"chat-documents";
-
-		const command = new GetObjectCommand({
-			Bucket: bucketName,
-			Key: document.s3Path,
-		});
-
-		const response = await s3Client.send(command);
-
-		if (!response.Body) {
-			throw new Error("Empty response from S3");
-		}
-
-		const buffer = Buffer.from(await response.Body.transformToByteArray());
-		console.log(
-			`[Activity] Downloaded ${document.filename} (${buffer.length} bytes)`,
-		);
-
-		// Step 2: Extract text
-		console.log("[Activity] Extracting text from document");
-		const extractionResult = await extractDocument(
-			documentId,
-			buffer,
-			document.filename,
-			document.mimeType,
-			extractionStrategy,
-			userId,
-			organizationId,
-		);
-		console.log(
-			`[Activity] Extracted ${extractionResult.text.length} characters using ${extractionResult.extractorUsed}`,
-		);
-
-		// Step 2.5: Sanitize extracted text to remove null bytes and control characters
-		// that PostgreSQL cannot store in UTF-8 encoded text fields
-		const sanitizedText = sanitizeTextForStorage(extractionResult.text);
-		if (sanitizedText.length !== extractionResult.text.length) {
+	return withHeartbeatTicker(
+		async () => {
 			console.log(
-				`[Activity] Sanitized text: removed ${extractionResult.text.length - sanitizedText.length} problematic characters`,
+				`[Activity] Processing document end-to-end: ${documentId}`,
 			);
-		}
+			console.log(`[Activity] chatId: ${chatId}`);
+			console.log(`[Activity] userId: ${userId}`);
+			console.log(`[Activity] organizationId: ${organizationId}`);
+			console.log(`[Activity] extractionStrategy: ${extractionStrategy}`);
 
-		// Step 3: Chunk the sanitized text
-		console.log("[Activity] Chunking document");
-		const chunks = chunkText(sanitizedText, document.filename, {
-			chunkSize: 3000, // 3000 chars ≈ 750 tokens (optimal for RAG)
-			chunkOverlap: 500, // 500 chars ≈ 125 tokens (~17% overlap)
-		});
-		console.log(`[Activity] Created ${chunks.length} chunks`);
-
-		// Get AI provider configuration using centralized function
-		const providerConfig = await getSystemEmbeddingRAGProviderConfig({
-			userId,
-			organizationId,
-		});
-		console.log("[Activity] Using centralized AI provider config");
-
-		// Process chunks in batches to optimize API calls while avoiding memory issues
-		// OpenAI allows up to 2048 embeddings per request, but we use 50 for safety
-		const BATCH_SIZE = 50; // Process 50 chunks at a time (was 10, now 5x more efficient)
-		let totalStored = 0;
-
-		for (
-			let batchStart = 0;
-			batchStart < chunks.length;
-			batchStart += BATCH_SIZE
-		) {
-			const batchEnd = Math.min(batchStart + BATCH_SIZE, chunks.length);
-			const batchChunks = chunks.slice(batchStart, batchEnd);
-
-			console.log(
-				`[Activity] Processing batch ${Math.floor(batchStart / BATCH_SIZE) + 1}/${Math.ceil(chunks.length / BATCH_SIZE)} (chunks ${batchStart + 1}-${batchEnd})`,
-			);
-
-			// Step 4: Generate embeddings for this batch
-			const batchTexts = batchChunks.map((chunk) => chunk.content);
-			const batchEmbeddingsResult = await generateEmbeddings(
-				batchTexts,
-				{
-					userId,
-					organizationId,
-					featureKey: "knowledge-index",
-					tags: ["rag-embedding", "document-processing"],
-				},
-				providerConfig,
-			);
-			console.log(
-				`[Activity] Generated ${batchEmbeddingsResult.embeddings.length} embeddings for batch (cost: $${batchEmbeddingsResult.cost.toFixed(4)})`,
-			);
-
-			// Step 5: Store chunks with embeddings immediately
-			for (let i = 0; i < batchChunks.length; i++) {
-				const chunk = batchChunks[i];
-				const embedding = batchEmbeddingsResult.embeddings[i];
-
-				await storeChunk({
-					documentId,
-					chatId,
-					userId,
-					organizationId,
-					content: chunk.content,
-					embedding,
-					chunkIndex: chunk.index, // Use 'index' property from TextChunk
-					metadata: {
-						...chunk.metadata,
-						filename: document.filename,
-						extractorUsed: extractionResult.extractorUsed,
-						extractionTime: extractionResult.extractionTime,
-						pageCount: extractionResult.pageCount,
+			try {
+				// Tenant-scoped lookup — a forged documentId from another tenant
+				// must not resolve here.
+				console.log("[Activity] Downloading document from S3");
+				const document = await db.chatDocument.findFirst({
+					where: {
+						id: documentId,
+						...tenantWhere(userId, organizationId),
 					},
 				});
-				totalStored++;
+
+				if (!document) {
+					throw new Error(
+						`Document not found or not accessible for this tenant: ${documentId}`,
+					);
+				}
+
+				const bucketName =
+					process.env.NEXT_PUBLIC_CHAT_DOCUMENTS_BUCKET_NAME ||
+					"chat-documents";
+
+				const command = new GetObjectCommand({
+					Bucket: bucketName,
+					Key: document.s3Path,
+				});
+
+				const response = await s3Client.send(command);
+
+				if (!response.Body) {
+					throw new Error("Empty response from S3");
+				}
+
+				const buffer = Buffer.from(
+					await response.Body.transformToByteArray(),
+				);
+				console.log(
+					`[Activity] Downloaded ${document.filename} (${buffer.length} bytes)`,
+				);
+
+				// Step 2: Extract text
+				console.log("[Activity] Extracting text from document");
+				const extractionResult = await extractDocument(
+					documentId,
+					buffer,
+					document.filename,
+					document.mimeType,
+					extractionStrategy,
+					userId,
+					organizationId,
+				);
+				console.log(
+					`[Activity] Extracted ${extractionResult.text.length} characters using ${extractionResult.extractorUsed}`,
+				);
+
+				// Step 2.5: Sanitize extracted text to remove null bytes and control characters
+				// that PostgreSQL cannot store in UTF-8 encoded text fields
+				const sanitizedText = sanitizeTextForStorage(
+					extractionResult.text,
+				);
+				if (sanitizedText.length !== extractionResult.text.length) {
+					console.log(
+						`[Activity] Sanitized text: removed ${extractionResult.text.length - sanitizedText.length} problematic characters`,
+					);
+				}
+
+				// Step 3: Chunk the sanitized text
+				console.log("[Activity] Chunking document");
+				const chunks = chunkText(sanitizedText, document.filename, {
+					chunkSize: 3000, // 3000 chars ≈ 750 tokens (optimal for RAG)
+					chunkOverlap: 500, // 500 chars ≈ 125 tokens (~17% overlap)
+				});
+				console.log(`[Activity] Created ${chunks.length} chunks`);
+
+				// Get AI provider configuration using centralized function
+				const providerConfig =
+					await getSystemEmbeddingRAGProviderConfig({
+						userId,
+						organizationId,
+					});
+				console.log("[Activity] Using centralized AI provider config");
+
+				// Process chunks in batches to optimize API calls while avoiding memory issues
+				// OpenAI allows up to 2048 embeddings per request, but we use 50 for safety
+				const BATCH_SIZE = 50; // Process 50 chunks at a time (was 10, now 5x more efficient)
+				let totalStored = 0;
+
+				for (
+					let batchStart = 0;
+					batchStart < chunks.length;
+					batchStart += BATCH_SIZE
+				) {
+					const batchEnd = Math.min(
+						batchStart + BATCH_SIZE,
+						chunks.length,
+					);
+					const batchChunks = chunks.slice(batchStart, batchEnd);
+
+					console.log(
+						`[Activity] Processing batch ${Math.floor(batchStart / BATCH_SIZE) + 1}/${Math.ceil(chunks.length / BATCH_SIZE)} (chunks ${batchStart + 1}-${batchEnd})`,
+					);
+
+					// Step 4: Generate embeddings for this batch
+					const batchTexts = batchChunks.map(
+						(chunk) => chunk.content,
+					);
+					const batchEmbeddingsResult = await generateEmbeddings(
+						batchTexts,
+						{
+							userId,
+							organizationId,
+							featureKey: "knowledge-index",
+							tags: ["rag-embedding", "document-processing"],
+						},
+						providerConfig,
+					);
+					console.log(
+						`[Activity] Generated ${batchEmbeddingsResult.embeddings.length} embeddings for batch (cost: $${batchEmbeddingsResult.cost.toFixed(4)})`,
+					);
+
+					// Step 5: Store chunks with embeddings immediately
+					for (let i = 0; i < batchChunks.length; i++) {
+						const chunk = batchChunks[i];
+						const embedding = batchEmbeddingsResult.embeddings[i];
+
+						await storeChunk({
+							documentId,
+							chatId,
+							userId,
+							organizationId,
+							content: chunk.content,
+							embedding,
+							chunkIndex: chunk.index, // Use 'index' property from TextChunk
+							metadata: {
+								...chunk.metadata,
+								filename: document.filename,
+								extractorUsed: extractionResult.extractorUsed,
+								extractionTime: extractionResult.extractionTime,
+								pageCount: extractionResult.pageCount,
+							},
+						});
+						totalStored++;
+					}
+
+					console.log(
+						`[Activity] Stored batch ${Math.floor(batchStart / BATCH_SIZE) + 1}, total stored: ${totalStored}/${chunks.length}`,
+					);
+
+					// Clear batch data from memory explicitly
+					// This helps ensure Temporal doesn't try to serialize large objects
+					batchChunks.length = 0;
+					batchEmbeddingsResult.embeddings.length = 0;
+				}
+
+				// Note: Last used timestamp is already updated when we fetch the provider config above
+
+				console.log(
+					`[Activity] Successfully processed and stored ${totalStored} chunks`,
+				);
+
+				// Return only small metadata, no large objects
+				return {
+					chunkCount: totalStored,
+					extractorUsed: extractionResult.extractorUsed,
+					extractionTime: extractionResult.extractionTime,
+					cost: extractionResult.cost,
+				};
+			} catch (error) {
+				console.error("[Activity] Failed to process document:", error);
+				throw new Error(
+					`Failed to process document: ${error instanceof Error ? error.message : "Unknown error"}`,
+				);
 			}
-
-			console.log(
-				`[Activity] Stored batch ${Math.floor(batchStart / BATCH_SIZE) + 1}, total stored: ${totalStored}/${chunks.length}`,
-			);
-
-			// Clear batch data from memory explicitly
-			// This helps ensure Temporal doesn't try to serialize large objects
-			batchChunks.length = 0;
-			batchEmbeddingsResult.embeddings.length = 0;
-		}
-
-		// Note: Last used timestamp is already updated when we fetch the provider config above
-
-		console.log(
-			`[Activity] Successfully processed and stored ${totalStored} chunks`,
-		);
-
-		// Return only small metadata, no large objects
-		return {
-			chunkCount: totalStored,
-			extractorUsed: extractionResult.extractorUsed,
-			extractionTime: extractionResult.extractionTime,
-			cost: extractionResult.cost,
-		};
-	} catch (error) {
-		console.error("[Activity] Failed to process document:", error);
-		throw new Error(
-			`Failed to process document: ${error instanceof Error ? error.message : "Unknown error"}`,
-		);
-	}
+		},
+		{ details: { documentId, phase: "process-document" } },
+	);
 }
 
 /**

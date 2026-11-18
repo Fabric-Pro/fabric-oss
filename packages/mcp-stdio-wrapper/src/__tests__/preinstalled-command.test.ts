@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { resolvePreinstalledCommand } from "../preinstalled-command";
+import { stubNpmRoot } from "./launch-fixtures";
 
 describe("resolvePreinstalledCommand", () => {
 	let globalRoot: string;
@@ -45,6 +46,32 @@ describe("resolvePreinstalledCommand", () => {
 			packageName: "@azure-devops/mcp",
 			version: "2.8.0",
 		});
+	});
+
+	it("gives the npm root lookup only base environment variables", async (t) => {
+		const npm = stubNpmRoot(t.mock, globalRoot);
+		const key = process.env.MCP_WRAPPER_API_KEY;
+		process.env.MCP_WRAPPER_API_KEY = "example-wrapper-key";
+		try {
+			const resolved = await resolvePreinstalledCommand([
+				"npx",
+				"-y",
+				"@azure-devops/mcp@2.8.0",
+			]);
+			assert.equal(resolved?.packageName, "@azure-devops/mcp");
+			assert.equal(npm.mock.callCount(), 1);
+			const env = npm.mock.calls[0]?.arguments[2].env;
+			assert.ok(env);
+			assert.equal(Object.hasOwn(env, "MCP_WRAPPER_API_KEY"), false);
+			assert.equal(env.PATH, process.env.PATH);
+		} finally {
+			npm.restore();
+			if (key === undefined) {
+				delete process.env.MCP_WRAPPER_API_KEY;
+			} else {
+				process.env.MCP_WRAPPER_API_KEY = key;
+			}
+		}
 	});
 
 	it("runs the installed binary for an unversioned spec, as npx itself would", async () => {

@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import {
+	getLatestSuccessfulReports,
 	getProjectReportSetupReason,
 	getTemplateInstance,
 } from "@repo/database";
@@ -10,6 +11,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { serializeLatestSuccess } from "../../lib/latest-successful-report";
 import {
 	canDeleteReportInstance,
 	canEditProjectReport,
@@ -55,6 +57,7 @@ export const getInstanceProcedure = tenantProtectedProcedure
 			canSaveToTemplate,
 			canSetOrganizationDefault,
 			canSetProjectDefault,
+			latestSuccesses,
 		] = await Promise.all([
 			canGenerateReportInstance(instance, context.user),
 			canEditReportInstance(instance, context.user),
@@ -75,6 +78,12 @@ export const getInstanceProcedure = tenantProtectedProcedure
 			instance.organizationId && instance.projectId
 				? canEditProjectReport(instance.projectId, context.user)
 				: false,
+			// What View opens: the newest successful run, not the newest run
+			getLatestSuccessfulReports({
+				instances: [instance],
+				userId: context.user.id,
+				organizationId,
+			}),
 		]);
 		// The organization's own templates' prompts are edited on the template,
 		// so its default holds only their parameter values.
@@ -131,6 +140,9 @@ export const getInstanceProcedure = tenantProtectedProcedure
 			createdAt: instance.createdAt.toISOString(),
 			updatedAt: instance.updatedAt.toISOString(),
 			executionCount: instance._count.executions,
+			latestSuccessfulReport: serializeLatestSuccess(
+				latestSuccesses.get(instance.id),
+			),
 			executions:
 				instance.executions?.map((exec: any) => ({
 					id: exec.id,

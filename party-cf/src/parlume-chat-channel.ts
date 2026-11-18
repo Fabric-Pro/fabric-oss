@@ -8,10 +8,12 @@ import {
 	observeParlumeChatMessage,
 	PARLUME_CHAT_CONFIRM_MS,
 	PARLUME_CHAT_UNAVAILABLE_LINE,
+	PARLUME_CHAT_UNKNOWN_POST_LINE,
 	type ParlumeChatMessage,
 	type ParlumeChatPost,
 	type ParlumeChatPostKind,
 	type ParlumeChatState,
+	parlumeChatPostRest,
 	parseParlumeChatMessage,
 	recordParlumeChatPost,
 } from "./parlume-chat";
@@ -595,10 +597,7 @@ export class ParlumeChatChannel {
 		);
 		const sent = await this.host.postToFabric(
 			"/api/internal/parlume/chat",
-			{
-				...bot,
-				message,
-			},
+			{ ...bot, message },
 		);
 		this.host.log(sent ? "info" : "warn", "chat.forwarded", {
 			...bot,
@@ -615,6 +614,25 @@ export class ParlumeChatChannel {
 		}
 		this.host.wakeAt(post.sentAt + PARLUME_CHAT_CONFIRM_MS);
 		return { sent: true, tag: post.tag, delivery: "queued" };
+	}
+
+	// A notice carries no tag of its own: nothing in it can be selected, and
+	// it must not push a selectable post out of the fifty Parlume keeps.
+	private async postNotice(bot: ParlumeChatBot, text: string): Promise<void> {
+		if ((await this.chatState()).unavailable) {
+			return;
+		}
+		const sent = await this.host.postToFabric(
+			"/api/internal/parlume/chat",
+			{
+				...bot,
+				message: text,
+			},
+		);
+		this.host.log(sent ? "info" : "warn", "chat.notice_forwarded", {
+			...bot,
+			sent: Boolean(sent),
+		});
 	}
 
 	// Speech and turns run on after the webhook is answered: Attendee waits on
@@ -643,12 +661,18 @@ export class ParlumeChatChannel {
 				const post = this.state
 					? findParlumeChatPost(this.state, command.tag)
 					: undefined;
+				// A tag Parlume no longer keeps (it holds the last fifty) or never
+				// posted: say so, rather than leave the selection unanswered.
 				if (!post) {
 					this.host.log("info", "chat.command_unknown_post", {
 						...bot,
 						command: command.kind,
 						tag: command.tag,
 					});
+					void this.postNotice(
+						bot,
+						`${command.tag}: ${PARLUME_CHAT_UNKNOWN_POST_LINE}`,
+					);
 					return;
 				}
 				void this.actOnPost(bot, command.kind, post, turn);
@@ -678,6 +702,18 @@ export class ParlumeChatChannel {
 			"speakerName" | "speakerId" | "chatMessageId"
 		>,
 	): Promise<void> {
+		// A shortened post's rest is posted from the stored text, not asked of
+		// the agent again; a longer rest is itself shortened with its own tag.
+		const rest = command === "more" ? parlumeChatPostRest(post) : "";
+		if (rest) {
+			this.host.log("info", "chat.more_rest", { ...bot, tag: post.tag });
+			await this.post(bot, {
+				text: `Rest of ${post.tag}:\n\n${rest}`,
+				turnId: post.turnId,
+				kind: "reply",
+			});
+			return;
+		}
 		const action = await this.postAction(bot, command, post);
 		if (action?.kind === "speak") {
 			await this.host.speak(action.text);

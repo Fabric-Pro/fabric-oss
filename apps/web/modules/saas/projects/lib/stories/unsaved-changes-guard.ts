@@ -38,6 +38,59 @@ export function isEditorDirty(
 }
 
 /**
+ * The last-saved snapshot to hold once an AI run starts.
+ *
+ * A clean editor with no save in flight holds what the server has, so its
+ * serialization at run start (`baseline`) is the saved text in the editor's
+ * own shape. The snapshot is otherwise seeded from the stored markdown, which
+ * the editor does not always reproduce byte for byte; comparing a Reject's
+ * restored text against that read an untouched story as dirty and saved it.
+ * A dirty editor or a save in flight keeps `lastSaved`: that save confirms
+ * what it sent.
+ */
+export function lastSavedAtRunStart({
+	baseline,
+	lastSaved,
+	hasUnsavedChanges,
+	saveInFlight,
+}: {
+	baseline: string;
+	lastSaved: string | null;
+	hasUnsavedChanges: boolean;
+	saveInFlight: boolean;
+}): string | null {
+	return hasUnsavedChanges || saveInFlight ? lastSaved : baseline;
+}
+
+/**
+ * Does the editor hold an AI draft that no review will resolve?
+ *
+ * A run streams its draft into the editor as diff marks, and its
+ * `confirm_changes` review accepts or rejects them. A run that fails or is
+ * stopped before that review leaves the marks with no Accept or Reject, and
+ * the next save keeps the AI's partial insertions, because saving strips the
+ * marks by keeping added text. Anything still deciding those marks (a run, a
+ * pending or resolving review, a context-update review) owns them.
+ */
+export function hasUnreviewedDraft(state: {
+	hasDiffMarks: boolean;
+	isAiLoading: boolean;
+	isAwaitingConfirmation: boolean;
+	hasPendingReview: boolean;
+	isResolvingReview: boolean;
+	isContextUpdateActive: boolean;
+}): boolean {
+	return (
+		state.hasDiffMarks &&
+		!state.isAiLoading &&
+		!state.isAwaitingConfirmation &&
+		!state.hasPendingReview &&
+		!state.isResolvingReview &&
+		!state.isContextUpdateActive
+	);
+}
+
+/**
  * Should we raise the browser's "leave site?" prompt?
  *
  * The Feature/Bug description editor auto-saves on a 10 second debounce

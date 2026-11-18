@@ -45,6 +45,7 @@ vi.mock("@repo/database", () => ({
 	canCreateProjectStory: mocks.canCreateProjectStory,
 	canUpdateProjectStory: mocks.canUpdateProjectStory,
 	getStoryById: mocks.getStoryById,
+	getVisibleStoryById: mocks.getStoryById,
 	getUserById: mocks.getUserById,
 	createStory: mocks.createStory,
 	updateStory: mocks.updateStory,

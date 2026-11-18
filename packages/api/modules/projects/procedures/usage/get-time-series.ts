@@ -1,6 +1,7 @@
 import { getProjectUsageTimeSeries } from "@repo/database";
 import { z } from "zod";
 import {
+	hiddenUsageFeatureKey,
 	projectScopeSchema,
 	projectUsageProcedure,
 	USAGE_ROUTE_TAGS,
@@ -22,10 +23,14 @@ export const getUsageTimeSeriesProcedure = projectUsageProcedure
 			bucket: z.enum(["day", "week"]).default("day"),
 		}),
 	)
-	.handler(async ({ input }) => {
+	.handler(async ({ input, context }) => {
 		return getProjectUsageTimeSeries({
 			projectId: input.projectId,
 			range: input.range,
 			bucket: input.bucket,
+			hiddenFeatureKey: await hiddenUsageFeatureKey(
+				input.projectId,
+				context.user.id,
+			),
 		});
 	});

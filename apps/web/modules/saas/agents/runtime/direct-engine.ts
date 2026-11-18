@@ -40,6 +40,11 @@
  * Direct approval resume is unavailable until a durable action receipt is
  * implemented. Resume requests return DIRECT_APPROVAL_UNSUPPORTED; read-only
  * chat, observation, reconnect and cancellation remain available.
+ *
+ * A new turn starts only while `COPILOTKIT_DIRECT_CHAT` is on for the caller's
+ * organization (`FEATURE_DISABLED` otherwise). Connect, stop and isRunning do
+ * not read the flag, so a turn already running here can still be followed,
+ * saved and stopped after the flag is turned off.
  */
 import {
 	contentToText,
@@ -51,6 +56,7 @@ import {
 import {
 	abandonConversationTurnStart,
 	type ConversationTurn,
+	isFeatureEnabled,
 	requestConversationTurnCancel,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
@@ -232,6 +238,19 @@ export class DirectEngine implements RuntimeEngine {
 			last?.role === "user" ? contentToText(last.content).trim() : "";
 		if (!question) {
 			refuse(stream, "NO_MESSAGE", "A run needs a new user message.");
+			return;
+		}
+		if (
+			!(await isFeatureEnabled(
+				"COPILOTKIT_DIRECT_CHAT",
+				this.caller.organizationId,
+			))
+		) {
+			refuse(
+				stream,
+				"FEATURE_DISABLED",
+				"Direct chat is not enabled on the agent runtime for this organization.",
+			);
 			return;
 		}
 		const writable = await ensureThread(threadId, this.caller, {

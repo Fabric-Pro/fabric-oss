@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
 	handlers: {} as Record<string, (args: any) => Promise<any>>,
 	rows: new Map<string, any>(),
+	applications: new Map<string, Array<{ changeIndex: number }>>(),
 	reviews: new Map<string, any>(),
 	sessions: new Map<string, any>(),
 	createSession: vi.fn(),
@@ -20,7 +21,11 @@ const h = vi.hoisted(() => ({
 // real query helpers against the state left by the procedure's writes.
 vi.mock("../../../../../../database/prisma/client", () => {
 	const client = {
-		pendingBacklogProposalApplication: { findMany: async () => [] },
+		pendingBacklogProposalApplication: {
+			findMany: async ({ where }: any) =>
+				h.applications.get(where.proposalId) ?? [],
+		},
+		pendingBacklogProposalDuplicateResolution: { findMany: async () => [] },
 		pendingBacklogProposal: {
 			findUnique: async ({ where }: any) => h.rows.get(where.id) ?? null,
 			update: async ({ where, data }: any) =>
@@ -73,8 +78,12 @@ vi.mock("@repo/database", async () => {
 		h.rows.set(row.id, row);
 		return row;
 	};
+	const itemState = await import(
+		"../../../../../../database/prisma/queries/projects/pending-proposal-item-state"
+	);
 	return {
 		...queries,
+		...itemState,
 		recordProposalDuplicateResolution: vi.fn(),
 		db: {
 			$transaction: async (run: any) =>
@@ -150,7 +159,6 @@ await import("../retry-failed-proposal");
 await import("../retry-all-failed-proposals");
 await import("../cancel-pending-proposal");
 const {
-	finalizeClaimedProposal,
 	claimPendingProposalForApply,
 	markPendingProposalRejected,
 	markPendingProposalBacklog,
@@ -159,6 +167,22 @@ const {
 } = await import(
 	"../../../../../../database/prisma/queries/projects/pending-backlog-proposals"
 );
+const { finalizeProposalApply } = await import(
+	"../../../../../../database/prisma/queries/projects/pending-proposal-item-state"
+);
+/** The apply workflow's finalize of its APPLYING claim. */
+const finalizeApplyingClaim = ({
+	applyWorkflowId,
+	...params
+}: {
+	proposalId: string;
+	applyWorkflowId: string;
+	outcome: "applied" | "failed";
+}) =>
+	finalizeProposalApply({
+		...params,
+		claim: { status: "APPLYING", applyWorkflowId },
+	});
 
 const change = {
 	type: "feature",
@@ -205,6 +229,7 @@ function seed(status = "FAILED", extra = {}) {
 		source: "AI_UPDATE_SIDEBAR",
 		status,
 		proposal: { changes: [change] },
+		changeCount: 1,
 		sourceMetadata: {},
 		appliedChangeIndexes: [],
 		applyWorkflowId: "example-old-workflow",
@@ -220,6 +245,7 @@ function seed(status = "FAILED", extra = {}) {
 beforeEach(() => {
 	vi.resetAllMocks();
 	h.rows.clear();
+	h.applications.clear();
 	h.reviews.clear();
 	h.sessions.clear();
 	h.createSession.mockImplementation(async (data: any) => {
@@ -287,8 +313,10 @@ describe("apply row ownership", () => {
 						applyWorkflowId: options.workflowId,
 						applyStartedAt: null,
 					});
+					// The workflow recorded its only change before finalizing.
+					h.applications.set(id, [{ changeIndex: 0 }]);
 					expect(
-						await finalizeClaimedProposal({
+						await finalizeApplyingClaim({
 							proposalId: id,
 							applyWorkflowId: options.workflowId,
 							outcome: "applied",
@@ -349,8 +377,9 @@ describe("apply row ownership", () => {
 						reviewedAt: expect.any(Date),
 						reviewedBy: "example-user",
 					});
+					h.applications.set(row.id, [{ changeIndex: 0 }]);
 					expect(
-						await finalizeClaimedProposal({
+						await finalizeApplyingClaim({
 							proposalId: row.id,
 							applyWorkflowId: options.workflowId,
 							outcome: "applied",
@@ -412,7 +441,8 @@ describe("apply row ownership", () => {
 			const row = seed();
 			h.start.mockImplementationOnce(
 				async (_type: string, options: any) => {
-					await finalizeClaimedProposal({
+					h.applications.set(row.id, [{ changeIndex: 0 }]);
+					await finalizeApplyingClaim({
 						proposalId: row.id,
 						applyWorkflowId: options.workflowId,
 						outcome: "applied",
@@ -435,7 +465,7 @@ describe("apply row ownership", () => {
 		});
 		expect(h.terminate).toHaveBeenCalledWith("cancelled_by_user");
 		expect(
-			await finalizeClaimedProposal({
+			await finalizeApplyingClaim({
 				proposalId: row.id,
 				applyWorkflowId: row.applyWorkflowId,
 				outcome: "applied",
@@ -529,7 +559,9 @@ describe("watchdog claim clock", () => {
 						errorClass: "TimedOut",
 						errorMessage: "Example timeout",
 					});
-					await finalizeClaimedProposal({
+					// The workflow records its one change before finalizing.
+					row.appliedChangeIndexes = [0];
+					await finalizeApplyingClaim({
 						proposalId: row.id,
 						applyWorkflowId: options.workflowId,
 						outcome: "applied",

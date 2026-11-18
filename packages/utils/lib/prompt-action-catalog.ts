@@ -55,7 +55,7 @@ import { REPORT_PARAMETER_DEFAULTS_PROMPT_AGENT_KEY } from "./report-parameter-d
 import { REPORT_SAMPLE_PROMPT_AGENT_KEY } from "./report-sample-prompt";
 import { TIME_SUGGESTION_PROMPT_AGENT_KEY } from "./time-suggestion-prompt";
 
-export type PromptStoryKind = "FEATURE" | "BUG" | null;
+export type PromptStoryKind = "FEATURE" | "BUG" | "INITIATIVE" | null;
 
 /**
  * The client-only Main document of a coordinated Proposal (Fizzy #2801).
@@ -380,6 +380,12 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		actions: perKind("CLEAN_SPEC", "BUG"),
 	},
 	{
+		key: "initiative_clean_spec_generator",
+		label: "Initiative Full Spec Generator",
+		featureType: "WORK_ITEMS",
+		actions: perKind("CLEAN_SPEC", "INITIATIVE"),
+	},
+	{
 		// Decides how many clarifying questions to ask; one prompt per depth.
 		key: "clarifying_questions",
 		label: "Clarifying Questions",
@@ -410,7 +416,7 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		key: "maturation_summary",
 		label: "Maturation Summary",
 		featureType: "WORK_ITEMS",
-		actions: perKind("GENERAL", "FEATURE", "BUG"),
+		actions: perKind("GENERAL", "FEATURE", "BUG", "INITIATIVE"),
 	},
 	{
 		// The two halves of a duplicate merge: what the merged item says, and
@@ -976,6 +982,22 @@ export function offeredDocumentTypes(
 	);
 }
 
+/** Display label for a story kind, or null when the binding isn't kind-scoped. */
+export function storyKindLabel(
+	kind: PromptStoryKind | undefined,
+): "Feature" | "Bug" | "Initiative" | null {
+	if (kind === "FEATURE") {
+		return "Feature";
+	}
+	if (kind === "BUG") {
+		return "Bug";
+	}
+	if (kind === "INITIATIVE") {
+		return "Initiative";
+	}
+	return null;
+}
+
 /**
  * Every action a prompt can be bound to, superseded ones included. Surfaces
  * that offer actions to a person use {@link listOfferedPromptActions}; this
@@ -988,10 +1010,8 @@ export function listPromptActions(): PromptAction[] {
 		const generalOnly = isGeneralOnlyAgent(agent);
 
 		for (const spec of agent.actions) {
-			const kindSuffix =
-				spec.storyKind === null
-					? ""
-					: ` (${spec.storyKind === "FEATURE" ? "Feature" : "Bug"})`;
+			const label = storyKindLabel(spec.storyKind);
+			const kindSuffix = label ? ` (${label})` : "";
 
 			actions.push({
 				id: promptActionId(

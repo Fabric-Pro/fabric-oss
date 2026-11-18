@@ -386,8 +386,9 @@ describe("mintParlumeActingGrantForTurn", () => {
 			]),
 		);
 		expect(PARLUME_GRANT_SCOPES).toEqual(
-			expect.arrayContaining(["orgs:read", "chats:read", "mcp:read"]),
+			expect.arrayContaining(["orgs:read", "mcp:read"]),
 		);
+		expect(PARLUME_GRANT_SCOPES).not.toContain("chats:read");
 	});
 
 	it("mints a read-only meeting's grant without the portal writes", () => {

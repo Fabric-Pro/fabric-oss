@@ -11,11 +11,16 @@ vi.mock("@repo/database/prisma/client", () => ({
 			findUnique: async () => h.row,
 			updateMany: (...args: any[]) => h.updateMany(...args),
 		},
+		pendingBacklogProposalApplication: { findMany: async () => [] },
+		pendingBacklogProposalDuplicateResolution: { findMany: async () => [] },
 	},
 }));
 vi.mock("@repo/database", async () => ({
 	...(await import(
 		"../../../../../database/prisma/queries/projects/pending-backlog-proposals"
+	)),
+	...(await import(
+		"../../../../../database/prisma/queries/projects/pending-proposal-item-state"
 	)),
 	db: {
 		pendingBacklogProposal: {
@@ -42,6 +47,10 @@ beforeEach(() => {
 		status: "PENDING",
 		applyWorkflowId: "example-workflow",
 		applyStartedAt: new Date(),
+		// Its only change is applied, so a successful finalize closes it.
+		changeCount: 1,
+		appliedChangeIndexes: [0],
+		sourceMetadata: null,
 	};
 	h.updateMany.mockImplementation(async ({ where, data }: any) => {
 		if (
@@ -123,5 +132,25 @@ describe("claimed finalization during rollout", () => {
 			legacyFallback: false,
 		});
 		expect(h.row.status).toBe("APPLIED");
+	});
+	it("records the classified failure of an APPLYING claim in one write", async () => {
+		h.row.status = "APPLYING";
+		expect(
+			await finalizeClaimedProposalActivity({
+				...input,
+				outcome: "failed",
+				errorClass: "ExampleFailure",
+				errorMessage: "Example error",
+				rawApplyError: "Example details",
+			}),
+		).toEqual({ finalized: true, legacyFallback: false });
+		expect(h.updateMany).toHaveBeenCalledTimes(1);
+		expect(h.row).toMatchObject({
+			status: "FAILED",
+			errorClass: "ExampleFailure",
+			errorMessage: "Example error",
+			applyError: "Example details",
+			failedAt: expect.any(Date),
+		});
 	});
 });

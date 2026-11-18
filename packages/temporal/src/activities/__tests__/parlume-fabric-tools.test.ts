@@ -128,6 +128,7 @@ vi.mock("@repo/database", async (original) => {
 import { classifyReadOnlyToolAccess } from "@repo/utils/read-only-mode";
 import { FABRIC_CHAT_TOOL_DEFINITIONS } from "../../lib/fabric-gateway-tools";
 import {
+	FABRIC_MEETING_WITHHELD_TOOL_NAMES,
 	FABRIC_PORTAL_EXCLUDED_TOOL_NAMES,
 	FABRIC_PORTAL_TOOL_NAMES,
 } from "../../lib/fabric-portal-tools";
@@ -171,6 +172,10 @@ const PORTAL_READS: readonly string[] = [
 	"fabric_instruction_checks",
 	"fabric_query_workspace",
 ];
+/** What a meeting turn is offered: never the inviter's own workspaces. */
+const offeredInMeeting = (name: string) =>
+	!FABRIC_MEETING_WITHHELD_TOOL_NAMES.includes(name);
+const MEETING_PORTAL_READS = PORTAL_READS.filter(offeredInMeeting);
 const MEETING_EXCLUDED_WRITES = FABRIC_CHAT_TOOL_DEFINITIONS.filter(
 	(tool) =>
 		toolAccess(tool) === "WRITE" &&
@@ -399,7 +404,7 @@ describe("Fabric portal tools in a read-only meeting", () => {
 	const readOnly = () =>
 		createParlumeToolRuntime({ ...context, toolsReadOnly: true });
 
-	it.each(PORTAL_READS)("runs the read %s", async (name) => {
+	it.each(MEETING_PORTAL_READS)("runs the read %s", async (name) => {
 		const { tools } = await turnTools(readOnly());
 
 		await tools[name].execute({});
@@ -409,7 +414,9 @@ describe("Fabric portal tools in a read-only meeting", () => {
 	});
 
 	it.each(
-		FABRIC_PORTAL_TOOL_NAMES.filter((name) => !PORTAL_READS.includes(name)),
+		FABRIC_PORTAL_TOOL_NAMES.filter(
+			(name) => !PORTAL_READS.includes(name) && offeredInMeeting(name),
+		),
 	)(
 		"refuses the portal change %s without reaching the gateway",
 		async (name) => {
@@ -442,11 +449,19 @@ describe("Fabric portal tools in an actions meeting", () => {
 		const { tools } = await turnTools();
 
 		await tools.fabric_get_feature.execute({ featureId: "feature-1" });
-		await tools.fabric_query_workspace.execute({});
+		await tools.fabric_search_project_knowledge.execute({});
 
 		expect(gatewayCalls("fabric_get_feature")).toHaveLength(1);
-		expect(gatewayCalls("fabric_query_workspace")).toHaveLength(1);
+		expect(gatewayCalls("fabric_search_project_knowledge")).toHaveLength(1);
 		expect(mocks.state.action).toBeUndefined();
+	});
+
+	it("never offers the inviter's own workspaces", async () => {
+		const { tools } = await turnTools();
+
+		for (const name of FABRIC_MEETING_WITHHELD_TOOL_NAMES) {
+			expect(tools).not.toHaveProperty(name);
+		}
 	});
 
 	it("runs a portal change at once, once, and records who asked", async () => {

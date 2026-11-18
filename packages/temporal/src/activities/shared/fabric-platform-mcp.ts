@@ -18,6 +18,7 @@ import { directApprovalUnavailableResult } from "../../lib/direct-approval-polic
 import { isFabricChatTool } from "../../lib/fabric-gateway-tools";
 import type { FabricServiceActor } from "../../lib/fabric-mcp-service-headers";
 import {
+	FABRIC_MEETING_WITHHELD_TOOL_NAMES,
 	FABRIC_PORTAL_EXCLUDED_TOOL_NAMES,
 	isFabricPortalTool,
 } from "../../lib/fabric-portal-tools";
@@ -124,7 +125,10 @@ export async function loadFabricPlatformTools(
 	const offered = listed.filter(
 		(listing) =>
 			(!options.portal ||
-				!FABRIC_PORTAL_EXCLUDED_TOOL_NAMES.includes(listing.name)) &&
+				(!FABRIC_PORTAL_EXCLUDED_TOOL_NAMES.includes(listing.name) &&
+					!FABRIC_MEETING_WITHHELD_TOOL_NAMES.includes(
+						listing.name,
+					))) &&
 			(isFabricChatTool(listing.name) ||
 				(options.portal?.offer === true &&
 					isFabricPortalTool(listing.name))),

@@ -30,7 +30,7 @@ const SUMMARY_PROMPT_AGENT = "maturation_summary";
 const SUMMARY_PROMPT_DOCUMENT_TYPE = "GENERAL";
 
 /** Work-item kind the summary prompt is resolved for (exact-match binding, #R2). */
-export type SummaryStoryKind = "FEATURE" | "BUG";
+export type SummaryStoryKind = "FEATURE" | "BUG" | "INITIATIVE";
 
 const SummaryDigestSchema = z.object({
 	summary: z
@@ -66,7 +66,7 @@ export async function resolveSummaryInstructions({
 	storyKind = "FEATURE",
 }: {
 	tenantFilter: MaturationTenantFilter;
-	/** Resolves the kind-scoped Summary prompt (FEATURE vs BUG). Defaults to FEATURE. */
+	/** Resolves the kind-scoped Summary prompt. Defaults to FEATURE. */
 	storyKind?: SummaryStoryKind;
 }): Promise<string> {
 	const bound = await getBoundPromptForAgent({
@@ -169,7 +169,7 @@ export async function generateMaturationSummary({
 		instructions ??
 		(await resolveSummaryInstructions({
 			tenantFilter,
-			storyKind: feature.kind === "BUG" ? "BUG" : "FEATURE",
+			storyKind: feature.kind,
 		}));
 
 	const { model } = await getAIModelWithMetadata(

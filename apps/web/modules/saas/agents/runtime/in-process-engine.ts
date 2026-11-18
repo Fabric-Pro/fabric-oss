@@ -202,7 +202,18 @@ export abstract class InProcessEngine<Props, Turn> implements RuntimeEngine {
 			})) {
 				stream.emit(event);
 			}
-			stream.emit({ type: EventType.RUN_FINISHED, threadId, runId });
+			// A stopped turn ends `cancelled`, as the Temporal engines end
+			// theirs, so a stop never reads as a completed answer.
+			if (controller.signal.aborted) {
+				stream.emit({
+					type: EventType.RUN_FINISHED,
+					threadId,
+					runId,
+					outcome: { type: "cancelled" },
+				});
+			} else {
+				stream.emit({ type: EventType.RUN_FINISHED, threadId, runId });
+			}
 		} catch (error) {
 			await this.fail(stream, error);
 		} finally {

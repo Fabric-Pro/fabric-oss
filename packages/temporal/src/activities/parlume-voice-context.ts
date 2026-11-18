@@ -1,5 +1,3 @@
-import { headAtLineBreak } from "./shared/text-head";
-
 /**
  * How much of the meeting a spoken reply is given to read. Every input token is
  * read before the first word, and an answer is one or two sentences, so each
@@ -31,8 +29,6 @@ export const MAX_LIVE_TRANSCRIPT_SEGMENTS = 200;
 export const MAX_PARLUME_EARLIER_REPLY_CHARS = 600;
 /** Two workspace passages instead of the workspace's own default of five. */
 export const PARLUME_WORKSPACE_RAG_CHUNKS = 2;
-/** The inviter's recalled memories, cut at a line break. */
-export const MAX_PARLUME_MEMORY_CHARS = 1_500;
 
 /** Enough of the meeting chat for "what did they write in the chat?". */
 export const MAX_PARLUME_CHAT_MESSAGES = 20;
@@ -92,9 +88,4 @@ export function formatParlumeHistory(
 			{ role: "user" as const, content: requestText },
 			{ role: "assistant" as const, content: responseText },
 		]);
-}
-
-/** Recalled memories within the voice budget, cut at the last line break that fits. */
-export function trimParlumeMemory(context: string): string {
-	return headAtLineBreak(context, MAX_PARLUME_MEMORY_CHARS);
 }

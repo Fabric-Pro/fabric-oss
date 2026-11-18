@@ -1,4 +1,5 @@
 import { db } from "../client";
+import type { StoryKind } from "../generated/client";
 import { bindPromptVersionToTargets } from "./prompts";
 
 /**
@@ -11,7 +12,7 @@ import { bindPromptVersionToTargets } from "./prompts";
 export type NominationTarget = {
 	targetKey: string;
 	documentType: string;
-	storyKind: "FEATURE" | "BUG" | null;
+	storyKind: StoryKind | null;
 };
 
 /** Same identity a PromptBinding row carries, so two targets compare cleanly. */

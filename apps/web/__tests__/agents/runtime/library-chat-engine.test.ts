@@ -61,6 +61,7 @@ const m = vi.hoisted(() => ({
 	searchWorkspaceChunks: vi.fn(),
 	isFeatureEnabled: vi.fn(),
 	hasWorkspaceAccess: vi.fn(),
+	getEffectiveRagSettings: vi.fn(),
 }));
 
 vi.mock("@repo/ai", () => ({
@@ -79,6 +80,8 @@ vi.mock("@repo/ai", () => ({
 vi.mock("@repo/database", () => ({
 	isFeatureEnabled: (...args: unknown[]) => m.isFeatureEnabled(...args),
 	hasWorkspaceAccess: (...args: unknown[]) => m.hasWorkspaceAccess(...args),
+	getEffectiveRagSettings: (...args: unknown[]) =>
+		m.getEffectiveRagSettings(...args),
 	db: {
 		workspace: {
 			findUnique: async () =>
@@ -288,6 +291,10 @@ beforeEach(() => {
 		trackUsage: m.trackEmbedding,
 	});
 	m.searchWorkspaceChunks.mockResolvedValue(SEARCH_HITS);
+	m.getEffectiveRagSettings.mockResolvedValue({
+		topK: 8,
+		similarityThreshold: 0.2,
+	});
 	m.streamText.mockImplementation(
 		({ onError }: { onError: (event: { error: unknown }) => void }) => ({
 			textStream: (async function* () {
@@ -460,6 +467,27 @@ describe("the library-chat engine", () => {
 				},
 				taskType: "CHAT",
 				usage: USAGE,
+			}),
+		);
+	});
+
+	it("retrieves with the workspace's own search settings, as the route does", async () => {
+		m.getEffectiveRagSettings.mockResolvedValue({
+			topK: 3,
+			similarityThreshold: 0.55,
+		});
+
+		const events = await run();
+
+		expect(events.at(-1)).toMatchObject({ type: EventType.RUN_FINISHED });
+		expect(m.getEffectiveRagSettings).toHaveBeenCalledWith(
+			"workspace-example-1",
+		);
+		expect(m.searchWorkspaceChunks).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workspaceId: "workspace-example-1",
+				topK: 3,
+				minSimilarity: 0.55,
 			}),
 		);
 	});

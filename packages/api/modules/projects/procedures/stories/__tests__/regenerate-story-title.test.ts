@@ -322,10 +322,36 @@ describe("regenerateStoryTitleProcedure", () => {
 		);
 	});
 
-	// (The former "USER_STORY kind is treated as FEATURE" case was removed:
-	// User Story was retired as a work-item kind, so the only kinds the helper
-	// can receive are FEATURE and BUG — both covered above. The non-BUG →
-	// "FEATURE" mapping is exercised by the FEATURE happy path.)
+	it("story with kind=INITIATIVE → helper called with kindForTitle=INITIATIVE", async () => {
+		mocks.userStoryFindFirst.mockResolvedValue({
+			id: "story-initiative",
+			description: "An initiative to modernize our platform.",
+			kind: "INITIATIVE",
+			reporterSource: "WEB",
+		});
+		mocks.generateStoryTitleFromDescription.mockResolvedValue({
+			title: "Modernize platform",
+			source: "ai",
+		});
+
+		await handlers.regenerate({
+			input: {
+				projectId: "project-1",
+				storyId: "story-initiative",
+				organizationId: null,
+			},
+			context: ctx,
+		});
+
+		expect(mocks.generateStoryTitleFromDescription).toHaveBeenCalledWith(
+			expect.any(String),
+			"INITIATIVE",
+			expect.any(Object),
+		);
+	});
+
+	// (User Story was retired as a work-item kind; the kinds the helper
+	// can receive are FEATURE, BUG, and INITIATIVE.)
 
 	it("story with reporterSource=SLACK → helper called with creationSource=Slack", async () => {
 		mocks.userStoryFindFirst.mockResolvedValue({

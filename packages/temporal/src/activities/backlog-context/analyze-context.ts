@@ -38,6 +38,11 @@ import {
 	tenantWhere,
 	updateStory,
 } from "@repo/database";
+// Subpath (pure, no client) so it stays unmocked where @repo/database is mocked.
+import {
+	readStoredChangeEntry,
+	targetChangedSinceProposal,
+} from "@repo/database/prisma/queries/projects/proposal-changes";
 import { logger } from "@repo/logs";
 import {
 	ApplicationFailure,
@@ -61,6 +66,10 @@ import { withHeartbeatKeepalive } from "../../lib/with-heartbeat-keepalive";
 import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
 import { describeSyncErrorForUser } from "../pm-integration/pm-sync-user-error";
 import { CHARS_PER_TOKEN, MAX_TOKEN_BUDGET } from "./analysis-budget";
+import {
+	appliedUpdateFields,
+	noteAppliedProposalUpdate,
+} from "./proposal-update-decision-note";
 import { routeActionItemsToExistingTickets } from "./route-action-items";
 import { addRoutingNoteToSummary } from "./routing-summary";
 import {
@@ -3492,14 +3501,19 @@ async function applyBacklogChangesWithMergeSignal(
 	// row is stamped AI_RECOMMENDED with its batch id. Changes are sanitised in
 	// place (never dropped) so `proposalIndexFor` keeps its positions.
 	const policyProposalId = pendingProposalId ?? input.proposalId;
-	const isRecommendation = policyProposalId
-		? (
-				await db.pendingBacklogProposal.findUnique({
-					where: { id: policyProposalId },
-					select: { source: true },
-				})
-			)?.source === "ROADMAP_RECOMMENDATION"
-		: false;
+	// Also what an applied update's Decision Log note says prompted it.
+	const policyProposal = policyProposalId
+		? await db.pendingBacklogProposal.findUnique({
+				where: { id: policyProposalId },
+				select: { source: true, summary: true },
+			})
+		: null;
+	const isRecommendation =
+		policyProposal?.source === "ROADMAP_RECOMMENDATION";
+	// Only an inbox-reviewed proposal earns a Decision Log note: every AI
+	// Update sidebar apply also writes an AI_UPDATE_SIDEBAR row.
+	const notesAppliedUpdates =
+		policyProposal != null && policyProposal.source !== "AI_UPDATE_SIDEBAR";
 	if (isRecommendation) {
 		for (const change of approvedChanges) {
 			if (change.action !== "create") {
@@ -4322,6 +4336,18 @@ async function applyBacklogChangesWithMergeSignal(
 					},
 				});
 
+				// A Fabric id that loads no row here (deleted, stale or from
+				// another project) fails this change with a specific reason
+				// instead of reaching updateStory's generic "Story not found".
+				// The workflow prefixes each error with the change's title.
+				if (!existingRow && isValidFabricId) {
+					errors.push({
+						change: change as ChangeProposal["changes"][number],
+						error: "target ticket no longer exists in this project",
+					});
+					continue;
+				}
+
 				// Terminal-state gate (REQ-1/2/3): a resolved update target that is
 				// closed, declined, or auto-hidden is an immutable, terminal record.
 				// Redirect the proposed change into a NEW ticket instead of mutating
@@ -4495,13 +4521,30 @@ async function applyBacklogChangesWithMergeSignal(
 					? change.acceptanceCriteria?.to
 					: undefined;
 
+				// An analysis-time merge diffs against the body read then. When
+				// the ticket changed since, writing it would drop that edit, so
+				// it is merged into the current body like an unmerged update.
+				const staleAnalysisMerge =
+					change.structurePreserved === true &&
+					!!existingRow &&
+					targetChangedSinceProposal(
+						readStoredChangeEntry(change, originalIndex),
+						existingRow,
+					);
+				if (staleAnalysisMerge) {
+					logger.info(
+						"[Backlog Apply] Target changed since analysis; merging into the current body",
+						{ itemId, projectId },
+					);
+				}
+
 				// Merge updates that bypassed analysis or were deferred there.
 				// Completed analysis merges skip this call. A genuine fallback keeps
 				// the existing body; cancellation or deadline throws before this
 				// change writes or records completion, leaving it retryable.
 				if (
 					(proposedDescription || proposedAcceptanceCriteria) &&
-					!change.structurePreserved &&
+					(!change.structurePreserved || staleAnalysisMerge) &&
 					existingRow
 				) {
 					heartbeat(`apply structure-preserving merge: ${itemId}`);
@@ -4661,6 +4704,24 @@ async function applyBacklogChangesWithMergeSignal(
 								: {}),
 						},
 					});
+					if (policyProposalId && notesAppliedUpdates) {
+						await noteAppliedProposalUpdate({
+							proposalId: policyProposalId,
+							changeIndex: proposalIndexFor(originalIndex),
+							storyId: itemId,
+							projectId,
+							organizationId,
+							userId,
+							approvedByName,
+							applied: appliedUpdateFields(
+								change,
+								updateData,
+								existingRow,
+							),
+							reasoning: change.reasoning,
+							proposal: policyProposal,
+						});
+					}
 				}
 				updatedItems.push({
 					type: change.type,

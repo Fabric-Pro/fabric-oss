@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/client";
 import { db } from "@repo/database/prisma/client";
 import { listDecisionLogThreads } from "@repo/database/prisma/queries/feature-maturation";
 import { countArchitectureDecisionsByStatus } from "@repo/database/prisma/queries/projects/architecture-decisions";
+import { withVisibleStories } from "@repo/database/prisma/queries/projects/initiative-visibility";
 import { hasProjectAccess } from "@repo/database/prisma/queries/projects/projects";
 import { getLatestProjectScan } from "@repo/database/prisma/queries/projects/scan";
 import { rankStoryIdsBySemanticActivity } from "@repo/database/prisma/queries/projects/story-activity-ranking";
@@ -65,7 +66,7 @@ async function assertProjectAccess({
 
 async function loadRecentStories(projectId: string) {
 	const orderedIds = await rankStoryIdsBySemanticActivity(
-		{ projectId },
+		withVisibleStories({ projectId }),
 		STORY_LIMIT,
 	);
 	if (orderedIds.length === 0) {

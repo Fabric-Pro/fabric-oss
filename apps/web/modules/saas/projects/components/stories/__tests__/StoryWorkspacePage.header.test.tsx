@@ -92,7 +92,7 @@ vi.mock("../../../lib/stories/types", async (importActual) => {
 		transformStory: (s: { id: string }) => ({
 			id: s.id,
 			title: "Header test feature",
-			kind: "STORY",
+			kind: "FEATURE",
 			priority: "MEDIUM",
 			identifier: "F-1",
 			createdById: "u1",

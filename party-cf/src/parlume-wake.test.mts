@@ -98,6 +98,25 @@ test("accepts the spellings live transcription produces for the names", () => {
 	}
 });
 
+test("a greeting wakes Parlume when overlapping speech clips the name", () => {
+	// Verbatim from a staging meeting on 2026-11-18: a second speaker asked
+	// over someone else, and Flux ran both into one turn.
+	const wake = findParlumeWake(
+		"I think we should also look at the onboarding page before Friday. Hey, Fabry. Check the launch checklist together.... does this project have?... depends on it.",
+	);
+	assert.equal(wake?.offset, 66);
+	assert.equal(
+		parseParlumeWake("Hey Fabri, how many documents are there?"),
+		"how many documents are there?",
+	);
+	for (const text of [
+		"Fabry, how many documents are there?",
+		"We met Fabry today.",
+	]) {
+		assert.equal(parseParlumeWake(text), null, text);
+	}
+});
+
 test("does not wake for partial words or ordinary mentions", () => {
 	for (const text of [
 		"Hey Fabrication",

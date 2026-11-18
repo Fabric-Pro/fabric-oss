@@ -14,9 +14,8 @@ import {
 	listCasesForAgenticRun,
 	listTestCaseIdsForSelection,
 } from "@repo/database";
-import { hasPermission, Permissions } from "@repo/permissions";
 import type { z } from "zod";
-import { resolveEffectiveProjectPermissions } from "../../../lib/effective-project-permissions";
+import { canEditProjectAdminSettings } from "../../../lib/project-admin-settings";
 import {
 	estimateRunCost,
 	MAX_CASES_PER_RUN,
@@ -110,16 +109,5 @@ export async function isScriptedRunPermitted(input: {
 	projectId: string;
 	userId: string;
 }): Promise<boolean> {
-	const access = await resolveEffectiveProjectPermissions(
-		input.projectId,
-		input.userId,
-	);
-	return (
-		access?.source === "owner" ||
-		(access != null &&
-			hasPermission(
-				access.permissions,
-				Permissions.PROJECT_SETTINGS_EDIT,
-			))
-	);
+	return canEditProjectAdminSettings(input.projectId, input.userId);
 }

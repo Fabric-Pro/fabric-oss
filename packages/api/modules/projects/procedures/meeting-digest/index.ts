@@ -20,6 +20,7 @@ export {
 } from "./manage-action-item-links";
 export { proposeActionItemProcedure } from "./propose-action-item";
 export { setActionItemCompletedProcedure } from "./set-action-item-completed";
+export { setConfidentialProcedure } from "./set-confidential";
 export { setIncludedProcedure } from "./set-included";
 export { setParlumeAutoJoinProcedure } from "./set-parlume-auto-join";
 export { updateMeetingDetailsProcedure } from "./update-meeting-details";

@@ -24,6 +24,9 @@ import { db, tenantWhere } from "@repo/database";
  *
  * UserStory and ProjectMeetingActionItem carry no userId/organizationId columns
  * of their own, so tenancy is applied under the `project` relation.
+ *
+ * A confidential series has no history here: its transcripts stay out of
+ * every later agenda, recap and suggestion.
  */
 export function findPriorSeriesTranscripts(input: {
 	projectId: string;
@@ -40,6 +43,7 @@ export function findPriorSeriesTranscripts(input: {
 		where: {
 			projectId: input.projectId,
 			linkedMeetingId: input.linkedMeetingId,
+			linkedMeeting: { confidential: false },
 			project: tenantWhere(input.userId, input.organizationId),
 			meetingDate: { gte: input.since, lt: input.before },
 		},

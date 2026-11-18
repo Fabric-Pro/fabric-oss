@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
 	listTimeAccessRows: vi.fn(),
 	listTimeEntriesForAuthor: vi.fn(),
 	listTimeEntriesForAuthorStory: vi.fn(),
+	listRecentTimeEntryNotes: vi.fn(),
 	findTimeEntryForAuthor: vi.fn(),
 	listAuthorTimeEntriesOnWorkDate: vi.fn(),
 	findStoryForTimeEntry: vi.fn(),
@@ -43,6 +44,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 		listTimeAccessRows: mocks.listTimeAccessRows,
 		listTimeEntriesForAuthor: mocks.listTimeEntriesForAuthor,
 		listTimeEntriesForAuthorStory: mocks.listTimeEntriesForAuthorStory,
+		listRecentTimeEntryNotes: mocks.listRecentTimeEntryNotes,
 		findTimeEntryForAuthor: mocks.findTimeEntryForAuthor,
 		listAuthorTimeEntriesOnWorkDate: mocks.listAuthorTimeEntriesOnWorkDate,
 		findStoryForTimeEntry: mocks.findStoryForTimeEntry,
@@ -111,6 +113,8 @@ const { listTimeEntriesForStoryInputSchema, listTimeEntriesForStoryProcedure } =
 	await import("../list-for-story");
 const { listLoggableProjectsInputSchema, listLoggableProjectsProcedure } =
 	await import("../list-loggable-projects");
+const { listRecentTimeNotesInputSchema, listRecentTimeNotesProcedure } =
+	await import("../list-recent-notes");
 
 type StubbedProcedure = { __handler: Handler; __declared: Declaration[] };
 
@@ -1318,5 +1322,53 @@ describe("listForStory", () => {
 			storyId: "story-1",
 			userId: USER_ID,
 		});
+	});
+});
+
+describe("listRecentNotes", () => {
+	it("is gated on seeing the project, then reading it", () => {
+		expect(stub(listRecentTimeNotesProcedure).__declared).toEqual([
+			VISIBLE,
+			{ kind: "project", permission: Permissions.PROJECT_READ },
+		]);
+	});
+
+	it("reads up to five of the caller's own notes on the project", async () => {
+		mocks.listRecentTimeEntryNotes.mockResolvedValue([
+			"REQS",
+			"Development",
+		]);
+
+		const result = await call(
+			listRecentTimeNotesProcedure,
+			listRecentTimeNotesInputSchema,
+			{ projectId: "project-a" },
+		);
+
+		expect(result).toEqual({ notes: ["REQS", "Development"] });
+		expect(mocks.listRecentTimeEntryNotes).toHaveBeenCalledWith({
+			organizationId: ORG_ID,
+			projectId: "project-a",
+			userId: USER_ID,
+			limit: 5,
+		});
+	});
+
+	it("reads nothing for a project that is not there", async () => {
+		mocks.loadTimeTrackingProject.mockResolvedValue(null);
+
+		await expect(
+			call(listRecentTimeNotesProcedure, listRecentTimeNotesInputSchema, {
+				projectId: "project-gone",
+			}),
+		).rejects.toBeInstanceOf(ORPCError);
+		expect(mocks.listRecentTimeEntryNotes).not.toHaveBeenCalled();
+	});
+
+	it("rejects a missing project id", () => {
+		const result = listRecentTimeNotesInputSchema.safeParse({
+			projectId: "",
+		});
+		expect(result.success).toBe(false);
 	});
 });

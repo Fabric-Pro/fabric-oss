@@ -9,9 +9,11 @@ const mocks = vi.hoisted(() => ({
 	canManageReportTemplate: vi.fn(),
 	isOrganizationReportAdmin: vi.fn(),
 	canEditProjectReport: vi.fn(),
+	latestSuccesses: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
+	getLatestSuccessfulReports: mocks.latestSuccesses,
 	getTemplateInstance: mocks.getTemplateInstance,
 	getProjectReportSetupReason: () => undefined,
 }));
@@ -109,6 +111,56 @@ beforeEach(() => {
 	mocks.canManageReportTemplate.mockResolvedValue(false);
 	mocks.isOrganizationReportAdmin.mockResolvedValue(true);
 	mocks.canEditProjectReport.mockResolvedValue(false);
+	mocks.latestSuccesses.mockResolvedValue(new Map());
+});
+
+describe("reports.instances.get — the View action's report", () => {
+	it("returns the newest successful run the caller may open", async () => {
+		mocks.getTemplateInstance.mockResolvedValue(instanceFrom({}));
+		mocks.latestSuccesses.mockResolvedValue(
+			new Map([
+				[
+					"example-instance",
+					{
+						executionId: "example-run",
+						completedAt: new Date("2026-11-02T00:00:00.000Z"),
+						artifactId: "example-artifact",
+						artifactName: "report.md",
+					},
+				],
+			]),
+		);
+
+		const result = await mocks.handlers.get({
+			input: { id: "example-instance" },
+			context: ctx,
+		});
+
+		expect(mocks.latestSuccesses).toHaveBeenCalledWith({
+			instances: [expect.objectContaining({ id: "example-instance" })],
+			userId: "example-member",
+			organizationId: "example-org",
+		});
+		expect(result).toMatchObject({
+			latestSuccessfulReport: {
+				executionId: "example-run",
+				completedAt: "2026-11-02T00:00:00.000Z",
+				artifactId: "example-artifact",
+				artifactName: "report.md",
+			},
+		});
+	});
+
+	it("returns none before a run has succeeded", async () => {
+		mocks.getTemplateInstance.mockResolvedValue(instanceFrom({}));
+
+		const result = await mocks.handlers.get({
+			input: { id: "example-instance" },
+			context: ctx,
+		});
+
+		expect(result).toMatchObject({ latestSuccessfulReport: null });
+	});
 });
 
 describe("reports.instances.get — someone who only reads the report", () => {

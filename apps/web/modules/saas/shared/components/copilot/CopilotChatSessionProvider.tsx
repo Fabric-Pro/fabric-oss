@@ -144,9 +144,9 @@ export function useCopilotChatSessionActions() {
 	}
 	return useMemo(
 		() => ({
-			appendMessage: (
-				...args: Parameters<CopilotChatSession["appendMessage"]>
-			) => store.session.appendMessage(...args),
+			sendMessage: (
+				...args: Parameters<CopilotChatSession["sendMessage"]>
+			) => store.session.sendMessage(...args),
 			setMessages: (
 				...args: Parameters<CopilotChatSession["setMessages"]>
 			) => store.session.setMessages(...args),

@@ -1,6 +1,7 @@
 import { getProjectUsageBreakdown } from "@repo/database";
 import { z } from "zod";
 import {
+	hiddenUsageFeatureKey,
 	projectScopeSchema,
 	projectUsageProcedure,
 	USAGE_ROUTE_TAGS,
@@ -30,10 +31,14 @@ export const getUsageBreakdownProcedure = projectUsageProcedure
 				.default("model"),
 		}),
 	)
-	.handler(async ({ input }) => {
+	.handler(async ({ input, context }) => {
 		return getProjectUsageBreakdown({
 			projectId: input.projectId,
 			range: input.range,
 			groupBy: input.groupBy,
+			hiddenFeatureKey: await hiddenUsageFeatureKey(
+				input.projectId,
+				context.user.id,
+			),
 		});
 	});

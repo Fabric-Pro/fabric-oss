@@ -36,6 +36,7 @@ vi.mock("@repo/database", () => ({
 	getProjectAccessById: mocks.getProjectAccessById,
 	canUpdateProjectStory: mocks.canUpdateProjectStory,
 	getStoryById: mocks.getStoryById,
+	getVisibleStoryById: mocks.getStoryById,
 	// The PATCH route resolves the API key's user so the edit it writes carries a
 	// human name rather than landing unattributed.
 	getUserById: mocks.getUserById,

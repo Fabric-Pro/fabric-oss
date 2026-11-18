@@ -42,6 +42,7 @@ export type RoadmapFilterToolbarProps = {
 	aiMinQueryLength?: number;
 	projectId: string;
 	organizationId: string | null;
+	initiativesEnabled?: boolean;
 	lanesCount?: number;
 	/** View and sort controls beside the results summary. */
 	trailing?: React.ReactNode;
@@ -72,6 +73,7 @@ export function RoadmapFilterToolbar({
 	aiMinQueryLength,
 	projectId,
 	organizationId,
+	initiativesEnabled,
 	lanesCount,
 	trailing,
 	pmStatusOptions,
@@ -154,6 +156,7 @@ export function RoadmapFilterToolbar({
 			trailing={trailing}
 			lanesCount={lanesCount}
 			tagOptions={tagOptions}
+			initiativesEnabled={initiativesEnabled}
 			pmStatusOptions={pmStatusOptions}
 		/>
 	);

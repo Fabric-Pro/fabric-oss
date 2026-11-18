@@ -73,7 +73,10 @@ import { getBacklogSessionHistoryProcedure } from "./procedures/backlog/history-
 import { listBacklogSessionHistoryProcedure } from "./procedures/backlog/history-sessions-list";
 import { intakeProgressProcedure } from "./procedures/backlog/intake-progress";
 import { listCalendarMeetingsProcedure } from "./procedures/backlog/list-calendar-meetings";
+import { mergeIntoProposalItemProcedure } from "./procedures/backlog/merge-into-proposal-item";
+import { proposalDuplicateFlagsProcedure } from "./procedures/backlog/proposal-duplicate-flags";
 import { recommendationStatusProcedure } from "./procedures/backlog/recommendation-status";
+import { rejectProposalItemProcedure } from "./procedures/backlog/reject-proposal-item";
 import { retryAllFailedProposalsProcedure } from "./procedures/backlog/retry-all-failed-proposals";
 import { retryFailedProposalProcedure } from "./procedures/backlog/retry-failed-proposal";
 import { startAnalysisProcedure } from "./procedures/backlog/start-analysis";
@@ -392,6 +395,7 @@ import {
 	removeActionItemLinkProcedure,
 	saveAgendaProcedure,
 	setActionItemCompletedProcedure,
+	setConfidentialProcedure,
 	setIncludedProcedure,
 	setParlumeAutoJoinProcedure,
 	updateMeetingDetailsProcedure,
@@ -1340,6 +1344,8 @@ export const projectsRouter = {
 		// Parlume joins a linked series' occurrences on its own. The same
 		// permission as inviting it by hand, since every join is one.
 		setParlumeAutoJoin: setParlumeAutoJoinProcedure,
+		// Keeps a series' transcripts out of later answers, recaps and agendas.
+		setConfidential: setConfidentialProcedure,
 		listConfigurable: listConfigurableMeetingsProcedure,
 		extractInsights: extractInsightsProcedure,
 		setActionItemCompleted: setActionItemCompletedProcedure,
@@ -1592,6 +1598,10 @@ export const projectsRouter = {
 			retryAllFailed: retryAllFailedProposalsProcedure,
 			dismiss: dismissFailedProposalProcedure,
 			cancel: cancelPendingProposalProcedure,
+			rejectItem: rejectProposalItemProcedure,
+			// Duplicate detection against the Proposal Inbox
+			duplicateFlags: proposalDuplicateFlagsProcedure,
+			mergeIntoItem: mergeIntoProposalItemProcedure,
 		},
 
 		// Read-only AI Backlog change history (Session history + Audit tabs)

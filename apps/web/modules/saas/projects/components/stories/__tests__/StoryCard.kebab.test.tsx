@@ -200,6 +200,7 @@ function makeStory(overrides: Partial<UserStory> = {}): UserStory {
 		description: null,
 		acceptanceCriteria: null,
 		statusId: "status-1",
+		kind: "FEATURE",
 		priority: "P2_MEDIUM",
 		size: null,
 		storyPoints: null,

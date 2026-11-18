@@ -184,11 +184,15 @@ Consumes the same DB/Redis/AI/agent-URL set as `web`. Additionally:
 | Env var | Source | Required | Notes |
 |---|---|---|---|
 | `NODE_ENV` | ConfigMap | yes | |
-| `AGENT_API_KEY` | Secret | yes | Verifies inbound requests |
+| `MCP_WRAPPER_API_KEY` | Secret (`integrations` group) | production | Authenticates `/mcp/*` and `/stats`. Use the same non-empty value on the wrapper, web, and Temporal worker. |
 | `MCP_STDIO_WRAPPER_PORT` | implicit | no | Service exposes `3100` |
 | `OTEL_*` | ConfigMap + pod env | no | |
 
 The wrapper bridges STDIO MCP servers (e.g. Azure DevOps) to HTTP. It does not need DB/Redis/AI keys directly — the calling code does.
+
+For Aspire publish, supply the secret parameter `mcp-wrapper-api-key`. The
+AppHost passes it to the wrapper and Temporal worker as `MCP_WRAPPER_API_KEY`.
+Set the same key on any separately deployed web app that uses the wrapper.
 
 ### 2.4 LangGraph agents (×11)
 
@@ -321,11 +325,12 @@ At least one provider's ID/secret pair must be set. Each pair must come from the
   "LETTA_API_KEY":        "XXXX",
   "LANGGRAPH_API_KEY":    "XXXX",
   "FABRIC_AI_API_KEY":    "XXXX",
-  "FABRIC_SERVER_API_KEY":"XXXX"
+  "FABRIC_SERVER_API_KEY":"XXXX",
+  "MCP_WRAPPER_API_KEY":  "<secret>"
 }
 ```
 
-All optional. The first three are observability/memory; the last two are for the Vercel AI Gateway path.
+`MCP_WRAPPER_API_KEY` is required in production. The observability, memory, and Vercel AI Gateway credentials are optional.
 
 ### 3.6 `redis` (Terraform-managed, do NOT edit)
 

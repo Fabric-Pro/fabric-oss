@@ -14,6 +14,7 @@ import {
 import { formatDistanceToNow } from "date-fns";
 import {
 	FileTextIcon,
+	HistoryIcon,
 	Loader2Icon,
 	PlayIcon,
 	SettingsIcon,
@@ -22,6 +23,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { OwnerOnlyGenerate } from "./OwnerOnlyGenerate";
+import { ReportViewAction, viewLatestReportHref } from "./ReportViewAction";
 
 type ProjectReportInstance = {
 	id: string;
@@ -36,6 +38,8 @@ type ProjectReportInstance = {
 	generateBlockedReason: string | null;
 	lastRunAt: string | null;
 	latestExecutionStatus: string | null;
+	/** What View opens; `null` until a run has succeeded. */
+	latestSuccessfulReport: { artifactId: string } | null;
 };
 
 type Props = {
@@ -49,8 +53,9 @@ type Props = {
 };
 
 /**
- * The reports a project already has: open one, or generate a ready one in
- * one click. A report that is not ready says what it still needs.
+ * The reports a project already has: the title opens its execution history,
+ * View its latest successful report, Configure its settings, and Generate a
+ * ready one in one click. A report that is not ready says what it still needs.
  */
 export function ProjectReportInstancesList({
 	instances,
@@ -127,10 +132,17 @@ export function ProjectReportInstancesList({
 								<div className="min-w-0">
 									<CardTitle className="text-base">
 										<Link
-											href={href}
-											className="hover:text-primary motion-safe:transition-colors"
+											href={`${href}?tab=history`}
+											className="inline-flex items-center gap-1 underline decoration-muted-foreground/50 underline-offset-4 hover:text-primary hover:decoration-primary motion-safe:transition-colors"
 										>
 											{instance.name}
+											<HistoryIcon
+												aria-hidden="true"
+												className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+											/>
+											<span className="sr-only">
+												, execution history
+											</span>
 										</Link>
 									</CardTitle>
 									<CardDescription>
@@ -163,7 +175,13 @@ export function ProjectReportInstancesList({
 								</Badge>
 							</div>
 						</CardHeader>
-						<CardFooter className="flex-wrap gap-2 pt-2">
+						<CardFooter className="flex-wrap items-start gap-2 pt-2">
+							<ReportViewAction
+								hasSuccessfulReport={
+									instance.latestSuccessfulReport !== null
+								}
+								href={viewLatestReportHref(href)}
+							/>
 							<Button variant="outline" size="sm" asChild>
 								<Link href={href}>
 									<SettingsIcon className="mr-1 h-3 w-3" />

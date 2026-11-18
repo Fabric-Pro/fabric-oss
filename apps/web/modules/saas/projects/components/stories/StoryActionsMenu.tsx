@@ -34,6 +34,7 @@ import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 import { orpcClient } from "../../../../shared/lib/orpc-client";
+import { STORY_KIND_LABELS, storyKindNoun } from "../../lib/roadmap-filters";
 import { buildStoryDetailsRoute } from "../../lib/stories/routes";
 import { PRIORITY_OPTIONS, type UserStory } from "../../lib/stories/types";
 import { ConvertKindConfirmDialog } from "./ConvertKindConfirmDialog";
@@ -229,14 +230,14 @@ export function StoryActionsMenu({
 			toast.error(
 				error instanceof Error
 					? error.message
-					: `Failed to update ${story.kind === "BUG" ? "bug" : "feature"}`,
+					: `Failed to update ${storyKindNoun(story.kind)}`,
 			);
 		},
 		onSuccess: (_data, targetStage) => {
 			toast.success(
 				targetStage === "CLOSED"
-					? `${story.kind === "BUG" ? "Bug" : "Feature"} hidden`
-					: `${story.kind === "BUG" ? "Bug" : "Feature"} unhidden`,
+					? `${STORY_KIND_LABELS[story.kind]} hidden`
+					: `${STORY_KIND_LABELS[story.kind]} unhidden`,
 			);
 		},
 		onSettled: () => {
@@ -364,27 +365,29 @@ export function StoryActionsMenu({
 						</DropdownMenuSubContent>
 					</DropdownMenuSub>
 
-					<DropdownMenuItem
-						disabled={convertBlockedByDefer}
-						onClick={(e) => {
-							e.stopPropagation();
-							setConvertDialogOpen(true);
-						}}
-					>
-						<ArrowLeftRightIcon className="mr-2 size-4" />
-						<span className="flex flex-col">
-							<span>
-								{story.kind === "BUG"
-									? "Change to feature"
-									: "Change to bug"}
-							</span>
-							{convertBlockedByDefer ? (
-								<span className="max-w-56 text-muted-foreground text-xs">
-									{tConvert("deferredBlocked")}
+					{story.kind !== "INITIATIVE" && (
+						<DropdownMenuItem
+							disabled={convertBlockedByDefer}
+							onClick={(e) => {
+								e.stopPropagation();
+								setConvertDialogOpen(true);
+							}}
+						>
+							<ArrowLeftRightIcon className="mr-2 size-4" />
+							<span className="flex flex-col">
+								<span>
+									{story.kind === "BUG"
+										? "Change to feature"
+										: "Change to bug"}
 								</span>
-							) : null}
-						</span>
-					</DropdownMenuItem>
+								{convertBlockedByDefer ? (
+									<span className="max-w-56 text-muted-foreground text-xs">
+										{tConvert("deferredBlocked")}
+									</span>
+								) : null}
+							</span>
+						</DropdownMenuItem>
+					)}
 
 					<DropdownMenuItem
 						disabled={closeReopenMutation.isPending}
@@ -401,12 +404,8 @@ export function StoryActionsMenu({
 							<CircleSlashIcon className="mr-2 size-4" />
 						)}
 						{isClosed
-							? story.kind === "BUG"
-								? "Unhide bug"
-								: "Unhide feature"
-							: story.kind === "BUG"
-								? "Hide bug"
-								: "Hide feature"}
+							? `Unhide ${storyKindNoun(story.kind)}`
+							: `Hide ${storyKindNoun(story.kind)}`}
 					</DropdownMenuItem>
 
 					{onDelete && (

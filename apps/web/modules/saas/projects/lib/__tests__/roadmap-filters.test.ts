@@ -9,6 +9,7 @@ import {
 	type RoadmapFilters,
 	STORY_SOURCE_LABELS,
 	selectHiddenMatches,
+	storyKindNoun,
 } from "../roadmap-filters";
 import { dbSourceToFe, type UserStory } from "../stories/types";
 
@@ -1498,6 +1499,14 @@ describe("applyRoadmapFilters — maturation V2 stage edge cases", () => {
 			"v2-done",
 			"v2-todo",
 		]);
+	});
+});
+
+describe("storyKindNoun", () => {
+	it("returns lowercase nouns for all kinds", () => {
+		expect(storyKindNoun("BUG")).toBe("bug");
+		expect(storyKindNoun("FEATURE")).toBe("feature");
+		expect(storyKindNoun("INITIATIVE")).toBe("initiative");
 	});
 });
 

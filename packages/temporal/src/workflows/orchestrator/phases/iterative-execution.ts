@@ -114,6 +114,7 @@ import {
 	TOOL_RESULTS,
 	TOOLS,
 } from "../orchestrator-config";
+import { PROJECT_CREATE_STORY_TOOL } from "../project-create-story-tool-schema";
 import {
 	PROJECT_DOCUMENT_GET_DESCRIPTION,
 	PROJECT_DOCUMENT_GET_INPUT_SCHEMA,
@@ -2468,6 +2469,7 @@ async function runIterativeLoop(
 	let projectFeatureToolsRegistered = false;
 	// Same, for the document and Context-tab source reads.
 	let projectDocumentToolsRegistered = false;
+	let projectCreateStoryRegistered = false;
 	// The repository reads registered below, in catalog order.
 	const projectRepositoryToolsRegistered: string[] = [];
 
@@ -2602,6 +2604,18 @@ async function runIterativeLoop(
 				"fabric-ai-server";
 			projectFeatureToolsRegistered = true;
 		}
+		// Match the explicit Fabric list used by discovery before recording the
+		// patch. Histories without the marker keep their original tool set.
+		if (
+			(!Array.isArray(input.enabledFabricToolIds) ||
+				input.enabledFabricToolIds.includes("fabric_create_story")) &&
+			patched("orch-project-create-story-tool-v1")
+		) {
+			discoveredTools.fabric_create_story = PROJECT_CREATE_STORY_TOOL;
+			discoveredToolConfigIds.fabric_create_story =
+				FABRIC_AI_SERVER_CONFIG_ID;
+			projectCreateStoryRegistered = true;
+		}
 		// Live document and Context-tab source reads (Fizzy #2578): semantic
 		// search returns a similarity sample, so "list every document" or
 		// "which files are on the Context tab" came back as a guessed, mixed
@@ -2666,6 +2680,7 @@ async function runIterativeLoop(
 			{
 				projectId: input.projectId,
 				projectFeatureTools: projectFeatureToolsRegistered,
+				projectCreateStory: projectCreateStoryRegistered,
 				projectDocumentTools: projectDocumentToolsRegistered,
 				projectRepositoryTools: projectRepositoryToolsRegistered,
 			},
@@ -3031,7 +3046,7 @@ async function runIterativeLoop(
 			const catalogLoading = callToolMode
 				? "Before invoking a tool from the catalog, use search_tools to find its definition, get_tool_schema(name) if the definition was omitted, then call_tool(name, arguments) from the next model request. Definitions remain retrievable for this answer after history compaction. "
 				: `Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; ${schemaLifetime}. `;
-			systemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. ${catalogLoading}Tools NOT in the catalog (search_tools, ${projectToolsListed ? "project_rag_query, fabric_list_meeting_transcripts, " : ""}${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}${projectRepositoryToolsRegistered.map((name) => `${name}, `).join("")}${frameToolsRegistered.map((name) => `${name}, `).join("")}${projectToolsListed ? "search_slack_messages, search_teams_messages, " : ""}${companyContextToolRegistered ? "search_company_context, " : ""}OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
+			systemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. ${catalogLoading}Tools NOT in the catalog (search_tools, ${projectToolsListed ? "project_rag_query, fabric_list_meeting_transcripts, " : ""}${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectCreateStoryRegistered ? "fabric_create_story, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}${projectRepositoryToolsRegistered.map((name) => `${name}, `).join("")}${frameToolsRegistered.map((name) => `${name}, `).join("")}${projectToolsListed ? "search_slack_messages, search_teams_messages, " : ""}${companyContextToolRegistered ? "search_company_context, " : ""}OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
 		} else if (
 			options.firstCall &&
 			preloadedServerNames.length > 0 &&

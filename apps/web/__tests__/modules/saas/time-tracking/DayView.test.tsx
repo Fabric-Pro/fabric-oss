@@ -25,6 +25,16 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 			deleteEntry: { call: mockDelete },
 			listEntries: { key: () => [["timeTracking", "listEntries"], {}] },
 			listForStory: { key: () => [["timeTracking", "listForStory"], {}] },
+			listRecentNotes: {
+				key: () => [["timeTracking", "listRecentNotes"], {}],
+				queryOptions: (options: { input: unknown }) => ({
+					queryKey: [
+						["timeTracking", "listRecentNotes"],
+						{ input: options.input, type: "query" },
+					],
+					queryFn: async () => ({ notes: [] }),
+				}),
+			},
 		},
 		projects: {
 			stories: {

@@ -172,6 +172,12 @@ export const convertStoryKindProcedure = tenantProtectedProcedure
 			throw new ORPCError("NOT_FOUND", { message: "Story not found" });
 		}
 
+		if (existing.kind === "INITIATIVE") {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "Initiatives can't be converted.",
+			});
+		}
+
 		// No-op when the caller asks to convert to the same kind: nothing is
 		// written, no regeneration is started, and no job row is opened — there is
 		// no new template to redraft through. Return the current row so callers

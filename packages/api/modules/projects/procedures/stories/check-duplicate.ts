@@ -26,6 +26,17 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	MAX_INLINE_EMBEDS,
+	startRequestDeadline,
+} from "../../lib/duplicate-check-limits";
+import {
+	findProposalInboxMatches,
+	type InboxMatchEntry,
+	listInboxMatchEntries,
+	manualEntryCorpusTexts,
+} from "../../lib/proposal-duplicate-matching";
+import type { ProposalInboxMatch } from "../../lib/proposal-duplicate-scoring";
 
 /**
  * Duplicate-detection warning for the roadmap "Add" dialog's manual create
@@ -59,31 +70,15 @@ import {
  *   - THIS CHECK NEVER BLOCKS CREATION: any failure, timeout, or usage-limit
  *     rejection returns a "create" decision with `error` set, distinguishing
  *     "checked, found nothing" from "could not check" for the UI. Only an
- *     auth failure (no project access) still throws.
+ *     auth failure (no project access) still throws;
+ *   - `proposalMatches` lists unreviewed Proposal Inbox items similar to the
+ *     description (see `proposal-duplicate-scoring.ts` for the bar). Their
+ *     texts ride in the corpus's embedding request, so the description is
+ *     embedded once. The list is settled under the same deadline, and its
+ *     own failure only leaves it empty: it never changes the ticket result.
  */
 
 const LOG_PREFIX = "[Duplicate Check]";
-
-/** Cap on inline back-fill embedding per request, mirroring
- * `semantic-search.ts`'s `MAX_INLINE_EMBEDS` — bounds latency on a cold
- * backlog rather than blocking the dialog on it. */
-const MAX_INLINE_EMBEDS = 200;
-
-/**
- * Default request deadline for the whole embed-and-judge pipeline, from right
- * after the auth check. Overridable via `DUPLICATE_CHECK_TIMEOUT_MS` for
- * tuning without a redeploy, mirroring `DECISION_PRECHECK_TIMEOUT_MS`
- * (`packages/temporal/src/lib/decision-precheck/judge.ts`).
- */
-const DUPLICATE_CHECK_TIMEOUT_MS = 20_000;
-
-function resolveDuplicateCheckTimeoutMs(): number {
-	const raw = Number.parseInt(
-		process.env.DUPLICATE_CHECK_TIMEOUT_MS ?? "",
-		10,
-	);
-	return Number.isFinite(raw) && raw > 0 ? raw : DUPLICATE_CHECK_TIMEOUT_MS;
-}
 
 /** Cap on the description's first line used as the detection text's title
  * segment — generous enough to carry real signal, short enough that a
@@ -108,7 +103,12 @@ export type CheckDuplicateResult = {
 	reasoning?: string | null;
 	alternatives: CheckDuplicateAlternative[];
 	error?: string;
+	/** Similar unreviewed Proposal Inbox items, strongest first. */
+	proposalMatches: ProposalInboxMatch[];
 };
+
+/** The ticket half of the result, before the inbox matches are attached. */
+type StoryCheckResult = Omit<CheckDuplicateResult, "proposalMatches">;
 
 /**
  * The detection text's title segment, derived from the description's own
@@ -199,7 +199,7 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 		const titleSegment = deriveTitleSegment(description);
 		const itemText = buildDetectionText(titleSegment, description);
 
-		const unavailable = (error: string): CheckDuplicateResult => ({
+		const unavailable = (error: string): StoryCheckResult => ({
 			decision: "create",
 			confidence: 0,
 			alternatives: [],
@@ -207,26 +207,36 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 		});
 
 		// ONE deadline for the whole pipeline below, not just the language
-		// judge — see the module doc. `resolveDuplicateCheckTimeoutMs` reads
-		// the override once per request, not once per process, so a changed
-		// env var takes effect on the very next call.
-		const deadlineMs = resolveDuplicateCheckTimeoutMs();
+		// judge — see the module doc.
+		const deadline = startRequestDeadline();
 		const startedAt = Date.now();
-		const deadlineController = new AbortController();
-		const deadlineTimer = setTimeout(
-			() => deadlineController.abort(),
-			deadlineMs,
-		);
 		const stageTimings: StageTimings = {};
 		let timedOut = false;
-		const timeoutResult = new Promise<CheckDuplicateResult>((resolve) => {
-			deadlineController.signal.addEventListener("abort", () => {
-				timedOut = true;
-				resolve(unavailable(UNAVAILABLE_MESSAGE));
-			});
+		const timeoutResult = deadline.expired.then((): StoryCheckResult => {
+			timedOut = true;
+			return unavailable(UNAVAILABLE_MESSAGE);
 		});
 
-		const runCheck = async (): Promise<CheckDuplicateResult> => {
+		// The inbox items load beside the embedding check. A failed load or
+		// match only empties the inbox list; it never changes the ticket
+		// result. `inboxMatches` is replaced once the corpus has embedded
+		// the inbox texts.
+		const noInboxMatches: ProposalInboxMatch[] = [];
+		const warnInboxFailed = (error: unknown) => {
+			logger.warn(`${LOG_PREFIX} could not check the Proposal Inbox`, {
+				projectId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		};
+		const inboxEntries = listInboxMatchEntries(projectId).catch(
+			(error: unknown): InboxMatchEntry[] => {
+				warnInboxFailed(error);
+				return [];
+			},
+		);
+		let inboxMatches = Promise.resolve(noInboxMatches);
+
+		const runCheck = async (): Promise<StoryCheckResult> => {
 			// A tenant with no configured embedding provider is not a server
 			// error and not this check's private problem — it simply could
 			// not run. `resolveModelWithProvider` does NOT throw when
@@ -261,15 +271,16 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 			// Corpus load and judge-model resolution depend on nothing from
 			// each other, so they run concurrently rather than one after the
 			// other — on the warm path this is most of the request's latency.
+			const entries = await inboxEntries;
 			const corpusModelsStart = Date.now();
 			const corpusPromise = loadRoutingCorpus({
 				projectId,
 				userId: user.id,
 				organizationId,
-				itemTexts: [itemText],
+				itemTexts: manualEntryCorpusTexts(itemText, entries),
 				logPrefix: LOG_PREFIX,
 				maxStaleEmbeds: MAX_INLINE_EMBEDS,
-				abortSignal: deadlineController.signal,
+				abortSignal: deadline.signal,
 			}).finally(() => {
 				stageTimings.corpusMs = Date.now() - corpusModelsStart;
 			});
@@ -302,6 +313,18 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 				return unavailable(UNAVAILABLE_MESSAGE);
 			}
 			const corpus = corpusOutcome.value;
+			inboxMatches = findProposalInboxMatches({
+				projectId,
+				userId: user.id,
+				organizationId,
+				itemText,
+				entries,
+				corpus,
+				abortSignal: deadline.signal,
+			}).catch((error: unknown) => {
+				warnInboxFailed(error);
+				return noInboxMatches;
+			});
 
 			if (corpus.kind === "empty") {
 				// A legitimate, fully-evaluated outcome regardless of whether
@@ -346,7 +369,7 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 				organizationId,
 				projectId,
 				logPrefix: LOG_PREFIX,
-				abortSignal: deadlineController.signal,
+				abortSignal: deadline.signal,
 			});
 			stageTimings.judgeMs = Date.now() - judgeStart;
 
@@ -405,14 +428,18 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 		};
 
 		const result = await Promise.race([runCheck(), timeoutResult]);
-		clearTimeout(deadlineTimer);
+		const proposalMatches = await Promise.race([
+			inboxMatches,
+			deadline.expired.then(() => noInboxMatches),
+		]);
+		deadline.clear();
 		if (timedOut) {
 			logger.warn(`${LOG_PREFIX} request deadline exceeded`, {
 				projectId,
-				deadlineMs,
+				deadlineMs: deadline.ms,
 				...stageTimings,
 				elapsedMs: Date.now() - startedAt,
 			});
 		}
-		return result;
+		return { ...result, proposalMatches };
 	});

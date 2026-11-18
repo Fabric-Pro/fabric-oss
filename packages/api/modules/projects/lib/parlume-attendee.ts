@@ -1,4 +1,5 @@
 import { createOutboundHostAllowlist } from "@repo/utils/url-security";
+import { parlumeChatHtml } from "./parlume-chat-html";
 
 /** Attendee's hosted service; an organization can point at its own instance. */
 export const DEFAULT_ATTENDEE_BASE_URL = "https://app.attendee.dev";
@@ -535,24 +536,6 @@ export async function sendParlumeChatMessage(input: {
 	if (!response.ok) {
 		throw new ParlumeBridgeUnavailableError();
 	}
-}
-
-/**
- * Attendee's Teams bot types a plain-text message one key at a time, about
- * 6 to 7 ms a character, and passes on no meeting audio meanwhile: a long post
- * left Parlume deaf for up to ten seconds. A message with HTML tags is pasted
- * whole, so the text goes as one escaped paragraph.
- */
-function parlumeChatHtml(message: string): string {
-	// Attendee rejects characters above U+FFFF (emoji); drop them before
-	// cutting, so the cut cannot split a surrogate pair.
-	const text = message
-		.replace(/[\u{10000}-\u{10FFFF}]/gu, "")
-		.slice(0, 4_096)
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;");
-	return `<p>${text}</p>`;
 }
 
 /**

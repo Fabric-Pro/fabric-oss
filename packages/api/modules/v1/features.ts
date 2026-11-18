@@ -8,8 +8,9 @@ import {
 	canUpdateProjectStory,
 	createStory,
 	getProjectAccessById,
-	getStoryById,
 	getUserById,
+	getVisibleStoryById,
+	InitiativesDisabledError,
 	listStories,
 	listTasks,
 	updateStory,
@@ -27,6 +28,12 @@ import {
 	ok,
 	resolveV1Context,
 } from "./helpers";
+
+const STORY_KINDS = ["FEATURE", "BUG", "INITIATIVE"] as const;
+type V1StoryKind = (typeof STORY_KINDS)[number];
+
+const CREATE_KINDS = ["FEATURE", "INITIATIVE"] as const;
+type V1CreateStoryKind = (typeof CREATE_KINDS)[number];
 
 function redactV1CodingRun<T extends Record<string, unknown>>(run: T): T {
 	const metadata = run.providerMetadata as
@@ -116,6 +123,15 @@ export function registerFeatureRoutes(
 				| "P2_MEDIUM"
 				| "P3_LOW"
 				| undefined;
+			const kind = c.req.query("kind") as V1StoryKind | undefined;
+			if (kind && !STORY_KINDS.includes(kind)) {
+				return c.json(
+					badRequest(
+						`kind must be one of: ${STORY_KINDS.join(", ")}`,
+					),
+					400,
+				);
+			}
 			const statusId = c.req.query("statusId");
 			const assigneeId = c.req.query("assigneeId");
 
@@ -125,6 +141,7 @@ export function registerFeatureRoutes(
 				offset,
 				search,
 				priority,
+				kind,
 				statusId,
 				assigneeId,
 			});
@@ -164,7 +181,10 @@ export function registerFeatureRoutes(
 				return c.json(notFound("Project"), 404);
 			}
 
-			const story = await getStoryById(c.req.param("id")!, projectId);
+			const story = await getVisibleStoryById(
+				c.req.param("id")!,
+				projectId,
+			);
 			if (!story) {
 				return c.json(notFound("Feature"), 404);
 			}
@@ -223,6 +243,7 @@ export function registerFeatureRoutes(
 				description?: string;
 				acceptanceCriteria?: string;
 				priority?: string;
+				kind?: string;
 			};
 			try {
 				body = await c.req.json();
@@ -259,20 +280,40 @@ export function registerFeatureRoutes(
 				);
 			}
 
-			const story = await createStory({
-				projectId,
-				title,
-				description: body.description?.trim(),
-				acceptanceCriteria: body.acceptanceCriteria?.trim(),
-				priority: priority ?? "P2_MEDIUM",
-				createdById: ctx.userId,
-				source: "MANUAL",
-			});
+			const kind = body.kind as V1CreateStoryKind | undefined;
+			if (kind && !CREATE_KINDS.includes(kind)) {
+				return c.json(
+					badRequest(
+						`kind must be one of: ${CREATE_KINDS.join(", ")}`,
+					),
+					400,
+				);
+			}
+
+			let story: Awaited<ReturnType<typeof createStory>>;
+			try {
+				story = await createStory({
+					projectId,
+					title,
+					description: body.description?.trim(),
+					acceptanceCriteria: body.acceptanceCriteria?.trim(),
+					priority: priority ?? "P2_MEDIUM",
+					kind,
+					createdById: ctx.userId,
+					source: "MANUAL",
+				});
+			} catch (error) {
+				if (error instanceof InitiativesDisabledError) {
+					return c.json(badRequest(error.message), 400);
+				}
+				throw error;
+			}
 
 			return c.json(
 				ok({
 					id: story.id,
 					identifier: story.identifier,
+					kind: story.kind,
 					title: story.title,
 					description: story.description ?? null,
 					acceptanceCriteria: story.acceptanceCriteria ?? null,
@@ -328,7 +369,7 @@ export function registerFeatureRoutes(
 			}
 
 			const storyId = c.req.param("id")!;
-			const story = await getStoryById(storyId, projectId);
+			const story = await getVisibleStoryById(storyId, projectId);
 			if (!story) {
 				return c.json(notFound("Feature"), 404);
 			}
@@ -417,6 +458,7 @@ export function registerFeatureRoutes(
 				ok({
 					id: updated.id,
 					identifier: updated.identifier,
+					kind: updated.kind,
 					title: updated.title,
 					description: updated.description ?? null,
 					acceptanceCriteria: updated.acceptanceCriteria ?? null,
@@ -461,7 +503,10 @@ export function registerFeatureRoutes(
 				return c.json(notFound("Project"), 404);
 			}
 
-			const story = await getStoryById(c.req.param("id")!, projectId);
+			const story = await getVisibleStoryById(
+				c.req.param("id")!,
+				projectId,
+			);
 			if (!story) {
 				return c.json(notFound("Feature"), 404);
 			}

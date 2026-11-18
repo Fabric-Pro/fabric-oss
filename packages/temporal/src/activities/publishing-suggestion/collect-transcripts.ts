@@ -55,6 +55,9 @@ export async function collectTranscripts(
 	const rows = await db.projectMeetingTranscript.findMany({
 		where: {
 			...scope,
+			// A confidential series' transcripts never reach a publishing draft.
+			// `countNewContextSince` (publishing-suite.ts) filters the same way.
+			linkedMeeting: { confidential: false },
 			// NO createdAt on this model — window on syncedAt OR insightsExtractedAt
 			// (N4), mirroring the cost-guard's freshness OR so a transcript reprocessed
 			// inside the window is collected even if it originally synced outside it.

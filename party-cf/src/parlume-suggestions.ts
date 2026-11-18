@@ -188,17 +188,20 @@ export function acceptParlumeSuggestion(
 	];
 }
 
-/** The chat post: what it is about and whose words it answers, then the suggestion. */
+/**
+ * The chat post, a line each: what it is about, whose words it answers, the
+ * suggestion, and how to have it said.
+ */
 export function formatParlumeSuggestion(
 	tag: string,
 	suggestion: ParlumeSuggestion,
 ): string {
-	const anchor = `${suggestion.topic}, re ${suggestion.speaker}: "${suggestion.quote}". ${suggestion.text}`;
+	const anchor = `${suggestion.topic}\nRe ${suggestion.speaker}: "${suggestion.quote}"\n${suggestion.text}`;
 	switch (suggestion.kind) {
 		case "answer":
-			return `Suggestion on ${anchor} (reply "go ${tag}" and I'll say it)`;
+			return `Suggestion on ${anchor}\nReply "go ${tag}" and I'll say it.`;
 		case "missed_question":
-			return `Possibly missed question on ${anchor} (reply "go ${tag}" and I'll ask it)`;
+			return `Possibly missed question on ${anchor}\nReply "go ${tag}" and I'll ask it.`;
 		default: {
 			const unreachable: never = suggestion.kind;
 			return unreachable;

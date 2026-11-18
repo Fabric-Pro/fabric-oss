@@ -74,7 +74,7 @@ export const regenerateStoryTitleProcedure = tenantProtectedProcedure
 			throw new ORPCError("NOT_FOUND", { message: "Story not found" });
 		}
 
-		const kindForTitle = story.kind === "BUG" ? "BUG" : "FEATURE";
+		const kindForTitle = story.kind;
 		// Tenant XOR isolation preserved: `requireProjectPermission` +
 		// `hasProjectAccess` (above) + `findFirst` scoped to `projectId`.
 		const result = await generateStoryTitleFromDescription(

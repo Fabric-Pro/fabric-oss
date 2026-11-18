@@ -1485,7 +1485,8 @@
 					},
 					"meeting_digest": {
 						"inclusion_changed": "Meeting-Digest-Aufnahme geändert",
-						"action_item_toggled": "Erledigt-Status einer Meeting-Aktion geändert"
+						"action_item_toggled": "Erledigt-Status einer Meeting-Aktion geändert",
+						"confidentiality_changed": "Vertraulichkeit einer Meeting-Serie geändert"
 					},
 					"meeting": {
 						"deleted": "Meeting gelöscht",
@@ -4204,6 +4205,7 @@
 				"actions": "Aktionen",
 				"bug": "Bug",
 				"feature": "Feature",
+				"initiative": "Initiative",
 				"track": "Track",
 				"estimate": "Schätzung",
 				"size": "Größe",
@@ -5323,6 +5325,7 @@
 				"unassigned": "Nicht zugewiesen",
 				"kindFeature": "Feature",
 				"kindBug": "Bug",
+				"kindInitiative": "Initiative",
 				"coversAria": "{kind} {identifier} öffnen: {title}",
 				"coversMore": "{count, plural, one {+# weiteres} other {+# weitere}}",
 				"automated": "Automatisiert",
@@ -5816,6 +5819,7 @@
 				"includeBugsAndClosed": "Bugs & geschlossene einbeziehen",
 				"selectedCount": "{count} ausgewählt",
 				"bug": "Bug",
+				"initiative": "Initiative",
 				"closed": "Geschlossen",
 				"coverageCount": "{count, plural, =0 {Keine Testfälle} one {# Testfall} other {# Testfälle}}"
 			},
@@ -7761,6 +7765,8 @@
 			"aboutDuration": "Geben Sie 1h 30m, 1.5 oder 90m ein und drücken Sie die Eingabetaste. Projekt und Tätigkeit werden aus Ihrem letzten Eintrag übernommen.",
 			"aboutStartStop": "Dieses Projekt verlangt Start- und Endzeiten, und Fabric berechnet die Dauer. Für Arbeit nach Mitternacht wählen Sie den nächsten Tag als Enddatum. Der Eintrag zählt zu dem Tag, an dem er begonnen hat.",
 			"note": "Notiz",
+			"recentNotes": "Letzte Notizen",
+			"useRecentNote": "Notiz verwenden: {note}",
 			"billable": "Abrechenbar",
 			"timeZone": "Zeitzone",
 			"added": "Zeit erfasst",
@@ -7784,7 +7790,7 @@
 		"suggestions": {
 			"title": "Zu bestätigen",
 			"aboutTitle": "Über Zu bestätigen",
-			"about": "Zeit, die Fabric aus Ihren eigenen Meetings, Testläufen, Testarbeiten und Änderungen an Arbeitselementen vorschlägt. Eine Dauer wird nur eingetragen, wenn Beginn und Ende tatsächlich bekannt sind; sonst geben Sie ein, wie lange Sie gearbeitet haben. Mit Bestätigen oder der Eingabetaste erfassen Sie sie, mit Keine Arbeitszeit verwerfen Sie sie. Öffnen Sie eine Zeile, um vorher Notiz, abrechenbar, Tätigkeit oder Arbeitselement zu ändern. Bei Projekten nach Aufwand füllt sich die Liste nach Ihren Meetings und beim Öffnen dieser Seite von selbst; bei Festpreisprojekten wählen Sie Meine Aktivität prüfen. Vorschläge verfallen am Ende der folgenden Woche.",
+			"about": "Zeit, die Fabric aus Ihren eigenen Meetings, verknüpften Teams-Meetings in Ihrem Kalender, Testläufen, Testarbeiten und Änderungen an Arbeitselementen vorschlägt. Eine Dauer wird nur eingetragen, wenn Beginn und Ende tatsächlich bekannt sind; sonst geben Sie ein, wie lange Sie gearbeitet haben. Mit Bestätigen oder der Eingabetaste erfassen Sie sie, mit Keine Arbeitszeit verwerfen Sie sie. Öffnen Sie eine Zeile, um vorher Notiz, abrechenbar, Tätigkeit oder Arbeitselement zu ändern. Bei Projekten nach Aufwand füllt sich die Liste nach Ihren Meetings und beim Öffnen dieser Seite von selbst; bei Festpreisprojekten wählen Sie Meine Aktivität prüfen. Vorschläge verfallen am Ende der folgenden Woche.",
 			"check": "Meine Aktivität prüfen",
 			"checking": "Wird geprüft…",
 			"confirm": "Bestätigen",
@@ -7810,7 +7816,8 @@
 				"workItemEdits": "{count, plural, one {# Änderung an einem Arbeitselement} other {# Änderungen an Arbeitselementen}}",
 				"testResults": "{count, plural, one {# erfasstes Testergebnis} other {# erfasste Testergebnisse}}",
 				"testCaseChanges": "{count, plural, one {# Änderung an einem Testfall} other {# Änderungen an Testfällen}}",
-				"pullRequestPushes": "{count, plural, one {# Push in einen Pull Request} other {# Pushes in Pull Requests}}"
+				"pullRequestPushes": "{count, plural, one {# Push in einen Pull Request} other {# Pushes in Pull Requests}}",
+				"calendarMeetings": "{count, plural, one {# Kalendertermin} other {# Kalendertermine}}"
 			}
 		},
 		"entry": {

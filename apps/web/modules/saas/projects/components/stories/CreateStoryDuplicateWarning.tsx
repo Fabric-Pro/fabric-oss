@@ -33,6 +33,10 @@ import {
 } from "../../lib/submit-create-story-enrichment";
 import type { PendingDocAttachment } from "../../lib/text-attachment-validation";
 import { ProposalDiffField } from "./ProposalDiffField";
+import {
+	type ProposalInboxMatch,
+	ProposalInboxMatches,
+} from "./ProposalInboxMatches";
 import { confidenceBand } from "./ProposalRoutingControl";
 
 /** `submitCreateStoryEnrichment` takes a `toast` dep rather than importing
@@ -60,20 +64,30 @@ export type CheckDuplicateResult = {
 	reasoning?: string | null;
 	alternatives: CheckDuplicateAlternative[];
 	error?: string;
+	/** Similar unreviewed Proposal Inbox items (absent from older servers). */
+	proposalMatches?: ProposalInboxMatch[];
 };
 
-/** The subset of `checkDuplicate`'s response this step renders — always the
- * "enrich" decision; a "create" or an error result never reaches this
- * component (the dialog stays on the form). */
-export type DuplicateWarningResult = {
-	decision: "enrich";
-	confidence: number;
-	matchedStoryId: string;
-	matchedIdentifier?: string;
-	matchedTitle?: string;
-	reasoning?: string | null;
-	alternatives: CheckDuplicateAlternative[];
-};
+/** What this step renders: a matched work item ("enrich"), similar Proposal
+ * Inbox items, or both. A plain "create" with no inbox match never reaches
+ * this component (the dialog stays on the form). */
+export type DuplicateWarningResult =
+	| {
+			decision: "enrich";
+			confidence: number;
+			matchedStoryId: string;
+			matchedIdentifier?: string;
+			matchedTitle?: string;
+			reasoning?: string | null;
+			alternatives: CheckDuplicateAlternative[];
+			proposalMatches?: ProposalInboxMatch[];
+	  }
+	| {
+			decision: "create";
+			proposalMatches: ProposalInboxMatch[];
+			/** The work-item half of the check could not run. */
+			storyCheckFailed: boolean;
+	  };
 
 export type CheckBeforeCreateOutcome =
 	| { kind: "warn"; result: DuplicateWarningResult }
@@ -85,7 +99,8 @@ export type CheckBeforeCreateOutcome =
  * creation and whether the check itself is why. A rejected call and an
  * `error`-carrying result both mean "could not check" (`checkFailed: true`);
  * an enrich decision missing its target degrades to a plain create rather
- * than a warning with nothing to show.
+ * than a warning with nothing to show. Similar Proposal Inbox items warn on
+ * their own, even when the work-item half found nothing or could not run.
  */
 export async function checkBeforeCreate(
 	run: () => Promise<CheckDuplicateResult>,
@@ -96,10 +111,12 @@ export async function checkBeforeCreate(
 	} catch {
 		return { kind: "create", checkFailed: true };
 	}
-	if (result.error) {
-		return { kind: "create", checkFailed: true };
-	}
-	if (result.decision === "enrich" && result.matchedStoryId) {
+	const proposalMatches = result.proposalMatches ?? [];
+	if (
+		!result.error &&
+		result.decision === "enrich" &&
+		result.matchedStoryId
+	) {
 		return {
 			kind: "warn",
 			result: {
@@ -110,10 +127,21 @@ export async function checkBeforeCreate(
 				matchedTitle: result.matchedTitle,
 				reasoning: result.reasoning,
 				alternatives: result.alternatives,
+				proposalMatches,
 			},
 		};
 	}
-	return { kind: "create", checkFailed: false };
+	if (proposalMatches.length > 0) {
+		return {
+			kind: "warn",
+			result: {
+				decision: "create",
+				proposalMatches,
+				storyCheckFailed: Boolean(result.error),
+			},
+		};
+	}
+	return { kind: "create", checkFailed: Boolean(result.error) };
 }
 
 type Props = {
@@ -136,6 +164,9 @@ type Props = {
 	/** The target was updated; the parent invalidates its stories query,
 	 * closes the dialog and navigates. */
 	onEnriched: (storyId: string) => void;
+	/** The text was merged into a Proposal Inbox item; the parent resets the
+	 * form and closes the dialog without creating anything. */
+	onMergedIntoProposal: () => void;
 };
 
 export function CreateStoryDuplicateWarning({
@@ -150,11 +181,14 @@ export function CreateStoryDuplicateWarning({
 	onBack,
 	onCreateAnyway,
 	onEnriched,
+	onMergedIntoProposal,
 }: Props) {
 	const t = useTranslations("projects.stories.create.duplicateWarning");
-	const { alternatives } = result;
+	const storyResult = result.decision === "enrich" ? result : null;
+	const alternatives = storyResult?.alternatives ?? [];
+	const proposalMatches = result.proposalMatches ?? [];
 	const [selectedStoryId, setSelectedStoryId] = useState(
-		result.matchedStoryId ?? alternatives[0]?.storyId,
+		storyResult?.matchedStoryId ?? alternatives[0]?.storyId,
 	);
 	const selected =
 		alternatives.find((alt) => alt.storyId === selectedStoryId) ??
@@ -174,7 +208,7 @@ export function CreateStoryDuplicateWarning({
 				organizationId,
 				targetStoryId,
 				proposedDescription: description,
-				reasoning: result.reasoning ?? undefined,
+				reasoning: storyResult?.reasoning ?? undefined,
 			}),
 	});
 	const preview = previewMutation.data;
@@ -206,13 +240,56 @@ export function CreateStoryDuplicateWarning({
 		onSuccess: (r) => onEnriched(r.storyId),
 	});
 
-	if (!selected) {
-		// Defensive: an "enrich" decision always names a target among its own
-		// alternatives.
-		return null;
+	const inboxMatches =
+		proposalMatches.length > 0 ? (
+			<ProposalInboxMatches
+				matches={proposalMatches}
+				projectId={projectId}
+				organizationId={organizationId}
+				description={description}
+				hasAttachments={hasAttachments}
+				disabled={confirmMutation.isPending}
+				onMerged={onMergedIntoProposal}
+			/>
+		) : null;
+
+	if (!storyResult || !selected) {
+		// Only inbox matches to show. (An "enrich" decision always names a
+		// target among its own alternatives.)
+		if (!inboxMatches) {
+			return null;
+		}
+		return (
+			<div
+				ref={containerRef}
+				tabIndex={-1}
+				className="space-y-4 outline-none"
+			>
+				<Alert variant="warning">
+					<AlertTriangleIcon aria-hidden="true" />
+					<AlertTitle>{t("inboxOnlyTitle")}</AlertTitle>
+					<AlertDescription>
+						<p>{t("inboxOnlyBody")}</p>
+					</AlertDescription>
+				</Alert>
+				{inboxMatches}
+				<div className="flex flex-wrap justify-end gap-2">
+					<Button type="button" variant="ghost" onClick={onBack}>
+						{t("back")}
+					</Button>
+					<Button
+						type="button"
+						variant="outline"
+						onClick={onCreateAnyway}
+					>
+						{t("createAnyway")}
+					</Button>
+				</div>
+			</div>
+		);
 	}
 
-	const band = confidenceBand(result.confidence);
+	const band = confidenceBand(storyResult.confidence);
 
 	return (
 		<div
@@ -228,9 +305,9 @@ export function CreateStoryDuplicateWarning({
 					<p className={cn("text-xs", band.className)}>
 						{band.label}
 					</p>
-					{result.reasoning && (
+					{storyResult.reasoning && (
 						<p className="text-muted-foreground text-xs">
-							{result.reasoning}
+							{storyResult.reasoning}
 						</p>
 					)}
 				</AlertDescription>
@@ -357,6 +434,8 @@ export function CreateStoryDuplicateWarning({
 					)}
 				</div>
 			)}
+
+			{inboxMatches}
 
 			<div className="flex flex-wrap justify-end gap-2">
 				<Button type="button" variant="ghost" onClick={onBack}>

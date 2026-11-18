@@ -2,8 +2,6 @@
  * MCP STDIO Wrapper HTTP Server
  *
  * Exposes STDIO-based MCP servers via HTTP endpoints.
- * This wrapper is designed to run as an internal service in Azure Container Apps,
- * accessible only from other services in the same environment.
  *
  * Endpoints:
  * - POST /mcp/call - Execute an MCP method
@@ -11,31 +9,20 @@
  * - GET /stats - Pool statistics (internal use)
  *
  * Security:
- * - Internal-only middleware restricts access to private network
+ * - Protected routes require an API key in production
  * - Credentials passed in the request body, injected as env vars to spawned
  *   processes; a pooled process is replaced when they change
  * - Process-per-user isolation
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { registerHttpServerShutdown } from "@repo/observability/http-server";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
-import { parse as parseShellArgs } from "shell-quote";
 import { z } from "zod/v4";
 
-import {
-	internalApiKeyMiddleware,
-	internalOnlyMiddleware,
-} from "./middleware/internal-only";
-import {
-	type ResolvedCommand,
-	resolvePreinstalledCommand,
-} from "./preinstalled-command";
+import { CatalogLaunchError, validateCatalogLaunch } from "./catalog-command";
+import { internalOnlyMiddleware } from "./middleware/internal-only";
 import {
 	getProcessPool,
 	hashCredentials,
@@ -44,17 +31,12 @@ import {
 } from "./process-pool";
 import { createStdioTransport, StdioRpcError } from "./stdio-transport";
 
-const TWILIO_PACKAGE = "@twilio-alpha/mcp";
-const TWILIO_LAUNCHER = fileURLToPath(
-	new URL("./launchers/twilio.cjs", import.meta.url),
-);
-
 // =============================================================================
 // Request Schemas
 // =============================================================================
 
 const McpCallRequestSchema = z.object({
-	/** MCP server command (e.g., 'npx @azure-devops/mcp') */
+	/** Pinned catalog command (e.g., 'npx -y @azure-devops/mcp@2.8.0') */
 	command: z.string(),
 	/** Arguments for the command (e.g., ['organization-name']) */
 	args: z.array(z.string()).default([]),
@@ -69,7 +51,17 @@ const McpCallRequestSchema = z.object({
 	/** Configuration ID for process caching */
 	configId: z.string(),
 	/** Credential environment variables (never logged) */
-	credentials: z.record(z.string(), z.string()).optional(),
+	// Preserve the supplied names so the catalog policy can reject unknown keys.
+	credentials: z
+		.custom<Record<string, string>>(
+			(value) =>
+				typeof value === "object" &&
+				value !== null &&
+				!Array.isArray(value) &&
+				Object.values(value).every((item) => typeof item === "string"),
+			"Expected credential names mapped to strings.",
+		)
+		.optional(),
 	/**
 	 * How fresh `credentials` are, compared element by element
 	 * (`compareCredentialsVersions`). A call whose credentials are older than
@@ -79,65 +71,6 @@ const McpCallRequestSchema = z.object({
 });
 
 export type McpCallRequest = z.infer<typeof McpCallRequestSchema>;
-
-// =============================================================================
-// Credential Materialization
-// =============================================================================
-
-/**
- * Materializes credential JSON content into temp files on the wrapper's filesystem.
- *
- * The web server passes Google Drive OAuth credentials as JSON strings
- * (__GDRIVE_OAUTH_KEYS_JSON, __GDRIVE_CREDENTIALS_JSON) instead of file paths,
- * since the web server and wrapper may run in different containers.
- *
- * This function writes those JSON strings to temp files and replaces the
- * credential keys with GDRIVE_OAUTH_PATH / GDRIVE_CREDENTIALS_PATH pointing
- * to the written files.
- *
- * @returns The resolved credentials and any temp paths that need cleanup.
- */
-async function materializeCredentialFiles(
-	credentials: Record<string, string>,
-	configId: string,
-): Promise<{ resolved: Record<string, string>; cleanupPaths: string[] }> {
-	const oauthKeysJson = credentials.__GDRIVE_OAUTH_KEYS_JSON;
-	const credentialsJson = credentials.__GDRIVE_CREDENTIALS_JSON;
-
-	if (!oauthKeysJson && !credentialsJson) {
-		return { resolved: credentials, cleanupPaths: [] };
-	}
-
-	// A unique directory per creation: two creations for one config can run
-	// at once (each set of credentials gets its own process), and must not
-	// write over or delete each other's files. mkdtemp creates it with 0o700.
-	const tmpDir = await mkdtemp(join(tmpdir(), `gdrive-mcp-${configId}-`));
-	try {
-		const resolved = { ...credentials };
-		// Remove the JSON content keys — they should not be passed as env vars
-		delete resolved.__GDRIVE_OAUTH_KEYS_JSON;
-		delete resolved.__GDRIVE_CREDENTIALS_JSON;
-
-		if (oauthKeysJson) {
-			const oauthKeysPath = join(tmpDir, "gcp-oauth.keys.json");
-			await writeFile(oauthKeysPath, oauthKeysJson, { mode: 0o600 });
-			resolved.GDRIVE_OAUTH_PATH = oauthKeysPath;
-		}
-
-		if (credentialsJson) {
-			const credentialsPath = join(tmpDir, "credentials.json");
-			await writeFile(credentialsPath, credentialsJson, { mode: 0o600 });
-			resolved.GDRIVE_CREDENTIALS_PATH = credentialsPath;
-		}
-
-		console.log(`[MCP Call] Materialized credential files in ${tmpDir}`);
-
-		return { resolved, cleanupPaths: [tmpDir] };
-	} catch (error) {
-		await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-		throw error;
-	}
-}
 
 /**
  * Deadline for the handshake with a freshly spawned server. It covers process
@@ -156,12 +89,8 @@ export interface ServerConfig {
 	port?: number;
 	/** Process pool configuration */
 	poolConfig?: ProcessPoolConfig;
-	/** Internal API key for additional security (optional) */
+	/** Override the key used to authenticate protected routes. */
 	internalApiKey?: string;
-	/** Command resolver override (used in tests) */
-	resolveCommand?: (
-		commandParts: readonly string[],
-	) => Promise<ResolvedCommand | null>;
 }
 
 /**
@@ -170,7 +99,6 @@ export interface ServerConfig {
 export function createServer(config: ServerConfig = {}): Hono {
 	const app = new Hono();
 	const pool = getProcessPool(config.poolConfig);
-	const resolveCommand = config.resolveCommand ?? resolvePreinstalledCommand;
 
 	// ==========================================================================
 	// Middleware
@@ -189,28 +117,10 @@ export function createServer(config: ServerConfig = {}): Hono {
 		}),
 	);
 
-	// Internal-only access (defense-in-depth)
-	// Note: In production, this service runs as a SIDECAR of temporal-worker,
-	// so all traffic comes via localhost. The middleware is kept for:
-	// 1. Local development scenarios
-	// 2. Defense-in-depth if architecture changes
-	app.use("/mcp/*", internalOnlyMiddleware());
-	app.use("/stats", internalOnlyMiddleware());
-
-	// API key authentication (defense in depth)
-	// Both /mcp/* and /stats require API key when configured
-	// In sidecar mode, this authenticates temporal-worker -> mcp-stdio-wrapper calls
-	const isProduction = process.env.NODE_ENV === "production";
-	if (config.internalApiKey) {
-		app.use("/mcp/*", internalApiKeyMiddleware(config.internalApiKey));
-		app.use("/stats", internalApiKeyMiddleware(config.internalApiKey));
-	} else if (isProduction) {
-		// Warn but don't fail - sidecar mode means localhost-only access
-		console.warn(
-			"[Security] MCP_WRAPPER_API_KEY not set in production. " +
-				"API key auth provides defense-in-depth and is strongly recommended.",
-		);
-	}
+	// Protect the MCP route subtree and pool statistics with the same middleware.
+	const requireInternalAccess = internalOnlyMiddleware(config.internalApiKey);
+	app.use("/mcp/*", requireInternalAccess);
+	app.use("/stats", requireInternalAccess);
 
 	// ==========================================================================
 	// Health Check
@@ -288,6 +198,16 @@ export function createServer(config: ServerConfig = {}): Hono {
 		// process only (not a replacement started with newer credentials).
 		let transport: Awaited<ReturnType<typeof pool.getOrCreate>> | undefined;
 		try {
+			const launch = { command, args, credentials };
+			// Validate before pool lookup so a warm process cannot serve an invalid request.
+			validateCatalogLaunch(launch);
+			// Changes to the catalog command or arguments also require a new child.
+			const launchHash = hashCredentials({
+				...credentials,
+				command,
+				args: JSON.stringify(args),
+			});
+
 			// Get or create transport using the pool's race-condition-safe
 			// method. A pooled process started with other credentials (a
 			// refreshed token, a revoke or a reconnect) is replaced.
@@ -300,48 +220,8 @@ export function createServer(config: ServerConfig = {}): Hono {
 						`[MCP Call] Creating new transport for config: ${configId}`,
 					);
 
-					// Parse command properly handling quoted args and paths with spaces
-					const parsedCommand = parseShellArgs(command);
-					// Filter out any non-string entries (shell-quote can return objects for operators)
-					const commandParts = parsedCommand.filter(
-						(part): part is string => typeof part === "string",
-					);
-					const preinstalled = await resolveCommand(commandParts);
-					if (preinstalled) {
-						console.log(
-							`[MCP Call] Running preinstalled ${preinstalled.packageName}@${preinstalled.version} instead of npx`,
-						);
-					}
-					const executable =
-						preinstalled?.executable ?? commandParts[0];
-					// Twilio reads credentials only from argv; its launcher adds them in-process.
-					const commandArgs =
-						preinstalled?.packageName === TWILIO_PACKAGE
-							? [TWILIO_LAUNCHER, ...preinstalled.args, ...args]
-							: [
-									...(preinstalled?.args ??
-										commandParts.slice(1)),
-									...args,
-								];
-
-					let cleanupPaths: string[] = [];
-					let newTransport: Awaited<
-						ReturnType<typeof createStdioTransport>
-					> | null = null;
+					const newTransport = await createStdioTransport(launch);
 					try {
-						// Only the request that creates the pooled process needs credential
-						// files. Calls reusing that process must not create orphaned copies.
-						const materialized = await materializeCredentialFiles(
-							credentials ?? {},
-							configId,
-						);
-						cleanupPaths = materialized.cleanupPaths;
-						newTransport = await createStdioTransport({
-							command: executable,
-							args: commandArgs,
-							env: materialized.resolved,
-						});
-
 						// MCP connections must initialize successfully before use.
 						await newTransport.request(
 							"initialize",
@@ -360,21 +240,13 @@ export function createServer(config: ServerConfig = {}): Hono {
 						);
 						await newTransport.notify("notifications/initialized");
 					} catch (error) {
-						await newTransport?.close().catch(() => {});
-						await Promise.all(
-							cleanupPaths.map((path) =>
-								rm(path, {
-									recursive: true,
-									force: true,
-								}).catch(() => {}),
-							),
-						);
+						await newTransport.close().catch(() => {});
 						throw error;
 					}
 
-					return { transport: newTransport, cleanupPaths };
+					return newTransport;
 				},
-				hashCredentials(credentials),
+				launchHash,
 				credentialsVersion,
 			);
 
@@ -403,6 +275,9 @@ export function createServer(config: ServerConfig = {}): Hono {
 				result,
 			});
 		} catch (error) {
+			if (error instanceof CatalogLaunchError) {
+				return c.json({ success: false, error: error.message }, 400);
+			}
 			console.error("[MCP Call] Error:", error);
 			if (error instanceof StdioRpcError) {
 				return c.json({ success: false, error: error.message });

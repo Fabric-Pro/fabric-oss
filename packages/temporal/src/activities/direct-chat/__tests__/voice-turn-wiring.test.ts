@@ -127,7 +127,11 @@ vi.mock("../../shared/read-only-gate", () => ({
 
 import { executeDirectChatActivity } from "../ai-execution";
 
-type Captured = { providerOptions?: unknown; maxOutputTokens?: number };
+type Captured = {
+	providerOptions?: unknown;
+	maxOutputTokens?: number;
+	tools?: Record<string, unknown>;
+};
 
 async function runTurn(overrides: Partial<DirectChatWorkflowInput> = {}) {
 	state.captured = undefined;
@@ -183,6 +187,15 @@ describe("direct chat: a spoken turn", () => {
 		expect(timings.values["direct.enhancerMs"]).toBe(0);
 	});
 
+	// Anyone in the meeting asks with the inviter's access: the inviter's own
+	// chats, agents and connections stay out of the meeting.
+	it("is not given the inviter's own sessions, agents and connections", async () => {
+		const { request } = await runTurn({ featureKey: "parlume" });
+		expect(Object.keys(request.tools ?? {})).not.toContain(
+			"list_recent_sessions",
+		);
+	});
+
 	it("does not mistake a reasoning-effort option for Anthropic thinking", async () => {
 		const { request } = await runTurn({ featureKey: "parlume" });
 		expect(request.maxOutputTokens).toBeUndefined();
@@ -223,6 +236,9 @@ describe("direct chat: an ordinary turn", () => {
 			const { request, timings } = await runTurn({ featureKey });
 			expect(state.enhance).toHaveBeenCalledTimes(1);
 			expect(request.providerOptions).toBeUndefined();
+			expect(Object.keys(request.tools ?? {})).toContain(
+				"list_recent_sessions",
+			);
 			expect(timings.values["direct.enhancerMs"]).toBeGreaterThanOrEqual(
 				0,
 			);

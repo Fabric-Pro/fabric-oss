@@ -116,4 +116,19 @@ describe("FeatureCoverageList — row click target", () => {
 			"/app/projects/p1/stories/story-2",
 		);
 	});
+
+	it("renders the Initiative chip for an INITIATIVE row", () => {
+		mockRows([
+			makeRow({
+				kind: "INITIATIVE",
+				storyId: "story-3",
+				title: "Enterprise SSO migration",
+			}),
+		]);
+		render(<FeatureCoverageList projectId="p1" />);
+
+		expect(
+			screen.getByText("featurePicker.initiative"),
+		).toBeInTheDocument();
+	});
 });

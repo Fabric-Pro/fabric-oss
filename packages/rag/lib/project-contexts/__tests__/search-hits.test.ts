@@ -5,12 +5,14 @@ const h = vi.hoisted(() => ({
 	pages: vi.fn(),
 	context: vi.fn(),
 	bundle: vi.fn(),
+	confidential: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
 	db: {
 		projectContext: { findMany: h.rows },
 		projectContextUrlPage: { findMany: h.pages },
 	},
+	findConfidentialTranscriptContextIds: h.confidential,
 	getRetrievableContextById: h.context,
 	getRetrievableConversationBundleById: h.bundle,
 }));
@@ -23,6 +25,7 @@ import { generateSparseVector } from "../../embedding/sparse";
 import {
 	hydrateProjectContextHits,
 	searchProjectContextHits,
+	withoutConfidentialTranscripts,
 } from "../search-hits";
 import { searchSimilarProjectContexts } from "../store";
 
@@ -110,6 +113,35 @@ beforeEach(() => {
 			);
 		}),
 	);
+});
+
+describe("withoutConfidentialTranscripts", () => {
+	it("drops every chunk of a confidential series' transcript and keeps the rest in order", async () => {
+		h.confidential.mockResolvedValue(new Set(["transcript-secret"]));
+		const hits = [
+			hit("prd"),
+			hit("transcript-secret"),
+			hit("transcript-secret-chunk-3"),
+			hit("transcript-open"),
+		];
+
+		await expect(
+			withoutConfidentialTranscripts(hits, tenant.projectId),
+		).resolves.toEqual([hit("prd"), hit("transcript-open")]);
+		expect(h.confidential).toHaveBeenCalledWith({
+			projectId: tenant.projectId,
+			contextIds: ["prd", "transcript-secret", "transcript-open"],
+		});
+	});
+
+	it("returns the hits as they are when no series is confidential", async () => {
+		h.confidential.mockResolvedValue(new Set());
+		const hits = [hit("prd"), hit("transcript-open")];
+
+		await expect(
+			withoutConfidentialTranscripts(hits, tenant.projectId),
+		).resolves.toBe(hits);
+	});
 });
 
 describe("project-scoped URL-page hydration", () => {

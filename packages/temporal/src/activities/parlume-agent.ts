@@ -1,4 +1,3 @@
-import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
 import { getAgentImplementationAvailability } from "@repo/agent-types/agent-implementation";
 import { FABRIC_AGENT_IDENTITY } from "@repo/ai/lib/fabric-agent-identity";
 import {
@@ -20,14 +19,16 @@ import {
 } from "./deployment-execution";
 import { executeDirectChatActivity } from "./direct-chat/ai-execution";
 import { collectMcpToolsActivity } from "./direct-chat/mcp-tools";
-import { generateMemoryContextActivity } from "./direct-chat/memory-context";
 import { retrieveWorkspaceDocumentsActivity } from "./direct-chat/rag-retrieval";
 import { parlumeFingerprint } from "./parlume-action-policy";
-import {
-	PARLUME_WORKSPACE_RAG_CHUNKS,
-	trimParlumeMemory,
-} from "./parlume-voice-context";
+import { PARLUME_WORKSPACE_RAG_CHUNKS } from "./parlume-voice-context";
 import { timeTurnStep } from "./shared/turn-timing";
+
+/**
+ * The project agent's own memory tool. A meeting turn neither recalls nor
+ * writes memories: they belong to the inviter and the agent, not the room.
+ */
+const AGENT_MEMORY_TOOL = "agent-memory";
 
 interface ParlumeAgentSession {
 	id: string;
@@ -118,36 +119,28 @@ async function loadConnectionBindings(
 	return { mcp, integrations };
 }
 
+/**
+ * The agent a meeting turn runs, as configured now. External MCP servers,
+ * OAuth integrations and RAG workspaces reach a meeting only when the agent
+ * opts in (`meetingExternalTools`): otherwise a meeting answer draws on the
+ * meeting's project and Fabric's own tools alone. The Fabric Agent has no
+ * agent row to opt in with, so in a meeting it never uses them. An empty list
+ * is passed on as "none" rather than "unset", which `collectMcpToolsActivity`
+ * would read back from the saved chat preference.
+ */
 export async function loadParlumeAgent(session: ParlumeAgentSession) {
 	if (session.agentKind === "FABRIC_AGENT") {
-		const [preferences, defaultMcpIds] = await Promise.all([
-			getOrchestratorPreferences(session.userId, session.organizationId),
-			getDefaultEnabledMcpConfigIds(
-				session.userId,
-				session.organizationId,
-			),
-		]);
-		const selected = preferences?.enabledMcpConfigIds ?? [];
-		// No saved selection reaches no external server, as in the chat. An
-		// empty list is passed on as "none" rather than "unset", which
-		// `collectMcpToolsActivity` would read back from the same preference.
-		const enabledMcpConfigIds = selected.length
-			? [...new Set([...selected, ...defaultMcpIds])]
-			: [];
+		const preferences = await getOrchestratorPreferences(
+			session.userId,
+			session.organizationId,
+		);
 		const reasoningMode: "lite" | "pro" | "balanced" =
 			preferences?.reasoningMode === "deep" ||
 			preferences?.reasoningMode === "planner"
 				? "pro"
 				: (preferences?.reasoningMode ?? "balanced");
-		const { allowed: workspaceIds } = await filterWorkspaceIdsForTenant({
-			workspaceIds: preferences?.enabledWorkspaceIds ?? [],
-			userId: session.userId,
-			organizationId: session.organizationId,
-		});
-		const connections = await loadConnectionBindings(
-			session,
-			enabledMcpConfigIds,
-		);
+		const enabledMcpConfigIds: string[] = [];
+		const workspaceIds: string[] = [];
 		return {
 			kind: "FABRIC_AGENT" as const,
 			revision: parlumeFingerprint({
@@ -155,7 +148,6 @@ export async function loadParlumeAgent(session: ParlumeAgentSession) {
 				enabledMcpConfigIds,
 				reasoningMode,
 				workspaceIds,
-				connections,
 			}),
 			enabledMcpConfigIds,
 			reasoningMode,
@@ -203,11 +195,14 @@ export async function loadParlumeAgent(session: ParlumeAgentSession) {
 			"The selected agent implementation is unavailable for execution.",
 		);
 	}
-	const { allowed: workspaceIds } = await filterWorkspaceIdsForTenant({
-		workspaceIds: instance.workspaceIds,
-		userId: session.userId,
-		organizationId: session.organizationId,
-	});
+	const external = instance.meetingExternalTools;
+	const { allowed: workspaceIds } = external
+		? await filterWorkspaceIdsForTenant({
+				workspaceIds: instance.workspaceIds,
+				userId: session.userId,
+				organizationId: session.organizationId,
+			})
+		: { allowed: [] };
 	const config: DeploymentConfig = {
 		deploymentId: `parlume-${session.id}`,
 		template: { ...instance.template, knowledgeSources: [], tools: [] },
@@ -221,10 +216,14 @@ export async function loadParlumeAgent(session: ParlumeAgentSession) {
 			modelOverride: instance.modelOverride,
 			modelConfig: jsonObject.nullable().parse(instance.modelConfig),
 		},
-		integrationConfigurations: instance.integrationConfigurations,
-		mcpConfigIds: instance.mcpServerConfigurations.map(
-			({ mcpConfigId }) => mcpConfigId,
-		),
+		integrationConfigurations: external
+			? instance.integrationConfigurations
+			: [],
+		mcpConfigIds: external
+			? instance.mcpServerConfigurations.map(
+					({ mcpConfigId }) => mcpConfigId,
+				)
+			: [],
 		toolConnections: z
 			.record(z.string(), jsonObject)
 			.parse(instance.toolConnections ?? {}),
@@ -234,6 +233,7 @@ export async function loadParlumeAgent(session: ParlumeAgentSession) {
 		kind: "TEMPLATE_INSTANCE" as const,
 		revision: parlumeFingerprint({
 			config,
+			meetingExternalTools: external,
 			connections: await loadConnectionBindings(
 				session,
 				config.mcpConfigIds,
@@ -241,15 +241,17 @@ export async function loadParlumeAgent(session: ParlumeAgentSession) {
 			),
 		}),
 		config,
+		meetingExternalTools: external,
 	};
 }
 
 type ParlumeAgent = Awaited<ReturnType<typeof loadParlumeAgent>>;
 
 /**
- * What the Fabric Agent looks up for a request before it runs: its MCP tools,
- * the user's memory and the agent's workspace documents. None of it depends on
- * the meeting context, so a turn starts it alongside that context's lookups.
+ * What the Fabric Agent looks up for a request before it runs: its MCP tools
+ * and the agent's workspace documents. None of it depends on the meeting
+ * context, so a turn starts it alongside that context's lookups. A meeting
+ * turn recalls no memories: the inviter's are not the room's to hear.
  */
 export function gatherParlumeAgentContext(
 	agent: Extract<ParlumeAgent, { kind: "FABRIC_AGENT" }>,
@@ -263,13 +265,6 @@ export function gatherParlumeAgentContext(
 					session.userId,
 					session.organizationId,
 					agent.enabledMcpConfigIds,
-				),
-			),
-			timeTurnStep("agent.memoryMs", () =>
-				generateMemoryContextActivity(
-					message,
-					session.userId,
-					session.organizationId,
 				),
 			),
 			timeTurnStep("agent.workspaceMs", () =>
@@ -304,7 +299,7 @@ export async function executeParlumeAgent(input: {
 }): Promise<{ success: boolean; response: string; error?: string }> {
 	const { agent, session } = input;
 	if (agent.kind === "FABRIC_AGENT") {
-		const [{ mcpToolInfo }, memory, workspace] = await (input.gathered ??
+		const [{ mcpToolInfo }, workspace] = await (input.gathered ??
 			gatherParlumeAgentContext(agent, session, input.message));
 		const result = await executeDirectChatActivity(
 			{
@@ -334,7 +329,7 @@ export async function executeParlumeAgent(input: {
 					.join("\n\n"),
 			},
 			mcpToolInfo,
-			trimParlumeMemory(memory.context ?? ""),
+			"",
 			"",
 		);
 		return {
@@ -349,6 +344,7 @@ export async function executeParlumeAgent(input: {
 			input: { message: input.message },
 			userId: session.userId,
 			organizationId: session.organizationId,
+			loadAgentMemory: false,
 		}),
 	);
 	if (context.projectId !== session.projectId) {
@@ -372,9 +368,16 @@ export async function executeParlumeAgent(input: {
 		]
 			.filter(Boolean)
 			.join("\n\n"),
-		mcpConfigIds: context.mcpConfigIds,
-		integrationConfigurations: context.integrationConfigurations,
-		builtInToolNames: context.builtInToolNames,
+		// The built context falls back to MCP servers named in the agent's
+		// legacy tool connections, so an agent that has not opted in gets
+		// none here whatever the context found.
+		mcpConfigIds: agent.meetingExternalTools ? context.mcpConfigIds : [],
+		integrationConfigurations: agent.meetingExternalTools
+			? context.integrationConfigurations
+			: [],
+		builtInToolNames: context.builtInToolNames.filter(
+			(name) => name !== AGENT_MEMORY_TOOL,
+		),
 		workspaceIds: agent.config.workspaceIds,
 		model: context.model,
 		userId: session.userId,

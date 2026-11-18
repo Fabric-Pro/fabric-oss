@@ -1,7 +1,11 @@
 import { logger } from "@repo/logs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ParlumeActionContext } from "../parlume-actions";
-import { createParlumeMeetingChatPoster } from "../parlume-chat-tool";
+import { PARLUME_CHAT_POST_CHARS } from "../parlume-chat-reply";
+import {
+	createParlumeMeetingChatPoster,
+	createParlumeMeetingChatTool,
+} from "../parlume-chat-tool";
 
 type Story = {
 	id: string;
@@ -15,6 +19,14 @@ const state = vi.hoisted(() => ({
 	stories: [] as Array<Record<string, unknown>>,
 	documents: [] as Array<Record<string, unknown>>,
 	contexts: [] as Array<Record<string, unknown>>,
+	instructionSync: null as {
+		projectId: string;
+		repositoryIntegration: {
+			repositoryUrl: string;
+			repositoryOwner: string;
+			repositoryName: string;
+		};
+	} | null,
 	access: { organizationId: "org-1" } as {
 		organizationId: string | null;
 	} | null,
@@ -80,6 +92,7 @@ vi.mock("@repo/database", () => {
 				organizationId?: string | null;
 			}) => urlFor(`${a.projectId}?tab=${a.tab}`, a.organizationId),
 		),
+		withVisibleStories: (where: unknown) => where,
 		db: {
 			userStory: {
 				findMany: vi.fn(
@@ -158,6 +171,14 @@ vi.mock("@repo/database", () => {
 						) ?? null,
 				),
 			},
+			projectInstructionRepositorySync: {
+				findUnique: vi.fn(
+					async ({ where }: { where: { projectId: string } }) =>
+						state.instructionSync?.projectId === where.projectId
+							? state.instructionSync
+							: null,
+				),
+			},
 		},
 	};
 });
@@ -188,8 +209,13 @@ const story = (overrides: Partial<Story> = {}): Story => ({
 type Input = {
 	text?: string;
 	links?: Array<{
-		kind: "work_item" | "document" | "source" | "project_tab";
-		ref: string;
+		kind:
+			| "work_item"
+			| "document"
+			| "source"
+			| "project_tab"
+			| "instructions_repository";
+		ref?: string;
 		label?: string;
 	}>;
 };
@@ -217,6 +243,7 @@ beforeEach(() => {
 			originalFilename: "kickoff.md",
 		},
 	];
+	state.instructionSync = null;
 	state.access = { organizationId: "org-1" };
 	state.builderFailure = false;
 	state.post.mockResolvedValue({ sent: true, tag: "P1" });
@@ -306,6 +333,7 @@ describe("post_to_meeting_chat links", () => {
 		expect(state.post).not.toHaveBeenCalled();
 		expect(result).toEqual({
 			sent: false,
+			error: expect.stringContaining("Nothing was sent"),
 			links: [],
 			unresolved: [
 				{ ref: "F-123", reason: "No such work item in this project." },
@@ -385,15 +413,116 @@ describe("post_to_meeting_chat links", () => {
 	});
 
 	it.each([
+		// The project's main tabs, as a staging meeting asked for them in one list.
+		["Overview", "overview"],
+		["Meeting Digest", "meeting-digest"],
+		["the Daily Brief page", "daily-brief"],
+		["Release notes", "release-notes"],
+		["Testing", "test-cases"],
 		["roadmap", "stories"],
 		["Decisions", "decisions"],
 		["documents", "documents"],
 		["context", "context"],
+		["instructions", "coding-instructions"],
+		["Coding instructions", "coding-instructions"],
+		// How a participant names it: "the coding instructions page".
+		["the Coding Instructions page", "coding-instructions"],
+		["roadmap tab", "stories"],
 	])("opens the %s tab", async (ref, tab) => {
 		await post({ links: [{ kind: "project_tab", ref }] });
 
 		expect(lastMessage()).toContain(`project-1?tab=${tab}`);
 	});
+
+	it("names the Coding Instructions tab as such", async () => {
+		await post({ links: [{ kind: "project_tab", ref: "instructions" }] });
+
+		expect(lastMessage()).toBe(
+			"Coding instructions — https://fabric.example/app/example-org/projects/project-1?tab=coding-instructions",
+		);
+	});
+
+	it("links the repository the project's Coding Instructions sync from, as a browser opens it", async () => {
+		state.instructionSync = {
+			projectId: "project-1",
+			repositoryIntegration: {
+				repositoryUrl:
+					"https://dev.azure.com/example-org/Example/_git/coding-instructions.git",
+				repositoryOwner: "example-org",
+				repositoryName: "coding-instructions",
+			},
+		};
+
+		const result = await post({
+			links: [{ kind: "instructions_repository" }],
+		});
+
+		expect(lastMessage()).toBe(
+			"Coding instructions repository · example-org/coding-instructions — https://dev.azure.com/example-org/Example/_git/coding-instructions",
+		);
+		expect(result).toMatchObject({ sent: true, unresolved: [] });
+	});
+
+	it("asks for the item when a link other than the repository has no ref", async () => {
+		const result = await post({ links: [{ kind: "work_item" }] });
+
+		expect(state.post).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			sent: false,
+			unresolved: [
+				{ ref: "work_item", reason: expect.stringContaining("ref") },
+			],
+		});
+	});
+
+	it.each([
+		["no repository sync", null],
+		[
+			"an address with credentials",
+			"https://token@github.com/example-org/coding-instructions",
+		],
+		[
+			"an address that is not https",
+			"git@github.com:example-org/rules.git",
+		],
+	])(
+		"refuses the instructions repository with %s and says why",
+		async (_name, url) => {
+			state.instructionSync = url
+				? {
+						projectId: "project-1",
+						repositoryIntegration: {
+							repositoryUrl: url,
+							repositoryOwner: "example-org",
+							repositoryName: "rules",
+						},
+					}
+				: null;
+
+			const result = await post({
+				links: [
+					{
+						kind: "instructions_repository",
+						ref: "coding instructions",
+					},
+				],
+			});
+
+			expect(state.post).not.toHaveBeenCalled();
+			expect(result).toMatchObject({
+				sent: false,
+				error: expect.stringContaining("Nothing was sent"),
+				unresolved: [
+					{
+						ref: "coding instructions",
+						reason: expect.stringContaining(
+							"project_tab instructions",
+						),
+					},
+				],
+			});
+		},
+	);
 
 	it("refuses a tab that does not exist", async () => {
 		const result = await post({
@@ -442,6 +571,70 @@ describe("post_to_meeting_chat links", () => {
 	});
 });
 
+describe("get_meeting_links", () => {
+	const getLinks = (links: NonNullable<Input["links"]>) =>
+		createParlumeMeetingChatTool(context).get_meeting_links.execute?.(
+			{ links },
+			{ toolCallId: "call-1", messages: [], context: {} },
+		);
+
+	// A typed or realtime answer is posted by Parlume itself: the agent only
+	// needs the exact addresses to write them into it.
+	it("returns exact addresses without posting anything", async () => {
+		const result = await getLinks([
+			{ kind: "project_tab", ref: "coding instructions page" },
+			{ kind: "work_item", ref: "F-999" },
+		]);
+
+		expect(state.post).not.toHaveBeenCalled();
+		expect(result).toEqual({
+			resolved: [
+				{
+					ref: "coding instructions page",
+					title: "Coding instructions",
+					url: "https://fabric.example/app/example-org/projects/project-1?tab=coding-instructions",
+				},
+			],
+			unresolved: [
+				{ ref: "F-999", reason: "No such work item in this project." },
+			],
+		});
+	});
+
+	// A staging meeting asked for "Overview, Meeting Digest, Context, Roadmap"
+	// and got "Link unavailable" for the first two.
+	it("resolves the project's main pages asked for in one list", async () => {
+		const result = await getLinks(
+			["Overview", "Meeting Digest", "Context", "Roadmap"].map((ref) => ({
+				kind: "project_tab" as const,
+				ref,
+			})),
+		);
+
+		expect(result).toEqual({
+			resolved: [
+				["Overview", "Overview", "overview"],
+				["Meeting Digest", "Meeting Digest", "meeting-digest"],
+				["Context", "Context", "context"],
+				["Roadmap", "Roadmap", "stories"],
+			].map(([ref, title, tab]) => ({
+				ref,
+				title,
+				url: `https://fabric.example/app/example-org/projects/project-1?tab=${tab}`,
+			})),
+			unresolved: [],
+		});
+	});
+
+	it("refuses when the inviter can no longer read the project", async () => {
+		state.access = null;
+
+		expect(await getLinks([{ kind: "work_item", ref: "F-123" }])).toEqual({
+			error: "Project not found or access denied.",
+		});
+	});
+});
+
 describe("post_to_meeting_chat text", () => {
 	it("posts whatever the participant asked for, URLs included", async () => {
 		await post({
@@ -468,8 +661,8 @@ describe("post_to_meeting_chat text", () => {
 		expect(state.post).not.toHaveBeenCalled();
 	});
 
-	it("keeps the whole message, with room for the bridge's tag, inside the chat's 4,000 characters, shortening the text before any link", async () => {
-		state.stories = Array.from({ length: 10 }, (_, index) =>
+	it("keeps the whole message, with room for the bridge's tag, inside one chat post, shortening the text before any link", async () => {
+		state.stories = Array.from({ length: 5 }, (_, index) =>
 			story({
 				id: `story-${index}`,
 				identifier: `F-${index + 1}`,
@@ -487,10 +680,10 @@ describe("post_to_meeting_chat text", () => {
 
 		const message = lastMessage();
 		const [text, links] = message.split("\n\n");
-		expect(message.length).toBeLessThanOrEqual(3_990);
+		expect(message.length).toBeLessThanOrEqual(PARLUME_CHAT_POST_CHARS);
 		expect(text.endsWith("…")).toBe(true);
 		expect(text.length).toBeLessThan(3_500);
-		expect(links.split("\n")).toHaveLength(10);
+		expect(links.split("\n")).toHaveLength(5);
 	});
 
 	it("drops links from the end, never cutting one, when links alone are too long", async () => {
@@ -510,7 +703,9 @@ describe("post_to_meeting_chat text", () => {
 		});
 
 		const lines = lastMessage().split("\n");
-		expect(lastMessage().length).toBeLessThanOrEqual(3_990);
+		expect(lastMessage().length).toBeLessThanOrEqual(
+			PARLUME_CHAT_POST_CHARS,
+		);
 		expect(lines.every((line) => /— https:\/\/\S+$/.test(line))).toBe(true);
 		expect(lines.length).toBeLessThan(10);
 		const unresolved = (result.unresolved as Array<{ reason: string }>).map(

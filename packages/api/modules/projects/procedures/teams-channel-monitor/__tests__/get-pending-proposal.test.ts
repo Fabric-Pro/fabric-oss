@@ -1,7 +1,8 @@
 /**
  * Unit tests for `getPendingProposalProcedure`: the project check, and the
- * additive `createdChangeIndexes` read from the application table — which,
- * unlike the `appliedChangeIndexes` mirror, never counts a duplicate skip.
+ * additive per-item outcomes: `applications` and `createdChangeIndexes` read
+ * from the application table — which, unlike the `appliedChangeIndexes`
+ * mirror, never counts a duplicate skip — and `rejectedChangeIndexes`.
  */
 
 import { ORPCError } from "@orpc/server";
@@ -11,17 +12,37 @@ const { handlers, mocks } = vi.hoisted(() => {
 	const handlers: Record<string, (...args: unknown[]) => unknown> = {};
 	const mocks = {
 		getProposal: vi.fn(),
-		getAppliedChangeIndexes: vi.fn(),
+		listProposalApplications: vi.fn(),
+		listProposalDuplicateResolutions: vi.fn(),
+		readRejectedChangeIndexes: vi.fn(),
 		getLinkedTeamsChatGraphId: vi.fn(),
 	};
 	return { handlers, mocks };
 });
 
-vi.mock("@repo/database", () => ({
-	getPendingBacklogProposal: mocks.getProposal,
-	getAppliedChangeIndexes: mocks.getAppliedChangeIndexes,
-	getLinkedTeamsChatGraphId: mocks.getLinkedTeamsChatGraphId,
-}));
+vi.mock("../../../../../../database/prisma/client", () => ({ db: {} }));
+vi.mock("@repo/database", async () => {
+	const changes = await import(
+		"../../../../../../database/prisma/queries/projects/proposal-changes"
+	);
+	const itemState = await import(
+		"../../../../../../database/prisma/queries/projects/pending-proposal-item-state"
+	);
+	return {
+		computeProposalItemState: itemState.computeProposalItemState,
+		getPendingBacklogProposal: mocks.getProposal,
+		listProposalApplications: mocks.listProposalApplications,
+		listProposalDuplicateResolutions:
+			mocks.listProposalDuplicateResolutions,
+		proposalRevision: changes.proposalRevision,
+		readRejectedChangeIndexes: mocks.readRejectedChangeIndexes,
+		readStoredProposalChanges: changes.readStoredProposalChanges,
+		targetChangedSinceProposal: changes.targetChangedSinceProposal,
+		getLinkedTeamsChatGraphId: mocks.getLinkedTeamsChatGraphId,
+	};
+});
+
+import { proposalRevision } from "../../../../../../database/prisma/queries/projects/proposal-changes";
 
 vi.mock("../../../../../orpc/procedures", () => {
 	const chainable: Record<string, unknown> = {};
@@ -61,31 +82,102 @@ function callGet() {
 
 beforeEach(() => {
 	mocks.getProposal.mockReset();
-	mocks.getAppliedChangeIndexes.mockReset();
+	mocks.listProposalApplications.mockReset();
+	mocks.listProposalDuplicateResolutions.mockReset();
+	mocks.listProposalDuplicateResolutions.mockResolvedValue([]);
+	mocks.readRejectedChangeIndexes.mockReset();
+	mocks.readRejectedChangeIndexes.mockReturnValue([]);
 	mocks.getLinkedTeamsChatGraphId.mockReset();
 });
 
 describe("getPendingProposalProcedure", () => {
 	it("returns the row plus the created indexes, sorted, apart from the mirror", async () => {
+		const proposal = { changes: [] };
 		mocks.getProposal.mockResolvedValue({
 			id: "proposal-1",
 			projectId: "project-1",
+			changeCount: 4,
+			proposal,
 			appliedChangeIndexes: [3, 0, 2],
 		});
-		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set([3, 0]));
+		// The query returns application rows ordered by change index.
+		const applications = [
+			{ changeIndex: 0, createdEntityId: "story-1", action: "create" },
+			{ changeIndex: 3, createdEntityId: null, action: "update" },
+		];
+		mocks.listProposalApplications.mockResolvedValue(applications);
 
 		const result = await callGet();
 
-		expect(mocks.getAppliedChangeIndexes).toHaveBeenCalledWith(
+		expect(mocks.listProposalApplications).toHaveBeenCalledWith(
 			"proposal-1",
 		);
 		expect(result).toEqual({
 			id: "proposal-1",
 			projectId: "project-1",
+			changeCount: 4,
+			proposal,
 			appliedChangeIndexes: [3, 0, 2],
+			applications,
 			createdChangeIndexes: [0, 3],
+			duplicateResolutions: [],
+			duplicateChangeIndexes: [],
+			rejectedChangeIndexes: [],
+			resolvedItems: [
+				{ changeIndex: 0, reason: "applied" },
+				{ changeIndex: 2, reason: "applied" },
+				{ changeIndex: 3, reason: "applied" },
+			],
+			remainingCount: 1,
+			proposalRevision: proposalRevision(proposal),
+			targetChangedSinceProposalIndexes: [],
 			teamsChatSourceLink: null,
 		});
+	});
+
+	it("returns the items resolved as duplicates, with the existing ticket", async () => {
+		mocks.getProposal.mockResolvedValue({
+			id: "proposal-1",
+			projectId: "project-1",
+			changeCount: 2,
+			appliedChangeIndexes: [],
+		});
+		mocks.listProposalApplications.mockResolvedValue([]);
+		const duplicateResolutions = [
+			{ changeIndex: 1, existingEntityId: "story-existing" },
+		];
+		mocks.listProposalDuplicateResolutions.mockResolvedValue(
+			duplicateResolutions,
+		);
+
+		const result = await callGet();
+
+		expect(mocks.listProposalDuplicateResolutions).toHaveBeenCalledWith(
+			"proposal-1",
+		);
+		expect(result).toMatchObject({
+			duplicateResolutions,
+			duplicateChangeIndexes: [1],
+		});
+	});
+
+	it("returns the items moved to Rejected one at a time", async () => {
+		const sourceMetadata = { rejectedChangeIndexes: [1] };
+		mocks.getProposal.mockResolvedValue({
+			id: "proposal-1",
+			projectId: "project-1",
+			sourceMetadata,
+			appliedChangeIndexes: [],
+		});
+		mocks.listProposalApplications.mockResolvedValue([]);
+		mocks.readRejectedChangeIndexes.mockReturnValue([1]);
+
+		const result = await callGet();
+
+		expect(mocks.readRejectedChangeIndexes).toHaveBeenCalledWith(
+			sourceMetadata,
+		);
+		expect(result).toMatchObject({ rejectedChangeIndexes: [1] });
 	});
 
 	it("deep-links a Teams chat proposal to its root message through its linked chat, in the same project", async () => {
@@ -99,7 +191,7 @@ describe("getPendingProposalProcedure", () => {
 			},
 			appliedChangeIndexes: [],
 		});
-		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set());
+		mocks.listProposalApplications.mockResolvedValue([]);
 		mocks.getLinkedTeamsChatGraphId.mockResolvedValue(
 			"19:example-chat@thread.v2",
 		);
@@ -130,7 +222,7 @@ describe("getPendingProposalProcedure", () => {
 			},
 			appliedChangeIndexes: [],
 		});
-		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set());
+		mocks.listProposalApplications.mockResolvedValue([]);
 		mocks.getLinkedTeamsChatGraphId.mockResolvedValue(graphChatId);
 
 		const result = await callGet();
@@ -161,7 +253,7 @@ describe("getPendingProposalProcedure", () => {
 				sourceMetadata,
 				appliedChangeIndexes: [],
 			});
-			mocks.getAppliedChangeIndexes.mockResolvedValue(new Set());
+			mocks.listProposalApplications.mockResolvedValue([]);
 
 			const result = await callGet();
 
@@ -178,7 +270,7 @@ describe("getPendingProposalProcedure", () => {
 		});
 
 		await expect(callGet()).rejects.toBeInstanceOf(ORPCError);
-		expect(mocks.getAppliedChangeIndexes).not.toHaveBeenCalled();
+		expect(mocks.listProposalApplications).not.toHaveBeenCalled();
 	});
 
 	it("is NOT_FOUND for a missing proposal", async () => {

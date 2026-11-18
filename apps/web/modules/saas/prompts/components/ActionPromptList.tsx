@@ -46,7 +46,7 @@ export type ActionPromptVariant = {
 type Props = {
 	targetKey: string;
 	documentType: string;
-	storyKind: "FEATURE" | "BUG" | null;
+	storyKind: "FEATURE" | "BUG" | "INITIATIVE" | null;
 	prompts: ActionPromptVariant[];
 	basePath: string;
 	/** Refetch the catalog after a switch lands. */

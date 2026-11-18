@@ -500,6 +500,46 @@ describe("enhanceFeatureProcedure — a Clean Spec refresh resolves the agent fr
 		);
 	});
 
+	it("resolves the INITIATIVE Clean Spec agent when the stored kind is INITIATIVE", async () => {
+		mocks.getStoryById.mockResolvedValue({
+			id: "story-1",
+			title: "Existing work item",
+			description: "Original description body",
+			acceptanceCriteria: null,
+			draftingStage: "PLACEHOLDER",
+			kind: "INITIATIVE",
+			identifier: "I-001",
+			version: 1,
+		});
+		mocks.getBoundPromptForAgent.mockResolvedValue({
+			version: { content: "BOUND_CLEAN_SPEC_SENTINEL" },
+			format: "PLAIN_TEXT",
+			key: "initiative_clean_spec",
+		});
+		mocks.renderTemplate.mockResolvedValue({
+			rendered: "BOUND_CLEAN_SPEC_SENTINEL",
+			error: null,
+		});
+
+		await handlers.enhance({
+			input: {
+				projectId: "project-1",
+				storyId: "story-1",
+				organizationId: null,
+				cleanSpecRefresh: true,
+			},
+			context: ctx,
+		});
+
+		expect(mocks.getBoundPromptForAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				agentName: "initiative_clean_spec_generator",
+				documentType: "CLEAN_SPEC",
+				storyKind: "INITIATIVE",
+			}),
+		);
+	});
+
 	it("takes the agent from the story load, not from anything the caller passed — the input carries no kind field at all", async () => {
 		// The exact same `input` object is reused for both calls below; only the
 		// `getStoryById` mock changes between them. `cleanSpecRefresh` inputs

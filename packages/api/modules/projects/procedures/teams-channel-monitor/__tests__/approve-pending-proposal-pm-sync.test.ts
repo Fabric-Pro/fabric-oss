@@ -27,7 +27,7 @@ const { handlers, mocks, schemas } = vi.hoisted(() => {
 		claim: vi.fn(async () => true),
 		getPendingBacklogProposal: vi.fn(),
 		markPendingProposalApproved: vi.fn(),
-		markPendingProposalApplied: vi.fn(),
+		settleCreatesOnlyApply: vi.fn(),
 		markPendingProposalFailed: vi.fn(),
 		appendAppliedChangeIndexes: vi.fn(),
 		recordProposalApplication: vi.fn(),
@@ -56,11 +56,12 @@ const { handlers, mocks, schemas } = vi.hoisted(() => {
 
 vi.mock("@repo/database", () => ({
 	getAppliedChangeIndexes: vi.fn(async () => new Set<number>()),
+	readRejectedChangeIndexes: () => [],
 	claimPendingProposalWithReview: mocks.claim,
 
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	markPendingProposalApproved: mocks.markPendingProposalApproved,
-	markPendingProposalApplied: mocks.markPendingProposalApplied,
+	settleCreatesOnlyApply: mocks.settleCreatesOnlyApply,
 	markPendingProposalFailed: mocks.markPendingProposalFailed,
 	appendAppliedChangeIndexes: mocks.appendAppliedChangeIndexes,
 	recordProposalApplication: mocks.recordProposalApplication,
@@ -251,7 +252,10 @@ beforeEach(() => {
 	mocks.featureFindFirst.mockResolvedValue(null);
 	mocks.appendAppliedChangeIndexes.mockResolvedValue(undefined);
 	mocks.markPendingProposalApproved.mockResolvedValue(undefined);
-	mocks.markPendingProposalApplied.mockResolvedValue(undefined);
+	mocks.settleCreatesOnlyApply.mockResolvedValue({
+		status: "applied",
+		remainingChangeCount: 0,
+	});
 	mocks.markPendingProposalFailed.mockResolvedValue(undefined);
 
 	// Default: the new row is a BUG so `enqueuePmSync` is called with

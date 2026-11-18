@@ -38,7 +38,7 @@ type CoverageRow = {
 	storyId: string;
 	identifier: string;
 	title: string;
-	kind: "FEATURE" | "BUG";
+	kind: "FEATURE" | "BUG" | "INITIATIVE";
 	closed: boolean;
 	caseCount: number;
 };
@@ -242,6 +242,11 @@ export function FeaturePicker({
 											{row.kind === "BUG" && (
 												<span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
 													{t("bug")}
+												</span>
+											)}
+											{row.kind === "INITIATIVE" && (
+												<span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+													{t("initiative")}
 												</span>
 											)}
 											{row.closed && (

@@ -36,6 +36,13 @@ import { config } from "@repo/config";
 import { gitlabOutboundFetch } from "@repo/integrations/gitlab";
 import { logger } from "@repo/logs";
 import { getStorageProvider } from "@repo/storage";
+import {
+	createOutboundHostAllowlist,
+	OutboundResponseRejectedError,
+	PINNED_FETCH_ANY_CONTENT_TYPE,
+	safeFetchOutboundPinned,
+	UnsafeOutboundUrlError,
+} from "@repo/utils/url-security";
 
 // =============================================================================
 // Constants
@@ -54,6 +61,151 @@ export const STORY_MEDIA_PREFIX = "story-media/";
  * delays and any subsequent re-syncs within a week.
  */
 export const STORY_MEDIA_SIGNED_URL_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+const ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
+const IMAGE_DOWNLOAD_MAX_BYTES = 10 * 1024 * 1024;
+const STORY_IMAGE_CONTENT_TYPES = [
+	"image/png",
+	"image/jpeg",
+	"image/gif",
+	"image/webp",
+	"image/svg+xml",
+];
+
+type StoryMediaKind = "image" | "file";
+
+function isStoryMediaHttpSource(src: string): boolean {
+	return /^https?:\/\//i.test(src);
+}
+
+function storyMediaContentType(response: Response): string {
+	return (response.headers.get("content-type") ?? "").split(";")[0].trim();
+}
+
+function storyMediaSourceHost(src: string): string | undefined {
+	return URL.parse(src)?.hostname || undefined;
+}
+
+function storyMediaFetchError(error: unknown): string {
+	// Guard and transport errors may contain signed URL details.
+	if (error instanceof OutboundResponseRejectedError) {
+		return error.code;
+	}
+	// The guard also wraps resolver errors with a cause.
+	if (error instanceof UnsafeOutboundUrlError && error.cause === undefined) {
+		return error.code;
+	}
+	return "source request failed";
+}
+
+async function fetchStoryMedia(
+	src: string,
+	maxBytes: number,
+	kind: StoryMediaKind = "image",
+): Promise<Response> {
+	const url = new URL(src);
+	const init = {
+		headers: {
+			"User-Agent":
+				"Fabric-Sync/1.0 (+https://fabric.pro; pm-sync worker)",
+			Accept: kind === "image" ? "image/*" : "*/*",
+		},
+	};
+
+	if (
+		process.env.NODE_ENV === "development" &&
+		!url.username &&
+		!url.password
+	) {
+		// The development exception is limited to the configured storage
+		// origin and path-style story-media bucket. Redirects are disabled.
+		const storage = URL.parse(process.env.S3_ENDPOINT ?? "");
+		const isStorageMedia =
+			storage?.origin === url.origin &&
+			url.pathname.startsWith(
+				`${storage.pathname.replace(/\/$/, "")}/${config.storage.bucketNames.projectContexts}/${STORY_MEDIA_PREFIX}`,
+			);
+		if (isStorageMedia) {
+			const guard = createOutboundHostAllowlist({
+				envVar: "STORY_SYNC_MEDIA_ALLOWED_HOSTS",
+				nonProductionDefaultHosts: [
+					url.hostname
+						.toLowerCase()
+						.replace(/^\[|\]$/g, "")
+						.replace(/\.$/, ""),
+				],
+			});
+			if (guard.isAllowedHost(url.href)) {
+				const response = await guard.fetch(url, {
+					...init,
+					signal: AbortSignal.timeout(10_000),
+				});
+				return limitLocalStoryMedia(response, maxBytes, kind);
+			}
+		}
+	}
+
+	return safeFetchOutboundPinned(url.href, init, {
+		maxBytes,
+		allowedContentTypes:
+			kind === "image"
+				? STORY_IMAGE_CONTENT_TYPES
+				: [PINNED_FETCH_ANY_CONTENT_TYPE],
+	});
+}
+
+async function limitLocalStoryMedia(
+	response: Response,
+	maxBytes: number,
+	kind: StoryMediaKind,
+): Promise<Response> {
+	if (!response.ok) {
+		await response.body?.cancel();
+		return response;
+	}
+	if (
+		kind === "image" &&
+		!STORY_IMAGE_CONTENT_TYPES.includes(
+			storyMediaContentType(response).toLowerCase(),
+		)
+	) {
+		await response.body?.cancel();
+		throw new OutboundResponseRejectedError(
+			"CONTENT_TYPE_NOT_ALLOWED",
+			"Expected an image response",
+		);
+	}
+	if (!response.body) {
+		return response;
+	}
+
+	const reader = response.body.getReader();
+	const chunks: Uint8Array<ArrayBuffer>[] = [];
+	let size = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) {
+				break;
+			}
+			size += value.byteLength;
+			if (size > maxBytes) {
+				throw new OutboundResponseRejectedError(
+					"RESPONSE_TOO_LARGE",
+					"Source exceeded the download size limit",
+				);
+			}
+			chunks.push(new Uint8Array(value));
+		}
+	} finally {
+		await reader.cancel().catch(() => {});
+	}
+	return new Response(new Blob(chunks), {
+		status: response.status,
+		statusText: response.statusText,
+		headers: response.headers,
+	});
+}
 
 // =============================================================================
 // Key extraction
@@ -1213,13 +1365,7 @@ async function uploadOneImageToAdo(
 	target: AdoAttachmentTarget,
 ): Promise<string | null> {
 	const src = image.src;
-	if (!src) {
-		return null;
-	}
-	// Bail early on data URLs — they're already inline; ADO usually
-	// strips them too, but uploading a data-URL is an extra round-trip
-	// and the failure mode is the same.
-	if (/^data:/i.test(src)) {
+	if (!isStoryMediaHttpSource(src)) {
 		return null;
 	}
 	// Bail on URLs already pointing at this ADO instance — re-uploading
@@ -1230,33 +1376,22 @@ async function uploadOneImageToAdo(
 	}
 
 	let binary: ArrayBuffer;
-	let contentType = "application/octet-stream";
+	let contentType: string;
 	try {
-		// Send a real-ish User-Agent — Wikipedia, GitHub user-content, and
-		// other public image hosts return 4xx for default Node user-agents
-		// (Wikipedia returns 400; GitHub returns 403). The token is
-		// arbitrary but identifies the request as Fabric's sync worker so
-		// hosts who want to block can do so deliberately.
-		const res = await fetch(src, {
-			headers: {
-				"User-Agent":
-					"Fabric-Sync/1.0 (+https://fabric.pro; pm-sync worker)",
-				Accept: "image/*,*/*;q=0.8",
-			},
-		});
+		const res = await fetchStoryMedia(src, IMAGE_DOWNLOAD_MAX_BYTES);
 		if (!res.ok) {
 			logger.warn("[ADO Attachments] Source fetch failed", {
-				src,
+				sourceHost: storyMediaSourceHost(src),
 				status: res.status,
 			});
 			return null;
 		}
 		binary = await res.arrayBuffer();
-		contentType = res.headers.get("content-type") ?? contentType;
+		contentType = storyMediaContentType(res).toLowerCase();
 	} catch (err) {
 		logger.warn("[ADO Attachments] Source fetch threw", {
-			src,
-			error: err instanceof Error ? err.message : String(err),
+			sourceHost: storyMediaSourceHost(src),
+			error: storyMediaFetchError(err),
 		});
 		return null;
 	}
@@ -1294,7 +1429,6 @@ async function uploadOneImageToAdo(
 				}
 			}
 			logger.warn("[ADO Attachments] Upload failed", {
-				src,
 				fileName,
 				status: up.status,
 				bodyPreview,
@@ -1307,7 +1441,6 @@ async function uploadOneImageToAdo(
 		return json.url ?? null;
 	} catch (err) {
 		logger.warn("[ADO Attachments] Upload threw", {
-			src,
 			fileName,
 			error: err instanceof Error ? err.message : String(err),
 		});
@@ -1364,6 +1497,32 @@ function gitlabUploadFileName(alt: string, contentType: string): string {
 	return `image.${ext}`;
 }
 
+async function downloadGitLabStoryMedia(
+	src: string,
+	kind: StoryMediaKind,
+): Promise<{ bytes: Buffer; contentType: string } | null> {
+	try {
+		const response = await fetchStoryMedia(src, ATTACHMENT_MAX_BYTES, kind);
+		if (!response.ok) {
+			logger.warn("[GitLab Attachments] Source fetch failed", {
+				sourceHost: storyMediaSourceHost(src),
+				status: response.status,
+			});
+			return null;
+		}
+		return {
+			bytes: Buffer.from(await response.arrayBuffer()),
+			contentType: storyMediaContentType(response),
+		};
+	} catch (err) {
+		logger.warn("[GitLab Attachments] Source fetch threw", {
+			sourceHost: storyMediaSourceHost(src),
+			error: storyMediaFetchError(err),
+		});
+		return null;
+	}
+}
+
 /**
  * Upload every embeddable markdown image in a GitLab-bound description to the
  * project's `POST /api/v4/projects/:id/uploads` endpoint and rewrite each
@@ -1391,7 +1550,6 @@ export async function uploadGitLabImagesAndRewriteDescription(
 	const uploadUrl = `${apiBase}/projects/${encodeURIComponent(
 		opts.projectId,
 	)}/uploads`;
-	const MAX_BYTES = 25 * 1024 * 1024;
 
 	const matches = [...description.matchAll(/!\[([^\]]*)\]\(([^)\s]+)\)/g)];
 	if (matches.length === 0) {
@@ -1414,21 +1572,17 @@ export async function uploadGitLabImagesAndRewriteDescription(
 				bytes = data[2]
 					? Buffer.from(data[3], "base64")
 					: Buffer.from(decodeURIComponent(data[3]), "utf8");
-			} else if (/^https?:\/\//i.test(src)) {
-				const res = await fetch(src, {
-					headers: { "User-Agent": "Fabric-Sync/1.0 (pm-sync push)" },
-				});
-				if (!res.ok) {
+			} else if (isStoryMediaHttpSource(src)) {
+				const download = await downloadGitLabStoryMedia(src, "image");
+				if (!download) {
 					continue;
 				}
-				bytes = Buffer.from(await res.arrayBuffer());
-				contentType =
-					res.headers.get("content-type")?.split(";")[0]?.trim() ||
-					contentType;
+				bytes = download.bytes;
+				contentType = download.contentType.toLowerCase();
 			} else {
 				continue; // relative/non-fetchable URL we can't upload
 			}
-			if (bytes.length === 0 || bytes.length > MAX_BYTES) {
+			if (bytes.length === 0 || bytes.length > ATTACHMENT_MAX_BYTES) {
 				continue;
 			}
 
@@ -1527,10 +1681,9 @@ export async function uploadGitLabFileAttachmentsAndRewrite(
 	const uploadUrl = `${apiBase}/projects/${encodeURIComponent(
 		opts.projectId,
 	)}/uploads`;
-	const MAX_BYTES = 25 * 1024 * 1024;
 
-	// Only Fabric-hosted attachments are ours to re-upload. Skip already-GitLab
-	// uploads, the Fabric back-link, and arbitrary external links.
+	// Match story-media references and inline data. Leave ordinary links and
+	// existing GitLab uploads as they are.
 	const shouldUpload = (src: string): boolean =>
 		!!src &&
 		!/\/uploads\/[0-9a-f]{32}\//i.test(src) &&
@@ -1549,21 +1702,17 @@ export async function uploadGitLabFileAttachmentsAndRewrite(
 				bytes = data[2]
 					? Buffer.from(data[3], "base64")
 					: Buffer.from(decodeURIComponent(data[3]), "utf8");
-			} else if (/^https?:\/\//i.test(src)) {
-				const res = await fetch(src, {
-					headers: { "User-Agent": "Fabric-Sync/1.0 (pm-sync push)" },
-				});
-				if (!res.ok) {
+			} else if (isStoryMediaHttpSource(src)) {
+				const download = await downloadGitLabStoryMedia(src, "file");
+				if (!download) {
 					return null;
 				}
-				bytes = Buffer.from(await res.arrayBuffer());
-				contentType =
-					res.headers.get("content-type")?.split(";")[0]?.trim() ||
-					contentType;
+				bytes = download.bytes;
+				contentType = download.contentType || contentType;
 			} else {
 				return null;
 			}
-			if (bytes.length === 0 || bytes.length > MAX_BYTES) {
+			if (bytes.length === 0 || bytes.length > ATTACHMENT_MAX_BYTES) {
 				return null;
 			}
 			const fileName = gitlabAttachmentFileName(label, src);
@@ -1697,10 +1846,7 @@ const BASE64_INLINE_MAX_BYTES = 2 * 1024 * 1024; // 2 MB
 /**
  * Fetch a single image URL and return a `data:` URL containing the
  * base64-encoded bytes, or `null` when the fetch failed / the response
- * was too large / the source was already a `data:` URL.
- *
- * The same `User-Agent` trick used for ADO attachment uploads applies —
- * Wikipedia / GitHub user-content reject default Node user-agents.
+ * was too large. Existing `data:` URLs pass through unchanged.
  */
 export async function fetchImageAsBase64DataUrl(
 	src: string,
@@ -1712,50 +1858,32 @@ export async function fetchImageAsBase64DataUrl(
 	if (/^data:/i.test(src)) {
 		return src;
 	}
+	if (!isStoryMediaHttpSource(src)) {
+		return null;
+	}
 	let binary: ArrayBuffer;
-	let contentType = "image/png";
+	let contentType: string;
 	try {
-		const res = await fetch(src, {
-			headers: {
-				"User-Agent":
-					"Fabric-Sync/1.0 (+https://fabric.pro; pm-sync worker)",
-				Accept: "image/*,*/*;q=0.8",
-			},
-		});
+		const res = await fetchStoryMedia(src, BASE64_INLINE_MAX_BYTES);
 		if (!res.ok) {
 			logger.warn("[Base64 Inline] Source fetch failed", {
-				src,
+				sourceHost: storyMediaSourceHost(src),
 				status: res.status,
 			});
 			return null;
 		}
 		binary = await res.arrayBuffer();
-		contentType = res.headers.get("content-type") ?? contentType;
+		contentType = storyMediaContentType(res).toLowerCase();
 	} catch (err) {
 		logger.warn("[Base64 Inline] Source fetch threw", {
-			src,
-			error: err instanceof Error ? err.message : String(err),
+			sourceHost: storyMediaSourceHost(src),
+			error: storyMediaFetchError(err),
 		});
 		return null;
 	}
 
-	if (binary.byteLength > BASE64_INLINE_MAX_BYTES) {
-		logger.warn(
-			"[Base64 Inline] Source too large to inline, leaving original",
-			{
-				src,
-				byteLength: binary.byteLength,
-				max: BASE64_INLINE_MAX_BYTES,
-			},
-		);
-		return null;
-	}
-
 	const base64 = Buffer.from(binary).toString("base64");
-	// Trim parameters (e.g. `image/png; charset=binary`) — the data-URL
-	// MIME type prefix should be the bare media type.
-	const mime = contentType.split(";")[0]?.trim() || "image/png";
-	return `data:${mime};base64,${base64}`;
+	return `data:${contentType};base64,${base64}`;
 }
 
 /**
@@ -1819,7 +1947,7 @@ export async function inlineJiraMarkdownImagesAsBase64DataUrls(
 		if (/^data:/i.test(src)) {
 			return; // already inlined
 		}
-		if (!/^https?:\/\//i.test(src)) {
+		if (!isStoryMediaHttpSource(src)) {
 			return; // non-HTTP (e.g. "url")
 		}
 		seen.add(src);
@@ -1997,12 +2125,6 @@ function md5Base64(bytes: ArrayBuffer): string {
  * flow. Returns the `attachable_sgid` on success (used to build the
  * `<action-text-attachment sgid="…">` tag), or `null` on any failure.
  *
- * Generalised over images AND non-image file attachments — the caller supplies
- * the display `fileName`, the `Accept` header, the size cap, a fallback
- * content-type, and an optional `preferContentType` (used for files where the
- * signed S3 URL responds `application/octet-stream` but the extension tells us
- * the real type).
- *
  * Failure modes that return `null` (caller applies its own fallback):
  *   - data: / non-http src (nothing to fetch)
  *   - source fetch failed (4xx, network, etc.)
@@ -2014,12 +2136,7 @@ async function uploadOneUrlToFizzy(
 	src: string,
 	fileName: string,
 	target: FizzyAttachmentTarget,
-	opts: {
-		accept: string;
-		maxBytes: number;
-		fallbackContentType: string;
-		preferContentType?: string | null;
-	},
+	kind: StoryMediaKind,
 ): Promise<string | null> {
 	if (!src) {
 		return null;
@@ -2027,56 +2144,41 @@ async function uploadOneUrlToFizzy(
 	if (/^data:/i.test(src)) {
 		return null;
 	}
-	if (!/^https?:\/\//i.test(src)) {
+	if (!isStoryMediaHttpSource(src)) {
 		return null;
 	}
 
 	// 1. Fetch source bytes.
 	let bytes: ArrayBuffer;
-	let contentType = opts.fallbackContentType;
+	let contentType: string;
 	try {
-		const res = await fetch(src, {
-			headers: {
-				"User-Agent":
-					"Fabric-Sync/1.0 (+https://fabric.pro; pm-sync worker)",
-				Accept: opts.accept,
-			},
-		});
+		const maxBytes =
+			kind === "image" ? IMAGE_DOWNLOAD_MAX_BYTES : ATTACHMENT_MAX_BYTES;
+		const res = await fetchStoryMedia(src, maxBytes, kind);
 		if (!res.ok) {
 			logger.warn("[Fizzy Attachments] Source fetch failed", {
-				src,
+				sourceHost: storyMediaSourceHost(src),
 				status: res.status,
 			});
 			return null;
 		}
 		bytes = await res.arrayBuffer();
+		const responseType = storyMediaContentType(res);
 		contentType =
-			res.headers.get("content-type")?.split(";")[0]?.trim() ||
-			contentType;
+			kind === "image" ? responseType.toLowerCase() : responseType;
+		if (
+			kind === "file" &&
+			(!contentType || contentType === "application/octet-stream")
+		) {
+			contentType =
+				contentTypeForFilename(fileName) ?? "application/octet-stream";
+		}
 	} catch (err) {
 		logger.warn("[Fizzy Attachments] Source fetch threw", {
-			src,
-			error: err instanceof Error ? err.message : String(err),
+			sourceHost: storyMediaSourceHost(src),
+			error: storyMediaFetchError(err),
 		});
 		return null;
-	}
-
-	if (bytes.byteLength > opts.maxBytes) {
-		logger.warn(
-			"[Fizzy Attachments] Source too large to upload, leaving original",
-			{ src, byteLength: bytes.byteLength, max: opts.maxBytes },
-		);
-		return null;
-	}
-
-	// Files fetched from the signed S3 URL frequently respond with a generic
-	// `application/octet-stream`; an extension-derived type (when supplied) is
-	// more accurate and drives Fizzy's attachment icon + preview.
-	if (
-		opts.preferContentType &&
-		(!contentType || contentType === "application/octet-stream")
-	) {
-		contentType = opts.preferContentType;
 	}
 
 	const checksum = md5Base64(bytes);
@@ -2109,7 +2211,7 @@ async function uploadOneUrlToFizzy(
 		if (!meta.ok) {
 			const text = await meta.text().catch(() => "");
 			logger.warn("[Fizzy Attachments] direct_uploads POST failed", {
-				src,
+				sourceHost: storyMediaSourceHost(src),
 				fileName,
 				status: meta.status,
 				body: text.slice(0, 200),
@@ -2139,13 +2241,20 @@ async function uploadOneUrlToFizzy(
 		if (!signedId || !uploadUrl) {
 			logger.warn(
 				"[Fizzy Attachments] direct_uploads response missing signed_id or url",
-				{ src, responsePreview: JSON.stringify(json).slice(0, 200) },
+				{
+					sourceHost: storyMediaSourceHost(src),
+					// Summarize the response shape without logging signed values.
+					responsePreview: JSON.stringify({
+						hasSignedId: Boolean(signedId),
+						hasUploadUrl: Boolean(uploadUrl),
+					}),
+				},
 			);
 			return null;
 		}
 	} catch (err) {
 		logger.warn("[Fizzy Attachments] direct_uploads POST threw", {
-			src,
+			sourceHost: storyMediaSourceHost(src),
 			error: err instanceof Error ? err.message : String(err),
 		});
 		return null;
@@ -2161,7 +2270,7 @@ async function uploadOneUrlToFizzy(
 		if (!put.ok) {
 			const text = await put.text().catch(() => "");
 			logger.warn("[Fizzy Attachments] PUT to signed URL failed", {
-				src,
+				sourceHost: storyMediaSourceHost(src),
 				fileName,
 				status: put.status,
 				body: text.slice(0, 200),
@@ -2170,7 +2279,7 @@ async function uploadOneUrlToFizzy(
 		}
 	} catch (err) {
 		logger.warn("[Fizzy Attachments] PUT to signed URL threw", {
-			src,
+			sourceHost: storyMediaSourceHost(src),
 			error: err instanceof Error ? err.message : String(err),
 		});
 		return null;
@@ -2180,10 +2289,9 @@ async function uploadOneUrlToFizzy(
 }
 
 /**
- * Upload one image to Fizzy as an ActionText attachment. Thin wrapper over
- * `uploadOneUrlToFizzy` with an image-appropriate Accept header, a 10 MB cap,
- * and a filename derived from the image's `alt` (the real source filename
- * captured on pull) falling back to the URL stem.
+ * Upload one image to Fizzy as an ActionText attachment with a 10 MB cap.
+ * Prefer the filename captured on pull in the image's `alt` text, falling
+ * back to the URL stem.
  */
 async function uploadOneImageToFizzy(
 	image: ImageRef,
@@ -2194,11 +2302,7 @@ async function uploadOneImageToFizzy(
 		image.src,
 		fileNameForImage(image, index),
 		target,
-		{
-			accept: "image/*,*/*;q=0.8",
-			maxBytes: 10 * 1024 * 1024,
-			fallbackContentType: "image/png",
-		},
+		"image",
 	);
 }
 
@@ -2451,14 +2555,7 @@ export async function resolveFizzyFileEmbeds(
 					file.href,
 					file.filename,
 					target,
-					{
-						accept: "*/*",
-						maxBytes: 25 * 1024 * 1024,
-						fallbackContentType: "application/octet-stream",
-						preferContentType: contentTypeForFilename(
-							file.filename,
-						),
-					},
+					"file",
 				);
 				if (sgid) {
 					return imageToActionTextAttachment(sgid);
@@ -2869,24 +2966,30 @@ export async function uploadOneImageToJiraDetailed(
 	attachment: UploadedJiraAttachment | null;
 	error: string | null;
 }> {
+	const isDataUrl = /^data:/i.test(imageSrc);
+	if (!isDataUrl && !isStoryMediaHttpSource(imageSrc)) {
+		return { attachment: null, error: null };
+	}
 	try {
 		// Fetch the bytes (works for both data: URLs and external HTTPS).
 		let fetchRes: Response;
 		try {
-			fetchRes = await fetch(imageSrc);
+			fetchRes = isDataUrl
+				? await fetch(imageSrc)
+				: await fetchStoryMedia(imageSrc, IMAGE_DOWNLOAD_MAX_BYTES);
 		} catch (err) {
-			const msg = `image fetch threw (${err instanceof Error ? err.message : String(err)})`;
+			const error = storyMediaFetchError(err);
 			logger.warn("[Jira Cloud] image fetch threw", {
+				sourceHost: storyMediaSourceHost(imageSrc),
 				issueKey,
-				src: imageSrc.slice(0, 64),
-				error: err instanceof Error ? err.message : String(err),
+				error,
 			});
-			return { attachment: null, error: msg };
+			return { attachment: null, error: `image fetch threw (${error})` };
 		}
 		if (!fetchRes.ok) {
 			logger.warn("[Jira Cloud] image fetch non-2xx", {
+				sourceHost: storyMediaSourceHost(imageSrc),
 				issueKey,
-				src: imageSrc.slice(0, 64),
 				status: fetchRes.status,
 			});
 			return {
@@ -3033,7 +3136,7 @@ export async function uploadJiraImagesAndRewriteDescription(
 			if (!includeDataUrls) {
 				return;
 			}
-		} else if (!/^https?:\/\//i.test(src)) {
+		} else if (!isStoryMediaHttpSource(src)) {
 			return;
 		}
 		seen.add(src);
@@ -3206,7 +3309,7 @@ export async function embedJiraImagesAsAdfMedia(
 		if (!src) {
 			continue;
 		}
-		if (!/^https?:\/\//i.test(src) && !/^data:/i.test(src)) {
+		if (!isStoryMediaHttpSource(src) && !/^data:/i.test(src)) {
 			continue;
 		}
 		const hint = `screenshot-${(i + 1).toString().padStart(3, "0")}.png`;

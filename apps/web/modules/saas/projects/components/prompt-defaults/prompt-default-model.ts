@@ -30,7 +30,7 @@ export type CatalogBinding = {
 export type CatalogEntry = {
 	targetKey: string;
 	documentType: string;
-	storyKind: "FEATURE" | "BUG" | null;
+	storyKind: "FEATURE" | "BUG" | "INITIATIVE" | null;
 	effectiveScope: "SYSTEM" | "ORG" | "PROJECT" | "USER" | null;
 	prompts: CatalogBinding[];
 };

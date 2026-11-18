@@ -7,9 +7,6 @@ describe("humanizeReportError", () => {
 			/generating this report/i,
 		);
 		expect(humanizeReportError(null, "save")).toMatch(/save your changes/i);
-		expect(humanizeReportError(undefined, "delete")).toMatch(
-			/delete this report/i,
-		);
 		expect(humanizeReportError("   ", "test")).toMatch(
 			/test the connection/i,
 		);

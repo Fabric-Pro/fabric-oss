@@ -1389,6 +1389,49 @@ describe("storySyncWorkflow — push workItemType resolution via enableTypeMappi
 		expect(output.success).toBe(true);
 		expect(lastCreateArgs()?.workItemType).toBe("User Story");
 	});
+
+	it("kind='INITIATIVE' → pushes as 'Epic' with flag off, or flag on without mapping", async () => {
+		activityStubs.getStoriesToSync.mockResolvedValue([
+			{
+				id: "s-wt-init",
+				identifier: "I-01",
+				title: "Initiative 1",
+				kind: "INITIATIVE",
+				externalId: null,
+				externalUrl: null,
+			},
+		]);
+
+		// Flag off gives "Epic"
+		await storySyncWorkflow({
+			projectId: "proj-wt-init-1",
+			mcpServerId: "srv-ado",
+			mcpConfigId: "cfg-ado",
+			containerId: "MyProject",
+			userId: "user-1",
+			organizationId: "org-1",
+			direction: "push",
+			enableTypeMapping: false,
+		});
+		expect(lastCreateArgs()?.workItemType).toBe("Epic");
+
+		// Forget run 1's calls so the next check reads run 2.
+		activityStubs.createStoryInPmWithClaim.mockClear();
+		activityStubs.executeMcpTool.mockClear();
+
+		// Flag on with no mapping also gives "Epic"
+		await storySyncWorkflow({
+			projectId: "proj-wt-init-2",
+			mcpServerId: "srv-ado",
+			mcpConfigId: "cfg-ado",
+			containerId: "MyProject",
+			userId: "user-1",
+			organizationId: "org-1",
+			direction: "push",
+			enableTypeMapping: true,
+		});
+		expect(lastCreateArgs()?.workItemType).toBe("Epic");
+	});
 });
 
 // =============================================================================

@@ -8,13 +8,13 @@ import {
 	getAppliedChangeIndexes,
 	getPendingBacklogProposal,
 	inferDedupFamily,
-	markPendingProposalApplied,
 	markPendingProposalFailed,
 	markProposalApplyDispatched,
 	recordProposalApplication,
 	recordProposalDuplicateResolution,
 	type SkippedDuplicate,
 	setPendingProposalAttachmentResult,
+	settleCreatesOnlyApply,
 	updateStory,
 } from "@repo/database";
 import type { TeamsHostedContentRef } from "@repo/integrations";
@@ -63,6 +63,14 @@ import {
 	type ChangeItem,
 	changeItemSchema,
 } from "../backlog/change-item-schema";
+import {
+	APPROVABLE_PROPOSAL_STATUSES,
+	assertProposalItemsUnresolved,
+	assertProposalRevision,
+	assertUpdateTargetsInProject,
+	lostClaimConflict,
+	PROPOSAL_ALREADY_ACTIONED_MESSAGE,
+} from "../backlog/proposal-approval-guards";
 import {
 	buildProposalReviewEntries,
 	PROPOSAL_REVIEW_MAX_CHANGES,
@@ -430,6 +438,8 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 				.array(z.number().int().min(0).max(PROPOSAL_REVIEW_MAX_CHANGES))
 				.max(PROPOSAL_REVIEW_MAX_CHANGES)
 				.optional(),
+			// `proposalRevision` of the detail the reviewer approved from.
+			expectedProposalRevision: z.string().max(128).optional(),
 			// Optional opt-out for PM sync. Undefined ⇒ sync if PM is wired
 			// up — matches user intent ("approved proposals sync when the PM
 			// tool is configured"). Explicit `false` skips. Explicit `true`
@@ -470,11 +480,7 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			});
 		}
 
-		if (
-			proposal.status !== "PENDING" &&
-			proposal.status !== "FAILED" &&
-			proposal.status !== "BACKLOG"
-		) {
+		if (!APPROVABLE_PROPOSAL_STATUSES.includes(proposal.status)) {
 			// PENDING/FAILED are the normal review states; BACKLOG is admitted so
 			// a deferred proposal can be approved (transition out of backlog — a
 			// backlogged proposal never materialized a story, so approving it
@@ -483,10 +489,13 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			// actioned it — surface a conflict so the inbox shows the "already
 			// approved or rejected" toast.
 			throw new ORPCError("CONFLICT", {
-				message:
-					"This proposal has already been approved or rejected perhaps by another user.",
+				message: PROPOSAL_ALREADY_ACTIONED_MESSAGE,
 			});
 		}
+		assertProposalRevision(
+			proposal.proposal,
+			input.expectedProposalRevision,
+		);
 
 		const project = await db.project.findUnique({
 			where: { id: input.projectId },
@@ -642,6 +651,18 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		const updates = remaining.filter(
 			({ change }) => change.action === "update",
 		);
+		// Refuse before the claim: an item another reviewer resolved, or an
+		// update whose target is not a work item in this project.
+		assertProposalItemsUnresolved({
+			indexes,
+			applied: alreadyApplied,
+			sourceMetadata: proposal.sourceMetadata,
+			allowApplied: proposal.status === "FAILED",
+		});
+		await assertUpdateTargetsInProject(
+			input.projectId,
+			updates.map(({ change }) => change),
+		);
 
 		// Claim the row (plan §F3): PENDING|FAILED → APPLYING in one
 		// compare-and-swap, so a concurrent approve gets CONFLICT and the
@@ -653,6 +674,8 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			reviewedBy: user.id,
 			applyWorkflowId: workflowId,
 			admitBacklog: true,
+			expectedSourceMetadata: proposal.sourceMetadata,
+			expectedProposal: proposal.proposal,
 			syncToPM:
 				input.syncToPM ??
 				!!(
@@ -676,10 +699,10 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			),
 		});
 		if (!claimed) {
-			throw new ORPCError("CONFLICT", {
-				message:
-					"This proposal has already been approved or rejected perhaps by another user.",
-			});
+			throw await lostClaimConflict(
+				input.proposalId,
+				APPROVABLE_PROPOSAL_STATUSES,
+			);
 		}
 
 		// 1. Process CREATE changes sequentially so partial failure leaves a
@@ -1387,6 +1410,7 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 				createdStoryIds,
 				updateWorkflowId: null,
 				status: "failed" as const,
+				remainingChangeCount: null,
 				errors: createErrors,
 				skipped,
 			};
@@ -1509,6 +1533,7 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 					createdStoryIds,
 					updateWorkflowId: null,
 					status: "failed" as const,
+					remainingChangeCount: null,
 					errors: [msg],
 					skipped,
 				};
@@ -1516,14 +1541,18 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		}
 
 		// 3. Terminal transitions:
-		//    - Updates dispatched → stays APPROVED (workflow flips APPLIED/FAILED)
-		//    - Creates-only, all succeeded → APPLIED now
-		let finalStatus: "applied" | "pending";
-		if (updateWorkflowId) {
-			finalStatus = "pending";
-		} else {
-			await markPendingProposalApplied(input.proposalId);
-			finalStatus = "applied";
+		//    - Updates dispatched → stays APPROVED (workflow flips APPLIED/FAILED);
+		//      "dispatched", with nothing counted yet
+		//    - Creates-only, all succeeded → APPLIED, or back to PENDING while
+		//      other items of the proposal are still undecided
+		let finalStatus: "applied" | "pending" | "dispatched" = "dispatched";
+		let remainingChangeCount: number | null = null;
+		if (!updateWorkflowId) {
+			const settled = await settleCreatesOnlyApply({
+				proposalId: input.proposalId,
+			});
+			finalStatus = settled.status;
+			remainingChangeCount = settled.remainingChangeCount;
 		}
 
 		// Server-authoritative override log: the reviewer accepted this proposal.
@@ -1559,6 +1588,7 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			createdStoryIds,
 			updateWorkflowId,
 			status: finalStatus,
+			remainingChangeCount,
 			errors: createErrors,
 			skipped,
 		};

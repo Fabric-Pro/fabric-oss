@@ -175,7 +175,10 @@ export const bindProcedures = {
 				targetKey: z.string(),
 				documentType: z.string().min(1, "Document type is required"),
 				// Exact-match scoping for stage bindings. Null/omit = non-stage binding.
-				storyKind: z.enum(["FEATURE", "BUG"]).nullable().optional(),
+				storyKind: z
+					.enum(["FEATURE", "BUG", "INITIATIVE"])
+					.nullable()
+					.optional(),
 				scope: z.enum(["SYSTEM", "ORG", "USER"]),
 				organizationId: z.string().nullable().optional(),
 				/** Narrows an ORG binding to one project (the PROJECT tier). */
@@ -318,7 +321,10 @@ export const bindProcedures = {
 				targetType: z.enum(["AGENT", "FEATURE"]),
 				targetKey: z.string(),
 				documentType: z.string().min(1, "Document type is required"),
-				storyKind: z.enum(["FEATURE", "BUG"]).nullable().optional(),
+				storyKind: z
+					.enum(["FEATURE", "BUG", "INITIATIVE"])
+					.nullable()
+					.optional(),
 				scope: z.enum(["SYSTEM", "ORG", "USER"]),
 				organizationId: z.string().nullable().optional(),
 				/** Clearing the PROJECT tier targets exactly that row. */
@@ -409,7 +415,7 @@ export const bindProcedures = {
 								.string()
 								.min(1, "Document type is required"),
 							storyKind: z
-								.enum(["FEATURE", "BUG"])
+								.enum(["FEATURE", "BUG", "INITIATIVE"])
 								.nullable()
 								.optional(),
 						}),
@@ -556,8 +562,11 @@ export const bindProcedures = {
 				targetKey: z.string(),
 				documentTypes: z.array(z.string().min(1)).min(1),
 				// Exact-match against PromptBinding.storyKind. Omit for non-kind-scoped
-				// bindings (matches storyKind IS NULL); pass "BUG"/"FEATURE" for stage tabs.
-				storyKind: z.enum(["FEATURE", "BUG"]).nullable().optional(),
+				// bindings (matches storyKind IS NULL); pass "BUG"/"FEATURE"/"INITIATIVE" for stage tabs.
+				storyKind: z
+					.enum(["FEATURE", "BUG", "INITIATIVE"])
+					.nullable()
+					.optional(),
 				organizationId: z.string().nullable().optional(),
 				/** Include PROJECT-tier bindings for this project. */
 				projectId: z.string().nullable().optional(),

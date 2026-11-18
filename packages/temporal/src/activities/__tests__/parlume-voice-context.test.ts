@@ -7,9 +7,7 @@ import {
 	MAX_LIVE_TRANSCRIPT_CHARS,
 	MAX_PARLUME_EARLIER_REPLY_CHARS,
 	MAX_PARLUME_HISTORY_TURNS,
-	MAX_PARLUME_MEMORY_CHARS,
 	PARLUME_PROJECT_RAG_CHUNKS,
-	trimParlumeMemory,
 } from "../parlume-voice-context";
 
 describe("voice context budgets", () => {
@@ -100,21 +98,5 @@ describe("formatParlumeHistory", () => {
 				{ requestText: "unanswered?", responseText: null },
 			]),
 		).toEqual([]);
-	});
-});
-
-describe("trimParlumeMemory", () => {
-	it("keeps memories within the voice budget whole", () => {
-		expect(trimParlumeMemory("- Prefers short answers.")).toBe(
-			"- Prefers short answers.",
-		);
-	});
-
-	it("cuts a long recall at the last line break that fits", () => {
-		const line = `- ${"Remembered fact. ".repeat(5)}\n`;
-		const trimmed = trimParlumeMemory(line.repeat(40));
-
-		expect(trimmed.length).toBeLessThanOrEqual(MAX_PARLUME_MEMORY_CHARS);
-		expect(trimmed.endsWith("Remembered fact.")).toBe(true);
 	});
 });

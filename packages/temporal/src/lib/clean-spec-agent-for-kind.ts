@@ -31,22 +31,17 @@ import type { StoryKind } from "@repo/database";
 export const CLEAN_SPEC_AGENT_BY_KIND: Record<StoryKind, string> = {
 	BUG: "bug_clean_spec_generator",
 	FEATURE: "feature_clean_spec_generator",
+	INITIATIVE: "initiative_clean_spec_generator",
 };
 
-/** The documentType both kinds' Clean Spec prompts are bound at. */
+/** The documentType every kind's Clean Spec prompts are bound at. */
 export const CLEAN_SPEC_DOCUMENT_TYPE = "CLEAN_SPEC";
 
-/**
- * Collapse a possibly-absent kind to exactly one of the two values before any
- * template lookup runs (#2048 R4). `StoryKind` is a two-value enum, but callers
- * hand us optional/nullable rows and a legacy third value existed until
- * recently — resolving here means no ambiguous value ever reaches the resolver,
- * and the fallback is deterministic rather than incidental.
- */
+/** A missing kind (null or undefined) resolves to FEATURE before any template lookup. */
 export function resolveStoryKind(
 	kind: StoryKind | null | undefined,
 ): StoryKind {
-	return kind === "BUG" ? "BUG" : "FEATURE";
+	return kind ?? "FEATURE";
 }
 
 /** The Clean Spec agent name for a work item of this kind. */
@@ -56,13 +51,15 @@ export function cleanSpecAgentForKind(
 	return CLEAN_SPEC_AGENT_BY_KIND[resolveStoryKind(kind)];
 }
 
-/**
- * The lowercase word a reviewer-facing message uses for this kind ("bug" /
- * "feature"). Returned alongside the resolved prompt so the message wording and
- * the template that was actually chosen cannot disagree.
- */
+const STORY_KIND_WORD: Record<StoryKind, "bug" | "feature" | "initiative"> = {
+	BUG: "bug",
+	FEATURE: "feature",
+	INITIATIVE: "initiative",
+};
+
+/** The lowercase word a reviewer-facing message uses for this kind. */
 export function storyKindWord(
 	kind: StoryKind | null | undefined,
-): "bug" | "feature" {
-	return resolveStoryKind(kind) === "BUG" ? "bug" : "feature";
+): "bug" | "feature" | "initiative" {
+	return STORY_KIND_WORD[resolveStoryKind(kind)];
 }

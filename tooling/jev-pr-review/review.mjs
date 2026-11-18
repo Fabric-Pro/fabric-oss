@@ -1,4 +1,8 @@
-import { QUESTION_DETAILS, QUESTIONS } from "./questions.mjs";
+import {
+	QUESTION_DETAILS,
+	QUESTIONS,
+	validateQuestionCutoffs,
+} from "./questions.mjs";
 
 const MAX_CHARS = 60_000;
 const MAX_PRIMARY_REQUESTS = 20;
@@ -88,21 +92,34 @@ export function packDiffs(files, limit = MAX_CHARS) {
 	return requests;
 }
 
-const ask = (decide, model, diff, keys) =>
+const ask = (decide, model, diff, keys, questions) =>
 	decide({
 		model,
 		state: { diff },
 		questions: Object.fromEntries(
 			keys.map((key) => [
 				key,
-				{ type: "boolean", instructions: QUESTIONS[key] },
+				{ type: "boolean", instructions: questions[key] },
 			]),
 		),
 		maxRetries: 2,
 		abortSignal: AbortSignal.timeout(CALL_TIMEOUT_MS),
 	});
 
-export async function evaluate({ files, decide, model, cutoff = 0.8 }) {
+export async function evaluate({
+	files,
+	decide,
+	model,
+	cutoff = 0.8,
+	questions = QUESTIONS,
+	questionDetails = QUESTION_DETAILS,
+	localize = true,
+}) {
+	validateQuestionCutoffs(questionDetails);
+	const keys = Object.keys(QUESTIONS);
+	const cutoffs = Object.fromEntries(
+		keys.map((key) => [key, questionDetails[key]?.cutoff ?? cutoff]),
+	);
 	const requests = packDiffs(files);
 	const errors = [];
 	const skipped = [];
@@ -118,7 +135,7 @@ export async function evaluate({ files, decide, model, cutoff = 0.8 }) {
 	];
 	let localizationCalls = 0;
 	let localizationCapped = false;
-	const rows = Object.keys(QUESTIONS).map((key) => ({
+	const rows = keys.map((key) => ({
 		key,
 		score: null,
 		failed: false,
@@ -139,12 +156,7 @@ export async function evaluate({ files, decide, model, cutoff = 0.8 }) {
 		let result;
 		let requestFailed = false;
 		try {
-			result = await ask(
-				decide,
-				model,
-				request.diff,
-				Object.keys(QUESTIONS),
-			);
+			result = await ask(decide, model, request.diff, keys, questions);
 		} catch {
 			errors.push(index + 1);
 			requestFailed = true;
@@ -158,7 +170,7 @@ export async function evaluate({ files, decide, model, cutoff = 0.8 }) {
 				}
 			} else {
 				row.score = Math.max(row.score ?? 0, score);
-				if (score >= cutoff) {
+				if (score >= cutoffs[row.key]) {
 					row.failed = true;
 					row.failing.push(index);
 				}
@@ -166,7 +178,8 @@ export async function evaluate({ files, decide, model, cutoff = 0.8 }) {
 		}
 	}
 	// Localize valid findings even when another request has no answer.
-	for (const row of rows.filter((row) => row.failed)) {
+	const findingsToLocalize = localize ? rows.filter((row) => row.failed) : [];
+	for (const row of findingsToLocalize) {
 		const candidates = [
 			...new Set(
 				row.failing.flatMap((index) =>
@@ -187,9 +200,13 @@ export async function evaluate({ files, decide, model, cutoff = 0.8 }) {
 						throw new Error("Localization call cap reached");
 					}
 					localizationCalls++;
-					const result = await ask(decide, model, part.diff, [
-						row.key,
-					]);
+					const result = await ask(
+						decide,
+						model,
+						part.diff,
+						[row.key],
+						questions,
+					);
 					const score = probability(result, row.key);
 					if (score === null) {
 						throw new Error("No localization answer");
@@ -202,7 +219,7 @@ export async function evaluate({ files, decide, model, cutoff = 0.8 }) {
 			row.path = scores[0].path;
 			row.others = scores
 				.slice(1)
-				.filter((file) => file.score >= cutoff)
+				.filter((file) => file.score >= cutoffs[row.key])
 				.map((file) => file.path);
 		} catch {
 			row.path = candidateFiles.reduce((a, b) =>
@@ -236,7 +253,7 @@ export function commentBody(row, head) {
 		row.others.length
 			? `Other flagged files: ${row.others.map(codePath).join(", ")}.`
 			: "",
-		"This is an automated check by the Jev decision model and can be wrong; if it is, reply why and resolve the thread.",
+		"This is an automated check by the Jev decision model and can be wrong. Before resolving the thread, reply `fixed` or `false positive` and give one line explaining why.",
 		marker(row.key, head),
 	]
 		.filter(Boolean)

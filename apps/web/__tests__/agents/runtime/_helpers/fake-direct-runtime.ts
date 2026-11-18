@@ -134,6 +134,9 @@ function reset(owner: { userId: string; organizationId: string }) {
 	state.refusal = null;
 	state.startError = null;
 	state.flags.clear();
+	// The Direct engine starts a turn only with its flag on; a test about the
+	// flag turns it off.
+	state.flags.add("COPILOTKIT_DIRECT_CHAT");
 	state.flagChecks.length = 0;
 	state.signals.length = 0;
 	state.signalError = null;

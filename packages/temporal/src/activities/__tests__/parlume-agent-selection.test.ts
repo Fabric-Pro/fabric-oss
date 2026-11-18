@@ -607,25 +607,18 @@ describe("Parlume meeting turns", () => {
 		expect(voiceInstructions).not.toContain("one or two short");
 	});
 
-	it("splits a long chat answer into tagged posts within the chat's limit", async () => {
+	it("sends a long chat answer whole as one tagged post, which the bridge shortens and keeps for 'more'", async () => {
 		mocks.turn.mockResolvedValue({ ...turn(), replyChannel: "CHAT" });
 		const paragraph = `${"word ".repeat(700).trim()}.`;
-		mocks.execute.mockResolvedValue({
-			success: true,
-			response: `${paragraph}\n\n${paragraph}`,
-		});
-		mocks.chat
-			.mockResolvedValueOnce({ sent: true, tag: "P1" })
-			.mockResolvedValueOnce({ sent: true, tag: "P2" });
+		const answer = `${paragraph}\n\n${paragraph}`;
+		mocks.execute.mockResolvedValue({ success: true, response: answer });
+		mocks.chat.mockResolvedValueOnce({ sent: true, tag: "P1" });
 
 		await executeParlumeMeetingTurn({ turnId: "turn" });
 
 		const posts = mocks.chat.mock.calls.map(([input]) => input);
-		expect(posts).toHaveLength(2);
-		expect(posts.map((post) => post.final)).toEqual([false, true]);
-		for (const post of posts) {
-			expect(post.message.length).toBeLessThanOrEqual(3_990);
-		}
+		expect(posts).toHaveLength(1);
+		expect(posts[0]).toMatchObject({ final: true, message: answer });
 	});
 
 	it("records a chat answer the chat could not take", async () => {

@@ -1,6 +1,7 @@
 import { getProjectUsageRecent } from "@repo/database";
 import { z } from "zod";
 import {
+	hiddenUsageFeatureKey,
 	projectScopeSchema,
 	projectUsageProcedure,
 	USAGE_ROUTE_TAGS,
@@ -21,10 +22,14 @@ export const listRecentUsageProcedure = projectUsageProcedure
 			cursor: z.string().optional(),
 		}),
 	)
-	.handler(async ({ input }) => {
+	.handler(async ({ input, context }) => {
 		return getProjectUsageRecent({
 			projectId: input.projectId,
 			limit: input.limit,
 			cursor: input.cursor,
+			hiddenFeatureKey: await hiddenUsageFeatureKey(
+				input.projectId,
+				context.user.id,
+			),
 		});
 	});

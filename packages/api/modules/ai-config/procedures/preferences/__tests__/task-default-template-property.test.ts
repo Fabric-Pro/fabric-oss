@@ -31,6 +31,12 @@ const { db, state, procedures } = vi.hoisted(() => {
 			},
 			$transaction: vi.fn(),
 			userApiKey: { findFirst: vi.fn() },
+			member: {
+				findFirst: vi.fn(async () => ({
+					id: "example-member",
+					role: "member",
+				})),
+			},
 			organizationApiKey: { findFirst: vi.fn(), update: vi.fn() },
 		},
 		state: {
@@ -78,6 +84,12 @@ vi.mock("../../../../../../database/prisma/queries/ai-gateway", () => ({
 	getAiProviderApiKeyByProvider: async () => state.connection,
 }));
 vi.mock("@repo/database", async () => ({
+	...(await import(
+		"../../../../../../database/prisma/queries/organization-api-keys"
+	)),
+	...(await import(
+		"../../../../../../database/prisma/queries/organization-permissions"
+	)),
 	...(await import("../../../../../../database/prisma/queries/ai-models")),
 	...(await import(
 		"../../../../../../database/prisma/queries/task-default-snapshots"

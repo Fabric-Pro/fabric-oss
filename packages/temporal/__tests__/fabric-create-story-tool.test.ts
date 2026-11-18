@@ -35,7 +35,11 @@ describe("fabric_create_story tool wiring", () => {
 		expect(schema?.properties.title?.description?.toLowerCase()).toContain(
 			"optional",
 		);
-		expect(schema?.properties.kind?.enum).toEqual(["FEATURE", "BUG"]);
+		expect(schema?.properties.kind?.enum).toEqual([
+			"FEATURE",
+			"BUG",
+			"INITIATIVE",
+		]);
 		expect(schema?.properties.priority?.enum).toEqual([
 			"P0_CRITICAL",
 			"P1_HIGH",

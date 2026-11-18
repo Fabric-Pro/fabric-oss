@@ -13,6 +13,8 @@ export interface ConfigRow {
 	linkedMeetingId: string;
 	subject: string | null;
 	includedInDigest: boolean;
+	/** Its transcripts stay out of later answers, recaps and agendas. */
+	confidential: boolean;
 	lastMeetingDate: Date | null;
 }
 
@@ -59,6 +61,7 @@ export function toConfigRows(
 		id: string;
 		subject: string | null;
 		includedInDigest: boolean;
+		confidential: boolean;
 	}>,
 	lastMeetingByLinkedId: Map<string, Date>,
 ): ConfigRow[] {
@@ -66,6 +69,7 @@ export function toConfigRows(
 		linkedMeetingId: l.id,
 		subject: l.subject,
 		includedInDigest: l.includedInDigest,
+		confidential: l.confidential,
 		lastMeetingDate: lastMeetingByLinkedId.get(l.id) ?? null,
 	}));
 }
@@ -111,6 +115,7 @@ export const listConfigurableMeetingsProcedure = tenantProtectedProcedure
 				id: true,
 				subject: true,
 				includedInDigest: true,
+				confidential: true,
 				deactivatedAt: true,
 				parlumeAutoJoin: true,
 				parlumeAutoJoinToolsReadOnly: true,

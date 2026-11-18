@@ -103,8 +103,31 @@ describe("RoadmapFiltersPanel — primary tier", () => {
 		).toBeInTheDocument();
 		expect(screen.getByRole("option", { name: "Bug" })).toBeInTheDocument();
 		expect(
+			screen.queryByRole("option", { name: "Initiative" }),
+		).not.toBeInTheDocument();
+		expect(
 			screen.queryByRole("option", { name: "User Story" }),
 		).not.toBeInTheDocument();
+	});
+
+	it("offers Initiative when initiativesEnabled is true", async () => {
+		const user = userEvent.setup();
+		const onChange = vi.fn();
+		render(
+			<RoadmapFiltersPanel
+				tier="primary"
+				filters={EMPTY_ROADMAP_FILTERS}
+				onChange={onChange}
+				initiativesEnabled={true}
+			/>,
+		);
+		await user.click(screen.getByRole("button", { name: /^Type:/ }));
+		const initiativeOpt = await screen.findByRole("option", {
+			name: "Initiative",
+		});
+		expect(initiativeOpt).toBeInTheDocument();
+		await user.click(initiativeOpt);
+		expect(onChange).toHaveBeenCalledWith({ kind: ["INITIATIVE"] });
 	});
 
 	it("selecting a Priority option from the dropdown emits that value", async () => {

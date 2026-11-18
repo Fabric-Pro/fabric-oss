@@ -6,7 +6,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { db } from "@repo/database";
+import { ORPCError } from "@orpc/server";
+import { db, verifyOrganizationApiKey } from "@repo/database";
 import type { TenantContext } from "../types";
 
 /**
@@ -60,32 +61,8 @@ export async function validateApiKey(
 	}
 
 	// Try organization API key
-	const orgApiKey = await db.organizationApiKey.findFirst({
-		where: {
-			keyHash,
-			isActive: true,
-			OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-		},
-		select: {
-			id: true,
-			organizationId: true,
-			createdByUserId: true,
-			scopes: true,
-		},
-	});
-
+	const orgApiKey = await verifyOrganizationApiKey(keyHash);
 	if (orgApiKey) {
-		// Update last used timestamp (fire and forget)
-		db.organizationApiKey
-			.update({
-				where: { id: orgApiKey.id },
-				data: {
-					lastUsedAt: new Date(),
-					usageCount: { increment: 1 },
-				},
-			})
-			.catch(() => {}); // Ignore errors
-
 		return {
 			userId: orgApiKey.createdByUserId,
 			organizationId: orgApiKey.organizationId,
@@ -118,4 +95,18 @@ export function hasAnyScope(
 	requiredScopes: string[],
 ): boolean {
 	return requiredScopes.some((scope) => hasScope(tenant, scope));
+}
+
+/** Check the organization key creator's live permission after the scope check. */
+export async function requireOrganizationKeyPermission(
+	tenant: { userId: string; organizationId?: string | null },
+	holds: (userId: string, organizationId: string) => Promise<boolean>,
+): Promise<void> {
+	const { userId, organizationId } = tenant;
+	if (organizationId && !(await holds(userId, organizationId))) {
+		throw new ORPCError("FORBIDDEN", {
+			message:
+				"The key's owner no longer holds the required permission in this organization",
+		});
+	}
 }

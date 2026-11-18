@@ -1,5 +1,12 @@
 # @fabricorg/integrations-linear
 
+## 0.1.19
+
+### Patch Changes
+
+- Updated dependencies [1b48cc5]
+  - @fabricorg/sdk@0.8.4
+
 ## 0.1.18
 
 ### Patch Changes

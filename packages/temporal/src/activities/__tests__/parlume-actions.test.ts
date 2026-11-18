@@ -462,7 +462,7 @@ describe("Parlume meeting chat tool in the runtime", () => {
 	it("is offered to the agent as a tool of the runtime", () => {
 		expect(
 			Object.keys(createParlumeToolRuntime(context).tools ?? {}),
-		).toEqual(["post_to_meeting_chat"]);
+		).toEqual(["post_to_meeting_chat", "get_meeting_links"]);
 	});
 
 	it.each([true, false])(

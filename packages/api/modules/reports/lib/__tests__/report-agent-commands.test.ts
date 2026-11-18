@@ -41,6 +41,9 @@ vi.mock("@repo/database", async () => ({
 	...(await import(
 		"../../../../../database/prisma/queries/lib/report-evidence"
 	)),
+	...(await import(
+		"../../../../../database/prisma/queries/lib/report-instructions"
+	)),
 	isFeatureEnabled: m.flag,
 	isPlatformAdmin: m.platformAdmin,
 	getOrganizationMembership: m.membership,

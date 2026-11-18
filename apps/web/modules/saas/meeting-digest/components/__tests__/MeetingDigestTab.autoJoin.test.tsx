@@ -10,6 +10,7 @@ import { MeetingDigestTab } from "../MeetingDigestTab";
 
 const mocks = vi.hoisted(() => ({
 	setParlumeAutoJoin: vi.fn(),
+	setConfidential: vi.fn(),
 	toastError: vi.fn(),
 }));
 
@@ -21,12 +22,13 @@ vi.mock("../../hooks/use-meeting-digest", () => ({
 				linkedMeetingId: "lm-1",
 				subject: "Weekly sync",
 				includedInDigest: true,
+				confidential: false,
 				lastMeetingDate: null,
 				parlumeAutoJoin: {
 					enabled: false,
 					toolsReadOnly: true,
 					suggestionsEnabled: true,
-					suggestionAudience: "MEETING",
+					suggestionAudience: "TEAM",
 					enabledBy: null,
 					error: null,
 					errorAt: null,
@@ -40,6 +42,7 @@ vi.mock("../../hooks/use-meeting-digest", () => ({
 		isError: false,
 		setIncluded: vi.fn(),
 		setParlumeAutoJoin: mocks.setParlumeAutoJoin,
+		setConfidential: mocks.setConfidential,
 		onActionItemToggled: vi.fn(),
 		generateSummary: vi.fn(),
 		generatingRefs: new Set(),
@@ -110,6 +113,7 @@ async function openConfigure() {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.setParlumeAutoJoin.mockResolvedValue(undefined);
+	mocks.setConfidential.mockResolvedValue(undefined);
 });
 
 describe("MeetingDigestTab — Parlume auto-join", () => {
@@ -151,7 +155,7 @@ describe("MeetingDigestTab — Parlume auto-join", () => {
 			enabled: true,
 			toolsReadOnly: true,
 			suggestionsEnabled: true,
-			suggestionAudience: "MEETING",
+			suggestionAudience: "TEAM",
 		});
 	});
 
@@ -176,6 +180,46 @@ describe("MeetingDigestTab — Parlume auto-join", () => {
 					description:
 						"Connect your Microsoft account in Settings → Integrations first.",
 				},
+			),
+		);
+	});
+});
+
+describe("MeetingDigestTab — Confidential series", () => {
+	it.each([
+		{ parlume: true, agenda: true },
+		{ parlume: false, agenda: false },
+	])(
+		"offers the switch whatever the Parlume flags (%o) and saves the change",
+		async (flags) => {
+			renderTab(flags);
+			await openConfigure();
+
+			await userEvent.click(
+				screen.getByRole("switch", {
+					name: /Confidential for Weekly sync/,
+				}),
+			);
+
+			expect(mocks.setConfidential).toHaveBeenCalledWith("lm-1", true);
+		},
+	);
+
+	it("says so when the change is refused", async () => {
+		mocks.setConfidential.mockRejectedValue(new Error("network"));
+		renderTab({ parlume: false, agenda: false });
+		await openConfigure();
+
+		await userEvent.click(
+			screen.getByRole("switch", {
+				name: /Confidential for Weekly sync/,
+			}),
+		);
+
+		await waitFor(() =>
+			expect(mocks.toastError).toHaveBeenCalledWith(
+				"The series' confidentiality was not changed",
+				{ description: "Please try again." },
 			),
 		);
 	});

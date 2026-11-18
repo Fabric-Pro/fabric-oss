@@ -4,12 +4,21 @@
  * Tests for the story sync activities with dynamic PM tool discovery.
  */
 
+import { safeFetchOutboundPinned } from "@repo/utils/url-security";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	fixtureTarget,
 	mutablePmSettings,
 	pmTargetFixtures,
 } from "../../utils/test-fixtures/pm-target";
+
+vi.mock("@repo/utils/url-security", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@repo/utils/url-security")>()),
+	safeFetchOutboundPinned: vi.fn(),
+}));
+
+const fetchPinned = vi.mocked(safeFetchOutboundPinned);
 
 // Mock @repo/agent-core/backend. Explicit mock (no importOriginal) avoids
 // loading real @repo/database, which would keep pg.Pool handles alive
@@ -5954,6 +5963,7 @@ describe("uploadGitLabImagesAndRewriteDescription (GitLab issue #10 push)", () =
 					new Uint8Array([0xff, 0xd8, 0xff, 0xe0]).buffer,
 			} as unknown as Response;
 		});
+		fetchPinned.mockImplementation((url) => fetchMock(url));
 		vi.stubGlobal("fetch", fetchMock);
 		try {
 			const input =
@@ -5985,6 +5995,7 @@ describe("uploadGitLabImagesAndRewriteDescription (GitLab issue #10 push)", () =
 	});
 
 	it("leaves an already-GitLab /uploads image untouched (no re-upload)", async () => {
+		fetchPinned.mockReset();
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);
 		try {
@@ -5995,6 +6006,7 @@ describe("uploadGitLabImagesAndRewriteDescription (GitLab issue #10 push)", () =
 			});
 			expect(out).toBe(input);
 			expect(fetchMock).not.toHaveBeenCalled();
+			expect(fetchPinned).not.toHaveBeenCalled();
 		} finally {
 			vi.unstubAllGlobals();
 		}
@@ -6022,6 +6034,7 @@ describe("uploadGitLabFileAttachmentsAndRewrite (GitLab file-attachment push)", 
 				arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer,
 			} as unknown as Response;
 		});
+		fetchPinned.mockImplementation((url) => fetchMock(url));
 		vi.stubGlobal("fetch", fetchMock);
 		try {
 			const input =
@@ -6053,6 +6066,7 @@ describe("uploadGitLabFileAttachmentsAndRewrite (GitLab file-attachment push)", 
 	});
 
 	it("leaves an already-GitLab /uploads file link untouched (no re-upload)", async () => {
+		fetchPinned.mockReset();
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);
 		try {
@@ -6063,6 +6077,7 @@ describe("uploadGitLabFileAttachmentsAndRewrite (GitLab file-attachment push)", 
 			});
 			expect(out).toBe(input);
 			expect(fetchMock).not.toHaveBeenCalled();
+			expect(fetchPinned).not.toHaveBeenCalled();
 		} finally {
 			vi.unstubAllGlobals();
 		}
@@ -6249,6 +6264,86 @@ describe("createOrUpdateStoryFromPMItem — kind reverse-mapping on new story (#
 			| undefined;
 		expect(callArgs).toBeDefined();
 		expect(callArgs).not.toHaveProperty("kind");
+	});
+
+	it("flag on + mapped Initiative in project with initiatives off → createStory called with kind='FEATURE'", async () => {
+		process.env.FEATURE_PM_TYPE_MAPPING = "true";
+
+		const mockDb = db as unknown as {
+			project: { findUnique: ReturnType<typeof vi.fn> };
+			userStory: {
+				findFirst: ReturnType<typeof vi.fn>;
+				update: ReturnType<typeof vi.fn>;
+			};
+		};
+		mockDb.userStory.findFirst.mockResolvedValue(null);
+		mockDb.userStory.update.mockResolvedValue({} as never);
+		mockDb.project.findUnique.mockResolvedValue({
+			initiativesEnabled: false,
+		} as never);
+
+		vi.mocked(createStory).mockResolvedValue({
+			id: "new-story-init-off",
+			identifier: "F-INIT-1",
+		} as never);
+
+		await createOrUpdateStoryFromPMItem({
+			projectId: "proj-1",
+			externalId: "pm-init-1",
+			title: "Big Initiative",
+			userId: "user-1",
+			mcpConfigId: null,
+			containerId: "board-1",
+			organizationId: "org-1",
+			workItemType: "Initiative",
+			additionalContext: {
+				workItemTypeMapping: { INITIATIVE: "Initiative" },
+			} as unknown as Record<string, string>,
+		});
+
+		expect(createStory).toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "FEATURE" }),
+		);
+	});
+
+	it("flag on + mapped Initiative in project with initiatives on → createStory called with kind='INITIATIVE'", async () => {
+		process.env.FEATURE_PM_TYPE_MAPPING = "true";
+
+		const mockDb = db as unknown as {
+			project: { findUnique: ReturnType<typeof vi.fn> };
+			userStory: {
+				findFirst: ReturnType<typeof vi.fn>;
+				update: ReturnType<typeof vi.fn>;
+			};
+		};
+		mockDb.userStory.findFirst.mockResolvedValue(null);
+		mockDb.userStory.update.mockResolvedValue({} as never);
+		mockDb.project.findUnique.mockResolvedValue({
+			initiativesEnabled: true,
+		} as never);
+
+		vi.mocked(createStory).mockResolvedValue({
+			id: "new-story-init-on",
+			identifier: "F-INIT-2",
+		} as never);
+
+		await createOrUpdateStoryFromPMItem({
+			projectId: "proj-1",
+			externalId: "pm-init-2",
+			title: "Big Initiative",
+			userId: "user-1",
+			mcpConfigId: null,
+			containerId: "board-1",
+			organizationId: "org-1",
+			workItemType: "Initiative",
+			additionalContext: {
+				workItemTypeMapping: { INITIATIVE: "Initiative" },
+			} as unknown as Record<string, string>,
+		});
+
+		expect(createStory).toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "INITIATIVE" }),
+		);
 	});
 });
 

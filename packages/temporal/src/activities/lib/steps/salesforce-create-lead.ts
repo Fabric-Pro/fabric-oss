@@ -1,5 +1,6 @@
 import { fetchCredentialsByProvider } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
+import { fetchProviderStepOutbound } from "./outbound-request";
 import { interpolateTemplate } from "./utils";
 
 function normalizeSalesforceDomain(domain: string) {
@@ -37,7 +38,7 @@ export async function executeSalesforceCreateLeadStep(
 	const domain = normalizeSalesforceDomain(credentials.SALESFORCE_DOMAIN);
 
 	try {
-		const response = await fetch(
+		const response = await fetchProviderStepOutbound(
 			`${domain}/services/data/v61.0/sobjects/Lead`,
 			{
 				method: "POST",

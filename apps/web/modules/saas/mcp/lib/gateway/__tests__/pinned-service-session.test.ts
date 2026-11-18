@@ -110,6 +110,7 @@ describe("the scopes a service session holds", () => {
 		"authority:read",
 		"authority:write",
 		"orgs:write",
+		"chats:read",
 		"chats:write",
 		"workflows:admin",
 	])("never adds %s, however the grant names it", (scope) => {
@@ -118,7 +119,7 @@ describe("the scopes a service session holds", () => {
 		).toEqual([...SERVICE_CREDENTIAL_SCOPES]);
 	});
 
-	it.each(["orgs:read", "chats:read", "mcp:read"])(
+	it.each(["orgs:read", "mcp:read"])(
 		"adds %s when the grant names a project and it",
 		(scope) => {
 			expect(
@@ -192,9 +193,10 @@ describe("which gateway tools Parlume gets", () => {
 			"fabric_cancel_context_quality_run",
 			"fabric_compare_context_quality_runs",
 		];
-		// Plus the four Coding Instructions set-management tools.
+		// Plus the four Coding Instructions set-management tools, less the
+		// inviter's chat and connected-server lists.
 		expect(FABRIC_PORTAL_TOOL_NAMES).toHaveLength(
-			41 + savedEvaluationTools.length + 2 + 4,
+			41 + savedEvaluationTools.length + 2 + 4 - 2,
 		);
 		expect(
 			FABRIC_PORTAL_TOOL_NAMES.filter((name) =>
@@ -232,7 +234,9 @@ describe("which gateway tools Parlume gets", () => {
 			"fabric_knowledge_types",
 			"fabric_link_workspace_document",
 			"fabric_list_agent_runs",
+			"fabric_list_chats",
 			"fabric_list_code_repositories",
+			"fabric_list_connected_servers",
 			"fabric_list_project_pm_assigned_items",
 			"fabric_list_project_pm_members",
 			"fabric_list_project_pm_work_item_types",
@@ -319,7 +323,6 @@ describe("what the portal tools need", () => {
 			"fabric_get_project_instruction_bundle",
 			"fabric_get_workspace",
 			"fabric_get_workspace_document",
-			"fabric_list_connected_servers",
 			"fabric_list_project_instructions",
 			"fabric_list_project_workspace_documents",
 			"fabric_list_projects",
@@ -411,6 +414,8 @@ describe("the project a pinned session reaches", () => {
 		"fabric_memory_write",
 		"fabric_memory_write_status",
 		"fabric_memory_targets",
+		"fabric_list_chats",
+		"fabric_list_connected_servers",
 		"fabric_page_read_connected",
 		"fabric_page_ask",
 		"fabric_not_a_tool",
@@ -527,6 +532,7 @@ describe("the tools a pinned session is offered", () => {
 		expect(characters).toBeGreaterThan(20_000);
 		// Two source-authorized linked-document reads intentionally extend this
 		// catalog, and the four Coding Instructions set tools (about 1,000).
-		expect(characters).toBeLessThan(35_100);
+		// The work-item kind on create and INITIATIVE on the list filter add 69.
+		expect(characters).toBeLessThan(35_170);
 	});
 });

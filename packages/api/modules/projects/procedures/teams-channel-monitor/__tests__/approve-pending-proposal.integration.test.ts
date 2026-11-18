@@ -39,8 +39,9 @@ const { handlers, mocks } = vi.hoisted(() => {
 	const mocks = {
 		// DB queries
 		getPendingBacklogProposal: vi.fn(),
+		claimPendingProposalWithReview: vi.fn(async () => true),
 		markPendingProposalApproved: vi.fn(),
-		markPendingProposalApplied: vi.fn(),
+		settleCreatesOnlyApply: vi.fn(),
 		markPendingProposalFailed: vi.fn(),
 		appendAppliedChangeIndexes: vi.fn(),
 		markProposalApplyDispatched: vi.fn(),
@@ -72,13 +73,19 @@ const { handlers, mocks } = vi.hoisted(() => {
 	return { handlers, mocks };
 });
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
 	getAppliedChangeIndexes: vi.fn(async () => new Set<number>()),
-	claimPendingProposalWithReview: vi.fn(async () => true),
+	readRejectedChangeIndexes: () => [],
+	claimPendingProposalWithReview: mocks.claimPendingProposalWithReview,
+	proposalRevision: (
+		await import(
+			"../../../../../../database/prisma/queries/projects/proposal-changes"
+		)
+	).proposalRevision,
 
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	markPendingProposalApproved: mocks.markPendingProposalApproved,
-	markPendingProposalApplied: mocks.markPendingProposalApplied,
+	settleCreatesOnlyApply: mocks.settleCreatesOnlyApply,
 	markPendingProposalFailed: mocks.markPendingProposalFailed,
 	recordProposalApplication: vi.fn(),
 	recordProposalDuplicateResolution: vi.fn(),
@@ -98,7 +105,14 @@ vi.mock("@repo/database", () => ({
 		// procedure handler) lets every CREATE proceed exactly like before
 		// this PR. Suite-level default; individual tests can override
 		// through `mocks` if/when dedup-specific scenarios are added.
-		userStory: { findMany: vi.fn().mockResolvedValue([]) },
+		// An update-target lookup (`where.id.in`) finds every id, so updates
+		// name work items in this project.
+		userStory: {
+			findMany: vi.fn(
+				async (args?: { where?: { id?: { in?: string[] } } }) =>
+					(args?.where?.id?.in ?? []).map((id) => ({ id })),
+			),
+		},
 	},
 	// Pure helper canonical home is `@repo/database/utils`; inlined here
 	// to keep the test self-contained (mirrors the canonical implementation).
@@ -259,6 +273,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 	};
 });
 
+import { proposalRevision } from "../../../../../../database/prisma/queries/projects/proposal-changes";
 // Side-effect: register the handlers.
 import "../approve-pending-proposal";
 import "../reject-pending-proposal";
@@ -450,7 +465,10 @@ beforeEach(() => {
 	mocks.featureFindFirst.mockResolvedValue(null);
 	mocks.appendAppliedChangeIndexes.mockResolvedValue(undefined);
 	mocks.markPendingProposalApproved.mockResolvedValue(undefined);
-	mocks.markPendingProposalApplied.mockResolvedValue(undefined);
+	mocks.settleCreatesOnlyApply.mockResolvedValue({
+		status: "applied",
+		remainingChangeCount: 0,
+	});
 	mocks.markPendingProposalFailed.mockResolvedValue(undefined);
 	mocks.markPendingProposalRejected.mockResolvedValue({ updated: true });
 	mocks.setPendingProposalAttachmentResult.mockResolvedValue(undefined);
@@ -1346,5 +1364,51 @@ describe("approvePendingProposal (Teams) — consumed-index matcher (Codex round
 			.flatMap((c) => c[1] as number[])
 			.sort();
 		expect(flatIndexes).toEqual([0, 1]);
+	});
+});
+
+describe("approvePendingProposal (Teams) — approval from a stale view", () => {
+	const changed = expect.stringContaining("changed after you opened it");
+
+	it("refuses an approval built from an older proposal revision, before claiming", async () => {
+		const row = makeProposalRow({});
+		mocks.getPendingBacklogProposal.mockResolvedValueOnce(row);
+
+		await expect(
+			handlers.approve?.({
+				input: {
+					...APPROVAL_INPUT,
+					expectedProposalRevision: proposalRevision({ changes: [] }),
+				},
+				context: APPROVAL_CTX,
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT", message: changed });
+		expect(mocks.claimPendingProposalWithReview).not.toHaveBeenCalled();
+		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+	});
+
+	it("claims against the stored proposal; a lost claim on an open row says it changed", async () => {
+		const row = makeProposalRow({});
+		mocks.getPendingBacklogProposal
+			.mockResolvedValueOnce(row)
+			.mockResolvedValueOnce(row);
+		mocks.claimPendingProposalWithReview.mockResolvedValueOnce(false);
+
+		await expect(
+			handlers.approve?.({
+				input: {
+					...APPROVAL_INPUT,
+					expectedProposalRevision: proposalRevision(row.proposal),
+				},
+				context: APPROVAL_CTX,
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT", message: changed });
+		expect(mocks.claimPendingProposalWithReview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				expectedProposal: row.proposal,
+				expectedSourceMetadata: row.sourceMetadata,
+			}),
+		);
+		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
 	});
 });

@@ -61,7 +61,7 @@ const {
 	mockPromptById,
 	mockBoundPrompt,
 	mockSpecContext,
-	mockAppendMessage,
+	mockSendMessage,
 	mockInvalidateQueries,
 	mockToastError,
 	mockEnhanceMutate,
@@ -73,7 +73,7 @@ const {
 	mockPromptById: vi.fn(),
 	mockBoundPrompt: vi.fn(),
 	mockSpecContext: vi.fn(),
-	mockAppendMessage: vi.fn(),
+	mockSendMessage: vi.fn(),
 	mockInvalidateQueries: vi.fn(),
 	mockToastError: vi.fn(),
 	mockEnhanceMutate: vi.fn(),
@@ -84,7 +84,7 @@ const {
 
 // ---------------------------------------------------------------------------
 // CopilotKit — the runtime needs a provider; stub the sidebar so children
-// render inline and capture `appendMessage`, which is how a run is started.
+// render inline and capture `sendMessage`, which is how a run is started.
 // ---------------------------------------------------------------------------
 
 vi.mock("@copilotkit/react-core", () => ({
@@ -96,7 +96,7 @@ vi.mock("@copilotkit/react-core", () => ({
 	}),
 	useCopilotAction: vi.fn(),
 	// One hook, one connect: the workspace reads `isLoading`,
-	// `appendMessage`, `agent` and `setMessages` from the surface's
+	// `sendMessage`, `agent` and `setMessages` from the surface's
 	// `<CopilotChatSessionProvider>`, which is fed by this hook alone.
 	// `agent` is read off the mutable ref at call time so the in-flight
 	// latch below can flip `isRunning` between renders.
@@ -104,7 +104,7 @@ vi.mock("@copilotkit/react-core", () => ({
 		messages: [],
 		visibleMessages: [],
 		isLoading: false,
-		appendMessage: mockAppendMessage,
+		sendMessage: mockSendMessage,
 		setMessages: vi.fn(),
 		interrupt: null,
 		agent: agentRef.current,
@@ -128,19 +128,6 @@ vi.mock("@copilotkit/react-ui", () => ({
 			{children}
 		</div>
 	),
-}));
-
-vi.mock("@copilotkit/runtime-client-gql", () => ({
-	MessageRole: { User: "user", Assistant: "assistant", System: "system" },
-	// Keeps the props so a test can read the message text that was posted.
-	TextMessage: class {
-		role: string;
-		content: string;
-		constructor(props: { role: string; content: string }) {
-			this.role = props.role;
-			this.content = props.content;
-		}
-	},
 }));
 
 vi.mock("@saas/projects/components/copilot/CopilotSidebarHeader", () => ({
@@ -526,7 +513,7 @@ function renderWorkspace(maturationV2: boolean) {
 
 /** The message text posted into the agent thread, or "" if none was. */
 function postedMessage(): string {
-	const call = mockAppendMessage.mock.calls[0];
+	const call = mockSendMessage.mock.calls[0];
 	return (call?.[0] as { content?: string } | undefined)?.content ?? "";
 }
 
@@ -567,7 +554,7 @@ beforeEach(() => {
 	mockSetState.mockReset();
 	agentRef.current.isRunning = false;
 	mockSpecContext.mockResolvedValue({ contexts: [] });
-	mockAppendMessage.mockResolvedValue(undefined);
+	mockSendMessage.mockResolvedValue(undefined);
 	mockResolvePrompt.mockResolvedValue(serverSaysBug(BUG_PROMPT));
 	mockPromptById.mockResolvedValue({
 		versions: [{ content: FEATURE_PROMPT }],
@@ -586,7 +573,7 @@ describe("StoryWorkspace — Clean Spec refresh resolves its prompt server-side"
 			renderWorkspace(true);
 			mockSetState.mockClear();
 			let finish: () => void = () => {};
-			mockAppendMessage.mockImplementation(
+			mockSendMessage.mockImplementation(
 				() =>
 					new Promise<void>((resolve, reject) => {
 						finish = () =>
@@ -615,7 +602,7 @@ describe("StoryWorkspace — Clean Spec refresh resolves its prompt server-side"
 				);
 				await act(async () => finish());
 			} else {
-				expect(mockAppendMessage).not.toHaveBeenCalled();
+				expect(mockSendMessage).not.toHaveBeenCalled();
 			}
 			expect(mockSetState.mock.calls.at(-1)?.[0]).toMatchObject({
 				systemPrompt: "",
@@ -629,7 +616,7 @@ describe("StoryWorkspace — Clean Spec refresh resolves its prompt server-side"
 		renderWorkspace(true);
 		await clickUpdateFullSpec();
 
-		await waitFor(() => expect(mockAppendMessage).toHaveBeenCalled());
+		await waitFor(() => expect(mockSendMessage).toHaveBeenCalled());
 		expect(postedMessage()).not.toContain(BUG_PROMPT);
 		expect(mockSetState).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -666,16 +653,28 @@ describe("StoryWorkspace — Clean Spec refresh resolves its prompt server-side"
 		renderWorkspace(true);
 		await clickUpdateFullSpec();
 
-		await waitFor(() => expect(mockAppendMessage).toHaveBeenCalled());
+		await waitFor(() => expect(mockSendMessage).toHaveBeenCalled());
 		expect(postedMessage()).toContain("Refresh the Full Spec for this bug");
 		expect(postedMessage()).not.toContain("for this feature");
+	});
+
+	it("posts the turn as one AG-UI user message with its own id", async () => {
+		renderWorkspace(true);
+		await clickUpdateFullSpec();
+
+		await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
+		expect(mockSendMessage).toHaveBeenCalledWith({
+			id: expect.stringMatching(/.+/),
+			role: "user",
+			content: postedMessage(),
+		});
 	});
 
 	it("invalidates the work item query before posting when the kind drifted", async () => {
 		renderWorkspace(true);
 		await clickUpdateFullSpec();
 
-		await waitFor(() => expect(mockAppendMessage).toHaveBeenCalled());
+		await waitFor(() => expect(mockSendMessage).toHaveBeenCalled());
 		// Fizzy #2048 (U7): the expected value used to be the hand-built
 		// literal `["projects", "stories", "list", "proj-1"]`. That key matched
 		// none of the three shapes this repository registers, so the
@@ -694,7 +693,7 @@ describe("StoryWorkspace — Clean Spec refresh resolves its prompt server-side"
 		// refresh has to land before the run is posted.
 		expect(
 			Math.min(...mockInvalidateQueries.mock.invocationCallOrder),
-		).toBeLessThan(mockAppendMessage.mock.invocationCallOrder[0]);
+		).toBeLessThan(mockSendMessage.mock.invocationCallOrder[0]);
 	});
 
 	it("leaves the cache alone when the server agrees with it", async () => {
@@ -709,7 +708,7 @@ describe("StoryWorkspace — Clean Spec refresh resolves its prompt server-side"
 		renderWorkspace(true);
 		await clickUpdateFullSpec();
 
-		await waitFor(() => expect(mockAppendMessage).toHaveBeenCalled());
+		await waitFor(() => expect(mockSendMessage).toHaveBeenCalled());
 		expect(mockInvalidateQueries).not.toHaveBeenCalled();
 		expect(postedMessage()).toContain(
 			"Refresh the Full Spec for this feature",
@@ -733,7 +732,7 @@ describe("StoryWorkspace — Clean Spec refresh resolves its prompt server-side"
 				"cleanSpecRefreshError",
 			),
 		);
-		expect(mockAppendMessage).not.toHaveBeenCalled();
+		expect(mockSendMessage).not.toHaveBeenCalled();
 		// No cross-kind substitution is attempted in the browser either.
 		expect(mockBoundPrompt).not.toHaveBeenCalled();
 	});
@@ -761,7 +760,7 @@ describe("StoryWorkspace — Clean Spec refresh resolves its prompt server-side"
 		await act(async () => {
 			release?.(serverSaysBug(BUG_PROMPT));
 		});
-		await waitFor(() => expect(mockAppendMessage).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(mockSendMessage).toHaveBeenCalledTimes(1));
 	});
 
 	it("starts no run when the agent is already running", async () => {
@@ -770,7 +769,7 @@ describe("StoryWorkspace — Clean Spec refresh resolves its prompt server-side"
 		await clickUpdateFullSpec();
 
 		expect(mockResolvePrompt).not.toHaveBeenCalled();
-		expect(mockAppendMessage).not.toHaveBeenCalled();
+		expect(mockSendMessage).not.toHaveBeenCalled();
 	});
 });
 
@@ -785,7 +784,7 @@ describe("StoryWorkspace — stage Enhance resolves its prompt server-side", () 
 			renderWorkspace(false);
 			mockSetState.mockClear();
 			let finish: () => void = () => {};
-			mockAppendMessage.mockImplementation(
+			mockSendMessage.mockImplementation(
 				() =>
 					new Promise<void>((resolve, reject) => {
 						finish = () =>
@@ -809,7 +808,7 @@ describe("StoryWorkspace — stage Enhance resolves its prompt server-side", () 
 			}
 			await runStageEnhance("enhance-default");
 			if (outcome.endsWith("abort")) {
-				expect.soft(mockAppendMessage).not.toHaveBeenCalled();
+				expect.soft(mockSendMessage).not.toHaveBeenCalled();
 				expect
 					.soft(screen.getByTestId("transition-dialog"))
 					.toHaveAttribute("data-open", "true");
@@ -858,7 +857,7 @@ describe("StoryWorkspace — stage Enhance resolves its prompt server-side", () 
 		renderWorkspace(false);
 		await runStageEnhance("enhance-default");
 
-		await waitFor(() => expect(mockAppendMessage).toHaveBeenCalled());
+		await waitFor(() => expect(mockSendMessage).toHaveBeenCalled());
 		const input = mockResolvePrompt.mock.calls[0][0] as Record<
 			string,
 			unknown
@@ -888,7 +887,7 @@ describe("StoryWorkspace — stage Enhance resolves its prompt server-side", () 
 		renderWorkspace(false);
 		await runStageEnhance("enhance-picked-prompt");
 
-		await waitFor(() => expect(mockAppendMessage).toHaveBeenCalled());
+		await waitFor(() => expect(mockSendMessage).toHaveBeenCalled());
 		expect(mockPromptById).not.toHaveBeenCalled();
 		expect(mockResolvePrompt.mock.calls[0][0]).toMatchObject({
 			storyId: "story-1",
@@ -908,11 +907,11 @@ describe("StoryWorkspace — stage Enhance resolves its prompt server-side", () 
 		renderWorkspace(false);
 		await runStageEnhance("enhance-default");
 
-		await waitFor(() => expect(mockAppendMessage).toHaveBeenCalled());
+		await waitFor(() => expect(mockSendMessage).toHaveBeenCalled());
 		expect(mockInvalidateQueries).toHaveBeenCalled();
 		expect(
 			Math.min(...mockInvalidateQueries.mock.invocationCallOrder),
-		).toBeLessThan(mockAppendMessage.mock.invocationCallOrder[0]);
+		).toBeLessThan(mockSendMessage.mock.invocationCallOrder[0]);
 	});
 
 	it("falls back to the sync stage update and starts no run when nothing resolves (AE7)", async () => {
@@ -928,7 +927,7 @@ describe("StoryWorkspace — stage Enhance resolves its prompt server-side", () 
 		await runStageEnhance("enhance-default");
 
 		await waitFor(() => expect(mockEnhanceMutate).toHaveBeenCalled());
-		expect(mockAppendMessage).not.toHaveBeenCalled();
+		expect(mockSendMessage).not.toHaveBeenCalled();
 		expect(mockBoundPrompt).not.toHaveBeenCalled();
 		expect(mockPromptById).not.toHaveBeenCalled();
 	});
