@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { db } from "../client";
 import { agentConversationViewerWhere } from "./agent-conversation-sharing";
 import { canReadOrganizationAgents } from "./organization-permissions";
@@ -48,7 +49,7 @@ export function buildChatMediaStorageKey({
 	kind,
 	extension,
 	timestamp = Date.now(),
-	hash = Math.random().toString(36).substring(2, 10),
+	hash = randomBytes(16).toString("hex"),
 }: {
 	ownerPrefix: string;
 	kind: "chat-images" | "generated-images" | "tts-audio";

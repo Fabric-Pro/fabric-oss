@@ -158,3 +158,25 @@ describe("useOrchestratorConversation — saveExecution", () => {
 		expect("updateExecution" in result.current).toBe(false);
 	});
 });
+
+it("invalidates paginated conversation history as soon as creation succeeds", async () => {
+	const client = new QueryClient();
+	const invalidate = vi.spyOn(client, "invalidateQueries");
+	conversations.create.mockResolvedValue({ id: "example-conversation" });
+	const { result } = renderHook(
+		() => useOrchestratorConversation({ organizationId: "example-org" }),
+		{
+			wrapper: ({ children }) => (
+				<QueryClientProvider client={client}>
+					{children}
+				</QueryClientProvider>
+			),
+		},
+	);
+	await act(async () => {
+		await result.current.createConversation({ title: "Example request" });
+	});
+	expect(invalidate).toHaveBeenCalledWith({
+		queryKey: ["agents", "conversations"],
+	});
+});

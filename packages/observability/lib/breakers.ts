@@ -55,6 +55,12 @@ import {
 	providerBreakerState,
 	providerRequestTotal,
 } from "./app-metrics";
+// Side-effect import: `getBreaker` resolves each provider's `breakerKey` from
+// these registrations. The S3, Stripe and Resend providers import this module
+// through the `@repo/observability/breakers` subpath, so a server bundle that
+// loads neither the package root nor the web startup module would otherwise
+// see an empty registry.
+import "./integration-providers";
 import { getRegistration } from "./integration-registry";
 
 // -----------------------------------------------------------------------------

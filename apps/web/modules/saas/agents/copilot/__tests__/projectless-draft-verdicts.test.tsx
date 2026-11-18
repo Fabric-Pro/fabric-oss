@@ -1,4 +1,10 @@
-import { act, fireEvent, render, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	act,
+	fireEvent,
+	render as testingRender,
+	within,
+} from "@testing-library/react";
 import type { ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -213,3 +219,14 @@ vi.mock("@saas/shared/components/copilot/CopilotChatSessionProvider", () => ({
 	useCopilotChatSessionSelector: (select: any) =>
 		select({ isLoading: mocks.loading, messages: [] }),
 }));
+
+function render(ui: ReactElement) {
+	const client = new QueryClient();
+	return testingRender(ui, {
+		wrapper: ({ children }) => (
+			<QueryClientProvider client={client}>
+				{children}
+			</QueryClientProvider>
+		),
+	});
+}

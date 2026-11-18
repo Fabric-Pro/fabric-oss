@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
 	type ChatMediaKind,
 	isBeforeChatMediaLegacyCutoff,
@@ -37,7 +38,7 @@ export async function uploadRecordedChatMedia({
 }): Promise<string> {
 	const ownerPrefix = organizationId || userId;
 	const timestamp = Date.now();
-	const hash = Math.random().toString(36).substring(2, 10);
+	const hash = randomBytes(16).toString("hex");
 	const storagePath = `${ownerPrefix}/${storageKind}/${timestamp}-${hash}.${extension}`;
 
 	await uploadFile(storagePath, data, {

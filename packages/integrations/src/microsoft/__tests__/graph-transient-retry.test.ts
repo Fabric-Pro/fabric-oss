@@ -125,6 +125,33 @@ describe("graphRequest transient retry (issue #2859)", () => {
 		expect(result.transcripts[0].id).toBe("transcript_1");
 	});
 
+	it("logs each retry with its status and Graph request id", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		stubFetch([
+			() =>
+				new Response(BAD_GATEWAY_BODY, {
+					status: 502,
+					headers: { "request-id": "req-1" },
+				}),
+			() => new Response(JSON.stringify({ value: [] }), { status: 200 }),
+		]);
+
+		const promise = executeMicrosoftTeamsTool(
+			"list_meeting_transcripts",
+			{ meetingId: "meeting_1" },
+			"user_1",
+		);
+		await vi.runAllTimersAsync();
+		await promise;
+
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("Graph returned 502; retry 1 of 3"),
+			expect.objectContaining({ method: "GET", requestId: "req-1" }),
+		);
+		warn.mockRestore();
+	});
+
 	it("releases the body of the response it drops", async () => {
 		// An unread body holds its connection out of the pool across the sleep.
 		const cancelled = vi.fn();

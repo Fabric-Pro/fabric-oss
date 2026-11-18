@@ -10,6 +10,7 @@ export { repairSyncProcedure } from "./repair-sync";
 export { restoreMeetingProcedure } from "./restore-meeting";
 export { setAutoAnalyzeProcedure } from "./set-auto-analyze";
 export { setMeetingSyncActiveProcedure } from "./set-meeting-sync-active";
+export { syncNowStatusProcedure } from "./sync-now-status";
 export {
 	browseTranscriptFoldersProcedure,
 	connectTranscriptFoldersProcedure,

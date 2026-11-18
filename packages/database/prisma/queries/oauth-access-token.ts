@@ -137,7 +137,7 @@ export async function verifyOAuthAccessToken(
 	// Legacy grants are expanded to all configured resources before activation;
 	// empty or malformed lists must never recover that wider legacy access.
 	const mcpResource = staticResourceFor(resource.appUrl, "mcp");
-	const mcpShortResource = `${resource.appUrl.replace(/\/+$/, "")}/mcp`;
+	const mcpShortResource = `${resource.appUrl.replace(/(?<!\/)\/+$/g, "")}/mcp`;
 	const apiResource = staticResourceFor(resource.appUrl, "api");
 	const configured = new Set([
 		mcpResource,

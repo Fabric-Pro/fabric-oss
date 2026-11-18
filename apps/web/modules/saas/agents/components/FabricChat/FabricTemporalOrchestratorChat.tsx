@@ -1,5 +1,8 @@
 "use client";
 
+import { LiveAnnouncerRegion } from "@saas/shared/components/LiveAnnouncer";
+import { sharedDocumentChat } from "./orchestrator/shared-document-chat";
+
 /**
  * FabricTemporalOrchestratorChat - Temporal-based orchestrator chat component
  *
@@ -353,6 +356,32 @@ export function FabricTemporalOrchestratorChat({
 	const canManageBilling = activeOrganization ? isOrganizationAdmin : true;
 	const organizationSlug = activeOrganization?.slug ?? null;
 
+	const localImagePreviews = useRef(new Map<string, string>());
+	const ownedPreviewUrls = useRef(new Set<string>());
+	const previewGeneration = useRef(0);
+	const [pendingImagePreviews, setPendingImagePreviews] = useState<string[]>(
+		[],
+	);
+	const releaseImagePreviews = useCallback(() => {
+		previewGeneration.current += 1;
+		for (const url of ownedPreviewUrls.current) {
+			URL.revokeObjectURL(url);
+		}
+		ownedPreviewUrls.current.clear();
+		localImagePreviews.current.clear();
+	}, []);
+	useEffect(() => releaseImagePreviews, [releaseImagePreviews]);
+	const createImagePreview = useCallback((file: File) => {
+		const url = URL.createObjectURL(file);
+		ownedPreviewUrls.current.add(url);
+		return url;
+	}, []);
+	const thumbnailUrl = (path: string, orgId?: string) =>
+		localImagePreviews.current.get(path) ??
+		storagePathToProxyUrl(path, orgId);
+	const [pendingSend, setPendingSend] = useState<string | null>(null);
+	const preparingSendRef = useRef(false);
+	const queryClient = useQueryClient();
 	const [input, setInput] = useState(initialInput ?? "");
 	const [completedExecutions, setCompletedExecutions] = useState<
 		CompletedExecution[]
@@ -564,6 +593,9 @@ export function FabricTemporalOrchestratorChat({
 	// project attached before `setConversationId` (see there).
 	const handleConversationStarted = useCallback(
 		async (startedConversationId: string) => {
+			void queryClient.invalidateQueries({
+				queryKey: ["agents", "conversations"],
+			});
 			if (attachedProjectId) {
 				try {
 					await orpcClient.projects.conversations.attach({
@@ -583,7 +615,7 @@ export function FabricTemporalOrchestratorChat({
 			setConversationId(startedConversationId);
 			onConversationCreated?.(startedConversationId);
 		},
-		[attachedProjectId, organizationId, onConversationCreated],
+		[attachedProjectId, organizationId, onConversationCreated, queryClient],
 	);
 
 	// The send in flight: whether it carried images or documents from the
@@ -1024,8 +1056,6 @@ export function FabricTemporalOrchestratorChat({
 		staleTime: 30_000,
 	});
 
-	const queryClient = useQueryClient();
-
 	useEffect(() => {
 		if (
 			conversationId &&
@@ -1258,6 +1288,15 @@ export function FabricTemporalOrchestratorChat({
 			setConversationId(newId);
 		}
 
+		if (
+			newId !== prevId &&
+			!(newId && newId === selfCreatedConversationIdRef.current)
+		) {
+			releaseImagePreviews();
+			setAttachedImages([]);
+			setPendingImagePreviews([]);
+		}
+
 		// Only reset state when conversation actually changes
 		if (newId !== prevId) {
 			// Clear state when:
@@ -1301,7 +1340,7 @@ export function FabricTemporalOrchestratorChat({
 			}
 			prevConversationIdRef.current = newId;
 		}
-	}, [activeConversationId, conversationId, reset]);
+	}, [activeConversationId, conversationId, reset, releaseImagePreviews]);
 
 	// Track last known plan to preserve it after completion
 	const lastPlanRef = useRef<TaskPlan | null>(null);
@@ -1670,7 +1709,11 @@ export function FabricTemporalOrchestratorChat({
 		!!state.executionId &&
 		landedExecutionId !== state.executionId;
 	const isTurnInFlight =
-		isPreparingSend || isLoading || isAwaitingApproval || isTurnLanding;
+		pendingSend !== null ||
+		isPreparingSend ||
+		isLoading ||
+		isAwaitingApproval ||
+		isTurnLanding;
 	const onStreamingChangeRef = useRef(onStreamingChange);
 	onStreamingChangeRef.current = onStreamingChange;
 	useEffect(() => {
@@ -2420,13 +2463,16 @@ export function FabricTemporalOrchestratorChat({
 	 */
 	const handleFileSelect = useCallback(
 		async (e: ChangeEvent<HTMLInputElement>) => {
-			const files = e.target.files;
-			if (!files) {
+			const files = Array.from(e.target.files ?? []);
+			// Snapshot before resetting: shaping may finish after a conversation switch.
+			e.target.value = "";
+			const generation = previewGeneration.current;
+			if (files.length === 0) {
 				return;
 			}
 
 			const newImages: typeof attachedImages = [];
-			for (const file of Array.from(files)) {
+			for (const file of files) {
 				if (isClientRenderableAiChatImage(file.type)) {
 					if (file.size > DEFAULT_AI_CHAT_MAX_FILE_BYTES) {
 						toast.error(
@@ -2438,6 +2484,9 @@ export function FabricTemporalOrchestratorChat({
 					// raw cap above can still exceed what the model accepts —
 					// failing later with nothing the user can act on.
 					const shaped = await prepareImageForAi(file);
+					if (generation !== previewGeneration.current) {
+						return;
+					}
 					if (!shaped.ok) {
 						toast.error(shaped.error);
 						continue;
@@ -2446,7 +2495,7 @@ export function FabricTemporalOrchestratorChat({
 						id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
 						file: shaped.file,
 						name: file.name,
-						previewUrl: URL.createObjectURL(shaped.file),
+						previewUrl: createImagePreview(shaped.file),
 						status: "pending",
 					});
 					continue;
@@ -2457,18 +2506,20 @@ export function FabricTemporalOrchestratorChat({
 			if (newImages.length > 0) {
 				setAttachedImages((prev) => [...prev, ...newImages]);
 			}
-
-			// Reset input so the same file can be selected again
-			e.target.value = "";
 		},
-		[enqueueDocument],
+		[enqueueDocument, createImagePreview],
 	);
 
 	const removeAttachedImage = useCallback((id: string) => {
 		setAttachedImages((prev) => {
 			const img = prev.find((i) => i.id === id);
-			if (img) {
+			if (img && ownedPreviewUrls.current.delete(img.previewUrl)) {
 				URL.revokeObjectURL(img.previewUrl);
+				for (const [path, url] of localImagePreviews.current) {
+					if (url === img.previewUrl) {
+						localImagePreviews.current.delete(path);
+					}
+				}
 			}
 			return prev.filter((i) => i.id !== id);
 		});
@@ -2506,23 +2557,28 @@ export function FabricTemporalOrchestratorChat({
 			// Same shaping as the paperclip: a raw screenshot can exceed the
 			// provider's per-image cap, or the upload route's body limit
 			// (review F37).
+			const generation = previewGeneration.current;
 			const file = await shapePastedImageForAi(pasted);
+			if (generation !== previewGeneration.current) {
+				return;
+			}
 			if (!file) {
 				return;
 			}
 			const id = `paste-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+			const previewUrl = createImagePreview(file);
 			setAttachedImages((prev) => [
 				...prev,
 				{
 					id,
 					file,
 					name: pasted.name || "pasted-image",
-					previewUrl: URL.createObjectURL(file),
+					previewUrl,
 					status: "pending" as const,
 				},
 			]);
 		},
-		[],
+		[createImagePreview],
 	);
 
 	/**
@@ -2544,80 +2600,96 @@ export function FabricTemporalOrchestratorChat({
 
 		const uploadedPaths: string[] = [];
 
-		for (const img of pendingImages) {
-			setAttachedImages((prev) =>
-				prev.map((i) =>
-					i.id === img.id ? { ...i, status: "uploading" } : i,
-				),
-			);
-
-			try {
-				const formData = new FormData();
-				formData.append("file", img.file);
-				// Pass organizationId so upload uses the correct tenant prefix
-				// (session.activeOrganizationId can be stale in personal context)
-				if (organizationId) {
-					formData.append("organizationId", organizationId);
-				}
-
-				const response = await fetch(
-					"/api/agents/fabric-ai/upload-image",
-					{
-						method: "POST",
-						body: formData,
-					},
+		await Promise.allSettled(
+			pendingImages.map(async (img, index) => {
+				setAttachedImages((prev) =>
+					prev.map((i) =>
+						i.id === img.id ? { ...i, status: "uploading" } : i,
+					),
 				);
 
-				if (!response.ok) {
-					// The platform's own 413 is not JSON; reading it as JSON
-					// threw and hid why the upload failed (review F37).
-					const body = await response.json().catch(() => null);
-					throw new ImageUploadError(
-						describeImageUploadFailure(
-							response.status,
-							body,
-							img.name,
+				try {
+					const formData = new FormData();
+					formData.append("file", img.file);
+					// Pass organizationId so upload uses the correct tenant prefix
+					// (session.activeOrganizationId can be stale in personal context)
+					if (organizationId) {
+						formData.append("organizationId", organizationId);
+					}
+
+					const response = await fetch(
+						"/api/agents/fabric-ai/upload-image",
+						{
+							method: "POST",
+							body: formData,
+						},
+					);
+
+					if (!response.ok) {
+						// The platform's own 413 is not JSON; reading it as JSON
+						// threw and hid why the upload failed (review F37).
+						const body = await response.json().catch(() => null);
+						throw new ImageUploadError(
+							describeImageUploadFailure(
+								response.status,
+								body,
+								img.name,
+							),
+						);
+					}
+
+					const result = await response.json();
+					// Use storagePath (stable) instead of url (signed, expires in 1 hour)
+					uploadedPaths[index] = result.storagePath;
+					if (ownedPreviewUrls.current.has(img.previewUrl)) {
+						localImagePreviews.current.set(
+							result.storagePath,
+							img.previewUrl,
+						);
+					}
+
+					setAttachedImages((prev) =>
+						prev.map((i) =>
+							i.id === img.id
+								? {
+										...i,
+										status: "ready",
+										uploadedUrl: result.url,
+										storagePath: result.storagePath,
+									}
+								: i,
 						),
 					);
+				} catch (error) {
+					console.error("[ImageUpload] Failed:", error);
+					setPendingImagePreviews((prev) =>
+						prev.filter((url) => url !== img.previewUrl),
+					);
+					setAttachedImages((prev) =>
+						prev.map((i) =>
+							i.id === img.id ? { ...i, status: "error" } : i,
+						),
+					);
+					toast.error(
+						error instanceof ImageUploadError
+							? error.message
+							: `Failed to upload ${img.name}`,
+					);
 				}
+			}),
+		);
 
-				const result = await response.json();
-				// Use storagePath (stable) instead of url (signed, expires in 1 hour)
-				uploadedPaths.push(result.storagePath);
-
-				setAttachedImages((prev) =>
-					prev.map((i) =>
-						i.id === img.id
-							? {
-									...i,
-									status: "ready",
-									uploadedUrl: result.url,
-									storagePath: result.storagePath,
-								}
-							: i,
-					),
-				);
-			} catch (error) {
-				console.error("[ImageUpload] Failed:", error);
-				setAttachedImages((prev) =>
-					prev.map((i) =>
-						i.id === img.id ? { ...i, status: "error" } : i,
-					),
-				);
-				toast.error(
-					error instanceof ImageUploadError
-						? error.message
-						: `Failed to upload ${img.name}`,
-				);
-			}
-		}
-
-		// Also include already-uploaded images (by storage path)
-		const existingPaths = attachedImages
-			.filter((img) => img.storagePath && img.status === "ready")
-			.map((img) => img.storagePath as string);
-
-		return [...existingPaths, ...uploadedPaths];
+		return attachedImages.flatMap((image) => {
+			const path =
+				image.status === "ready"
+					? image.storagePath
+					: uploadedPaths[
+							pendingImages.findIndex(
+								(pending) => pending.id === image.id,
+							)
+						];
+			return path ? [path] : [];
+		});
 	}, [attachedImages, organizationId]);
 
 	/**
@@ -2646,127 +2718,145 @@ export function FabricTemporalOrchestratorChat({
 		const inlineContexts: string[] = [];
 		let aiChatId: string | undefined = currentDocumentChatId || undefined;
 
-		for (const attachedFile of pendingFiles) {
-			try {
-				setAttachedDocuments((prev) =>
-					prev.map((f) =>
-						f.id === attachedFile.id
-							? { ...f, status: "uploading" as const }
-							: f,
-					),
-				);
-
-				const {
-					documentId,
-					signedUploadUrl,
-					useServerUpload,
-					chatId: returnedChatId,
-				} = await orpcClient.ai.documents.createUploadUrl({
-					chatId: aiChatId,
-					organizationId: organizationId || undefined,
-					filename: attachedFile.name,
-					mimeType: attachedFile.type || "application/octet-stream",
-					size: attachedFile.size,
-				});
-
-				if (!aiChatId && returnedChatId) {
-					aiChatId = returnedChatId;
-					adoptDocumentChat(returnedChatId);
-				}
-
-				if (signedUploadUrl) {
-					const uploadResponse = await fetch(signedUploadUrl, {
-						method: "PUT",
-						body: attachedFile.file,
-						headers: {
-							"Content-Type":
-								attachedFile.type || "application/octet-stream",
-						},
-					});
-					if (!uploadResponse.ok) {
-						throw new Error(
-							`Upload failed with status ${uploadResponse.status}`,
-						);
-					}
-				} else if (useServerUpload) {
-					const arrayBuffer = await attachedFile.file.arrayBuffer();
-					const base64 = btoa(
-						new Uint8Array(arrayBuffer).reduce(
-							(data, byte) => data + String.fromCharCode(byte),
-							"",
+		const createUploadUrl = sharedDocumentChat(
+			(
+				input: Parameters<
+					typeof orpcClient.ai.documents.createUploadUrl
+				>[0],
+			) => orpcClient.ai.documents.createUploadUrl(input),
+			aiChatId,
+		);
+		await Promise.allSettled(
+			pendingFiles.map(async (attachedFile, index) => {
+				try {
+					setAttachedDocuments((prev) =>
+						prev.map((f) =>
+							f.id === attachedFile.id
+								? { ...f, status: "uploading" as const }
+								: f,
 						),
 					);
-					await orpcClient.ai.documents.upload({
+
+					const {
 						documentId,
-						fileData: base64,
+						signedUploadUrl,
+						useServerUpload,
+						chatId: returnedChatId,
+					} = await createUploadUrl({
+						chatId: aiChatId,
+						organizationId: organizationId || undefined,
+						filename: attachedFile.name,
 						mimeType:
 							attachedFile.type || "application/octet-stream",
+						size: attachedFile.size,
 					});
-				} else {
-					throw new Error("No upload method available");
+
+					if (!aiChatId && returnedChatId) {
+						aiChatId = returnedChatId;
+						adoptDocumentChat(returnedChatId);
+					}
+
+					if (signedUploadUrl) {
+						const uploadResponse = await fetch(signedUploadUrl, {
+							method: "PUT",
+							body: attachedFile.file,
+							headers: {
+								"Content-Type":
+									attachedFile.type ||
+									"application/octet-stream",
+							},
+						});
+						if (!uploadResponse.ok) {
+							throw new Error(
+								`Upload failed with status ${uploadResponse.status}`,
+							);
+						}
+					} else if (useServerUpload) {
+						const arrayBuffer =
+							await attachedFile.file.arrayBuffer();
+						const base64 = btoa(
+							new Uint8Array(arrayBuffer).reduce(
+								(data, byte) =>
+									data + String.fromCharCode(byte),
+								"",
+							),
+						);
+						await orpcClient.ai.documents.upload({
+							documentId,
+							fileData: base64,
+							mimeType:
+								attachedFile.type || "application/octet-stream",
+						});
+					} else {
+						throw new Error("No upload method available");
+					}
+
+					setAttachedDocuments((prev) =>
+						prev.map((f) =>
+							f.id === attachedFile.id
+								? {
+										...f,
+										status: "processing" as const,
+										documentId,
+										chatId: aiChatId,
+									}
+								: f,
+						),
+					);
+
+					// `process` already bounds what it returns, so no client-side
+					// budget is applied here (a second cut would report a truncation
+					// the user was never subject to).
+					const processed = await orpcClient.ai.documents.process({
+						documentId,
+					});
+					const contextEntry = buildAiChatAttachmentEntry(
+						attachedFile.name,
+						processed?.extractedContent ?? "",
+					);
+
+					setAttachedDocuments((prev) =>
+						prev.map((f) =>
+							f.id === attachedFile.id
+								? {
+										...f,
+										status: "ready" as const,
+										extraction: processed?.extraction,
+										contextEntry,
+									}
+								: f,
+						),
+					);
+
+					documentIds[index] = documentId;
+					inlineContexts[index] = contextEntry;
+					toast.success(`Uploaded ${attachedFile.name}`);
+				} catch (error) {
+					console.error("Document upload error:", error);
+					setAttachedDocuments((prev) =>
+						prev.map((f) =>
+							f.id === attachedFile.id
+								? {
+										...f,
+										status: "error" as const,
+										error:
+											error instanceof Error
+												? error.message
+												: "Upload failed",
+									}
+								: f,
+						),
+					);
+					toast.error(`Failed to upload ${attachedFile.name}`);
 				}
+			}),
+		);
 
-				setAttachedDocuments((prev) =>
-					prev.map((f) =>
-						f.id === attachedFile.id
-							? {
-									...f,
-									status: "processing" as const,
-									documentId,
-									chatId: aiChatId,
-								}
-							: f,
-					),
-				);
-
-				// `process` already bounds what it returns, so no client-side
-				// budget is applied here (a second cut would report a truncation
-				// the user was never subject to).
-				const processed = await orpcClient.ai.documents.process({
-					documentId,
-				});
-				const contextEntry = buildAiChatAttachmentEntry(
-					attachedFile.name,
-					processed?.extractedContent ?? "",
-				);
-
-				setAttachedDocuments((prev) =>
-					prev.map((f) =>
-						f.id === attachedFile.id
-							? {
-									...f,
-									status: "ready" as const,
-									extraction: processed?.extraction,
-									contextEntry,
-								}
-							: f,
-					),
-				);
-
-				documentIds.push(documentId);
-				inlineContexts.push(contextEntry);
-				toast.success(`Uploaded ${attachedFile.name}`);
-			} catch (error) {
-				console.error("Document upload error:", error);
-				setAttachedDocuments((prev) =>
-					prev.map((f) =>
-						f.id === attachedFile.id
-							? {
-									...f,
-									status: "error" as const,
-									error:
-										error instanceof Error
-											? error.message
-											: "Upload failed",
-								}
-							: f,
-					),
-				);
-				toast.error(`Failed to upload ${attachedFile.name}`);
-			}
-		}
-
-		return { documentIds, inlineContexts, chatId: aiChatId };
+		return {
+			documentIds: documentIds.filter(Boolean),
+			inlineContexts: inlineContexts.filter(Boolean),
+			chatId: aiChatId,
+		};
 	}, [
 		attachedDocuments,
 		currentDocumentChatId,
@@ -2779,6 +2869,51 @@ export function FabricTemporalOrchestratorChat({
 	const handleSendMessage = async (
 		prompt?: unknown,
 		continueFromTurnId?: string,
+	) => {
+		const text = typeof prompt === "string" ? prompt : input;
+		if (!text.trim() || isLoading || preparingSendRef.current) {
+			return;
+		}
+		preparingSendRef.current = true;
+		setPendingSend(text.trim());
+		setPendingImagePreviews(
+			attachedImages
+				.filter((image) => image.status !== "error")
+				.map((image) => image.previewUrl),
+		);
+		let handedOff = false;
+		const endPreparation = () => {
+			handedOff = true;
+			preparingSendRef.current = false;
+			setPendingSend(null);
+		};
+		try {
+			await performSendMessage(
+				prompt,
+				continueFromTurnId,
+				endPreparation,
+			);
+		} catch (error) {
+			if (handedOff) {
+				throw error;
+			}
+			if (typeof prompt !== "string") {
+				setInput(text);
+			}
+			toast.error("Failed to prepare message");
+			console.error("Message preparation failed:", error);
+		} finally {
+			if (!handedOff) {
+				preparingSendRef.current = false;
+				setPendingSend(null);
+			}
+		}
+	};
+
+	const performSendMessage = async (
+		prompt: unknown,
+		continueFromTurnId: string | undefined,
+		endPreparation: () => void,
 	) => {
 		const text = typeof prompt === "string" ? prompt : input;
 		if (!text.trim() || isLoading) {
@@ -2949,14 +3084,13 @@ export function FabricTemporalOrchestratorChat({
 		if (attachedImages.length > 0) {
 			try {
 				newlyAttachedImageUrls = await uploadAttachedImages();
-				// Clear attached images after upload
-				for (const img of attachedImages) {
-					URL.revokeObjectURL(img.previewUrl);
-				}
 				setAttachedImages([]);
 			} catch (error) {
 				console.error("[ImageUpload] Upload failed:", error);
 				toast.error("Failed to upload images");
+				if (typeof prompt !== "string") {
+					setInput(text);
+				}
 				return;
 			}
 		}
@@ -3033,10 +3167,8 @@ export function FabricTemporalOrchestratorChat({
 		);
 		lastUserImageUrlsRef.current = turnImageUrls;
 
-		// Everything that can reject the send has run, so an empty
-		// conversation is never left behind by a failed upload. From here the
-		// host sees the turn as in flight: the conversation it is told about
-		// below has no stream yet.
+		// Create the conversation after attachment preparation. From here the
+		// host stays attached until the transport finishes, including a Stop drain.
 		setIsPreparingSend(true);
 		const thisSend = {};
 		try {
@@ -3068,6 +3200,8 @@ export function FabricTemporalOrchestratorChat({
 			// Pass forceNewChat flag and template instructions to ensure hook starts fresh for new chats
 			// Template instructions are per-message scope (cleared after sending by ChatInput)
 			// Template integration/MCP IDs are merged with enabled IDs for this message only
+			// The transport installs its turn UI synchronously in this batch.
+			endPreparation();
 			await sendMessage(
 				content,
 				history,
@@ -3262,6 +3396,7 @@ export function FabricTemporalOrchestratorChat({
 	];
 
 	const isEmptyThread =
+		pendingSend === null &&
 		messages.length === 0 &&
 		completedExecutions.length === 0 &&
 		!liveMultiAgentView &&
@@ -3296,9 +3431,12 @@ export function FabricTemporalOrchestratorChat({
 											)
 									: undefined
 							}
-							onContinue={(newConversationId) =>
-								onConversationCreated?.(newConversationId)
-							}
+							onContinue={(newConversationId) => {
+								void queryClient.invalidateQueries({
+									queryKey: ["agents", "conversations"],
+								});
+								onConversationCreated?.(newConversationId);
+							}}
 						/>
 					)}
 				<ChatInput
@@ -3306,12 +3444,16 @@ export function FabricTemporalOrchestratorChat({
 					value={input}
 					onChange={setInput}
 					onSend={handleSendMessage}
-					onStop={handleStopFromButton}
+					onStop={
+						isLoading || isAwaitingApproval
+							? handleStopFromButton
+							: undefined
+					}
 					// Stop is visible while the workflow is paused on
 					// `pendingApproval` (AC-9 / decision 20) — cancel
 					// implicitly rejects the proposed step.
 					pendingApproval={isAwaitingApproval}
-					isLoading={isLoading}
+					isLoading={isLoading || pendingSend !== null}
 					variant={isWelcome ? "hero" : "default"}
 					placeholder="Ask Fabric anything... (type @ to mention a template)"
 					attachTooltip="Attach files"
@@ -3555,10 +3697,17 @@ export function FabricTemporalOrchestratorChat({
 	return (
 		<div className="flex h-full overflow-hidden">
 			<div className="flex min-w-0 flex-1 flex-col">
+				<LiveAnnouncerRegion
+					data-testid="send-preparation-status"
+					announcement={
+						pendingSend !== null ? "Preparing message…" : ""
+					}
+				/>
 				{/* Messages Area. A failed turn with nothing else in the
 				    thread (a message refused before it ran, in a chat with
 				    no earlier turns) still needs the thread, where its
 				    notice renders, rather than the landing. */}
+
 				{isEmptyThread ? (
 					compactMode ? (
 						/* The drawer's empty state: Databricks Genie style
@@ -3742,7 +3891,7 @@ export function FabricTemporalOrchestratorChat({
 																							className="cursor-pointer"
 																						>
 																							<Image
-																								src={storagePathToProxyUrl(
+																								src={thumbnailUrl(
 																									url,
 																									organizationId,
 																								)}
@@ -4365,7 +4514,7 @@ export function FabricTemporalOrchestratorChat({
 																			className="cursor-pointer"
 																		>
 																			<Image
-																				src={storagePathToProxyUrl(
+																				src={thumbnailUrl(
 																					url,
 																					organizationId,
 																				)}
@@ -5328,6 +5477,36 @@ export function FabricTemporalOrchestratorChat({
 												);
 											}}
 										/>
+									</div>
+								</div>
+							)}
+							{pendingSend !== null && !isLoading && (
+								<div className="space-y-2 p-4">
+									<div className="flex gap-2 mb-2 flex-wrap">
+										{pendingImagePreviews.map((url) => (
+											<Image
+												key={url}
+												src={url}
+												alt="Attached"
+												width={80}
+												height={80}
+												unoptimized
+												className="h-20 w-20 rounded-md border object-cover"
+											/>
+										))}
+									</div>
+									<p className="whitespace-pre-wrap text-sm">
+										{pendingSend}
+									</p>
+									<div
+										aria-hidden="true"
+										className="flex items-center gap-2 text-sm text-muted-foreground"
+									>
+										<Loader2
+											className="h-4 w-4 animate-spin"
+											aria-hidden="true"
+										/>
+										Preparing message…
 									</div>
 								</div>
 							)}

@@ -1683,3 +1683,36 @@ describe("logs", () => {
 		expect(logged).not.toContain("SECRET");
 	});
 });
+
+it.each(["web_search", "read_url"])(
+	"records completion for the timed %s wrapper",
+	async (toolName) => {
+		const spy = vi.spyOn(logger, "info");
+		vi.stubGlobal("fetch", okFetch());
+		try {
+			const call =
+				toolName === "web_search"
+					? search("example-call")
+					: read("example-call", "https://example.com/report");
+			await toolNode(
+				researchState(
+					[call],
+					progressed({}, ["https://example.com/report"]),
+				),
+				AUTHORIZED,
+			);
+			const records = spy.mock.calls.filter(
+				(call) => call[0] === "[ToolNode] Tool completed",
+			);
+			expect(records).toHaveLength(1);
+			expect(records[0]?.[1]).toEqual({
+				toolName,
+				durationMs: expect.any(Number),
+				success: true,
+			});
+		} finally {
+			spy.mockRestore();
+			vi.unstubAllGlobals();
+		}
+	},
+);

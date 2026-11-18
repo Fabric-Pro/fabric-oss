@@ -19,7 +19,7 @@
 		"@repo/ai": "workspace:*",
 		"@repo/observability": "workspace:*",
 		"ai": "^7.0.140",
-		"hono": "^4.13.11",
+		"hono": "^4.13.16",
 		"nunjucks": "^3.2.4",
 		"stripe": "^19.2.0",
 		"undici": "^8.5.0",

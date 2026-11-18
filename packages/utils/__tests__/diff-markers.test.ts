@@ -160,7 +160,7 @@ describe("resolveEncodedDiffMarkers: one pass leaves nothing for a second", () =
 
 	it("resolves markers that share their zero-width spaces", () => {
 		// `ADD_END` ends with the two zero-width spaces `DEL_START` begins with.
-		const shared = `${ENC_ADD_END}${ENC_DEL_START.replace("%E2%80%8B%E2%80%8B", "")}`;
+		const shared = `${ENC_ADD_END}${ENC_DEL_START.replaceAll("%E2%80%8B%E2%80%8B", "")}`;
 
 		expect(resolveToFixedPoint(`https://example.com/${shared}x`)).toBe(
 			"https://example.com/-DEL_START%E2%80%8B%C2%A0x",

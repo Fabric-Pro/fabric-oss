@@ -291,7 +291,7 @@ export async function orchestratorCompletionWorkflow(
 				? "partial"
 				: "failure";
 
-		await embedAndStoreTrajectory({
+		const stored = await embedAndStoreTrajectory({
 			executionId,
 			taskDescription: message,
 			// Cast: activity only reads id/description/status from steps
@@ -312,12 +312,24 @@ export async function orchestratorCompletionWorkflow(
 			],
 		});
 
+		// The activity returns false when it could not store the execution
+		// (it has logged why), so only a true result is reported as stored
+		// (Fizzy #3571). Logging is not a workflow command, so replay is
+		// unaffected.
 		if (!workflowInfo().unsafe.isReplaying) {
-			log.info("Execution stored in Qdrant semantic memory", {
+			const details = {
 				executionId,
 				outcome,
 				stepCount: taskPlanSteps.length,
-			});
+			};
+			if (stored) {
+				log.info("Execution stored in Qdrant semantic memory", details);
+			} else {
+				log.warn(
+					"Execution not stored in Qdrant semantic memory",
+					details,
+				);
+			}
 		}
 	} catch (error) {
 		if (!workflowInfo().unsafe.isReplaying) {

@@ -247,6 +247,9 @@ export function useConversationHistory(options: UseConversationHistoryOptions) {
 			return result;
 		},
 		onSuccess: (data) => {
+			void queryClient.invalidateQueries({
+				queryKey: ["agents", "conversations"],
+			});
 			queryClient.invalidateQueries({ queryKey: listKey });
 			setActiveConversationId(data.id);
 		},

@@ -264,6 +264,11 @@ pnpm test
 pnpm guidance:check
 ```
 
+Type-check through `pnpm type-check` (root) or `pnpm type-check` inside a
+package, never bare `tsc` or `npx tsc`. Classic `tsc` on `apps/web` exceeds
+node's default ~4 GB heap and aborts with SIGABRT; package scripts use `tsgo`
+and the root script raises the heap to 12 GB.
+
 Do not automatically run the full suite for a localized change when focused
 tests plus static checks provide the necessary evidence. Conversely, do not use
 a focused test to claim unrelated packages are healthy.

@@ -146,6 +146,20 @@ function FacetTrigger({
 	);
 }
 
+// A search box only earns its place on longer lists (Stage = 5, Source = 11);
+// on the short facets (Type / Priority / Sync) it's clutter, and dropping it
+// also keeps cmdk from filtering.
+const isSearchable = (optionCount: number) => optionCount > 4;
+
+function FacetSearchInput({ label }: { label: string }) {
+	return (
+		<CommandInput
+			placeholder={`Search ${label.toLowerCase()}…`}
+			className="h-9"
+		/>
+	);
+}
+
 // Fixed-width triggers keep selected values from shifting neighbouring controls.
 function FacetMultiSelect<T extends string>({
 	label,
@@ -191,10 +205,7 @@ function FacetMultiSelect<T extends string>({
 						"1")
 					: (extraOption?.label ?? "1")
 				: t("selected", { count: activeCount });
-	// A search box only earns its place on longer lists (Stage = 5, Source = 11);
-	// on the short facets (Type / Priority / Sync) it's clutter, and dropping it
-	// also keeps cmdk from filtering.
-	const searchable = options.length > 4;
+	const searchable = isSearchable(options.length);
 	const trigger = (
 		<PopoverTrigger asChild>
 			<FacetTrigger
@@ -219,12 +230,7 @@ function FacetMultiSelect<T extends string>({
 				</Tooltip>
 				<PopoverContent align="start" className="w-56 p-0">
 					<Command shouldFilter={searchable}>
-						{searchable && (
-							<CommandInput
-								placeholder={`Search ${label.toLowerCase()}…`}
-								className="h-9"
-							/>
-						)}
+						{searchable && <FacetSearchInput label={label} />}
 						<CommandList>
 							{searchable && (
 								<CommandEmpty>None found.</CommandEmpty>
@@ -328,28 +334,33 @@ function FacetMultiSelect<T extends string>({
 	);
 }
 
-function RecencySelect({
+// Single-select facet: an "Any" row (value null) plus the given options. A
+// selected value missing from `options` (e.g. supplied by the URL) still shows
+// in the trigger, so the active selection is always visible.
+function SingleSelect({
 	label,
+	anyLabel,
+	options,
 	value,
 	onChange,
 }: {
 	label: string;
-	value: RecencyWindowDays | null;
-	onChange: (next: RecencyWindowDays | null) => void;
+	anyLabel: string;
+	options: { value: string; label: string }[];
+	value: string | null;
+	onChange: (next: string | null) => void;
 }) {
-	const t = useTranslations("projects.stories.roadmapUi");
 	const [open, setOpen] = useState(false);
-	const selected = value === null ? "none" : String(value);
-	const options = [
-		{ value: "none", label: t("anyTime") },
-		...RECENCY_WINDOW_OPTIONS.map((days) => ({
-			value: String(days),
-			label: t("lastDays", { days }),
-		})),
-	];
 	const summary =
-		options.find((option) => option.value === selected)?.label ??
-		t("anyTime");
+		value === null
+			? anyLabel
+			: (options.find((option) => option.value === value)?.label ??
+				value);
+	const rows: { value: string | null; label: string }[] = [
+		{ value: null, label: anyLabel },
+		...options,
+	];
+	const searchable = isSearchable(options.length);
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild>
@@ -361,30 +372,26 @@ function RecencySelect({
 			</PopoverTrigger>
 			<PopoverContent align="start" className="w-56 p-0">
 				<Command
-					shouldFilter={false}
-					defaultValue={selected}
+					shouldFilter={searchable}
+					defaultValue={summary}
 					tabIndex={0}
 				>
+					{searchable && <FacetSearchInput label={label} />}
 					<CommandList>
+						{searchable && <CommandEmpty>None found.</CommandEmpty>}
 						<CommandGroup>
-							{options.map((option) => (
+							{rows.map((option) => (
 								<CommandItem
-									key={option.value}
-									value={option.value}
+									key={option.value ?? ""}
+									value={option.label}
 									className="justify-between"
 									onSelect={() => {
-										onChange(
-											option.value === "none"
-												? null
-												: (Number(
-														option.value,
-													) as RecencyWindowDays),
-										);
+										onChange(option.value);
 										setOpen(false);
 									}}
 								>
 									{option.label}
-									{option.value === selected && (
+									{option.value === value && (
 										<CheckIcon
 											aria-hidden
 											className="size-3.5"
@@ -397,6 +404,34 @@ function RecencySelect({
 				</Command>
 			</PopoverContent>
 		</Popover>
+	);
+}
+
+function RecencySelect({
+	label,
+	value,
+	onChange,
+}: {
+	label: string;
+	value: RecencyWindowDays | null;
+	onChange: (next: RecencyWindowDays | null) => void;
+}) {
+	const t = useTranslations("projects.stories.roadmapUi");
+	return (
+		<SingleSelect
+			label={label}
+			anyLabel={t("anyTime")}
+			options={RECENCY_WINDOW_OPTIONS.map((days) => ({
+				value: String(days),
+				label: t("lastDays", { days }),
+			}))}
+			value={value === null ? null : String(value)}
+			onChange={(next) =>
+				onChange(
+					next === null ? null : (Number(next) as RecencyWindowDays),
+				)
+			}
+		/>
 	);
 }
 
@@ -525,6 +560,8 @@ export type RoadmapFiltersPanelProps = {
 	tier: "primary" | "more";
 	/** Distinct project tags for the tag facet (empty until loaded / flag off). */
 	tagOptions?: string[];
+	/** Distinct PM-tool statuses across the loaded work items. */
+	pmStatusOptions?: string[];
 };
 
 export function RoadmapFiltersPanel({
@@ -532,6 +569,7 @@ export function RoadmapFiltersPanel({
 	onChange,
 	tier,
 	tagOptions = [],
+	pmStatusOptions = [],
 }: RoadmapFiltersPanelProps) {
 	const tRange = useTranslations("common.dateRangePicker");
 	const rangeLabels: DateRangePickerLabels = {
@@ -621,6 +659,18 @@ export function RoadmapFiltersPanel({
 				selected={filters.sync}
 				onChange={(sync) => onChange({ sync })}
 			/>
+			{(pmStatusOptions.length > 0 || filters.pmStatus !== null) && (
+				<SingleSelect
+					label={t("pmStatus")}
+					anyLabel={t("any")}
+					options={pmStatusOptions.map((value) => ({
+						value,
+						label: value,
+					}))}
+					value={filters.pmStatus}
+					onChange={(pmStatus) => onChange({ pmStatus })}
+				/>
+			)}
 			<FacetMultiSelect
 				label={t("source")}
 				options={SOURCE_OPTIONS}

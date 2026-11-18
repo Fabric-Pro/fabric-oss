@@ -750,3 +750,10 @@ describe("wrapFlowchartNodeLabels", () => {
 		);
 	});
 });
+
+it("handles a whitespace-heavy text arrow in linear time", () => {
+	const source = `flowchart TD\nA --\t${"\t".repeat(50_000)}x`;
+	const start = performance.now();
+	expect(wrapFlowchartNodeLabels(source)).toBeNull();
+	expect(performance.now() - start).toBeLessThan(250);
+});

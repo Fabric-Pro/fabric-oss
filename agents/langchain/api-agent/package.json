@@ -24,7 +24,7 @@
 		"@langchain/openai": "^1.5.11",
 		"@repo/agent-core": "workspace:*",
 		"@repo/observability": "workspace:*",
-		"hono": "^4.13.11",
+		"hono": "^4.13.16",
 		"undici": "^8.5.0",
 		"uuid": "^14.0.2"
 	},

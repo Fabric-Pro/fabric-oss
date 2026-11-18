@@ -1003,13 +1003,14 @@ async function buildMcpClientForConfig(
 			isAuthError: true,
 		});
 	}
-	// A retired system server that cannot start (Fizzy #3531): its package
-	// was never published, or it needs more secrets than a STDIO connection
-	// carries. Starting it only fails, and fails again on the next call.
+	// A retired system server that cannot start (Fizzy #3531, #3457): its
+	// package was never published, it needs more secrets than a STDIO
+	// connection carries, or it needs command-line arguments this connection
+	// does not have. Starting it only fails, and fails again on the next call.
 	// Refused here, before anything runs, with what the person can do about it.
 	if (
 		transport === "STDIO" &&
-		isUnrunnableSystemMcpServer(mcpConfig.mcpServer)
+		isUnrunnableSystemMcpServer(mcpConfig.mcpServer, mcpConfig.commandArgs)
 	) {
 		const serverName =
 			mcpConfig.displayName || mcpServer?.name || undefined;

@@ -88,3 +88,15 @@ describe("analyzeChunkQuality", () => {
 		expect(sizeDistribution([])).toBeNull();
 	});
 });
+
+it("classifies adversarial whitespace boundaries promptly", () => {
+	const start = performance.now();
+	expect(classifyBoundary(`!${"\n".repeat(50000)}x`, "next")).toBe(
+		"mid-sentence",
+	);
+	expect(classifyBoundary(`x${"\t".repeat(50000)}!`, "next")).toBe("clean");
+	expect(classifyBoundary("| x |", `| x |\n${"\t".repeat(50000)}!`)).toBe(
+		"split-table",
+	);
+	expect(performance.now() - start).toBeLessThan(500);
+});

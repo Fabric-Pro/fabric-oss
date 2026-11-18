@@ -239,7 +239,7 @@ describe("MCP Apps, Stateless MCP & Durable Tool Execution", () => {
 				/<meta http-equiv="Content-Security-Policy" content="([^"]+)"/,
 			)?.[1];
 			const scripts = [
-				...html.matchAll(/<script>([\s\S]*?)<\/script>/g),
+				...html.matchAll(/<script>([\s\S]*?)<\/script>/gi),
 			].map((match) => match[1]);
 			expect(csp).toBeDefined();
 			expect(scripts.length).toBeGreaterThan(0);

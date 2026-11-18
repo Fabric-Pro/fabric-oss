@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 /**
  * Chat Image Upload API
  *
@@ -88,7 +89,7 @@ export async function POST(request: NextRequest) {
 		// Build storage path
 		const extension = file.type.split("/")[1] || "png";
 		const timestamp = Date.now();
-		const hash = Math.random().toString(36).substring(2, 10);
+		const hash = randomBytes(16).toString("hex");
 		const ownerPrefix = organizationId || userId;
 		const storagePath = `${ownerPrefix}/chat-images/${timestamp}-${hash}.${extension}`;
 		const bucket = config.storage.bucketNames.chatDocuments;

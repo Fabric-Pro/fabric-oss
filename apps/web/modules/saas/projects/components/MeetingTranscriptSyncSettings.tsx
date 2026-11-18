@@ -12,6 +12,7 @@ import { useSession } from "@saas/auth/hooks/use-session";
 import { LINKED_MEETINGS_QUERY_KEY } from "@saas/meeting-digest/hooks/use-linked-meeting-join-urls";
 import { LinkedMeetingSelector } from "@saas/meetings/components";
 import { TranscriptFolderSettings } from "@saas/projects/components/meeting-sources/TranscriptFolderSettings";
+import { useSyncNowOutcome } from "@saas/projects/components/meeting-sources/useSyncNowOutcome";
 import { TranscriptFileUpload } from "@saas/projects/components/TranscriptFileUpload";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -60,7 +61,7 @@ import {
 	VideoIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 /** Cache key for the recently-deleted list (#2355). */
@@ -810,17 +811,29 @@ export function MeetingTranscriptSyncSettings({
 		},
 	});
 
-	// Poll for "Last sync" timestamp update after triggering sync.
-	// The Temporal workflow runs async, so we poll until the DB value changes.
-	const syncPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+	const refreshAfterSync = useCallback(() => {
+		queryClient.invalidateQueries({
+			queryKey: [
+				"meeting-transcript-sync-transcripts",
+				projectId,
+				organizationId,
+			],
+		});
+		queryClient.invalidateQueries({
+			queryKey: [LINKED_MEETINGS_QUERY_KEY, projectId, organizationId],
+		});
+		queryClient.invalidateQueries({
+			queryKey: orpc.projects.get.queryKey({
+				input: { id: projectId, organizationId },
+			}),
+		});
+	}, [queryClient, projectId, organizationId]);
 
-	useEffect(() => {
-		return () => {
-			if (syncPollRef.current) {
-				clearInterval(syncPollRef.current);
-			}
-		};
-	}, []);
+	const syncNow = useSyncNowOutcome({
+		projectId,
+		organizationId,
+		onFinished: refreshAfterSync,
+	});
 
 	// Trigger sync now mutation
 	const triggerSyncMutation = useMutation({
@@ -831,54 +844,13 @@ export function MeetingTranscriptSyncSettings({
 				...(daysBack ? { daysBack } : {}),
 			});
 		},
-		onSuccess: () => {
-			toast.success("Transcript sync started");
-			queryClient.invalidateQueries({
-				queryKey: [
-					"meeting-transcript-sync-transcripts",
-					projectId,
-					organizationId,
-				],
+		onSuccess: (result) => {
+			toast.success("Transcript sync started", {
+				description: "You will see the result here when it finishes.",
 			});
-
-			// Poll project data every 2s until meetingTranscriptSyncLastRun changes (max 30s).
-			const lastRunBefore = project.meetingTranscriptSyncLastRun
-				? new Date(project.meetingTranscriptSyncLastRun).getTime()
-				: 0;
-			let elapsed = 0;
-
-			if (syncPollRef.current) {
-				clearInterval(syncPollRef.current);
+			if (result?.workflowId) {
+				syncNow.watch(result.workflowId);
 			}
-			syncPollRef.current = setInterval(async () => {
-				elapsed += 2000;
-				await queryClient.invalidateQueries({
-					queryKey: orpc.projects.get.queryKey({
-						input: { id: projectId, organizationId },
-					}),
-				});
-				const data = queryClient.getQueryData<{
-					project?: {
-						meetingTranscriptSyncLastRun?: Date | string | null;
-					};
-				}>(
-					orpc.projects.get.queryKey({
-						input: { id: projectId, organizationId },
-					}),
-				);
-				const lastRunAfter = data?.project?.meetingTranscriptSyncLastRun
-					? new Date(
-							data.project.meetingTranscriptSyncLastRun,
-						).getTime()
-					: 0;
-
-				if (lastRunAfter > lastRunBefore || elapsed >= 30000) {
-					if (syncPollRef.current) {
-						clearInterval(syncPollRef.current);
-					}
-					syncPollRef.current = null;
-				}
-			}, 2000);
 		},
 		onError: (error) => {
 			toast.error("Failed to trigger sync", {
@@ -887,6 +859,7 @@ export function MeetingTranscriptSyncSettings({
 			});
 		},
 	});
+	const syncBusy = triggerSyncMutation.isPending || syncNow.isSyncing;
 
 	const handleAutoSyncToggle = useCallback(
 		(enabled: boolean) => {
@@ -1068,13 +1041,11 @@ export function MeetingTranscriptSyncSettings({
 														undefined,
 													)
 												}
-												disabled={
-													triggerSyncMutation.isPending
-												}
+												disabled={syncBusy}
 												aria-label="Sync transcripts now"
 												className="h-auto gap-2 px-2 py-1 text-primary hover:text-primary"
 											>
-												{triggerSyncMutation.isPending ? (
+												{syncBusy ? (
 													<Loader2Icon className="size-4 animate-spin" />
 												) : (
 													<RefreshCwIcon className="size-4" />
@@ -1092,9 +1063,7 @@ export function MeetingTranscriptSyncSettings({
 												variant="ghost"
 												size="sm"
 												aria-label="Sync options"
-												disabled={
-													triggerSyncMutation.isPending
-												}
+												disabled={syncBusy}
 												className="h-auto px-1 py-1 text-primary hover:text-primary"
 											>
 												<ChevronDownIcon className="size-4" />

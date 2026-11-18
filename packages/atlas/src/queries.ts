@@ -33,6 +33,10 @@ import type {
 	TechStackEntry,
 } from "./types";
 
+// A graph rewrite can contain tens of thousands of rows in one transaction.
+export const GRAPH_REWRITE_TIMEOUT_MS = 60_000;
+const GRAPH_REWRITE_MAX_WAIT_MS = 2_000;
+
 const MAX_NEIGHBORS = 60;
 const MAX_MODULE_SAMPLE_FILES = 6;
 
@@ -899,12 +903,20 @@ export async function replaceCrossEdges(
 		description: e.description,
 		...tenant,
 	}));
-	await db.$transaction([
-		db.atlasCrossEdge.deleteMany({
-			where: { projectId, ...tenantWhere(ctx) },
-		}),
-		...(rows.length ? [db.atlasCrossEdge.createMany({ data: rows })] : []),
-	]);
+	await db.$transaction(
+		async (tx) => {
+			await tx.atlasCrossEdge.deleteMany({
+				where: { projectId, ...tenantWhere(ctx) },
+			});
+			if (rows.length) {
+				await tx.atlasCrossEdge.createMany({ data: rows });
+			}
+		},
+		{
+			timeout: GRAPH_REWRITE_TIMEOUT_MS,
+			maxWait: GRAPH_REWRITE_MAX_WAIT_MS,
+		},
+	);
 	return rows.length;
 }
 
@@ -1081,16 +1093,22 @@ export async function persistTechnicalGraph(
 		...tenant,
 	}));
 
-	await db.$transaction([
-		db.atlasEdge.deleteMany({
-			where: { analysisId, mode: "TECHNICAL" },
-		}),
-		db.atlasNode.deleteMany({
-			where: { analysisId, mode: "TECHNICAL" },
-		}),
-		db.atlasNode.createMany({ data: nodeRows }),
-		db.atlasEdge.createMany({ data: edgeRows }),
-	]);
+	await db.$transaction(
+		async (tx) => {
+			await tx.atlasEdge.deleteMany({
+				where: { analysisId, mode: "TECHNICAL" },
+			});
+			await tx.atlasNode.deleteMany({
+				where: { analysisId, mode: "TECHNICAL" },
+			});
+			await tx.atlasNode.createMany({ data: nodeRows });
+			await tx.atlasEdge.createMany({ data: edgeRows });
+		},
+		{
+			timeout: GRAPH_REWRITE_TIMEOUT_MS,
+			maxWait: GRAPH_REWRITE_MAX_WAIT_MS,
+		},
+	);
 }
 
 // ── Structure-phase resume checkpoint ───────────────────────────────────────
@@ -1237,27 +1255,28 @@ export async function persistBusinessGraph(
 		})),
 	];
 
-	await db.$transaction([
-		db.atlasEdge.deleteMany({
-			where: { analysisId, mode: "BUSINESS" },
-		}),
-		db.atlasNode.deleteMany({
-			where: { analysisId, mode: "BUSINESS" },
-		}),
-		db.atlasNode.createMany({ data: nodeRows }),
-		db.atlasEdge.createMany({ data: edgeRows }),
-		// Stamp the freshness fingerprint in the SAME transaction as the graph so
-		// "graph persisted" ⟺ "signature persisted" — a retry can then trust the
-		// stored signature to skip an identical (expensive) AI re-derivation.
-		...(signature !== undefined
-			? [
-					db.atlasAnalysis.update({
-						where: { id: analysisId },
-						data: { businessSignature: signature },
-					}),
-				]
-			: []),
-	]);
+	await db.$transaction(
+		async (tx) => {
+			await tx.atlasEdge.deleteMany({
+				where: { analysisId, mode: "BUSINESS" },
+			});
+			await tx.atlasNode.deleteMany({
+				where: { analysisId, mode: "BUSINESS" },
+			});
+			await tx.atlasNode.createMany({ data: nodeRows });
+			await tx.atlasEdge.createMany({ data: edgeRows });
+			if (signature !== undefined) {
+				await tx.atlasAnalysis.update({
+					where: { id: analysisId },
+					data: { businessSignature: signature },
+				});
+			}
+		},
+		{
+			timeout: GRAPH_REWRITE_TIMEOUT_MS,
+			maxWait: GRAPH_REWRITE_MAX_WAIT_MS,
+		},
+	);
 }
 
 /** The fingerprint of the inputs that produced the persisted BUSINESS graph, or

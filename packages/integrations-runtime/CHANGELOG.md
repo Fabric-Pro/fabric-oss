@@ -1,5 +1,11 @@
 # @fabricorg/integrations-runtime
 
+## 0.1.3
+
+### Patch Changes
+
+- e8fb586: Published SDK and integration declaration files now retain entry documentation comments.
+
 ## 0.1.2
 
 ### Patch Changes

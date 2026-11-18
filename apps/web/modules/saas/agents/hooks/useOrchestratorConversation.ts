@@ -320,6 +320,9 @@ export function useOrchestratorConversation(
 			return result;
 		},
 		onSuccess: (data) => {
+			void queryClient.invalidateQueries({
+				queryKey: ["agents", "conversations"],
+			});
 			queryClient.invalidateQueries({ queryKey: listKey });
 			setActiveConversationId(data.id);
 		},

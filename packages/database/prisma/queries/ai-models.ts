@@ -1145,6 +1145,8 @@ export async function getCanonicalNameForProviderModelId(
 
 /** Type for AI usage log data */
 export interface AiUsageLogData {
+	firstTokenMs?: number | null;
+	requestId?: string | null;
 	userId?: string;
 	organizationId?: string;
 	projectId?: string;
@@ -1366,6 +1368,8 @@ export async function logAiUsage(data: AiUsageLogData) {
 			// other row's cost is already final.
 			costIsActual: !data.gatewayGenerationId,
 			latencyMs: data.latencyMs,
+			firstTokenMs: data.firstTokenMs,
+			requestId: data.requestId,
 			billingCategory: data.billingCategory ?? null,
 			billingCustomerId: data.billingCustomerId ?? null,
 			success: resolvedSuccess,

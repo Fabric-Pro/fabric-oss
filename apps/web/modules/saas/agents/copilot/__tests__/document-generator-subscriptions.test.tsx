@@ -1,4 +1,5 @@
-import { act, render } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render as testingRender } from "@testing-library/react";
 import type { ReactElement } from "react";
 import * as React from "react";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -176,3 +177,14 @@ it("seeds an empty custom-agent run with document and attachment context", () =>
 		}),
 	);
 });
+
+function render(ui: ReactElement) {
+	const client = new QueryClient();
+	return testingRender(ui, {
+		wrapper: ({ children }) => (
+			<QueryClientProvider client={client}>
+				{children}
+			</QueryClientProvider>
+		),
+	});
+}

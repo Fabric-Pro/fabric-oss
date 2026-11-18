@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ParlumeSentenceQueue } from "../parlume-spoken-text";
 import { speakParlumeResponse } from "../parlume-voice";
 import { TurnTimings, withTurnTimings } from "../shared/turn-timing";
@@ -79,20 +79,29 @@ const speaker = {
 
 beforeEach(() => {
 	vi.resetAllMocks();
+	vi.useFakeTimers();
+	vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
 	process.env.NEXT_PUBLIC_PARTYKIT_HOST = "bridge.example.com";
 	process.env.AGENT_SERVICE_SECRET = "service-secret";
 	resolveOpenAiApiKey.mockResolvedValue("voice-key");
 	getAISpeechModel.mockResolvedValue(null);
 });
 
+afterEach(() => {
+	vi.useRealTimers();
+	vi.unstubAllGlobals();
+});
+
 async function speakAndMeasure(text: string) {
 	const timings = new TurnTimings();
-	await withTurnTimings(timings, () =>
+	const speaking = withTurnTimings(timings, () =>
 		speakParlumeResponse({
 			...speaker,
 			sentences: ParlumeSentenceQueue.fromText(text, 800),
 		}),
 	);
+	await vi.runAllTimersAsync();
+	await speaking;
 	return timings.snapshot().speech;
 }
 
@@ -118,23 +127,23 @@ describe("Parlume speech timing", () => {
 			chars: "The project is Example.".length,
 			route: "gateway",
 		});
-		expect(sentence?.firstByteMs).toBeGreaterThanOrEqual(55);
+		expect(sentence?.firstByteMs).toBe(60);
 		expect(sentence?.firstByteMs).toBe(sentence?.totalMs);
-		expect(sentence?.startedAtMs).toBeLessThan(50);
+		expect(sentence?.startedAtMs).toBe(0);
 	});
 
 	it("measures the direct route's first byte apart from the end of the clip", async () => {
-		const stream = new ReadableStream<Uint8Array>({
-			async start(controller) {
-				await sleep(40);
-				controller.enqueue(new Uint8Array([1, 0]));
-				await sleep(80);
-				controller.enqueue(new Uint8Array([2, 0]));
-				controller.close();
-			},
-		});
 		stubPcmFetch(async (url: string, init?: RequestInit) => {
 			if (new URL(url).origin === "https://api.openai.com") {
+				const stream = new ReadableStream<Uint8Array>({
+					async start(controller) {
+						await sleep(40);
+						controller.enqueue(new Uint8Array([1, 0]));
+						await sleep(80);
+						controller.enqueue(new Uint8Array([2, 0]));
+						controller.close();
+					},
+				});
 				return new Response(stream);
 			}
 			await drain(init?.body);
@@ -144,10 +153,8 @@ describe("Parlume speech timing", () => {
 		const [sentence] = await speakAndMeasure("Short answer.");
 
 		expect(sentence?.route).toBe("openai-direct");
-		expect(sentence?.firstByteMs).toBeGreaterThanOrEqual(35);
-		expect(sentence?.totalMs).toBeGreaterThanOrEqual(
-			(sentence?.firstByteMs ?? 0) + 70,
-		);
+		expect(sentence?.firstByteMs).toBe(40);
+		expect(sentence?.totalMs).toBe(120);
 	});
 
 	it("records each sentence, the second starting after the first", async () => {
@@ -188,11 +195,14 @@ describe("Parlume speech timing", () => {
 			await drain(init?.body);
 			return Response.json({ played: true });
 		});
-		await expect(
-			speakParlumeResponse({
-				...speaker,
-				sentences: ParlumeSentenceQueue.fromText("Hello.", 800),
-			}),
-		).resolves.toEqual({ played: true, interrupted: false });
+		const speaking = speakParlumeResponse({
+			...speaker,
+			sentences: ParlumeSentenceQueue.fromText("Hello.", 800),
+		});
+		await vi.runAllTimersAsync();
+		await expect(speaking).resolves.toEqual({
+			played: true,
+			interrupted: false,
+		});
 	});
 });

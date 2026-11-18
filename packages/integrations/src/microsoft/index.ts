@@ -36,6 +36,7 @@ import { downloadDriveItem, listDriveFolderChildren } from "./drive-folder";
 import { extractHostedContentRefsFromHtml } from "./hosted-content";
 import { executeParlumeChannelOperation } from "./parlume-channel";
 import { assertParlumeChannelSendAccess } from "./parlume-channel-access";
+import { MicrosoftRequestTimeoutError, microsoftFetch } from "./request";
 import {
 	getRecordingTranscriptContent,
 	listRecordingTranscripts,
@@ -425,7 +426,7 @@ async function refreshMicrosoftToken(
 
 	console.log("[MicrosoftTeams] Refreshing expired access token...");
 
-	const response = await fetch(
+	const response = await microsoftFetch(
 		"https://login.microsoftonline.com/common/oauth2/v2.0/token",
 		{
 			method: "POST",
@@ -762,6 +763,9 @@ export async function executeMicrosoftTeamsTool(
 					"[MicrosoftTeams] Successfully refreshed empty access token",
 				);
 			} catch (refreshError) {
+				if (refreshError instanceof MicrosoftRequestTimeoutError) {
+					throw refreshError;
+				}
 				console.error(
 					"[MicrosoftTeams] Failed to refresh empty access token:",
 					refreshError,
@@ -838,7 +842,7 @@ export async function executeMicrosoftTeamsTool(
 				);
 				throwIfDispatchStopped();
 			}
-			return fetch(requestUrl, {
+			return microsoftFetch(requestUrl, {
 				...options,
 				redirect: "error",
 				headers: {
@@ -924,6 +928,9 @@ export async function executeMicrosoftTeamsTool(
 				// Retry the request with new token
 				res = await makeRequest(accessToken);
 			} catch (refreshError) {
+				if (refreshError instanceof MicrosoftRequestTimeoutError) {
+					throw refreshError;
+				}
 				// The resend below refused by a chat turn's stop is not a
 				// failed refresh.
 				rethrowIfDispatchStopped(refreshError);
@@ -957,6 +964,17 @@ export async function executeMicrosoftTeamsTool(
 			const backoffMs = computeGraphThrottleBackoffMs(
 				res.headers.get("Retry-After"),
 				attempt,
+			);
+			// Without this line a retry that recovered leaves no trace, and an
+			// outage is only visible once every retry has failed. The request id
+			// is what Microsoft support asks for.
+			console.warn(
+				`[MicrosoftTeams] Graph returned ${res.status}; retry ${attempt + 1} of ${TRANSIENT_MAX_RETRIES} in ${backoffMs} ms`,
+				{
+					method: (options.method ?? "GET").toUpperCase(),
+					path: new URL(url).pathname,
+					requestId: res.headers.get("request-id"),
+				},
 			);
 			// Release the response that is about to be dropped. An unread body
 			// holds its connection out of the pool until it is GC'd, which

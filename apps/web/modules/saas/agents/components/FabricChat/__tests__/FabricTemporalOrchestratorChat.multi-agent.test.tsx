@@ -87,7 +87,16 @@ vi.mock("../../../hooks/useOrchestratorChatStream", () => ({
 				limitSignals: [],
 				handoffRecommended: null,
 			},
-			sendMessage: vi.fn(async () => null),
+			sendMessage: vi.fn(async (content: string) => {
+				await options?.multiAgentSend?.({
+					threadId: "example-thread",
+					content,
+					history: [],
+					forwardedProps: {},
+					onRefused: () => undefined,
+				});
+				return null;
+			}),
 			attach: m.attach,
 			sendApproval: vi.fn(),
 			sendClarification: vi.fn(),
@@ -296,16 +305,31 @@ function expectServedLabels(alphaText: string, betaText: string) {
 vi.mock("../shared", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../shared")>()),
 	ChatInput: ({
+		value,
+		onChange,
+		onSend,
 		isLoading,
 		onStop,
 		headerSlot,
 	}: {
+		value: string;
+		onChange: (value: string) => void;
+		onSend: () => void;
 		isLoading?: boolean;
 		onStop?: () => void;
 		headerSlot?: ReactNode;
 	}) => (
 		<div>
 			{headerSlot}
+			<textarea
+				aria-label="Message"
+				value={value}
+				onChange={(event) => onChange(event.target.value)}
+				disabled={isLoading}
+			/>
+			<button type="button" onClick={onSend}>
+				Send
+			</button>
 			{isLoading ? (
 				<button type="button" onClick={onStop}>
 					Stop
@@ -868,4 +892,27 @@ describe("FabricTemporalOrchestratorChat — a message to several agents", () =>
 			"model:alpha,model:beta",
 		);
 	});
+});
+
+it("hands preparation to the pending multi-agent turn before its send settles", async () => {
+	let release!: () => void;
+	m.respond = async () => {
+		await new Promise<void>((resolve) => {
+			release = resolve;
+		});
+	};
+	renderChat();
+	fireEvent.click(screen.getByRole("button", { name: "Pick Alpha" }));
+	fireEvent.click(screen.getByRole("button", { name: "Pick Beta" }));
+	fireEvent.change(screen.getByLabelText("Message"), {
+		target: { value: "Compare these plans" },
+	});
+	fireEvent.click(screen.getByRole("button", { name: "Send" }));
+	await waitFor(() => expect(m.runs).toHaveLength(1));
+	expect(screen.getByTestId("send-preparation-status")).toBeEmptyDOMElement();
+	expect(screen.getAllByText("Compare these plans")).toHaveLength(1);
+	fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+	await waitFor(() => expect(screen.getByLabelText("Message")).toBeEnabled());
+	expect(screen.getByTestId("send-preparation-status")).toBeEmptyDOMElement();
+	await act(async () => release());
 });

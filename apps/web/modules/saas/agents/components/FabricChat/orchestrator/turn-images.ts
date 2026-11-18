@@ -1,4 +1,5 @@
 import { buildAiChatAttachmentEntry } from "@repo/utils/ai-chat-attachment";
+import { sharedDocumentChat } from "./shared-document-chat";
 
 /**
  * Most images one Orchestrator turn sends. Matches the composer's paste cap,
@@ -114,62 +115,83 @@ export async function uploadTurnImagesAsDocuments({
 	const inlineContexts: string[] = [];
 	let aiChatId = chatId;
 
-	for (const image of images.slice(0, ORCHESTRATOR_TURN_IMAGE_CAP)) {
-		try {
-			const mimeType = image.file.type || "application/octet-stream";
-			const created = await documents.createUploadUrl({
-				chatId: aiChatId,
-				organizationId,
-				filename: image.name,
-				mimeType,
-				size: image.file.size,
-			});
-			if (!aiChatId && created.chatId) {
-				aiChatId = created.chatId;
-			}
+	const createUploadUrl = sharedDocumentChat(
+		(input: Parameters<ChatDocumentClient["createUploadUrl"]>[0]) =>
+			documents.createUploadUrl(input),
+		aiChatId,
+	);
+	await Promise.allSettled(
+		images
+			.slice(0, ORCHESTRATOR_TURN_IMAGE_CAP)
+			.map(async (image, index) => {
+				try {
+					const mimeType =
+						image.file.type || "application/octet-stream";
+					const created = await createUploadUrl({
+						chatId: aiChatId,
+						organizationId,
+						filename: image.name,
+						mimeType,
+						size: image.file.size,
+					});
+					if (!aiChatId && created.chatId) {
+						aiChatId = created.chatId;
+					}
 
-			if (created.signedUploadUrl) {
-				const response = await fetchFn(created.signedUploadUrl, {
-					method: "PUT",
-					body: image.file,
-					headers: { "Content-Type": mimeType },
-				});
-				if (!response.ok) {
-					throw new Error(
-						`Upload failed with status ${response.status}`,
+					if (created.signedUploadUrl) {
+						const response = await fetchFn(
+							created.signedUploadUrl,
+							{
+								method: "PUT",
+								body: image.file,
+								headers: { "Content-Type": mimeType },
+							},
+						);
+						if (!response.ok) {
+							throw new Error(
+								`Upload failed with status ${response.status}`,
+							);
+						}
+					} else if (created.useServerUpload) {
+						const bytes = new Uint8Array(
+							await image.file.arrayBuffer(),
+						);
+						const base64 = btoa(
+							bytes.reduce(
+								(data, byte) =>
+									data + String.fromCharCode(byte),
+								"",
+							),
+						);
+						await documents.upload({
+							documentId: created.documentId,
+							fileData: base64,
+							mimeType,
+						});
+					} else {
+						throw new Error("No upload method available");
+					}
+
+					// The stored blob is all the vision loader needs, so a failed
+					// extraction costs only the text description, never the pixels.
+					documentIds[index] = created.documentId;
+					const extractedContent = await documents
+						.process({ documentId: created.documentId })
+						.then((processed) => processed?.extractedContent ?? "")
+						.catch(() => "");
+					inlineContexts[index] = buildAiChatAttachmentEntry(
+						image.name,
+						extractedContent,
 					);
+				} catch (error) {
+					onUploadError?.(image.name, error);
 				}
-			} else if (created.useServerUpload) {
-				const bytes = new Uint8Array(await image.file.arrayBuffer());
-				const base64 = btoa(
-					bytes.reduce(
-						(data, byte) => data + String.fromCharCode(byte),
-						"",
-					),
-				);
-				await documents.upload({
-					documentId: created.documentId,
-					fileData: base64,
-					mimeType,
-				});
-			} else {
-				throw new Error("No upload method available");
-			}
+			}),
+	);
 
-			// The stored blob is all the vision loader needs, so a failed
-			// extraction costs only the text description, never the pixels.
-			documentIds.push(created.documentId);
-			const extractedContent = await documents
-				.process({ documentId: created.documentId })
-				.then((processed) => processed?.extractedContent ?? "")
-				.catch(() => "");
-			inlineContexts.push(
-				buildAiChatAttachmentEntry(image.name, extractedContent),
-			);
-		} catch (error) {
-			onUploadError?.(image.name, error);
-		}
-	}
-
-	return { documentIds, inlineContexts, chatId: aiChatId };
+	return {
+		documentIds: documentIds.filter(Boolean),
+		inlineContexts: inlineContexts.filter(Boolean),
+		chatId: aiChatId,
+	};
 }

@@ -7,25 +7,30 @@
  *     messages): the group joins that proposal as related evidence, so the
  *     reviewer gets one proposal per problem rather than one per message.
  *
- * The duplicate detector's two stages, run one-against-many: the error's text
- * is embedded and compared with the candidates' vectors (open bugs from the
- * shared cache, pending proposals embedded once per scan), and the closest few
- * go to the detector's own verifier, in parallel so a group costs one round
- * trip. There is no similarity floor: a raw log excerpt and a hand-written bug
- * score low against each other even when they describe the same failure, so
- * the closest candidates are always verified and the verifier decides. Only a
- * verdict that the two are the same work item, at the detector's confidence
- * bar, counts. Overlapping scope does not: a report about the same area is
- * not this error's ticket, and two look-alike errors stay two proposals.
+ * The duplicate detector's two stages, run one-against-many: the error's
+ * text is embedded and compared with the candidates' vectors (open bugs from
+ * the shared cache, pending proposals embedded when loaded). A proposal
+ * remembered without a vector is embedded when a later check needs it, with
+ * later checks retrying while its vector is missing. The closest few
+ * candidates go to the detector's own verifier in parallel, costing one
+ * verifier round trip per group. There is no similarity floor: a raw log
+ * excerpt and a hand-written bug score low against each other even when they
+ * describe the same failure, so the closest candidates with positive
+ * similarity reach the verifier. Only a verdict that the two are the same
+ * work item, at the detector's confidence bar, counts. Overlapping scope
+ * does not: a report about the same area is not this error's ticket, and two
+ * look-alike errors stay two proposals.
  *
  * Every candidate checked is returned with its score and verdict, so a
  * proposal filed anyway shows what was ruled out and why.
  *
- * Candidates are loaded once per scan, on the first group that needs them,
- * and each proposal the scan files is added (`remember`) so a later group in
- * the same scan can join it. A failure to load them or to embed an error
- * THROWS, and the scan records it and files the proposal as before: a
- * recurring error still reaches the inbox when matching is unavailable.
+ * Candidates are loaded on the first group that needs them and retained after
+ * a successful load. Each proposal the scan files is added (`remember`) so a
+ * later group in the same scan can join it. Rejected candidate-loading or
+ * error-embedding calls throw; the scan records the failure and proceeds to
+ * filing. Rejected embedding calls for remembered proposals are caught and
+ * logged as warnings instead; candidates without vectors are skipped while
+ * candidates with vectors remain usable.
  */
 
 import { generateText, getAIModelWithMetadata, Output } from "@repo/ai";
@@ -80,6 +85,8 @@ export interface OpenBugCheck {
 }
 
 export interface OpenBugMatcher {
+	/** Sticky for this matcher: some candidates could not be compared reliably. */
+	readonly degraded: boolean;
 	check(group: RedactedErrorGroup): Promise<OpenBugCheck>;
 	/** A proposal this scan just filed for `group`, for later groups to join. */
 	remember(
@@ -104,7 +111,7 @@ interface Candidate {
 	id: string;
 	identifier: string;
 	text: string;
-	embedding: number[];
+	embedding: number[] | undefined;
 }
 
 /** The text an error group is compared by, built the way a story's is. */
@@ -151,6 +158,7 @@ export function createOpenBugMatcher(
 		projectId: input.projectId,
 		featureKey: "knowledge-search",
 	};
+	let degraded = false;
 	let loading: Promise<Candidate[]> | null = null;
 	let loaded: Candidate[] | null = null;
 	/** Each checked group's vector, so `remember` need not embed it again. */
@@ -174,6 +182,9 @@ export function createOpenBugMatcher(
 		});
 		return stories.flatMap((story) => {
 			const embedding = vectors.get(story.id);
+			if (!embedding?.length) {
+				degraded = true;
+			}
 			return embedding
 				? [{ ...story, kind: "story" as const, embedding }]
 				: [];
@@ -199,6 +210,9 @@ export function createOpenBugMatcher(
 		);
 		return proposals.flatMap((proposal, index) => {
 			const embedding = embeddings[index];
+			if (!embedding?.length) {
+				degraded = true;
+			}
 			return embedding
 				? [{ ...proposal, kind: "proposal" as const, embedding }]
 				: [];
@@ -232,16 +246,58 @@ export function createOpenBugMatcher(
 		const {
 			embeddings: [embedding],
 		} = await generateEmbeddings([text], embedOptions);
+		if (!embedding?.length) {
+			degraded = true;
+		}
 		if (!embedding) {
 			return NOTHING_CHECKED;
 		}
 		groupVectors.set(group.fingerprint, { text, embedding });
+		// Groups first seen with an empty pool have no vector until a later
+		// group needs to compare with them. Keep this batch separate so its
+		// failure leaves candidates with existing vectors usable.
+		const unembedded = pool.filter((candidate) => !candidate.embedding);
+		if (unembedded.length > 0) {
+			try {
+				const { embeddings } = await generateEmbeddings(
+					unembedded.map((candidate) => candidate.text),
+					embedOptions,
+				);
+				for (const [index, candidate] of unembedded.entries()) {
+					const vector = embeddings[index];
+					candidate.embedding = vector?.length ? vector : undefined;
+					if (!candidate.embedding) {
+						degraded = true;
+					}
+				}
+			} catch (err) {
+				degraded = true;
+				logger.warn(
+					`${LOG_PREFIX} remembered proposal embeddings failed`,
+					{
+						projectId: input.projectId,
+						err: err instanceof Error ? err.message : String(err),
+					},
+				);
+			}
+		}
 		// A dimension mismatch also scores 0, so a mid-run embedding-model
 		// change degrades to "nothing to check" rather than to a garbage match.
+		if (
+			pool.some(
+				(candidate) =>
+					!candidate.embedding ||
+					candidate.embedding.length !== embedding.length,
+			)
+		) {
+			degraded = true;
+		}
 		const shortlist = pool
 			.map((candidate) => ({
 				candidate,
-				similarity: cosineSimilarity(embedding, candidate.embedding),
+				similarity: candidate.embedding
+					? cosineSimilarity(embedding, candidate.embedding)
+					: 0,
 			}))
 			.filter((entry) => entry.similarity > 0)
 			.sort((a, b) => b.similarity - a.similarity)
@@ -294,6 +350,7 @@ export function createOpenBugMatcher(
 							confidence: verdict.confidence,
 						};
 					} catch (err) {
+						degraded = true;
 						// One failed verdict is "no match" for that candidate, not a
 						// failed scan: the worst case is a proposal a reviewer can
 						// dismiss.
@@ -338,17 +395,23 @@ export function createOpenBugMatcher(
 		title: string,
 	): void => {
 		const vector = groupVectors.get(group.fingerprint);
-		if (!loaded || !vector) {
+		if (!loaded) {
 			return;
 		}
 		loaded.push({
 			kind: "proposal",
 			id: proposalId,
 			identifier: proposalLabel(title),
-			text: vector.text,
-			embedding: vector.embedding,
+			text: vector?.text ?? detectionTextForErrorGroup(group),
+			embedding: vector?.embedding,
 		});
 	};
 
-	return { check, remember };
+	return {
+		check,
+		remember,
+		get degraded() {
+			return degraded;
+		},
+	};
 }

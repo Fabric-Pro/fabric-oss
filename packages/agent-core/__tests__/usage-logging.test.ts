@@ -1050,3 +1050,31 @@ describe("usage payload call-time snapshots", () => {
 		},
 	);
 });
+
+it("sends first-token timing and explicit conversation identity", async () => {
+	const fetchMock = vi
+		.fn()
+		.mockResolvedValue(new Response("{}", { status: 200 }));
+	vi.stubGlobal("fetch", fetchMock);
+	try {
+		await logAgentUsageFromRunnableConfig(
+			{
+				configurable: {
+					ai_token: "example-token",
+					ai_provider: "OPENAI_DIRECT",
+					ai_model: "example-model",
+					usage_conversation_id: "example-explicit",
+					thread_id: "example-thread",
+				},
+			},
+			{ usage_metadata: { input_tokens: 1, output_tokens: 2 } },
+			{ model: undefined, taskType: "TOOL_CALLING", firstTokenMs: 42 },
+		);
+		expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+			firstTokenMs: 42,
+			conversationId: "example-explicit",
+		});
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});

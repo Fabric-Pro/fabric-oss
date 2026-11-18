@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { ORPCError } from "@orpc/server";
 import { config } from "@repo/config";
 import { getDocumentById } from "@repo/database";
@@ -75,7 +76,7 @@ export const createMediaUploadUrlProcedure = tenantProtectedProcedure
 		}
 
 		// Generate unique S3 key
-		const uniqueId = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+		const uniqueId = `${Date.now()}_${randomBytes(16).toString("hex")}`;
 		const s3Key = `document-media/${projectId}/${documentId}/${uniqueId}.${extension}`;
 		const bucket = config.storage.bucketNames.projectContexts;
 

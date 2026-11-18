@@ -175,7 +175,11 @@ overrides:
   # Actual archiver-utils, rimraf and react-email consumers have Node guards.
   "glob@^10.0.0": "14.0.2"
   "glob@^11.0.0": "14.0.2"
-  "hono@^4.0.0": "^4.13.7"
+  # 4.13.18 fixes GHSA-39q9-qp46-w8xg (`bodyLimit()` keeps every transfer chunk
+  # in memory), which reaches the v1 API routes that use `hono/body-limit`, and
+  # completes the validator fix for GHSA-92p4-j3wq-jmqx. This override decides
+  # the resolved version, so the manifests' own `hono` ranges do not set the floor.
+  "hono@^4.0.0": "^4.13.18"
   "immutable@^4.0.0": "^4.3.9"
   "kysely@^0.28.0": "^0.28.17"
   "lodash@^4.0.0": "^4.18.0"

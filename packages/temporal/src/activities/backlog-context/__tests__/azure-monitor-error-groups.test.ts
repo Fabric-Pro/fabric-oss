@@ -463,6 +463,8 @@ it("shares only the autoscaler metric and replica scheduling reasons, with teard
 		new Set([
 			"FailedGetExternalMetric",
 			"FailedComputeMetricsReplicas",
+			"FailedGetContainerResourceMetric",
+			"FailedGetResourceMetric",
 			"AssigningReplicaFailed",
 		]),
 	);
@@ -523,27 +525,52 @@ describe("replica-scheduling-teardown", () => {
 	});
 });
 
-it("autoscaler-replica-start requires all proof clauses and event recheck", () => {
+describe("autoscaler-replica-start", () => {
+	const predicate =
+		'_reason in ("FailedComputeMetricsReplicas", "FailedGetContainerResourceMetric", "FailedGetResourceMetric") and (_log endswith "(pods might be unready)" or _log endswith "no metrics returned from resource metrics API")';
 	const q = buildErrorGroupQuery(SCOPE);
-	expect(q).toContain(
-		'let _proof6_0 = _systemLogs\n| where _reason in ("ContainerStarted")\n| where isnotempty(_revision)',
+
+	it.each([
+		[0, "ContainerStarted", "okAt <= failAt and okAt >= failAt - 2m"],
+		[1, "ContainerStarted", "failAt <= okAt and okAt <= failAt + 2m"],
+		[2, "KEDAScalersStarted", "okAt <= failAt and okAt >= failAt - 2m"],
+	])(
+		"requires proof %i reason, direction, window and non-empty matching revision",
+		(index, reason, time) => {
+			const rule = PLATFORM_NOISE_RULES.find(
+				(candidate) => candidate.id === "autoscaler-replica-start",
+			);
+			expect(rule?.proofs[Number(index)]).toEqual({
+				reasons: [reason],
+				direction: index === 1 ? "at-or-after" : "before",
+				gapMinutes: 2,
+			});
+			expect(q).toContain(
+				`let _proof6_${index} = _systemLogs\n| where _reason in ("${reason}")\n| where isnotempty(_revision)\n| project _revision, okAt = TimeGenerated;\nlet _noise6_${index} = _systemLogs\n| where ${predicate}\n| where isnotempty(_revision)\n| distinct _revision, failAt = TimeGenerated\n| join kind=inner (_proof6_${index}) on _revision\n| where ${time}\n| distinct _revision, failAt;`,
+			);
+		},
 	);
-	expect(q).toContain(
-		'let _noise6_0 = _systemLogs\n| where _reason in ("FailedComputeMetricsReplicas")',
-	);
-	expect(q).toContain("| where okAt <= failAt and okAt >= failAt - 2m");
-	expect(q).toContain(
-		'| extend _rule6 = coalesce(_proven6, false) and _reason in ("FailedComputeMetricsReplicas") and _log endswith "(pods might be unready)"',
-	);
+
+	it("requires one of three CPU reasons and either grouped ending in the event recheck", () => {
+		expect(q).toContain(
+			`| extend _rule6 = coalesce(_proven6, false) and ${predicate}`,
+		);
+		expect(q).toContain(
+			"let _noise6 = union _noise6_0, _noise6_1, _noise6_2\n| distinct _revision, failAt;",
+		);
+		expect(q).toContain(
+			"| join kind=leftouter (_noise6 | extend _proven6 = true) on _revision, $left.TimeGenerated == $right.failAt",
+		);
+	});
 });
 
 it("resource-metrics-blip requires all proof clauses and event recheck", () => {
 	const q = buildErrorGroupQuery(SCOPE);
 	expect(q).toContain(
-		'let _failures7 = materialize(_systemLogs\n| where _reason in ("FailedComputeMetricsReplicas") and _log endswith "(get pods.metrics.k8s.io)"\n| where isnotempty(_app)',
+		'let _failures7 = materialize(_systemLogs\n| where _reason in ("FailedComputeMetricsReplicas", "FailedGetContainerResourceMetric", "FailedGetResourceMetric") and _log endswith "(get pods.metrics.k8s.io)"\n| where isnotempty(_app)',
 	);
 	expect(q).toContain(
-		'| extend _rule7 = coalesce(_proven7, false) and _reason in ("FailedComputeMetricsReplicas") and _log endswith "(get pods.metrics.k8s.io)"',
+		'| extend _rule7 = coalesce(_proven7, false) and _reason in ("FailedComputeMetricsReplicas", "FailedGetContainerResourceMetric", "FailedGetResourceMetric") and _log endswith "(get pods.metrics.k8s.io)"',
 	);
 });
 
@@ -570,6 +597,7 @@ it("never sets aside a readiness failure on simultaneity alone", () => {
 
 	expect(cpuRules.map((rule) => rule.id)).toEqual(["resource-metrics-blip"]);
 	expect(cpuRules[0]?.log?.value).not.toContain("pods might be unready");
+	expect(cpuRules[0]?.log?.value).not.toContain("no metrics returned");
 });
 
 it("keeps external and CPU metric failures out of each other's peer count", () => {
@@ -579,7 +607,11 @@ it("keeps external and CPU metric failures out of each other's peer count", () =
 
 	expect(families).toEqual([
 		["FailedGetExternalMetric"],
-		["FailedComputeMetricsReplicas"],
+		[
+			"FailedComputeMetricsReplicas",
+			"FailedGetContainerResourceMetric",
+			"FailedGetResourceMetric",
+		],
 	]);
 });
 
@@ -589,7 +621,10 @@ it("leaves every other CPU metric failure to be reported", () => {
 	);
 	expect(rule?.log).toEqual({
 		operator: "endswith",
-		value: "(pods might be unready)",
+		value: [
+			"(pods might be unready)",
+			"no metrics returned from resource metrics API",
+		],
 	});
 	expect(rule?.key).toBe("revision");
 });
@@ -657,7 +692,7 @@ it("requires all clauses: A proof reason", () => {
 });
 it("requires all clauses: A failure reason", () => {
 	expect(buildErrorGroupQuery(SCOPE)).toContain(
-		'let _noise4_0 = _systemLogs\n| where _reason in ("FailedGetExternalMetric", "FailedComputeMetricsReplicas")\n| where isnotempty(_revision)',
+		'let _noise4_0 = _systemLogs\n| where _reason in ("FailedGetExternalMetric", "FailedComputeMetricsReplicas", "FailedGetContainerResourceMetric", "FailedGetResourceMetric")\n| where isnotempty(_revision)',
 	);
 });
 it("requires all clauses: A before direction", () => {
@@ -687,7 +722,7 @@ it("requires all clauses: A union", () => {
 });
 it("requires all clauses: A event recheck", () => {
 	expect(buildErrorGroupQuery(SCOPE)).toContain(
-		'| extend _rule4 = coalesce(_proven4, false) and _reason in ("FailedGetExternalMetric", "FailedComputeMetricsReplicas")\n',
+		'| extend _rule4 = coalesce(_proven4, false) and _reason in ("FailedGetExternalMetric", "FailedComputeMetricsReplicas", "FailedGetContainerResourceMetric", "FailedGetResourceMetric")\n',
 	);
 });
 it("requires all clauses: B failure reason", () => {
@@ -763,4 +798,98 @@ it("requires all clauses: A result join", () => {
 	expect(buildErrorGroupQuery(SCOPE)).toContain(
 		"| join kind=leftouter (_noise4 | extend _proven4 = true) on _revision, $left.TimeGenerated == $right.failAt",
 	);
+});
+
+it.each([
+	null,
+	"bad",
+	{ tables: [null] },
+	{ tables: [{ rows: [] }] },
+	{ tables: [{ columns: [] }] },
+	{ tables: [{ columns: [], rows: [42] }] },
+	{ tables: [{ columns: [], rows: [[]] }] },
+	{ tables: [], error: { code: "PartialError" } },
+	{},
+	{ tables: "invalid" },
+])(
+	"preserves tolerant summaries but reports incomplete envelopes %j",
+	async (payload) => {
+		const adapter = createAzureMonitorLogSourceAdapter({
+			workspaceId: "example-workspace",
+			sharedStore: false,
+			getToken: async () => "example-token",
+			fetchImpl: vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => payload,
+			}) as unknown as typeof fetch,
+		});
+		const summary = await adapter.summarizeErrorGroups?.(SCOPE);
+		expect(summary?.complete).toBe(false);
+		expect(summary).toEqual(expect.any(Array));
+	},
+);
+
+it("reports a well-formed empty summary as complete", async () => {
+	const adapter = createAzureMonitorLogSourceAdapter({
+		workspaceId: "example-workspace",
+		sharedStore: false,
+		getToken: async () => "example-token",
+		fetchImpl: vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => ({ tables: [] }),
+		}) as unknown as typeof fetch,
+	});
+	expect((await adapter.summarizeErrorGroups?.(SCOPE))?.complete).toBe(true);
+});
+
+it("keeps usable groups from a partial envelope and logs one safe reason", async () => {
+	const { logger } = await import("@repo/logs");
+	const info = vi.spyOn(logger, "info");
+	try {
+		const payload = {
+			error: { code: "PartialError", message: "example-private-detail" },
+			tables: [
+				{
+					columns: [
+						"Kind",
+						"GroupKey",
+						"Occurrences",
+						"FirstSeen",
+						"LastSeen",
+					].map((name) => ({ name })),
+					rows: [
+						[
+							"trace",
+							"Example failure",
+							12,
+							"2026-11-12T10:00:00Z",
+							"2026-11-13T10:00:00Z",
+						],
+					],
+				},
+			],
+		};
+		const adapter = createAzureMonitorLogSourceAdapter({
+			workspaceId: "example-workspace",
+			sharedStore: false,
+			getToken: async () => "example-token",
+			fetchImpl: vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => payload,
+			}) as unknown as typeof fetch,
+		});
+		const summary = await adapter.summarizeErrorGroups?.(SCOPE);
+		expect(summary).toHaveLength(1);
+		expect(summary?.complete).toBe(false);
+		expect(info).toHaveBeenCalledTimes(1);
+		expect(info).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.objectContaining({ absenceSkippedReason: "error envelope" }),
+		);
+		expect(JSON.stringify(info.mock.calls)).not.toContain(
+			"example-private-detail",
+		);
+	} finally {
+		info.mockRestore();
+	}
 });

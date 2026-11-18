@@ -8421,6 +8421,9 @@ model RecurringErrorSignature {
   sourceStoryIds    String[]             @default([])
   pendingProposalId String?
   storyId           String?
+  // When a scan first found this signature's bug no longer open; cleared when
+  // the signature is linked to a new proposal or an open bug again.
+  storyClosedSeenAt DateTime?
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
 
@@ -17785,6 +17788,8 @@ model AiUsageLog {
   taskType            AiTaskType?
   agentId             String?
   conversationId      String?
+  requestId           String? // Reply message ID grouping calls in one request
+  firstTokenMs        Int? // Milliseconds from call timing origin to first streamed text or tool-call output, or reasoning the provider streams as message content
   frameId             String?
   workflowExecutionId String?
   // Product-feature attribution (Fizzy #2230, Phase 1): which user-facing AI
@@ -17827,7 +17832,7 @@ model AiUsageLog {
   // no cost and stay estimates); costIsActual stays false until reconciled.
   gatewayGenerationId      String?
   costIsActual             Boolean                 @default(false)
-  latencyMs                Int // Time to first token or completion
+  latencyMs                Int // Time to completion of the call or operation
   billingCategory          AiUsageBillingCategory?
   billingCustomerId        String?
 

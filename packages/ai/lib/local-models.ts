@@ -12,6 +12,7 @@
  * so there every task resolves as before even if the variables leak in.
  */
 import { createOpenAI } from "@ai-sdk/openai";
+import { stripTrailingSlashes } from "@repo/utils/strip-trailing-slashes";
 import type {
 	EmbeddingModel,
 	Experimental_DecisionModel,
@@ -87,7 +88,7 @@ export function getLocalModelConfig(
 		);
 	}
 	return {
-		baseUrl: baseUrl.replace(/\/+$/, ""),
+		baseUrl: stripTrailingSlashes(baseUrl),
 		model,
 		provider: env[`${prefix}_PROVIDER`]?.trim() || "local server",
 	};

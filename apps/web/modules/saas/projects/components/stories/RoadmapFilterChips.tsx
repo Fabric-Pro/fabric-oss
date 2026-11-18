@@ -110,6 +110,15 @@ export function RoadmapFilterChips({
 			onRemove: () => onRemoveFilter("sync", value),
 		});
 	}
+	if (filters.pmStatus !== null) {
+		chips.push({
+			key: "pmStatus",
+			label: "PM status",
+			value: filters.pmStatus,
+			ariaRemoveLabel: `Remove PM status ${filters.pmStatus} filter`,
+			onRemove: () => onRemoveFilter("pmStatus"),
+		});
+	}
 	for (const value of filters.source) {
 		const label = STORY_SOURCE_LABELS[value];
 		chips.push({

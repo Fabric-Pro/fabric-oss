@@ -135,6 +135,7 @@ import {
 	toolArgumentText,
 	visibleReplyText,
 } from "./proposal-client-mode";
+import { conversationIdForUsage, firstTokenTiming } from "./usage-timing";
 import {
 	isWebResearchAllowed,
 	isWebResearchToolName,
@@ -682,6 +683,7 @@ async function applyInputBudgetGate(
 	const transcript = transcriptLines.join("\n---\n");
 
 	const gateStart = Date.now();
+	const gateTiming = firstTokenTiming(gateStart);
 	let summaryText: string;
 	try {
 		const summaryModel = await getAgentModelAsync(config, {
@@ -695,7 +697,10 @@ async function applyInputBudgetGate(
 				),
 				new HumanMessage(transcript),
 			],
-			{ ...config, tags: [...(config?.tags ?? []), "nostream"] },
+			gateTiming.config({
+				...config,
+				tags: [...(config?.tags ?? []), "nostream"],
+			}),
 		);
 		// Fire-and-forget: the usage row is observability, nothing below reads
 		// it back, and `logAgentUsageFromRunnableConfig` never rejects — so
@@ -705,6 +710,8 @@ async function applyInputBudgetGate(
 			taskType: "SIMPLE",
 			agentId: "project_document_generator:budget_gate",
 			latencyMs: Date.now() - gateStart,
+			firstTokenMs: gateTiming.firstTokenMs,
+			conversationId: conversationIdForUsage(config),
 		});
 		const raw =
 			typeof summaryResp.content === "string"
@@ -3490,6 +3497,7 @@ exact schema. Read it before invoking.`;
 		}
 
 		// Create model with provider config
+		const modelLookupStart = Date.now();
 		const model = await getAgentModelAsync(config, {
 			temperature: 0.5,
 			maxTokens: Math.min(NORMAL_OUTPUT_TOKEN_CEILING, baseMaxTokens),
@@ -3503,6 +3511,7 @@ exact schema. Read it before invoking.`;
 			taskType: "TOOL_CALLING",
 		});
 
+		const modelLookupMs = Date.now() - modelLookupStart;
 		logger.info(
 			"[Project Document Generator] Using model:",
 			providerConfig?.model || "(API fallback)",
@@ -4384,6 +4393,8 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 		} as Record<string, unknown>);
 
 		logger.info("[Project Document Generator] Invoking model", {
+			modelLookupMs,
+			msSinceNodeStart: Date.now() - generationStart,
 			messageCount: state.messages.length,
 			documentLength: state.document?.length || 0,
 			documentType: state.documentType,
@@ -4598,16 +4609,18 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 
 		lastRequestShape = summarizeMessagesForLogging(invokeMessages);
 
+		let callTiming = firstTokenTiming(generationStart);
 		const replyConfig = () => {
+			callTiming = firstTokenTiming(generationStart);
 			const attemptId = uuidv4();
 			getWriter(runnableConfig)?.({ replyAttempt: attemptId });
-			return {
+			return callTiming.config({
 				...runnableConfig,
 				metadata: {
 					...runnableConfig.metadata,
 					reply_attempt: attemptId,
 				},
-			};
+			});
 		};
 
 		// Invoke the model. Provider errors propagate as-is; the frontend
@@ -4623,6 +4636,8 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			taskType: "TOOL_CALLING",
 			agentId: "project_document_generator",
 			latencyMs: Date.now() - generationStart,
+			firstTokenMs: callTiming.firstTokenMs,
+			conversationId: conversationIdForUsage(runnableConfig),
 			projectId: state.projectId || undefined,
 			outputMessageId:
 				typeof runnableConfig.configurable?.output_message_id ===
@@ -4833,6 +4848,8 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 					taskType: "TOOL_CALLING",
 					agentId: "project_document_generator:finalize_guard",
 					latencyMs: Date.now() - generationStart,
+					firstTokenMs: callTiming.firstTokenMs,
+					conversationId: conversationIdForUsage(runnableConfig),
 					projectId: state.projectId || undefined,
 					outputMessageId:
 						typeof runnableConfig.configurable
@@ -4896,6 +4913,8 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 					agentId:
 						"project_document_generator:finalize_guard_fallback",
 					latencyMs: Date.now() - generationStart,
+					firstTokenMs: callTiming.firstTokenMs,
+					conversationId: conversationIdForUsage(runnableConfig),
 					projectId: state.projectId || undefined,
 					outputMessageId:
 						typeof runnableConfig.configurable
@@ -4970,6 +4989,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				},
 			);
 
+			const retryLookupStart = Date.now();
 			const retryModel = await getAgentModelAsync(config, {
 				temperature: 0.5,
 				maxTokens: Math.min(
@@ -4986,6 +5006,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				retryCount: state.retryCount,
 				taskType: "TOOL_CALLING",
 			});
+			const retryModelLookupMs = Date.now() - retryLookupStart;
 			if (!retryModel.bindTools) {
 				throw new Error(
 					"[Project Document Generator] Model does not support tool binding",
@@ -5028,6 +5049,8 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				taskType: "TOOL_CALLING",
 				agentId: "project_document_generator:truncation_retry",
 				latencyMs: Date.now() - generationStart,
+				firstTokenMs: callTiming.firstTokenMs,
+				conversationId: conversationIdForUsage(runnableConfig),
 				projectId: state.projectId || undefined,
 				outputMessageId:
 					typeof runnableConfig.configurable?.output_message_id ===
@@ -5040,6 +5063,8 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			logger.warn(
 				"[Project Document Generator] Truncation-recovery retry completed",
 				{
+					modelLookupMs: retryModelLookupMs,
+					msSinceNodeStart: Date.now() - generationStart,
 					stopReason: resolveStopReason(response),
 					recovered: !isEmptyModelResponse(response),
 					toolCallCount: response.tool_calls?.length || 0,

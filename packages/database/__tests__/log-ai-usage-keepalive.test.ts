@@ -88,6 +88,25 @@ describe("logAiUsage keeps the function alive for the usage-limit recorder", () 
 		vi.restoreAllMocks();
 	});
 
+	it("preserves request and first-token fields through the row writer", async () => {
+		await logAiUsage({
+			...USAGE,
+			userId: "example-user",
+			organizationId: "example-org",
+			firstTokenMs: 12,
+			requestId: "msg_1793000000000_0123456789abcdef0123456789abcdef",
+		});
+		expect(usageLogCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					firstTokenMs: 12,
+					requestId:
+						"msg_1793000000000_0123456789abcdef0123456789abcdef",
+				}),
+			}),
+		);
+	});
+
 	it("registers the recorder's pending work with waitUntil", async () => {
 		const recording = deferred();
 		const recorder = vi.fn(() => recording.promise);

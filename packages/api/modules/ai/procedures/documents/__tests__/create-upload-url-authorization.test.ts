@@ -260,4 +260,26 @@ describe("ai.documents.createUploadUrl target organization authorization", () =>
 			expect.objectContaining({ organizationId: ORG_B }),
 		);
 	});
+
+	it("builds storage keys without Math.random", async () => {
+		const random = vi.spyOn(Math, "random").mockImplementation(() => {
+			throw new Error("insecure randomness");
+		});
+		try {
+			await expect(invoke()).resolves.toMatchObject({
+				chatId: "example-chat",
+				useServerUpload: true,
+			});
+			expect(mocks.createAiChat).toHaveBeenCalledWith({
+				userId: USER_ID,
+				organizationId: ORG_B,
+				title: "Document Upload",
+			});
+			expect(mocks.createChatDocument).toHaveBeenCalledWith(
+				expect.objectContaining({ organizationId: ORG_B }),
+			);
+		} finally {
+			random.mockRestore();
+		}
+	});
 });

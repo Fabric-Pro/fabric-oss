@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { ORPCError } from "@orpc/server";
 import { config } from "@repo/config";
 import { createWizardTempContext } from "@repo/database";
@@ -92,7 +93,7 @@ export const createTempUploadUrlProcedure = tenantProtectedProcedure
 		}
 
 		// Generate context ID and S3 path
-		const contextId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+		const contextId = `temp_${Date.now()}_${randomBytes(16).toString("hex")}`;
 		const s3Path = `wizard-temp/${user.id}/${sessionId}/${contextId}.${fileConfig.extension}`;
 		const bucket = config.storage.bucketNames.projectContexts;
 

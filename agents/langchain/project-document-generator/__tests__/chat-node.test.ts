@@ -4576,6 +4576,110 @@ describe("Project Document Generator Chat Node - Finalize mode (issue #2999)", (
 			),
 		).toBe(true);
 	});
+	it("records timing and conversation on finalize guard and fallback rows", async () => {
+		const clock = vi.spyOn(Date, "now").mockReturnValue(100);
+		const usage = vi.mocked(logAgentUsageFromRunnableConfig);
+		usage.mockClear();
+		let now = 100;
+		const responses = [
+			searchResponse("example-search-a"),
+			searchResponse("example-search-b"),
+			searchResponse("example-search-c"),
+			writeResponse("example-write"),
+		];
+		mockInvoke.mockImplementation(async (_messages, config) => {
+			now += 20;
+			clock.mockReturnValue(now);
+			const handlers = Array.isArray(config.callbacks)
+				? config.callbacks
+				: (config.callbacks?.handlers ?? []);
+			for (const handler of handlers) {
+				if (handler.name === "assistant_first_token")
+					await handler.handleLLMNewToken("Example");
+			}
+			return responses.shift();
+		});
+		try {
+			await chatNode(stateWithRounds(MAX_TOOL_ITERATIONS), {
+				configurable: { thread_id: "example-thread" },
+			});
+			expect(
+				usage.mock.calls
+					.filter(
+						(call) =>
+							call[2].agentId ===
+							"project_document_generator:finalize_guard",
+					)
+					.map((call) => call[2]),
+			).toEqual([
+				expect.objectContaining({
+					firstTokenMs: 40,
+					conversationId: "example-thread",
+				}),
+				expect.objectContaining({
+					firstTokenMs: 60,
+					conversationId: "example-thread",
+				}),
+			]);
+			expect(
+				usage.mock.calls.find(
+					(call) =>
+						call[2].agentId ===
+						"project_document_generator:finalize_guard_fallback",
+				)?.[2],
+			).toMatchObject({
+				firstTokenMs: 80,
+				conversationId: "example-thread",
+			});
+		} finally {
+			clock.mockRestore();
+			mockInvoke.mockReset();
+		}
+	});
+	it("records the budget-gate call's own origin and conversation", async () => {
+		const clock = vi.spyOn(Date, "now").mockReturnValue(100);
+		const usage = vi.mocked(logAgentUsageFromRunnableConfig);
+		usage.mockClear();
+		let now = 100;
+		const responses = [
+			new AIMessage({
+				content: "",
+				response_metadata: { finish_reason: "length" },
+			}),
+			new AIMessage({ content: "Example summary" }),
+			writeResponse("example-write"),
+		];
+		mockInvoke.mockImplementation(async (_messages, config) => {
+			now += 20;
+			clock.mockReturnValue(now);
+			const handlers = Array.isArray(config.callbacks)
+				? config.callbacks
+				: (config.callbacks?.handlers ?? []);
+			for (const handler of handlers) {
+				if (handler.name === "assistant_first_token")
+					await handler.handleLLMNewToken("Example");
+			}
+			return responses.shift();
+		});
+		try {
+			await chatNode(stateWithRounds(MAX_TOOL_ITERATIONS), {
+				configurable: { thread_id: "example-thread" },
+			});
+			expect(
+				usage.mock.calls.find(
+					(call) =>
+						call[2].agentId ===
+						"project_document_generator:budget_gate",
+				)?.[2],
+			).toMatchObject({
+				firstTokenMs: 20,
+				conversationId: "example-thread",
+			});
+		} finally {
+			clock.mockRestore();
+			mockInvoke.mockReset();
+		}
+	});
 });
 
 describe("reply provenance calls", () => {
@@ -5499,4 +5603,57 @@ describe("Project Document Generator Chat Node - Web research", () => {
 			expect(factsIn(update?.messages ?? [])).toHaveLength(0);
 		});
 	});
+});
+
+describe("per-call usage timing", () => {
+	it.each([true, false])(
+		"keeps retry token timing separate (retry callback=%s)",
+		async (retryToken) => {
+			const clock = vi.spyOn(Date, "now").mockReturnValue(100);
+			const usage = vi.mocked(logAgentUsageFromRunnableConfig);
+			usage.mockClear();
+			mockInvoke.mockReset();
+			const fire = async (config: any) => {
+				const handlers = Array.isArray(config.callbacks)
+					? config.callbacks
+					: (config.callbacks?.handlers ?? []);
+				for (const handler of handlers)
+					if (handler.name === "assistant_first_token")
+						await handler.handleLLMNewToken("Example");
+			};
+			mockInvoke.mockImplementationOnce(async (_messages, config) => {
+				clock.mockReturnValue(120);
+				await fire(config);
+				return new AIMessage({
+					content: "",
+					response_metadata: { finish_reason: "length" },
+				});
+			});
+			mockInvoke.mockImplementationOnce(async (_messages, config) => {
+				clock.mockReturnValue(155);
+				if (retryToken) await fire(config);
+				return new AIMessage({ content: "Example final reply" });
+			});
+			try {
+				await chatNode(
+					createMockState({
+						document: "Example document",
+						messages: [new HumanMessage("Example question")],
+					}),
+					{ configurable: { thread_id: "example-thread" } },
+				);
+				expect(mockInvoke).toHaveBeenCalledTimes(2);
+				expect(usage.mock.calls[0]?.[2]).toMatchObject({
+					firstTokenMs: 20,
+					conversationId: "example-thread",
+				});
+				expect(usage.mock.calls[1]?.[2]).toMatchObject({
+					firstTokenMs: retryToken ? 55 : undefined,
+					conversationId: "example-thread",
+				});
+			} finally {
+				clock.mockRestore();
+			}
+		},
+	);
 });

@@ -130,7 +130,7 @@ export function slugifyKnowledgeKey(value: string): string {
 		.toLowerCase()
 		.replace(/[^a-z0-9._-]+/g, "-")
 		.replace(/^[^a-z0-9]+/, "")
-		.replace(/-+$/, "")
+		.replace(/(?<!-)-+$/g, "")
 		.slice(0, 80);
 }
 

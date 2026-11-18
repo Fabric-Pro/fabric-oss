@@ -94,6 +94,9 @@ jobs:
       - name: Build publishable packages
         run: pnpm turbo build --filter="@fabricorg/*"
 
+      - name: Check published declarations
+        run: pnpm check:declaration-maps
+
       - name: Type-check publishable packages
         run: pnpm turbo type-check --filter="@fabricorg/*"
 

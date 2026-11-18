@@ -156,6 +156,8 @@ export interface LogSourceAdapter {
 
 /** Array result kept compatible with adapters that do not report platform noise. */
 export type ErrorGroupSummary = RawErrorGroup[] & {
+	/** True only when the adapter established a complete read; absent means unknown. */
+	complete?: boolean;
 	platformNoiseSetAside?: number;
 	platformNoiseByRule?: Record<string, number>;
 	platformNoiseApps?: string[];

@@ -651,6 +651,7 @@ it.each(["org", "plan", "personal", "org-nonreasoning"])(
 			}),
 		};
 		const expectedHeaders = {
+			"x-fabric-route-setup-ms": expect.stringMatching(/^\d+$/),
 			...(source.startsWith("org") && {
 				"X-AI-Is-Reasoning": String(source === "org"),
 			}),
@@ -699,5 +700,16 @@ it.each(["org", "plan", "personal", "org-nonreasoning"])(
 			);
 			expect(headers).not.toHaveProperty("X-AI-Is-Reasoning");
 		}
+	},
+);
+
+it.each(["info", "agent/connect"])(
+	"omits run setup timing for %s",
+	async (method) => {
+		expect((await call(method)).status).toBe(200);
+		expect(taskPlannerHeaders()).not.toContainEqual([
+			"x-fabric-route-setup-ms",
+			expect.anything(),
+		]);
 	},
 );

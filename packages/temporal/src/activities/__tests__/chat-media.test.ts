@@ -151,3 +151,38 @@ describe("canUseChatMedia", () => {
 		expect(mocks.isBeforeChatMediaLegacyCutoff).toHaveBeenCalledTimes(2);
 	});
 });
+
+it("builds storage keys without Math.random", async () => {
+	const random = vi.spyOn(Math, "random").mockImplementation(() => {
+		throw new Error("insecure randomness");
+	});
+	try {
+		const path = await uploadRecordedChatMedia({
+			data: Buffer.from("example"),
+			contentType: "audio/mpeg",
+			extension: "mp3",
+			storageKind: "tts-audio",
+			recordKind: "TTS_AUDIO",
+			userId: "example-user",
+			organizationId: "example-org",
+			conversationId: "example-conversation",
+		});
+
+		expect(path).toMatch(/^example-org\/tts-audio\/\d+-[a-z0-9]+\.mp3$/);
+		expect(mocks.recordChatMediaObject).toHaveBeenCalledWith({
+			storageKey: path,
+			kind: "TTS_AUDIO",
+			userId: "example-user",
+			organizationId: "example-org",
+			conversationId: "example-conversation",
+		});
+		expect(mocks.uploadFile.mock.invocationCallOrder[0]).toBeLessThan(
+			mocks.recordChatMediaObject.mock.invocationCallOrder[0],
+		);
+		expect(chatMediaProxyUrl(path, "example-org")).toContain(
+			`path=${encodeURIComponent(path)}&orgId=example-org`,
+		);
+	} finally {
+		random.mockRestore();
+	}
+});

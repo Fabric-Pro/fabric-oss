@@ -2839,6 +2839,43 @@ export function createUnifiedServer(
 	// LangGraphHttpAgent from @ag-ui/client makes POST / requests
 	// expecting AG-UI format SSE events
 	app.post("/", async (c: Context) => {
+		const timingStart = Date.now();
+		let timingSent = false;
+		let timingThreadId: unknown = null;
+		let timingRunId: unknown = null;
+		let timingMessageId: string | null = null;
+		let firstVisibleOutputMs: number | null = null;
+		let firstVisibleEvent: unknown = null;
+		const rawSetup = c.req.header("x-fabric-route-setup-ms");
+		const routeSetupMs =
+			rawSetup !== undefined &&
+			/^\d+$/.test(rawSetup) &&
+			Number(rawSetup) <= 600000
+				? Number(rawSetup)
+				: null;
+		let timingOutcome = "error";
+		let terminalStateError = false;
+		const finishTiming = (outcome: string) => {
+			if (timingSent) return;
+			timingSent = true;
+			console.log(`[UnifiedServer:${config.name}] Run timing`, {
+				event: "agent.run_timing",
+				threadId: timingThreadId,
+				runId: timingRunId,
+				messageId: timingMessageId,
+				firstVisibleOutputMs,
+				firstVisibleEvent,
+				totalMs: Date.now() - timingStart,
+				outcome,
+				routeSetupMs,
+			});
+		};
+		c.req.raw.signal.addEventListener(
+			"abort",
+			() => finishTiming("client_abort"),
+			{ once: true },
+		);
+
 		console.log(
 			`[UnifiedServer:${config.name}] AG-UI root POST / handler called`,
 		);
@@ -2847,9 +2884,15 @@ export function createUnifiedServer(
 		let redactHandlerError = false;
 		try {
 			const body = await c.req.json();
+			const requestOutputSeed = {
+				document: body.state?.document,
+				streamingContent: body.state?.streamingContent,
+			};
 			const messages = stripEmptyResponseFallbacks(body.messages || []);
 			const threadId = body.threadId || `thread_${Date.now()}`;
 			const runId = body.runId || `run_${Date.now()}`;
+			timingThreadId = threadId;
+			timingRunId = runId;
 
 			// Extract tenant context from headers (forwarded by LangGraphHttpAgent)
 			const tenantUserId =
@@ -2888,6 +2931,7 @@ export function createUnifiedServer(
 						`[UnifiedServer:${config.name}] AG-UI token exchange failed:`,
 						error,
 					);
+					finishTiming("error");
 					return c.json(
 						{
 							error: "AI token exchange failed. Please check your AI provider configuration.",
@@ -2957,6 +3001,7 @@ export function createUnifiedServer(
 			});
 
 			const messageId = `msg_${Date.now()}_${randomBytes(16).toString("hex")}`;
+			timingMessageId = messageId;
 
 			// Build runtime config
 			// Priority: passed ai_api_key (override provider) > token exchange (default provider)
@@ -3081,7 +3126,66 @@ export function createUnifiedServer(
 					};
 
 					// Helper to send AG-UI events safely
-					const sendEvent = (event: Record<string, unknown>) => {
+					const sendEvent = (
+						event: Record<string, unknown>,
+						seedSnapshot = false,
+					) => {
+						if (event.type === "RUN_FINISHED") {
+							timingOutcome = terminalStateError
+								? "error"
+								: "finished";
+						}
+						if (
+							firstVisibleOutputMs === null &&
+							isControllerOpen &&
+							!seedSnapshot
+						) {
+							const stateDelta = Array.isArray(event.delta)
+								? Object.fromEntries(
+										event.delta
+											.filter(
+												(op: any) =>
+													op.op !== "remove" &&
+													(op.path ===
+														"/streamingContent" ||
+														op.path ===
+															"/document"),
+											)
+											.map((op: any) => [
+												op.path.slice(1),
+												op.value,
+											]),
+									)
+								: event.delta;
+							const payload = (event.snapshot ?? stateDelta) as
+								| Record<string, unknown>
+								| undefined;
+							if (
+								event.type === "TEXT_MESSAGE_CONTENT" ||
+								event.type === "TOOL_CALL_START" ||
+								((event.type === "STATE_SNAPSHOT" ||
+									event.type === "STATE_DELTA") &&
+									payload &&
+									[
+										payload.streamingContent,
+										payload.document,
+									].some(
+										(value, index) =>
+											typeof value === "string" &&
+											value.length > 0 &&
+											value !==
+												requestOutputSeed[
+													index === 0
+														? "streamingContent"
+														: "document"
+												],
+									))
+							) {
+								firstVisibleOutputMs = Date.now() - timingStart;
+								firstVisibleEvent = event.type;
+							}
+						}
+
 						if (!isControllerOpen) {
 							console.log(
 								`[UnifiedServer:${config.name}] Skipping event (controller closed):`,
@@ -3183,10 +3287,13 @@ export function createUnifiedServer(
 								runBaseState !== null &&
 								typeof runBaseState === "object"
 							) {
-								sendEvent({
-									type: "STATE_SNAPSHOT",
-									snapshot: initialSnapshot,
-								});
+								sendEvent(
+									{
+										type: "STATE_SNAPSHOT",
+										snapshot: initialSnapshot,
+									},
+									true,
+								);
 							}
 
 							const streamReplies =
@@ -4066,6 +4173,7 @@ export function createUnifiedServer(
 							// Same key shape the streaming path uses, so an error
 							// the graph already surfaced as AI text isn't shown
 							// twice.
+							terminalStateError = Boolean(finalState.error);
 							const terminalErrorKey = terminalError
 								? `${terminalError.slice(0, 50)}_${terminalError.length}`
 								: null;
@@ -4363,6 +4471,15 @@ export function createUnifiedServer(
 
 						safeClose();
 					} catch (error) {
+						if (
+							c.req.raw.signal.aborted ||
+							(error as NodeJS.ErrnoException)?.code ===
+								"ERR_INVALID_STATE" ||
+							(error instanceof Error &&
+								error.name === "AbortError")
+						) {
+							timingOutcome = "client_abort";
+						}
 						// Only log if it's not an expected controller closed error
 						if (
 							(error as NodeJS.ErrnoException).code !==
@@ -4394,11 +4511,13 @@ export function createUnifiedServer(
 						});
 						safeClose();
 					} finally {
+						finishTiming(timingOutcome);
 						clearInterval(keepaliveInterval);
 						keepaliveInterval = undefined;
 					}
 				},
 				cancel() {
+					finishTiming("client_abort");
 					// Called when the client disconnects — clears the heartbeat
 					if (keepaliveInterval !== undefined) {
 						clearInterval(keepaliveInterval);
@@ -4419,6 +4538,7 @@ export function createUnifiedServer(
 				`[UnifiedServer:${config.name}] Error in AG-UI / handler:`,
 				redactHandlerError ? errorLogFields(error) : error,
 			);
+			finishTiming("error");
 			return c.json(
 				{
 					error: redactHandlerError

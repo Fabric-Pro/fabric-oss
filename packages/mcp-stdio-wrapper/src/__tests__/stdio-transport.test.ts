@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it, mock } from "node:test";
 import {
 	createStdioTransport,
+	redactUrlCredentials,
 	StdioRpcError,
 	stderrLogLevel,
 	summarizeNpmFailure,
@@ -118,6 +119,67 @@ describe("StdioTransport npm failures", () => {
 			);
 		} finally {
 			await transport.close();
+		}
+	});
+});
+
+describe("StdioTransport unexpected exits (Fizzy #3457)", () => {
+	async function exitReason(childScript: string): Promise<string> {
+		const transport = await createStdioTransport({
+			command: process.execPath,
+			args: [
+				"-e",
+				`process.stdin.once("data", () => { ${childScript} }); setInterval(() => {}, 1000);`,
+			],
+		});
+		let message = "";
+		try {
+			await assert.rejects(
+				transport.request("initialize", {}, 5_000),
+				(error: Error) => {
+					message = error.message;
+					return true;
+				},
+			);
+		} finally {
+			await transport.close();
+		}
+		return message;
+	}
+
+	it("names the exit code and keeps the child's stderr out of the reason", async () => {
+		const message = await exitReason(
+			`process.stderr.write("Please provide a database URL: postgresql://dev:hunter2@db.example.com/app\\n");
+			setTimeout(() => process.exit(1), 20);`,
+		);
+		assert.equal(message, "Process exited unexpectedly (exit code 1)");
+	});
+
+	it("names the signal that ended the process", async () => {
+		const message = await exitReason(
+			`process.kill(process.pid, "SIGTERM");`,
+		);
+		assert.equal(message, "Process exited unexpectedly (signal SIGTERM)");
+	});
+});
+
+describe("redactUrlCredentials", () => {
+	it("masks the user and password of a URL argument", () => {
+		assert.equal(
+			redactUrlCredentials("postgresql://dev:hunter2@db.example.com/app"),
+			"postgresql://[REDACTED]@db.example.com/app",
+		);
+	});
+
+	it("leaves arguments without URL credentials alone", () => {
+		for (const arg of [
+			"-y",
+			"@modelcontextprotocol/server-postgres",
+			"postgresql://db.example.com/app",
+			"example-org",
+			"dev@example.com",
+		]) {
+			assert.equal(redactUrlCredentials(arg), arg);
 		}
 	});
 });

@@ -117,13 +117,7 @@
 		"build": {
 			"dependsOn": ["^generate", "^build"],
 			"outputs": ["dist/**", ".next/**", "!.next/cache/**"],
-			// The tsdown packages import a shared plugin from tooling/tsdown,
-			// outside their own package, so it is not in $TURBO_DEFAULT$.
-			"inputs": [
-				"$TURBO_DEFAULT$",
-				".env*",
-				"$TURBO_ROOT$/tooling/tsdown/**"
-			]
+			"inputs": ["$TURBO_DEFAULT$", ".env*"]
 		},
 		// The CLI a deployment serves from /cli (see
 		// packages/cli/scripts/pack-deployment.mjs). It bundles the CLI with its

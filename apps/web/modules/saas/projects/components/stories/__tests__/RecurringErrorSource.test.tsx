@@ -4,8 +4,10 @@
  * evidence a reviewer needs to accept the bug — and tolerates metadata it does
  * not recognise instead of throwing inside the inbox.
  */
+import de from "@repo/i18n/translations/de.json";
+import translations from "@repo/i18n/translations/en.json";
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	isRecurringErrorSource,
 	RecurringErrorSourceBadge,
@@ -137,3 +139,179 @@ describe("RecurringErrorSourcePanel", () => {
 		expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
 	});
 });
+
+const localeState = vi.hoisted(() => ({ locale: "en" as "en" | "de" }));
+beforeEach(() => {
+	localeState.locale = "en";
+});
+vi.mock("next-intl", async () => {
+	const actual =
+		await vi.importActual<typeof import("next-intl")>("next-intl");
+	return {
+		...actual,
+		useTranslations: () =>
+			actual.createTranslator({
+				locale: localeState.locale,
+				messages: localeState.locale === "de" ? de : translations,
+				namespace: "projects.recurringErrorSource",
+			}),
+	};
+});
+const absence = {
+	firstAbsentScanAt: "2026-11-12T10:00:00Z",
+	lastAbsentScanAt: "2026-11-13T10:00:00Z",
+	scans: 2,
+};
+it("renders the absence badge and threshold explanation", () => {
+	const sourceMetadata = { ...LOG_METADATA, recurringErrorAbsence: absence };
+	render(
+		<>
+			<RecurringErrorSourceBadge
+				source="LOG_MONITOR"
+				sourceMetadata={sourceMetadata}
+			/>
+			<RecurringErrorSourcePanel
+				source="LOG_MONITOR"
+				sourceMetadata={sourceMetadata}
+			/>
+		</>,
+	);
+	expect(screen.getByText(/Below threshold/)).toBeInTheDocument();
+	expect(
+		screen.getByText(/The last 2 scans.*at the threshold/),
+	).toBeInTheDocument();
+});
+it.each([
+	undefined,
+	null,
+	{},
+	{ ...absence, scans: 0 },
+	{ ...absence, scans: 1.5 },
+	{ ...absence, firstAbsentScanAt: "bad" },
+	{ ...absence, lastAbsentScanAt: "bad" },
+	{ ...absence, firstAbsentScanAt: "2027-01-01" },
+])(
+	"preserves output for absent or malformed absence %j",
+	(recurringErrorAbsence) => {
+		const { container } = render(
+			<>
+				<RecurringErrorSourceBadge
+					source="LOG_MONITOR"
+					sourceMetadata={{ ...LOG_METADATA, recurringErrorAbsence }}
+				/>
+				<RecurringErrorSourcePanel
+					source="LOG_MONITOR"
+					sourceMetadata={{ ...LOG_METADATA, recurringErrorAbsence }}
+				/>
+			</>,
+		);
+		expect(container.textContent).not.toContain("Below threshold");
+		expect(container.textContent).not.toContain("at the threshold");
+		expect(
+			screen.getByText("Recurring error · 12× in 24h"),
+		).toBeInTheDocument();
+	},
+);
+it("ignores absence on incident proposals", () => {
+	render(
+		<RecurringErrorSourcePanel
+			source="INCIDENT_CLUSTER"
+			sourceMetadata={{
+				...INCIDENT_METADATA,
+				recurringErrorAbsence: absence,
+			}}
+		/>,
+	);
+	expect(screen.queryByText(/at the threshold/)).not.toBeInTheDocument();
+});
+
+it("uses the latest parseable sighting across own and related errors", () => {
+	const latest = "2026-10-25T09:00:00Z";
+	render(
+		<RecurringErrorSourceBadge
+			source="LOG_MONITOR"
+			sourceMetadata={{
+				...LOG_METADATA,
+				recurringErrorAbsence: absence,
+				relatedErrors: [
+					null,
+					3,
+					{ recurringError: { lastSeen: "bad" } },
+					{ recurringError: { lastSeen: latest } },
+					{ recurringError: { lastSeen: "2026-10-20T09:00:00Z" } },
+				],
+			}}
+		/>,
+	);
+	expect(
+		screen.getByText(
+			`Below threshold · last seen ${new Date(latest).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`,
+		),
+	).toBeInTheDocument();
+});
+it("uses related sightings when the own date is invalid", () => {
+	render(
+		<RecurringErrorSourceBadge
+			source="LOG_MONITOR"
+			sourceMetadata={{
+				recurringError: { lastSeen: "bad" },
+				recurringErrorAbsence: absence,
+				relatedErrors: [
+					{ recurringError: { lastSeen: "2026-10-25T09:00:00Z" } },
+				],
+			}}
+		/>,
+	);
+	expect(screen.getByText(/Below threshold.*Oct 25/)).toBeInTheDocument();
+});
+it("hides the marker when no sighting parses", () => {
+	render(
+		<RecurringErrorSourceBadge
+			source="LOG_MONITOR"
+			sourceMetadata={{
+				recurringErrorAbsence: absence,
+				recurringError: { lastSeen: "bad" },
+				relatedErrors: [{ recurringError: { lastSeen: null } }],
+			}}
+		/>,
+	);
+	expect(screen.queryByText(/Below threshold/)).not.toBeInTheDocument();
+});
+it.each(["en", "de"] as const)(
+	"renders real ICU singular and plural output in %s",
+	(locale) => {
+		localeState.locale = locale;
+		const { rerender } = render(
+			<RecurringErrorSourcePanel
+				source="LOG_MONITOR"
+				sourceMetadata={{
+					...LOG_METADATA,
+					recurringErrorAbsence: { ...absence, scans: 1 },
+				}}
+			/>,
+		);
+		expect(
+			screen.getByText(
+				locale === "en"
+					? /The latest scan .*at the threshold/
+					: /Der letzte Scan .*erforderlichen Häufigkeit/,
+			),
+		).toBeInTheDocument();
+		rerender(
+			<RecurringErrorSourcePanel
+				source="LOG_MONITOR"
+				sourceMetadata={{
+					...LOG_METADATA,
+					recurringErrorAbsence: absence,
+				}}
+			/>,
+		);
+		expect(
+			screen.getByText(
+				locale === "en"
+					? /The last 2 scans .*at the threshold/
+					: /Die letzten 2 Scans .*erforderlichen Häufigkeit/,
+			),
+		).toBeInTheDocument();
+	},
+);

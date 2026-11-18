@@ -416,6 +416,7 @@ function buildAgentRegistry(): AgentRegistry {
  * single-route POST, and this route answers with a 405.
  */
 export async function POST(req: NextRequest) {
+	const routeStart = Date.now();
 	try {
 		// Get user session for authentication
 		const headersList = await headers();
@@ -594,6 +595,10 @@ export async function POST(req: NextRequest) {
 			return issued.response;
 		}
 		const { headers: agentHeaders, settings } = issued.request;
+		if (isAgentRun)
+			agentHeaders["x-fabric-route-setup-ms"] = String(
+				Date.now() - routeStart,
+			);
 
 		// Build LangGraphHttpAgent wrappers from the module-scope registry.
 		// Cheap: each is just a {url, headers} container.

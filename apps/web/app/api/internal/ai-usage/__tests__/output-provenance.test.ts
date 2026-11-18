@@ -121,3 +121,35 @@ describe("Copilot output provenance", () => {
 		expect((await usage({ futureUsageField: "example" })).status).toBe(200);
 	});
 });
+
+describe("request timing records", () => {
+	it("stores timing and request identity", async () => {
+		expect((await usage({ firstTokenMs: 42 })).status).toBe(200);
+		expect(mocks.logAiUsage).toHaveBeenCalledWith(
+			expect.objectContaining({ firstTokenMs: 42, requestId: replyId }),
+		);
+	});
+	it.each([-1, 3_600_001, 1.5, "12", {}, [], true, null])(
+		"records usage with null for invalid duration %s",
+		async (firstTokenMs) => {
+			expect((await usage({ firstTokenMs })).status).toBe(200);
+			expect(mocks.logAiUsage).toHaveBeenCalledWith(
+				expect.objectContaining({ firstTokenMs: null }),
+			);
+		},
+	);
+	it.each([
+		null,
+		123,
+		"msg_invalid",
+		[replyId],
+		`prefix${replyId}`,
+		`${replyId}suffix`,
+		"msg_0793000000000_0123456789abcdef0123456789abcdef",
+	])("drops malformed request ID %s", async (outputMessageId) => {
+		expect((await usage({ outputMessageId })).status).toBe(200);
+		expect(mocks.logAiUsage).toHaveBeenCalledWith(
+			expect.objectContaining({ requestId: null }),
+		);
+	});
+});

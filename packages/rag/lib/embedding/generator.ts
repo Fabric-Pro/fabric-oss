@@ -35,6 +35,10 @@ import {
 	embeddingBaseModelName,
 	getEmbeddingDimensions,
 } from "./dimensions";
+import {
+	type EmbeddingCredentialSource,
+	EmbeddingGenerationError,
+} from "./errors";
 import { MAX_TOKENS_PER_INPUT } from "./limits";
 import type {
 	BatchEmbeddingResult,
@@ -104,6 +108,13 @@ export interface EmbeddingProviderConfig {
 	apiKey: string;
 	provider?: string | null;
 	baseUrl?: string | null;
+}
+
+/** The resolver reports the platform AI Gateway key as a `null` source. */
+function embeddingCredentialSource(metadata: {
+	configSource: "user" | "organization" | null;
+}): EmbeddingCredentialSource {
+	return metadata.configSource ?? "platform";
 }
 
 /**
@@ -229,14 +240,17 @@ export async function generateEmbedding(
 		// catch still recognises it. Any other failure is wrapped with its
 		// cause kept.
 		rethrowIfDispatchStopped(error);
+		const credentialSource = embeddingCredentialSource(metadata);
 		logger.error("[EmbeddingGenerator] Failed to generate embedding", {
 			error: error instanceof Error ? error.message : error,
 			modelName: baseModelName,
+			modelProvider: metadata.provider,
+			credentialSource,
 		});
 
-		throw new Error(
+		throw new EmbeddingGenerationError(
 			`Embedding generation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-			{ cause: error },
+			{ cause: error, credentialSource, provider: metadata.provider },
 		);
 	}
 }
@@ -486,16 +500,19 @@ export async function generateEmbeddings(
 		// As in generateEmbedding: a stop leaves as it is, anything else
 		// keeps its cause.
 		rethrowIfDispatchStopped(error);
+		const credentialSource = embeddingCredentialSource(metadata);
 		logger.error(
 			"[EmbeddingGenerator] Failed to generate batch embeddings",
 			{
 				error: error instanceof Error ? error.message : error,
 				modelName: baseModelName,
+				modelProvider: metadata.provider,
+				credentialSource,
 			},
 		);
-		throw new Error(
+		throw new EmbeddingGenerationError(
 			`Batch embedding generation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-			{ cause: error },
+			{ cause: error, credentialSource, provider: metadata.provider },
 		);
 	}
 }

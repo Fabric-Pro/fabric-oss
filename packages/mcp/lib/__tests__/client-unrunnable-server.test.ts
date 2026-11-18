@@ -42,9 +42,16 @@ vi.mock("@repo/utils/url-security", () => ({
 	}),
 }));
 
+import {
+	ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS,
+	UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS,
+} from "@repo/database/prisma/hidden-mcp-server-keys";
 import { createMcpClientForConfig, McpClientError } from "../client";
 
-function stdioConfig(server: Record<string, unknown>) {
+function stdioConfig(
+	server: Record<string, unknown>,
+	config: Record<string, unknown> = {},
+) {
 	return {
 		id: "config_fetch",
 		enabled: true,
@@ -61,6 +68,7 @@ function stdioConfig(server: Record<string, unknown>) {
 			command: "npx -y @modelcontextprotocol/server-fetch",
 			...server,
 		},
+		...config,
 	};
 }
 
@@ -78,7 +86,10 @@ describe("createMcpClientForConfig — servers that can never start", () => {
 		mockGetMcpConfigById.mockReset();
 	});
 
-	it.each(["fetch", "time", "sqlite", "raycast", "browserbase"])(
+	it.each([
+		...UNRUNNABLE_SYSTEM_MCP_SERVER_KEYS,
+		...ARGUMENT_REQUIRED_SYSTEM_MCP_SERVER_KEYS,
+	])(
 		"refuses the retired system %s server without calling the wrapper",
 		async (key) => {
 			mockGetMcpConfigById.mockResolvedValue(
@@ -130,6 +141,31 @@ describe("createMcpClientForConfig — servers that can never start", () => {
 	it("leaves a retired server that still starts alone", async () => {
 		mockGetMcpConfigById.mockResolvedValue(
 			stdioConfig({ key: "puppeteer", isSystemProvided: true }),
+		);
+
+		const error = await errorOf(
+			createMcpClientForConfig({
+				configId: "config_fetch",
+				userId: "user_a",
+				organizationId: "org_a",
+			}),
+		);
+
+		expect((error as { code?: string } | undefined)?.code).not.toBe(
+			"SERVER_UNAVAILABLE",
+		);
+	});
+
+	it("starts a retired server that needs an argument when the connection has one", async () => {
+		mockGetMcpConfigById.mockResolvedValue(
+			stdioConfig(
+				{
+					key: "postgres",
+					isSystemProvided: true,
+					command: "npx -y @modelcontextprotocol/server-postgres",
+				},
+				{ commandArgs: ["postgresql://db.example.com/app"] },
+			),
 		);
 
 		const error = await errorOf(

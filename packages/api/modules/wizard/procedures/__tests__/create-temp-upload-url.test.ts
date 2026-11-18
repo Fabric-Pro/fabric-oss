@@ -154,4 +154,31 @@ describe("createTempUploadUrl", () => {
 			}),
 		);
 	});
+
+	it("builds storage keys without Math.random", async () => {
+		const random = vi.spyOn(Math, "random").mockImplementation(() => {
+			throw new Error("insecure randomness");
+		});
+		try {
+			const res = await handler({ input: baseInput, context: ctx });
+
+			expect(res.signedUploadUrl).toBe("https://signed.example/put");
+			expect(res.contentType).toBe("text/markdown");
+			expect(res.s3Path).toMatch(
+				/^wizard-temp\/user-1\/session-1\/temp_.+\.md$/,
+			);
+			expect(mockCreateWizardTempContext).toHaveBeenCalledWith(
+				expect.objectContaining({
+					mimeType: "text/markdown",
+					type: "FILE",
+				}),
+			);
+			expect(getSignedUploadUrl).toHaveBeenCalledWith(
+				expect.stringMatching(/\.md$/),
+				expect.objectContaining({ contentType: "text/markdown" }),
+			);
+		} finally {
+			random.mockRestore();
+		}
+	});
 });

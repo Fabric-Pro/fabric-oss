@@ -290,14 +290,27 @@ function visibleContent(node: Node): "text" | "image" | null {
 	return image ? "image" : null;
 }
 
-/** A link's destination and title, as Turndown's own link rule writes them. */
+/** Escape Markdown link targets, preserving literal backslashes on reload. */
 function linkTarget(link: Element): string {
-	const href = (link.getAttribute("href") ?? "").replace(/([()])/g, "\\$1");
+	const href = (link.getAttribute("href") ?? "")
+		.replaceAll("\\", "\\\\")
+		.replace(/([()])/g, "\\$1");
 	const title = (link.getAttribute("title") ?? "")
+		.replaceAll("\\", "\\\\")
 		.replace(/(\n+\s*)+/g, "\n")
 		.replace(/"/g, '\\"');
 	return title ? `${href} "${title}"` : href;
 }
+
+/** Match Turndown's inline link shape and title handling with escaped targets. */
+const inlineLinkRule: TurndownService.Rule = {
+	filter: (node: any, options: any) =>
+		options.linkStyle === "inlined" &&
+		node.nodeName === "A" &&
+		!!node.getAttribute("href"),
+	replacement: (content: string, node: any) =>
+		`[${content}](${linkTarget(node)})`,
+};
 
 /**
  * Turndown rule for a link with no visible text (Fizzy #2946).
@@ -350,6 +363,7 @@ function getInlineCellService(): TurndownService {
 	// main one.
 	service.addRule("highlightMark", highlightMarkRule);
 	service.addRule("emphasis", emphasisRule);
+	service.addRule("inlineLink", inlineLinkRule);
 	service.addRule("emptyLink", emptyLinkRule);
 	inlineCellServiceSingleton = service;
 	return service;
@@ -565,6 +579,7 @@ export function createTurndownService(): TurndownService {
 			(node as HTMLElement).outerHTML,
 	});
 	service.addRule("highlightMark", highlightMarkRule);
+	service.addRule("inlineLink", inlineLinkRule);
 	service.addRule("emptyLink", emptyLinkRule);
 	service.addRule("emphasis", emphasisRule);
 	service.addRule("heading", headingRule);

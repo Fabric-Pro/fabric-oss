@@ -14,7 +14,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { generateText } from "@repo/ai";
+import { generateText, isPermanentProviderFailure } from "@repo/ai";
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import {
@@ -25,6 +25,7 @@ import {
 	searchSimilarExecutions,
 	storeExecutionSummary,
 } from "@repo/rag";
+import { EmbeddingGenerationError } from "@repo/rag/lib/embedding/errors";
 import { withDefaultFeature } from "@repo/rag/lib/embedding/usage";
 import type {
 	FailureWarning,
@@ -407,10 +408,35 @@ export async function embedAndStoreTrajectory(
 		return stored;
 	} catch (error) {
 		console.error(
-			`❌ [OrchestratorMemory] Failed to store execution: ${error}`,
+			`❌ [OrchestratorMemory] ${describeStoreFailure(executionId, error)}`,
 		);
 		return false;
 	}
+}
+
+const REJECTED_KEY_OWNERS = {
+	user: "the user's AI provider key",
+	organization: "the organization's AI provider key",
+	platform: "the platform AI Gateway key",
+} as const;
+
+/**
+ * Says why an execution was not stored. A key the embedding provider refused
+ * is named by its owner, and the provider's own text is left out: the AI
+ * Gateway's text tells the reader to set AI_GATEWAY_API_KEY even when the
+ * refused key was an organization's own (Fizzy #3571).
+ */
+function describeStoreFailure(executionId: string, error: unknown): string {
+	if (!isPermanentProviderFailure(error)) {
+		return `Failed to store execution ${executionId}: ${error}`;
+	}
+	const attributed =
+		error instanceof EmbeddingGenerationError ? error : undefined;
+	const provider = attributed?.provider ? ` (${attributed.provider})` : "";
+	const owner = attributed
+		? REJECTED_KEY_OWNERS[attributed.credentialSource]
+		: "its key";
+	return `Execution ${executionId} not stored: the embedding provider${provider} rejected ${owner}`;
 }
 
 // ============================================================================

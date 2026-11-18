@@ -5953,6 +5953,7 @@
 				"roadmapOrderHelp": "Roadmap order — the project's saved order (priority first, then each item's saved position).",
 				"groupSortHelp": "Orders the {group} lanes themselves — ascending keeps the default order, descending reverses it.",
 				"sync": "Sync",
+				"pmStatus": "PM status",
 				"source": "Source",
 				"size": "Size",
 				"flags": "Flags",
@@ -6010,7 +6011,7 @@
 		},
 		"recurringErrors": {
 			"toggleLabel": "Propose bugs for recurring errors",
-			"toggleDescription": "Twice a day, Fabric groups this project's application errors and its open bug reports. A problem that recurs {threshold} or more times within {windowHours} hours is proposed as a bug in the review inbox once; later occurrences are added to that proposal or bug. Reads the log source configured for this project. Off by default.",
+			"toggleDescription": "Twice a day, Fabric groups this project's application errors and its open bug reports. A problem that recurs {threshold} or more times within {windowHours} hours is proposed as a bug in the review inbox; later occurrences update the pending proposal or open bug. After a bug is observed closed, the scan waits seven days before proposing again; declined bugs are not proposed again, but their errors can join a matching open bug or pending proposal. Reads the log source configured for this project. Off by default.",
 			"updated": "Recurring-error detection updated",
 			"updateFailed": "Failed to update recurring-error detection",
 			"lastScan": "Last scanned {when}",
@@ -10111,6 +10112,10 @@
 			"cancelFailed": "Couldn't cancel the run: {message}",
 			"status": "Paused",
 			"setupSubject": "Project setup"
+		},
+		"recurringErrorSource": {
+			"absenceExplanation": "{scans, plural, one {The latest scan (since {first}, latest {last}) did not find this error at the threshold.} other {The last # scans (since {first}, latest {last}) did not find this error at the threshold.}}",
+			"belowThreshold": "Below threshold · last seen {lastSeen}"
 		}
 	},
 	"zod": {

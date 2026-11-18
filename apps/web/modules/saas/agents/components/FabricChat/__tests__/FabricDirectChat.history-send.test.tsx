@@ -169,6 +169,7 @@ vi.mock("@analytics", () => ({
 }));
 
 const createConversationMock = vi.fn();
+const createUploadMock = vi.fn();
 const addMessageMock = vi.fn();
 const updateSettingsMock = vi.fn();
 const selectionMock = vi.fn();
@@ -176,6 +177,15 @@ const instanceGetMock = vi.fn();
 const detachProjectMock = vi.fn();
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
+		ai: {
+			documents: {
+				createUploadUrl: (...args: unknown[]) =>
+					createUploadMock(...args),
+				process: vi.fn(async () => ({
+					extractedContent: "Example text",
+				})),
+			},
+		},
 		agentTemplates: {
 			instances: {
 				get: (...args: unknown[]) => instanceGetMock(...args),
@@ -1644,4 +1654,108 @@ it("saves document chat undo after a completed settings write", async () => {
 			}),
 		),
 	);
+});
+
+it("shows preparation and uploads Direct attachments together in one chat", async () => {
+	let next = 0;
+	createUploadMock.mockReset().mockImplementation(async () => {
+		const id = ++next;
+		return {
+			documentId: `example-document-${id}`,
+			chatId: "example-chat",
+			signedUploadUrl: `https://example.com/upload/${id}`,
+		};
+	});
+	const releases: Array<() => void> = [];
+	const previousFetch = vi.mocked(global.fetch).getMockImplementation();
+	if (!previousFetch) {
+		throw new Error("Expected the stream fetch fixture");
+	}
+	vi.spyOn(global, "fetch").mockImplementation((input, init) =>
+		String(input).startsWith("https://example.com/upload/")
+			? new Promise<Response>((resolve) => {
+					releases.push(() => resolve({ ok: true } as Response));
+				})
+			: previousFetch(input, init),
+	);
+	const { ui } = harness();
+	const view = render(ui("conv_old", convOld));
+	await waitFor(() =>
+		expect(view.container.textContent).toContain("second answer"),
+	);
+	const live = view.getByTestId("send-preparation-status");
+	expect(live).toBeEmptyDOMElement();
+	await act(async () =>
+		fireEvent.change(
+			view.container.querySelector(
+				'input[type="file"]',
+			) as HTMLInputElement,
+			{
+				target: {
+					files: ["a.png", "b.png", "c.png"].map(
+						(name) =>
+							new File(["image"], name, { type: "image/png" }),
+					),
+				},
+			},
+		),
+	);
+	fireEvent.click(view.getByRole("button", { name: "send", exact: true }));
+	await waitFor(() => expect(releases).toHaveLength(3));
+	await act(async () =>
+		fireEvent.click(
+			view.getByRole("button", { name: "send", exact: true }),
+		),
+	);
+	expect(streamBodies).toHaveLength(0);
+	expect(createUploadMock).toHaveBeenCalledTimes(3);
+	expect(view.getByTestId("send-preparation-status")).toHaveTextContent(
+		"Preparing message",
+	);
+	expect(view.getByTestId("send-preparation-status")).toBe(live);
+	expect(
+		view
+			.getByText("second answer")
+			.compareDocumentPosition(view.getByText("third question")) &
+			Node.DOCUMENT_POSITION_FOLLOWING,
+	).toBeTruthy();
+	expect(view.getByText("third question")).toBeVisible();
+	expect(createUploadMock.mock.calls.map(([input]) => input.chatId)).toEqual([
+		undefined,
+		"example-chat",
+		"example-chat",
+	]);
+	await act(async () => {
+		releases[2]();
+		releases[0]();
+		releases[1]();
+	});
+	await waitFor(() =>
+		expect(view.container.textContent).toContain("third answer"),
+	);
+	expect(view.queryByTestId("send-preparation-status")).toBeEmptyDOMElement();
+	expect(view.getAllByText("third question")).toHaveLength(1);
+	expect(streamBodies[0].attachedDocumentIds).toEqual([
+		"example-document-1",
+		"example-document-2",
+		"example-document-3",
+	]);
+});
+
+it("shows a text-only question before Direct begins the turn", async () => {
+	const { ui } = harness();
+	const view = render(ui("conv_old", convOld));
+	await waitFor(() =>
+		expect(view.container.textContent).toContain("second answer"),
+	);
+	fireEvent.click(view.getByRole("button", { name: "send", exact: true }));
+	expect(view.getByTestId("send-preparation-status")).toHaveTextContent(
+		"Preparing message",
+	);
+	expect(view.getByText("third question")).toBeVisible();
+	await waitFor(() =>
+		expect(view.container.textContent).toContain("third answer"),
+	);
+	expect(view.queryByTestId("send-preparation-status")).toBeEmptyDOMElement();
+	expect(view.getAllByText("third question")).toHaveLength(1);
 });

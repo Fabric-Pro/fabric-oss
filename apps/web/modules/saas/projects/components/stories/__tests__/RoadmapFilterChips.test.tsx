@@ -83,6 +83,22 @@ describe("RoadmapFilterChips", () => {
 		expect(onRemoveFilter).toHaveBeenCalledWith("missingDesc");
 	});
 
+	it("renders a PM status chip that clears only that filter", () => {
+		const onRemoveFilter = vi.fn();
+		render(
+			<RoadmapFilterChips
+				filters={{ ...EMPTY_ROADMAP_FILTERS, pmStatus: "Done" }}
+				onRemoveFilter={onRemoveFilter}
+			/>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Remove PM status Done filter",
+			}),
+		);
+		expect(onRemoveFilter).toHaveBeenCalledExactlyOnceWith("pmStatus");
+	});
+
 	it("renders a 'Clear all' action when onClearAll is provided", () => {
 		const onClearAll = vi.fn();
 		render(

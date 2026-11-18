@@ -20,6 +20,8 @@ import { resolveUsageFrame } from "../../agents/fabric-ai/resolve-usage-frame";
 export const runtime = "nodejs";
 
 const bodySchema = z.object({
+	// Malformed timing metadata must not discard billing usage.
+	firstTokenMs: z.number().int().min(0).max(3_600_000).nullish().catch(null),
 	provider: z.string().min(1),
 	model: z.string().min(1),
 	taskType: z.string().min(1),
@@ -217,6 +219,12 @@ export async function POST(request: Request) {
 			reasoningTokens: body.reasoningTokens,
 			gatewayGenerationId: body.gatewayGenerationId,
 			latencyMs: body.latencyMs,
+			firstTokenMs: body.firstTokenMs ?? null,
+			requestId:
+				typeof body.outputMessageId === "string" &&
+				/^msg_[1-9][0-9]{12}_[0-9a-f]{32}$/.test(body.outputMessageId)
+					? body.outputMessageId
+					: null,
 			billingCategory: mapBillingCategory(body.billingMode),
 			billingCustomerId: body.billingCustomerId,
 			// A ChatGPT plan carries no API cost (Fizzy #2939).

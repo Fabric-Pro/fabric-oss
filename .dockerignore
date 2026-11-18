@@ -35,12 +35,11 @@ scripts/
 # preflight, identifier guard, screenshots) then rebuilt all agent images with
 # no change to their contents. Allow-list the workspace packages the filtered
 # installs link (@repo/tsconfig, @repo/tsgo, @repo/scripts,
-# @repo/tailwind-config) and the shared tsdown config; anything new under
+# @repo/tailwind-config) and their tooling; anything new under
 # tooling/ stays out until an image needs it.
 tooling/*
 !tooling/scripts
 !tooling/tailwind
-!tooling/tsdown
 !tooling/tsgo
 !tooling/typescript
 

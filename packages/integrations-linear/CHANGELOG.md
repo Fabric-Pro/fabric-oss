@@ -1,5 +1,14 @@
 # @fabricorg/integrations-linear
 
+## 0.1.18
+
+### Patch Changes
+
+- e8fb586: Published SDK and integration declaration files now retain entry documentation comments.
+- Updated dependencies [e8fb586]
+  - @fabricorg/sdk@0.8.3
+  - @fabricorg/integrations-runtime@0.1.3
+
 ## 0.1.17
 
 ### Patch Changes

@@ -13,7 +13,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -217,8 +217,30 @@ vi.mock("@saas/agents/components/FabricChat/ConversationToolPicker", () => ({
 vi.mock("@saas/agents/components/FabricChat/shared", () => ({
 	ActiveContextIndicator: () => null,
 	AgentModelPicker: () => null,
-	ChatInput: () => null,
-	ChatWelcome: () => null,
+	ChatInput: ({
+		value,
+		onChange,
+		onSend,
+		isLoading,
+	}: {
+		value: string;
+		onChange: (value: string) => void;
+		onSend: () => void;
+		isLoading: boolean;
+	}) => (
+		<div>
+			<textarea
+				aria-label="Message"
+				value={value}
+				onChange={(event) => onChange(event.target.value)}
+				disabled={isLoading}
+			/>
+			<button onClick={onSend} type="button">
+				Send
+			</button>
+		</div>
+	),
+	ChatWelcome: ({ composer }: { composer: React.ReactNode }) => composer,
 	getLatestSuccessfulFrameFromGroups: () => null,
 	InteractiveContentPanel: () => null,
 	ToolCallList: () => null,
@@ -415,3 +437,79 @@ describe("FabricDirectChat transport", () => {
 		expect(runtimeHookMock).not.toHaveBeenCalled();
 	});
 });
+
+it.each([false, true])(
+	"releases Direct preparation at handoff and allows sending after Stop (runtime=%s)",
+	async (runtime) => {
+		access.flag = runtime;
+		let loading = false;
+		const releases: Array<() => void> = [];
+		const sendMessage = vi.fn((content: string) => {
+			streamMessages.push({
+				id: `example-${streamMessages.length}`,
+				role: "user",
+				content,
+				timestamp: new Date(),
+			});
+			loading = true;
+			return new Promise<void>((resolve) => {
+				releases.push(resolve);
+			});
+		});
+		const implementation = () => ({
+			...streamResult(),
+			sendMessage,
+			isLoading: loading,
+		});
+		legacyHookMock.mockImplementation(implementation);
+		runtimeHookMock.mockImplementation(implementation);
+		const client = new QueryClient();
+		const onStreamingChange = vi.fn();
+		const ui = () => (
+			<QueryClientProvider client={client}>
+				<FabricDirectChat
+					organizationId="org_example"
+					compactMode
+					onStreamingChange={onStreamingChange}
+				/>
+			</QueryClientProvider>
+		);
+		const view = render(ui());
+		fireEvent.change(view.getByLabelText("Message"), {
+			target: { value: "First Direct turn" },
+		});
+		await act(async () =>
+			fireEvent.click(view.getByRole("button", { name: "Send" })),
+		);
+		view.rerender(ui());
+		loading = false;
+		view.rerender(ui());
+		expect(
+			view.getByTestId("send-preparation-status"),
+		).toBeEmptyDOMElement();
+		expect(view.getByLabelText("Message")).toBeEnabled();
+		expect(view.getAllByText("First Direct turn")).toHaveLength(1);
+		expect(onStreamingChange).toHaveBeenLastCalledWith(false);
+		fireEvent.change(view.getByLabelText("Message"), {
+			target: { value: "Second Direct turn" },
+		});
+		await act(async () =>
+			fireEvent.click(view.getByRole("button", { name: "Send" })),
+		);
+		expect(sendMessage).toHaveBeenCalledTimes(2);
+		await act(async () => {
+			releases.forEach((release) => {
+				release();
+			});
+		});
+		legacyHookMock.mockImplementation((_options: unknown) =>
+			streamResult(),
+		);
+		runtimeHookMock.mockImplementation(
+			(options: { onConversationStarted?: (id: string) => void }) => {
+				runtimeOptions = options;
+				return streamResult();
+			},
+		);
+	},
+);
