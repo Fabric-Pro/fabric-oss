@@ -73,6 +73,8 @@ beforeEach(() => {
 		transcriptContextId: null,
 		providerDataDeletedAt: null,
 		createdAt: new Date("2026-10-01T17:00:00Z"),
+		memberSpeakerIds: [],
+		guestSpeakerIds: [],
 	});
 	mocks.sessionUpdateMany.mockResolvedValue({ count: 1 });
 	mocks.segmentFindMany.mockResolvedValue([]);
@@ -108,17 +110,38 @@ describe("Parlume empty transcript finalization", () => {
 		});
 		expect(mocks.sessionUpdate).toHaveBeenCalledWith(
 			expect.objectContaining({
-				data: { providerDataDeletedAt: expect.any(Date) },
+				data: {
+					providerDataDeletedAt: expect.any(Date),
+					callbackTokenDigest: null,
+					webhookReceipts: { deleteMany: {} },
+				},
+			}),
+		);
+	});
+
+	it("keeps the webhook token while Attendee's data is still to be deleted", async () => {
+		mocks.deleteProviderData.mockRejectedValue(new Error("bot not ended"));
+
+		await expect(finalizeParlumeSession("session-1")).rejects.toThrow(
+			"bot not ended",
+		);
+
+		// The terminal webhook Attendee redelivers is what retries the
+		// deletion, so it must still be accepted.
+		expect(mocks.sessionUpdate).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ callbackTokenDigest: null }),
 			}),
 		);
 	});
 });
 
 describe("Parlume transcript finalization", () => {
-	it("tags the saved transcript and its embedding workflow with the Attendee provider", async () => {
+	it("tags the saved transcript with the Attendee provider, and never embeds it", async () => {
 		mocks.segmentFindMany.mockResolvedValue([
 			{
 				text: "We decided to ship the draft.",
+				source: "SPEECH",
 				speakerName: "Dev One",
 				utteranceStartMs: 0,
 				utteranceEndMs: 2_000,
@@ -152,18 +175,9 @@ describe("Parlume transcript finalization", () => {
 				}),
 			}),
 		);
-		expect(mocks.workflowStart).toHaveBeenCalledWith(
+		expect(mocks.workflowStart).not.toHaveBeenCalledWith(
 			"contextEmbeddingWorkflow",
-			expect.objectContaining({
-				args: [
-					expect.objectContaining({
-						contextId: "context-1",
-						metadata: expect.objectContaining({
-							provider: "attendee",
-						}),
-					}),
-				],
-			}),
+			expect.anything(),
 		);
 	});
 
@@ -198,8 +212,10 @@ describe("Parlume transcript finalization", () => {
 			projectId: "project-1",
 			organizationId: "org-1",
 		};
+		// A question asked on the Parlume page stays out of the record.
+		const meetingTurn = { replyChannel: { not: "PAGE" } };
 		expect(mocks.turnFindMany).toHaveBeenCalledWith({
-			where,
+			where: { ...where, ...meetingTurn },
 			select: {
 				id: true,
 				requestText: true,
@@ -211,7 +227,7 @@ describe("Parlume transcript finalization", () => {
 			take: 10_001,
 		});
 		expect(mocks.actionFindMany).toHaveBeenCalledWith({
-			where,
+			where: { ...where, turn: meetingTurn },
 			select: { turnId: true, toolName: true, status: true },
 			orderBy: [{ createdAt: "asc" }, { id: "asc" }],
 			take: 10_001,

@@ -47,17 +47,33 @@ reason = "Remaining third-party Zod 3.25.75/3.25.76 and zod/v3 compatibility ris
 
 # Identity 4.14.1 now accepts fixed MSAL 7.x. The separate Microsoft Agents
 # parent still pins reviewed 5.1.5; the source/lock guard retains this exception.
+# agents-hosting 1.10.2 moves to MSAL 7.1.1 but was published 2026-11-19,
+# inside the 24-hour minimumReleaseAge window when this was re-checked.
 [[IgnoredVulns]]
 id = "GHSA-xcx6-jx8p-x3h5"
-ignoreUntil = 2026-11-30
-reason = "MSAL 5.1.5 remains via Microsoft agents-hosting 1.8.1; Identity 4.14.1 and telemetry resolve fixed MSAL 7.1.2. The installed agents-hosting does not call acquireTokenByCode or acquireTokenInteractive. The dependency-security guard rejects other vulnerable versions, first-party auth-code credentials/calls and identity plugin registration. DefaultAzureCredential remains the sole first-party credential. See SECURITY.md for the remaining third-party risk."
+ignoreUntil = 2027-01-19
+reason = "MSAL 5.1.5 remains via Microsoft agents-hosting 1.8.1 (re-checked 2026-11-20; 1.10.2 with MSAL 7.1.1 is the planned replacement); Identity 4.14.1 and telemetry resolve fixed MSAL 7.1.2. The installed agents-hosting does not call acquireTokenByCode or acquireTokenInteractive. The dependency-security guard checks locked versions and named first-party auth-code credentials, calls and identity plugin registrations. Reviewed DefaultAzureCredential sites include Log Analytics and Anthropic federation. See SECURITY.md for the remaining third-party risk."
 
-# PhoneNumber is not imported by the reviewed consumers; the dependency-security
-# check limits resolutions and fails if tracked first-party source names the package.
+# The former graphql-scalars entry (GHSA-x8rm-f576-gq67) was removed
+# 2026-11-20: a CopilotKit-scoped override pins graphql-scalars 1.24.0, which
+# predates the vulnerable PhoneNumber regex, so no affected copy remains.
+
+# esbuild <0.25.0 serves cross-origin reads from its development server. The
+# dependency-security check limits this ID-wide ignore to the two reviewed
+# copies under their reviewed parents and checks that neither starts `serve`.
 [[IgnoredVulns]]
-id = "GHSA-x8rm-f576-gq67"
-ignoreUntil = 2026-11-30
-reason = "graphql-scalars 1.25.0 via @copilotkit/runtime and type-graphql; their builds use GraphQLJSON, GraphQLJSONObject, GraphQLTimestamp and GraphQLDateTimeISO, not PhoneNumber. The fixed 2.0.1 is outside the type-graphql peer range. See SECURITY.md § Documented dismissals."
+id = "GHSA-67mh-4wv8-2f99"
+ignoreUntil = 2027-02-19
+reason = "esbuild 0.18.20 (drizzle-kit dev dependency via @esbuild-kit/core-utils, transform-only) and 0.21.5 (partykit 0.0.115 local collab dev CLI, which starts esbuild serve only for a configured serve assets directory; none is configured). Neither parent has a release on esbuild >=0.25. Production collab runs from party-cf. See SECURITY.md § Documented dismissals."
+
+# instrumentation-http <0.222.0 copies raw query strings into server spans.
+# auto-instrumentations-node resolves the fixed line; only Azure Monitor's
+# unregistered copy remains, and the dependency-security check limits the
+# ignore to it and checks first-party code never calls useAzureMonitor.
+[[IgnoredVulns]]
+id = "GHSA-3v2p-hm54-8qcq"
+ignoreUntil = 2027-01-19
+reason = "instrumentation-http 0.221.0 remains only under @azure/monitor-opentelemetry 1.20.1 (latest 1.21.0 still declares ^0.221.0). Its instrumentations are registered only by useAzureMonitor; first-party code builds its only TelemetryClient with useGlobalProviders false, whose provider loads no instrumentation. The registered NodeSDK instrumentation resolves fixed 0.223.2. See SECURITY.md § Documented dismissals."
 
 # No fixed picomatch release exists; every version through 4.0.7 is affected.
 # The dependency-security check limits this ID-wide ignore to the reviewed

@@ -225,9 +225,9 @@ describe("useDirectStream — a usage limit that refuses the turn", () => {
 		expect(hook.result.current.state.status).toBe("error");
 	});
 
-	it("drops the placeholder for a refusal before any answer, as before", async () => {
+	it("ends a refusal before any answer with the paused state the saved turn shows, without the limit's id", async () => {
 		showAiUsageLimitToast.mockClear();
-		const { hook, send, finish } = startTurn();
+		const { hook, send, finish, last } = startTurn();
 
 		await send({
 			type: "error",
@@ -238,9 +238,16 @@ describe("useDirectStream — a usage limit that refuses the turn", () => {
 		await finish();
 
 		expect(showAiUsageLimitToast).toHaveBeenCalledWith(LIMIT_DATA);
-		expect(
-			hook.result.current.messages.filter((m) => m.role === "assistant"),
-		).toEqual([]);
+		expect(last()).toMatchObject({
+			role: "assistant",
+			isError: true,
+			isStreaming: false,
+			streamStatus: "error",
+			errorMessage:
+				"AI calls are paused — the usage limit for this month is reached. Manage limits to raise it, or try again after it resets.",
+		});
+		expect(last().errorMessage).not.toContain("limit-1");
+		expect(hook.result.current.state.status).toBe("idle");
 	});
 });
 

@@ -202,3 +202,40 @@ describe("GET /api/agents/ai-config — gatewayUrl resolution", () => {
 		expect(body.gatewayUrl).toBe("https://ai-gateway.vercel.sh/v1");
 	});
 });
+
+it.each([false, true])(
+	"serves task metadata for a federated model only with Bearer opt-in (%s)",
+	async (acceptBearer) => {
+		verifySignedTenantRequestMock.mockReturnValue({
+			ok: true,
+			userId: USER_ID,
+			organizationId: "example-org",
+		});
+		setupModel("ANTHROPIC_DIRECT");
+		const bearerSource = vi.fn();
+		getRAGProviderConfigMock.mockResolvedValue({
+			apiKey: "",
+			baseUrl: "https://api.anthropic.com/v1",
+			anthropicBearerSource: bearerSource,
+		});
+		const request = new Request(
+			"https://fabric.example.com/api/agents/ai-config/task?taskType=SIMPLE",
+			{
+				headers: acceptBearer
+					? { "X-AI-Credential-Kind": "bearer" }
+					: undefined,
+			},
+		) as NextRequest;
+		const response = await GET_TASK(request);
+		const body = await response.json();
+		expect(response.status).toBe(acceptBearer ? 200 : 409);
+		expect(body).toMatchObject(
+			acceptBearer
+				? { provider: "ANTHROPIC_DIRECT", credentialKind: "bearer" }
+				: { code: "ANTHROPIC_BEARER_REQUIRED" },
+		);
+		expect(body).not.toHaveProperty("apiKey");
+		expect(body).not.toHaveProperty("accessToken");
+		expect(bearerSource).not.toHaveBeenCalled();
+	},
+);

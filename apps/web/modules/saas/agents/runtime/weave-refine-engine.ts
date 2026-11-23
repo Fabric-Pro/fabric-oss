@@ -1,5 +1,6 @@
 import { type AGUIEvent, EventType, type RunAgentInput } from "@ag-ui/client";
 import { streamText } from "@repo/ai";
+import { isModelRefusal } from "@repo/ai/lib/provider-failure-message";
 import {
 	type AuthorizedProject,
 	runWithAuthorizedProject,
@@ -12,6 +13,7 @@ import {
 	resolveRefineModel,
 } from "@repo/api/modules/weave/lib/refine-request-turn";
 import {
+	isDeclinedRefineReply,
 	parseRefineResponse,
 	REFINE_SYSTEM_PROMPT,
 	refineFeedbackPreview,
@@ -21,6 +23,7 @@ import { recordProcedureFailure } from "@repo/api/orpc/middleware/audit-error-mi
 import { isFeatureEnabled } from "@repo/database";
 import {
 	WEAVE_REFINE_AGENT_ID,
+	WEAVE_REFINE_DECLINED,
 	WEAVE_REFINE_EVENT,
 	type WeaveRefineProps,
 	weaveRefinePropsSchema,
@@ -29,6 +32,7 @@ import {
 	type InProcessAdmission,
 	InProcessEngine,
 	type InProcessRun,
+	InProcessTurnError,
 	requestReplyConversation,
 } from "./in-process-engine";
 
@@ -177,6 +181,18 @@ export class WeaveRefineEngine extends InProcessEngine<
 			}
 		} catch (error) {
 			streamError ??= error;
+		}
+		if (
+			(streamError && isModelRefusal(streamError)) ||
+			(!streamError &&
+				((await result.finishReason) === "content-filter" ||
+					isDeclinedRefineReply(text)))
+		) {
+			yield { type: EventType.TEXT_MESSAGE_END, messageId };
+			throw new InProcessTurnError(
+				WEAVE_REFINE_DECLINED,
+				"The AI declined to refine this request, so it is unchanged. Rephrase it and try again.",
+			);
 		}
 		if (streamError) {
 			yield { type: EventType.TEXT_MESSAGE_END, messageId };

@@ -57,6 +57,7 @@ import {
 import { redactLogText } from "@repo/utils/log-redaction";
 import { shutdownAppInsights } from "./app-insights";
 import { isHttpProbe } from "./http-probes";
+import { undiciRedactedUrlAttributes } from "./url-redaction";
 // Re-export API for use in instrumentation modules
 
 export interface ObservabilityConfig {
@@ -427,6 +428,33 @@ function setupConsoleInterception(serviceName: string): void {
 }
 
 /**
+ * Options `initObservability` passes to `getNodeAutoInstrumentations`.
+ * Exported so tests can register the same instrumentation configuration.
+ */
+export function getAutoInstrumentationOptions(
+	verboseInstrumentation: boolean,
+): NonNullable<Parameters<typeof getNodeAutoInstrumentations>[0]> {
+	return {
+		"@opentelemetry/instrumentation-http": {
+			ignoreIncomingRequestHook: (request) => isHttpProbe(request.url),
+		},
+		// GHSA-hgpx-52j8-8gq2: undici <=0.35.0 records outgoing fetch URLs
+		// verbatim. The fix needs OpenTelemetry 3.x; until then this hook
+		// overwrites url.full / url.query with redacted values.
+		"@opentelemetry/instrumentation-undici": {
+			startSpanHook: undiciRedactedUrlAttributes,
+		},
+		// Disable verbose instrumentations in development
+		"@opentelemetry/instrumentation-fs": {
+			enabled: verboseInstrumentation,
+		},
+		"@opentelemetry/instrumentation-dns": {
+			enabled: verboseInstrumentation,
+		},
+	};
+}
+
+/**
  * Initialize OpenTelemetry observability
  *
  * Call this once at application startup before any other code runs.
@@ -559,19 +587,9 @@ export function initObservability(config: ObservabilityConfig): void {
 					},
 				],
 		instrumentations: [
-			getNodeAutoInstrumentations({
-				"@opentelemetry/instrumentation-http": {
-					ignoreIncomingRequestHook: (request) =>
-						isHttpProbe(request.url),
-				},
-				// Disable verbose instrumentations in development
-				"@opentelemetry/instrumentation-fs": {
-					enabled: verboseInstrumentation,
-				},
-				"@opentelemetry/instrumentation-dns": {
-					enabled: verboseInstrumentation,
-				},
-			}),
+			getNodeAutoInstrumentations(
+				getAutoInstrumentationOptions(verboseInstrumentation),
+			),
 		],
 	});
 

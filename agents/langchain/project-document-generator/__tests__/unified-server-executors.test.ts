@@ -46,7 +46,7 @@ type StreamExecutor = (
 ) => AsyncGenerator<Record<string, unknown>>;
 
 const invoke = () => server.args[1] as Executor;
-const platformStream = () => server.args[4] as StreamExecutor;
+const platformStream = () => server.args[3] as StreamExecutor;
 
 /** The editor's frontend actions as CopilotKit sends them. */
 const EDITOR_ACTIONS = [

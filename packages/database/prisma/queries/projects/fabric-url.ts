@@ -103,6 +103,30 @@ export async function buildFabricProjectTabUrl(args: {
 	return `${await projectUrlBase(args)}?tab=${args.tab}`;
 }
 
+/** The project's Parlume page, where its meetings, requests and notes are. */
+export async function buildParlumePageUrl(args: {
+	projectId: string;
+	organizationId: string;
+}): Promise<string> {
+	return `${await projectUrlBase(args)}/parlume`;
+}
+
+/**
+ * The page where a member confirms or dismisses a change Parlume proposed,
+ * under the project's Parlume page. The id is in the path, because sign-in
+ * returns a visitor to the path alone. `dismiss` opens the same page ready to
+ * dismiss. Opening either link changes nothing.
+ */
+export async function buildParlumeActionUrl(args: {
+	projectId: string;
+	actionId: string;
+	organizationId: string;
+	intent?: "dismiss";
+}): Promise<string> {
+	const url = `${await buildParlumePageUrl(args)}/actions/${encodeURIComponent(args.actionId)}`;
+	return args.intent ? `${url}?intent=${args.intent}` : url;
+}
+
 /**
  * Absolute URL to a project's in-app Release Notes tab. Mirrors
  * `buildFabricStoryUrl`'s tenant handling: org projects live under

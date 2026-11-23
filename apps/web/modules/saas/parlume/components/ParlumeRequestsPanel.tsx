@@ -36,6 +36,7 @@ export interface ParlumeHistoryView {
 
 /** Everything the meetings asked Parlume, filtered by session and by kind. */
 export function ParlumeRequestsPanel({
+	projectBasePath,
 	sessions,
 	sessionFilter,
 	onSessionFilterChange,
@@ -43,6 +44,8 @@ export function ParlumeRequestsPanel({
 	onKindChange,
 	history,
 }: {
+	/** `/app/{org}/projects/{id}`, under which each proposal has its page. */
+	projectBasePath: string;
 	sessions: ParlumeSession[];
 	sessionFilter: string;
 	onSessionFilterChange: (sessionId: string) => void;
@@ -123,6 +126,7 @@ export function ParlumeRequestsPanel({
 						<ParlumeRequestItem
 							key={request.id}
 							request={request}
+							projectBasePath={projectBasePath}
 						/>
 					))}
 				</ol>

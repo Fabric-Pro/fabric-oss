@@ -258,3 +258,38 @@ describe("transcribeAudio — never on Fabric's own key", () => {
 		fetchSpy.mockRestore();
 	});
 });
+
+it.each(["hybrid", "full"] as const)(
+	"refuses federated Anthropic in %s transcription",
+	async (mode) => {
+		vi.mocked(transcribe).mockClear();
+		const dispatch = vi
+			.spyOn(globalThis, "fetch")
+			.mockRejectedValue(new Error("Unexpected dispatch"));
+		getRAGProviderConfig.mockResolvedValue({
+			...TENANT_PROVIDER,
+			provider: "ANTHROPIC_DIRECT",
+			apiKey: "",
+			anthropicBearerSource: vi.fn(),
+		});
+		try {
+			const result = await transcribeAudio(AUDIO, "meeting.mp3", {
+				mode,
+				userContext: {
+					userId: "example-user",
+					organizationId: "example-org",
+				},
+			});
+			expect(result).toMatchObject({
+				success: false,
+				error: expect.stringContaining(
+					"Anthropic federation cannot be used for transcription",
+				),
+			});
+			expect(transcribe).not.toHaveBeenCalled();
+			expect(dispatch).not.toHaveBeenCalled();
+		} finally {
+			dispatch.mockRestore();
+		}
+	},
+);

@@ -1,0 +1,91 @@
+{
+	"fixture": "sprint-planning-short",
+	"note": "Hand-written model replies for the scorer tests. A notes segment is a transcript line number: the fixture segment id plus one, after the speech header.",
+	"notes": {
+		"discussion": [
+			{
+				"text": "The refund export is mostly done; only the date filter remains.",
+				"segment": 4,
+				"quote": "we only need the date filter"
+			}
+		],
+		"decisions": [
+			{
+				"text": "The refund export ships in this sprint.",
+				"segment": 6,
+				"quote": "the refund export ships in this sprint"
+			},
+			{
+				"text": "Duplicate charge alerts are owned by the on-call team.",
+				"segment": 15,
+				"quote": "Not decided yet"
+			},
+			{
+				"text": "The PDF export stays for now.",
+				"segment": 7,
+				"quote": "the PDF export stays for now"
+			}
+		],
+		"actionItems": [
+			{
+				"text": "Finish the date filter.",
+				"segment": 5,
+				"quote": "I can finish the date filter",
+				"owner": "Sam Example",
+				"due": "by Wednesday"
+			},
+			{
+				"text": "Write the idempotency key design note.",
+				"segment": 12,
+				"quote": "can you write the design note for the idempotency key",
+				"owner": "Dev Example",
+				"due": "Friday"
+			}
+		],
+		"openQuestions": [
+			{
+				"text": "Who owns the duplicate charge alert?",
+				"segment": 14,
+				"quote": "Who owns the alert for duplicate charges"
+			},
+			{
+				"text": "What else is left for the sprint?",
+				"segment": 3
+			}
+		]
+	},
+	"suggestions": [
+		{
+			"suggest": true,
+			"kind": "missed_question",
+			"text": "Who will confirm with finance whether anyone still uses the PDF export, and by when?",
+			"speaker": "Dev Example",
+			"quote": "keep the PDF export until finance confirms",
+			"topic": "PDF export"
+		},
+		{
+			"suggest": true,
+			"kind": "answer",
+			"text": "PAY-60 Idempotency key for refunds is already planned.",
+			"speaker": "Riley Example",
+			"quote": "we need an idempotency key for refunds",
+			"topic": "Idempotency key"
+		},
+		{
+			"suggest": true,
+			"kind": "answer",
+			"text": "PAY-57 Alert on duplicate charges is open, high priority and unassigned.",
+			"speaker": "Sam Example",
+			"quote": "Who owns the alert for duplicate charges",
+			"topic": "Duplicate charge alert"
+		},
+		{
+			"suggest": true,
+			"kind": "answer",
+			"text": "Remember to celebrate the release next week.",
+			"speaker": "Alex Example",
+			"quote": "that's the plan",
+			"topic": "Wrap up"
+		}
+	]
+}

@@ -1,5 +1,11 @@
 "use client";
 
+import {
+	isReportRunning,
+	listShowsStartedRun,
+	type PressedRun,
+	STARTED_RUN_WAIT_MS,
+} from "@saas/reports/lib/project-report-suite";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -21,6 +27,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { OwnerOnlyGenerate } from "./OwnerOnlyGenerate";
 import { ReportViewAction, viewLatestReportHref } from "./ReportViewAction";
@@ -37,6 +44,7 @@ type ProjectReportInstance = {
 	/** What still stops the report from generating; `null` when it is ready. */
 	generateBlockedReason: string | null;
 	lastRunAt: string | null;
+	executionCount?: number;
 	latestExecutionStatus: string | null;
 	/** What View opens; `null` until a run has succeeded. */
 	latestSuccessfulReport: { artifactId: string } | null;
@@ -66,6 +74,21 @@ export function ProjectReportInstancesList({
 }: Props) {
 	const router = useRouter();
 	const queryClient = useQueryClient();
+	// Generate stays busy from the press until the refetched list shows the
+	// run: between the request's success and that refetch the row still shows
+	// the previous run, and a second press there would start a second run.
+	const [pressedRun, setPressedRun] = useState<PressedRun | null>(null);
+
+	useEffect(() => {
+		if (!pressedRun) {
+			return;
+		}
+		const timer = setTimeout(
+			() => setPressedRun(null),
+			STARTED_RUN_WAIT_MS,
+		);
+		return () => clearTimeout(timer);
+	}, [pressedRun]);
 
 	const executeMutation = useMutation(
 		orpc.reports.instances.execute.mutationOptions({
@@ -82,6 +105,7 @@ export function ProjectReportInstancesList({
 				});
 			},
 			onError: (error) => {
+				setPressedRun(null);
 				toast.error(error.message || "Failed to start the report");
 			},
 		}),
@@ -114,12 +138,16 @@ export function ProjectReportInstancesList({
 		<div className="space-y-4">
 			{instances.map((instance) => {
 				const href = `${reportTemplatesPath}/instances/${instance.id}`;
+				const isAwaitingRun =
+					pressedRun?.instanceId === instance.id &&
+					!listShowsStartedRun(instance, pressedRun);
 				const isStarting =
-					executeMutation.isPending &&
-					executeMutation.variables?.instanceId === instance.id;
-				const isRunning =
-					instance.latestExecutionStatus === "PENDING" ||
-					instance.latestExecutionStatus === "RUNNING";
+					isAwaitingRun ||
+					(executeMutation.isPending &&
+						executeMutation.variables?.instanceId === instance.id);
+				const isRunning = isReportRunning(instance);
+				const isBusy =
+					isRunning || isAwaitingRun || executeMutation.isPending;
 				const blockedReason = instance.canGenerate
 					? instance.generateBlockedReason
 					: null;
@@ -198,19 +226,32 @@ export function ProjectReportInstancesList({
 								{(ownerOnlyId) => (
 									<Button
 										size="sm"
-										onClick={() =>
-											executeMutation.mutate({
-												instanceId: instance.id,
-												organizationId,
-											})
-										}
+										onClick={() => {
+											if (!isBusy) {
+												setPressedRun({
+													instanceId: instance.id,
+													executionCount:
+														instance.executionCount ??
+														null,
+													lastRunAt:
+														instance.lastRunAt,
+												});
+												executeMutation.mutate({
+													instanceId: instance.id,
+													organizationId,
+												});
+											}
+										}}
 										disabled={
 											!instance.canGenerate ||
 											!instance.isActive ||
-											Boolean(blockedReason) ||
-											isRunning ||
-											executeMutation.isPending
+											Boolean(blockedReason)
 										}
+										// Not `disabled` while the run starts and runs:
+										// that would drop focus from the button just
+										// pressed.
+										aria-disabled={isBusy || undefined}
+										className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
 										aria-describedby={
 											[
 												ownerOnlyId,

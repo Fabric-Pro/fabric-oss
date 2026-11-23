@@ -5,38 +5,24 @@ import {
 	createParlumeToolRuntime,
 	type ParlumeActionContext,
 } from "../parlume-actions";
-import {
-	type AgentToolInvocation,
-	hasExactAgentToolApproval,
-} from "../shared/agent-tool-runtime";
+import type { AgentToolInvocation } from "../shared/agent-tool-runtime";
 
 const state = vi.hoisted(() => {
 	const initial: {
 		session: Record<string, unknown>;
 		actions: Array<Record<string, unknown>>;
 		access: boolean;
-		generationCurrent: boolean;
-		muted: boolean;
-		held: ReturnType<typeof vi.fn>;
-		audit: ReturnType<typeof vi.fn>;
+		proposal: ReturnType<typeof vi.fn>;
 	} = {
 		session: {},
 		actions: [],
 		access: true,
-		generationCurrent: true,
-		muted: false,
-		held: vi.fn(),
-		audit: vi.fn(),
+		proposal: vi.fn(),
 	};
 	return initial;
 });
 vi.mock("../parlume-voice", () => ({
-	readParlumeVoiceState: vi.fn(async () => ({
-		current: state.generationCurrent,
-		muted: state.muted,
-		chatAvailable: true,
-	})),
-	postParlumeHeldChange: state.held,
+	postParlumeProposal: state.proposal,
 }));
 
 function matches(
@@ -102,16 +88,20 @@ vi.mock("@repo/database", () => {
 			},
 		),
 	};
-	const delegates = { parlumeMeetingSession: session, parlumeAction: action };
 	return {
 		db: {
-			...delegates,
-			$transaction: (run: (tx: typeof delegates) => Promise<unknown>) =>
-				run(delegates),
+			parlumeMeetingSession: session,
+			parlumeAction: action,
+			project: {
+				findUnique: vi.fn(async () => ({ name: "Example project" })),
+			},
 		},
+		buildParlumeActionUrl: vi.fn(
+			async (input: { actionId: string; intent?: string }) =>
+				`https://app.example.com/app/example-org/projects/project/parlume/actions/${input.actionId}${input.intent ? `?intent=${input.intent}` : ""}`,
+		),
 		hasProjectAccess: vi.fn(async () => state.access),
 		canEditProject: vi.fn(async () => state.access),
-		recordAuditTx: state.audit,
 	};
 });
 
@@ -123,14 +113,14 @@ const context: ParlumeActionContext = {
 	userId: "user",
 	speakerId: "speaker-a",
 	speakerName: "Alex",
-	requestText: "create a ticket called Review",
+	requestText: "create a feature called Export to CSV",
 	agentRevision: "revision",
 	voiceGeneration: 3,
 	toolsReadOnly: false,
 };
 const inputSchema = z.object({
 	title: z.string(),
-	nested: z.object({ value: z.number() }).optional(),
+	priority: z.string().optional(),
 });
 const execute = vi.fn(async (): Promise<unknown> => ({ success: true }));
 
@@ -138,11 +128,11 @@ function call(
 	overrides: Partial<AgentToolInvocation> & { args?: unknown } = {},
 ): AgentToolInvocation {
 	return {
-		name: "connection_b_create_ticket",
-		description: "Create a ticket",
+		name: "fabric_create_story",
+		description: "Create a feature",
 		inputSchema,
-		source: { configId: "connection-b", originalName: "create_ticket" },
-		args: { title: "Review" },
+		source: { configId: "builtin", originalName: "fabric_create_story" },
+		args: { title: "Export to CSV", priority: "High" },
 		delegates: false,
 		execute: () => execute(),
 		...overrides,
@@ -157,9 +147,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	state.actions = [];
 	state.access = true;
-	state.generationCurrent = true;
-	state.muted = false;
-	state.held.mockResolvedValue({ sent: true, tag: "P7" });
+	state.proposal.mockResolvedValue({ sent: true, tag: "P7" });
 	state.session = {
 		id: "session",
 		projectId: "project",
@@ -172,174 +160,178 @@ beforeEach(() => {
 	execute.mockResolvedValue({ success: true });
 });
 
-describe("Parlume actions without confirmation", () => {
-	it("runs a write at once, as the inviter, and records who asked and what came of it", async () => {
+describe("Parlume proposes every change", () => {
+	it("records a write as a proposal and makes no change", async () => {
 		const result = await createParlumeToolRuntime(context).invoke(call());
 
-		expect(result).toEqual({ success: true });
-		expect(execute).toHaveBeenCalledTimes(1);
+		expect(execute).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ proposed: true, changed: false });
 		expect(actionRow()).toMatchObject({
 			sessionId: "session",
 			projectId: "project",
 			userId: "user",
 			speakerId: "speaker-a",
 			speakerName: "Alex",
-			toolConfigId: "connection-b",
-			toolOriginalName: "create_ticket",
-			arguments: { title: "Review" },
-			status: "COMPLETED",
-			outcome: JSON.stringify({ success: true }),
-			completedAt: expect.any(Date),
+			toolConfigId: "builtin",
+			toolOriginalName: "fabric_create_story",
+			arguments: { title: "Export to CSV", priority: "High" },
+			summary: "Create feature “Export to CSV”",
+			status: "PROPOSED",
+			chatTag: "P7",
+			presentedAt: expect.any(Date),
 		});
-		expect(actionRow()?.summary).not.toMatch(/confirm|cancel/i);
 	});
-	it("writes the audit entry for the executed action once", async () => {
-		await createParlumeToolRuntime(context).invoke(call());
 
-		expect(state.audit).toHaveBeenCalledTimes(1);
-		expect(state.audit).toHaveBeenCalledWith(
-			expect.anything(),
-			expect.objectContaining({
-				action: "project.parlume.action_confirmed",
-				actor: { type: "user", userId: "user" },
-				organizationId: "org",
-				projectId: "project",
-				metadata: expect.objectContaining({
-					requesterSpeakerId: "speaker-a",
-					toolName: "connection_b_create_ticket",
-				}),
-			}),
-		);
-	});
-	it("runs the write under the exact approval that tool's own gate checks", async () => {
-		let approved = false;
-		execute.mockImplementation(async () => {
-			approved = hasExactAgentToolApproval({
-				configId: "connection-b",
-				originalName: "create_ticket",
-				userId: "user",
-				organizationId: "org",
-				args: { title: "Review" },
-			});
-			return { success: true };
-		});
+	it("keeps a proposal open for 24 hours", async () => {
+		const before = Date.now();
 
 		await createParlumeToolRuntime(context).invoke(call());
 
-		expect(approved).toBe(true);
+		const expiresAt = (actionRow()?.expiresAt as Date).getTime();
+		expect(expiresAt - before).toBeGreaterThanOrEqual(24 * 60 * 60 * 1000);
+		expect(expiresAt - Date.now()).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
 	});
-	it("records a speaker Teams could not name instead of refusing the change", async () => {
+
+	it("posts the proposal with its Confirm and Dismiss links, tag first and under 1,500 characters", async () => {
+		await createParlumeToolRuntime(context).invoke(call());
+
+		const actionId = String(actionRow()?.id);
+		const confirmUrl = `https://app.example.com/app/example-org/projects/project/parlume/actions/${actionId}`;
+		expect(state.proposal).toHaveBeenCalledWith({
+			sessionId: "session",
+			turnId: "request",
+			voiceGeneration: 3,
+			actionId,
+			message: [
+				"**Proposed change** · not made yet",
+				"Create feature “Export to CSV” in Example project",
+				"Asked by Alex: “create a feature called Export to CSV”",
+				"Priority: High",
+				`[Confirm in Fabric](${confirmUrl}) · [Dismiss](${confirmUrl}?intent=dismiss)`,
+				"Only a signed-in project member can confirm. Open for 24 hours.",
+			].join("\n"),
+			spoken: "Proposed change, not made yet: Create feature “Export to CSV”. A signed-in project member can confirm it in Fabric.",
+			confirmUrl,
+			dismissUrl: `${confirmUrl}?intent=dismiss`,
+		});
+		const message = String(state.proposal.mock.calls[0]?.[0].message);
+		expect(`[P7] ${message}`.length).toBeLessThan(1_500);
+	});
+
+	it("tells the agent the change waits for a member, naming the tag", async () => {
+		const result = await createParlumeToolRuntime(context).invoke(call());
+
+		expect(result).toMatchObject({
+			instruction: expect.stringContaining("P7 waits for a member"),
+		});
+		expect(JSON.stringify(result)).not.toMatch(/go P7/);
+	});
+
+	// "Create a bug … Sync it to the tracker and assign it to Sam" got only
+	// "P76 waits for a member to confirm it in Fabric." in three of three
+	// requests: nothing said the sync and the assignment were not done.
+	it("asks the agent to name the parts of the request the proposal does not do", async () => {
+		const result = await createParlumeToolRuntime(context).invoke(call());
+
+		expect(result).toMatchObject({
+			instruction: expect.stringMatching(
+				/does not do.*syncing the item to another tool, assigning it to someone.*those parts are not done, naming each/,
+			),
+		});
+	});
+
+	it("asks for the parts left out also when the chat is out of reach", async () => {
+		state.proposal.mockResolvedValue({
+			sent: false,
+			reason: "chat_unavailable",
+		});
+
+		const result = await createParlumeToolRuntime(context).invoke(call());
+
+		expect(result).toMatchObject({
+			instruction: expect.stringContaining("those parts are not done"),
+		});
+	});
+
+	it("points to the Parlume page when the chat is out of reach", async () => {
+		state.proposal.mockResolvedValue({
+			sent: false,
+			reason: "chat_unavailable",
+		});
+
+		const result = await createParlumeToolRuntime(context).invoke(call());
+
+		expect(result).toMatchObject({
+			instruction: expect.stringContaining("Parlume page"),
+		});
+		expect(actionRow()).toMatchObject({ status: "PROPOSED" });
+		expect(actionRow()).not.toHaveProperty("chatTag");
+	});
+
+	it("records a speaker Teams could not name", async () => {
 		await createParlumeToolRuntime({ ...context, speakerId: null }).invoke(
 			call(),
 		);
 
-		expect(execute).toHaveBeenCalledTimes(1);
 		expect(actionRow()).toMatchObject({ speakerId: "unattributed" });
 	});
-	it("runs one identical call once in a turn, and says so to the second", async () => {
+
+	it("proposes one identical call once in a turn, and says so to the second", async () => {
 		const runtime = createParlumeToolRuntime(context);
 
 		await runtime.invoke(call());
 		const second = await runtime.invoke(call());
 
-		expect(execute).toHaveBeenCalledTimes(1);
 		expect(state.actions).toHaveLength(1);
-		expect(second).toMatchObject({ alreadyRequested: true });
-		expect(state.audit).toHaveBeenCalledTimes(1);
+		expect(state.proposal).toHaveBeenCalledTimes(1);
+		expect(second).toMatchObject({ alreadyProposed: true });
 	});
-	it("runs two different changes in one turn", async () => {
+
+	it("proposes two different changes in one turn", async () => {
 		const runtime = createParlumeToolRuntime(context);
 
 		await runtime.invoke(call({ args: { title: "First" } }));
 		await runtime.invoke(call({ args: { title: "Second" } }));
 
-		expect(execute).toHaveBeenCalledTimes(2);
 		expect(state.actions).toHaveLength(2);
-	});
-	it("records a created work item's result as completed", async () => {
-		execute.mockResolvedValue({
-			storyId: "story-1",
-			identifier: "251",
-			title: "Parlume test",
-			url: "https://fabric.example/app/example-org/projects/p/stories/story-1",
-			aiDrafted: true,
-		});
-
-		const result = await createParlumeToolRuntime(context).invoke(call());
-
-		expect(result).toMatchObject({ identifier: "251" });
-		expect(actionRow()?.status).toBe("COMPLETED");
-	});
-	it("records a refusal from the tool as failed", async () => {
-		execute.mockResolvedValue({ error: "Permission denied" });
-
-		await createParlumeToolRuntime(context).invoke(call());
-
-		expect(actionRow()?.status).toBe("FAILED");
-	});
-	it("records an uncertain outcome and never retries it", async () => {
-		execute.mockRejectedValueOnce(new Error("Transport disconnected"));
-		const runtime = createParlumeToolRuntime(context);
-
-		const first = await runtime.invoke(call());
-		await runtime.invoke(call());
-
-		expect(first).toMatchObject({
-			error: expect.stringContaining("could not verify"),
-		});
-		expect(execute).toHaveBeenCalledTimes(1);
-		expect(actionRow()?.status).toBe("OUTCOME_UNKNOWN");
-	});
-	it("does not run a change once the request was interrupted before dispatch", async () => {
-		state.generationCurrent = false;
-
-		const result = await createParlumeToolRuntime(context).invoke(call());
-
-		expect(result).toMatchObject({
-			error: expect.stringContaining("No change was made"),
-		});
 		expect(execute).not.toHaveBeenCalled();
-		expect(actionRow()?.status).toBe("CANCELLED");
 	});
-	it("holds a change the agent asked for after the meeting spoke over Parlume, and offers it in the chat", async () => {
-		state.muted = true;
 
-		const result = await createParlumeToolRuntime(context).invoke(call());
-
-		expect(execute).not.toHaveBeenCalled();
-		expect(result).toMatchObject({
-			held: true,
-			changed: false,
-			instruction: expect.stringContaining('"go P7"'),
-		});
-		expect(state.held).toHaveBeenCalledWith({
-			sessionId: "session",
-			turnId: "request",
-			action: "connection b create ticket “Review”",
-			request: "create a ticket called Review",
-		});
-		expect(actionRow()).toMatchObject({
-			status: "CANCELLED",
-			outcome: expect.stringContaining("Held before dispatch"),
-		});
-	});
-	it("still runs a read after the meeting spoke over Parlume", async () => {
-		state.muted = true;
-
-		await createParlumeToolRuntime(context).invoke(
+	it("does not propose a change through a connection, which would run with the inviter's credentials", async () => {
+		const result = await createParlumeToolRuntime(context).invoke(
 			call({
-				name: "connection_b_list_tickets",
+				name: "connection_b_create_ticket",
 				source: {
 					configId: "connection-b",
-					originalName: "list_tickets",
+					originalName: "create_ticket",
 				},
 			}),
 		);
 
-		expect(execute).toHaveBeenCalledTimes(1);
-		expect(state.held).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			error: expect.stringContaining("agent chat"),
+		});
+		expect(execute).not.toHaveBeenCalled();
+		expect(state.actions).toEqual([]);
 	});
-	it("does not run a change when the inviter's access changed", async () => {
+
+	it("still runs a read at once", async () => {
+		await createParlumeToolRuntime(context).invoke(
+			call({
+				name: "fabric_list_project_features",
+				source: {
+					configId: "builtin",
+					originalName: "fabric_list_project_features",
+				},
+				args: {},
+			}),
+		);
+
+		expect(execute).toHaveBeenCalledTimes(1);
+		expect(state.actions).toEqual([]);
+	});
+
+	it("does not propose a change when the inviter's access changed", async () => {
 		state.access = false;
 
 		const result = await createParlumeToolRuntime(context).invoke(call());
@@ -347,10 +339,10 @@ describe("Parlume actions without confirmation", () => {
 		expect(result).toMatchObject({
 			error: expect.stringContaining("Ask again"),
 		});
-		expect(execute).not.toHaveBeenCalled();
 		expect(state.actions).toEqual([]);
 	});
-	it("refuses a call that carries credentials, without running it", async () => {
+
+	it("refuses a call that carries credentials, without recording it", async () => {
 		const result = await createParlumeToolRuntime(context).invoke(
 			call({ args: { title: "x", apiKey: "example" } }),
 		);
@@ -358,19 +350,7 @@ describe("Parlume actions without confirmation", () => {
 		expect(result).toMatchObject({
 			error: expect.stringContaining("credentials"),
 		});
-		expect(execute).not.toHaveBeenCalled();
 		expect(state.actions).toEqual([]);
-	});
-	it("has no proposal or confirmation step to hold a write", async () => {
-		const result = await createParlumeToolRuntime(context).invoke(call());
-
-		expect(result).not.toHaveProperty("status", "awaiting_confirmation");
-		expect(state.actions.map((row) => row.status)).not.toContain(
-			"AWAITING_CONFIRMATION",
-		);
-		expect(state.actions.map((row) => row.status)).not.toContain(
-			"PROPOSED",
-		);
 	});
 });
 
@@ -391,19 +371,15 @@ describe("Parlume read-only meetings and project scope", () => {
 	});
 	it("refuses a built-in write that names another project", async () => {
 		const result = await createParlumeToolRuntime(context).invoke(
-			call({
-				name: "create_ticket",
-				source: { configId: "builtin", originalName: "create_ticket" },
-				args: { projectId: "other" },
-			}),
+			call({ args: { title: "x", projectId: "other" } }),
 		);
 
 		expect(result).toMatchObject({
 			error: expect.stringContaining("own project"),
 		});
-		expect(execute).not.toHaveBeenCalled();
+		expect(state.actions).toEqual([]);
 	});
-	it("classifies a namespaced MCP read by its original tool name", async () => {
+	it("classifies a namespaced read by its original tool name", async () => {
 		state.session.toolsReadOnly = true;
 
 		await createParlumeToolRuntime({
@@ -411,12 +387,12 @@ describe("Parlume read-only meetings and project scope", () => {
 			toolsReadOnly: true,
 		}).invoke(
 			call({
-				name: "connection_b_get_ticket",
+				name: "project_context_get_feature",
 				source: {
-					configId: "connection-b",
-					originalName: "get_ticket",
+					configId: "builtin",
+					originalName: "fabric_get_project_feature",
 				},
-				args: { id: "ticket" },
+				args: { id: "feature" },
 			}),
 		);
 
@@ -503,8 +479,52 @@ describe("Parlume meeting chat tool in the runtime", () => {
 		});
 
 		expect(result).toMatchObject({
-			error: expect.stringContaining("read-only"),
+			error: expect.stringContaining("every project member can read"),
 		});
+		expect(execute).not.toHaveBeenCalled();
+	});
+});
+
+// A meeting turn's ceiling is plain project read, whoever is in the meeting.
+describe("Parlume's project-read ceiling in a meeting", () => {
+	const read = (configId: string, originalName: string) =>
+		call({
+			name: originalName,
+			source: { configId, originalName, access: "READ" },
+			args: {},
+		});
+
+	it.each([
+		["fabric-platform", "fabric_get_feature"],
+		["builtin", "project_rag_query"],
+		["parlume", "post_to_meeting_chat"],
+	])("reads the project with %s's %s", async (configId, name) => {
+		await createParlumeToolRuntime(context).invoke(read(configId, name));
+
+		expect(execute).toHaveBeenCalled();
+	});
+
+	it.each([
+		["fabric-platform", "fabric_list_workflows"],
+		["builtin", "fabric_web_search"],
+		["builtin", "workspace_rag_query"],
+		["connection-b", "list_issues"],
+		["databricks-vector-search:integration-1", "search_databricks_indexes"],
+	])("leaves out %s's %s, past project read", async (configId, name) => {
+		const result = await createParlumeToolRuntime(context).invoke(
+			read(configId, name),
+		);
+
+		expect(result).toMatchObject({
+			error: expect.stringContaining("every project member can read"),
+		});
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("still proposes a change to the project", async () => {
+		const result = await createParlumeToolRuntime(context).invoke(call());
+
+		expect(result).toMatchObject({ proposed: true, changed: false });
 		expect(execute).not.toHaveBeenCalled();
 	});
 });

@@ -43,8 +43,8 @@ const { WorkflowExecutionAlreadyStartedError } = await import(
 );
 const {
 	confirmParlumeAutoJoinOccurrence,
+	findScheduledOccurrence,
 	groupAutoJoinSeries,
-	isOccurrenceStillScheduled,
 	matchAutoJoinOccurrences,
 	PARLUME_AUTO_JOIN_CALENDAR_ERRORS,
 	PARLUME_AUTO_JOIN_CONFIRM_UNREADABLE,
@@ -267,6 +267,8 @@ describe("planParlumeAutoJoins", () => {
 			},
 			"user-1",
 			"org-1",
+			undefined,
+			{},
 		);
 		expect(mocks.workflowStart).toHaveBeenCalledWith(
 			"parlumeAutoJoinOccurrenceWorkflow",
@@ -398,7 +400,7 @@ describe("planParlumeAutoJoins", () => {
 	});
 });
 
-describe("isOccurrenceStillScheduled", () => {
+describe("findScheduledOccurrence", () => {
 	const occurrenceStartMs = NOW + MINUTE;
 
 	it("finds the occurrence at its start, or within a minute of it", () => {
@@ -408,7 +410,7 @@ describe("isOccurrenceStillScheduled", () => {
 			occurrenceStartMs - MINUTE,
 		]) {
 			expect(
-				isOccurrenceStillScheduled({
+				findScheduledOccurrence({
 					joinUrl: JOIN_URL,
 					occurrenceStartMs,
 					meetings: [
@@ -418,13 +420,13 @@ describe("isOccurrenceStillScheduled", () => {
 						},
 					],
 				}),
-			).toBe(true);
+			).toBeDefined();
 		}
 	});
 
 	it("does not find one that moved, was cancelled or is another meeting", () => {
 		expect(
-			isOccurrenceStillScheduled({
+			findScheduledOccurrence({
 				joinUrl: JOIN_URL,
 				occurrenceStartMs,
 				meetings: [
@@ -444,7 +446,7 @@ describe("isOccurrenceStillScheduled", () => {
 					},
 				],
 			}),
-		).toBe(false);
+		).toBeUndefined();
 	});
 });
 
@@ -464,17 +466,63 @@ describe("confirmParlumeAutoJoinOccurrence", () => {
 			parlumeAutoJoin: true,
 			parlumeAutoJoinUserId: "user-1",
 			deactivatedAt: null,
+			parlumeAutoJoinUser: { email: "Dev.One@Example.com" },
 			project: { organizationId: "org-1" },
 		});
 	});
 
 	it("reads the enabler's calendar two minutes either side of the start and goes ahead when the occurrence is there", async () => {
 		mocks.teamsTool.mockResolvedValue({
+			meetings: [
+				{
+					start: graphStart(NOW + MINUTE),
+					joinUrl: JOIN_URL,
+					attendeeDomains: ["example.com", "partner.example"],
+					inviteeEmails: [
+						"dev.one@example.com",
+						"dev.two@example.com",
+					],
+				},
+			],
+		});
+
+		await expect(confirmParlumeAutoJoinOccurrence(input)).resolves.toEqual({
+			proceed: true,
+			inviteeDomains: ["example.com", "partner.example"],
+			inviteeEmails: ["dev.one@example.com", "dev.two@example.com"],
+		});
+		// Only the addresses from the enabler's own domain are asked for.
+		expect(mocks.teamsTool).toHaveBeenCalledWith(
+			"list_calendar_meetings",
+			{
+				startDate: new Date(NOW - MINUTE).toISOString(),
+				endDate: new Date(NOW + 3 * MINUTE).toISOString(),
+			},
+			"user-1",
+			"org-1",
+			undefined,
+			{ inviteeEmailDomain: "example.com" },
+		);
+		expect(mocks.updateMany).not.toHaveBeenCalled();
+	});
+
+	it("asks for no invitee address when the enabler has no address to take a domain from", async () => {
+		mocks.findFirst.mockResolvedValue({
+			joinUrl: JOIN_URL,
+			parlumeAutoJoin: true,
+			parlumeAutoJoinUserId: "user-1",
+			deactivatedAt: null,
+			parlumeAutoJoinUser: null,
+			project: { organizationId: "org-1" },
+		});
+		mocks.teamsTool.mockResolvedValue({
 			meetings: [{ start: graphStart(NOW + MINUTE), joinUrl: JOIN_URL }],
 		});
 
 		await expect(confirmParlumeAutoJoinOccurrence(input)).resolves.toEqual({
 			proceed: true,
+			inviteeDomains: [],
+			inviteeEmails: [],
 		});
 		expect(mocks.teamsTool).toHaveBeenCalledWith(
 			"list_calendar_meetings",
@@ -484,8 +532,26 @@ describe("confirmParlumeAutoJoinOccurrence", () => {
 			},
 			"user-1",
 			"org-1",
+			undefined,
+			{},
 		);
-		expect(mocks.updateMany).not.toHaveBeenCalled();
+	});
+
+	it("passes on at most 200 invitee addresses", async () => {
+		const many = Array.from({ length: 250 }, (_, i) => `d${i}@example.com`);
+		mocks.teamsTool.mockResolvedValue({
+			meetings: [
+				{
+					start: graphStart(NOW + MINUTE),
+					joinUrl: JOIN_URL,
+					inviteeEmails: many,
+				},
+			],
+		});
+
+		const confirmed = await confirmParlumeAutoJoinOccurrence(input);
+
+		expect(confirmed.proceed && confirmed.inviteeEmails).toHaveLength(200);
 	});
 
 	it("skips an occurrence that was cancelled after it was scheduled", async () => {
@@ -576,7 +642,11 @@ describe("confirmParlumeAutoJoinOccurrence", () => {
 		const pending = confirmParlumeAutoJoinOccurrence(input);
 		await vi.runAllTimersAsync();
 
-		await expect(pending).resolves.toEqual({ proceed: true });
+		await expect(pending).resolves.toEqual({
+			proceed: true,
+			inviteeDomains: [],
+			inviteeEmails: [],
+		});
 		expect(mocks.updateMany).not.toHaveBeenCalled();
 	});
 
@@ -591,6 +661,8 @@ describe("confirmParlumeAutoJoinOccurrence", () => {
 
 		await expect(confirmParlumeAutoJoinOccurrence(input)).resolves.toEqual({
 			proceed: true,
+			inviteeDomains: [],
+			inviteeEmails: [],
 		});
 		expect(mocks.teamsTool).not.toHaveBeenCalled();
 	});
@@ -600,6 +672,8 @@ describe("requestParlumeAutoJoin", () => {
 	const input = {
 		linkedMeetingId: "lm-1",
 		occurrenceStart: "2026-10-27T09:00:00.000Z",
+		inviteeDomains: ["example.com"],
+		inviteeEmails: ["dev.two@example.com"],
 	};
 
 	afterEach(() => {
@@ -631,6 +705,24 @@ describe("requestParlumeAutoJoin", () => {
 				}),
 			}),
 		);
+	});
+
+	it("logs the request without an invitee's address", async () => {
+		const { logger } = await import("@repo/logs");
+		vi.mocked(logger.info).mockClear();
+		const fetchMock = vi.fn(
+			async () => new Response(JSON.stringify({ outcome: "started" })),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await requestParlumeAutoJoin(input);
+
+		expect(logger.info).toHaveBeenCalledWith(
+			"[Parlume] auto_join.requested",
+			expect.objectContaining({ inviteeDomains: ["example.com"] }),
+		);
+		const logged = JSON.stringify(vi.mocked(logger.info).mock.calls);
+		expect(logged).not.toContain("dev.two@example.com");
 	});
 
 	it("does not retry a refusal the web app answered with a 4xx", async () => {

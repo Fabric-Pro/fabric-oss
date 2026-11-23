@@ -20,6 +20,8 @@ import {
 } from "../../projects/lib/parlume-provider-settings";
 import {
 	ATTENDEE_URL_NEEDS_KEY,
+	guestPolicySchema,
+	listParlumeChannelConnections,
 	loadParlumeSettingsView,
 	parlumeSettingsViewSchema,
 	requireParlumeOrganization,
@@ -27,6 +29,10 @@ import {
 } from "../lib/settings-view";
 
 const ATTENDEE_KEY_PATTERN = /^\S{8,512}$/;
+// A login group's name as the Attendee dashboard shows it.
+const TEAMS_LOGIN_GROUP_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N} ._@-]{0,119}$/u;
+// Attendee shows the project's webhook secret as base64 (32 bytes).
+const ATTENDEE_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9+/]{22,510}={0,2}$/;
 
 /** Blank means "not given", like an untouched password field. */
 const blankToUndefined = (value: string | undefined) =>
@@ -35,10 +41,11 @@ const blankToUndefined = (value: string | undefined) =>
 /**
  * Saves the organization's meeting-assistant settings. Every field left out
  * keeps its stored value; `null` clears it. An empty key field keeps the
- * stored key unless the base URL changes, which needs the key typed again.
- * `clearAttendeeApiKey` removes the key together with the base
- * URL and Teams sign-in mode it belongs to, so invitations fall back to the
- * operator's Attendee project as a whole.
+ * stored key unless the base URL changes, which needs the key typed again; an
+ * empty webhook secret field keeps the stored secret.
+ * `clearAttendeeApiKey` removes the key together with the base URL, Teams
+ * sign-in mode and webhook secret it belongs to, so invitations fall back to
+ * the operator's Attendee project as a whole.
  */
 export const updateParlumeSettings = tenantProtectedProcedure
 	.use(
@@ -56,17 +63,22 @@ export const updateParlumeSettings = tenantProtectedProcedure
 		z.object({
 			organizationId: z.string(),
 			attendeeApiKey: z.string().max(512).optional(),
+			attendeeWebhookSecret: z.string().max(512).optional(),
 			clearAttendeeApiKey: z.boolean().optional(),
 			attendeeBaseUrl: z.string().max(2048).nullable().optional(),
 			teamsLoginMode: teamsLoginModeSchema.nullable().optional(),
+			teamsLoginGroup: z.string().max(120).nullable().optional(),
 			realtimeDeployment: z.string().max(64).nullable().optional(),
+			guestPolicy: guestPolicySchema.optional(),
+			channelIntegrationId: z.string().max(128).nullable().optional(),
 		}),
 	)
 	.output(parlumeSettingsViewSchema)
 	.handler(async ({ input, context }) => {
 		await requireParlumeOrganization(input.organizationId);
 		const newKey = blankToUndefined(input.attendeeApiKey);
-		if (newKey && input.clearAttendeeApiKey) {
+		const newWebhookSecret = blankToUndefined(input.attendeeWebhookSecret);
+		if ((newKey || newWebhookSecret) && input.clearAttendeeApiKey) {
 			throw new ORPCError("BAD_REQUEST", {
 				message:
 					"Either enter a new Attendee API key or remove it, not both.",
@@ -75,6 +87,15 @@ export const updateParlumeSettings = tenantProtectedProcedure
 		if (newKey && !ATTENDEE_KEY_PATTERN.test(newKey)) {
 			throw new ORPCError("BAD_REQUEST", {
 				message: "The Attendee API key looks malformed.",
+			});
+		}
+		if (
+			newWebhookSecret &&
+			!ATTENDEE_WEBHOOK_SECRET_PATTERN.test(newWebhookSecret)
+		) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"The Attendee webhook secret looks malformed. Copy it from Settings → Webhooks in the Attendee dashboard.",
 			});
 		}
 
@@ -112,6 +133,36 @@ export const updateParlumeSettings = tenantProtectedProcedure
 			}
 		}
 
+		let group: string | null | undefined = input.teamsLoginGroup;
+		if (typeof group === "string") {
+			const trimmed = group.trim();
+			if (!trimmed) {
+				group = null;
+			} else if (!TEAMS_LOGIN_GROUP_PATTERN.test(trimmed)) {
+				throw new ORPCError("BAD_REQUEST", {
+					message:
+						"The Teams login group may use letters, digits, spaces, dots, hyphens, underscores and @, up to 120 characters.",
+				});
+			} else {
+				group = trimmed;
+			}
+		}
+
+		// Only one of the organization's own shared Microsoft connections:
+		// Parlume posts in channels as that account.
+		const channelIntegrationId = input.channelIntegrationId;
+		if (
+			typeof channelIntegrationId === "string" &&
+			!(await listParlumeChannelConnections(input.organizationId)).some(
+				(connection) => connection.id === channelIntegrationId,
+			)
+		) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Choose one of the organization's shared Microsoft connections.",
+			});
+		}
+
 		const stored = await getOrganizationParlumeSettings(
 			input.organizationId,
 		);
@@ -129,13 +180,30 @@ export const updateParlumeSettings = tenantProtectedProcedure
 			: input.teamsLoginMode === undefined
 				? (stored?.teamsLoginMode ?? null)
 				: teamsLoginModeToStored(input.teamsLoginMode);
-		// The base URL and sign-in mode describe the organization's own
-		// Attendee project. Without its key they would apply to the operator's
-		// project, and a base URL would receive the operator's key.
-		if (!keyAfter && (baseUrlAfter || teamsAfter)) {
+		// A login group is the account a signed-in bot uses, so it goes with
+		// the sign-in mode: an anonymous bot has none.
+		const groupAfter =
+			clearsKey || teamsAfter === null
+				? null
+				: group === undefined
+					? (stored?.teamsLoginGroup ?? null)
+					: group;
+		const webhookSecretAfter = clearsKey
+			? null
+			: newWebhookSecret
+				? encryptApiKey(newWebhookSecret)
+				: (stored?.encryptedAttendeeWebhookSecret ?? null);
+		// The base URL, sign-in mode, login group and webhook secret describe
+		// the organization's own Attendee project. Without its key they would
+		// apply to the operator's project, which every organization without a
+		// key shares, and a base URL would receive the operator's key.
+		if (
+			!keyAfter &&
+			(baseUrlAfter || teamsAfter || group || webhookSecretAfter)
+		) {
 			throw new ORPCError("BAD_REQUEST", {
 				message:
-					"Add the organization's Attendee API key to use a custom Attendee URL or Teams sign-in.",
+					"Add the organization's Attendee API key to use a custom Attendee URL, Teams sign-in or webhook secret.",
 			});
 		}
 		// Clearing back to the default counts as a change too: the default is
@@ -154,11 +222,17 @@ export const updateParlumeSettings = tenantProtectedProcedure
 				? { encryptedAttendeeApiKey: encryptApiKey(newKey) }
 				: {}),
 			...(clearsKey ? { encryptedAttendeeApiKey: null } : {}),
+			encryptedAttendeeWebhookSecret: webhookSecretAfter,
 			attendeeBaseUrl: baseUrlAfter,
 			teamsLoginMode: teamsAfter,
+			teamsLoginGroup: groupAfter,
 			...(deployment === undefined
 				? {}
 				: { realtimeDeployment: deployment }),
+			...(input.guestPolicy ? { guestPolicy: input.guestPolicy } : {}),
+			...(channelIntegrationId === undefined
+				? {}
+				: { channelIntegrationId }),
 			updatedById: context.user.id,
 		};
 		await db.organizationParlumeSettings.upsert({
@@ -167,8 +241,8 @@ export const updateParlumeSettings = tenantProtectedProcedure
 			update: data,
 		});
 
-		// Non-secret facts only: never the key, its ciphertext or its mask, and
-		// no URL text (a path can carry a secret).
+		// Non-secret facts only: never the key or the webhook secret, their
+		// ciphertext or a mask, and no URL text (a path can carry a secret).
 		recordAuditFromRequest(context, {
 			action: "org.integration.config_updated",
 			category: "org",
@@ -181,12 +255,22 @@ export const updateParlumeSettings = tenantProtectedProcedure
 			metadata: {
 				keyChanged: Boolean(newKey),
 				keyCleared: clearsKey,
+				// Named apart from "secret", which the audit redactor masks.
+				webhookVerificationChanged: Boolean(newWebhookSecret),
+				webhookVerificationSet: webhookSecretAfter !== null,
 				customAttendeeUrl: baseUrlAfter !== null,
 				teamsLoginMode: teamsAfter,
+				teamsLoginGroupSet: groupAfter !== null,
+				channelConnectionSet:
+					channelIntegrationId === undefined
+						? Boolean(stored?.channelIntegrationId)
+						: channelIntegrationId !== null,
 				realtimeDeploymentSet:
 					deployment === undefined
 						? Boolean(stored?.realtimeDeployment)
 						: deployment !== null,
+				guestPolicy:
+					input.guestPolicy ?? stored?.guestPolicy ?? "NOTES_ONLY",
 			},
 		});
 

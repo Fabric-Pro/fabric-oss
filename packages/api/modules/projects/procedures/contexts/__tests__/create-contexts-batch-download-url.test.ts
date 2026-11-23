@@ -26,7 +26,9 @@ const {
 	mockGetSignedUrl,
 	mockDeleteObjects,
 	mockVerifyOrganizationMembership,
+	mockWithoutWithheldParlumeTranscripts,
 } = vi.hoisted(() => ({
+	mockWithoutWithheldParlumeTranscripts: vi.fn(),
 	mockListContextsForDownload: vi.fn(),
 	mockGetProjectForDownload: vi.fn(),
 	mockUrlPageFindMany: vi.fn(),
@@ -52,6 +54,10 @@ vi.mock("@repo/database", () => ({
 			findMany: mockUrlPageFindMany,
 		},
 	},
+}));
+
+vi.mock("../../../lib/parlume-transcript-access", () => ({
+	withoutWithheldParlumeTranscripts: mockWithoutWithheldParlumeTranscripts,
 }));
 
 vi.mock("@repo/config", () => ({
@@ -525,6 +531,42 @@ describe("createContextsBatchDownloadUrl", () => {
 			organization: { id: "org-1" },
 			role: "admin",
 		});
+		mockWithoutWithheldParlumeTranscripts.mockReset();
+		mockWithoutWithheldParlumeTranscripts.mockImplementation(
+			async (contexts: unknown[]) => contexts,
+		);
+	});
+
+	it("leaves out a Parlume meeting transcript the caller may not read", async () => {
+		const transcript = makeClassBContext({
+			id: "parlume-transcript",
+			type: "MEETING_TRANSCRIPT",
+			content: "Alex: what the meeting said",
+			sourceTitle: "Parlume meeting transcript",
+		});
+		mockListContextsForDownload.mockResolvedValueOnce([
+			makeClassBContext({ id: "b1" }),
+			transcript,
+		]);
+		mockWithoutWithheldParlumeTranscripts.mockImplementation(
+			async (contexts: TestCtx[]) =>
+				contexts.filter((ctx) => ctx.id !== transcript.id),
+		);
+
+		const result = (await runHandler({
+			input: { projectId: "proj-1", organizationId: null },
+		})) as { includedCount: number; totalCount: number };
+
+		expect(mockWithoutWithheldParlumeTranscripts).toHaveBeenCalledWith(
+			expect.any(Array),
+			{ projectId: "proj-1", userId: "user-1" },
+		);
+		expect(result).toMatchObject({ includedCount: 1, totalCount: 1 });
+		expect(
+			capturedEntries.some((entry) =>
+				String(entry.content ?? "").includes("what the meeting said"),
+			),
+		).toBe(false);
 	});
 
 	it("returns NOT_FOUND when the project is not visible to the caller", async () => {

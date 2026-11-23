@@ -2,7 +2,7 @@
  * Unit tests for `appendConversationMessage` — Fizzy #1412 §2.1.
  *
  * Covers:
- *   - Happy path: lock → scan → append in serializable tx, returns the
+ *   - Happy path: lock → scan → append in a Read Committed tx, returns the
  *     persisted message + deduplicated=false.
  *   - Idempotency: appending a message with an `operationKey` that
  *     already exists in the conversation's messages array returns the
@@ -189,9 +189,11 @@ describe("appendConversationMessage — happy path", () => {
 		expect(result.deduplicated).toBe(false);
 		expect(result.persisted).toEqual(message);
 		expect(mocks.$transactionMock).toHaveBeenCalledTimes(1);
-		// Verify Serializable isolation was requested.
+		// Read Committed: an append that waits on another writer's row lock
+		// reads the row as that writer committed it. Serializable would fail
+		// the append with a serialization error instead.
 		const txOpts = mocks.$transactionMock.mock.calls[0]?.[1];
-		expect(txOpts).toMatchObject({ isolationLevel: "Serializable" });
+		expect(txOpts).toMatchObject({ isolationLevel: "ReadCommitted" });
 		// One queryRaw (the SELECT FOR UPDATE), one update.
 		expect(mocks.queryRawMock).toHaveBeenCalledTimes(1);
 		expect(mocks.updateMock).toHaveBeenCalledTimes(1);

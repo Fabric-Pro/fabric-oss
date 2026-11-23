@@ -8,9 +8,11 @@ import {
 	within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { formatShortDate } from "../../lib/parlume-format";
+import { formatClock, formatShortDate } from "../../lib/parlume-format";
+import { lobbyDeadline } from "../../lib/parlume-view";
 import { ParlumePage } from "../ParlumePage";
 import {
+	action,
 	liveSession,
 	PROJECT_BASE_PATH,
 	request,
@@ -93,13 +95,15 @@ describe("ParlumePage while the bot is joining", () => {
 		expect(screen.queryByText("Live in meeting")).toBeNull();
 	});
 
-	it("waits in the lobby once the invite is out, with the organizer's instruction", async () => {
+	it("waits in the lobby once the invite is out, asking the viewer to admit it", async () => {
+		const createdAt = new Date(Date.now() - 60_000);
 		mocks.listSessions.mockResolvedValue(
 			sessionsPage([
 				liveSession({
 					id: "joining1",
 					status: "JOINING",
 					joinedAt: null,
+					createdAt,
 				}),
 			]),
 		);
@@ -110,9 +114,12 @@ describe("ParlumePage while the bot is joining", () => {
 				name: "Waiting in the lobby…",
 			}),
 		).toBeInTheDocument();
-		expect(
-			screen.getByText(/Ask the organizer to admit “Fabric Parlume”/),
-		).toBeInTheDocument();
+		const hint = screen.getByText(
+			/Admit “Fabric Parlume” from the Teams lobby if you are the organizer or a presenter; otherwise ask the organizer\./,
+		);
+		expect(hint).toHaveTextContent(
+			`It stops waiting at about ${formatClock(lobbyDeadline({ createdAt }))}.`,
+		);
 		expect(step("Invite sent")).not.toHaveAttribute("aria-current");
 		expect(step("Waiting in lobby")).toHaveAttribute(
 			"aria-current",
@@ -175,6 +182,7 @@ describe("ParlumePage while the bot is joining", () => {
 		expect(
 			screen.getByRole("button", { name: "Cancelling…" }),
 		).toBeDisabled();
+		expect(screen.queryByText(/Admit “Fabric Parlume”/)).toBeNull();
 		cleanup();
 
 		mocks.listSessions.mockResolvedValue(
@@ -302,6 +310,39 @@ describe("ParlumePage live session", () => {
 			projectId: "example-project",
 			sessionId: "live1",
 		});
+	});
+
+	it("shows where a request's proposed changes stand now, not the answer given when they were proposed", async () => {
+		mocks.history.mockResolvedValue({
+			items: [
+				request({
+					id: "t1",
+					sessionId: "live1",
+					requestText: "Create a feature called Export",
+					responseText:
+						"P2 waits for a member to confirm it in Fabric.",
+					actions: [
+						action({ chatTag: "P2", status: "COMPLETED" }),
+						action({
+							id: "a2",
+							chatTag: "P6",
+							status: "CANCELLED",
+						}),
+					],
+				}),
+			],
+			total: 1,
+			nextCursor: null,
+		});
+		showPage();
+
+		const live = (
+			await screen.findByRole("heading", { name: "Live in meeting" })
+		).closest("div[class*=rounded]") as HTMLElement;
+		expect(
+			await within(live).findByText("P2 · Completed, P6 · Dismissed"),
+		).toBeInTheDocument();
+		expect(within(live).queryByText(/waits for a member/)).toBeNull();
 	});
 
 	it("invites any attendee to ask while nothing has been asked yet", async () => {

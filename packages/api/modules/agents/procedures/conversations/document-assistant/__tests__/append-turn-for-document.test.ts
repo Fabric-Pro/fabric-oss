@@ -597,6 +597,94 @@ describe("appendTurnForDocument — existing conversation", () => {
 		);
 	});
 
+	it("locks the conversation row before it reads the messages it rewrites", async () => {
+		dbMock.documentAssistantConversation.findUnique.mockResolvedValue({
+			id: JOIN_ID,
+			userId: "user-1",
+			organizationId: ORG_ID,
+			updatedAt: new Date(),
+		});
+		const tx = stubTransaction();
+		// A Reject's review stamp and its "Changes rejected." operation
+		// result, both committed while this save waited on the lock.
+		const call = {
+			id: "confirm",
+			name: "confirm_changes",
+			args: {},
+			status: "executing",
+			rejectedAt: "2026-05-19T10:00:06Z",
+		};
+		const operationResult = {
+			id: "sys-1",
+			role: "system",
+			content: "Changes rejected.",
+			timestamp: "2026-05-19T10:00:06.500Z",
+			metadata: { operationKey: "op-1" },
+		};
+		dbMock.agentConversation.findFirst.mockResolvedValue({
+			id: CONV_ID,
+			messages: [
+				{ ...assistantMessage, toolCalls: [call] },
+				operationResult,
+			],
+			agentId: "doc-agent",
+		});
+		dbMock.agentConversation.update.mockResolvedValue({
+			updatedAt: new Date(),
+		});
+		await handlers.appendTurnForDocument({
+			context: makeContext() as unknown as BuiltContext,
+			input: {
+				documentRefKind: "PROJECT_DOCUMENT",
+				documentRefId: DOC_ID,
+				projectId: PROJECT_ID,
+				organizationId: ORG_ID,
+				conversationId: CONV_ID,
+				message: {
+					...assistantMessage,
+					toolCalls: [
+						{
+							id: call.id,
+							name: call.name,
+							args: {},
+							status: "success",
+							result: '{"accepted":false}',
+						},
+					],
+				},
+				agentId: "doc-agent",
+			},
+		});
+
+		expect(repoDatabaseMock.lockConversationRow).toHaveBeenCalledWith(
+			tx,
+			CONV_ID,
+		);
+		expect(
+			repoDatabaseMock.lockConversationRow.mock.invocationCallOrder[0],
+		).toBeLessThan(
+			dbMock.agentConversation.findFirst.mock.invocationCallOrder[0]!,
+		);
+		expect(dbMock.agentConversation.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: {
+					messages: [
+						expect.objectContaining({
+							toolCalls: [
+								{
+									...call,
+									status: "success",
+									result: '{"accepted":false}',
+								},
+							],
+						}),
+						operationResult,
+					],
+				},
+			}),
+		);
+	});
+
 	it("sets visibilityLockedAt on the first user message", async () => {
 		dbMock.documentAssistantConversation.findUnique.mockResolvedValue({
 			id: JOIN_ID,

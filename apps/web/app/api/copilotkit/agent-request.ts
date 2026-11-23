@@ -5,7 +5,7 @@ import {
 import {
 	buildEffectiveBaseUrl,
 	type getAIModelWithMetadata,
-	getRAGProviderConfig,
+	getRAGProviderConfigForModel,
 	isReasoningModelName,
 	resolveModelWithProvider,
 } from "@repo/ai";
@@ -46,7 +46,7 @@ const TENANT_CACHE_MAX_ENTRIES = Number.parseInt(
 );
 
 type AIModelResult = Awaited<ReturnType<typeof getAIModelWithMetadata>>;
-type ProviderConfig = Awaited<ReturnType<typeof getRAGProviderConfig>>;
+type ProviderConfig = Awaited<ReturnType<typeof getRAGProviderConfigForModel>>;
 
 interface TenantConfig {
 	/** Null for an organization with no provider whose member runs on their own plan. */
@@ -87,13 +87,11 @@ async function getTenantConfig(
 	}
 
 	const promise = (async () => {
-		const [aiModelResult, providerConfig] = await Promise.all([
-			// The agents' plan decision is made per request below.
-			resolveCopilotOrgModel({ userId, organizationId }),
-			getRAGProviderConfig({ userId, organizationId }).catch(
-				(error: unknown) => error as Error,
-			),
-		]);
+		// The agents' plan decision is made per request below.
+		const aiModelResult = await resolveCopilotOrgModel({
+			userId,
+			organizationId,
+		});
 
 		if (!aiModelResult) {
 			const { model: planModel } = await resolveChatGptPlanModel({
@@ -117,11 +115,11 @@ async function getTenantConfig(
 				trackUsage: () => {},
 			};
 		}
-		if (providerConfig instanceof Error) {
-			throw providerConfig;
-		}
-
 		const { metadata, trackUsage } = aiModelResult;
+		const providerConfig = await getRAGProviderConfigForModel(
+			{ userId, organizationId },
+			metadata,
+		);
 		const aiGatewayUrl = buildEffectiveBaseUrl(
 			metadata.provider,
 			providerConfig.baseUrl || undefined,

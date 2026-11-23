@@ -11,9 +11,16 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockListContexts, mockHasProjectAccess } = vi.hoisted(() => ({
+const {
+	mockListContexts,
+	mockHasProjectAccess,
+	mockWithheldParlumeTranscriptIds,
+	mockWithheldConfidential,
+} = vi.hoisted(() => ({
 	mockListContexts: vi.fn(),
 	mockHasProjectAccess: vi.fn(),
+	mockWithheldParlumeTranscriptIds: vi.fn(),
+	mockWithheldConfidential: vi.fn(),
 }));
 
 vi.mock("@repo/database", async () => {
@@ -30,6 +37,18 @@ vi.mock("@repo/database", async () => {
 		listContexts: mockListContexts,
 	};
 });
+
+vi.mock("../../../lib/parlume-transcript-access", () => ({
+	withheldParlumeTranscriptIds: mockWithheldParlumeTranscriptIds,
+}));
+
+vi.mock("../../../lib/parlume-confidential", () => ({
+	withheldConfidentialParlumeSessions: mockWithheldConfidential,
+	withoutParlumeNotes: (metadata: Record<string, unknown>) => {
+		const { parlumeNotes: _, ...rest } = metadata;
+		return rest;
+	},
+}));
 
 vi.mock("@repo/database/prisma/zod", () => ({
 	ProjectContextTypeSchema: { optional: () => ({}) },
@@ -65,6 +84,9 @@ type Row = {
 	contentHash: string | null;
 	sourcePath: string | null;
 	createdAt: Date;
+	type?: string;
+	contentPreview?: string | null;
+	metadata?: Record<string, unknown>;
 };
 
 type Handler = (args: {
@@ -106,6 +128,11 @@ function row(
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockHasProjectAccess.mockResolvedValue(true);
+	mockWithheldParlumeTranscriptIds.mockResolvedValue(new Set());
+	mockWithheldConfidential.mockResolvedValue({
+		sessionIds: new Set(),
+		contextIds: new Set(),
+	});
 });
 
 describe("listContexts procedure — duplicateOfContextId", () => {
@@ -279,5 +306,132 @@ describe("listContexts procedure — sourcePathPrefix (Fizzy #2620)", () => {
 			}),
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
 		expect(mockListContexts).not.toHaveBeenCalled();
+	});
+});
+
+describe("listContexts procedure — Parlume transcript previews", () => {
+	const transcriptText =
+		"Captured incoming speech:\n[chat] Dana: the launch moves to Friday";
+	const notes = { parlumeNotes: "Launch date discussed." };
+
+	function rows(): Row[] {
+		return [
+			{
+				...row("transcript", "h-transcript", "2026-11-02T00:00:00Z"),
+				type: "MEETING_TRANSCRIPT",
+				contentPreview: transcriptText,
+				metadata: notes,
+			},
+			{
+				...row("spec", "h-spec", "2026-11-01T00:00:00Z"),
+				type: "TEXT",
+				contentPreview: "The launch checklist.",
+			},
+		];
+	}
+
+	async function list() {
+		const handler = await loadHandler();
+		const result = await handler({
+			input: { projectId: "proj-1" },
+			context: orgCtx,
+		});
+		return new Map(result.contexts.map((ctx) => [ctx.id, ctx]));
+	}
+
+	it("lists a transcript the caller may not read, with its notes and without its text or hash", async () => {
+		mockListContexts.mockResolvedValue({
+			contexts: rows(),
+			total: 2,
+			hasMore: false,
+		});
+		mockWithheldParlumeTranscriptIds.mockResolvedValue(
+			new Set(["transcript"]),
+		);
+
+		const byId = await list();
+
+		expect(mockWithheldParlumeTranscriptIds).toHaveBeenCalledTimes(1);
+		expect(mockWithheldParlumeTranscriptIds).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			userId: "user-1",
+		});
+		expect(byId.get("transcript")).toMatchObject({
+			type: "MEETING_TRANSCRIPT",
+			contentPreview: null,
+			contentHash: null,
+			metadata: notes,
+		});
+		expect(byId.get("spec")?.contentPreview).toBe("The launch checklist.");
+	});
+
+	it("leaves out a confidential meeting's notes for a reader who was not in it", async () => {
+		mockListContexts.mockResolvedValue({
+			contexts: rows(),
+			total: 2,
+			hasMore: false,
+		});
+		mockWithheldParlumeTranscriptIds.mockResolvedValue(
+			new Set(["transcript"]),
+		);
+		mockWithheldConfidential.mockResolvedValue({
+			sessionIds: new Set(["session-1"]),
+			contextIds: new Set(["transcript"]),
+		});
+
+		const byId = await list();
+
+		expect(mockWithheldConfidential).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			userId: "user-1",
+		});
+		expect(byId.get("transcript")).toMatchObject({
+			contentPreview: null,
+			contentHash: null,
+			metadata: {},
+		});
+	});
+
+	it("does not mark a readable source as a copy of a withheld transcript", async () => {
+		mockListContexts.mockResolvedValue({
+			contexts: [
+				{
+					...row("transcript", "h-same", "2026-11-01T00:00:00Z"),
+					type: "MEETING_TRANSCRIPT",
+					contentPreview: transcriptText,
+				},
+				{
+					...row("pasted", "h-same", "2026-11-02T00:00:00Z"),
+					type: "TEXT",
+					contentPreview: transcriptText,
+				},
+			],
+			total: 2,
+			hasMore: false,
+		});
+		mockWithheldParlumeTranscriptIds.mockResolvedValue(
+			new Set(["transcript"]),
+		);
+
+		const byId = await list();
+
+		expect(byId.get("pasted")?.duplicateOfContextId).toBeNull();
+	});
+
+	it("keeps the preview for a reader who may read the transcript", async () => {
+		// The inviter and a project manager: the helper withholds nothing.
+		mockListContexts.mockResolvedValue({
+			contexts: rows(),
+			total: 2,
+			hasMore: false,
+		});
+
+		const byId = await list();
+
+		expect(byId.get("transcript")).toMatchObject({
+			contentPreview: transcriptText,
+			contentHash: "h-transcript",
+		});
+		expect(byId.get("spec")?.contentPreview).toBe("The launch checklist.");
 	});
 });

@@ -123,6 +123,7 @@ function cannedResponseFor(path: string[]): unknown {
 				techStack: [],
 				features: [],
 				userRole: "owner",
+				canEditDocuments: true,
 			},
 		};
 	}

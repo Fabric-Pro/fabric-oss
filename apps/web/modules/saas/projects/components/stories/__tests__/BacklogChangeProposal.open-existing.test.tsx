@@ -8,13 +8,14 @@
  * AI Update panel and the Feature Proposals panel.
  */
 
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	BacklogChangeProposal,
 	type ChangeItem,
 } from "../BacklogChangeProposal";
+import { renderWithQueryClient } from "./render-with-query-client";
 
 // Mutable, hoisted test doubles referenced by the module mocks below. A
 // hoisted record lets the (hoisted) `vi.mock` factories close over values we
@@ -59,6 +60,9 @@ vi.mock("next-intl", () => ({
 	useTranslations: () => (key: string, params?: Record<string, unknown>) => {
 		if (key === "openExisting") {
 			return `Open existing ticket: ${params?.identifier ?? ""} — ${params?.title ?? ""}`;
+		}
+		if (key === "openExistingIdentifierOnly") {
+			return `Open existing ticket: ${params?.identifier ?? ""}`;
 		}
 		if (key === "openExistingTooltip") {
 			return "Open this existing feature in a new tab to review its current content.";
@@ -112,7 +116,7 @@ function resolvedUpdate(overrides: Partial<ChangeItem> = {}): ChangeItem {
 function renderProposal(
 	props: Partial<React.ComponentProps<typeof BacklogChangeProposal>> = {},
 ) {
-	return render(
+	return renderWithQueryClient(
 		<BacklogChangeProposal
 			summary="Test proposal"
 			contextSummary="Captured from a Teams thread"
@@ -261,8 +265,10 @@ describe("BacklogChangeProposal — open existing ticket affordance", () => {
 			],
 		});
 
+		// No resolved title: the label names the identifier alone, never an
+		// empty segment after a dash.
 		const button = screen.getByRole("button", {
-			name: /Open existing ticket: FEAT-008/,
+			name: "Open existing ticket: FEAT-008",
 		});
 		expect(button).toBeInTheDocument();
 		expect(screen.getByText(/Updates FEAT-008/)).toBeInTheDocument();

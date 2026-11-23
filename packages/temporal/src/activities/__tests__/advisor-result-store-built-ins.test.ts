@@ -62,7 +62,7 @@ vi.mock("@repo/database", () => ({
 	listMeetingTranscriptsByDate: mocks.meetings,
 }));
 vi.mock("@repo/ai", () => ({
-	getRAGProviderConfig: async () => ({}),
+	getEmbeddingRAGProviderConfig: async () => ({}),
 	extractRelevantExcerpts: mocks.extract,
 }));
 vi.mock("@repo/rag", async () => ({

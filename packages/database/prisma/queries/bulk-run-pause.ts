@@ -463,6 +463,8 @@ export async function organizationHasLlmApiProvider(
 			...LLM_PROVIDER_PURPOSE_FILTER,
 		},
 		select: {
+			organizationId: true,
+			provider: true,
 			encryptedApiKey: true,
 			clientId: true,
 			encryptedClientSecret: true,

@@ -25,7 +25,7 @@ export function getAgentModel(
 	providerConfig?: ProviderConfig,
 	options: ModelOptions = {},
 ) {
-	if (!providerConfig?.apiKey) {
+	if (!providerConfig?.apiKey && !providerConfig?.anthropicBearerSource) {
 		throw new Error(
 			"[StoryBreakdown] No AI provider config passed. " +
 				"Provider configuration must be passed from the CopilotKit runtime. " +

@@ -468,46 +468,66 @@ describe("organization OpenAI image choices", () => {
 	});
 });
 
-it("uses the organization's Vercel connection when its default provider is not Vercel", async () => {
-	const { createGateway, generateText, getRAGProviderConfig } = await import(
-		"@repo/ai"
-	);
-	vi.mocked(createGateway).mockClear();
-	vi.mocked(getRAGProviderConfig).mockResolvedValue({
-		provider: "ANTHROPIC_DIRECT",
-		apiKey: "anthropic-key",
-	} as never);
-	getAiProviderApiKeyByProvider.mockResolvedValue({
-		provider: "VERCEL_GATEWAY",
-		source: "organization",
-		apiKey: "encrypted-org-gateway-key",
-		configId: "gateway-config",
-	});
-	resolveProviderApiKey.mockResolvedValue("org-gateway-key");
-	vi.mocked(generateText).mockResolvedValue({
-		text: "example",
-		files: [{ uint8Array: new Uint8Array([1]), mediaType: "image/png" }],
-	} as never);
+it.each(["apiKey", "federated", "revoked"] as const)(
+	"uses the organization's Vercel connection with an Anthropic %s default",
+	async (authMode) => {
+		const { createGateway, generateText, getRAGProviderConfig } =
+			await import("@repo/ai");
+		vi.mocked(createGateway).mockClear();
+		const bearer = vi.fn();
+		if (authMode === "revoked") {
+			const { AnthropicFederationUnavailableError } = await import(
+				"@repo/database/prisma/queries/anthropic-federation"
+			);
+			vi.mocked(getRAGProviderConfig).mockRejectedValue(
+				new AnthropicFederationUnavailableError(),
+			);
+		} else {
+			vi.mocked(getRAGProviderConfig).mockResolvedValue({
+				provider: "ANTHROPIC_DIRECT",
+				apiKey: authMode === "apiKey" ? "example-anthropic-key" : "",
+				...(authMode === "federated" && {
+					anthropicBearerSource: bearer,
+				}),
+			} as never);
+		}
+		getAiProviderApiKeyByProvider.mockResolvedValue({
+			provider: "VERCEL_GATEWAY",
+			source: "organization",
+			apiKey: "encrypted-org-gateway-key",
+			configId: "gateway-config",
+		});
+		resolveProviderApiKey.mockResolvedValue("org-gateway-key");
+		vi.mocked(generateText).mockResolvedValue({
+			text: "example",
+			files: [
+				{ uint8Array: new Uint8Array([1]), mediaType: "image/png" },
+			],
+		} as never);
 
-	const result = await generateImageActivity({
-		prompt: "example image",
-		provider: "gateway",
-		userId: "example-user",
-		organizationId: "example-org",
-	});
+		const result = await generateImageActivity({
+			prompt: "example image",
+			provider: "gateway",
+			userId: "example-user",
+			organizationId: "example-org",
+		});
 
-	expect(result.success).toBe(true);
-	expect(getAiProviderApiKeyByProvider).toHaveBeenCalledWith({
-		userId: "example-user",
-		organizationId: "example-org",
-		provider: "VERCEL_GATEWAY",
-	});
-	expect(createGateway).toHaveBeenCalledWith({ apiKey: "org-gateway-key" });
-	expect(updateProviderLastUsed).toHaveBeenCalledWith({
-		configId: "gateway-config",
-		source: "organization",
-	});
-});
+		expect(result.success).toBe(true);
+		expect(bearer).not.toHaveBeenCalled();
+		expect(getAiProviderApiKeyByProvider).toHaveBeenCalledWith({
+			userId: "example-user",
+			organizationId: "example-org",
+			provider: "VERCEL_GATEWAY",
+		});
+		expect(createGateway).toHaveBeenCalledWith({
+			apiKey: "org-gateway-key",
+		});
+		expect(updateProviderLastUsed).toHaveBeenCalledWith({
+			configId: "gateway-config",
+			source: "organization",
+		});
+	},
+);
 
 it("uses the organization Vercel connection when default resolution reports no provider", async () => {
 	const { createGateway, generateText, getRAGProviderConfig } = await import(

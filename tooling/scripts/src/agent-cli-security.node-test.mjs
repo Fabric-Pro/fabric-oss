@@ -4,7 +4,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { installedConsumers } from "./installed-consumers.mjs";
+import {
+	addPackage,
+	assertRejectsMalformed,
+	mutableCopy,
+	readLockfile,
+	requireLockfile,
+	validateLockfile,
+} from "./lockfile-shape.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const agents = [
@@ -74,22 +81,56 @@ test("agent source, manifests and scripts cannot invoke or download the retired 
 });
 
 test("the dependency graph cannot restore extract-zip through the retired CLI", () => {
-	const yaml = installedConsumers("@changesets/parse", "1.0.0")[0].require(
-		"yaml",
-	);
-	const lockfile = yaml.parse(
-		readFileSync(join(root, "pnpm-lock.yaml"), "utf8"),
-	);
-	for (const section of ["packages", "snapshots"]) {
-		assert.ok(lockfile[section]);
-		for (const name of Object.keys(lockfile[section])) {
-			assert.doesNotMatch(
-				name,
-				/^(?:@langchain\/langgraph-cli|extract-zip)@/,
+	const lockfile = readLockfile();
+	verifyNoRetiredCli(lockfile);
+	assertRejectsMalformed(verifyNoRetiredCli, lockfile);
+	for (const [name, version] of [
+		["extract-zip", "2.0.1"],
+		["@langchain/langgraph-cli", "1.4.5"],
+	]) {
+		// A package record alone, and a package with its snapshot.
+		for (const bad of [
+			Object.assign(mutableCopy(lockfile), {}),
+			addPackage(mutableCopy(lockfile), `${name}@${version}`),
+		]) {
+			bad.packages[`${name}@${version}`] = {
+				resolution: { integrity: "sha512-c3ludGhldGlj" },
+			};
+			assert.throws(
+				() => verifyNoRetiredCli(validateLockfile(bad)),
+				/Retired agent CLI dependency/,
 			);
 		}
+		const bad = addPackage(mutableCopy(lockfile), `${name}@${version}`);
+		bad.importers["."].devDependencies = {
+			...bad.importers["."].devDependencies,
+			[name]: { specifier: version, version },
+		};
+		assert.throws(
+			() => verifyNoRetiredCli(validateLockfile(bad)),
+			/Retired agent CLI dependency/,
+		);
 	}
 });
+
+const retiredCliPackages = new Set(["@langchain/langgraph-cli", "extract-zip"]);
+
+function verifyNoRetiredCli(lockfile) {
+	requireLockfile(lockfile);
+	for (const entry of [...lockfile.packages, ...lockfile.snapshots]) {
+		assert.ok(
+			!retiredCliPackages.has(entry.name),
+			`Retired agent CLI dependency: ${entry.key}`,
+		);
+	}
+	for (const reference of lockfile.references) {
+		assert.ok(
+			!retiredCliPackages.has(reference.name) &&
+				!retiredCliPackages.has(reference.target?.name),
+			`Retired agent CLI dependency: ${reference.owner} -> ${reference.name}`,
+		);
+	}
+}
 
 test("six agent development and production entries retain unified protocol and port contracts", () => {
 	for (const [agent, port] of agents) {

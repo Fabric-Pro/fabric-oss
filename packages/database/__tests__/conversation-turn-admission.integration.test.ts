@@ -32,6 +32,7 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaClient } from "../prisma/generated/client";
+import { hydrateConversationTurnResults } from "../prisma/queries/conversation-turn-results";
 import {
 	abandonConversationTurnStart,
 	admitConversationTurn,
@@ -43,8 +44,6 @@ import {
 	markConversationTurnStartFailed,
 	requestConversationTurnCancel,
 } from "../prisma/queries/conversation-turns";
-
-import { hydrateConversationTurnResults } from "../prisma/queries/conversation-turn-results";
 
 const IDS = {
 	owner: "cturn-owner",
@@ -346,7 +345,7 @@ describe.skipIf(!process.env.DATABASE_URL)(
 				if (!finishBeforeDelete) {
 					await finish();
 				}
-				return fixtures.conversationTurn.findUniqueOrThrow({
+				return fixtures.conversationTurn.findUnique({
 					where: { id: admitted.turn.id },
 					select: {
 						conversationId: true,
@@ -368,13 +367,10 @@ describe.skipIf(!process.env.DATABASE_URL)(
 				});
 			});
 
-			it("does not take the answer of a run that finishes after the delete", async () => {
-				expect(await turnInDeletedConversation(false)).toMatchObject({
-					conversationId: null,
-					status: "COMPLETED",
-					questionText: null,
-					responseText: null,
-				});
+			// A run still going when its conversation was deleted takes nothing
+			// back: the turn that ends it is deleted with the conversation.
+			it("deletes the turn of a run that finishes after the delete", async () => {
+				expect(await turnInDeletedConversation(false)).toBeNull();
 			});
 
 			it("drops the text of a turn admitted without a conversation and claimed by its first save", async () => {

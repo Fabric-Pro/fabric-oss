@@ -1,3 +1,4 @@
+import { AnthropicFederationUnavailableError } from "@repo/database/prisma/queries/anthropic-federation";
 /**
  * AI Token Exchange Endpoint
  *
@@ -54,6 +55,9 @@ interface ExchangeResponse {
 	maxOutputTokens?: number | null;
 	contextWindow?: number | null;
 	apiKey: string;
+	credentialKind?: "bearer";
+	accessToken?: string;
+	credentialExpiresAt?: number;
 	provider: string;
 	model: string;
 	baseUrl?: string;
@@ -209,6 +213,15 @@ export async function POST(
 					)
 				: await resolve();
 		} catch (error) {
+			if (error instanceof AnthropicFederationUnavailableError) {
+				return NextResponse.json(
+					{
+						error: error.message,
+						code: "ANTHROPIC_FEDERATION_UNAVAILABLE",
+					},
+					{ status: 409 },
+				);
+			}
 			const reconnect = chatGptPlanReconnectRefusal(error);
 			if (reconnect) {
 				return NextResponse.json(reconnect.body, {
@@ -315,14 +328,42 @@ export async function POST(
 
 		// providerConfig.apiKey is already decrypted by getRAGProviderConfig()
 		const decryptedApiKey = providerConfig.apiKey;
+		if (
+			providerConfig.anthropicBearerSource &&
+			request.headers.get("X-AI-Credential-Kind") !== "bearer"
+		) {
+			return NextResponse.json(
+				{
+					error: "This agent must support Anthropic Bearer credentials.",
+					code: "ANTHROPIC_BEARER_REQUIRED",
+				},
+				{ status: 409 },
+			);
+		}
 
 		const model = metadata.modelString;
 		const providerToUse = metadata.provider;
 
 		// Calculate remaining token validity
-		const expiresIn = getRemainingValidity(claims);
-
 		const jinaApiKey = await lookupJinaApiKey(userId, organizationId);
+		const bearer = await providerConfig
+			.anthropicBearerSource?.()
+			.catch(() => null);
+		if (
+			providerConfig.anthropicBearerSource &&
+			(!bearer || bearer.expiresAt <= Date.now())
+		) {
+			return NextResponse.json(
+				{
+					error: "Anthropic identity token exchange failed.",
+					code: "ANTHROPIC_FEDERATION_UNAVAILABLE",
+				},
+				{ status: 503 },
+			);
+		}
+		const expiresIn = bearer
+			? Math.max(0, Math.floor((bearer.expiresAt - Date.now()) / 1000))
+			: getRemainingValidity(claims);
 
 		// Return the exchange result with full provider configuration
 		// Use the resolved provider which may differ from the user's default
@@ -330,7 +371,12 @@ export async function POST(
 		const response: ExchangeResponse = {
 			...pinnedMetadata,
 			...(modelPinned && { modelPinned: true }),
-			apiKey: decryptedApiKey, // Decrypted API key - ready to use
+			apiKey: decryptedApiKey,
+			...(bearer && {
+				credentialKind: bearer.kind,
+				accessToken: bearer.token,
+				credentialExpiresAt: bearer.expiresAt,
+			}),
 			provider: providerToUse || "unknown",
 			canonicalModelName: metadata.canonicalName,
 			model: model, // Full model string compatible with the provider
@@ -342,7 +388,9 @@ export async function POST(
 		// Include base URL based on the resolved provider
 		// Use DEFAULT_BASE_URLS from @repo/ai - SINGLE SOURCE OF TRUTH
 		// SDK-based providers (OPENAI_DIRECT, ANTHROPIC_DIRECT, GROQ, MISTRAL_AI, COHERE) don't have entries
-		if (providerConfig.baseUrl) {
+		if (bearer) {
+			response.baseUrl = "https://api.anthropic.com";
+		} else if (providerConfig.baseUrl) {
 			response.baseUrl = providerConfig.baseUrl;
 		} else if (
 			providerToUse &&
@@ -373,7 +421,10 @@ export async function POST(
 			expiresIn,
 		});
 
-		return NextResponse.json(response);
+		return NextResponse.json(
+			response,
+			bearer ? { headers: { "Cache-Control": "no-store" } } : undefined,
+		);
 	} catch (error) {
 		console.error("[AI Exchange] Error:", error);
 		return NextResponse.json(
@@ -482,7 +533,7 @@ export async function OPTIONS(): Promise<NextResponse> {
 		status: 204,
 		headers: {
 			"Access-Control-Allow-Methods": "POST, OPTIONS",
-			"Access-Control-Allow-Headers": `Content-Type, ${AI_TOKEN_HEADER}`,
+			"Access-Control-Allow-Headers": `Content-Type, ${AI_TOKEN_HEADER}, X-AI-Credential-Kind`,
 			"Access-Control-Max-Age": "86400",
 		},
 	});

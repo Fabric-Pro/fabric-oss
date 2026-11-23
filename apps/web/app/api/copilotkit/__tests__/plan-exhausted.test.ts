@@ -90,7 +90,7 @@ vi.mock("@repo/agent-tools", () => ({
 
 vi.mock("@repo/ai", () => ({
 	buildEffectiveBaseUrl: (_provider: string, baseUrl: string) => baseUrl,
-	getRAGProviderConfig: mocks.providerConfig,
+	getRAGProviderConfigForModel: mocks.providerConfig,
 	isReasoningModelName: (name: string) =>
 		name.toLowerCase().includes("deepseek-r1"),
 	resolveModelWithProvider: mocks.resolveModelWithProvider,

@@ -11,29 +11,28 @@ import { useLocale, useTranslations } from "next-intl";
 import { shortDateLabel } from "../lib/date-labels";
 import type { TimeEntry } from "../lib/time-entry-model";
 
-/** What the proposed entry would be, for when the duplicate is not loaded. */
-interface ProposedEntrySummary {
-	workDate: string;
-	durationMinutes: number | null;
-	activity: TimeEntry["activity"];
-	target: string;
-}
-
 /**
  * The server's objection to a save, asked as one inline question beside the
  * form rather than in a dialog: the person answers it where they typed.
+ *
+ * A duplicate is described by the entry it matches. When that entry is not
+ * among `knownEntries` (a work item's form lists only that item's entries, the
+ * timer lists none), the question names nothing about it: the match may be on
+ * another work item, project or day, so the proposed entry's own work item,
+ * duration or activity would misstate it.
  */
 export function EntryWarningQuestion({
 	warning,
 	knownEntries,
-	proposed,
+	workDate,
 	isSaving,
 	onConfirm,
 	onDismiss,
 }: {
 	warning: TimeEntryWarning;
 	knownEntries: readonly TimeEntry[];
-	proposed: ProposedEntrySummary;
+	/** The proposed entry's work date, which the daily total is for. */
+	workDate: string;
 	isSaving: boolean;
 	onConfirm: () => void;
 	onDismiss: () => void;
@@ -48,27 +47,23 @@ export function EntryWarningQuestion({
 			const duplicate = knownEntries.find((entry) =>
 				warning.entryIds.includes(entry.id),
 			);
-			const minutes =
-				duplicate?.durationMinutes ?? proposed.durationMinutes;
-			question = t("duplicate", {
-				duration:
-					minutes === null ? "" : formatDurationMinutes(minutes),
-				activity:
-					TIME_ACTIVITY_LABELS[
-						duplicate?.activity ?? proposed.activity
-					],
-				target: duplicate
-					? duplicate.storyIdentifier
-						? `${duplicate.storyIdentifier} ${duplicate.storyTitle ?? ""}`.trim()
-						: duplicate.projectName
-					: proposed.target,
-			});
+			question = duplicate
+				? t("duplicate", {
+						duration: formatDurationMinutes(
+							duplicate.durationMinutes,
+						),
+						activity: TIME_ACTIVITY_LABELS[duplicate.activity],
+						target: duplicate.storyIdentifier
+							? `${duplicate.storyIdentifier} ${duplicate.storyTitle ?? ""}`.trim()
+							: duplicate.projectName,
+					})
+				: t("duplicateUnlisted");
 			confirmLabel = t("duplicateConfirm");
 			break;
 		}
 		case "OVER_DAILY_LIMIT":
 			question = t("overLimit", {
-				date: shortDateLabel(proposed.workDate, locale),
+				date: shortDateLabel(workDate, locale),
 				total: formatDurationMinutes(warning.totalMinutes),
 			});
 			confirmLabel = t("overLimitConfirm");

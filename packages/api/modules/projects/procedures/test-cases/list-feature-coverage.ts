@@ -37,9 +37,12 @@ export const listFeatureCoverageProcedure = tenantProtectedProcedure
 			/**
 			 * `STABLE` (default) is the createdAt order a paging reader needs to
 			 * hold still. `UNCOVERED_FIRST` ranks untested work first, then most
-			 * recently updated — what a picker offering somewhere to aim wants.
+			 * recently updated. `RECENT_FIRST` is the work-item pickers' order:
+			 * most recently edited first, coverage aside.
 			 */
-			order: z.enum(["STABLE", "UNCOVERED_FIRST"]).optional(),
+			order: z
+				.enum(["STABLE", "UNCOVERED_FIRST", "RECENT_FIRST"])
+				.optional(),
 			limit: z.number().int().min(1).max(200).optional(),
 			offset: z.number().int().min(0).optional(),
 		}),

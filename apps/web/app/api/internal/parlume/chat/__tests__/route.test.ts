@@ -6,17 +6,35 @@ const mocks = vi.hoisted(() => ({
 	settings: vi.fn(),
 	send: vi.fn(),
 	channelSend: vi.fn(),
+	recordTag: vi.fn(),
+	recordRecapTag: vi.fn(),
+	turnFindFirst: vi.fn(),
+	OutcomeUnknownError: class extends Error {},
 }));
 
 vi.mock("@repo/database", () => ({
-	db: { parlumeMeetingSession: { findFirst: mocks.findFirst } },
+	db: {
+		parlumeMeetingSession: { findFirst: mocks.findFirst },
+		parlumeMeetingTurn: { findFirst: mocks.turnFindFirst },
+	},
 }));
 
-vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
-	sendParlumeMeetingChat: (...args: unknown[]) => mocks.send(...args),
-}));
+vi.mock(
+	"@repo/api/modules/projects/lib/parlume-attendee",
+	async (original) => ({
+		...(await original<
+			typeof import("@repo/api/modules/projects/lib/parlume-attendee")
+		>()),
+		sendParlumeMeetingChat: (...args: unknown[]) => mocks.send(...args),
+	}),
+);
 vi.mock("@repo/api/modules/projects/lib/parlume-channel-chat", () => ({
+	ParlumeChannelPostOutcomeUnknownError: mocks.OutcomeUnknownError,
 	sendParlumeChannelPost: mocks.channelSend,
+}));
+vi.mock("@repo/api/modules/projects/lib/parlume-chat-tags", () => ({
+	recordParlumeChatTag: mocks.recordTag,
+	recordParlumeRecapTag: mocks.recordRecapTag,
 }));
 
 vi.mock("@repo/api/modules/projects/lib/parlume-provider-settings", () => ({
@@ -84,8 +102,30 @@ describe("Parlume meeting chat fallback", () => {
 		expect(mocks.channelSend).toHaveBeenCalledWith(
 			"session-1",
 			"[P1] Answer",
+			false,
 		);
 		expect(mocks.send).not.toHaveBeenCalled();
+	});
+
+	// Suggestions and the recap keep their one-paragraph form.
+	it("passes a plain post on as plain, to either chat", async () => {
+		await POST(request({ ...message, plain: true }));
+		expect(mocks.send).toHaveBeenCalledWith(
+			expect.objectContaining({ plain: true }),
+		);
+
+		mocks.findFirst.mockResolvedValue({
+			id: "session-1",
+			providerBotId: "bot-1",
+			organizationId: "org-1",
+			channelChatStatus: "READY",
+		});
+		await POST(request({ ...message, message: "[P2] Recap", plain: true }));
+		expect(mocks.channelSend).toHaveBeenCalledWith(
+			"session-1",
+			"[P2] Recap",
+			true,
+		);
 	});
 	it.each(["ATTENDEE", "UNRESOLVED"])(
 		"keeps ordinary/resolution-unknown short-link chat on the queued-only Attendee path (%s)",
@@ -137,6 +177,34 @@ describe("Parlume meeting chat fallback", () => {
 			expect(mocks.channelSend).not.toHaveBeenCalled();
 		},
 	);
+	// A channel post can fail after Graph created it: the bridge keeps that
+	// one as possibly in the thread, and forgets one that was never sent.
+	it.each([
+		["unknown", new mocks.OutcomeUnknownError("Read-back unavailable")],
+		["not_sent", new Error("Channel chat session is no longer active.")],
+	])(
+		"answers a failed channel post with its outcome (%s)",
+		async (outcome, error) => {
+			mocks.findFirst.mockResolvedValue({
+				id: "session-1",
+				providerBotId: "bot-1",
+				organizationId: "org-1",
+				channelChatStatus: "READY",
+			});
+			mocks.channelSend.mockRejectedValue(error);
+
+			const response = await POST(
+				request({ ...message, message: "[P1] Answer" }),
+			);
+
+			expect(response.status).toBe(502);
+			expect(await response.json()).toEqual({
+				error: "Channel chat delivery could not be confirmed. Check the meeting thread before retrying.",
+				outcome,
+			});
+			expect(mocks.send).not.toHaveBeenCalled();
+		},
+	);
 	it("rejects a caller without the service token", async () => {
 		const response = await POST(request(message, "wrong"));
 
@@ -184,6 +252,23 @@ describe("Parlume meeting chat fallback", () => {
 
 		expect(response.status).toBe(409);
 		expect(mocks.send).not.toHaveBeenCalled();
+		expect(mocks.recordTag).not.toHaveBeenCalled();
+	});
+
+	it("records the post's tag before it is sent", async () => {
+		mocks.send.mockImplementation(() => {
+			expect(mocks.recordTag).toHaveBeenCalledWith(
+				"session-1",
+				"[P5] Unavailable: P3 to P4.",
+			);
+		});
+
+		const response = await POST(
+			request({ ...message, message: "[P5] Unavailable: P3 to P4." }),
+		);
+
+		expect(response.status).toBe(200);
+		expect(mocks.send).toHaveBeenCalledTimes(1);
 	});
 
 	it("reports a provider refusal, such as chat disabled in the meeting", async () => {
@@ -194,5 +279,121 @@ describe("Parlume meeting chat fallback", () => {
 		const response = await POST(request(message));
 
 		expect(response.status).toBe(502);
+	});
+
+	// A recap the bridge held until the chat opened is posted after Fabric's
+	// own request ended without a tag; the page called it not posted.
+	it("records a sent recap's tag for the Parlume page, to either chat", async () => {
+		const recap = { ...message, message: "[P35] Since last time…" };
+		mocks.send.mockImplementation(() => {
+			expect(mocks.recordRecapTag).not.toHaveBeenCalled();
+		});
+
+		await POST(request({ ...recap, plain: true, recap: true }));
+		expect(mocks.recordRecapTag).toHaveBeenCalledWith(
+			"session-1",
+			"[P35] Since last time…",
+		);
+
+		mocks.recordRecapTag.mockClear();
+		mocks.findFirst.mockResolvedValue({
+			id: "session-1",
+			providerBotId: "bot-1",
+			organizationId: "org-1",
+			channelChatStatus: "READY",
+		});
+		const response = await POST(
+			request({ ...recap, plain: true, recap: true }),
+		);
+		expect(await response.json()).toEqual({
+			sent: true,
+			delivery: "observed",
+		});
+		expect(mocks.recordRecapTag).toHaveBeenCalledWith(
+			"session-1",
+			"[P35] Since last time…",
+		);
+	});
+
+	it("records no recap tag for another post, or for a recap the chat refused", async () => {
+		await POST(request({ ...message, message: "[P4] Idea", plain: true }));
+		mocks.send.mockRejectedValue(new Error("refused"));
+		await POST(request({ ...message, message: "[P5] Recap", recap: true }));
+
+		expect(mocks.recordRecapTag).not.toHaveBeenCalled();
+	});
+
+	// A stop ends the request and its work: an answer prepared meanwhile,
+	// a proposal or a rest of it, never reaches the chat afterwards.
+	it("drops a post for a request someone stopped, before its tag is counted", async () => {
+		mocks.turnFindFirst.mockResolvedValue({ status: "STOPPED" });
+
+		const response = await POST(
+			request({
+				...message,
+				message: "[P6] The plan.",
+				turnId: "turn-1",
+			}),
+		);
+
+		expect(response.status).toBe(409);
+		expect(mocks.turnFindFirst).toHaveBeenCalledWith({
+			where: { id: "turn-1", sessionId: "session-1" },
+			select: { status: true },
+		});
+		expect(mocks.send).not.toHaveBeenCalled();
+		expect(mocks.channelSend).not.toHaveBeenCalled();
+		expect(mocks.recordTag).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["a running request's post", "RUNNING", false, 200],
+		["a completed request's later post", "COMPLETED", false, 200],
+		["a failed request's error line", "FAILED", true, 200],
+		["a failed request's answer", "FAILED", false, 409],
+		["an error line for a request still running", "RUNNING", true, 409],
+		["an error line for a stopped request", "STOPPED", true, 409],
+	])("decides whether %s may post", async (_label, status, failed, code) => {
+		mocks.turnFindFirst.mockResolvedValue({ status });
+
+		const response = await POST(
+			request({
+				...message,
+				message: "[P6] The plan.",
+				turnId: "turn-1",
+				...(failed ? { turnFailed: true } : {}),
+			}),
+		);
+
+		expect(response.status).toBe(code);
+		expect(mocks.send).toHaveBeenCalledTimes(code === 200 ? 1 : 0);
+	});
+
+	it("drops a post that names a request of another session", async () => {
+		mocks.turnFindFirst.mockResolvedValue(null);
+
+		const response = await POST(
+			request({
+				...message,
+				message: "[P6] The plan.",
+				turnId: "turn-9",
+			}),
+		);
+
+		expect(response.status).toBe(409);
+		expect(mocks.send).not.toHaveBeenCalled();
+	});
+
+	it("still reports a sent recap as sent when its tag cannot be recorded", async () => {
+		mocks.recordRecapTag.mockRejectedValue(new Error("database down"));
+
+		const response = await POST(
+			request({ ...message, message: "[P5] Recap", recap: true }),
+		);
+
+		expect(await response.json()).toEqual({
+			sent: true,
+			delivery: "queued",
+		});
 	});
 });

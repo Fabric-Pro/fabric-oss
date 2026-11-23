@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
+	describeParlumeChange,
 	parlumeActionArguments,
 	parlumeActionOutcome,
 	parlumeFingerprint,
 	parlumeToolFingerprint,
-	summarizeParlumeAction,
 } from "../parlume-action-policy";
 
 describe("Parlume action outcomes", () => {
@@ -120,12 +120,35 @@ describe("Parlume action policy", () => {
 			}),
 		).toEqual({ title: "A synthetic issue", assigned: "example-user" });
 	});
-	it("summarizes an action for the history without asking anyone to confirm it", () => {
-		const summary = summarizeParlumeAction("fabric_create_story", {
-			title: "Parlume test",
-		});
+	it("describes a proposed change in product words, a story as a feature", () => {
+		expect(
+			describeParlumeChange("fabric_create_story", {
+				title: "Export to CSV",
+			}),
+		).toBe("Create feature “Export to CSV”");
+		expect(describeParlumeChange("fabric_list_stories", {})).toBe(
+			"List features",
+		);
+	});
 
-		expect(summary).toBe("Create story. title: Parlume test");
-		expect(summary).not.toMatch(/confirm|cancel/i);
+	it("calls a story by the kind it is given", () => {
+		expect(
+			describeParlumeChange("fabric_create_story", {
+				kind: "BUG",
+				title: "Login fails",
+			}),
+		).toBe("Create bug “Login fails”");
+		expect(
+			describeParlumeChange("fabric_create_story", {
+				kind: "FEATURE",
+				title: "Export to CSV",
+			}),
+		).toBe("Create feature “Export to CSV”");
+	});
+
+	it("keeps other tool words and shortens a long title", () => {
+		expect(
+			describeParlumeChange("update-bug", { name: "x".repeat(100) }),
+		).toBe(`Update bug “${"x".repeat(79)}…”`);
 	});
 });

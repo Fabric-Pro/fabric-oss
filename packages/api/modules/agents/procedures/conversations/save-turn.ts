@@ -17,14 +17,22 @@ import { resolvedOrganizationId } from "./resolved-organization";
 import { MessageSchema, maybeStripReasoning } from "./update-conversation";
 
 /**
- * Settings the Advisor keeps in a conversation's metadata. `selectedMcpConfigIds`:
- * absent keeps the stored selection, `null` removes it, an array replaces it.
+ * Settings the Advisor keeps in a conversation's metadata. `selectedMcpConfigIds`
+ * and `planModel` (a ChatGPT plan model picked for this chat only): absent
+ * keeps the stored value, `null` removes it, a value replaces it.
  */
 const SettingsSchema = z.object({
 	executionMode: z.enum(["lite", "balanced", "deep", "planner"]).optional(),
 	instanceId: z.string().min(1).max(INPUT_BOUNDS.name).optional(),
 	selectedMcpConfigIds: idArray().nullable().optional(),
 	documentChatId: z.string().min(1).max(INPUT_BOUNDS.name).optional(),
+	planModel: z
+		.object({
+			canonicalName: z.string().min(1).max(INPUT_BOUNDS.name),
+			name: z.string().min(1).max(INPUT_BOUNDS.name),
+		})
+		.nullable()
+		.optional(),
 });
 
 /**

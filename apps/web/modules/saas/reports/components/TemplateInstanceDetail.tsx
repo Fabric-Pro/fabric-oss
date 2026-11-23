@@ -12,7 +12,9 @@ import { gitlabStatusQueryOptions } from "@saas/data-connections/lib/gitlab-stat
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
 import { useDeleteReportInstance } from "@saas/reports/hooks/use-delete-report-instance";
+import { useDialogFocusReturn } from "@saas/reports/hooks/use-dialog-focus-return";
 import { useReportConnectionTest } from "@saas/reports/hooks/use-report-connection-test";
+import { useRequestedFieldFocus } from "@saas/reports/hooks/use-requested-field-focus";
 import {
 	findConfigsForSource,
 	getMcpConfigDisplayName,
@@ -396,6 +398,9 @@ export function TemplateInstanceDetail({
 	} | null>(null);
 	const [loadingArtifact, setLoadingArtifact] = useState<string | null>(null);
 	const [isViewerFullscreen, setIsViewerFullscreen] = useState(false);
+	// A report opened from a card's View, on page load, returns focus to View.
+	const viewButtonRef = useRef<HTMLButtonElement>(null);
+	const viewerFocusReturn = useDialogFocusReturn(viewButtonRef);
 
 	// State for artifact email send / delivery history dialogs. Exactly one of
 	// (send | history) is "open" at a time per the popover/dialog pattern.
@@ -1176,21 +1181,11 @@ export function TemplateInstanceDetail({
 	}, [opensLatestReport, instance]);
 
 	// Rename opens Settings and puts the cursor in the name field.
-	const [renameRequested, setRenameRequested] = useState(false);
-	const nameFieldRef = useRef<HTMLInputElement>(null);
+	const nameFieldFocus = useRequestedFieldFocus();
 	const renameReport = () => {
 		goToTab("overview");
-		setRenameRequested(true);
+		nameFieldFocus.request();
 	};
-	useEffect(() => {
-		const nameField = nameFieldRef.current;
-		if (!renameRequested || activeTab !== "overview" || !nameField) {
-			return;
-		}
-		nameField.scrollIntoView({ block: "center" });
-		nameField.focus();
-		setRenameRequested(false);
-	}, [renameRequested, activeTab]);
 
 	// Helper: Check if a parameter is used in template sections
 	const isUsedInTemplateOutput = (paramKey: string): boolean => {
@@ -1567,6 +1562,7 @@ export function TemplateInstanceDetail({
 						size="default"
 						hasSuccessfulReport={latestSuccess !== null}
 						onView={viewLatestReport}
+						buttonRef={viewButtonRef}
 						isOpening={
 							latestSuccess !== null &&
 							loadingArtifact === latestSuccess.artifactId
@@ -1949,7 +1945,7 @@ export function TemplateInstanceDetail({
 											Instance Name
 										</Label>
 										<Input
-											ref={nameFieldRef}
+											ref={nameFieldFocus.ref}
 											id="instance-name"
 											disabled={readOnly}
 											value={instanceName}
@@ -4043,16 +4039,24 @@ export function TemplateInstanceDetail({
 																				<Button
 																					variant="ghost"
 																					size="sm"
-																					className="h-7 px-2 text-xs"
-																					onClick={() =>
-																						handleViewArtifact(
-																							artifact.id,
-																							artifact.name,
-																						)
-																					}
-																					disabled={
+																					className="h-7 px-2 text-xs aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+																					onClick={() => {
+																						if (
+																							loadingArtifact !==
+																							artifact.id
+																						) {
+																							void handleViewArtifact(
+																								artifact.id,
+																								artifact.name,
+																							);
+																						}
+																					}}
+																					// Not `disabled`, which would drop
+																					// focus from the button just pressed.
+																					aria-disabled={
 																						loadingArtifact ===
-																						artifact.id
+																							artifact.id ||
+																						undefined
 																					}
 																					aria-label={`View ${artifact.name}`}
 																					title={`View ${artifact.name}`}
@@ -4255,6 +4259,7 @@ export function TemplateInstanceDetail({
 				}}
 			>
 				<DialogContent
+					{...viewerFocusReturn}
 					className={
 						isViewerFullscreen
 							? "max-w-[100vw] w-[100vw] h-[100vh] max-h-[100vh] m-0 rounded-none flex flex-col"

@@ -8,14 +8,17 @@
  * leaves the component: the `orpcClient.newsletter.sends.approve` call.
  */
 import {
+	act,
 	render as baseRender,
 	fireEvent,
 	screen,
 	within,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 import type { ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { AUTO_CAPTURE_LINK_TEXT } from "../NewsletterReviewDialog";
 
 const render = (ui: ReactElement) =>
 	baseRender(ui, {
@@ -24,11 +27,22 @@ const render = (ui: ReactElement) =>
 		),
 	});
 
-const { mutateSpy, approveSpy, refetchSpy, queryData } = vi.hoisted(() => ({
-	mutateSpy: vi.fn(),
-	approveSpy: vi.fn(),
-	refetchSpy: vi.fn(),
-	queryData: {} as Record<string, unknown>,
+const { mutateSpy, approveSpy, refetchSpy, queryData, flags, mutation } =
+	vi.hoisted(() => ({
+		mutateSpy: vi.fn(),
+		approveSpy: vi.fn(),
+		refetchSpy: vi.fn(),
+		queryData: {} as Record<string, unknown>,
+		flags: { environmentSettings: false },
+		mutation: { isPending: false },
+	}));
+
+// The flag is inlined at build time; a getter lets each test choose it.
+vi.mock("../settings-tab-navigation", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../settings-tab-navigation")>()),
+	get ENVIRONMENT_SETTINGS_ENABLED() {
+		return flags.environmentSettings;
+	},
 }));
 
 vi.mock("next-intl", () => ({
@@ -130,7 +144,7 @@ vi.mock("@tanstack/react-query", () => ({
 		refetch: refetchSpy,
 	}),
 	useMutation: (opts: { mutationFn?: (variables: unknown) => unknown }) => ({
-		isPending: false,
+		isPending: mutation.isPending,
 		mutate: (variables: unknown) => {
 			mutateSpy(variables);
 			opts.mutationFn?.(variables);
@@ -210,14 +224,20 @@ function pendingSend(over: Record<string, unknown> = {}) {
 	};
 }
 
-function renderSettings() {
+function renderSettings(props: { canEdit?: boolean } = {}) {
 	return render(
-		<ProjectNewsletterSettings projectId="p-1" organizationId={null} />,
+		<ProjectNewsletterSettings
+			projectId="p-1"
+			organizationId={null}
+			{...props}
+		/>,
 	);
 }
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	flags.environmentSettings = false;
+	mutation.isPending = false;
 	setSettings();
 	queryData.subscribers = { subscribers: [] };
 	queryData.sends = { sends: [], total: 0 };
@@ -290,6 +310,51 @@ describe("ProjectNewsletterSettings — Images in highlights setting", () => {
 		renderSettings();
 
 		expect(screen.queryByText("Capture from")).not.toBeInTheDocument();
+	});
+
+	// A control disabled while its own save runs dropped keyboard focus to
+	// the page.
+	it("keeps the switch enabled and focused while its save runs", async () => {
+		const user = userEvent.setup();
+		const { rerender } = renderSettings();
+		const images = screen.getByRole("switch", {
+			name: "Images in highlights",
+		});
+
+		act(() => images.focus());
+		await user.keyboard(" ");
+		mutation.isPending = true;
+		rerender(
+			<ProjectNewsletterSettings projectId="p-1" organizationId={null} />,
+		);
+
+		expect(mutateSpy).toHaveBeenCalledWith({
+			projectId: "p-1",
+			organizationId: null,
+			screenshotsEnabled: true,
+		});
+		expect(images).toBeEnabled();
+		expect(images).toHaveFocus();
+	});
+
+	it("still locks the chat channel lists while a save runs", async () => {
+		setSettings({ deliveryDestination: "CHAT", chatChannels: [] });
+		queryData.teamsLinked = [
+			{ teamId: "team-1", channelId: "chan-1", channelName: "General" },
+		];
+		mutation.isPending = true;
+		renderSettings();
+
+		// Review is on, so the review alert list may show it too.
+		const channels = await screen.findAllByRole("checkbox", {
+			name: "TEAMS: General",
+		});
+		for (const channel of channels) {
+			expect(channel).toBeDisabled();
+		}
+		expect(
+			screen.getByRole("switch", { name: "Images in highlights" }),
+		).toBeEnabled();
 	});
 });
 
@@ -399,6 +464,50 @@ describe("ProjectNewsletterSettings — reviewing a send", () => {
 		expect(
 			within(dialog).queryByRole("button", {
 				name: "Open image: Search results page",
+			}),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("ProjectNewsletterSettings — the review's automatic-capture link", () => {
+	function openReview(props: { canEdit?: boolean }) {
+		flags.environmentSettings = true;
+		setSettings({
+			screenshotsEnabled: true,
+			screenshotEnvironmentId: null,
+		});
+		queryData.pending = { sends: [pendingSend()] };
+		renderSettings(props);
+		fireEvent.click(screen.getByRole("button", { name: "Review" }));
+		return screen.getByRole("dialog");
+	}
+
+	it("is offered to a reviewer whose edit rights are confirmed", () => {
+		const dialog = openReview({ canEdit: true });
+
+		expect(
+			within(dialog).getByRole("button", {
+				name: AUTO_CAPTURE_LINK_TEXT,
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("is not offered before edit rights are known", () => {
+		const dialog = openReview({});
+
+		expect(
+			within(dialog).queryByRole("button", {
+				name: AUTO_CAPTURE_LINK_TEXT,
+			}),
+		).not.toBeInTheDocument();
+	});
+
+	it("is not offered to a reviewer who cannot edit the settings", () => {
+		const dialog = openReview({ canEdit: false });
+
+		expect(
+			within(dialog).queryByRole("button", {
+				name: AUTO_CAPTURE_LINK_TEXT,
 			}),
 		).not.toBeInTheDocument();
 	});

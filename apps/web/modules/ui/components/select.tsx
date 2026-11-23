@@ -44,6 +44,13 @@ const SelectTrigger = ({
 				!showsPlaceholder && selectedText ? selectedText : "";
 			props.onPointerEnter?.(event);
 		}}
+		onPointerLeave={(event) => {
+			// The title is also the trigger's accessible description. Left in
+			// place, it would keep naming the value from the last hover after a
+			// keyboard or programmatic change picks another one.
+			event.currentTarget.title = "";
+			props.onPointerLeave?.(event);
+		}}
 	>
 		{children}
 		<SelectPrimitive.Icon asChild>
@@ -56,6 +63,7 @@ const SelectContent = ({
 	className,
 	children,
 	position = "popper",
+	onKeyDown,
 	...props
 }: React.ComponentProps<typeof SelectPrimitive.Content>) => (
 	<SelectPrimitive.Portal>
@@ -69,6 +77,17 @@ const SelectContent = ({
 			)}
 			position={position}
 			{...props}
+			onKeyDown={(event) => {
+				onKeyDown?.(event);
+				// An option is chosen on Enter's keydown, and the browser then
+				// delivers the same key press to whatever the choice moved
+				// focus to. A confirmation dialog opened from `onValueChange`
+				// had its Cancel pressed and closed at once. Radix stops Space
+				// the same way.
+				if (event.key === "Enter") {
+					event.preventDefault();
+				}
+			}}
 		>
 			<SelectPrimitive.Viewport
 				className={cn(

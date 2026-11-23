@@ -12,6 +12,7 @@ import {
 } from "@ui/components/tooltip";
 import {
 	HistoryIcon,
+	Loader2Icon,
 	LockIcon,
 	PlusIcon,
 	UsersIcon,
@@ -64,7 +65,11 @@ export interface CopilotSidebarHeaderConfig {
 	conversationId: string | null;
 	visibility: "SHARED" | "PRIVATE";
 	visibilityLockedAt: string | null;
-	onNewConversation: () => void;
+	/**
+	 * The control is busy, and takes no second click, until a returned
+	 * promise settles: a new conversation can wait for a decision on a draft.
+	 */
+	onNewConversation: () => void | Promise<void>;
 	onOpenHistory: () => void;
 	/**
 	 * Lifts the pre-first-send visibility toggle up to the parent so the
@@ -300,6 +305,23 @@ export function CopilotSidebarHeader({ config }: CopilotSidebarHeaderProps) {
 		onOpenHistory,
 		onVisibilityChange,
 	} = config;
+	// Kept here, not passed in: a changed config is a new header component,
+	// and remounting it dropped the keyboard focus on the click. The control
+	// stays focusable while busy (`aria-disabled`), as a disabled button
+	// loses the focus too.
+	const [isStartingNewConversation, setIsStartingNewConversation] =
+		useState(false);
+	const handleNewConversation = async () => {
+		if (isStartingNewConversation) {
+			return;
+		}
+		setIsStartingNewConversation(true);
+		try {
+			await onNewConversation();
+		} finally {
+			setIsStartingNewConversation(false);
+		}
+	};
 
 	return (
 		<TooltipProvider delayDuration={300}>
@@ -324,11 +346,23 @@ export function CopilotSidebarHeader({ config }: CopilotSidebarHeaderProps) {
 							type="button"
 							variant="ghost"
 							size="icon-sm"
-							onClick={onNewConversation}
+							onClick={handleNewConversation}
+							aria-disabled={isStartingNewConversation}
+							aria-busy={isStartingNewConversation}
 							aria-label="Start a new conversation"
 							className="text-muted-foreground hover:text-foreground transition-colors duration-150"
 						>
-							<PlusIcon className="size-4" aria-hidden="true" />
+							{isStartingNewConversation ? (
+								<Loader2Icon
+									className="size-4 motion-safe:animate-spin"
+									aria-hidden="true"
+								/>
+							) : (
+								<PlusIcon
+									className="size-4"
+									aria-hidden="true"
+								/>
+							)}
 						</Button>
 					</TooltipTrigger>
 					<TooltipContent>

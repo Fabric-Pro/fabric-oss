@@ -95,10 +95,15 @@ export async function checkPublishingGenerationActor(input: {
 
 	// The owner short-circuit is not optional decoration — it is what makes this
 	// "the gate's question" rather than "a permission lookup that usually agrees
-	// with the gate". See `resolveProjectAccess`.
+	// with the gate". See `resolveProjectAccess`. So is the reach refusal: an
+	// organization role grants nothing on a project the actor cannot open.
 	const authorized =
-		access.source === "owner" ||
-		hasPermission(access.permissions, Permissions.PUBLISHING_TOPIC_UPDATE);
+		access.isVisible &&
+		(access.source === "owner" ||
+			hasPermission(
+				access.permissions,
+				Permissions.PUBLISHING_TOPIC_UPDATE,
+			));
 
 	return authorized
 		? { ok: true }

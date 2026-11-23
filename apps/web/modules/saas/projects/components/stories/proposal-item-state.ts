@@ -12,13 +12,15 @@
  * Why a row is locked. `accepted` is the Roadmap-recommendation wording,
  * `applied` everyone else's; `already-on-roadmap` is an item resolved
  * without creating anything (its title or a duplicate was already on the
- * Roadmap); `rejected` was moved to Rejected on its own.
+ * Roadmap); `rejected` was moved to Rejected on its own, and `restored`
+ * was moved there and then restored from the Rejected list.
  */
 export type LockedReason =
 	| "accepted"
 	| "applied"
 	| "already-on-roadmap"
-	| "rejected";
+	| "rejected"
+	| "restored";
 
 /** Badge text and the checkbox's accessible-name suffix, per reason. */
 export const LOCKED_REASON_COPY: Record<
@@ -32,6 +34,10 @@ export const LOCKED_REASON_COPY: Record<
 		ariaSuffix: "already on the Roadmap",
 	},
 	rejected: { badge: "Moved to Rejected", ariaSuffix: "moved to Rejected" },
+	restored: {
+		badge: "Restored from Rejected",
+		ariaSuffix: "restored from Rejected",
+	},
 };
 
 /** A single-item decision still in flight, for that row's spinner. */
@@ -52,6 +58,12 @@ export type ProposalDuplicateResolution = {
 	existingEntityId: string | null;
 };
 
+/** An item moved to Rejected and restored from there, with its ticket. */
+export type RestoredProposalItem = {
+	changeIndex: number;
+	storyId: string | null;
+};
+
 /** One item the server counts as resolved, with its reason. */
 export type ResolvedProposalItem = {
 	changeIndex: number;
@@ -70,11 +82,12 @@ export type ProposalItemState = {
 function lockedReasonFor(
 	item: ResolvedProposalItem,
 	created: ReadonlySet<number>,
+	restored: ReadonlySet<number>,
 	appliedReason: "accepted" | "applied",
 ): LockedReason {
 	switch (item.reason) {
 		case "rejected":
-			return "rejected";
+			return restored.has(item.changeIndex) ? "restored" : "rejected";
 		case "applied":
 		case "duplicate":
 			return created.has(item.changeIndex)
@@ -96,12 +109,16 @@ export function deriveProposalItemState(params: {
 	appliedReason: "accepted" | "applied";
 	/** Existing tickets the last approve matched instead of creating. */
 	skippedTargets?: ReadonlyMap<number, string>;
+	/** Rejected items restored from the Rejected list. */
+	restoredItems?: readonly RestoredProposalItem[];
 }): ProposalItemState {
 	const created = new Set(params.createdChangeIndexes);
+	const restoredItems = params.restoredItems ?? [];
+	const restored = new Set(restoredItems.map((item) => item.changeIndex));
 	const lockedReasons = new Map<number, LockedReason>(
 		params.resolvedItems.map((item) => [
 			item.changeIndex,
-			lockedReasonFor(item, created, params.appliedReason),
+			lockedReasonFor(item, created, restored, params.appliedReason),
 		]),
 	);
 
@@ -119,6 +136,9 @@ export function deriveProposalItemState(params: {
 	}
 	for (const application of params.applications ?? []) {
 		setTarget(application.changeIndex, application.createdEntityId);
+	}
+	for (const item of restoredItems) {
+		setTarget(item.changeIndex, item.storyId);
 	}
 
 	const reasons = Array.from(lockedReasons.values());

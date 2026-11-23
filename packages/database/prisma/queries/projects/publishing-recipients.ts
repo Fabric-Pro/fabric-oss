@@ -24,7 +24,9 @@ import { effectiveContributorUserIds } from "./publishing-suite";
  *   A. personal-project owner → OWNER project permissions
  *   C. an ACTIVE (accepted, unexpired) ProjectMember row is AUTHORITATIVE — its role decides and
  *      the org role is NOT consulted. This is NOT restricted to organization projects.
- *   B. otherwise, and only when the project has a host organization, the org role decides
+ *   B. otherwise, and only when the project has a host organization, the org role decides, but
+ *      only for the project's creator: the project page admits no other organization member
+ *      without a project row, so neither does this
  *
  * It diverges from the newsletter helper in three ways, not two: it batches a whole roster rather
  * than one project's reviewers, its predicate is PUBLISHING_TOPIC_CREATE rather than
@@ -95,11 +97,15 @@ export function selectPublishingRecipientIds(input: {
 	}
 
 	// Path B — org-role fallback, reachable only when the project has an organization AND the user
-	// has no active project row. Excluding the INACTIVE ones too would drop an org admin whose
-	// project invitation merely lapsed, who can still act on these topics.
+	// has no active project row, and only for the project's creator: any other organization member
+	// without a project row cannot open the project, so cannot act on its topics. A creator whose
+	// own project row lapsed still falls back here, as at the permission gate.
 	if (project.organizationId) {
 		for (const orgMember of orgMembers) {
-			if (activeIds.has(orgMember.userId)) {
+			if (
+				activeIds.has(orgMember.userId) ||
+				orgMember.userId !== project.userId
+			) {
 				continue;
 			}
 			if (canCreateTopics(resolveOrgPermissions(orgMember.role))) {
@@ -114,9 +120,8 @@ export function selectPublishingRecipientIds(input: {
 /**
  * Reads the roster and applies the pure core. Returns null when the project no longer exists.
  *
- * Every id this returns is a RECIPIENT. `Project.userId` participates only as the personal-project
- * owner test — on an organization project it is the denormalized tenant owner and carries no
- * notification meaning at all, which is why Path A is gated on `organizationId === null`.
+ * Every id this returns is a RECIPIENT. `Project.userId` is the personal-project owner for Path A
+ * and, on an organization project, the creator Path B admits through the org role.
  */
 export async function resolvePublishingEligibleRecipients(input: {
 	projectId: string;
@@ -255,6 +260,17 @@ export async function assertPublishingCycleTenant(input: {
 	projectId: string;
 	cycleTenant: { organizationId: string | null; userId: string | null };
 }): Promise<"OK" | "TENANT_CHANGED"> {
+	return (await readCycleProject(input)) ? "OK" : "TENANT_CHANGED";
+}
+
+/**
+ * The project row behind {@link assertPublishingCycleTenant}: the project when it is still the
+ * cycle's and still eligible, otherwise `null`.
+ */
+async function readCycleProject(input: {
+	projectId: string;
+	cycleTenant: { organizationId: string | null; userId: string | null };
+}) {
 	const project = await db.project.findUnique({
 		where: { id: input.projectId },
 		select: {
@@ -265,7 +281,7 @@ export async function assertPublishingCycleTenant(input: {
 		},
 	});
 	if (!project || project.status !== "ACTIVE" || project.deletedAt !== null) {
-		return "TENANT_CHANGED";
+		return null;
 	}
 
 	// Normalize the project's CURRENT tuple the same way the cycle's was normalized at creation:
@@ -274,8 +290,8 @@ export async function assertPublishingCycleTenant(input: {
 	const currentUser = currentOrg === null ? project.userId : null;
 	return currentOrg === input.cycleTenant.organizationId &&
 		currentUser === input.cycleTenant.userId
-		? "OK"
-		: "TENANT_CHANGED";
+		? project
+		: null;
 }
 
 /**
@@ -330,20 +346,18 @@ export async function reauthorizePublishingRecipient(input: {
 	// Tenancy first. Permission is only a meaningful question once the project is still the cycle's
 	// — a recipient who kept their role across a transfer is authorized on a project that is no
 	// longer this cycle's, and answering OK there is the leak §9.2(d) forbids.
-	if (
-		(await assertPublishingCycleTenant({
-			projectId: input.projectId,
-			cycleTenant: input.cycleTenant,
-		})) === "TENANT_CHANGED"
-	) {
+	const project = await readCycleProject({
+		projectId: input.projectId,
+		cycleTenant: input.cycleTenant,
+	});
+	if (!project) {
 		return "TENANT_CHANGED";
 	}
 
-	// The gate just asserted the project's normalized tuple EQUALS the cycle's, so the cycle tuple
-	// is the project's current tenancy and re-reading the project would only widen the window. The
-	// pure core reads `project.userId` solely through its personal-project owner test, which is
-	// gated on `organizationId === null` — the one case in which the normalized tenant userId IS
-	// the project's owner column.
+	// The gate just asserted the project's normalized tuple EQUALS the cycle's, so the cycle's
+	// organization is the project's current one. The pure core takes the project row's own `userId`,
+	// not the cycle's: the cycle normalizes it to null on an organization project, where the core
+	// needs it as the creator Path B admits.
 	const currentOrg = input.cycleTenant.organizationId;
 
 	const [member, orgMember] = await Promise.all([
@@ -373,10 +387,7 @@ export async function reauthorizePublishingRecipient(input: {
 	]);
 
 	const allowed = selectPublishingRecipientIds({
-		project: {
-			organizationId: currentOrg,
-			userId: input.cycleTenant.userId,
-		},
+		project: { organizationId: currentOrg, userId: project.userId },
 		members: member ? [member] : [],
 		orgMembers: orgMember ? [orgMember] : [],
 		now: input.now ?? new Date(),

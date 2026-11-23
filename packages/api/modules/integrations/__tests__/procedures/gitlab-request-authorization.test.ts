@@ -16,7 +16,7 @@
  *  - a member may disconnect their own GitLab (`MCP_CONNECT`), a viewer may
  *    not;
  *  - a REST API key reaches the GitLab Delete only while its owner holds
- *    `MCP_DELETE` now, wildcard keys included, and that refusal is
+ *    `MCP_CONNECT` now, wildcard keys included, and that refusal is
  *    distinguishable from a missing scope.
  */
 
@@ -1417,7 +1417,7 @@ describe("REST API DELETE /mcp/configs/:id for a GitLab server", () => {
 		seedOfficialConfig(ORG);
 	});
 
-	it("disconnects for an owner who holds MCP_DELETE", async () => {
+	it("disconnects for an admin who holds MCP_CONNECT", async () => {
 		state.members[ORG][USER] = "admin";
 
 		const response = await remove(["mcp:write"]);
@@ -1426,8 +1426,17 @@ describe("REST API DELETE /mcp/configs/:id for a GitLab server", () => {
 		expect(connectionRowsIn(ORG)[0]?.isActive).toBe(false);
 	});
 
+	it("disconnects for a member who holds MCP_CONNECT", async () => {
+		state.members[ORG][USER] = "member";
+
+		const response = await remove(["mcp:write"]);
+
+		expect(response.status).toBe(200);
+		expect(connectionRowsIn(ORG)[0]?.isActive).toBe(false);
+	});
+
 	it.each([
-		["a demoted owner's mcp:write key", ["mcp:write"], "member"],
+		["a demoted member's mcp:write key", ["mcp:write"], "viewer"],
 		["a wildcard key", ["*"], "viewer"],
 	])(
 		"refuses %s, distinguishably from a missing scope",

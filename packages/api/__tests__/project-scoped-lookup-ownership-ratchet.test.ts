@@ -26,10 +26,11 @@
  * loaded row. `input.organizationId` is a guard, never a scoping key.
  *
  * Do NOT "fix" a violation by swapping in `getProjectAccessById` /
- * `buildProjectAccessWhere`. Those require `userId` OR a ProjectMember row and
- * so have no path B — they would 404 an org-role caller who legitimately holds
- * permission without a member row. They are for procedures that do their own
- * authorization, not for ones already behind this middleware.
+ * `buildProjectAccessWhere`. They take a tenant argument the handler would
+ * have to derive, and they repeat a decision the middleware already made —
+ * the middleware admits exactly the callers who can open the project. They are
+ * for procedures that do their own authorization, not for ones already behind
+ * this middleware.
  */
 
 import { readdirSync, readFileSync } from "node:fs";

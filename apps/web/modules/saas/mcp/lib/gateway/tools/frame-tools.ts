@@ -79,7 +79,9 @@ function withDefaultSurface(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Record<string, unknown> {
-	const surface = session.actingContext?.surface;
+	const surface = FRAME_SURFACES.find(
+		(value) => value === session.actingContext?.surface,
+	);
 	return args.surface === undefined && surface ? { ...args, surface } : args;
 }
 

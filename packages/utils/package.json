@@ -188,6 +188,11 @@
 			"import": "./lib/completion-claim-prompts.ts",
 			"default": "./lib/completion-claim-prompts.ts"
 		},
+		"./unbacked-claim-notice": {
+			"types": "./lib/unbacked-claim-notice.ts",
+			"import": "./lib/unbacked-claim-notice.ts",
+			"default": "./lib/unbacked-claim-notice.ts"
+		},
 		"./diff-markers": {
 			"types": "./lib/diff-markers.ts",
 			"import": "./lib/diff-markers.ts",
@@ -252,6 +257,31 @@
 			"types": "./lib/parlume-chat-delivery-evidence.ts",
 			"import": "./lib/parlume-chat-delivery-evidence.ts",
 			"default": "./lib/parlume-chat-delivery-evidence.ts"
+		},
+		"./parlume-confidential": {
+			"types": "./lib/parlume-confidential.ts",
+			"import": "./lib/parlume-confidential.ts",
+			"default": "./lib/parlume-confidential.ts"
+		},
+		"./parlume-join-notice": {
+			"types": "./lib/parlume-join-notice.ts",
+			"import": "./lib/parlume-join-notice.ts",
+			"default": "./lib/parlume-join-notice.ts"
+		},
+		"./parlume-notes": {
+			"types": "./lib/parlume-notes.ts",
+			"import": "./lib/parlume-notes.ts",
+			"default": "./lib/parlume-notes.ts"
+		},
+		"./parlume-notes-prompt": {
+			"types": "./lib/parlume-notes-prompt.ts",
+			"import": "./lib/parlume-notes-prompt.ts",
+			"default": "./lib/parlume-notes-prompt.ts"
+		},
+		"./parlume-proposal-fields": {
+			"types": "./lib/parlume-proposal-fields.ts",
+			"import": "./lib/parlume-proposal-fields.ts",
+			"default": "./lib/parlume-proposal-fields.ts"
 		},
 		"./parlume-recap-prompt": {
 			"types": "./lib/parlume-recap-prompt.ts",
@@ -512,6 +542,11 @@
 			"types": "./lib/classify-limit-error.ts",
 			"import": "./lib/classify-limit-error.ts",
 			"default": "./lib/classify-limit-error.ts"
+		},
+		"./provider-failure-text": {
+			"types": "./lib/provider-failure-text.ts",
+			"import": "./lib/provider-failure-text.ts",
+			"default": "./lib/provider-failure-text.ts"
 		},
 		"./pipeline-sync-failure-kinds": {
 			"types": "./lib/pipeline-sync-failure-kinds.ts",
@@ -797,6 +832,11 @@
 			"types": "./lib/proposal-update-summary.ts",
 			"import": "./lib/proposal-update-summary.ts",
 			"default": "./lib/proposal-update-summary.ts"
+		},
+		"./proposal-update-edits": {
+			"types": "./lib/proposal-update-edits.ts",
+			"import": "./lib/proposal-update-edits.ts",
+			"default": "./lib/proposal-update-edits.ts"
 		}
 	},
 	"name": "@repo/utils",

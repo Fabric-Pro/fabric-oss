@@ -22,6 +22,8 @@ const CHAT_LINK = new RegExp(
 	`\\[([^\\]\\n]+)\\]\\((https?:\\/\\/[^\\s()<>"]+)\\)|${CHAT_URL.source}`,
 	"g",
 );
+/** A Markdown link alone, `[label](address)`. */
+const MARKDOWN_LINK = /\[([^\]\n]+)\]\((https?:\/\/[^\s()<>"]+)\)/g;
 /** "Title — address" or "Title: address": the title is the link. */
 const TITLED_LINK = new RegExp(
 	`^(.*?\\S)\\s*(?:[—–-]|:)\\s+(${CHAT_URL.source})([.,;…]?)$`,
@@ -32,6 +34,7 @@ const ADDRESS_LINE = new RegExp(
 );
 /** How a sentence or a list introduction ends: such a line is not a title. */
 const SENTENCE_END = /[.,;:!?…]$/;
+const LIST_ITEM = /^(?:•|[-*+]|\d{1,3}[.)])\s+/;
 /** What opens a line before its text: the post's tag, then a list marker ("• ", "1. "). */
 const LINE_PREFIX = /^(?:\[P\d{1,6}\]\s+)?(?:(?:•|\d{1,3}\.)\s+)?/;
 const HEADING = /^#{1,6}\s+/;
@@ -126,15 +129,29 @@ function lineHtml(line: string): string {
  * A title on one line and its address alone on the next, as "Overview" then
  * the Overview address: the pair becomes one titled link. A line that ends a
  * sentence or opens a list ("Here are the pages:"), holds an address of its
- * own, or is a heading is not a title.
+ * own, or is a heading is not a title. A line ending in ":" over one bare
+ * address and nothing more of a list ("Project coding instructions:") titles
+ * it, without the colon; it showed the raw address instead.
  */
-function titleLinkHtml(line: string, next: string | undefined): string | null {
+function titleLinkHtml(
+	line: string,
+	next: string | undefined,
+	after: string | undefined,
+): string | null {
 	const address = next === undefined ? null : ADDRESS_LINE.exec(next);
-	if (!address) {
+	if (!address || next === undefined) {
 		return null;
 	}
 	const opening = LINE_PREFIX.exec(line)?.[0] ?? "";
-	const title = line.slice(opening.length);
+	const introduction = line.slice(opening.length);
+	const introducesOne =
+		!LIST_ITEM.test(next) &&
+		(after === undefined ||
+			(!LIST_ITEM.test(after) && !/https?:\/\//.test(after)));
+	const title =
+		introduction.endsWith(":") && introducesOne
+			? introduction.slice(0, -1).trimEnd()
+			: introduction;
 	if (
 		!title ||
 		title.length > MAX_LINK_TITLE_CHARS ||
@@ -150,7 +167,7 @@ function titleLinkHtml(line: string, next: string | undefined): string | null {
 function paragraphHtml(lines: string[]): string {
 	const html: string[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		const titled = titleLinkHtml(lines[i], lines[i + 1]);
+		const titled = titleLinkHtml(lines[i], lines[i + 1], lines[i + 2]);
 		if (titled) {
 			html.push(titled);
 			i++;
@@ -161,9 +178,23 @@ function paragraphHtml(lines: string[]): string {
 	return `<p>${html.join("<br>")}</p>`;
 }
 
-/** Blank lines part paragraphs; each paragraph keeps its lines. */
+/** A paragraph that is one bare address and nothing else. */
+function isLoneAddress(lines: string[] | undefined): boolean {
+	return (
+		lines?.length === 1 &&
+		ADDRESS_LINE.test(lines[0]) &&
+		!LIST_ITEM.test(lines[0])
+	);
+}
+
+/**
+ * Blank lines part paragraphs; each paragraph keeps its lines. A paragraph
+ * ending in ":" over a paragraph that is one bare address, with no further
+ * address paragraph after it, joins it, so the line can title the link: the
+ * agent writes "Project coding instructions:", a blank line, the address.
+ */
 function chatParagraphs(text: string): string[][] {
-	const paragraphs = text
+	const blocks = text
 		.split(/\r?\n\s*\r?\n/)
 		.map((paragraph) =>
 			paragraph
@@ -172,6 +203,20 @@ function chatParagraphs(text: string): string[][] {
 				.filter(Boolean),
 		)
 		.filter((lines) => lines.length > 0);
+	const paragraphs: string[][] = [];
+	for (let i = 0; i < blocks.length; i++) {
+		const lines = blocks[i];
+		if (
+			lines.at(-1)?.endsWith(":") &&
+			isLoneAddress(blocks[i + 1]) &&
+			!isLoneAddress(blocks[i + 2])
+		) {
+			paragraphs.push([...lines, ...blocks[i + 1]]);
+			i++;
+		} else {
+			paragraphs.push(lines);
+		}
+	}
 	const [first, ...rest] = paragraphs;
 	if (first?.length !== 1 || first[0].length <= LEAD_PARAGRAPH_CHARS) {
 		return paragraphs;
@@ -180,6 +225,42 @@ function chatParagraphs(text: string): string[][] {
 	return lead
 		? [[lead[1]], [first[0].slice(lead[0].length)], ...rest]
 		: paragraphs;
+}
+
+/**
+ * Attendee rejects characters above U+FFFF (emoji); they go before the cut,
+ * so the cut cannot split a surrogate pair.
+ */
+function chatText(message: string): string {
+	return message
+		.replace(/[\u{10000}-\u{10FFFF}]/gu, "")
+		.slice(0, MAX_CHAT_TEXT_CHARS);
+}
+
+/**
+ * A suggestion or the recap as Teams shows it: one escaped paragraph, with
+ * no lines or emphasis, and no links but a `[title](address)` one, such as
+ * a suggestion's "Say it". The meeting-chat formatting of answers and
+ * results is not applied to them.
+ */
+export function parlumePlainChatHtml(message: string): string {
+	const text = chatText(message)
+		.replace(/(\*\*|__)(.+?)\1/g, "$2")
+		.replace(/`/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
+	// A `[title](address)` link, as a suggestion's "Say it", is the one
+	// thing a plain post links.
+	let linked = "";
+	let last = 0;
+	for (const match of text.matchAll(MARKDOWN_LINK)) {
+		linked += `${escapeChatHtml(text.slice(last, match.index))}${linkHtml(match[2], linkTitleHtml(match[1]))}`;
+		last = match.index + match[0].length;
+	}
+	linked += escapeChatHtml(text.slice(last));
+	// Room for the `<p>` and `</p>` around the text.
+	const html = cutChatHtml(linked, ATTENDEE_MAX_CHAT_CHARS - 7);
+	return `<p>${html}</p>`;
 }
 
 /**
@@ -195,11 +276,7 @@ function chatParagraphs(text: string): string[][] {
  * - Markdown headings and emphasis become bold or italics, never symbols.
  */
 export function parlumeChatHtml(message: string): string {
-	// Attendee rejects characters above U+FFFF (emoji); drop them before
-	// cutting, so the cut cannot split a surrogate pair.
-	const text = message
-		.replace(/[\u{10000}-\u{10FFFF}]/gu, "")
-		.slice(0, MAX_CHAT_TEXT_CHARS);
+	const text = chatText(message);
 	const paragraphs = chatParagraphs(text);
 	const html = paragraphs.map(paragraphHtml).join("");
 	if (html.length <= ATTENDEE_MAX_CHAT_CHARS) {

@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { findHeadingLineEnd, stripInlineDecoration } from "./markdown-heading";
+import { describe, expect, it, vi } from "vitest";
+import {
+	fencedCodeLines,
+	findHeadingLine,
+	findHeadingLineEnd,
+	stripInlineDecoration,
+} from "./markdown-heading";
 
 describe("stripInlineDecoration", () => {
 	describe("decorated headings become matchable", () => {
@@ -319,5 +324,91 @@ describe("findHeadingLineEnd", () => {
 			text.indexOf("## <mark>Attachments</mark>") +
 				"## <mark>Attachments</mark>".length,
 		);
+	});
+
+	it("skips a heading-shaped line inside a code fence, in a CRLF document too", () => {
+		for (const eol of ["\n", "\r\n"]) {
+			const fenced = ["```md", HEADING, "```", ""].join(eol);
+			const text = `${fenced}${HEADING}${eol}- **Q:** Q1?`;
+			// The line break after the heading line outside the fence.
+			expect(findHeadingLineEnd(text, HEADING)).toBe(
+				text.indexOf("\n", fenced.length),
+			);
+		}
+	});
+});
+
+describe("fencedCodeLines", () => {
+	const isHeading = (line: string) => /^#{1,6}\s/.test(line.trim());
+	const code = (lines: string[]) =>
+		fencedCodeLines(lines, isHeading)
+			.map((fenced, i) => (fenced ? i : -1))
+			.filter((i) => i !== -1);
+
+	it("marks a fence and its body, closed by a run of the same character at least as long", () => {
+		expect(
+			code(["a", "````md", "# x", "```", "~~~~", "# y", "`````", "b"]),
+		).toEqual([1, 2, 3, 4, 5, 6]);
+	});
+
+	it("marks a fence at any indentation, as inside a nested list item", () => {
+		expect(
+			code([
+				"- a",
+				"    - b",
+				"        ```",
+				"        # x",
+				"        ```",
+			]),
+		).toEqual([2, 3, 4]);
+	});
+
+	it("does not open a backtick fence whose info string holds a backtick", () => {
+		expect(code(["```js`", "# x"])).toEqual([]);
+		expect(code(["~~~ a`b", "# x", "~~~"])).toEqual([0, 1, 2]);
+	});
+
+	it("runs a fence never closed to the end when a boundary is outside it", () => {
+		expect(code(["# a", "```", "# b"])).toEqual([1, 2]);
+	});
+
+	it("reads a fence never closed as text when it hides every boundary", () => {
+		// The tildes cannot close the backtick fence, so it never closes.
+		expect(code(["text", "```", "# a", "~~~", "# b", "~~~"])).toEqual([
+			3, 4, 5,
+		]);
+	});
+
+	it("marks a fence in a CRLF document", () => {
+		expect(code(["a\r", "```ts\r", "# x\r", "```\r", "# y"])).toEqual([
+			1, 2, 3,
+		]);
+		expect(code(["~~~\r", "# x\r", "~~~~\r", "# y"])).toEqual([0, 1, 2]);
+	});
+
+	it("tests each line once, however many stray openers it reads as text", () => {
+		const lines = [...Array.from({ length: 500 }, () => "```a"), "# end"];
+		const isBoundary = vi.fn(isHeading);
+
+		expect(fencedCodeLines(lines, isBoundary).includes(true)).toBe(false);
+		expect(isBoundary).toHaveBeenCalledTimes(lines.length);
+	});
+});
+
+describe("findHeadingLine", () => {
+	const PATTERN = /^##\s+Acceptance/;
+
+	it("returns the offsets of the first matching line outside code", () => {
+		const text =
+			"Intro\n```\n## Acceptance (code)\n```\n## <mark>Acceptance</mark>\nx";
+		const heading = "## <mark>Acceptance</mark>";
+		expect(findHeadingLine(text, PATTERN)).toEqual({
+			start: text.indexOf(heading),
+			length: heading.length,
+		});
+	});
+
+	it("returns null when the only match is inside a closed fence", () => {
+		expect(findHeadingLine("```\n## Acceptance\n```", PATTERN)).toBeNull();
 	});
 });

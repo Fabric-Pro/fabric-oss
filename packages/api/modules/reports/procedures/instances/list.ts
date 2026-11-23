@@ -50,6 +50,8 @@ export const listInstancesProcedure = tenantProtectedProcedure
 				input.projectId,
 				context.user.id,
 				Permissions.REPORT_READ,
+				undefined,
+				{ admitUnreachableOrganizationMember: true },
 			);
 			// Reading the project is not reading its reports: a project guest who
 			// is no member of the organization gets nothing, as `get` gives them,

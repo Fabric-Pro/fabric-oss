@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
 	update: vi.fn(),
 	access: vi.fn(),
 	integration: vi.fn(),
+	parlumeSettings: vi.fn(),
 	graph: vi.fn(),
 	relay: vi.fn(),
 	claim: vi.fn(),
@@ -30,9 +31,10 @@ vi.mock("@repo/database", () => ({
 			deleteMany: mocks.deletePost,
 			updateMany: mocks.confirmPost,
 		},
+		organizationParlumeSettings: { findUnique: mocks.parlumeSettings },
 	},
 	getProjectAccessContext: mocks.access,
-	resolveWorkflowIntegrationForProvider: mocks.integration,
+	resolveWorkflowIntegrationPreferring: mocks.integration,
 }));
 vi.mock("@repo/integrations/microsoft", async () => ({
 	...(await import(
@@ -51,6 +53,8 @@ vi.mock("../parlume-attendee", () => ({
 import {
 	channelReplyFromResource,
 	deliverParlumeChannelNotification,
+	ParlumeChannelPostOutcomeUnknownError,
+	parlumeChannelPostBody,
 	prepareParlumeChannelNotifications,
 	reconcileParlumeChannelChat,
 	sendParlumeChannelPost,
@@ -345,6 +349,52 @@ describe("Parlume Graph channel contract", () => {
 		);
 		expect(mocks.integration).not.toHaveBeenCalled();
 	});
+	it("pins the organization's chosen Parlume connection before the inviter's own", async () => {
+		mocks.session.mockResolvedValueOnce({
+			...base,
+			channelIntegrationId: null,
+		});
+		mocks.parlumeSettings.mockResolvedValue({
+			channelIntegrationId: "example-parlume-account",
+		});
+		mocks.integration.mockResolvedValue({ id: "example-parlume-account" });
+
+		await reconcileParlumeChannelChat(base.id, base.organizationId);
+
+		expect(mocks.parlumeSettings).toHaveBeenCalledWith({
+			where: { organizationId: base.organizationId },
+			select: { channelIntegrationId: true },
+		});
+		expect(mocks.integration).toHaveBeenCalledWith(
+			"MICROSOFT_GRAPH",
+			"example-parlume-account",
+			base.userId,
+			base.organizationId,
+		);
+		expect(mocks.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({ channelIntegrationId: null }),
+				data: { channelIntegrationId: "example-parlume-account" },
+			}),
+		);
+	});
+	it("uses the inviter's connection when the organization chose none", async () => {
+		mocks.session.mockResolvedValueOnce({
+			...base,
+			channelIntegrationId: null,
+		});
+		mocks.parlumeSettings.mockResolvedValue(null);
+		mocks.integration.mockResolvedValue({ id: "example-integration" });
+
+		await reconcileParlumeChannelChat(base.id, base.organizationId);
+
+		expect(mocks.integration).toHaveBeenCalledWith(
+			"MICROSOFT_GRAPH",
+			null,
+			base.userId,
+			base.organizationId,
+		);
+	});
 	it("renews an active subscription and tears it down after end or access revocation", async () => {
 		mocks.session.mockResolvedValue({
 			...base,
@@ -432,7 +482,7 @@ describe("Parlume Graph channel contract", () => {
 				kind: "send",
 				sessionId: base.id,
 				destination,
-				text: "[P1] Fabric Parlume: Current project status.",
+				html: "<p>[P1] Fabric Parlume: Current project status.</p>",
 			},
 			base.userId,
 			base.organizationId,
@@ -455,6 +505,63 @@ describe("Parlume Graph channel contract", () => {
 			data: { confirmedAt: now },
 		});
 	});
+	it("sends a post with links as HTML, and its read-back digest equals the request digest", async () => {
+		const confirmUrl =
+			"https://example.com/app/example-org/projects/p1/parlume/actions/a1";
+		const proposal = [
+			"[P8] **Proposed change** · not made yet",
+			"Create feature “Export to CSV” in Example Project",
+			`[Confirm in Fabric](${confirmUrl}) · [Dismiss](${confirmUrl}?intent=dismiss)`,
+		].join("\n");
+		const body = parlumeChannelPostBody(proposal);
+		// Graph returns the reply's HTML in its own markup.
+		const readBack = {
+			...reply,
+			body: {
+				contentType: "html",
+				content: `<div>${body.html
+					.replace(/<b>/g, "<strong>")
+					.replace(/<\/b>/g, "</strong>")
+					.replace(/·/g, "&#183;")}</div>`,
+			},
+		};
+		mocks.claim.mockResolvedValue({ count: 1 });
+		mocks.post.mockResolvedValue({
+			id: "example-post",
+			requestDigest: body.requestDigest,
+			providerMessageId: null,
+		});
+		mocks.savePost.mockResolvedValue({
+			id: "example-post",
+			requestDigest: body.requestDigest,
+			providerMessageId: reply.id,
+		});
+		mocks.graph
+			.mockResolvedValueOnce(reply)
+			.mockResolvedValueOnce({ messageId: reply.id })
+			.mockResolvedValueOnce(readBack);
+
+		await sendParlumeChannelPost(base.id, proposal);
+
+		expect(body.html).toContain(
+			`<a href="${confirmUrl}">Confirm in Fabric</a>`,
+		);
+		expect(body.html.startsWith("<p>[P8] Fabric Parlume: <b>")).toBe(true);
+		expect(mocks.graph.mock.calls[1][1]).toMatchObject({
+			kind: "send",
+			html: body.html,
+		});
+		expect(mocks.confirmPost).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					requestDigest: body.requestDigest,
+				}),
+			}),
+		);
+		expect(mocks.relay.mock.calls[0][0].message.text).toBe(
+			"[P8] Fabric Parlume: Proposed change · not made yet\nCreate feature “Export to CSV” in Example Project\nConfirm in Fabric · Dismiss",
+		);
+	});
 	it("does not repeat a duplicate tagged send, but can retry its read-back relay", async () => {
 		mocks.claim.mockResolvedValue({ count: 0 });
 		mocks.post.mockResolvedValue({
@@ -476,13 +583,17 @@ describe("Parlume Graph channel contract", () => {
 		mocks.graph
 			.mockResolvedValueOnce(reply)
 			.mockRejectedValueOnce(new Error("HTTP 502"));
-		await expect(sendParlumeChannelPost(base.id, text)).rejects.toThrow(
-			"HTTP 502",
+		const ambiguous = sendParlumeChannelPost(base.id, text);
+		await expect(ambiguous).rejects.toThrow("HTTP 502");
+		await expect(ambiguous).rejects.toBeInstanceOf(
+			ParlumeChannelPostOutcomeUnknownError,
 		);
 		mocks.claim.mockResolvedValue({ count: 0 });
 		mocks.graph.mockResolvedValue(reply);
-		await expect(sendParlumeChannelPost(base.id, text)).rejects.toThrow(
-			"outcome is unknown",
+		const retried = sendParlumeChannelPost(base.id, text);
+		await expect(retried).rejects.toThrow("outcome is unknown");
+		await expect(retried).rejects.toBeInstanceOf(
+			ParlumeChannelPostOutcomeUnknownError,
 		);
 		expect(mocks.confirmPost).not.toHaveBeenCalled();
 		expect(
@@ -493,8 +604,10 @@ describe("Parlume Graph channel contract", () => {
 	});
 	it("a failed preflight remains retryable and produces exactly one subsequent POST", async () => {
 		mocks.graph.mockRejectedValueOnce(new Error("GET unavailable"));
-		await expect(sendParlumeChannelPost(base.id, text)).rejects.toThrow(
-			"GET unavailable",
+		const preflight = sendParlumeChannelPost(base.id, text);
+		await expect(preflight).rejects.toThrow("GET unavailable");
+		await expect(preflight).rejects.not.toBeInstanceOf(
+			ParlumeChannelPostOutcomeUnknownError,
 		);
 		expect(mocks.claim).not.toHaveBeenCalled();
 		mocks.graph
@@ -513,6 +626,24 @@ describe("Parlume Graph channel contract", () => {
 			),
 		).toHaveLength(1);
 	});
+	it("a tag claimed by a different message fails before any send, as not sent", async () => {
+		mocks.claim.mockResolvedValue({ count: 0 });
+		mocks.post.mockResolvedValue({
+			id: "example-post",
+			requestDigest: "a-different-digest",
+			providerMessageId: reply.id,
+		});
+		const conflict = sendParlumeChannelPost(base.id, text);
+		await expect(conflict).rejects.toThrow("different message");
+		await expect(conflict).rejects.not.toBeInstanceOf(
+			ParlumeChannelPostOutcomeUnknownError,
+		);
+		expect(
+			mocks.graph.mock.calls.some(
+				([, operation]) => operation.kind === "send",
+			),
+		).toBe(false);
+	});
 	it("does not confirm a stored provider ID when its exact read-back fails", async () => {
 		mocks.graph
 			.mockResolvedValueOnce(reply)
@@ -523,8 +654,10 @@ describe("Parlume Graph channel contract", () => {
 			requestDigest,
 			providerMessageId: reply.id,
 		});
-		await expect(sendParlumeChannelPost(base.id, text)).rejects.toThrow(
-			"Read-back unavailable",
+		const readBack = sendParlumeChannelPost(base.id, text);
+		await expect(readBack).rejects.toThrow("Read-back unavailable");
+		await expect(readBack).rejects.toBeInstanceOf(
+			ParlumeChannelPostOutcomeUnknownError,
 		);
 		expect(mocks.savePost).toHaveBeenCalled();
 		expect(mocks.confirmPost).not.toHaveBeenCalled();
@@ -547,7 +680,9 @@ describe("Parlume Graph channel contract", () => {
 			providerMessageId: reply.id,
 		});
 		mocks.graph.mockResolvedValueOnce(reply).mockResolvedValueOnce(message);
-		await expect(sendParlumeChannelPost(base.id, text)).rejects.toThrow();
+		await expect(
+			sendParlumeChannelPost(base.id, text),
+		).rejects.toBeInstanceOf(ParlumeChannelPostOutcomeUnknownError);
 		expect(mocks.confirmPost).not.toHaveBeenCalled();
 	});
 	it("records owned notification evidence even when bridge relay fails", async () => {

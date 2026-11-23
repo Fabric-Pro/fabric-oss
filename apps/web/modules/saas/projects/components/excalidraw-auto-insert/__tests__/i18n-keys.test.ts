@@ -29,6 +29,7 @@ describe("i18n -- tooltips.diagrams (D5 / spec § 14.7)", () => {
 
 	it.each([
 		["insertCrossProject"],
+		["insertCrossProjectUnnamed"],
 		["insertNoPermission"],
 		["insertNoCreatePermission"],
 		["insertNotReady"],
@@ -55,21 +56,28 @@ describe("i18n -- diagrams.autoInsert (D5 / spec § 14.7)", () => {
 		["insertDocumentButton"],
 		["insertFeatureButton"],
 		["openPickerButton"],
+		["openPickerNoProject"],
 		["insertedDocumentButton"],
 		["insertedFeatureButton"],
 		["saveToDiagramsButton"],
 		["copyEmbedCodeButton"],
 		["pickerTitle"],
 		["pickerDescription"],
+		["pickerDescriptionThisProject"],
 		["pickerTabDocuments"],
 		["pickerTabFeatures"],
-		["pickerEmpty"],
+		["pickerSearchDocuments"],
+		["pickerSearchFeatures"],
+		["pickerEmptyDocuments"],
+		["pickerEmptyFeatures"],
+		["pickerNoMatches"],
 		["toastSuccess"],
 		["toastSuccessAction"],
 		["toastErrorDb"],
 		["toastErrorForbidden"],
 		["toastCopyFailed"],
 		["bannerEditorFailure"],
+		["bannerEditorFailureThisProject"],
 		["bannerEditorFailureRetry"],
 	] as const)("declares key `%s` as a non-empty string", (key) => {
 		const value = ns[key as keyof typeof ns];
@@ -79,6 +87,17 @@ describe("i18n -- diagrams.autoInsert (D5 / spec § 14.7)", () => {
 
 	it("`pickerDescription` carries the {projectName} interpolation token", () => {
 		expect(ns.pickerDescription).toContain("{projectName}");
+	});
+
+	it("each picker tab names only its own kind in its search and empty text", () => {
+		expect(ns.pickerSearchDocuments).toMatch(/document/i);
+		expect(ns.pickerSearchDocuments).not.toMatch(/feature/i);
+		expect(ns.pickerSearchFeatures).toMatch(/feature/i);
+		expect(ns.pickerSearchFeatures).not.toMatch(/document/i);
+		expect(ns.pickerEmptyDocuments).toMatch(/document/i);
+		expect(ns.pickerEmptyDocuments).not.toMatch(/feature/i);
+		expect(ns.pickerEmptyFeatures).toMatch(/feature/i);
+		expect(ns.pickerEmptyFeatures).not.toMatch(/document/i);
 	});
 
 	it("`toastSuccess` carries the {docName} interpolation token", () => {

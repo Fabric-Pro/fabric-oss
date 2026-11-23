@@ -49,7 +49,12 @@ function fakeDiffEditor(): Editor {
 						{
 							isText: true,
 							nodeSize: 5,
-							marks: [{ type: { name: "diffInsert" } }],
+							marks: [
+								{
+									type: { name: "diffInsert" },
+									attrs: { move: null },
+								},
+							],
 						},
 						0,
 					);
@@ -57,7 +62,12 @@ function fakeDiffEditor(): Editor {
 						{
 							isText: true,
 							nodeSize: 4,
-							marks: [{ type: { name: "diffDelete" } }],
+							marks: [
+								{
+									type: { name: "diffDelete" },
+									attrs: { move: null },
+								},
+							],
 						},
 						5,
 					);

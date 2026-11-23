@@ -3,9 +3,13 @@
  *
  * The Fabric Agent in a meeting is offered the same Fabric tools as the chat,
  * and Parlume's own action gate, not the gateway's confirmation card, decides
- * what any of them may do there: a read runs, a change is refused in a
- * read-only meeting, and in an actions meeting it runs at once, once, and is
- * recorded with who asked for it. These tests run the real gateway client and
+ * what any of them may do there: a project read runs, a project change is
+ * refused in a read-only meeting, and in an actions meeting it is proposed
+ * once, with who asked for it, for a member to confirm. A tool above project
+ * read (workflows, frames and pages, and the tools that answer for the person
+ * rather than the project) is refused in every meeting, read or change, since
+ * a meeting answer uses only what every project member can read. These tests
+ * run the real gateway client and
  * the real gate against a fake gateway, so the pieces that have to agree (the
  * source a tool is registered under and the source its approval is recorded
  * under) are checked together.
@@ -36,9 +40,9 @@ vi.mock("../shared/read-only-gate", () => ({
 vi.mock("../parlume-voice", () => ({
 	readParlumeVoiceState: vi.fn(async () => ({
 		current: true,
-		muted: false,
 		chatAvailable: true,
 	})),
+	postParlumeProposal: vi.fn(async () => ({ sent: true, tag: "P3" })),
 }));
 vi.mock("@repo/database", async (original) => {
 	const actual = await original<typeof import("@repo/database")>();
@@ -111,7 +115,11 @@ vi.mock("@repo/database", async (original) => {
 			return structuredClone(mocks.state.action);
 		}),
 	};
-	const delegates = { parlumeMeetingSession: session, parlumeAction: action };
+	const delegates = {
+		parlumeMeetingSession: session,
+		parlumeAction: action,
+		project: { findUnique: vi.fn(async () => ({ name: "Example" })) },
+	};
 	return {
 		...actual,
 		db: {
@@ -119,6 +127,10 @@ vi.mock("@repo/database", async (original) => {
 			$transaction: (run: (tx: typeof delegates) => Promise<unknown>) =>
 				run(delegates),
 		},
+		buildParlumeActionUrl: vi.fn(
+			async ({ actionId }: { actionId: string }) =>
+				`https://app.example.com/app/example-org/projects/project/parlume/actions/${actionId}`,
+		),
 		hasProjectAccess: vi.fn(async () => true),
 		canEditProject: vi.fn(async () => true),
 		recordAuditTx: vi.fn(),
@@ -130,7 +142,9 @@ import { FABRIC_CHAT_TOOL_DEFINITIONS } from "../../lib/fabric-gateway-tools";
 import {
 	FABRIC_MEETING_WITHHELD_TOOL_NAMES,
 	FABRIC_PORTAL_EXCLUDED_TOOL_NAMES,
+	FABRIC_PORTAL_PROJECT_TOOL_NAMES,
 	FABRIC_PORTAL_TOOL_NAMES,
+	isFabricPortalProjectTool,
 } from "../../lib/fabric-portal-tools";
 import { confirmationMeta, toolAccess } from "../../lib/fabric-tool-definition";
 import { fabricToolSources } from "../direct-chat/fabric-turn-tools";
@@ -289,16 +303,6 @@ describe("Fabric tools in a read-only meeting", () => {
 		mocks.state.session.toolsReadOnly = true;
 	});
 
-	it("runs a Fabric read", async () => {
-		const { tools } = await turnTools(
-			createParlumeToolRuntime({ ...context, toolsReadOnly: true }),
-		);
-
-		await tools.fabric_list_workflows.execute({});
-
-		expect(gatewayCalls("fabric_list_workflows")).toHaveLength(1);
-	});
-
 	it.each(MEETING_EXCLUDED_WRITES)(
 		"never offers the meeting-excluded Fabric change %s",
 		async (name) => {
@@ -309,19 +313,32 @@ describe("Fabric tools in a read-only meeting", () => {
 			expect(tools[name]).toBeUndefined();
 		},
 	);
+});
 
-	it.each(
-		FABRIC_CHAT_TOOL_DEFINITIONS.filter(
-			(tool) =>
-				toolAccess(tool) === "WRITE" &&
-				!MEETING_EXCLUDED_WRITES.includes(tool.name),
-		).map((tool) => tool.name),
-	)(
-		"refuses the Fabric change %s without reaching the gateway or proposing",
+/**
+ * Above project read: workflows, frames and pages, and the tools that answer
+ * for the person rather than the project. Even an actions meeting, the more
+ * permissive mode, neither runs nor proposes them.
+ */
+const ABOVE_PROJECT_READ = [
+	"fabric_list_workflows",
+	"fabric_get_workflow",
+	"fabric_list_frames",
+	...FABRIC_CHAT_TOOL_DEFINITIONS.filter(
+		(tool) =>
+			toolAccess(tool) === "WRITE" &&
+			!MEETING_EXCLUDED_WRITES.includes(tool.name),
+	).map((tool) => tool.name),
+	...FABRIC_PORTAL_TOOL_NAMES.filter(
+		(name) => !isFabricPortalProjectTool(name) && offeredInMeeting(name),
+	),
+];
+
+describe("Fabric tools above project read in a meeting", () => {
+	it.each(ABOVE_PROJECT_READ)(
+		"refuses %s without reaching the gateway or proposing",
 		async (name) => {
-			const { tools } = await turnTools(
-				createParlumeToolRuntime({ ...context, toolsReadOnly: true }),
-			);
+			const { tools } = await turnTools();
 
 			const result = await tools[name].execute({
 				workflowId: "wf-1",
@@ -329,72 +346,12 @@ describe("Fabric tools in a read-only meeting", () => {
 			});
 
 			expect(result).toMatchObject({
-				error: expect.stringContaining("read-only"),
+				error: expect.stringContaining("every project member can read"),
 			});
 			expect(gatewayCalls(name)).toHaveLength(0);
 			expect(mocks.state.action).toBeUndefined();
 		},
 	);
-});
-
-describe("Fabric tools in an actions meeting", () => {
-	it("runs a Fabric change at once, once, exactly as asked, without Fabric's own confirmation card", async () => {
-		const { tools } = await turnTools();
-
-		const result = await tools.fabric_create_workflow.execute(WORKFLOW, {
-			toolCallId: "call-1",
-		});
-		await tools.fabric_create_workflow.execute(WORKFLOW, {
-			toolCallId: "call-2",
-		});
-
-		expect(result).not.toHaveProperty("requiresConfirmation");
-		expect(gatewayCalls("fabric_create_workflow")).toHaveLength(1);
-		expect(gatewayCalls("fabric_create_workflow")[0]?.[0]).toEqual(
-			expect.objectContaining({
-				name: "fabric_create_workflow",
-				arguments: WORKFLOW,
-			}),
-		);
-		expect(mocks.state.action).toMatchObject({
-			speakerId: "speaker-a",
-			toolConfigId: "fabric-platform",
-			toolOriginalName: "fabric_create_workflow",
-			arguments: WORKFLOW,
-			status: "COMPLETED",
-		});
-	});
-
-	it("runs a Fabric read without a record", async () => {
-		const { tools } = await turnTools();
-
-		await tools.fabric_get_workflow.execute({ workflowId: "wf-1" });
-
-		expect(gatewayCalls("fabric_get_workflow")).toHaveLength(1);
-		expect(mocks.state.action).toBeUndefined();
-	});
-
-	it("keeps a Fabric tool inside the meeting's own project", async () => {
-		const { tools } = await turnTools();
-
-		const read = await tools.fabric_list_frames.execute({
-			surface: "artifact",
-			projectId: "another-project",
-		});
-		const change = await tools.fabric_create_frame.execute({
-			title: "Plan",
-			projectId: "another-project",
-		});
-
-		expect(read).toMatchObject({
-			error: expect.stringContaining("own project"),
-		});
-		expect(change).toMatchObject({
-			error: expect.stringContaining("own project"),
-		});
-		expect(mocks.callTool).not.toHaveBeenCalled();
-		expect(mocks.state.action).toBeUndefined();
-	});
 });
 
 describe("Fabric portal tools in a read-only meeting", () => {
@@ -414,7 +371,7 @@ describe("Fabric portal tools in a read-only meeting", () => {
 	});
 
 	it.each(
-		FABRIC_PORTAL_TOOL_NAMES.filter(
+		FABRIC_PORTAL_PROJECT_TOOL_NAMES.filter(
 			(name) => !PORTAL_READS.includes(name) && offeredInMeeting(name),
 		),
 	)(
@@ -464,23 +421,23 @@ describe("Fabric portal tools in an actions meeting", () => {
 		}
 	});
 
-	it("runs a portal change at once, once, and records who asked", async () => {
+	it("proposes a portal change once, exactly as asked, records who asked, and makes no change", async () => {
 		const { tools } = await turnTools();
+		const update = tools.fabric_update_feature_status;
+		const change = { featureId: "feature-1", status: "IN_REVIEW" };
 
-		await tools.fabric_update_feature_status.execute({
-			featureId: "feature-1",
-			status: "IN_REVIEW",
-		});
-		await tools.fabric_update_feature_status.execute({
-			featureId: "feature-1",
-			status: "IN_REVIEW",
-		});
+		const result = await update.execute(change, { toolCallId: "call-1" });
+		await update.execute(change, { toolCallId: "call-2" });
 
-		expect(gatewayCalls("fabric_update_feature_status")).toHaveLength(1);
+		expect(result).toMatchObject({ proposed: true, changed: false });
+		expect(gatewayCalls("fabric_update_feature_status")).toHaveLength(0);
 		expect(mocks.state.action).toMatchObject({
 			speakerId: "speaker-a",
 			toolConfigId: "fabric-platform",
 			toolOriginalName: "fabric_update_feature_status",
+			arguments: change,
+			status: "PROPOSED",
+			chatTag: "P3",
 		});
 	});
 

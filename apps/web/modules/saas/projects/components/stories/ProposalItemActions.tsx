@@ -16,6 +16,8 @@ import {
 } from "lucide-react";
 import { useId } from "react";
 import type { BacklogProposalPanel } from "../../../../analytics/events/backlog-open-existing";
+import type { SkippableField } from "./BacklogChangeDetailDialog";
+import type { ChangeItem } from "./BacklogChangeProposal";
 import {
 	type RoutingAnnotation,
 	type RoutingOverride,
@@ -89,6 +91,53 @@ export function itemApproveBlockedReason(
 	}
 }
 
+/**
+ * What an item's Approve button says it applies. An update proposal reviewed
+ * Fast reads "Apply all changes", or "Apply accepted changes" once the
+ * reviewer rejected one of its proposed fields. A create routed to enrich an
+ * existing ticket, and anything without a line-by-line review, reads
+ * "Approve".
+ */
+export function itemApproveLabel(
+	change: ChangeItem | undefined,
+	lineReview: boolean,
+	skippedFields: ReadonlySet<SkippableField> | undefined,
+): string {
+	if (!change || !lineReview || change.routing) {
+		return "Approve";
+	}
+	return rejectsAProposedField(change, skippedFields)
+		? "Apply accepted changes"
+		: "Apply all changes";
+}
+
+function rejectsAProposedField(
+	change: ChangeItem,
+	skipped: ReadonlySet<SkippableField> | undefined,
+): boolean {
+	if (!skipped || skipped.size === 0) {
+		return false;
+	}
+	return Array.from(skipped).some((field) => {
+		switch (field) {
+			case "title":
+				return (
+					change.title.from !== undefined &&
+					change.title.from !== change.title.to
+				);
+			case "description":
+			case "acceptanceCriteria":
+			case "priority":
+			case "size":
+				return change[field] !== undefined;
+			default: {
+				const unhandled: never = field;
+				return unhandled;
+			}
+		}
+	});
+}
+
 type Props = {
 	itemTitle: string;
 	onApprove: () => void;
@@ -98,13 +147,13 @@ type Props = {
 	approveBlockedReason: string | null;
 	/** The action in flight for this item, if any. */
 	pendingAction: "approve" | "reject" | null;
+	/** The Approve button's text, from `itemApproveLabel`. */
+	approveLabel: string;
 	/**
-	 * Update items only: Approve reads "Apply all changes" (Fast review) and
-	 * this opens the item for line-by-line review (Thorough).
+	 * Update items only: opens the target ticket with the changes pending a
+	 * line-by-line review (Thorough).
 	 */
 	onReviewLineByLine?: () => void;
-	/** Why line-by-line review is unavailable for this update, or null. */
-	lineReviewBlockedReason?: string | null;
 };
 
 export function ProposalItemActions({
@@ -114,11 +163,10 @@ export function ProposalItemActions({
 	disabled,
 	approveBlockedReason,
 	pendingAction,
+	approveLabel,
 	onReviewLineByLine,
-	lineReviewBlockedReason = null,
 }: Props) {
 	const reasonId = useId();
-	const lineReviewReasonId = useId();
 	return (
 		<div className="mt-2 flex flex-wrap items-center gap-2">
 			<Button
@@ -127,11 +175,12 @@ export function ProposalItemActions({
 				variant="outline"
 				className="h-7 px-2 text-xs"
 				onClick={onApprove}
+				data-item-approve=""
 				disabled={disabled || approveBlockedReason !== null}
 				aria-label={
-					onReviewLineByLine
-						? `Apply all changes to ${itemTitle}`
-						: `Approve ${itemTitle}`
+					approveLabel === "Approve"
+						? `Approve ${itemTitle}`
+						: `${approveLabel} to ${itemTitle}`
 				}
 				aria-describedby={approveBlockedReason ? reasonId : undefined}
 			>
@@ -143,7 +192,7 @@ export function ProposalItemActions({
 				) : (
 					<CheckIcon className="size-3.5" aria-hidden="true" />
 				)}
-				{onReviewLineByLine ? "Apply all changes" : "Approve"}
+				{approveLabel}
 			</Button>
 			{onReviewLineByLine && (
 				<Button
@@ -152,10 +201,10 @@ export function ProposalItemActions({
 					variant="outline"
 					className="h-7 px-2 text-xs"
 					onClick={onReviewLineByLine}
-					disabled={disabled || lineReviewBlockedReason !== null}
+					disabled={disabled || approveBlockedReason !== null}
 					aria-label={`Review ${itemTitle} line by line`}
 					aria-describedby={
-						lineReviewBlockedReason ? lineReviewReasonId : undefined
+						approveBlockedReason ? reasonId : undefined
 					}
 				>
 					<ListChecksIcon className="size-3.5" aria-hidden="true" />
@@ -184,14 +233,6 @@ export function ProposalItemActions({
 			{approveBlockedReason && (
 				<p id={reasonId} className="text-muted-foreground text-xs">
 					{approveBlockedReason}
-				</p>
-			)}
-			{onReviewLineByLine && lineReviewBlockedReason && (
-				<p
-					id={lineReviewReasonId}
-					className="text-muted-foreground text-xs"
-				>
-					{lineReviewBlockedReason}
 				</p>
 			)}
 		</div>

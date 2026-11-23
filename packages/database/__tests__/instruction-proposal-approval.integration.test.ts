@@ -156,7 +156,8 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				},
 			});
 			// An approval counts only while its approver holds the publish
-			// permission, which an organization member's role grants.
+			// permission on a project they can open: the proposer as its
+			// creator, each reviewer as an accepted project editor.
 			await db.member.createMany({
 				data: [PROPOSER_ID, REVIEWER_ID, SECOND_REVIEWER_ID].map(
 					(userId) => ({
@@ -178,6 +179,15 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				},
 			});
 			projectId = project.id;
+			await db.projectMember.createMany({
+				data: [REVIEWER_ID, SECOND_REVIEWER_ID].map((userId) => ({
+					projectId,
+					userId,
+					role: "EDITOR" as const,
+					invitedBy: PROPOSER_ID,
+					acceptedAt: now,
+				})),
+			});
 		});
 
 		afterEach(async () => {
@@ -622,7 +632,20 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 						userId: REVIEWER_ID,
 					},
 				});
+				// Leaving the organization also removes its project memberships.
+				const departedProjectMember =
+					await db.projectMember.findUniqueOrThrow({
+						where: {
+							projectId_userId: {
+								projectId,
+								userId: REVIEWER_ID,
+							},
+						},
+					});
 				await db.member.delete({ where: { id: departed.id } });
+				await db.projectMember.delete({
+					where: { id: departedProjectMember.id },
+				});
 				try {
 					await expect(
 						approveAs(SECOND_REVIEWER_ID),
@@ -639,6 +662,9 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					expect(proposal.proposalStatus).toBe("PENDING");
 				} finally {
 					await db.member.create({ data: departed });
+					await db.projectMember.create({
+						data: departedProjectMember,
+					});
 				}
 			});
 

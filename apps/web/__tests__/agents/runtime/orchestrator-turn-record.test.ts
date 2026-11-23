@@ -80,9 +80,11 @@ vi.mock("@repo/database", () => ({
 	},
 }));
 
-const { saveAnsweredClarification, saveOrchestratorTurn } = await import(
-	"@saas/agents/runtime/orchestrator-turn-record"
-);
+const {
+	saveAnsweredClarification,
+	saveOrchestratorTurn,
+	saveRefusedOrchestratorTurn,
+} = await import("@saas/agents/runtime/orchestrator-turn-record");
 
 const KEY = "turn-key-0001";
 const EXECUTION = "orch-00000000-0000-4000-8000-000000000001";
@@ -418,6 +420,33 @@ describe("the saved record", () => {
 			code: "AI_USAGE_LIMIT_EXCEEDED",
 		});
 		expect(store.saves).toBe(0);
+	});
+
+	it("saves a turn refused at its start with its question and the refusal", async () => {
+		const refused = turn({
+			status: "FAILED",
+			terminalAt: ended,
+			terminalReason: "refused: 429",
+		});
+		const paused =
+			"AI calls are paused — the usage limit for today is reached.";
+
+		await saveRefusedOrchestratorTurn(refused, paused);
+
+		const { messages, executions } = hydrate(refused);
+		expect(messages.map((message) => message.role)).toEqual([
+			"user",
+			"assistant",
+		]);
+		expect(messages[0]).toMatchObject({ content: QUESTION });
+		expect(messages[1]).toMatchObject({
+			content: `Error: ${paused}`,
+			streamStatus: "error",
+		});
+		expect(executions[0]).toMatchObject({
+			finalResponse: `Error: ${paused}`,
+			terminalStatus: "FAILED",
+		});
 	});
 
 	it("saves an empty success as the chat's completion wording", async () => {

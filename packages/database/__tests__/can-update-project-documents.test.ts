@@ -62,6 +62,13 @@ function orgProject() {
 	});
 }
 
+function orgProjectCreatedByCaller() {
+	mocks.projectFindUnique.mockResolvedValue({
+		userId: USER_ID,
+		organizationId: ORG_ID,
+	});
+}
+
 function activeProjectRow(role: string) {
 	mocks.projectMemberFindUnique.mockResolvedValue({
 		role,
@@ -110,15 +117,24 @@ describe("canUpdateProjectDocuments", () => {
 		},
 	);
 
-	it("grants a plain organization member with no project row", async () => {
-		orgProject();
+	it("grants the project's creator as a plain organization member with no project row", async () => {
+		orgProjectCreatedByCaller();
 		mocks.projectMemberFindUnique.mockResolvedValue(null);
 		mocks.memberFindFirst.mockResolvedValue({ role: "member" });
 		expect(await canUpdateProjectDocuments(PROJECT_ID, USER_ID)).toBe(true);
 	});
 
-	it("refuses an organization viewer with no project row", async () => {
+	it("refuses an organization member with no project row who cannot open the project", async () => {
 		orgProject();
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+		expect(await canUpdateProjectDocuments(PROJECT_ID, USER_ID)).toBe(
+			false,
+		);
+	});
+
+	it("refuses an organization viewer with no project row", async () => {
+		orgProjectCreatedByCaller();
 		mocks.projectMemberFindUnique.mockResolvedValue(null);
 		mocks.memberFindFirst.mockResolvedValue({ role: "viewer" });
 		expect(await canUpdateProjectDocuments(PROJECT_ID, USER_ID)).toBe(
@@ -135,8 +151,8 @@ describe("canUpdateProjectDocuments", () => {
 		expect(await canUpdateProjectDocuments(PROJECT_ID, USER_ID)).toBe(true);
 	});
 
-	it("treats an expired project row as absent and falls back to the org role", async () => {
-		orgProject();
+	it("treats an expired project row as absent and falls back to the creator's org role", async () => {
+		orgProjectCreatedByCaller();
 		mocks.projectMemberFindUnique.mockResolvedValue({
 			role: "VIEWER",
 			acceptedAt: new Date("2020-01-01"),

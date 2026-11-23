@@ -25,13 +25,13 @@ export async function rankStoryIdsBySemanticActivity(
 	const [edited, neverEdited] = await Promise.all([
 		db.userStory.findMany({
 			where: { ...where, lastEditedAt: { not: null } },
-			orderBy: { lastEditedAt: "desc" },
+			orderBy: [{ lastEditedAt: "desc" }, { id: "asc" }],
 			take,
 			select,
 		}),
 		db.userStory.findMany({
 			where: { ...where, lastEditedAt: null },
-			orderBy: { createdAt: "desc" },
+			orderBy: [{ createdAt: "desc" }, { id: "asc" }],
 			take,
 			select,
 		}),

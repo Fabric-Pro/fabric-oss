@@ -1,6 +1,7 @@
 import { assertInputOrgMatchesProject } from "../../lib/authorized-project-tenant";
 import {
 	assertProjectPermission,
+	assertSessionOrganizationPermission,
 	authorizeInputOrganization,
 	Permissions,
 } from "../../orpc/procedures";
@@ -31,12 +32,27 @@ export async function admitAtlasChat(request: {
 }
 
 /**
- * Every check `atlas.chat` makes, in the procedure's order, for the agent
- * runtime's `atlas-chat` engine. The request runs in `caller.organizationId`,
- * which the runtime endpoint tie-checked.
+ * Every check `atlas.chat` makes, for the agent runtime's `atlas-chat`
+ * engine. The request runs in `caller.organizationId`, which the runtime
+ * endpoint tie-checked; `activeOrganizationId` is the organization the
+ * caller's session names, whose role `atlas.chat` judges.
+ *
+ * The order differs from the procedure's. There the tenant middleware first
+ * refuses a session naming an organization the caller has left or that is
+ * deleted; project access and then AI_CHAT on the session's role follow.
+ * Here the checks run as: project access (PROJECT_READ), the request's
+ * organization against the project's, the session's organization (left,
+ * deleted, or no AI_CHAT), AI_CHAT in the request's organization, Atlas
+ * enabled, then Codebase Q&A available. A caller refused by more than one
+ * check can therefore see a different refusal here than from `atlas.chat`;
+ * whether they are refused does not change.
  */
 export async function authorizeAtlasChat(
-	caller: { userId: string; organizationId: string },
+	caller: {
+		userId: string;
+		organizationId: string;
+		activeOrganizationId: string | null;
+	},
 	projectId: string,
 ): Promise<void> {
 	// `requireProjectPermission`'s check: NOT_FOUND first (a caller with no tie
@@ -49,12 +65,13 @@ export async function authorizeAtlasChat(
 	// The refusal the middleware gives a request that names another
 	// organization than the project's.
 	assertInputOrgMatchesProject(caller.organizationId, project);
-	// AI_CHAT in the organization the turn runs in, as the runtime checks a
-	// conversation write (`thread.ts`). `requirePermission` reads the
-	// session's role from the oRPC tenant context, which a runtime request
-	// has none of. This is the project's organization (checked above), so a
-	// member whose session's active organization is another one, where they
-	// lack AI_CHAT, is admitted here and refused by `atlas.chat`.
+	// AI_CHAT as `atlas.chat`'s `requirePermission` judges it: on the role in
+	// the organization the session names. A member whose session names
+	// another organization, where they lack AI_CHAT, is refused here as
+	// there.
+	await assertSessionOrganizationPermission(Permissions.AI_CHAT, caller);
+	// And in the organization the turn runs in, the project's (checked
+	// above), as the runtime checks a conversation write (`thread.ts`).
 	await authorizeInputOrganization(
 		Permissions.AI_CHAT,
 		caller.organizationId,

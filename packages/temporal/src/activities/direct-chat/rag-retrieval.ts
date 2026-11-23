@@ -4,7 +4,7 @@
  * Handles RAG context retrieval from documents and workspaces.
  */
 
-import { getRAGProviderConfig } from "@repo/ai";
+import { getEmbeddingRAGProviderConfig } from "@repo/ai";
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import {
@@ -184,11 +184,11 @@ export async function retrieveRagContextForDirectChatActivity(
 			"@repo/rag"
 		);
 
-		let providerConfig:
-			| Awaited<ReturnType<typeof getRAGProviderConfig>>
-			| undefined;
+		let providerConfig: Awaited<
+			ReturnType<typeof getEmbeddingRAGProviderConfig>
+		>;
 		try {
-			providerConfig = await getRAGProviderConfig({
+			providerConfig = await getEmbeddingRAGProviderConfig({
 				userId,
 				organizationId,
 			});
@@ -213,7 +213,7 @@ export async function retrieveRagContextForDirectChatActivity(
 			documentIds,
 			topK,
 			minSimilarity,
-			apiKey: providerConfig.apiKey,
+			providerConfig,
 			// Reached only when the user attached documents to this message
 			// (the activity returns early above when documentIds is empty), so
 			// drop the similarity floor to guarantee the attached content is read.
@@ -481,7 +481,7 @@ async function retrieveWorkspaceDocuments(
 
 		// TENANT side, same reasoning as the project-document retrieval above:
 		// a workspace search runs for a chat turn someone is waiting on.
-		const providerConfig = await getRAGProviderConfig({
+		const providerConfig = await getEmbeddingRAGProviderConfig({
 			userId,
 			organizationId,
 		});

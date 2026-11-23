@@ -1,7 +1,6 @@
 "use client";
 
 import { Button } from "@ui/components/button";
-import { Markdown } from "@ui/components/markdown";
 import { TableCell, TableRow } from "@ui/components/table";
 import { ArrowRightIcon, ChevronRightIcon, FileTextIcon } from "lucide-react";
 import Link from "next/link";
@@ -14,8 +13,10 @@ import {
 	modeLabel,
 	type ParlumeSession,
 } from "../lib/parlume-format";
-import { MONO_LABEL } from "../lib/parlume-styles";
 import { sessionOutcome, TONE_DOT, TONE_TEXT } from "../lib/parlume-view";
+import { ParlumeConfidentialControl } from "./ParlumeConfidentialControl";
+import { ParlumeDeleteSession } from "./ParlumeDeleteSession";
+import { ParlumeSessionNotes } from "./ParlumeSessionNotes";
 import { ParlumeSuggestionsList } from "./ParlumeSuggestionsList";
 
 function hasNotesBlock(session: ParlumeSession): boolean {
@@ -26,16 +27,12 @@ function hasNotesBlock(session: ParlumeSession): boolean {
 function hasDetails(session: ParlumeSession): boolean {
 	return (
 		Boolean(session.lastError) ||
+		session.confidential ||
+		session.canMarkConfidential ||
 		hasNotesBlock(session) ||
 		session.requestCount > 0 ||
 		session.suggestionCount > 0
 	);
-}
-
-function notesPlaceholder(session: ParlumeSession): string {
-	return session.notesStatus === "FAILED"
-		? "Meeting notes are unavailable."
-		: "Preparing meeting notes…";
 }
 
 function SessionDetails({
@@ -49,28 +46,48 @@ function SessionDetails({
 	projectBasePath: string;
 	onViewRequests: (sessionId: string) => void;
 }) {
+	const transcriptReadable =
+		session.canReadTranscript && !session.transcriptDeletedAt;
+	const deletable =
+		session.canDeleteSession &&
+		((session.transcriptContextId !== null &&
+			!session.transcriptDeletedAt) ||
+			session.requestCount > 0 ||
+			session.suggestionCount > 0);
 	return (
 		<div className="space-y-3.5 px-6 pt-1 pb-5">
 			{session.lastError && (
 				<p className="text-sm text-destructive">{session.lastError}</p>
 			)}
-			{hasNotesBlock(session) && (
-				<div className="max-w-2xl space-y-1.5">
-					<span className={MONO_LABEL}>Meeting notes</span>
-					{session.notes ? (
-						<Markdown className="text-foreground prose-headings:mt-3 prose-headings:mb-1 prose-headings:text-sm prose-headings:font-medium prose-p:my-1 prose-ul:my-1 prose-li:my-0">
-							{session.notes}
-						</Markdown>
-					) : (
-						<p className="text-sm text-muted-foreground">
-							{notesPlaceholder(session)}
-						</p>
-					)}
-				</div>
+			<ParlumeConfidentialControl
+				projectId={projectId}
+				session={session}
+				className="max-w-2xl"
+			/>
+			{!session.contentWithheld && hasNotesBlock(session) && (
+				<ParlumeSessionNotes
+					projectId={projectId}
+					session={session}
+					transcriptHref={
+						session.transcriptContextId && transcriptReadable
+							? `${projectBasePath}/contexts/${session.transcriptContextId}`
+							: null
+					}
+				/>
 			)}
-			{(session.transcriptContextId || session.requestCount > 0) && (
+			{session.transcriptContextId &&
+				!transcriptReadable &&
+				!session.contentWithheld && (
+					<p className="text-sm text-muted-foreground">
+						{session.transcriptDeletedAt
+							? "The transcript was deleted. The notes stay."
+							: "Only the people invited to this meeting, the person who invited Parlume and project managers can open the transcript."}
+					</p>
+				)}
+			{((session.transcriptContextId && transcriptReadable) ||
+				session.requestCount > 0) && (
 				<div className="flex flex-wrap gap-2">
-					{session.transcriptContextId && (
+					{session.transcriptContextId && transcriptReadable && (
 						<Button asChild variant="outline" size="sm">
 							<Link
 								href={`${projectBasePath}/contexts/${session.transcriptContextId}`}
@@ -105,6 +122,12 @@ function SessionDetails({
 						variant="details"
 					/>
 				</div>
+			)}
+			{deletable && (
+				<ParlumeDeleteSession
+					projectId={projectId}
+					sessionId={session.id}
+				/>
 			)}
 		</div>
 	);

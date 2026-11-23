@@ -60,6 +60,10 @@ vi.mock("@repo/utils", async () => {
 
 import { logger } from "@repo/logs";
 
+import {
+	capReanalysisConnectedContext,
+	REANALYSIS_CONNECTED_CONTEXT_MAX_CHARS,
+} from "../src/activities/backlog-context/analysis-budget";
 import { reanalyzeBodyByKind } from "../src/lib/reanalyze-body-by-kind";
 
 const BUG_BODY = `## Bug: Login fails
@@ -557,5 +561,111 @@ describe("merge cancellation", () => {
 			description: BUG_BODY,
 		});
 		expect(logger.error).toHaveBeenCalled();
+	});
+});
+
+describe("reanalyzeBodyByKind — connected context cap (Fizzy #3523)", () => {
+	const CAP = REANALYSIS_CONNECTED_CONTEXT_MAX_CHARS;
+	const NOTICE = "\n\n[... truncated to fit token budget ...]";
+	const renderedContext = () =>
+		mocks.renderTemplate.mock.calls[0][0].variables
+			.connected_context_items as string;
+
+	function stubOutput(kind: "BUG" | "FEATURE") {
+		mocks.generateText.mockResolvedValue({
+			output:
+				kind === "BUG"
+					? { needsMoreInfo: false, markdown: BUG_BODY }
+					: { description: "As a user, I want X, so that Y." },
+			usage: {},
+		});
+	}
+
+	for (const kind of ["BUG", "FEATURE"] as const) {
+		describe(kind, () => {
+			const extra =
+				kind === "FEATURE"
+					? { existingDescription: "As a user, I want X, so that Y." }
+					: {};
+
+			it("truncates oversized context to exactly the cap, keeping the prefix", async () => {
+				stubOutput(kind);
+				const big = `PREFIX-${"x".repeat(100_000)}`;
+				await reanalyzeBodyByKind({
+					...BASE,
+					...extra,
+					kind,
+					connectedContext: big,
+				});
+				const ctx = renderedContext();
+				expect(ctx).toHaveLength(CAP);
+				expect(ctx.startsWith("PREFIX-xxx")).toBe(true);
+				expect(ctx.endsWith(NOTICE)).toBe(true);
+				expect(logger.info).toHaveBeenCalledWith(
+					expect.any(String),
+					expect.objectContaining({
+						kind,
+						projectId: "p1",
+						originalChars: big.length,
+						cappedChars: CAP,
+					}),
+				);
+			});
+
+			it("passes context at the cap through byte-identical", async () => {
+				stubOutput(kind);
+				const exact = "y".repeat(CAP);
+				await reanalyzeBodyByKind({
+					...BASE,
+					...extra,
+					kind,
+					connectedContext: exact,
+				});
+				expect(renderedContext()).toBe(exact);
+				expect(logger.info).not.toHaveBeenCalled();
+			});
+
+			it("renders undefined context as an empty string", async () => {
+				stubOutput(kind);
+				await reanalyzeBodyByKind({ ...BASE, ...extra, kind });
+				expect(renderedContext()).toBe("");
+			});
+		});
+	}
+});
+
+describe("capReanalysisConnectedContext", () => {
+	const CAP = REANALYSIS_CONNECTED_CONTEXT_MAX_CHARS;
+
+	it("pins the cap at 24,000 characters", () => {
+		expect(REANALYSIS_CONNECTED_CONTEXT_MAX_CHARS).toBe(24_000);
+	});
+
+	it("does not leave half a surrogate pair at the cut", () => {
+		const notice = "\n\n[... truncated to fit token budget ...]";
+		const cut = CAP - notice.length;
+		// The emoji's high surrogate sits on the last kept position.
+		const text = `${"a".repeat(cut - 1)}\u{1F600}${"b".repeat(CAP)}`;
+		const out = capReanalysisConnectedContext(text);
+		expect(out).toBe(`${"a".repeat(cut - 1)}${notice}`);
+		expect(out).toHaveLength(CAP - 1);
+	});
+
+	it("returns empty string for undefined and empty input", () => {
+		expect(capReanalysisConnectedContext(undefined)).toBe("");
+		expect(capReanalysisConnectedContext("")).toBe("");
+	});
+
+	it("leaves text of exactly the cap unchanged", () => {
+		const text = "a".repeat(CAP);
+		expect(capReanalysisConnectedContext(text)).toBe(text);
+	});
+
+	it("truncates text one character over the cap to exactly the cap", () => {
+		const out = capReanalysisConnectedContext("a".repeat(CAP + 1));
+		expect(out).toHaveLength(CAP);
+		expect(out.endsWith("[... truncated to fit token budget ...]")).toBe(
+			true,
+		);
 	});
 });

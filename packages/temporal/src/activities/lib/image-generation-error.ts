@@ -1,4 +1,5 @@
 import { DatabricksOAuthError } from "@repo/ai/lib/databricks-oauth";
+import { AnthropicFederationUnavailableError } from "@repo/database/prisma/queries/anthropic-federation";
 import { RetryError } from "ai";
 
 export type ImageGenerationProvider =
@@ -60,7 +61,10 @@ export function imageGenerationErrorMessage(
 
 /** Credential lookup can fail at a different provider than the image call. */
 export function imageCredentialErrorMessage(error: unknown): string {
-	if (error instanceof DatabricksOAuthError) {
+	if (
+		error instanceof DatabricksOAuthError ||
+		error instanceof AnthropicFederationUnavailableError
+	) {
 		return error.message;
 	}
 	return "Couldn't load the organization's AI provider credentials. Check Settings → AI Providers.";

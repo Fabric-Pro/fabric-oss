@@ -13,6 +13,7 @@ import { Editor } from "@tiptap/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { diffPartialText, fromMarkdown } from "../diff-utils";
 import {
+	acceptAllChanges,
 	acceptChange,
 	editorHoldsDiffMarks,
 	findDiffRanges,
@@ -100,6 +101,27 @@ describe("editorHoldsDiffMarks", () => {
 			),
 		).toBe(false);
 		expect(editorHoldsDiffMarks(null)).toBe(false);
+	});
+});
+
+describe("acceptAllChanges", () => {
+	it("takes every change in one transaction, leaving no marks", () => {
+		const editor = reviewOf(
+			"## Scope\n\nPhase one.\n\nA paragraph the assistant proposes.",
+		);
+		let transactions = 0;
+		editor.on("transaction", () => {
+			transactions += 1;
+		});
+
+		expect(acceptAllChanges(editor)).toBe(true);
+		expect(transactions).toBe(1);
+		expect(editorHoldsDiffMarks(editor.state.doc)).toBe(false);
+		const body = getEditorMarkdownForSave(editor) ?? "";
+		expect(body).toContain("Phase one.");
+		expect(body).not.toContain("then two");
+		expect(body).toContain("A paragraph the assistant proposes.");
+		expect(acceptAllChanges(editor)).toBe(false);
 	});
 });
 
@@ -295,22 +317,33 @@ describe("rejecting a block the proposal added whole", () => {
 		expect(editorHoldsDiffMarks(editor.state.doc)).toBe(false);
 	});
 
-	it("keeps a list item whose nested list held text before, emptying only its own line", () => {
-		const editor = editorWith(
-			'<ul><li><p><ins class="diff-ins">New lead-in</ins></p><ul><li><p>Kept detail</p></li></ul></li></ul>',
-		);
+	it.each([
+		{
+			label: "under the item before it, at the depth they had",
+			html: '<ul><li><p>Before</p></li><li><p><ins class="diff-ins">New lead-in</ins></p><ul><li><p>Kept detail</p></li></ul></li></ul><p>After.</p>',
+			kept: "<ul><li><p>Before</p><ul><li><p>Kept detail</p></li></ul></li></ul><p>After.</p>",
+		},
+		{
+			label: "after the items already nested under the item before it",
+			html: '<ul><li><p>Before</p><ul><li><p>Own detail</p></li></ul></li><li><p><ins class="diff-ins">New lead-in</ins></p><ul><li><p>Kept detail</p></li></ul></li></ul><p>After.</p>',
+			kept: "<ul><li><p>Before</p><ul><li><p>Own detail</p></li><li><p>Kept detail</p></li></ul></li></ul><p>After.</p>",
+		},
+		{
+			label: "in its place, one level out, when it was first in its list",
+			html: '<ul><li><p><ins class="diff-ins">New lead-in</ins></p><ul><li><p>Kept detail</p></li></ul></li><li><p>Next</p></li></ul><p>After.</p>',
+			kept: "<ul><li><p>Kept detail</p></li><li><p>Next</p></li></ul><p>After.</p>",
+		},
+	])(
+		"keeps the items nested under a removed line $label, under no empty bullet",
+		({ html, kept }) => {
+			const editor = editorWith(html);
 
-		expect(rejectAllChanges(editor)).toBe(true);
+			expect(rejectAllChanges(editor)).toBe(true);
 
-		expect(editor.state.doc.textContent).toBe("Kept detail");
-		let items = 0;
-		editor.state.doc.descendants((node) => {
-			if (node.type.name === "listItem") {
-				items += 1;
-			}
-		});
-		expect(items).toBe(2);
-	});
+			expect(emptyTextblocks(editor)).toBe(0);
+			expect(editor.getJSON()).toEqual(editorWith(kept).getJSON());
+		},
+	);
 
 	it("keeps the document's one block, emptied, since a document is never without one", () => {
 		const editor = editorWith(

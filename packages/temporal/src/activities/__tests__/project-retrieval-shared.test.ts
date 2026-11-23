@@ -25,6 +25,7 @@ vi.mock("@repo/database", () => ({
 		projectContext: { findMany: h.rows },
 		projectContextUrlPage: { findMany: h.pages },
 	},
+	findConfidentialTranscriptContextIds: async () => new Set<string>(),
 	getRetrievableContextById: h.context,
 	getRetrievableConversationBundleById: vi.fn(),
 	getProjectRagSettings: async () => ({

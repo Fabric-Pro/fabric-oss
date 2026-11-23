@@ -135,8 +135,6 @@ const { app, start } = createUnifiedServer(
 			},
 		};
 	},
-	// A2A streaming executor (not used for now)
-	undefined,
 	// Platform streaming executor for CopilotKit LangGraphAgent
 	// Uses streamMode: ["updates", "messages"] to get both node updates AND LLM token streaming
 	async function* (

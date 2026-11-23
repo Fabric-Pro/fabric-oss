@@ -5,14 +5,19 @@
  * item title or ticket ID, and lives for as long as the drawer is open.
  * In the detail view each unresolved item is approved, or moved to
  * Rejected, on its own: the inbox sends only that index and stays on the
- * proposal until nothing is left to review.
+ * proposal until nothing is left to review. A background refresh of the
+ * open proposal never disables those actions.
  */
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+	focusManager,
+	QueryClient,
+	QueryClientProvider,
+} from "@tanstack/react-query";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 	useFeatureFlag: () => false,
@@ -206,6 +211,10 @@ if (!Element.prototype.hasPointerCapture) {
 }
 
 import { PendingBacklogProposalsInbox } from "../PendingBacklogProposalsInbox";
+import {
+	endProposalTicketReview,
+	pendingProposalTicketReview,
+} from "../proposal-ticket-review";
 
 const PROJECT_ID = "project_1";
 const PROPOSAL_ID = "proposal_1";
@@ -359,7 +368,12 @@ const REJECTED_ROWS = [
 	}),
 ];
 
-function renderInbox(options: { defaultFilter?: "all" | "backlog" } = {}) {
+function renderInbox(
+	options: {
+		defaultFilter?: "all" | "backlog";
+		navigate?: (href: string) => void;
+	} = {},
+) {
 	const client = new QueryClient({
 		defaultOptions: {
 			queries: { retry: false },
@@ -374,6 +388,7 @@ function renderInbox(options: { defaultFilter?: "all" | "backlog" } = {}) {
 				projectId={PROJECT_ID}
 				organizationId={null}
 				defaultFilter={options.defaultFilter}
+				navigate={options.navigate}
 			/>
 		</QueryClientProvider>
 	);
@@ -859,5 +874,111 @@ describe("PendingBacklogProposalsInbox — per-item review", () => {
 		expect(
 			await screen.findByText("1 of 2 changes left"),
 		).toBeInTheDocument();
+	});
+});
+
+describe("PendingBacklogProposalsInbox — actions during a background refresh", () => {
+	const update = {
+		type: "feature",
+		action: "update",
+		existingId: "story-7",
+		existingIdentifier: "ABC-7",
+		title: { from: "Bravo item", to: "Bravo item" },
+		description: { from: "Intro\nOld step", to: "Intro\nNew step" },
+		structurePreserved: true,
+		reasoning: "Test fixture",
+		sourceContext: "teams_messages",
+	};
+
+	/** Re-read the open proposal as the tab regaining focus does, held open. */
+	function startBackgroundRefresh(detail: unknown): () => void {
+		let release: () => void = () => {};
+		pendingProposalsGet.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve(detail);
+				}),
+		);
+		act(() => {
+			focusManager.setFocused(false);
+			focusManager.setFocused(true);
+		});
+		return () => release();
+	}
+
+	afterEach(() => {
+		focusManager.setFocused(undefined);
+	});
+
+	it("moves an item to Rejected on the first click while the proposal refreshes", async () => {
+		proposalsRejectItem.mockResolvedValue({ success: true, updated: true });
+		const user = setupUser();
+		renderInbox();
+		await user.click(await screen.findByText(SUMMARY));
+		const reject = await screen.findByRole("button", {
+			name: "Move Bravo item to Rejected",
+		});
+		await waitFor(() => {
+			expect(reject).toBeEnabled();
+		});
+		const getCalls = pendingProposalsGet.mock.calls.length;
+
+		const release = startBackgroundRefresh(makeDetail());
+		await waitFor(() => {
+			expect(pendingProposalsGet.mock.calls.length).toBeGreaterThan(
+				getCalls,
+			);
+		});
+		await user.click(
+			screen.getByRole("button", { name: "Move Bravo item to Rejected" }),
+		);
+
+		await waitFor(() => {
+			expect(proposalsRejectItem).toHaveBeenCalledTimes(1);
+		});
+		expect(proposalsRejectItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proposalId: PROPOSAL_ID,
+				changeIndex: 1,
+			}),
+		);
+		release();
+	});
+
+	it("opens an update's ticket for a line-by-line review, handing it the item", async () => {
+		const base = makeDetail();
+		const detail = {
+			...base,
+			proposal: {
+				...base.proposal,
+				changes: [feature("Alpha item"), update],
+			},
+		};
+		pendingProposalsGet.mockResolvedValue(detail);
+		const navigate = vi.fn();
+		const user = setupUser();
+		renderInbox({ navigate });
+		await user.click(await screen.findByText(SUMMARY));
+		const review = await screen.findByRole("button", {
+			name: "Review Bravo item line by line",
+		});
+		await waitFor(() => {
+			expect(review).toBeEnabled();
+		});
+		await user.click(review);
+
+		expect(navigate).toHaveBeenCalledWith(
+			"/app/example-org/projects/project_1/stories/story-7?storyTab=cleanSpec",
+		);
+		const handed = pendingProposalTicketReview("story-7");
+		expect(handed).toMatchObject({
+			projectId: PROJECT_ID,
+			proposalId: PROPOSAL_ID,
+			changeIndex: 1,
+			source: detail.source,
+		});
+		expect(handed?.change.existingId).toBe("story-7");
+		expect(proposalsRejectItem).not.toHaveBeenCalled();
+		endProposalTicketReview();
 	});
 });

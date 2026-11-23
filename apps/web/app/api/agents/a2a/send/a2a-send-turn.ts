@@ -1,3 +1,4 @@
+import { AnthropicFederationUnavailableError } from "@repo/database/prisma/queries/anthropic-federation";
 /**
  * The A2A relay's steps, shared by `POST /api/agents/a2a/send` and the agent
  * runtime's `cuga-generalist` engine: find the ACTIVE SYSTEM agent and check
@@ -135,11 +136,13 @@ export async function resolveA2ARelayAIConfig({
 		// Track usage (fire-and-forget)
 		trackUsage();
 
-		// Get raw provider config for base URL
-		const providerConfig = await getRAGProviderConfigForModel(
-			{ userId, organizationId },
-			metadata,
-		);
+		// Plan credentials are exchanged separately and have no provider URL.
+		const providerConfig = onPlan
+			? null
+			: await getRAGProviderConfigForModel(
+					{ userId, organizationId },
+					metadata,
+				);
 
 		aiToken = await issueAIToken({
 			userId,
@@ -160,7 +163,7 @@ export async function resolveA2ARelayAIConfig({
 			? undefined
 			: buildEffectiveBaseUrl(
 					metadata.provider,
-					providerConfig.baseUrl || undefined,
+					providerConfig?.baseUrl || undefined,
 				) || undefined;
 
 		console.log("[A2A Send] Issued AI token for user:", {
@@ -178,6 +181,9 @@ export async function resolveA2ARelayAIConfig({
 		// destructive toast and stops the request.
 		if (error instanceof AiUsageLimitExceededError) {
 			return { ok: false, limit: error };
+		}
+		if (error instanceof AnthropicFederationUnavailableError) {
+			throw error;
 		}
 		console.warn("[A2A Send] Failed to issue AI token:", error);
 		// Continue without AI config - agent will use its own defaults

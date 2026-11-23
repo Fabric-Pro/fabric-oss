@@ -419,6 +419,8 @@ Membership of the organization is **not** reach. It is the single most common wa
 
 Distinct from *tenant scope*, which asks which projects belong to a workspace the person is in at all. The two differ for exactly the projects of your own organization that you were never added to, and that gap is where every disclosure and every dead link in this area has come from. A surface deciding what to **show** may legitimately ask either question; a surface deciding what to **link to** must ask about reach.
 
+Acting on a project requires reach too. An organization role decides which permissions a person holds on a project they can reach, but it never grants reach on its own, so a person who cannot open a project cannot change it either. The one deliberate exception is reports: an organization admin or owner inherits Project Editor on every project's reports. Reach is decided for the project a request names, so a record inside it (a feature's task, a maturation question) is looked up within that project; an id from any other project reads as missing.
+
 ### Project guest
 A member of a project who is not a member of the organization that owns it — typically someone from the client's side, invited to one engagement. A guest can hold any project role, including one that generates documents, so project role says nothing about guest status; only the owning organization's membership does.
 

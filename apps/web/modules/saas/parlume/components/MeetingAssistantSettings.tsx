@@ -5,13 +5,16 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { LoaderIcon, LockIcon } from "lucide-react";
 import { SETTINGS_QUERY_KEY } from "../lib/query-keys";
+import { ChannelRepliesSettingsCard } from "./ChannelRepliesSettingsCard";
+import { GuestSettingsCard } from "./GuestSettingsCard";
 import { MeetingBotSettingsCard } from "./MeetingBotSettingsCard";
 import { VoiceSettingsCard } from "./VoiceSettingsCard";
 
 /**
  * Everything Parlume needs that an organization configures for itself: its
- * meeting bot and its voice. The media bridge is the Fabric operator's and is
- * not shown here.
+ * meeting bot, its voice, what it does when a guest is in, and the account it
+ * replies with in Teams channels. The media bridge is the Fabric operator's
+ * and is not shown here.
  */
 export function MeetingAssistantSettings({
 	organizationId,
@@ -75,6 +78,16 @@ export function MeetingAssistantSettings({
 				organizationId={organizationId}
 				settings={query.data}
 				aiProvidersHref={aiProvidersHref}
+				readOnly={readOnly}
+			/>
+			<GuestSettingsCard
+				organizationId={organizationId}
+				settings={query.data}
+				readOnly={readOnly}
+			/>
+			<ChannelRepliesSettingsCard
+				organizationId={organizationId}
+				settings={query.data}
 				readOnly={readOnly}
 			/>
 		</>

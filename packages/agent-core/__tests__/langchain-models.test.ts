@@ -2803,3 +2803,383 @@ it("normalizes long Databricks URL slash runs", () => {
 	) as unknown as { clientConfig: { baseURL: string } };
 	expect(model.clientConfig.baseURL).toContain("https://example.com/");
 });
+
+it.each([false, true])(
+	"uses the correct Anthropic authorization header (bearer=%s)",
+	async (bearer) => {
+		const requests: Headers[] = [];
+		const fetch = vi.fn(
+			async (input: string | Request, init?: RequestInit) => {
+				requests.push(new Request(input, init).headers);
+				return new Response(null, { status: 401 });
+			},
+		);
+		vi.stubGlobal("fetch", fetch);
+		try {
+			const model = createProviderModel(
+				{
+					provider: "ANTHROPIC_DIRECT",
+					model: "claude-haiku-4-5",
+					apiKey: "example-api-key",
+					...(bearer && {
+						anthropicBearerSource: async () => ({
+							kind: "bearer" as const,
+							token: "example-access-token",
+							expiresAt: Date.now() + 60_000,
+						}),
+					}),
+				},
+				{ maxRetries: 0 },
+			);
+			await expect(model.invoke("Hello")).rejects.toThrow();
+			expect(requests).toHaveLength(1);
+			expect(requests[0].get("x-api-key")).toBe(
+				bearer ? null : "example-api-key",
+			);
+			expect(requests[0].get("authorization")).toBe(
+				bearer ? "Bearer example-access-token" : null,
+			);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	},
+);
+
+it.each([true, false])(
+	"uses a model-local Bearer through Fabric token expiry and refreshes only while authorized (%s)",
+	async (canExchangeAgain) => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const startedAt = Date.now();
+		const fabricExpiresAt = startedAt + 300_000;
+		const bearerExpiresAt = startedAt + 600_000;
+		vi.stubEnv("FABRIC_API_URL", "https://fabric.example.com");
+		const exchange = vi.fn(async () => {
+			if (!canExchangeAgain && Date.now() >= fabricExpiresAt) {
+				return Response.json(
+					{ error: "AI token expired" },
+					{ status: 401 },
+				);
+			}
+			const first = Date.now() === startedAt;
+			return Response.json({
+				credentialKind: "bearer",
+				provider: "ANTHROPIC_DIRECT",
+				model: "claude-haiku-4-5",
+				accessToken: first ? "example-first" : "example-replacement",
+				credentialExpiresAt: first
+					? bearerExpiresAt
+					: Date.now() + 600_000,
+			});
+		});
+		const dispatch = vi.fn(async (_request: Request) =>
+			Response.json({
+				id: "msg_example",
+				type: "message",
+				role: "assistant",
+				model: "claude-haiku-4-5",
+				content: [{ type: "text", text: "Example reply" }],
+				stop_reason: "end_turn",
+				usage: { input_tokens: 1, output_tokens: 1 },
+			}),
+		);
+		vi.stubGlobal(
+			"fetch",
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const request = new Request(input, init);
+				if (
+					request.url ===
+					"https://fabric.example.com/api/ai/keys/exchange"
+				) {
+					expect(request.headers.get("x-ai-token")).toBe(
+						"example-fabric-token",
+					);
+					return exchange();
+				}
+				expect(request.url).toBe(
+					"https://api.anthropic.com/v1/messages",
+				);
+				return dispatch(request);
+			},
+		);
+		try {
+			const configurable = {
+				ai_credential_kind: "bearer",
+				ai_provider: "ANTHROPIC_DIRECT",
+				ai_model: "claude-haiku-4-5",
+				fabric_usage: { ai_token: "example-fabric-token" },
+			};
+			const config = extractProviderConfig({ configurable });
+			if (!config) {
+				throw new Error("Expected a Bearer provider config");
+			}
+			const model = createProviderModel(config, {
+				maxRetries: 0,
+				maxTokens: 100,
+			}) as ChatAnthropic;
+			model.streaming = false;
+			await expect(model.invoke("Hello")).resolves.toMatchObject({
+				content: "Example reply",
+			});
+			vi.setSystemTime(fabricExpiresAt + 1);
+			await expect(model.invoke("Hello again")).resolves.toMatchObject({
+				content: "Example reply",
+			});
+			expect(exchange).toHaveBeenCalledTimes(1);
+			expect(
+				dispatch.mock.calls.map(([request]) =>
+					request.headers.get("authorization"),
+				),
+			).toEqual(["Bearer example-first", "Bearer example-first"]);
+			expect(JSON.stringify(configurable)).not.toContain("example-first");
+			if (!canExchangeAgain) {
+				const anotherSource = extractProviderConfig({
+					configurable,
+				})?.anthropicBearerSource;
+				await expect(anotherSource?.()).rejects.toThrow(
+					"AI token expired",
+				);
+			}
+
+			vi.setSystemTime(bearerExpiresAt - 15_000);
+			if (canExchangeAgain) {
+				await model.invoke("Refresh");
+				expect(
+					dispatch.mock.lastCall?.[0].headers.get("authorization"),
+				).toBe("Bearer example-replacement");
+			} else {
+				const expired = {
+					cause: {
+						message: "Token exchange failed: AI token expired",
+					},
+				};
+				await expect(model.invoke("Refresh")).rejects.toMatchObject(
+					expired,
+				);
+				vi.setSystemTime(bearerExpiresAt);
+				await expect(model.invoke("Expired")).rejects.toMatchObject(
+					expired,
+				);
+				expect(dispatch).toHaveBeenCalledTimes(2);
+			}
+			expect(exchange).toHaveBeenCalledTimes(canExchangeAgain ? 2 : 4);
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllGlobals();
+			vi.unstubAllEnvs();
+		}
+	},
+);
+
+it.each([
+	undefined,
+	"example-invalid-scope",
+	{},
+	{ ai_token: 1 },
+	{ ai_token: "" },
+])(
+	"refuses a flat tool token when the Bearer usage scope is %j",
+	(fabric_usage) => {
+		expect(() =>
+			extractProviderConfig({
+				configurable: {
+					ai_credential_kind: "bearer",
+					ai_provider: "ANTHROPIC_DIRECT",
+					ai_model: "example-claude",
+					ai_token: "example-tool-token",
+					fabric_usage,
+				},
+			}),
+		).toThrow("Missing Anthropic Bearer credential exchange context");
+	},
+);
+
+it.each(["apiKey", "federated"] as const)(
+	"uses a separate task provider with an Anthropic %s run",
+	async (authMode) => {
+		vi.stubEnv("FABRIC_API_URL", "https://fabric.example.com");
+		vi.stubEnv(
+			"AGENT_SERVICE_SECRET",
+			"example-service-secret-0123456789abcdef",
+		);
+		const send = vi.fn(async (url: string) => {
+			expect(url).toContain("/api/agents/ai-config/task");
+			return Response.json({
+				provider: "OPENAI_DIRECT",
+				model: "example-task-model",
+				apiKey: "example-task-key",
+			});
+		});
+		vi.stubGlobal("fetch", send);
+		try {
+			const model = await getAgentModelAsync(
+				{
+					configurable: {
+						ai_provider: "ANTHROPIC_DIRECT",
+						ai_model: "example-anthropic-model",
+						tenant_user_id: "example-user",
+						tenant_organization_id: "example-org",
+						...(authMode === "apiKey"
+							? { ai_api_key: "example-anthropic-key" }
+							: {
+									ai_credential_kind: "bearer",
+									fabric_usage: {
+										ai_token: "example-fabric-token",
+									},
+								}),
+					},
+				},
+				{ taskType: "SIMPLE" },
+			);
+			expect(servedModelIdentity(model)).toEqual({
+				provider: "OPENAI_DIRECT",
+				model: "example-task-model",
+			});
+			expect(send).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.unstubAllGlobals();
+			vi.unstubAllEnvs();
+		}
+	},
+);
+
+it.each([
+	[
+		"bearer",
+		{ provider: "OPENAI_DIRECT", model: "task", credentialKind: "bearer" },
+		"Missing Anthropic Bearer credential exchange context",
+	],
+	[
+		"apiKey",
+		{
+			provider: "ANTHROPIC_DIRECT",
+			model: "task",
+			credentialKind: "bearer",
+		},
+		"Missing Anthropic Bearer credential exchange context",
+	],
+	[
+		"apiKey",
+		{ provider: "OPENAI_DIRECT", model: "task" },
+		"The selected task provider did not return a credential",
+	],
+	[
+		"bearer",
+		{ provider: "ANTHROPIC_DIRECT", model: "task" },
+		"The selected task provider did not return a credential",
+	],
+] as const)(
+	"refuses a task credential with incompatible metadata from a %s run (%o)",
+	async (authMode, task, message) => {
+		vi.stubEnv("FABRIC_API_URL", "https://fabric.example.com");
+		vi.stubEnv(
+			"AGENT_SERVICE_SECRET",
+			"example-service-secret-0123456789abcdef",
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json(task)),
+		);
+		try {
+			await expect(
+				getAgentModelAsync(
+					{
+						configurable: {
+							ai_provider: "ANTHROPIC_DIRECT",
+							ai_model: "example-anthropic-model",
+							tenant_user_id: "example-user",
+							tenant_organization_id: "example-org",
+							...(authMode === "bearer"
+								? {
+										ai_credential_kind: "bearer",
+										fabric_usage: {
+											ai_token: "example-fabric-token",
+										},
+									}
+								: { ai_api_key: "example-anthropic-key" }),
+						},
+					},
+					{ taskType: "SIMPLE" },
+				),
+			).rejects.toThrow(message);
+		} finally {
+			vi.unstubAllGlobals();
+			vi.unstubAllEnvs();
+		}
+	},
+);
+
+it.each(["ANTHROPIC_FEDERATION_UNAVAILABLE", "ANTHROPIC_BEARER_REQUIRED"])(
+	"does not use the original provider after a task returns %s",
+	async (code) => {
+		vi.stubEnv("FABRIC_API_URL", "https://fabric.example.com");
+		vi.stubEnv(
+			"AGENT_SERVICE_SECRET",
+			"example-service-secret-0123456789abcdef",
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json({ code }, { status: 409 })),
+		);
+		try {
+			await expect(
+				getAgentModelAsync(
+					{
+						configurable: {
+							ai_provider: "OPENAI_DIRECT",
+							ai_model: "example-original-model",
+							ai_api_key: "example-original-key",
+							tenant_user_id: "example-user",
+							tenant_organization_id: "example-org",
+						},
+					},
+					{ taskType: "SIMPLE" },
+				),
+			).rejects.toMatchObject({ code });
+		} finally {
+			vi.unstubAllGlobals();
+			vi.unstubAllEnvs();
+		}
+	},
+);
+
+it("uses the scoped Bearer source when task metadata selects Anthropic", async () => {
+	vi.stubEnv("FABRIC_API_URL", "https://fabric.example.com");
+	vi.stubEnv(
+		"AGENT_SERVICE_SECRET",
+		"example-service-secret-0123456789abcdef",
+	);
+	const send = vi.fn(async (_url: string, init?: RequestInit) => {
+		expect(new Headers(init?.headers).get("X-AI-Credential-Kind")).toBe(
+			"bearer",
+		);
+		return Response.json({
+			provider: "ANTHROPIC_DIRECT",
+			model: "example-task-model",
+			credentialKind: "bearer",
+		});
+	});
+	vi.stubGlobal("fetch", send);
+	try {
+		const model = await getAgentModelAsync(
+			{
+				configurable: {
+					ai_provider: "ANTHROPIC_DIRECT",
+					ai_model: "example-original-model",
+					ai_credential_kind: "bearer",
+					fabric_usage: { ai_token: "example-fabric-token" },
+					tenant_user_id: "example-user",
+					tenant_organization_id: "example-org",
+				},
+			},
+			{ taskType: "SIMPLE" },
+		);
+		expect(servedModelIdentity(model)).toEqual({
+			provider: "ANTHROPIC_DIRECT",
+			model: "example-task-model",
+		});
+		expect(send).toHaveBeenCalledTimes(1);
+	} finally {
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+	}
+});

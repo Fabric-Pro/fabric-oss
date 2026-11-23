@@ -119,6 +119,7 @@ import {
 	deriveStorageErrorSkipReason,
 	describeContextSkipReason,
 } from "../../lib/context-skip-reason";
+import { withoutWithheldParlumeTranscripts } from "../../lib/parlume-transcript-access";
 import {
 	buildPathPrefixMarkdown,
 	type ContextTenantFilter,
@@ -657,9 +658,13 @@ export const createContextsBatchDownloadUrlProcedure = tenantProtectedProcedure
 		// 2. Load all contexts (ordered by createdAt asc). Authorization for
 		//    this project was already enforced by the procedure middleware and
 		//    `getProjectForDownload` above, so the query is project-scoped.
-		const contexts = (await listContextsForDownload(
-			input.projectId,
-		)) as unknown as ContextRow[];
+		//    A Parlume transcript the caller may not read is left out.
+		const contexts = await withoutWithheldParlumeTranscripts(
+			(await listContextsForDownload(
+				input.projectId,
+			)) as unknown as ContextRow[],
+			{ projectId: input.projectId, userId: user.id },
+		);
 
 		// 3. Fix the order, apply the item ceiling, and weigh the result —
 		//    all BEFORE streaming anything.

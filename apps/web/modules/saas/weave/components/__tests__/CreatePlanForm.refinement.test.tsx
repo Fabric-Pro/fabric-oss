@@ -8,6 +8,8 @@
  *     organization on screen, a new thread per input; the feedback shows as
  *     it streams, and the improved request, the ready banner and "Use
  *     refined request" change only when the reply is complete;
+ *   - the improved request replaces the Request only on "Use refined
+ *     request";
  *   - a flag flipped after mount changes nothing until the next mount;
  *   - each follow-up carries the improved request and the exchanges so far;
  *   - a failure toasts its message and takes the input back out, leaving
@@ -243,6 +245,17 @@ function requestField(): HTMLTextAreaElement {
 	return screen.getByLabelText("Request") as HTMLTextAreaElement;
 }
 
+/** The improved request the last reply proposes, before it is used. */
+function refinedField(): HTMLTextAreaElement {
+	return screen.getByLabelText("Refined request") as HTMLTextAreaElement;
+}
+
+function applyRefinedRequest() {
+	fireEvent.click(
+		screen.getByRole("button", { name: /Use refined request/ }),
+	);
+}
+
 function refinementField(): HTMLInputElement {
 	return screen.getByPlaceholderText(INPUT_PLACEHOLDER) as HTMLInputElement;
 }
@@ -339,7 +352,7 @@ describe("with the flag off", () => {
 
 		sendRefinement("Tokens, please");
 
-		await waitFor(() => expect(requestField().value).toBe(U1));
+		await waitFor(() => expect(refinedField().value).toBe(U1));
 		expect(m.refine).toHaveBeenCalledWith({
 			projectId: PROJECT,
 			organizationId: ORG,
@@ -350,6 +363,26 @@ describe("with the flag off", () => {
 		expect(screen.getByText(READY_BANNER)).toBeTruthy();
 		expect(screen.getByText(F1)).toBeTruthy();
 		expect(m.runs).toEqual([]);
+	});
+
+	it("replaces the request with the refined one only on Use refined request", async () => {
+		m.refine.mockResolvedValue({
+			success: true,
+			feedback: F1,
+			updatedMessage: U1,
+			isReady: true,
+		});
+		form();
+		startRefining();
+
+		sendRefinement("Tokens, please");
+		await waitFor(() => expect(refinedField().value).toBe(U1));
+		expect(requestField().value).toBe(REQUEST);
+
+		applyRefinedRequest();
+
+		expect(requestField().value).toBe(U1);
+		expect(screen.queryByLabelText("Refined request")).toBeNull();
 	});
 
 	it("toasts a failure and takes the input back out", async () => {
@@ -397,6 +430,65 @@ describe("with the flag off", () => {
 		await waitFor(() => expect(refinementField().disabled).toBe(false));
 	});
 
+	it("drops the refined request once the request is written again", async () => {
+		m.refine
+			.mockResolvedValueOnce({
+				success: true,
+				feedback: F1,
+				updatedMessage: U1,
+				isReady: false,
+			})
+			.mockResolvedValueOnce({
+				success: true,
+				feedback: "Clear now.",
+				updatedMessage: "U2",
+				isReady: true,
+			});
+		form();
+		startRefining();
+		sendRefinement("Tokens, please");
+		await waitFor(() => expect(refinedField().value).toBe(U1));
+
+		fireEvent.change(requestField(), { target: { value: "Add signup" } });
+
+		expect(screen.queryByLabelText("Refined request")).toBeNull();
+		sendRefinement("Example provider");
+		await waitFor(() => expect(refinedField().value).toBe("U2"));
+		expect(m.refine).toHaveBeenLastCalledWith(
+			expect.objectContaining({ currentMessage: "Add signup" }),
+		);
+
+		fireEvent.change(requestField(), {
+			target: { value: "Add signup and login" },
+		});
+		applyRefinedRequest();
+
+		expect(requestField().value).toBe("Add signup and login");
+	});
+
+	it("proposes nothing from a reply that arrives after the request was written again", async () => {
+		const pending = deferred<unknown>();
+		m.refine.mockReturnValue(pending.promise);
+		form();
+		startRefining();
+		sendRefinement("Tokens, please");
+		await waitFor(() => expect(m.refine).toHaveBeenCalledTimes(1));
+
+		fireEvent.change(requestField(), { target: { value: "Add signup" } });
+		await act(async () => {
+			pending.resolve({
+				success: true,
+				feedback: F1,
+				updatedMessage: U1,
+				isReady: false,
+			});
+		});
+
+		await screen.findByText(F1);
+		expect(screen.queryByLabelText("Refined request")).toBeNull();
+		expect(requestField().value).toBe("Add signup");
+	});
+
 	it("sends each follow-up with the improved request and the exchanges so far", async () => {
 		m.refine
 			.mockResolvedValueOnce({
@@ -415,9 +507,10 @@ describe("with the flag off", () => {
 		startRefining();
 
 		sendRefinement("Tokens, please");
-		await waitFor(() => expect(requestField().value).toBe(U1));
+		await waitFor(() => expect(refinedField().value).toBe(U1));
 		sendRefinement("Example provider");
-		await waitFor(() => expect(requestField().value).toBe("U2"));
+		await waitFor(() => expect(refinedField().value).toBe("U2"));
+		expect(requestField().value).toBe(REQUEST);
 
 		expect(m.refine).toHaveBeenLastCalledWith({
 			projectId: PROJECT,
@@ -462,14 +555,14 @@ describe("with the flag on and an organization on screen", () => {
 		startRefining();
 
 		sendRefinement("Tokens, please");
-		await waitFor(() => expect(requestField().value).toBe(U1));
+		await waitFor(() => expect(refinedField().value).toBe(U1));
 		m.respond = runtimeReply({
 			feedback: "Clear now.",
 			updatedMessage: "U2",
 			isReady: true,
 		});
 		sendRefinement("Example provider");
-		await waitFor(() => expect(requestField().value).toBe("U2"));
+		await waitFor(() => expect(refinedField().value).toBe("U2"));
 
 		expect(m.refine).not.toHaveBeenCalled();
 		expect(m.runs).toHaveLength(2);
@@ -554,12 +647,14 @@ describe("with the flag on and an organization on screen", () => {
 			rest.resolve();
 		});
 
-		await waitFor(() => expect(requestField().value).toBe(U1));
+		await waitFor(() => expect(refinedField().value).toBe(U1));
+		expect(requestField().value).toBe(REQUEST);
 		expect(bubbles(container)).toEqual(["Tokens, please", F1]);
 		expect(screen.getByText(READY_BANNER)).toBeTruthy();
 		expect(screen.getByText("Use refined request")).toBeTruthy();
 		expect(refinementField().disabled).toBe(false);
 
+		applyRefinedRequest();
 		fireEvent.click(screen.getByRole("button", { name: /Create Plan/ }));
 		expect(onSubmit).toHaveBeenCalledWith({
 			name: "Example plan",
@@ -638,7 +733,7 @@ describe("with the flag on and an organization on screen", () => {
 
 		sendRefinement("Tokens, please");
 
-		await waitFor(() => expect(requestField().value).toBe(U1));
+		await waitFor(() => expect(refinedField().value).toBe(U1));
 		expect(bubbles(container)).toEqual(["Tokens, please", ""]);
 		expect(screen.getByText("Use refined request")).toBeTruthy();
 	});
@@ -675,7 +770,7 @@ describe("the transport is chosen when the form mounts", () => {
 
 		sendRefinement("Tokens, please");
 
-		await waitFor(() => expect(requestField().value).toBe(U1));
+		await waitFor(() => expect(refinedField().value).toBe(U1));
 		expect(m.refine).toHaveBeenCalledWith(
 			expect.objectContaining({ organizationId: null }),
 		);
@@ -696,7 +791,7 @@ describe("the transport is chosen when the form mounts", () => {
 
 		sendRefinement("Tokens, please");
 
-		await waitFor(() => expect(requestField().value).toBe(U1));
+		await waitFor(() => expect(refinedField().value).toBe(U1));
 		expect(m.refine).toHaveBeenCalledTimes(1);
 		expect(m.runs).toEqual([]);
 	});

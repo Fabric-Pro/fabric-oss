@@ -40,6 +40,29 @@ export function isPmTicketMissingError(
 	return false;
 }
 
+/** The per-change error of an update whose target ticket was deleted. */
+export const MISSING_UPDATE_TARGET_ERROR =
+	"target ticket no longer exists in this project";
+
+/**
+ * The `errorClass` a proposal is finalized with after per-change failures:
+ * `TargetMissing` when every failure is an update whose target ticket no
+ * longer exists, so the inbox can name that problem, else the generic
+ * `default`. `failureCount` counts every failure, PM sync included.
+ */
+export function perChangeFailureClass(params: {
+	applyErrors: readonly string[];
+	failureCount: number;
+}): string {
+	return params.applyErrors.length > 0 &&
+		params.applyErrors.length === params.failureCount &&
+		params.applyErrors.every(
+			(error) => error === MISSING_UPDATE_TARGET_ERROR,
+		)
+		? "TargetMissing"
+		: "default";
+}
+
 /**
  * Resolve which approved-change proposal indexes are "fully applied" and should
  * be recorded on the proposal (so an idempotent retry skips them). A change

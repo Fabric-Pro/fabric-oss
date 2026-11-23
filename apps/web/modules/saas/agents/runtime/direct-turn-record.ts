@@ -7,15 +7,18 @@ import {
 	type ConversationMessage,
 	type ConversationTurn,
 	finalizeConversationTurn,
+	getAgentConversationById,
 	saveConversationTurn,
 } from "@repo/database";
 import type {
 	DirectChatToolCall,
 	DirectChatWorkflowOutput,
 } from "@repo/temporal";
+import { attachmentNamesMetadata } from "@saas/agents/lib/attachment-names";
 import { DIRECT_EXECUTION_MODE } from "@saas/agents/lib/conversation-turn-mode";
 import type { CompletedTurnSettlement } from "@saas/agents/lib/server/conversation-turn-admission";
 import { toolCallToPersistedStatus } from "@saas/agents/lib/tool-call-status";
+import { aiUsageLimitPausedText } from "../../../../app/api/agents/fabric-ai/stream/ai-usage-limit-paused-message";
 import {
 	failedTurnEvent,
 	partialTurnEvent,
@@ -78,14 +81,48 @@ export function directTurnMessageIds(turnKey: string) {
 	return { user: `${turnKey}:user`, assistant: `${turnKey}:assistant` };
 }
 
-/** A turn's question, saved when the turn is admitted and again, unchanged, with its answer. */
-function directQuestion(turn: ConversationTurn): ConversationMessage {
+/**
+ * A turn's question, saved when the turn is admitted and again, unchanged,
+ * with its answer. The turn row keeps only the text, so the names of the
+ * files it was sent with come from the request, then from that first save.
+ */
+function directQuestion(
+	turn: ConversationTurn,
+	attachmentNames: unknown,
+): ConversationMessage {
 	return {
 		id: directTurnMessageIds(turn.clientRequestKey).user,
 		role: "user",
 		content: turn.questionText ?? "",
 		timestamp: turn.createdAt.toISOString(),
+		...attachmentNamesMetadata(attachmentNames),
 	};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The attachment names the admission save stored with the turn's question. */
+async function savedAttachmentNames(
+	turn: ConversationTurn,
+	conversationId: string,
+): Promise<unknown> {
+	const conversation = await getAgentConversationById({
+		id: conversationId,
+		userId: turn.userId,
+		organizationId: turn.organizationId,
+	});
+	const messages: unknown[] = Array.isArray(conversation?.messages)
+		? conversation.messages
+		: [];
+	const questionId = directTurnMessageIds(turn.clientRequestKey).user;
+	const question = messages.find(
+		(message) => isRecord(message) && message.id === questionId,
+	);
+	return isRecord(question) && isRecord(question.metadata)
+		? question.metadata.attachmentNames
+		: undefined;
 }
 
 /**
@@ -101,13 +138,14 @@ function directTurnMessages(
 	turn: ConversationTurn,
 	ending: DirectTurnEnding,
 	apiBilling: ApiBillingNotice | null,
+	attachmentNames: unknown,
 ): ConversationMessage[] {
 	const answer = directAnswer(
 		directTurnMessageIds(turn.clientRequestKey).assistant,
 		ending,
 		apiBilling,
 	);
-	return [directQuestion(turn), answer];
+	return [directQuestion(turn, attachmentNames), answer];
 }
 
 /** Tool calls as the Direct chat saves them: each result as a string. */
@@ -162,6 +200,14 @@ function stoppedAnswer(
 	});
 }
 
+/**
+ * A failure as the saved answer shows it: a usage limit's refusal as the
+ * paused state, never the limit's internal id.
+ */
+function shownFailure(message: string): string {
+	return aiUsageLimitPausedText(message) ?? message;
+}
+
 function directAnswer(
 	id: string,
 	ending: DirectTurnEnding,
@@ -172,7 +218,7 @@ function directAnswer(
 		case "failed":
 			return stoppedAnswer(id, answeredAt, ending.partial, {
 				streamStatus: "error",
-				errorMessage: ending.message,
+				errorMessage: shownFailure(ending.message),
 			});
 		case "cancelled":
 			return stoppedAnswer(id, answeredAt, ending.partial, {
@@ -197,7 +243,8 @@ function completedAnswer(
 ): DirectConversationMessage {
 	const failure = result.success ? null : failedTurnEvent(result);
 	const partial = partialTurnEvent(result);
-	const errorMessage = failure?.message ?? partial?.message;
+	const failureText = failure?.message ?? partial?.message;
+	const errorMessage = failureText && shownFailure(failureText);
 	const limit = failure?.limit ?? partial?.limit;
 	const pending = result.pendingConfirmation;
 	const apiBilling = billing ?? result.apiBilling;
@@ -294,7 +341,8 @@ function directTurnSettlement(
  * ids derived from the turn's key, so a second save (another observer, a
  * reconcile) adds nothing. The question saved at admission is the same
  * message of the same turn, so it is kept where it is and the answer goes
- * right after it (`saveConversationTurn`'s slots).
+ * right after it (`saveConversationTurn`'s slots). The save replaces that
+ * message, so it carries the attachment names the admission save stored.
  */
 async function recordDirectTurn(
 	turn: ConversationTurn,
@@ -306,11 +354,12 @@ async function recordDirectTurn(
 	if (!conversationId || !executionId) {
 		return;
 	}
+	const attachmentNames = await savedAttachmentNames(turn, conversationId);
 	await saveConversationTurn({
 		id: conversationId,
 		userId: turn.userId,
 		organizationId: turn.organizationId,
-		messages: directTurnMessages(turn, ending, apiBilling),
+		messages: directTurnMessages(turn, ending, apiBilling, attachmentNames),
 		execution: {
 			id: executionId,
 			mode: DIRECT_EXECUTION_MODE,
@@ -326,9 +375,11 @@ async function recordDirectTurn(
  * the turn's execution under the same id as the end-of-turn save, which
  * then keeps it in place: a retried save adds nothing. A failed save is
  * logged and left to the end-of-turn save, which writes the question too.
+ * `attachmentNames` is the request's, bounded by `readAttachmentNames`.
  */
 export async function recordDirectQuestion(
 	turn: ConversationTurn,
+	attachmentNames?: unknown,
 ): Promise<void> {
 	const conversationId = turn.conversationId;
 	const executionId = turn.executionId;
@@ -340,7 +391,7 @@ export async function recordDirectQuestion(
 			id: conversationId,
 			userId: turn.userId,
 			organizationId: turn.organizationId,
-			messages: [directQuestion(turn)],
+			messages: [directQuestion(turn, attachmentNames)],
 			execution: {
 				id: executionId,
 				mode: DIRECT_EXECUTION_MODE,
@@ -349,6 +400,48 @@ export async function recordDirectQuestion(
 		});
 	} catch (error) {
 		console.error("[Agent Runtime] Failed to save a Direct question", {
+			executionId,
+			error,
+		});
+	}
+}
+
+/**
+ * Save a turn refused at admission (a usage limit, a request budget): its
+ * question and the refusal as a failed answer, so reopening the chat shows
+ * what happened instead of an empty conversation. The turn's terminal state
+ * is the admission's to write. A failed save is logged; the refusal is
+ * still sent.
+ */
+export async function recordRefusedDirectTurn(
+	turn: ConversationTurn,
+	message: string,
+	attachmentNames?: unknown,
+): Promise<void> {
+	const conversationId = turn.conversationId;
+	const executionId = turn.executionId;
+	if (!conversationId || !executionId) {
+		return;
+	}
+	try {
+		await saveConversationTurn({
+			id: conversationId,
+			userId: turn.userId,
+			organizationId: turn.organizationId,
+			messages: directTurnMessages(
+				turn,
+				{ kind: "failed", message },
+				null,
+				attachmentNames,
+			),
+			execution: {
+				id: executionId,
+				mode: DIRECT_EXECUTION_MODE,
+				status: "failed",
+			},
+		});
+	} catch (error) {
+		console.error("[Agent Runtime] Failed to save a refused Direct turn", {
 			executionId,
 			error,
 		});

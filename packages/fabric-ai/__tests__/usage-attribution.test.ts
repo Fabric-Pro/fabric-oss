@@ -22,7 +22,7 @@ vi.mock("@repo/ai", () => ({
 	AIProviderNotConfiguredError: class extends Error {},
 	AUDIO_PROVIDER_REQUIRED: { transcription: "transcription refused" },
 	getRAGProviderConfig: vi.fn(),
-	getSystemRAGProviderConfig: vi.fn(),
+	getRAGProviderConfigForModel: vi.fn(),
 	logModelUsageAsync: vi.fn(),
 }));
 vi.mock("@repo/observability", () => ({

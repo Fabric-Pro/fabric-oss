@@ -12,6 +12,7 @@
  * 7. Hardcoded fallback (if database is empty)
  */
 
+import { AnthropicFederationUnavailableError } from "@repo/database/prisma/queries/anthropic-federation";
 import { logger } from "@repo/logs";
 import {
 	type AnswerModelSnapshot,
@@ -21,6 +22,11 @@ import {
 	answerRouteHash,
 	isUnusableAnswerModel,
 } from "./answer-model-snapshot";
+import {
+	ANTHROPIC_ORIGIN,
+	type AnthropicBearerSource,
+	getAnthropicBearerSource,
+} from "./anthropic-federation";
 import {
 	embeddingModelFitsVectorStore,
 	UnsupportedEmbeddingModelError,
@@ -280,6 +286,7 @@ export async function selectModelDynamic(
 		const defaultConnection = await getAiProviderApiKey({
 			userId: context.userId,
 			organizationId: context.organizationId,
+			retainUnavailableFederation: true,
 		});
 		connection =
 			defaultConnection?.provider === preferredProvider
@@ -608,6 +615,7 @@ function mapProviderToPrefix(provider: DbAIProvider): string {
  * Result from resolveModelWithProvider - contains everything needed for AI calls
  */
 export interface ResolvedModelConfig {
+	federatedOrganizationId?: string;
 	/** Identity of the selected provider config, before legacy request options are combined. */
 	routeHash?: string;
 	/** The model string to pass to getModel - already includes provider prefix if needed */
@@ -671,10 +679,11 @@ export async function resolveModelWithProvider(
 		complexity?: DynamicTaskComplexity;
 		requiresToolCalling?: boolean;
 		/**
-		 * The provider to run on instead of the tenant's default: only the
-		 * member's own key, while their ChatGPT plans are spent (Fizzy #3085).
-		 * A model that needs another provider then resolves no credential at
-		 * all, never another key of the organization's.
+		 * The provider to run on instead of the tenant's default: the
+		 * member's own key, while their ChatGPT plans are spent (Fizzy #3085),
+		 * or the tenant's config for the provider `getAIModelOnProvider`
+		 * names. A model that needs another provider then resolves no
+		 * credential at all, never another key of the organization's.
 		 */
 		providerConfig?: Awaited<ReturnType<typeof getAiProviderApiKey>>;
 	},
@@ -741,6 +750,7 @@ export async function resolveModelWithProvider(
 			(await getAiProviderApiKey({
 				userId: context.userId,
 				organizationId: context.organizationId || undefined,
+				retainUnavailableFederation: true,
 			}));
 	}
 
@@ -765,6 +775,12 @@ export async function resolveModelWithProvider(
 			deploymentName: null,
 			_error: errorMessage, // Internal hint for callers
 		};
+	}
+
+	if (isEmbeddingTask) {
+		assertEmbeddingCredential(
+			Boolean(providerConfig.federatedOrganizationId),
+		);
 	}
 
 	// Track the deployment alongside the credentials and endpoint.
@@ -825,6 +841,12 @@ export async function resolveModelWithProvider(
 	// 2. system_default: User selected a model (e.g., gpt-4o-mini) that only works with OpenAI
 	// 3. user_preference: User selected a model from a non-default provider
 	const providerMismatch = result.provider !== preferredProvider;
+
+	// Credential metadata belongs to the selected provider, including on
+	// mismatch paths that fail to find a usable connection.
+	let federatedOrganizationId = providerMismatch
+		? undefined
+		: providerConfig.federatedOrganizationId;
 
 	// CRITICAL: For embedding tasks, provider mismatch is a fatal error
 	// We cannot use Azure API key against OpenAI endpoint (or vice versa)
@@ -915,6 +937,8 @@ export async function resolveModelWithProvider(
 				!fallbackIsPlatformServed
 			) {
 				routeHash = answerRouteHash(fallbackProviderConfig);
+				federatedOrganizationId =
+					fallbackProviderConfig.federatedOrganizationId;
 				finalApiKey = fallbackProviderConfig.apiKey;
 				finalClientId = fallbackProviderConfig.clientId ?? null;
 				finalEncryptedClientSecret =
@@ -943,6 +967,9 @@ export async function resolveModelWithProvider(
 				finalDeploymentName = null;
 			}
 		} catch (error) {
+			if (error instanceof AnthropicFederationUnavailableError) {
+				throw error;
+			}
 			console.warn(
 				`[ModelSelector] Failed to get ${result.provider} credentials:`,
 				error,
@@ -957,9 +984,17 @@ export async function resolveModelWithProvider(
 		}
 	}
 
+	if (
+		federatedOrganizationId &&
+		!hasProviderCredentials({ federatedOrganizationId })
+	) {
+		throw new AnthropicFederationUnavailableError();
+	}
+
 	return {
 		modelString,
 		provider: result.provider,
+		...(federatedOrganizationId && { federatedOrganizationId }),
 		apiKey: finalApiKey,
 		clientId: finalClientId,
 		encryptedClientSecret: finalEncryptedClientSecret,
@@ -2010,9 +2045,46 @@ function recordAnswerChange(
 	logger.info("advisor.answer_route_change", change);
 }
 
+/**
+ * Resolves `options.modelOverride` on the tenant's own enabled config for
+ * `provider` instead of its default one: the organization's when the context
+ * names one, else the member's. It refuses, rather than falling back, when
+ * that provider has no such config or does not map the model, and a ChatGPT
+ * plan never serves it. Usage limits and per-call usage logging apply as in
+ * {@link getAIModelWithMetadata}. For evaluation runs that compare models on
+ * a provider the tenant configured but did not make its default.
+ */
+export function getAIModelOnProvider(
+	provider: DbAIProvider,
+	options: Omit<GetAIModelOptions, "answerSnapshot" | "modelOverride"> & {
+		modelOverride: string;
+	},
+	context: AIOperationContext,
+): Promise<AIModelResult> {
+	return resolveAIModelWithMetadata(options, context, provider);
+}
+
+async function getTenantConfigForProvider(
+	provider: DbAIProvider,
+	context: AIOperationContext,
+) {
+	const config = await getAiProviderApiKeyByProvider({
+		userId: context.userId,
+		organizationId: context.organizationId,
+		provider,
+	});
+	if (!config.configId) {
+		throw new AIProviderNotConfiguredError(
+			`No enabled ${provider} provider is configured for this ${context.organizationId ? "organization" : "account"}.`,
+		);
+	}
+	return config;
+}
+
 async function resolveAIModelWithMetadata(
 	options: GetAIModelWithMetadataOptions,
 	callerContext: AIOperationContext,
+	onProvider?: DbAIProvider,
 ): Promise<AIModelResult | AggregateAIModelResult> {
 	const context = withAmbientJobType(callerContext);
 	const {
@@ -2055,6 +2127,7 @@ async function resolveAIModelWithMetadata(
 	if (
 		!NON_TEXT_TASK_TYPES.has(String(taskType).toUpperCase()) &&
 		context.excludeChatGptPlan !== true &&
+		!onProvider &&
 		(!pinned || pinned.provider === "OPENAI_CHATGPT_PLAN")
 	) {
 		const plan = await chatGptPlanSourceForCall(routingContext, {
@@ -2104,6 +2177,9 @@ async function resolveAIModelWithMetadata(
 	) {
 		throw new AnswerModelUnavailableError();
 	}
+	const providerConfig = onProvider
+		? await getTenantConfigForProvider(onProvider, context)
+		: personalKey?.personalKey;
 	const config: ResolvedModelConfig =
 		livePinnedConfig && pinned
 			? {
@@ -2127,9 +2203,7 @@ async function resolveAIModelWithMetadata(
 					{
 						complexity,
 						requiresToolCalling,
-						...(personalKey && {
-							providerConfig: personalKey.personalKey,
-						}),
+						...(providerConfig && { providerConfig }),
 					},
 				);
 
@@ -2157,7 +2231,10 @@ async function resolveAIModelWithMetadata(
 	// Step 3: Resolve the bearer token — a decrypted PAT/API key, or a
 	// workspace access token minted from a Databricks service principal.
 	// Downstream sees a plain string either way.
-	const decryptedApiKey = await resolveProviderApiKey(config);
+	const anthropicBearerSource = getAnthropicBearerSource(config);
+	const decryptedApiKey = anthropicBearerSource
+		? undefined
+		: await resolveProviderApiKey(config);
 	const billingState = getTenantAiGatewayBillingState({
 		provider: config.provider,
 		configSource: config.configSource,
@@ -2191,6 +2268,10 @@ async function resolveAIModelWithMetadata(
 		} else if (providerCanonical) {
 			canonicalName = providerCanonical;
 			finalModelString = apiModelOverride;
+		} else if (onProvider) {
+			throw new Error(
+				`[ModelSelector] ${onProvider} has no available mapping for ${apiModelOverride}.`,
+			);
 		} else {
 			logger.warn(
 				"Skipping model override without an available provider mapping",
@@ -2238,6 +2319,7 @@ async function resolveAIModelWithMetadata(
 		userId: context.userId,
 		organizationId: context.organizationId,
 		apiKey: decryptedApiKey,
+		...(anthropicBearerSource && { anthropicBearerSource }),
 		provider: config.provider,
 		baseUrl: config.baseUrl,
 		headers: billingState.headers ?? undefined,
@@ -2828,6 +2910,14 @@ export async function getAIEmbeddingModel(
 	return result.model;
 }
 
+function assertEmbeddingCredential(federated: boolean): void {
+	if (federated) {
+		throw new AIProviderNotConfiguredError(
+			"Anthropic federation cannot be used for embeddings. Configure a documents provider with embedding support.",
+		);
+	}
+}
+
 type EmbeddingResolutionContext = Pick<
 	AIOperationContext,
 	"userId" | "organizationId" | "organizationOnly"
@@ -3004,6 +3094,7 @@ export async function getAIEmbeddingModelWithMetadata(
  * Provider configuration for RAG/embedding operations
  */
 export interface RAGProviderConfig {
+	anthropicBearerSource?: AnthropicBearerSource;
 	apiKey: string;
 	provider: string | null;
 	baseUrl: string | null;
@@ -3033,14 +3124,18 @@ async function toRAGProviderConfig(
 		);
 	}
 
-	// Resolve the bearer token and return config with all fields. Consumers of
-	// this config (the LangGraph agent relay route, CopilotKit's OpenAI client,
-	// the AI key-exchange route) receive a ready-to-use token and need no
-	// knowledge of which auth mode produced it.
+	// Only the exchange route needs to mint a token. Relay callers can use
+	// the canonical endpoint hint without receiving a provider credential.
+	const anthropicBearerSource = getAnthropicBearerSource(providerConfig);
 	return {
-		apiKey: await resolveProviderApiKey(providerConfig),
+		...(anthropicBearerSource && { anthropicBearerSource }),
+		apiKey: anthropicBearerSource
+			? ""
+			: await resolveProviderApiKey(providerConfig),
 		provider: providerConfig.provider,
-		baseUrl: providerConfig.baseUrl,
+		baseUrl: anthropicBearerSource
+			? `${ANTHROPIC_ORIGIN}/v1`
+			: providerConfig.baseUrl,
 		enabledProviders: providerConfig.enabledProviders,
 		source: providerConfig.source || "user",
 		deploymentName: providerConfig.deploymentName || null,
@@ -3108,17 +3203,41 @@ export async function getRAGProviderConfig(
  * just resolved: the raw key behind THAT model. For a caller that hands the
  * key to a client of its own (the AI key exchange, the agent config routes).
  *
- * The two only differ while the member's ChatGPT plans are spent and their
- * own key serves the call (Fizzy #3085): re-resolving the tenant's default
- * would pair that model with the organization's key, billing it under a
- * policy that said stop. The pinned row is the caller's own, by `userId`.
+ * Use the selected connection even when the model has a different provider
+ * than the default. A plan-spent personal key is looked up by its pinned row.
  */
 export async function getRAGProviderConfigForModel(
 	context: AIOperationContext,
-	metadata: Pick<AIModelMetadata, "configId" | "planSpentPersonalKey">,
+	metadata: Pick<AIModelMetadata, "configId" | "planSpentPersonalKey"> &
+		Partial<Pick<AIModelMetadata, "provider" | "configSource">>,
 ): Promise<RAGProviderConfig> {
 	if (!metadata.planSpentPersonalKey) {
-		return getRAGProviderConfig(context);
+		if (!metadata.provider || !metadata.configId) {
+			const config = await getRAGProviderConfig(context);
+			if (metadata.provider && metadata.provider !== config.provider) {
+				throw new AIProviderNotConfiguredError(
+					"The selected AI provider configuration changed during resolution.",
+				);
+			}
+			return config;
+		}
+		const config = await getAiProviderApiKeyByProvider({
+			userId: context.userId,
+			organizationId:
+				metadata.configSource === "user"
+					? undefined
+					: context.organizationId,
+			provider: metadata.provider,
+		});
+		if (
+			config.configId !== metadata.configId ||
+			config.provider !== metadata.provider
+		) {
+			throw new AIProviderNotConfiguredError(
+				"The selected AI provider configuration changed during resolution.",
+			);
+		}
+		return toRAGProviderConfig(config);
 	}
 	const personal = metadata.configId
 		? await getPlanSpentPersonalProviderConfig({
@@ -3193,6 +3312,13 @@ export async function getSystemRAGProviderConfig(
 export async function getEmbeddingRAGProviderConfig(
 	context: AIOperationContext,
 ): Promise<RAGProviderConfig> {
+	return resolveEmbeddingRAGProviderConfig(context, getRAGProviderConfig);
+}
+
+async function resolveEmbeddingRAGProviderConfig(
+	context: AIOperationContext,
+	getDefault: (context: AIOperationContext) => Promise<RAGProviderConfig>,
+): Promise<RAGProviderConfig> {
 	const localEmbeddings = getLocalEmbeddingsConfig();
 	if (localEmbeddings) {
 		return toLocalEmbeddingsRAGProviderConfig(localEmbeddings);
@@ -3201,10 +3327,11 @@ export async function getEmbeddingRAGProviderConfig(
 		userId: context.userId,
 		organizationId: context.organizationId || undefined,
 	});
-	if (hasProviderCredentials(documentsProvider)) {
-		return toRAGProviderConfig(documentsProvider);
-	}
-	return getRAGProviderConfig(context);
+	const resolved = hasProviderCredentials(documentsProvider)
+		? await toRAGProviderConfig(documentsProvider)
+		: await getDefault(context);
+	assertEmbeddingCredential(Boolean(resolved.anthropicBearerSource));
+	return resolved;
 }
 
 /**
@@ -3219,16 +3346,8 @@ export async function getEmbeddingRAGProviderConfig(
 export async function getSystemEmbeddingRAGProviderConfig(
 	context: AIOperationContext,
 ): Promise<RAGProviderConfig> {
-	const localEmbeddings = getLocalEmbeddingsConfig();
-	if (localEmbeddings) {
-		return toLocalEmbeddingsRAGProviderConfig(localEmbeddings);
-	}
-	const documentsProvider = await getEmbeddingProviderConfig({
-		userId: context.userId,
-		organizationId: context.organizationId || undefined,
-	});
-	if (hasProviderCredentials(documentsProvider)) {
-		return toRAGProviderConfig(documentsProvider);
-	}
-	return getSystemRAGProviderConfig(context);
+	return resolveEmbeddingRAGProviderConfig(
+		context,
+		getSystemRAGProviderConfig,
+	);
 }

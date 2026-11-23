@@ -16,6 +16,10 @@ import {
 	readProviderRowCredentials,
 } from "@repo/database";
 import {
+	AnthropicFederationUnavailableError,
+	getAnthropicFederationConfig,
+} from "@repo/database/prisma/queries/anthropic-federation";
+import {
 	type AiProviderPurpose,
 	AiProviderPurposeSchema,
 } from "@repo/database/prisma/zod";
@@ -264,6 +268,7 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 	.output(
 		z.object({
 			organizationEmbedding: organizationEmbeddingSchema.nullable(),
+			anthropicFederationAvailable: z.boolean().optional(),
 			isConfigured: z.boolean(),
 			/**
 			 * Whether THIS caller can reach a usable provider from this
@@ -484,6 +489,7 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 
 		// TENANT ISOLATION: Query ONLY the appropriate config based on context
 		// Never mix personal and organization configurations
+		let organizationFederationUnavailable = false;
 		if (organizationId) {
 			// Organization context: ONLY query cloud_provider_config
 			const [orgProviders, organizationDefault] = await Promise.all([
@@ -491,7 +497,17 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 					where: { organizationId, enabled: true },
 					orderBy: [{ isDefault: "desc" }, { priority: "desc" }],
 				}),
-				getOrganizationDefaultProvider(organizationId),
+				getOrganizationDefaultProvider(organizationId).catch(
+					(error: unknown) => {
+						if (
+							error instanceof AnthropicFederationUnavailableError
+						) {
+							organizationFederationUnavailable = true;
+							return null;
+						}
+						throw error;
+					},
+				),
 			]);
 			defaultProvider = organizationDefault;
 
@@ -556,7 +572,11 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 		// someone else's configuration, and the rows stay out of every field
 		// above — this widens what the caller is told about themselves, not
 		// what the organization is told about its tenants.
-		if (organizationId && !canResolveProvider) {
+		if (
+			organizationId &&
+			!canResolveProvider &&
+			!organizationFederationUnavailable
+		) {
 			const ownProviders = await db.userCloudProviderConfig.findMany({
 				where: {
 					userId: user.id,
@@ -680,6 +700,9 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			embeddingProvider,
 			embeddingModel,
 			organizationEmbedding,
+			...(getAnthropicFederationConfig(organizationId) && {
+				anthropicFederationAvailable: true,
+			}),
 			localModels: {
 				embedding: localModelSummary("EMBEDDING"),
 				decision: localModelSummary("DECISION"),

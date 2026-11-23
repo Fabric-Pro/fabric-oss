@@ -12,6 +12,10 @@ describe("transcriptUploadFormatOf", () => {
 		["standup.vtt", "vtt"],
 		["standup.docx", "docx"],
 		["Q3 planning.final.DOCX", "docx"],
+		["standup.md", "md"],
+		["standup.MD", "md"],
+		["standup.Md", "md"],
+		["standup.mD", "md"],
 	])("reads %s as %s", (filename, format) => {
 		expect(transcriptUploadFormatOf(filename)).toBe(format);
 	});
@@ -19,6 +23,7 @@ describe("transcriptUploadFormatOf", () => {
 	it.each([
 		"standup.pdf",
 		"standup.doc",
+		"standup.markdown",
 		"standup",
 		".txt",
 		"vtt",
@@ -33,8 +38,8 @@ describe("transcriptUploadFormatOf", () => {
 
 describe("what a surface tells the user", () => {
 	it("derives the picker and the message from one list", () => {
-		expect(TRANSCRIPT_UPLOAD_FORMAT_LIST).toBe(".txt, .vtt, .docx");
-		expect(TRANSCRIPT_UPLOAD_ACCEPT_ATTR).toBe(".txt,.vtt,.docx");
+		expect(TRANSCRIPT_UPLOAD_FORMAT_LIST).toBe(".txt, .vtt, .docx, .md");
+		expect(TRANSCRIPT_UPLOAD_ACCEPT_ATTR).toBe(".txt,.vtt,.docx,.md");
 	});
 
 	it("allows 25 MB", () => {

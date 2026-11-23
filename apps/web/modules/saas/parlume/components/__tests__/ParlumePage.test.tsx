@@ -217,10 +217,10 @@ describe("ParlumePage invitation", () => {
 		expect(actions).not.toBeChecked();
 		expect(
 			screen.getByText(
-				/Makes the changes attendees ask for, with your permissions, as soon as they ask/,
+				"Proposes the changes attendees ask for. Nothing changes until a project member confirms it in Fabric.",
 			),
 		).toBeInTheDocument();
-		expect(screen.queryByText(/confirm/i)).toBeNull();
+		expect(screen.queryByText(/as soon as they ask/i)).toBeNull();
 
 		fireEvent.click(actions);
 		expect(actions).toBeChecked();
@@ -269,6 +269,7 @@ describe("ParlumePage invitation", () => {
 	function notReady(
 		overrides: Partial<{
 			meetingBot: boolean;
+			webhookSigned: boolean;
 			voice: boolean;
 			platform: boolean;
 			canConfigure: boolean;
@@ -276,6 +277,7 @@ describe("ParlumePage invitation", () => {
 	) {
 		const ready = {
 			meetingBot: true,
+			webhookSigned: true,
 			voice: true,
 			platform: true,
 			canConfigure: true,
@@ -283,11 +285,12 @@ describe("ParlumePage invitation", () => {
 		};
 		mocks.listAgents.mockResolvedValue({
 			agents: [builtIn],
-			operatorReady: false,
+			operatorReady: ready.meetingBot && ready.voice && ready.platform,
 			readiness: {
 				meetingBot: {
 					ready: ready.meetingBot,
 					source: ready.meetingBot ? "organization" : null,
+					webhookSigned: ready.meetingBot && ready.webhookSigned,
 				},
 				voice: {
 					ready: ready.voice,
@@ -340,6 +343,32 @@ describe("ParlumePage invitation", () => {
 		expect(
 			screen.queryByTestId("parlume-missing-platform"),
 		).not.toBeInTheDocument();
+	});
+
+	it("advises on a missing webhook secret without blocking invitations", async () => {
+		notReady({ webhookSigned: false });
+		showPage();
+
+		const advisory = await screen.findByTestId(
+			"parlume-advisory-webhook-secret",
+		);
+		expect(advisory).toHaveTextContent(
+			"Fabric does not check the meeting bot's events against an Attendee webhook secret.",
+		);
+		expect(
+			within(advisory).getByRole("link", {
+				name: "Add the webhook secret",
+			}),
+		).toHaveAttribute(
+			"href",
+			"/app/example-org/settings/meeting-assistant?returnTo=%2F",
+		);
+		expect(
+			screen.queryByText("Parlume is not ready to join meetings yet."),
+		).not.toBeInTheDocument();
+		await screen.findByRole("combobox", { name: "Agent" });
+		fireEvent.change(linkField(), { target: { value: meetingUrl } });
+		expect(inviteButton()).toBeEnabled();
 	});
 
 	it("tells a member who cannot change settings who can, without a settings link", async () => {

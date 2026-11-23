@@ -109,8 +109,9 @@ export function WorkspaceDocumentChatDialog({
 		content: string;
 		sources?: WorkspaceDocumentSource[];
 	} | null>(null);
-	const usesPersistedHistory =
-		transport !== "runtime" && organizationId !== null;
+	// An organization's workspace keeps the person's document conversation
+	// on either transport.
+	const usesPersistedHistory = organizationId !== null;
 
 	// Scroll to bottom on new messages
 	useEffect(() => {

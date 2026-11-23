@@ -175,6 +175,136 @@ const PARITY_FIXTURES: ParityFixture[] = [
 		},
 	},
 	{
+		name: "a heading-shaped line inside a code fence is not a boundary",
+		markdown: [
+			"Desc body",
+			"",
+			"```bash",
+			"example export --format csv",
+			"## Acceptance Criteria (inside a code fence)",
+			"```",
+			"",
+			"## Acceptance Criteria",
+			"",
+			"- AC 1",
+		].join("\n"),
+		expected: {
+			description: [
+				"Desc body",
+				"",
+				"```bash",
+				"example export --format csv",
+				"## Acceptance Criteria (inside a code fence)",
+				"```",
+			].join("\n"),
+			acceptanceCriteria: "- AC 1",
+		},
+	},
+	{
+		name: "a fence in a CRLF document hides its heading-shaped line",
+		markdown: [
+			"Desc body",
+			"",
+			"```bash",
+			"## Acceptance Criteria (inside a code fence)",
+			"```",
+			"",
+			"## Acceptance Criteria",
+			"",
+			"- AC 1",
+		].join("\r\n"),
+		expected: {
+			description: [
+				"Desc body",
+				"",
+				"```bash",
+				"## Acceptance Criteria (inside a code fence)",
+				"```",
+			].join("\r\n"),
+			acceptanceCriteria: "- AC 1",
+		},
+	},
+	{
+		name: "a fence inside a nested list item hides its heading-shaped line",
+		markdown: [
+			"- Step one",
+			"    - Nested step",
+			"",
+			"        ```bash",
+			"        # Acceptance check",
+			"        ```",
+			"",
+			"## Acceptance Criteria",
+			"",
+			"- AC 1",
+		].join("\n"),
+		expected: {
+			description: [
+				"- Step one",
+				"    - Nested step",
+				"",
+				"        ```bash",
+				"        # Acceptance check",
+				"        ```",
+			].join("\n"),
+			acceptanceCriteria: "- AC 1",
+		},
+	},
+	{
+		name: "a backtick line whose info string holds a backtick is not a fence",
+		markdown: [
+			"```inline` code",
+			"",
+			"## Acceptance Criteria",
+			"",
+			"- AC 1",
+			"",
+			"```",
+			"code",
+			"```",
+		].join("\n"),
+		expected: {
+			description: "```inline` code",
+			acceptanceCriteria: ["- AC 1", "", "```", "code", "```"].join("\n"),
+		},
+	},
+	{
+		name: "a fence never closed does not hide the only acceptance heading",
+		markdown: [
+			"Desc body",
+			"",
+			"```",
+			"",
+			"## Acceptance Criteria",
+			"",
+			"- AC 1",
+		].join("\n"),
+		expected: {
+			description: ["Desc body", "", "```"].join("\n"),
+			acceptanceCriteria: "- AC 1",
+		},
+	},
+	{
+		name: "a fence never closed runs to the end below the acceptance heading",
+		markdown: [
+			"## Acceptance Criteria",
+			"",
+			"- AC 1",
+			"",
+			"```",
+			"## Acceptance Criteria (in the open fence)",
+		].join("\n"),
+		expected: {
+			description: "",
+			acceptanceCriteria: [
+				"- AC 1",
+				"",
+				"```",
+				"## Acceptance Criteria (in the open fence)",
+			].join("\n"),
+		},
+	},
+	{
 		name: "no AC heading at all",
 		markdown: "## Description\n\nJust a description.",
 		expected: {
@@ -390,6 +520,31 @@ describe("separateEmbeddedAcceptanceCriteria", () => {
 		});
 
 		expect(drafted.acceptanceCriteria).toBe("- AC 1");
+	});
+
+	it("recovers them from below a code fence the model never closed", () => {
+		const drafted = separateEmbeddedAcceptanceCriteria({
+			description:
+				"Run it:\n\n```bash\nexample export\n\n## Acceptance Criteria\n\n- AC 1",
+			acceptanceCriteria: "",
+		});
+
+		expect(drafted).toEqual({
+			description: "Run it:\n\n```bash\nexample export",
+			acceptanceCriteria: "- AC 1",
+		});
+	});
+
+	it("leaves criteria in a closed code fence where they are", () => {
+		const description =
+			"Example:\n\n```md\n## Acceptance Criteria\n\n- AC 1\n```";
+		const drafted = separateEmbeddedAcceptanceCriteria({
+			description,
+			acceptanceCriteria: "",
+		});
+
+		expect(drafted.description).toBe(description);
+		expect(drafted.acceptanceCriteria).toBe("");
 	});
 
 	it("never second-guesses a model that complied", () => {

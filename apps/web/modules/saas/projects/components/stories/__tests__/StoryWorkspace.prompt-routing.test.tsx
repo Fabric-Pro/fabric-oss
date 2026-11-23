@@ -494,7 +494,7 @@ function serverSaysBug(content: string, source = "bound") {
 	};
 }
 
-function renderWorkspace(maturationV2: boolean) {
+function renderWorkspace(maturationV2: boolean, canEdit = true) {
 	return render(
 		<StoryWorkspace
 			story={
@@ -502,7 +502,7 @@ function renderWorkspace(maturationV2: boolean) {
 					typeof StoryWorkspace
 				>[0]["story"]
 			}
-			canEdit
+			canEdit={canEdit}
 			projectId="proj-1"
 			projectName="Test Project"
 			maturationV2={maturationV2}
@@ -766,6 +766,50 @@ describe("StoryWorkspace — Clean Spec refresh resolves its prompt server-side"
 	it("starts no run when the agent is already running", async () => {
 		agentRef.current.isRunning = true;
 		renderWorkspace(true);
+		await clickUpdateFullSpec();
+
+		expect(mockResolvePrompt).not.toHaveBeenCalled();
+		expect(mockSendMessage).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{ canEdit: true, offered: true },
+		{ canEdit: false, offered: false },
+	])(
+		"offers Update using context when canEdit=$canEdit: $offered",
+		async ({ canEdit, offered }) => {
+			renderWorkspace(false, canEdit);
+
+			const button = await screen.findByRole("button", {
+				name: /update using context/i,
+			});
+
+			expect((button as HTMLButtonElement).disabled).toBe(!offered);
+		},
+	);
+
+	it.each([
+		{ canEdit: true, offered: true },
+		{ canEdit: false, offered: false },
+	])(
+		"offers the kind change when canEdit=$canEdit: $offered",
+		async ({ canEdit, offered }) => {
+			renderWorkspace(false, canEdit);
+
+			const button = await screen.findByRole("button", {
+				name: /change to (bug|feature)/i,
+			});
+
+			expect((button as HTMLButtonElement).disabled).toBe(!offered);
+		},
+	);
+
+	it("is not offered to a member who cannot edit the work item", async () => {
+		renderWorkspace(true, false);
+
+		expect(
+			await screen.findByRole("button", { name: /update full spec/i }),
+		).toBeDisabled();
 		await clickUpdateFullSpec();
 
 		expect(mockResolvePrompt).not.toHaveBeenCalled();

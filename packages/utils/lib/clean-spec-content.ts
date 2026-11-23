@@ -23,15 +23,17 @@
  * lines.
  *
  * The loop shape is still a hand-held copy and MUST stay aligned with
- * `parseStoryContent`: both guard with `!inAcceptanceCriteria` so the FIRST
- * matching heading wins. The editor used to test every line instead; on a
- * document with two acceptance headings — the shape the decoration bug produced
- * by re-appending the section on every save — that made the client drop both
- * headings and merge the bodies while this splitter kept the second heading as
- * literal text. The guards were aligned when the normalizer landed.
+ * `parseStoryContent`: both test every line, drop EVERY acceptance heading
+ * outside a code fence (the shared `fencedCodeLines` finds fences), and let
+ * the first one open the criteria. On a document with two acceptance
+ * headings — the shape the decoration bug produced by re-appending the
+ * section on every save — both sides therefore keep both bodies in the
+ * criteria with no heading left inside them. The two once disagreed here: the
+ * client dropped both headings while this splitter kept the second as literal
+ * text.
  */
 
-import { stripInlineDecoration } from "./markdown-heading";
+import { fencedCodeLines, stripInlineDecoration } from "./markdown-heading";
 
 // Match an `Acceptance Criteria` heading at ANY level (`#`–`######`), exactly
 // like the editor's `parseStoryContent`. This file's contract is to stay
@@ -52,6 +54,10 @@ import { stripInlineDecoration } from "./markdown-heading";
 // fallback; sharing the pattern is what stops a fourth copy drifting the way
 // the first three did.
 export const ACCEPTANCE_HEADING_RE = /^#{1,6}\s+acceptance/i;
+
+function isAcceptanceHeading(line: string): boolean {
+	return ACCEPTANCE_HEADING_RE.test(stripInlineDecoration(line));
+}
 
 /**
  * Combine description + acceptance criteria into the single markdown document
@@ -88,10 +94,12 @@ export function splitCleanSpec(markdown: string): {
 	const descriptionLines: string[] = [];
 	const acceptanceCriteriaLines: string[] = [];
 	let inAcceptanceCriteria = false;
+	const code = fencedCodeLines(lines, isAcceptanceHeading);
 
-	for (const line of lines) {
-		// EVERY acceptance heading is dropped; the first opens the section.
-		// `parseStoryContent` does the same, line for line.
+	for (const [i, line] of lines.entries()) {
+		// EVERY acceptance heading outside a code fence is dropped; the first
+		// opens the section. `parseStoryContent` does the same, line for line.
+		// A heading-shaped line inside a fence is code and stays where it is.
 		//
 		// The guard sits on the state transition, not on the match. Skipping the
 		// match once the section is open would leave a second acceptance heading
@@ -101,7 +109,7 @@ export function splitCleanSpec(markdown: string): {
 		// decorated-heading bug produced, so that is the population this must be
 		// right for. Dropping them all lets `combineCleanSpec` collapse a forked
 		// document back to one section on its next write.
-		if (ACCEPTANCE_HEADING_RE.test(stripInlineDecoration(line))) {
+		if (!code[i] && isAcceptanceHeading(line)) {
 			inAcceptanceCriteria = true;
 			continue; // Drop the heading itself; combineCleanSpec re-adds it.
 		}

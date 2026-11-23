@@ -283,14 +283,15 @@ function answerBlock(text: string): HTMLElement {
 }
 
 /**
- * The Alpha block names the plan's model (not in the listing, so its id) and
+ * The Alpha block names the plan's model (not in the listing, so readably
+ * from its id) and
  * says its pick was not applied, with the pick-status note; the Beta block
  * names its own model, by the listing's name, and nothing more.
  */
 function expectServedLabels(alphaText: string, betaText: string) {
 	const alpha = within(answerBlock(alphaText));
 	expect(alpha.getAllByText(/^answeredByModel: /)).toEqual([
-		alpha.getByText("answeredByModel: gpt-plan-example"),
+		alpha.getByText("answeredByModel: GPT Plan Example"),
 	]);
 	expect(alpha.getByText("not applied").getAttribute("title")).toMatch(
 		/shared ChatGPT plan is on/,

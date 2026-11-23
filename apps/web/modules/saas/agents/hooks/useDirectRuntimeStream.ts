@@ -648,6 +648,7 @@ export function useDirectRuntimeStream(
 						attachedDocumentIds,
 						messageChatId,
 						inlineAttachmentContexts,
+						attachmentNames,
 					},
 					agentConfig,
 				});

@@ -19,14 +19,18 @@ export function orchestratorErrorMessage(
 	return error instanceof Error ? error.message : fallback;
 }
 
-/** A stream failure ends the phase without scheduling another model call. */
+/**
+ * A stream failure ends the phase without scheduling another model call.
+ * Its message is already the person's (the activity's shared provider
+ * failure message), shown as Direct shows its own, with no prefix.
+ */
 export function streamFailureResult(result: {
 	message: string;
 	usageLimit?: DirectChatUsageLimitRefusal;
 }) {
 	return {
 		success: false,
-		error: `LLM stream error: ${result.message}`,
+		error: result.message,
 		shouldContinue: false,
 		...(result.usageLimit ? { usageLimit: result.usageLimit } : {}),
 	};

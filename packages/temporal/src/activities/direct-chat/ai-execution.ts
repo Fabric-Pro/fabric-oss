@@ -34,6 +34,7 @@ import {
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
+import { providerFailureMessage } from "@repo/ai/lib/provider-failure-message";
 import { classifyLimitError } from "@repo/ai/limits";
 import {
 	makeAppendedStepCacheBreakpoint,
@@ -2476,7 +2477,16 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		const streamOutcome = resolveStreamOutcome({
 			responseText,
 			toolCalls,
-			streamErrorMessage: refusalMessage ?? streamErrorMessage,
+			// The provider's own text can carry its URL or a key fragment:
+			// the person reads the shared provider-failure message instead,
+			// and the log below keeps the original.
+			streamErrorMessage:
+				refusalMessage ??
+				(streamErrorMessage === undefined
+					? undefined
+					: providerFailureMessage(
+							streamErrorRaw ?? streamErrorMessage,
+						)),
 			pendingConfirmation,
 			finishReason: streamFinishReason,
 			stepCount: steps.length,
@@ -2661,6 +2671,21 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 					toolLimitError?.message ??
 					rawMessage)
 				: rawMessage);
+		// What the person reads: a limit's own message, otherwise the shared
+		// provider-failure message (the ledger and the log keep the original).
+		const userError =
+			thrownLimitError?.message ??
+			streamLimitError?.message ??
+			(NoOutputGeneratedError.isInstance(error) &&
+			streamErrorMessage === undefined &&
+			toolLimitError
+				? toolLimitError.message
+				: providerFailureMessage(
+						NoOutputGeneratedError.isInstance(error) &&
+							streamErrorRaw !== undefined
+							? streamErrorRaw
+							: error,
+					));
 
 		if (recordAggregateUsage && !aggregateUsageRecorded) {
 			const partialAggregate = aggregateUsage.partialAggregate();
@@ -2702,7 +2727,7 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		});
 		return {
 			success: false,
-			error: surfacedError,
+			error: userError,
 			durationMs: Date.now() - startTime,
 			...(limitError
 				? { usageLimit: toUsageLimitRefusal(limitError) }

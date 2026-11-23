@@ -9,7 +9,7 @@ Taking part in this project means following our [Code of Conduct](./CODE_OF_COND
 - **Node.js** >= 20
 - **pnpm** 10+
 - **Docker Desktop** (for infrastructure services)
-- **.NET 10 SDK** (optional, for Aspire orchestration)
+- **.NET 10 SDK and Aspire CLI 17.0.0** (optional, for Aspire orchestration). See the [Aspire prerequisites](aspire/README.md#prerequisites).
 
 ## Getting Started
 

@@ -8,13 +8,8 @@
  * 4. embedCodeAnalysisContext — Embed code analysis into Qdrant for RAG
  */
 
-import { resolveProviderApiKey } from "@repo/ai";
-import {
-	db,
-	type ProjectDocumentType,
-	resolveModelWithCredentials,
-	tenantWhere,
-} from "@repo/database";
+import { getSystemEmbeddingRAGProviderConfig } from "@repo/ai";
+import { db, type ProjectDocumentType, tenantWhere } from "@repo/database";
 import { contextContentHashOrNull } from "@repo/database/prisma/queries/projects/context-content-hash";
 import { logger } from "@repo/logs";
 import { embedProjectContext } from "@repo/rag/lib/project-contexts/auto-embed";
@@ -182,10 +177,9 @@ export async function ingestBacklogForRAG(
 	});
 
 	// Embed into Qdrant for RAG retrieval
-	const modelConfig = await resolveModelWithCredentials({
+	const providerConfig = await getSystemEmbeddingRAGProviderConfig({
 		userId,
 		organizationId,
-		taskType: "EMBEDDING",
 	});
 
 	await embedProjectContext({
@@ -195,15 +189,7 @@ export async function ingestBacklogForRAG(
 		organizationId,
 		content,
 		type: "TEXT",
-		apiKey: {
-			// Resolve to a real bearer token rather than reading `apiKey`: a
-			// service-principal config stores none, and the empty string this
-			// used to produce trips the downstream "no provider configured"
-			// presence check.
-			apiKey: await resolveProviderApiKey(modelConfig),
-			provider: modelConfig.provider ?? null,
-			baseUrl: modelConfig.baseUrl ?? null,
-		},
+		apiKey: providerConfig,
 		metadata: {
 			sourceTitle: "Backlog Items (PM Backlog Ingest)",
 			provider: "BACKLOG_INGEST",
@@ -632,10 +618,9 @@ export async function embedCodeAnalysisContext(
 	}
 	const content = context.content ?? "";
 
-	const modelConfig = await resolveModelWithCredentials({
+	const providerConfig = await getSystemEmbeddingRAGProviderConfig({
 		userId,
 		organizationId,
-		taskType: "EMBEDDING",
 	});
 
 	await embedProjectContext({
@@ -645,13 +630,7 @@ export async function embedCodeAnalysisContext(
 		organizationId,
 		content,
 		type: "TEXT",
-		apiKey: {
-			// See the note in ingestBacklogForRAG: resolve a real token so a
-			// service-principal config isn't seen as "no provider configured".
-			apiKey: await resolveProviderApiKey(modelConfig),
-			provider: modelConfig.provider ?? null,
-			baseUrl: modelConfig.baseUrl ?? null,
-		},
+		apiKey: providerConfig,
 		metadata: {
 			sourceTitle: "Code Analysis",
 			provider: "CODE_ANALYSIS",

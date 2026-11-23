@@ -1,5 +1,10 @@
 # Aspire CLI Usage Guide
 
+Run Fabric's local development stack with Aspire.
+
+- **Audience**: Fabric developers
+- **Owner**: Engineering team
+
 ## Overview
 
 This project uses **.NET Aspire** for orchestrating all development services, including infrastructure (PostgreSQL, Redis, Qdrant, Temporal), observability (Prometheus, Grafana, Jaeger), LangGraph agents, and the Next.js web application.
@@ -8,17 +13,14 @@ This project uses **.NET Aspire** for orchestrating all development services, in
 
 ### Recommended: Native Aspire CLI
 
-The simplest and most reliable way to use Aspire:
+Install the [Aspire CLI 17.0.0 bundle and other prerequisites](../aspire/README.md#prerequisites), then run the following from the repository root.
 
 ```bash
 # Start all services
 cd aspire/Fabric.AppHost && aspire run
-
-# Stop all services
-Press Ctrl+C
 ```
 
-**That's it!** Containers now stop automatically when you press Ctrl+C. 🎉
+Press Ctrl+C to stop the AppHost. Persistent infrastructure containers keep running and retain their data volumes. Before switching checkouts, stop those containers as described in the [Aspire troubleshooting guide](../aspire/README.md#run-one-fabric-stack-at-a-time).
 
 ### Alternative: Convenience Script
 
@@ -27,42 +29,13 @@ If you prefer, you can use the wrapper script:
 ```bash
 # Start all services
 ./aspire.sh run
-
-# Stop all services
-Press Ctrl+C
-
-# Cleanup orphaned containers (if needed)
-./aspire.sh down
-```
-
-## Key Changes (November 2025)
-
-### ✅ What Changed
-
-1. **Automatic Container Cleanup**: Containers now use session lifetime instead of persistent lifetime
-2. **Data Persists**: Docker volumes still persist between sessions, so you won't lose data
-3. **Ctrl+C Works**: Pressing Ctrl+C properly stops all containers and processes
-4. **Simpler Workflow**: No need for manual cleanup commands
-
-### 🔄 Migration from Old Approach
-
-**Before** (required manual cleanup):
-```bash
-./aspire.sh up       # Start services
-./aspire.sh down     # Stop services (required!)
-```
-
-**Now** (automatic cleanup):
-```bash
-./aspire.sh run      # Start services
-Ctrl+C               # Stop services (automatic!)
 ```
 
 ## Service Architecture
 
 ### Infrastructure Services
-- **PostgreSQL** (port 5432) - Primary database with persistent volume
-- **Redis** (port 6379) - Cache and session storage with persistent volume
+- **PostgreSQL 17** (port 5432) - Primary database with the existing `fabric-postgres-data` volume mounted at `/var/lib/postgresql/data`
+- **Redis 8.6** - Cache and session storage with the existing `fabric-redis-data` volume and non-TLS connections. Use the `cache` resource endpoint in the Aspire dashboard to find the assigned host port.
 - **Qdrant** (ports 6333, 6334) - Vector database with persistent volume
 - **Temporal** (port 7233) - Workflow orchestration server
 - **Temporal UI** (port 8083) - Temporal dashboard
@@ -114,10 +87,7 @@ cd aspire/Fabric.AppHost && aspire run
 
 ### Stop Services
 
-```bash
-# Simply press Ctrl+C in the terminal where Aspire is running
-# Containers will stop automatically!
-```
+Press Ctrl+C in the terminal where Aspire is running to stop the AppHost.
 
 ### Check Status
 
@@ -129,7 +99,6 @@ Example output:
 ```
 NAMES                      STATUS          PORTS
 postgres-67728638          Up 5 minutes    0.0.0.0:5432->5432/tcp
-redis-67728638             Up 5 minutes    0.0.0.0:6379->6379/tcp
 ...
 ```
 
@@ -200,18 +169,10 @@ another checkout of this repo is still running under the same label; list them w
 `docker ps --filter label=com.docker.compose.service=<resource-name>` and stop the stale
 one.
 
-Aspire 13.5's experimental `WithTerminal()` is not a substitute for this. It runs the
-resource's own entrypoint under a pseudo-terminal and lets the dashboard attach to that
-process; for an agent that is the Node server, not a shell, so it cannot exec into a
+Aspire 17's stable `WithTerminal()` runs the resource's configured process under a
+pseudo-terminal so the dashboard can attach to it. For an agent, that process is
+the Node server. Use `docker exec` as shown above to open a new shell inside the
 running container.
-
-### Cleanup Orphaned Containers
-
-If containers don't stop properly (rare):
-
-```bash
-./aspire.sh down
-```
 
 ### Restart All Services
 
@@ -307,68 +268,86 @@ deployed environments are unaffected.
 
 ### Aspire Secrets
 
-Sensitive configuration is managed via .NET user secrets:
+Use `aspire secret` from the AppHost directory to manage local parameters. The commands default to the Development environment. When you omit the value, Aspire prompts for it without displaying it.
 
 ```bash
 cd aspire/Fabric.AppHost
 
-# Set a secret
-dotnet user-secrets set "postgres-password" "your-password"
-dotnet user-secrets set "minio-root-user" "minioadmin"
-dotnet user-secrets set "minio-root-password" "minioadmin"
-dotnet user-secrets set "grafana-admin-password" "admin"
+aspire secret set Parameters:postgres-password
+aspire secret set Parameters:minio-root-user
+aspire secret set Parameters:minio-root-password
+aspire secret set Parameters:grafana-admin-password
 
-# List all secrets
-dotnet user-secrets list
+# Show the local secrets file path
+aspire secret path
 ```
 
-Secrets are stored in: `~/.microsoft/usersecrets/fabric-apphost-secrets/`
+On startup, Aspire imports legacy .NET user secrets if the Aspire Development secrets file is missing. Aspire secrets override values in appsettings and legacy .NET user secrets. Environment variables and AppHost command-line arguments can override Aspire secrets.
 
 ### Public Tunnel (OAuth callbacks and webhooks)
 
-OAuth providers that insist on an https redirect URI, and any service that posts
-webhooks to you, cannot reach `http://localhost:3001`. The AppHost can run the
-ngrok agent as a resource and serve the web app through it. It is off by default
-and needs two parameters, set in `appsettings.Development.json` (or via
-`dotnet user-secrets`):
+OAuth providers and webhook senders need a reachable HTTPS URL. The AppHost can
+forward requests to the local web app on port 3001 through a Microsoft dev
+tunnel. The tunnel is off by default and is available only in local run mode.
 
-```json
-"Parameters": {
-  "ngrok-domain": "example-org.ngrok-free.app",
-  "ngrok-auth-token": "<your ngrok auth token>"
-}
+Install the [dev tunnel CLI](https://learn.microsoft.com/en-us/azure/developer/dev-tunnels/get-started)
+and sign in with `devtunnel user login`. Aspire can prompt for sign-in when the
+tunnel starts. From the AppHost directory, set a fixed ID and restart the AppHost.
+
+```bash
+aspire secret set Parameters:dev-tunnel-id fabric-dev-example
 ```
 
-- `ngrok-domain` is a reserved domain from your ngrok account (free accounts
-  include one static domain). A reserved domain is required: the URL has to be
-  known before the web app starts, and OAuth providers need a stable callback.
-- `ngrok-auth-token` is your personal ngrok auth token. It only reaches the
-  `tunnel` container, never the web app or the agents.
+Choose an ID unique to you and available to your account. Use 3–60 lowercase
+ASCII letters, digits, or hyphens, with a letter or digit at each end. Aspire
+reuses the fixed ID across runs so callback URLs can stay stable. The tunnel
+requests a 720-hour expiration.
 
-When both are set the AppHost:
+Open the `tunnel-web-http` resource in the Aspire dashboard to find the URL.
+The dev tunnels service assigns its host when it first creates the tunnel, for
+example `https://abcd1234-3001.usw3.devtunnels.ms`; the host is not built from
+the ID. Aspire reuses the tunnel with that ID, so the host stays the same across
+AppHost restarts. A new ID, or a tunnel that was deleted or expired after 30
+days without use, gets a new host, and its callbacks must be registered again.
+The web app and Temporal worker receive that origin as `NEXT_PUBLIC_SITE_URL`.
+The web app also receives it as `DEV_TUNNEL_URL` for Better Auth's trusted
+origins and Next's `allowedDevOrigins`. An explicit `NEXT_PUBLIC_APP_URL` in `.env.local` still
+overrides the integration callbacks.
 
-1. Starts a `tunnel` container running the ngrok agent, forwarding
-   `https://<ngrok-domain>` to the web app on the host, and shows the public URL
-   on the resource in the dashboard.
-2. Sets `NEXT_PUBLIC_SITE_URL` for the web app to the tunnel URL, so Better
-   Auth, the MCP OAuth client and the integration connect flow build redirect
-   URIs, magic links and webhook targets on the public origin. (Setting
-   `NEXT_PUBLIC_APP_URL` in `.env.local` still overrides the integration
-   callbacks.)
-3. Sets `DEV_TUNNEL_URL`, which adds the tunnel to Better Auth's trusted origins
-   and to Next's `allowedDevOrigins`.
+Register the dashboard URL with the relevant `/api/...` callback paths in your
+OAuth provider or webhook sender. Use the tunnel host in your browser while
+testing. Session cookies, OAuth state, and passkeys are bound to the host where
+you sign in, so a flow started on localhost cannot complete on the tunnel.
+The web endpoint allows anonymous tunnel access so providers can reach it.
+Anyone with the URL can reach your local web app.
 
-Register `https://<ngrok-domain>/api/...` callback URLs with your OAuth
-providers, and use the app through the tunnel URL while it is on: session
-cookies, OAuth state and passkeys are bound to the host you sign in on, so a flow
-started on `localhost:3001` will not complete on the tunnel. Blank either
-parameter to go back to plain localhost.
+To disable the tunnel, stop the AppHost and set an explicit empty Development
+value from the AppHost directory.
 
-Starting a tunnel by hand instead, outside Aspire? Set both `DEV_TUNNEL_URL`
-and `NEXT_PUBLIC_SITE_URL` in `.env.local` to its https URL: the first adds the
-host to the trusted origins and `allowedDevOrigins`, the second makes redirect
-URIs and links use it. Only ngrok and Microsoft dev tunnel hosts are accepted
-for `DEV_TUNNEL_URL`, and it is ignored in production.
+```bash
+aspire secret set Parameters:dev-tunnel-id "" --environment Development
+```
+
+Remove any higher-precedence environment variable or AppHost command-line
+override, such as `Parameters__dev-tunnel-id`, before restarting. The empty
+value overrides an ID in appsettings or legacy .NET user secrets. Deleting
+the override can let a configured ID take effect again.
+
+If you start a tunnel by hand outside Aspire, set `DEV_TUNNEL_URL` and
+`NEXT_PUBLIC_SITE_URL` in `.env.local` to its HTTPS origin. The first adds the
+host to the development origin lists, and the second makes redirects and
+links use it. Better Auth accepts ngrok and Microsoft dev tunnel hosts for
+`DEV_TUNNEL_URL` and ignores it in production.
+
+### Postgres MCP server
+
+The AppHost exposes a read-only Postgres MCP server at
+`http://localhost:8150/sse` when using the local database. The server runs in
+restricted mode and is omitted when the AppHost uses an external database.
+
+```bash
+claude mcp add --transport sse fabric-postgres http://localhost:8150/sse
+```
 
 ## Startup Behavior
 
@@ -402,13 +381,9 @@ curl http://localhost:8134/ok
 
 ## Troubleshooting
 
-### Containers Don't Stop After Ctrl+C
+### Persistent Containers Still Running After Ctrl+C
 
-This should no longer happen with the new configuration. If it does:
-
-```bash
-./aspire.sh down
-```
+Follow [Run One Fabric Stack at a Time](../aspire/README.md#run-one-fabric-stack-at-a-time) to stop persistent containers before starting the stack from another checkout.
 
 ### Port Already in Use
 

@@ -38,7 +38,7 @@ const operation = {
 	kind: "send",
 	sessionId: "example-session",
 	destination,
-	text: "[P1] Fabric Parlume: Answer",
+	html: "<p>[P1] Fabric Parlume: <b>Answer</b></p>",
 };
 const send = () =>
 	executeMicrosoftTeamsTool(
@@ -77,6 +77,16 @@ describe("single-dispatch Parlume Graph reply", () => {
 			);
 		},
 	);
+	it("posts the reply as HTML, as other meeting chats show it", async () => {
+		mocks.fetch.mockResolvedValue(Response.json({ id: "example-reply" }));
+		expect(await send()).toEqual({ messageId: "example-reply" });
+		expect(JSON.parse(mocks.fetch.mock.calls[0][1].body)).toEqual({
+			body: {
+				contentType: "html",
+				content: "<p>[P1] Fabric Parlume: <b>Answer</b></p>",
+			},
+		});
+	});
 	it("checks exact current binding, access and hard stop at dispatch", async () => {
 		mocks.fetch.mockResolvedValue(Response.json({ id: "example-reply" }));
 		expect(await send()).toEqual({ messageId: "example-reply" });

@@ -14,6 +14,7 @@ import type { z } from "zod";
 
 export interface ProviderCredentialShape {
 	provider: string;
+	authMode?: "federated";
 	apiKey?: string;
 	clientId?: string;
 	clientSecret?: string;
@@ -38,6 +39,23 @@ export function refineProviderCredentials(
 	const hasClientId = Boolean(input.clientId?.trim());
 	const hasClientSecret = Boolean(input.clientSecret?.trim());
 	const hasServicePrincipal = hasClientId && hasClientSecret;
+
+	if (input.authMode === "federated") {
+		if (
+			input.provider !== "ANTHROPIC_DIRECT" ||
+			hasApiKey ||
+			hasClientId ||
+			hasClientSecret
+		) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["authMode"],
+				message:
+					"Federation requires direct Anthropic without an API key or service principal.",
+			});
+		}
+		return;
+	}
 
 	// Providers without OAuth M2M support still require an API key, and must
 	// reject service-principal fields outright rather than ignoring them.

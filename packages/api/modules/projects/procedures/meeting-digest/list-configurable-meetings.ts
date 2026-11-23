@@ -26,6 +26,8 @@ export interface ParlumeAutoJoinState {
 	suggestionAudience: ParlumeSuggestionAudience;
 	/** Who turned it on; null when off, or when their account is gone. */
 	enabledBy: { id: string; name: string } | null;
+	/** When they turned it on; null when off, or turned on before this was kept. */
+	enabledAt: Date | null;
 	error: string | null;
 	errorAt: Date | null;
 	/** Syncing is stopped for the series, so the scheduler skips it. */
@@ -42,6 +44,7 @@ export function toParlumeAutoJoinState(row: {
 	parlumeAutoJoinError: string | null;
 	parlumeAutoJoinErrorAt: Date | null;
 	parlumeAutoJoinUser: { id: string; name: string } | null;
+	parlumeAutoJoinEnabledAt: Date | null;
 }): ParlumeAutoJoinState {
 	return {
 		enabled: row.parlumeAutoJoin,
@@ -49,6 +52,7 @@ export function toParlumeAutoJoinState(row: {
 		suggestionsEnabled: row.parlumeAutoJoinSuggestions,
 		suggestionAudience: row.parlumeAutoJoinSuggestionAudience,
 		enabledBy: row.parlumeAutoJoin ? row.parlumeAutoJoinUser : null,
+		enabledAt: row.parlumeAutoJoin ? row.parlumeAutoJoinEnabledAt : null,
 		error: row.parlumeAutoJoinError,
 		errorAt: row.parlumeAutoJoinErrorAt,
 		syncStopped: row.deactivatedAt !== null,
@@ -124,6 +128,7 @@ export const listConfigurableMeetingsProcedure = tenantProtectedProcedure
 				parlumeAutoJoinError: true,
 				parlumeAutoJoinErrorAt: true,
 				parlumeAutoJoinUser: { select: { id: true, name: true } },
+				parlumeAutoJoinEnabledAt: true,
 			},
 			orderBy: { subject: "asc" },
 		});

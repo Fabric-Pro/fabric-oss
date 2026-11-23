@@ -159,7 +159,10 @@ export function directTurnInput(args: {
 	options: TurnRequestOptions;
 	send: Pick<
 		DirectSendOptions,
-		"attachedDocumentIds" | "messageChatId" | "inlineAttachmentContexts"
+		| "attachedDocumentIds"
+		| "messageChatId"
+		| "inlineAttachmentContexts"
+		| "attachmentNames"
 	>;
 	agentConfig: Awaited<ReturnType<typeof loadInstanceAgentConfig>> | null;
 }): RunAgentInput {
@@ -215,6 +218,8 @@ export function directTurnInput(args: {
 			chatId: send.messageChatId || options.chatId,
 			attachedDocumentIds: send.attachedDocumentIds,
 			inlineAttachmentContexts: send.inlineAttachmentContexts,
+			// Not a route field: the runtime saves them with the question.
+			attachmentNames: send.attachmentNames,
 			workspaceIds: options.workspaceIds,
 			workspaceDocumentIds: options.workspaceDocumentIds,
 			projectId:

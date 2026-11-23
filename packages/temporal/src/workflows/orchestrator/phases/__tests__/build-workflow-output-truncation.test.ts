@@ -503,7 +503,7 @@ describe("workflow output usage refusal", () => {
 			),
 		).toMatchObject({
 			status: "failed",
-			error: "LLM stream error: limit reached",
+			error: "limit reached",
 			usageLimit,
 		});
 	});

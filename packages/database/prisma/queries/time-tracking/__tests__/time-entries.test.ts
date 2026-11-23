@@ -377,8 +377,68 @@ describe("listRecentTimeEntryNotes", () => {
 			{ _max: { updatedAt: "desc" } },
 			{ description: "asc" },
 		]);
-		expect(query.take).toBe(5);
+		expect(query.skip).toBe(0);
 		expect(notes).toEqual(["Development", "REQS"]);
+		expect(mocks.timeEntry.groupBy).toHaveBeenCalledTimes(1);
+	});
+
+	it("collapses notes that differ only in whitespace before the limit", async () => {
+		mocks.timeEntry.groupBy.mockResolvedValue(
+			[
+				"Note  ten",
+				"Note ten",
+				" Note ten\n",
+				"   ",
+				"Note nine",
+				"Note eight",
+				"Note seven",
+				"Note six",
+				"Note five",
+			].map((description) => ({
+				description,
+				_max: { updatedAt: new Date() },
+			})),
+		);
+
+		const notes = await listRecentTimeEntryNotes({
+			organizationId: "org-1",
+			projectId: "project-a",
+			userId: "user-1",
+			limit: 5,
+		});
+
+		expect(notes).toEqual([
+			"Note  ten",
+			"Note nine",
+			"Note eight",
+			"Note seven",
+			"Note six",
+		]);
+	});
+
+	it("reads further groups until the limit holds distinct notes", async () => {
+		const batch = Array.from({ length: 50 }, (_, index) => ({
+			description: `Standup${" ".repeat(index + 1)}`,
+			_max: { updatedAt: new Date() },
+		}));
+		mocks.timeEntry.groupBy
+			.mockResolvedValueOnce(batch)
+			.mockResolvedValueOnce([
+				{ description: "Code review", _max: { updatedAt: new Date() } },
+			]);
+
+		const notes = await listRecentTimeEntryNotes({
+			organizationId: "org-1",
+			projectId: "project-a",
+			userId: "user-1",
+			limit: 5,
+		});
+
+		expect(notes).toEqual(["Standup ", "Code review"]);
+		const skips = mocks.timeEntry.groupBy.mock.calls.map(
+			([query]) => query.skip,
+		);
+		expect(skips).toEqual([0, 50]);
 	});
 });
 

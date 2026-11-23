@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
 	stop: vi.fn(),
 	actions: vi.fn(),
 	voiceState: vi.fn(),
+	toolContext: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
 	db: {
@@ -49,7 +50,10 @@ vi.mock("@repo/logs", () => ({
 }));
 vi.mock("@temporalio/activity", () => ({
 	Context: {
-		current: () => ({ cancellationSignal: new AbortController().signal }),
+		current: () => ({
+			cancellationSignal: new AbortController().signal,
+			heartbeat: vi.fn(),
+		}),
 	},
 }));
 vi.mock("../parlume-agent", () => ({
@@ -58,10 +62,13 @@ vi.mock("../parlume-agent", () => ({
 	executeParlumeAgent: mocks.execute,
 }));
 vi.mock("../parlume-actions", () => ({
-	createParlumeToolRuntime: () => ({ invoke: vi.fn() }),
+	createParlumeToolRuntime: (context: { proposalTags?: string[] }) => {
+		mocks.toolContext(context);
+		return { invoke: vi.fn() };
+	},
 }));
 vi.mock("../parlume-voice", () => ({
-	PARLUME_MAX_SPOKEN_CHARS: 800,
+	PARLUME_MAX_SPOKEN_CHARS: 675,
 	PARLUME_HEADLINE_SPOKEN_CHARS: 350,
 	readParlumeVoiceState: mocks.voiceState,
 	speakParlumeResponse: mocks.speak,
@@ -71,6 +78,9 @@ vi.mock("../parlume-voice", () => ({
 }));
 vi.mock("../project-metadata", () => ({
 	retrieveProjectContextsActivity: mocks.retrieve,
+}));
+vi.mock("../parlume-turn-audit", () => ({
+	recordParlumeTurnAnswered: vi.fn(),
 }));
 
 async function spokenSentences(callIndex = 0): Promise<string[]> {
@@ -84,6 +94,11 @@ async function spokenSentences(callIndex = 0): Promise<string[]> {
 	return spoken;
 }
 
+/** The turn's proposal tool posted a proposal under `tag`. */
+function postedProposal(tag: string): void {
+	mocks.toolContext.mock.calls[0]?.[0].proposalTags.push(tag);
+}
+
 function turn(agentKind = "FABRIC_AGENT", toolsReadOnly = true) {
 	return {
 		id: "turn",
@@ -91,6 +106,7 @@ function turn(agentKind = "FABRIC_AGENT", toolsReadOnly = true) {
 		voiceGeneration: 3,
 		speakerId: "speaker",
 		speakerName: "Alex",
+		requesterUserId: "user",
 		requestText: "What is the plan?",
 		replyChannel: "VOICE",
 		session: {
@@ -129,7 +145,6 @@ beforeEach(() => {
 	});
 	mocks.voiceState.mockResolvedValue({
 		current: true,
-		muted: false,
 		chatAvailable: true,
 	});
 });
@@ -159,6 +174,7 @@ describe("Parlume meeting turns", () => {
 			{ kind: "FABRIC_AGENT", revision: "current-revision" },
 			turn().session,
 			"What is the plan?",
+			"user",
 		);
 		releaseProjectKnowledge();
 		await running;
@@ -294,7 +310,7 @@ describe("Parlume meeting turns", () => {
 	}
 	it("says what it is doing when a tool starts and the agent said nothing first", async () => {
 		await expect(runToolCall()).resolves.toEqual([
-			"Creating that now.",
+			"Preparing that change.",
 			"Created F-251, Parlume test.",
 		]);
 	});
@@ -326,6 +342,11 @@ describe("Parlume meeting turns", () => {
 			voiceGeneration: 3,
 			final: true,
 			message: "The plan.",
+			header: {
+				kind: "answer",
+				asker: "Alex",
+				request: "What is the plan?",
+			},
 		});
 		expect(mocks.updateMany).toHaveBeenLastCalledWith(
 			expect.objectContaining({
@@ -364,6 +385,11 @@ describe("Parlume meeting turns", () => {
 			voiceGeneration: 3,
 			final: true,
 			message: "The CSV header fix and the release note.",
+			header: {
+				kind: "detail",
+				asker: "Alex",
+				request: "What is the plan?",
+			},
 		});
 	});
 	it("posts nothing more when the whole answer was spoken", async () => {
@@ -371,12 +397,45 @@ describe("Parlume meeting turns", () => {
 
 		expect(mocks.chat).not.toHaveBeenCalled();
 	});
-	it("posts what the meeting did not hear when someone spoke over the reply", async () => {
+	// A spoken request's reply said what its proposal leaves out, and only
+	// a typed request's reply was posted with that in the chat.
+	it("posts a spoken reply whole when it says what a proposal it posted leaves out", async () => {
+		mocks.chat.mockResolvedValue({ sent: true, tag: "P8" });
+		const reply =
+			"P7 waits for a member to confirm it in Fabric; syncing it and assigning it are not available through my tools.";
+		mocks.execute.mockImplementation(async () => {
+			postedProposal("P7");
+			observeAgentText(reply);
+			return { success: true, response: reply };
+		});
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		expect(mocks.chat).toHaveBeenCalledTimes(1);
+		expect(mocks.chat).toHaveBeenCalledWith(
+			expect.objectContaining({ message: reply, final: true }),
+		);
+	});
+	it("posts nothing more for a spoken reply that only says its proposal waits", async () => {
+		const reply = "P7 waits for a member to confirm it in Fabric.";
+		mocks.execute.mockImplementation(async () => {
+			postedProposal("P7");
+			observeAgentText(reply);
+			return { success: true, response: reply };
+		});
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		expect(mocks.chat).not.toHaveBeenCalled();
+	});
+	// Talk over Parlume no longer mutes it, so a reply cut short was replaced
+	// by a new request: it posts only its detail, as a reply heard to its end
+	// does, not the headline sentences it did not finish.
+	it("posts only the detail when the reply ended before it was heard", async () => {
 		mocks.chat.mockResolvedValue({ sent: true, tag: "P4" });
 		mocks.speak.mockResolvedValue({
 			played: false,
 			interrupted: true,
-			muted: true,
 			heard: 1,
 		});
 		mocks.execute.mockImplementation(async () => {
@@ -390,8 +449,7 @@ describe("Parlume meeting turns", () => {
 
 		expect(mocks.chat).toHaveBeenCalledWith(
 			expect.objectContaining({
-				message:
-					"The CSV header fix is the first of them.\n\nThe release note is the other.",
+				message: "The release note is the other.",
 				final: true,
 			}),
 		);
@@ -404,10 +462,31 @@ describe("Parlume meeting turns", () => {
 			}),
 		);
 	});
+	it("posts every sentence not heard, the headline's too, when the bridge lost the reply", async () => {
+		mocks.chat.mockResolvedValue({ sent: true, tag: "P4" });
+		mocks.speak.mockResolvedValue({
+			played: false,
+			interrupted: true,
+			heard: 1,
+			lost: true,
+		});
+		mocks.execute.mockImplementation(async () => {
+			observeAgentText("Two items are open on the roadmap. ");
+			observeAgentText("The CSV header fix is the first of them.\n---\n");
+			observeAgentText("The release note is the other.");
+			return { success: true, response: "Ignored when streamed." };
+		});
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		const posted = String(mocks.chat.mock.calls.at(-1)?.[0]?.message);
+		expect(posted).toContain("The CSV header fix is the first of them.");
+		expect(posted).toContain("The release note is the other.");
+		expect(posted).not.toContain("Two items are open on the roadmap.");
+	});
 	it("speaks the detail too, and says there is more, when the meeting chat is out of reach", async () => {
 		mocks.voiceState.mockResolvedValue({
 			current: true,
-			muted: false,
 			chatAvailable: false,
 		});
 		const long = "This sentence is here only to fill the reply. ".repeat(
@@ -563,14 +642,16 @@ describe("Parlume meeting turns", () => {
 			expect(voiceInstructions).toContain("Never read URLs aloud.");
 		},
 	);
-	it("tells an actions meeting's agent that a change takes effect at once, with nothing to confirm", async () => {
+	it("tells an actions meeting's agent that a change is proposed for a member to confirm in Fabric", async () => {
 		mocks.turn.mockResolvedValue(turn("FABRIC_AGENT", false));
 		await executeParlumeMeetingTurn({ turnId: "turn" });
 		const { voiceInstructions } = mocks.execute.mock.calls[0]?.[0] as {
 			voiceInstructions: string;
 		};
-		expect(voiceInstructions).toContain("takes effect as soon as you call");
-		expect(voiceInstructions).not.toMatch(/confirm|awaiting/i);
+		expect(voiceInstructions).toContain(
+			"proposes the change and does not make it",
+		);
+		expect(voiceInstructions).not.toContain("takes effect");
 	});
 	it("answers a request typed in the chat in the chat, without speaking", async () => {
 		mocks.turn.mockResolvedValue({ ...turn(), replyChannel: "CHAT" });
@@ -585,11 +666,60 @@ describe("Parlume meeting turns", () => {
 			voiceGeneration: 3,
 			final: true,
 			message: "The plan.",
+			header: {
+				kind: "answer",
+				asker: "Alex",
+				request: "What is the plan?",
+			},
 		});
 		const completed = mocks.updateMany.mock.calls.at(-1)?.[0];
 		expect(completed.data).toMatchObject({ status: "COMPLETED" });
 		expect(completed.data).not.toHaveProperty("error");
 		expect(completed.data).not.toHaveProperty("spokenAt");
+	});
+
+	it("answers a question asked on the Parlume page only there, without speaking or posting", async () => {
+		mocks.turn.mockResolvedValue({ ...turn(), replyChannel: "PAGE" });
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		expect(mocks.speak).not.toHaveBeenCalled();
+		expect(mocks.chat).not.toHaveBeenCalled();
+		expect(mocks.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ responseText: "The plan." }),
+			}),
+		);
+		const completed = mocks.updateMany.mock.calls.at(-1)?.[0];
+		expect(completed).toEqual({
+			where: { id: "turn", status: "RUNNING" },
+			data: { status: "COMPLETED", completedAt: expect.any(Date) },
+		});
+		// It never held the voice's turn, so it releases none.
+		expect(mocks.session).not.toHaveBeenCalled();
+		expect(mocks.toolContext.mock.calls[0]?.[0]).toMatchObject({
+			pageOnly: true,
+		});
+		const { voiceInstructions } = mocks.execute.mock.calls[0]?.[0] as {
+			voiceInstructions: string;
+		};
+		expect(voiceInstructions).toContain("typed on the Parlume page");
+	});
+
+	it("answers a page question even after the voice moved on to a newer request", async () => {
+		const base = turn();
+		mocks.turn.mockResolvedValue({
+			...base,
+			replyChannel: "PAGE",
+			voiceGeneration: 2,
+			session: { ...base.session, voiceGeneration: 5 },
+		});
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		expect(mocks.execute).toHaveBeenCalled();
+		const completed = mocks.updateMany.mock.calls.at(-1)?.[0];
+		expect(completed.data).toMatchObject({ status: "COMPLETED" });
 	});
 
 	it("tells the agent of a chat request to write a chat message, not a spoken answer", async () => {
@@ -640,6 +770,22 @@ describe("Parlume meeting turns", () => {
 		);
 	});
 
+	it("keeps a chat answer on the Parlume page while a guest is in the meeting", async () => {
+		mocks.turn.mockResolvedValue({ ...turn(), replyChannel: "CHAT" });
+		mocks.chat.mockResolvedValue({ sent: false, reason: "guests_present" });
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		expect(mocks.updateMany).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					status: "COMPLETED",
+					error: "The answer was not sent: Parlume had not confirmed that everyone in the meeting can see this project, so it answered only on the Parlume page.",
+				}),
+			}),
+		);
+	});
+
 	it("gives the agent the recent meeting chat, labelled as chat, apart from the spoken transcript", async () => {
 		mocks.segments.mockImplementation(async ({ where }) =>
 			where.source === "CHAT"
@@ -674,5 +820,131 @@ describe("Parlume meeting turns", () => {
 			voiceInstructions: string;
 		};
 		expect(voiceInstructions).toContain("cannot make changes");
+	});
+});
+
+describe("Parlume meeting turns: whose access and which audience", () => {
+	function turnWith(overrides: {
+		requesterUserId?: string | null;
+		requestText?: string;
+		session?: Record<string, unknown>;
+	}) {
+		const base = turn();
+		return {
+			...base,
+			...("requesterUserId" in overrides
+				? { requesterUserId: overrides.requesterUserId }
+				: {}),
+			...(overrides.requestText
+				? { requestText: overrides.requestText }
+				: {}),
+			session: { ...base.session, ...overrides.session },
+		};
+	}
+
+	it("searches the project with the access of the participant who asked, not the inviter's", async () => {
+		mocks.turn.mockResolvedValue(turnWith({ requesterUserId: "asker" }));
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		expect(mocks.hasAccess).toHaveBeenCalledWith("project", "asker", "org");
+		expect(mocks.retrieve).toHaveBeenCalledWith(
+			"What is the plan?",
+			"project",
+			"asker",
+			"org",
+			3,
+			{ maxPassageChars: 1_500 },
+		);
+		expect(mocks.execute).toHaveBeenCalledWith(
+			expect.objectContaining({ requesterUserId: "asker" }),
+		);
+	});
+
+	it("looks nothing up and says why when Parlume could not tell who asked", async () => {
+		mocks.turn.mockResolvedValue(turnWith({ requesterUserId: null }));
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		expect(mocks.retrieve).not.toHaveBeenCalled();
+		expect(mocks.segments).not.toHaveBeenCalled();
+		expect(mocks.gather).not.toHaveBeenCalled();
+		expect(mocks.execute).not.toHaveBeenCalled();
+		expect(mocks.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					responseText: expect.stringContaining(
+						"I couldn't tell who asked",
+					),
+				}),
+			}),
+		);
+	});
+
+	it("looks nothing up for an asker who can no longer read the project, in read-only mode too", async () => {
+		mocks.turn.mockResolvedValue(turnWith({ requesterUserId: "asker" }));
+		mocks.hasAccess.mockImplementation(
+			async (_project: string, userId: string) => userId !== "asker",
+		);
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		expect(turn().session.toolsReadOnly).toBe(true);
+		expect(mocks.retrieve).not.toHaveBeenCalled();
+		expect(mocks.execute).not.toHaveBeenCalled();
+	});
+
+	it("leaves the confidential part out unless everyone present may hear it", async () => {
+		mocks.turn.mockResolvedValue(
+			turnWith({
+				session: { confidential: true, confidentialSince: null },
+			}),
+		);
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		for (const [query] of mocks.segments.mock.calls) {
+			expect(query.where).toMatchObject({ confidential: false });
+		}
+		expect(mocks.history).not.toHaveBeenCalled();
+	});
+
+	it("uses the confidential part when the web route found every attendee present verified", async () => {
+		mocks.turn.mockResolvedValue(
+			turnWith({
+				session: { confidential: true, confidentialSince: null },
+			}),
+		);
+
+		await executeParlumeMeetingTurn({
+			turnId: "turn",
+			withConfidential: true,
+		});
+
+		for (const [query] of mocks.segments.mock.calls) {
+			expect(query.where).not.toHaveProperty("confidential");
+		}
+		expect(mocks.history).toHaveBeenCalled();
+	});
+
+	it("answers the confidential command itself without running the agent", async () => {
+		mocks.turn.mockResolvedValue(
+			turnWith({
+				requestText: "off the record",
+				session: { confidential: true, confidentialSince: new Date() },
+			}),
+		);
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		expect(mocks.execute).not.toHaveBeenCalled();
+		expect(mocks.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					responseText:
+						"This part of the meeting is confidential now.",
+				}),
+			}),
+		);
 	});
 });

@@ -299,6 +299,7 @@ export { Permissions } from "@repo/permissions";
 export {
 	assertInputOrgMatchesAuthorizedProject,
 	assertProjectPermission,
+	assertSessionOrganizationPermission,
 	authorizeInputOrganization,
 	getPermissionFromMiddleware,
 	PERMISSION_MIDDLEWARE_TAG,

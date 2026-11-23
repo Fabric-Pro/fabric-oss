@@ -23,6 +23,11 @@ export type ApproveOutcome = {
 	createdStoryIds?: string[];
 	/** Items still waiting for review; counted on `pending` / `applied`. */
 	remainingChangeCount?: number | null;
+	/**
+	 * Why each update left out of the approve was held back (its target is
+	 * not a work item in this project). Those items stay in review.
+	 */
+	heldBack?: string[];
 };
 
 /** The approve as the reviewer made it. */
@@ -46,6 +51,75 @@ export type ApproveToast = {
 };
 
 const ROADMAP_RECOMMENDATION_SOURCE = "ROADMAP_RECOMMENDATION";
+
+/**
+ * The heading of every refused or failed approve, for one item (its title)
+ * or for the whole proposal (null).
+ */
+export function approveRefusalTitle(itemTitle: string | null): string {
+	return itemTitle
+		? `Couldn't approve “${itemTitle}”`
+		: "Couldn't approve proposal";
+}
+
+/**
+ * The toast for the items an approve held back, or null when none was: each
+ * names its item and target, and those items stay in review.
+ */
+export function heldBackToast(
+	heldBack: readonly string[] | undefined,
+): ApproveToast | null {
+	if (!heldBack || heldBack.length === 0) {
+		return null;
+	}
+	const single = heldBack.length === 1;
+	return {
+		variant: "error",
+		title: single
+			? "Couldn't approve 1 item"
+			: `Couldn't approve ${heldBack.length} items`,
+		description: [...heldBack, staysInReview(heldBack.length)].join("\n"),
+	};
+}
+
+/** That `count` held-back items stay in review. */
+function staysInReview(count: number): string {
+	return count === 1 ? "It stays in review." : "They stay in review.";
+}
+
+/**
+ * The held-back toast to show beside an approve's own toast, or null. A
+ * failed approve's toast already names the items its errors name, so they
+ * are not named twice in a second toast.
+ */
+export function approveHeldBackToast(
+	result: ApproveOutcome,
+): ApproveToast | null {
+	const shown = new Set(result.status === "failed" ? result.errors : []);
+	return heldBackToast(
+		result.heldBack?.filter((reason) => !shown.has(reason)),
+	);
+}
+
+/**
+ * What an Apply Selected approves while it runs: the changes that apply out
+ * of all the proposal's, and the updates held back because their target
+ * ticket is not in this project (null when none is).
+ */
+export function approvedChangesText(
+	submitted: number,
+	total: number,
+	heldBack: number,
+): { approved: string; heldBack: string | null } {
+	const applying = Math.max(submitted - heldBack, 0);
+	return {
+		approved: `Approved ${applying} of ${total} proposed changes`,
+		heldBack:
+			heldBack > 0
+				? `${heldBack} held back: ${heldBack === 1 ? "its" : "their"} target ticket is not in this project.`
+				: null,
+	};
+}
 
 /**
  * Whether the open proposal closes. A whole-proposal approve closes unless
@@ -111,14 +185,20 @@ export function approveOutcomeToast(
 			? null
 			: (request.itemTitle ?? "This item");
 	if (result.status === "failed") {
+		// The items held back that the errors name are not toasted again
+		// (`approveHeldBackToast`): this toast says they stay in review.
+		const heldBack = new Set(result.heldBack);
+		const named =
+			result.errors?.filter((error) => heldBack.has(error)).length ?? 0;
 		return {
 			variant: "error",
-			title: itemTitle
-				? `Couldn't apply “${itemTitle}”`
-				: "Proposal approval failed",
-			description:
-				result.errors?.join("\n") ??
-				"Some changes could not be applied.",
+			title: approveRefusalTitle(itemTitle),
+			description: result.errors
+				? [
+						...result.errors,
+						...(named > 0 ? [staysInReview(named)] : []),
+					].join("\n")
+				: "Some changes could not be applied.",
 		};
 	}
 	if (itemTitle) {

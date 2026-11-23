@@ -21,6 +21,7 @@ import {
 	db,
 	getActiveDocumentAssistantConversation,
 	getRegisteredAgentByAgentId,
+	lockConversationRow,
 } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../../lib/audit";
@@ -330,6 +331,11 @@ export const appendTurnForDocument = tenantProtectedProcedure
 		// 4–8. Append (with spill + lock + idempotency)
 		// ------------------------------------------------------------------
 		const result = await db.$transaction(async (tx) => {
+			// Every path below rewrites the whole `messages` column. The
+			// row lock comes first so a review stamp (`recordDiffOutcome`)
+			// or an operation result written a moment earlier is read here
+			// and kept, not overwritten with the copy read before it landed.
+			await lockConversationRow(tx, targetConversationId);
 			const conversation = await tx.agentConversation.findFirst({
 				where: {
 					id: targetConversationId,

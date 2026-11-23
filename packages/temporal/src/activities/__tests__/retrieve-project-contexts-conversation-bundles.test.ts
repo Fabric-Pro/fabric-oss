@@ -35,6 +35,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 				findMany: (...args: unknown[]) => mocks.findMany(...args),
 			},
 		},
+		findConfidentialTranscriptContextIds: async () => new Set<string>(),
 		getProjectRagSettings: (...args: unknown[]) =>
 			mocks.getProjectRagSettings(...args),
 		getRetrievableConversationBundleById: (...args: unknown[]) =>

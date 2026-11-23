@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import { action, request } from "../../components/__tests__/fixtures";
 import { formatElapsed, initialsOf } from "../parlume-format";
 import {
+	actionDecision,
+	actionResult,
 	actionStatus,
 	actionSteps,
 	joinStepIndex,
 	joinTitle,
+	lobbyDeadline,
 	matchesKind,
+	requestStateLabel,
 	sessionOutcome,
 } from "../parlume-view";
 
@@ -89,6 +93,12 @@ describe("join progress", () => {
 		expect(joinTitle({ status: "JOINING" })).toBe("Waiting in the lobby…");
 		expect(joinTitle({ status: "LEAVING" })).toBe("Leaving the meeting…");
 	});
+
+	it("stops waiting in the lobby five minutes after the invite", () => {
+		expect(
+			lobbyDeadline({ createdAt: new Date("2026-11-21T10:00:00Z") }),
+		).toEqual(new Date("2026-11-21T10:05:00Z"));
+	});
 });
 
 describe("action status", () => {
@@ -97,7 +107,9 @@ describe("action status", () => {
 		["FAILED", "Failed", "bad"],
 		["OUTCOME_UNKNOWN", "Outcome unknown", "warn"],
 		["EXECUTING", "Executing", "warn"],
-		["CANCELLED", "Cancelled", "neutral"],
+		["CANCELLED", "Dismissed", "neutral"],
+		["PROPOSED", "Proposed", "warn"],
+		["EXPIRED", "Expired", "neutral"],
 	] as const)("labels %s as %s", (status, label, tone) => {
 		expect(actionStatus(action({ status }))).toEqual({ label, tone });
 	});
@@ -126,6 +138,131 @@ describe("actionSteps", () => {
 	});
 });
 
+describe("actionDecision", () => {
+	it("leaves an open proposal undecided", () => {
+		expect(
+			actionDecision({ status: "PROPOSED", decidedByName: null }),
+		).toBeNull();
+	});
+
+	it("names the member who confirmed or dismissed the change", () => {
+		expect(
+			actionDecision({ status: "COMPLETED", decidedByName: "Maya" }),
+		).toBe("Maya confirmed this change, and Fabric made it.");
+		expect(
+			actionDecision({ status: "CANCELLED", decidedByName: "Maya" }),
+		).toBe("Maya dismissed this proposal. No change was made.");
+	});
+
+	it("says an expired proposal made no change", () => {
+		expect(
+			actionDecision({ status: "EXPIRED", decidedByName: null }),
+		).toMatch(/expired, and no change was made/);
+	});
+});
+
+describe("actionResult", () => {
+	const origin = "https://fabric.example.com";
+	const made = (outcome: string) => ({
+		status: "COMPLETED" as const,
+		outcome,
+	});
+
+	it("names the item a Fabric tool returned and keeps only a same-site path", () => {
+		expect(
+			actionResult(
+				made(
+					JSON.stringify({
+						identifier: "3",
+						title: "Export to CSV",
+						kind: "FEATURE",
+						url: `${origin}/app/example-org/projects/p/stories/s?tab=spec`,
+					}),
+				),
+				origin,
+			),
+		).toEqual({
+			text: "Feature 3 · Export to CSV",
+			href: "/app/example-org/projects/p/stories/s?tab=spec",
+		});
+	});
+
+	it("drops an address on another site, or one that is not a URL", () => {
+		for (const url of [
+			"https://example.com/x",
+			"javascript:alert(1)",
+			`${origin}//example.com/x`,
+			`${origin}/\\example.com/x`,
+			"//example.com/x",
+		]) {
+			expect(
+				actionResult(
+					made(JSON.stringify({ title: "Export", url })),
+					origin,
+				),
+			).toEqual({ text: "Export", href: null });
+		}
+	});
+
+	it("keeps a prefixed identifier as it is", () => {
+		expect(
+			actionResult(
+				made(JSON.stringify({ identifier: "F-231", kind: "FEATURE" })),
+				origin,
+			),
+		).toEqual({ text: "F-231", href: null });
+	});
+
+	it("shows a failed change's error, never a made change", () => {
+		expect(
+			actionResult(
+				made(
+					JSON.stringify({
+						error: "Titles must be unique.",
+						title: "Export",
+					}),
+				),
+				origin,
+			),
+		).toEqual({ text: "Titles must be unique.", href: null });
+	});
+
+	it("never names or links an item for a change that was not made", () => {
+		const outcome = JSON.stringify({
+			success: false,
+			identifier: "3",
+			title: "Export",
+			kind: "FEATURE",
+			url: `${origin}/app/example-org/projects/p/stories/s`,
+		});
+		for (const status of ["FAILED", "OUTCOME_UNKNOWN"] as const) {
+			expect(actionResult({ status, outcome }, origin)).toBeNull();
+		}
+	});
+
+	it("shows a sentence outcome as written, and never raw or cut-short JSON", () => {
+		expect(
+			actionResult(
+				made("Dismissed in Fabric. No change was made."),
+				origin,
+			),
+		).toEqual({
+			text: "Dismissed in Fabric. No change was made.",
+			href: null,
+		});
+		expect(
+			actionResult(made(JSON.stringify({ ok: true })), origin),
+		).toBeNull();
+		expect(actionResult(made("[1,2]"), origin)).toBeNull();
+		expect(
+			actionResult(made('{"identifier":"3","title":"Export to'), origin),
+		).toBeNull();
+		expect(
+			actionResult({ status: "COMPLETED", outcome: null }, origin),
+		).toBeNull();
+	});
+});
+
 describe("matchesKind", () => {
 	const plain = request({ actions: [] });
 	const acting = request({ actions: [action()] });
@@ -140,5 +277,32 @@ describe("matchesKind", () => {
 	it("keeps everything under All", () => {
 		expect(matchesKind(plain, "all")).toBe(true);
 		expect(matchesKind(acting, "all")).toBe(true);
+	});
+});
+
+describe("requestStateLabel", () => {
+	const stopped = (
+		stopCause: "VOICE" | "CHAT" | "PAGE" | "PAUSE" | null,
+		stoppedBy: string | null = "Dev Example",
+	) =>
+		requestStateLabel(request({ status: "STOPPED", stopCause, stoppedBy }));
+
+	it("says how a request was stopped and who stopped it", () => {
+		expect(stopped("VOICE")).toBe("stopped by voice (Dev Example)");
+		expect(stopped("CHAT")).toBe("stopped in the chat (Dev Example)");
+		expect(stopped("PAGE")).toBe(
+			"stopped on the Parlume page (Dev Example)",
+		);
+		expect(stopped("PAUSE")).toBe("stopped by a pause (Dev Example)");
+	});
+
+	it("leaves out a stopper the meeting did not name, and a cause it did not record", () => {
+		expect(stopped("VOICE", null)).toBe("stopped by voice");
+		expect(stopped(null)).toBe("stopped");
+	});
+
+	it("says nothing for a completed request, and the state of any other", () => {
+		expect(requestStateLabel(request())).toBeNull();
+		expect(requestStateLabel(request({ status: "FAILED" }))).toBe("failed");
 	});
 });

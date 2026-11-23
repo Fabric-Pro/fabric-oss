@@ -42,10 +42,14 @@ export const templateParameterDefaultsProcedure = tenantProtectedProcedure
 	.meta({ auditActivity: "never" })
 	.input(parameterDefaultsInputSchema)
 	.handler(async ({ input, context, path }) => {
+		// Reach is `canCreateProjectReport`'s, which admits an organization
+		// admin to every project's reports.
 		await assertProjectPermission(
 			input.projectId,
 			context.user.id,
 			Permissions.REPORT_READ,
+			undefined,
+			{ admitUnreachableOrganizationMember: true },
 		);
 		if (!(await canCreateProjectReport(input.projectId, context.user))) {
 			throw new ORPCError("FORBIDDEN", {

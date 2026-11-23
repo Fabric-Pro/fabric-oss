@@ -1,5 +1,6 @@
 import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
 import {
+	findConfidentialTranscriptContextIds,
 	getContextById,
 	getProjectAccessContext,
 	readProjectContextBodyPage,
@@ -77,6 +78,20 @@ export async function POST(req: Request) {
 			return NextResponse.json(
 				{ error: "Source not found in this project" },
 				{ status: 404 },
+			);
+		}
+		// Search never returns a confidential series' transcript or a Parlume
+		// transcript, and an id from elsewhere does not open one either.
+		const confidential = await findConfidentialTranscriptContextIds({
+			projectId,
+			contextIds: [ctx.id],
+		});
+		if (confidential.size > 0) {
+			return NextResponse.json(
+				{
+					error: "This transcript is kept out of answers: it belongs to a confidential meeting series, or it is a Parlume meeting transcript.",
+				},
+				{ status: 403 },
 			);
 		}
 		const integer = (value: unknown, fallback: number) =>

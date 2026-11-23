@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	existsSync,
@@ -16,12 +17,21 @@ import {
 	installedConsumers,
 	installedDependency,
 } from "./installed-consumers.mjs";
+import {
+	addPackage,
+	assertRejectsMalformed,
+	entriesNamed,
+	isStableOutside,
+	mutableCopy,
+	readLockfile,
+	referencesTo,
+	requireLockfile,
+	semver,
+	validateLockfile,
+} from "./lockfile-shape.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const webRequire = createRequire(join(root, "apps/web/package.json"));
-const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
-	"semver",
-);
 const aguiPatchPath = "patches/@ag-ui__core@1.0.2.patch";
 const aguiPatchHash =
 	"153de2e00fea90a9c5f72a661e584c87c49fcd96634ffb4d97aafac580e95bf6";
@@ -41,35 +51,40 @@ function verifyAguiPatch(workspace, lockfile, patch) {
 		],
 		"npm:zod@4.6.7",
 	);
+	requireLockfile(lockfile);
 	assert.equal(
 		lockfile.patchedDependencies["@ag-ui/core@1.0.2"],
 		aguiPatchHash,
 	);
-	const snapshots = Object.keys(lockfile.snapshots).filter((key) =>
-		key.startsWith("@ag-ui/core@"),
-	);
+	const patched = `1.0.2(patch_hash=${aguiPatchHash})`;
+	const snapshots = entriesNamed(lockfile, "snapshots", "@ag-ui/core");
 	assert.ok(snapshots.length > 0);
-	for (const key of snapshots) {
+	for (const { key } of snapshots) {
 		assert.ok(
-			key.startsWith(`@ag-ui/core@1.0.2(patch_hash=${aguiPatchHash})`),
+			key.startsWith(`@ag-ui/core@${patched}`),
 			`Unpatched AG-UI: ${key}`,
 		);
-		assert.equal(
-			lockfile.snapshots[key].dependencies["zod-agui-runtime"],
-			"zod@4.6.7",
+		const runtime = lockfile.references.filter(
+			(reference) =>
+				reference.section === "snapshots" &&
+				reference.owner === key &&
+				reference.group === "dependencies" &&
+				reference.name === "zod-agui-runtime",
+		);
+		assert.deepEqual(
+			runtime.map((reference) => reference.reference),
+			["zod@4.6.7"],
+			`AG-UI zod runtime alias: ${key}`,
 		);
 	}
-	for (const [owner, metadata] of Object.entries(lockfile.snapshots)) {
-		for (const [name, reference] of Object.entries(
-			metadata.dependencies ?? {},
-		)) {
-			if (name === "@ag-ui/core") {
-				assert.ok(
-					reference.startsWith(`1.0.2(patch_hash=${aguiPatchHash})`),
-					`Unpatched AG-UI parent: ${owner}`,
-				);
-			}
-		}
+	for (const reference of referencesTo(lockfile, "@ag-ui/core")) {
+		assert.ok(
+			reference.target?.name === "@ag-ui/core" &&
+				reference.reference
+					.replace("@ag-ui/core@", "")
+					.startsWith(patched),
+			`Unpatched AG-UI parent: ${reference.owner}`,
+		);
 	}
 }
 
@@ -80,9 +95,7 @@ test("the exact AG-UI schema patch and isolated alias cover every peer island", 
 	const workspace = yaml.parse(
 		readFileSync(join(root, "pnpm-workspace.yaml"), "utf8"),
 	);
-	const lockfile = yaml.parse(
-		readFileSync(join(root, "pnpm-lock.yaml"), "utf8"),
-	);
+	const lockfile = readLockfile();
 	const patch = readFileSync(join(root, aguiPatchPath));
 	verifyAguiPatch(workspace, lockfile, patch);
 	assert.throws(() =>
@@ -92,9 +105,37 @@ test("the exact AG-UI schema patch and isolated alias cover every peer island", 
 			Buffer.concat([patch, Buffer.from("changed")]),
 		),
 	);
-	const bad = structuredClone(lockfile);
+	const bad = mutableCopy(lockfile);
 	bad.snapshots["@ag-ui/core@1.0.2(zod@3.25.76)"] = {};
-	assert.throws(() => verifyAguiPatch(workspace, bad, patch));
+	assert.throws(
+		() => verifyAguiPatch(workspace, validateLockfile(bad), patch),
+		/Unpatched AG-UI/,
+	);
+	const parent = addPackage(mutableCopy(lockfile), "example-parent@1.0.0", {
+		dependencies: { "@ag-ui/core": "file:vendor/ag-ui" },
+	});
+	assert.throws(
+		() => verifyAguiPatch(workspace, validateLockfile(parent), patch),
+		/Unpatched AG-UI parent: example-parent@1\.0\.0/,
+	);
+	const runtime = mutableCopy(lockfile);
+	const key = Object.keys(runtime.snapshots).find((name) =>
+		name.startsWith("@ag-ui/core@"),
+	);
+	runtime.snapshots[key].dependencies["zod-agui-runtime"] = "zod@3.25.76";
+	assert.throws(
+		() => verifyAguiPatch(workspace, validateLockfile(runtime), patch),
+		/AG-UI zod runtime alias/,
+	);
+	const unpatched = mutableCopy(lockfile);
+	unpatched.patchedDependencies = {};
+	assert.throws(() =>
+		verifyAguiPatch(workspace, validateLockfile(unpatched), patch),
+	);
+	assertRejectsMalformed(
+		(malformed) => verifyAguiPatch(workspace, malformed, patch),
+		lockfile,
+	);
 });
 
 test("mounted CopilotKit parsers use AG-UI's supported fixed Zod dependency while direct v3 stays isolated", async () => {
@@ -466,6 +507,173 @@ test("supported Azure parents use fixed Identity and MSAL while the Teams parent
 				.version,
 			"5.1.5",
 		);
+	}
+});
+
+// GHSA-x8rm-f576-gq67 (PhoneNumber ReDoS) affects graphql-scalars >=1.24.1
+// <=2.0.0. The fix, 2.0.1, is outside CopilotKit's and type-graphql's 1.x
+// ranges, so a CopilotKit-scoped override pins the unaffected 1.24.0.
+const graphqlScalarsAffected = ">=1.24.1 <=2.0.0";
+const graphqlScalarsVersion = "1.24.0";
+
+// Prereleases fail too: semver.satisfies excludes them from any range, so a
+// 2.0.0-rc would otherwise read as "outside" the affected range.
+function verifyGraphqlScalarsLockfile(lockfile) {
+	requireLockfile(lockfile);
+	for (const section of ["packages", "snapshots"]) {
+		const entries = entriesNamed(lockfile, section, "graphql-scalars");
+		assert.ok(
+			entries.length > 0,
+			`No graphql-scalars entries in ${section}`,
+		);
+		for (const { key, version } of entries) {
+			assert.ok(
+				isStableOutside(version, graphqlScalarsAffected),
+				`Vulnerable or unreviewed graphql-scalars resolution: ${key} (${section})`,
+			);
+		}
+	}
+	for (const reference of referencesTo(lockfile, "graphql-scalars")) {
+		assert.ok(
+			reference.target?.name === "graphql-scalars" &&
+				isStableOutside(
+					reference.target.version,
+					graphqlScalarsAffected,
+				),
+			`Vulnerable or unreviewed graphql-scalars reference: ${reference.owner}`,
+		);
+	}
+}
+
+// Runs PhoneNumber parsing on the advisory's payload shape in a child with a
+// deadline: the affected regex backtracks exponentially, the 1.24.0 one is
+// linear. A timeout, a crash or an unexpected result all count as failures.
+function phoneNumberRejectsQuickly(modulePath) {
+	const result = spawnSync(
+		process.execPath,
+		[
+			"-e",
+			`const { GraphQLPhoneNumber } = require(process.argv[1]);
+			let rejected = false;
+			try { GraphQLPhoneNumber.parseValue("1".repeat(40) + "x"); }
+			catch { rejected = true; }
+			process.exit(rejected ? 0 : 3);`,
+			modulePath,
+		],
+		{ encoding: "utf8", timeout: 5000, windowsHide: true },
+	);
+	return (
+		result.error === undefined &&
+		result.signal === null &&
+		result.status === 0
+	);
+}
+
+test("graphql-scalars lockfile guard rejects affected versions", () => {
+	const lockfile = readLockfile();
+	verifyGraphqlScalarsLockfile(lockfile);
+	for (const version of [
+		"1.24.1",
+		"1.25.0",
+		"2.0.0",
+		"2.0.0-rc.1",
+		"1.24.1-beta.0",
+		"2.0.1-rc.0",
+	]) {
+		const bad = addPackage(
+			mutableCopy(lockfile),
+			`graphql-scalars@${version}`,
+		);
+		assert.throws(
+			() => verifyGraphqlScalarsLockfile(validateLockfile(bad)),
+			/Vulnerable or unreviewed graphql-scalars resolution/,
+			version,
+		);
+	}
+	// A `file:` copy has no version to compare and fails as unreviewed.
+	const local = addPackage(mutableCopy(lockfile), "example-parent@1.0.0", {
+		dependencies: { "graphql-scalars": "file:vendor/graphql-scalars" },
+	});
+	assert.throws(
+		() => verifyGraphqlScalarsLockfile(validateLockfile(local)),
+		/Vulnerable or unreviewed graphql-scalars reference: example-parent@1\.0\.0/,
+	);
+	for (const bad of [null, {}, { packages: {}, snapshots: {} }]) {
+		assert.throws(
+			() => verifyGraphqlScalarsLockfile(validateLockfile(bad)),
+			/could not check/,
+		);
+		assert.throws(
+			() => verifyGraphqlScalarsLockfile(bad),
+			/could not check: guard input is not a validated lockfile/,
+		);
+	}
+	assertRejectsMalformed(verifyGraphqlScalarsLockfile, lockfile);
+});
+
+test("CopilotKit and type-graphql load unaffected graphql-scalars with their scalars", () => {
+	for (const runtime of installedConsumers("@copilotkit/runtime", "1.80.0")) {
+		const scalars = installedDependency(runtime.require, "graphql-scalars");
+		assert.equal(scalars.manifest.version, graphqlScalarsVersion);
+		assert.ok(
+			semver.satisfies(
+				scalars.manifest.version,
+				runtime.manifest.dependencies["graphql-scalars"],
+			),
+		);
+		const typeGraphql = installedDependency(
+			runtime.require,
+			"type-graphql",
+		);
+		const peerScalars = installedDependency(
+			typeGraphql.require,
+			"graphql-scalars",
+		);
+		assert.equal(peerScalars.path, scalars.path);
+		assert.ok(
+			semver.satisfies(
+				peerScalars.manifest.version,
+				typeGraphql.manifest.peerDependencies["graphql-scalars"],
+			),
+		);
+		const module = scalars.require(scalars.entry);
+		for (const name of [
+			"GraphQLJSON",
+			"GraphQLJSONObject",
+			"GraphQLTimestamp",
+			"GraphQLDateTimeISO",
+		]) {
+			assert.equal(typeof module[name]?.parseValue, "function", name);
+		}
+		assert.equal(phoneNumberRejectsQuickly(scalars.entry), true);
+	}
+});
+
+test("PhoneNumber probe fails on a slow, accepting or crashing parser", () => {
+	const artifacts = join(root, "artifacts");
+	mkdirSync(artifacts, { recursive: true });
+	const directory = mkdtempSync(join(artifacts, "phone-probe-"));
+	try {
+		for (const [name, body] of [
+			["slow.js", "parseValue() { for (;;) {} }"],
+			["accepts.js", "parseValue(value) { return value; }"],
+			["crashes.js", "parseValue() { process.exit(1); }"],
+		]) {
+			const path = join(directory, name);
+			writeFileSync(
+				path,
+				`module.exports = { GraphQLPhoneNumber: { ${body} } };`,
+			);
+			assert.equal(phoneNumberRejectsQuickly(path), false, name);
+		}
+		const good = join(directory, "good.js");
+		writeFileSync(
+			good,
+			'module.exports = { GraphQLPhoneNumber: { parseValue() { throw new TypeError("x"); } } };',
+		);
+		assert.equal(phoneNumberRejectsQuickly(good), true);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
 	}
 });
 

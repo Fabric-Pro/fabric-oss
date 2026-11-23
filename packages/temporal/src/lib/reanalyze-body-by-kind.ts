@@ -42,6 +42,7 @@ import {
 	type TemplateFormat,
 } from "@repo/utils";
 import { z } from "zod";
+import { capReanalysisConnectedContext } from "../activities/backlog-context/analysis-budget";
 import {
 	detectDestructiveRewrite,
 	extractSectionBody,
@@ -197,6 +198,18 @@ export async function reanalyzeBodyByKind(
 			return fallback(params, "prompt_not_bound");
 		}
 
+		// Fizzy #3523: bound the context here, where it becomes a template
+		// variable, so the limit does not depend on what a caller passes.
+		const cappedContext = capReanalysisConnectedContext(connectedContext);
+		if (cappedContext.length < (connectedContext?.length ?? 0)) {
+			logger.info("[reanalyzeBodyByKind] connected context truncated", {
+				kind,
+				projectId,
+				originalChars: connectedContext?.length ?? 0,
+				cappedChars: cappedContext.length,
+			});
+		}
+
 		const variables =
 			kind === "BUG"
 				? {
@@ -204,7 +217,7 @@ export async function reanalyzeBodyByKind(
 						bug_id_or_link: identifier ?? "",
 						existing_bug_markdown: existingDescription,
 						new_info_from_user_or_thread: newInfo,
-						connected_context_items: connectedContext ?? "",
+						connected_context_items: cappedContext,
 					}
 				: {
 						feature_title: title,
@@ -213,7 +226,7 @@ export async function reanalyzeBodyByKind(
 						existing_acceptance_criteria:
 							existingAcceptanceCriteria ?? "",
 						new_info_from_user_or_thread: newInfo,
-						connected_context_items: connectedContext ?? "",
+						connected_context_items: cappedContext,
 					};
 
 		// Unescaped: the bound prompts use double-stache, and HTML-escaping the

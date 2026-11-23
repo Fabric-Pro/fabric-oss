@@ -8,7 +8,7 @@
 import {
 	chatGptPlanServesCall,
 	getAIModelWithMetadata,
-	getRAGProviderConfig,
+	getRAGProviderConfigForModel,
 } from "@repo/ai";
 import type { AiTaskType } from "@repo/database";
 import type { ResolvedModelConfig, TaskType, TenantContext } from "../types";
@@ -36,10 +36,14 @@ export async function resolveModelForTenant(
 		trackUsage();
 
 		// Get raw credentials
-		const providerConfig = await getRAGProviderConfig({
-			userId: tenant.userId,
-			organizationId,
-		});
+		const providerConfig = await getRAGProviderConfigForModel(
+			{ userId: tenant.userId, organizationId },
+			metadata,
+		);
+
+		if (providerConfig.anthropicBearerSource) {
+			return null;
+		}
 
 		// Map selection source to expected format
 		const mapSource = (

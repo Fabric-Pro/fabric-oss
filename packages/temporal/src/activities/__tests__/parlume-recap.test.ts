@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 	collectStories: vi.fn(),
 	postChat: vi.fn(),
 	recordSuggestion: vi.fn(),
+	tagSuggestion: vi.fn(),
 	log: vi.fn(),
 }));
 
@@ -24,7 +25,10 @@ vi.mock("@repo/database", () => ({
 		},
 		projectContext: { findMany: mocks.contextFindMany },
 		projectMeetingTranscript: { findMany: mocks.transcriptFindMany },
-		parlumeSuggestion: { create: mocks.recordSuggestion },
+		parlumeSuggestion: {
+			create: mocks.recordSuggestion,
+			update: mocks.tagSuggestion,
+		},
 	},
 	getBoundPromptForAgent: mocks.boundPrompt,
 	tenantWhere: (userId: string, organizationId?: string | null) =>
@@ -117,6 +121,7 @@ beforeEach(() => {
 	mocks.collectStories.mockResolvedValue({ stories: [], tasks: [] });
 	mocks.postChat.mockResolvedValue({ sent: true, tag: "P1" });
 	mocks.recordSuggestion.mockResolvedValue({ id: "suggestion-1" });
+	mocks.tagSuggestion.mockResolvedValue({ id: "suggestion-1" });
 });
 
 afterEach(() => {
@@ -261,6 +266,7 @@ describe("postParlumeSeriesRecap: the previous meeting", () => {
 					organizationId: "o1",
 					id: { not: "s-now" },
 					status: "ENDED",
+					confidential: false,
 					transcriptContextId: { not: null },
 					joinedAt: {
 						gte: new Date("2026-07-29T09:00:00.000Z"),
@@ -286,9 +292,11 @@ describe("postParlumeSeriesRecap: the previous meeting", () => {
 			timeWindowStart: new Date("2026-10-20T09:40:00.000Z"),
 			timeWindowEnd: NOW,
 		});
+		// The recap keeps its one paragraph, unlike answers and results.
 		expect(mocks.postChat).toHaveBeenCalledExactlyOnceWith({
 			sessionId: "s-now",
 			message: RECAP,
+			plain: true,
 		});
 		expect(mocks.log).toHaveBeenCalledWith("info", "recap.posted", {
 			sessionId: "s-now",
@@ -396,6 +404,15 @@ describe("postParlumeSeriesRecap: the previous meeting", () => {
 			"recap.posted",
 			expect.objectContaining({ source: "transcript" }),
 		);
+	});
+
+	it("never recaps a confidential meeting: its notes are for the people who were in it", async () => {
+		mocks.sessionFindMany.mockResolvedValue([]);
+
+		await postParlumeSeriesRecap({ sessionId: "s-now" });
+
+		const [sessions] = mocks.sessionFindMany.mock.calls[0] ?? [];
+		expect(sessions.where).toMatchObject({ confidential: false });
 	});
 
 	it("uses only sessions of the same project and organization", async () => {
@@ -719,10 +736,40 @@ describe("postParlumeSeriesRecap: who sees it", () => {
 				kind: "RECAP",
 				audience: "MEETING",
 				text: RECAP,
-				chatTag: "P1",
+				chatTag: null,
 			},
 			select: { id: true },
 		});
+		expect(mocks.tagSuggestion).toHaveBeenCalledWith({
+			where: { id: "suggestion-1" },
+			data: { chatTag: "P1" },
+			select: { id: true },
+		});
+	});
+
+	// The bridge held the recap until the chat opened and posted it later:
+	// recorded only after Fabric's request ended, it never got its tag, and
+	// the page said the chat did not take it.
+	it("records the recap before posting it, so a recap the bridge holds gets its tag when it is posted", async () => {
+		sessionFor("MEETING");
+		mocks.postChat.mockImplementation(async () => {
+			expect(mocks.recordSuggestion).toHaveBeenCalledTimes(1);
+			return { sent: false, reason: "guests_present" };
+		});
+
+		await postParlumeSeriesRecap({ sessionId: "s-now" });
+
+		expect(mocks.postChat).toHaveBeenCalledTimes(1);
+		expect(mocks.recordSuggestion).toHaveBeenCalledWith({
+			data: expect.objectContaining({ kind: "RECAP", chatTag: null }),
+			select: { id: true },
+		});
+		expect(mocks.tagSuggestion).not.toHaveBeenCalled();
+		expect(mocks.log).not.toHaveBeenCalledWith(
+			"warn",
+			"recap.failed",
+			expect.anything(),
+		);
 	});
 
 	// External participants read the meeting chat.

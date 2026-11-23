@@ -11,6 +11,10 @@
  */
 
 import {
+	bodyEditsAgainst,
+	type UpdateBodies,
+} from "@repo/utils/proposal-update-edits";
+import {
 	describeLineCounts,
 	summarizeProposalUpdate,
 } from "@repo/utils/proposal-update-summary";
@@ -33,8 +37,19 @@ type Props = {
 	>;
 	/** Hide "Why" where the reasoning is already shown in full. */
 	showReasoning?: boolean;
+	/**
+	 * The ticket's bodies as they are now, for an update whose body has no
+	 * `from`: its change is counted against them, not against an empty body.
+	 */
+	current?: UpdateBodies;
 	/** Set once the item is applied: the ticket it updated, when known. */
 	applied?: { projectId?: string; storyId: string | null };
+	/**
+	 * A re-routed item whose merge adds none of its text to the target: the
+	 * target's identifier, so the summary says the item's content is not
+	 * written there.
+	 */
+	keptBodyOn?: string;
 	panel?: BacklogProposalPanel;
 	className?: string;
 };
@@ -42,23 +57,20 @@ type Props = {
 export function ProposalUpdateSummary({
 	change,
 	showReasoning = true,
+	current,
 	applied,
+	keptBodyOn,
 	panel,
 	className,
 }: Props) {
 	const headingId = useId();
 	const { title, description, acceptanceCriteria, priority, size } = change;
-	const lines = useMemo(
-		() =>
-			summarizeProposalUpdate({
-				title,
-				description,
-				acceptanceCriteria,
-				priority,
-				size,
-			}),
-		[title, description, acceptanceCriteria, priority, size],
-	);
+	const lines = useMemo(() => {
+		const bodies = current
+			? bodyEditsAgainst({ description, acceptanceCriteria }, current)
+			: { description, acceptanceCriteria };
+		return summarizeProposalUpdate({ title, ...bodies, priority, size });
+	}, [title, description, acceptanceCriteria, priority, size, current]);
 	const reasoning = showReasoning ? stripMarkdown(change.reasoning) : "";
 	return (
 		<div
@@ -105,6 +117,11 @@ export function ProposalUpdateSummary({
 			) : (
 				<p className="text-xs text-muted-foreground">
 					No field changes: the ticket stays as it is.
+				</p>
+			)}
+			{keptBodyOn && (
+				<p className="text-xs text-foreground break-words">
+					{`None of this item's text is merged into ${keptBodyOn}: its description and acceptance criteria stay as they are.`}
 				</p>
 			)}
 			{reasoning && (

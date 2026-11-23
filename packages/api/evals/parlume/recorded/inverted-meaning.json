@@ -1,0 +1,38 @@
+{
+	"fixture": "inverted-meaning",
+	"note": "Hand-written model replies for the scorer tests. A notes segment is a transcript line number: the fixture segment id plus one, after the speech header.",
+	"notes": {
+		"decisions": [
+			{
+				"text": "Drop the audit log from this release.",
+				"segment": 3,
+				"quote": "we should drop the audit log"
+			},
+			{
+				"text": "The mobile app ships in March.",
+				"segment": 4,
+				"quote": "the mobile app will not ship in March"
+			},
+			{
+				"text": "The mobile launch moves to April.",
+				"segment": 5,
+				"quote": "we move the mobile launch to April"
+			},
+			{
+				"text": "Offline mode is not cut; it stays behind a flag.",
+				"segment": 7,
+				"quote": "we're not cutting offline mode"
+			}
+		],
+		"actionItems": [
+			{
+				"text": "Update the release checklist.",
+				"segment": 8,
+				"quote": "I'll update the release checklist today",
+				"owner": "Casey Example",
+				"due": "today"
+			}
+		]
+	},
+	"suggestions": []
+}

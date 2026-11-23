@@ -30,6 +30,7 @@ import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { ReplaceStep } from "@tiptap/pm/transform";
 import { StarterKit } from "@tiptap/starter-kit";
 import { common, createLowlight } from "lowlight";
+import { DIFF_ANSWER_META } from "./editor-diff-marks";
 import { ImageLoadFallback } from "./image-load-fallback-extension";
 import { MediaImportPlaceholder } from "./media-import-placeholder-extension";
 import { buildMentionExtension } from "./mention-extension";
@@ -185,6 +186,23 @@ function hasClass(node: unknown, className: string): boolean {
 	return node instanceof HTMLElement && node.classList.contains(className);
 }
 
+/**
+ * The moved list block a diff mark's line, or a proposed table, belongs to,
+ * as the review diff tagged it (`data-diff-move`): the block is answered as
+ * one change (`findDiffRanges`). Null on every other change.
+ */
+const diffMoveAttribute = {
+	move: {
+		default: null,
+		parseHTML: (element: HTMLElement) =>
+			element.getAttribute("data-diff-move"),
+		renderHTML: (attributes: Record<string, unknown>) =>
+			typeof attributes.move === "string"
+				? { "data-diff-move": attributes.move }
+				: {},
+	},
+};
+
 // `inclusive: false` makes the marks stop at their boundary — when the user
 // places a cursor at the right edge of a marked span and types, the new
 // characters do NOT inherit the mark via ProseMirror's schema-level rules.
@@ -196,6 +214,10 @@ const DiffInsert = Mark.create({
 	name: "diffInsert",
 	priority: 1000,
 	inclusive: false,
+
+	addAttributes() {
+		return diffMoveAttribute;
+	},
 
 	parseHTML() {
 		return [
@@ -220,6 +242,10 @@ const DiffDelete = Mark.create({
 	name: "diffDelete",
 	priority: 1000,
 	inclusive: false,
+
+	addAttributes() {
+		return diffMoveAttribute;
+	},
 
 	parseHTML() {
 		return [
@@ -321,7 +347,12 @@ const MarkUserTypedAsDiffInsert = Extension.create({
 					let modified = false;
 
 					for (const transaction of transactions) {
-						if (!transaction.docChanged) {
+						// Answering a change moves content the proposal
+						// already holds; it is not typing.
+						if (
+							!transaction.docChanged ||
+							transaction.getMeta(DIFF_ANSWER_META)
+						) {
 							continue;
 						}
 
@@ -677,6 +708,8 @@ function buildSharedRichDocumentExtensions(
 								? { "data-diff": attributes.diff as string }
 								: {},
 					},
+					// A table in a moved list block is answered with the block.
+					...diffMoveAttribute,
 				};
 			},
 			addProseMirrorPlugins() {

@@ -20,8 +20,10 @@
  */
 
 import {
+	type AIModelMetadata,
 	type AIOperationContext,
 	getAIModelWithMetadata,
+	getRAGProviderConfigForModel,
 	getSystemRAGProviderConfig,
 	logModelUsageAsync,
 	toDatabricksInferenceBaseUrl,
@@ -168,6 +170,25 @@ export interface DelegatedExecutionResult {
 	};
 }
 
+async function getDelegatedProviderConfig(
+	context: AIOperationContext,
+	metadata: AIModelMetadata,
+) {
+	if (metadata.configId !== null || metadata.provider !== "VERCEL_GATEWAY") {
+		return getRAGProviderConfigForModel(context, metadata);
+	}
+
+	// A background embedding model can select the platform gateway without a
+	// provider row. Keep the system lookup for that route, outside agent APIs.
+	const config = await getSystemRAGProviderConfig(context);
+	if (config.provider !== metadata.provider) {
+		throw new Error(
+			"The selected AI provider configuration changed during resolution.",
+		);
+	}
+	return config;
+}
+
 /**
  * Execute a Fabric pattern using delegated credentials (Delegated Mode)
  *
@@ -253,16 +274,20 @@ export async function executePatternDelegated(
 		// Track usage (fire-and-forget)
 		trackUsage();
 
-		// 3. Get raw credentials for delegated mode (passing to Fabric AI server).
-		// SYSTEM side: Fabric pattern execution is reached only from the
-		// `executeFabricPattern` temporal activity and the orchestrator handlers
-		// that call it — background work, not a response a person is waiting on.
-		const providerConfig = await getSystemRAGProviderConfig({
-			userId: userContext.userId,
-			organizationId: userContext.organizationId,
-		});
+		// Pair the delegated model with the connection chosen for it.
+		const providerConfig = await getDelegatedProviderConfig(
+			{
+				userId: userContext.userId,
+				organizationId: userContext.organizationId,
+			},
+			metadata,
+		);
 
-		// providerConfig.apiKey is already decrypted by getSystemRAGProviderConfig()
+		if (providerConfig.anthropicBearerSource) {
+			throw new Error(
+				"Delegated Fabric patterns require an API key. Use direct execution for Anthropic federation.",
+			);
+		}
 		const apiKey = providerConfig.apiKey;
 		const modelString = metadata.modelString;
 
@@ -521,16 +546,20 @@ export async function* executePatternDelegatedStream(
 		// Track usage (fire-and-forget)
 		trackUsage();
 
-		// 3. Get raw credentials for delegated mode (passing to Fabric AI server).
-		// SYSTEM side: Fabric pattern execution is reached only from the
-		// `executeFabricPattern` temporal activity and the orchestrator handlers
-		// that call it — background work, not a response a person is waiting on.
-		const providerConfig = await getSystemRAGProviderConfig({
-			userId: userContext.userId,
-			organizationId: userContext.organizationId,
-		});
+		// Pair the delegated model with the connection chosen for it.
+		const providerConfig = await getDelegatedProviderConfig(
+			{
+				userId: userContext.userId,
+				organizationId: userContext.organizationId,
+			},
+			metadata,
+		);
 
-		// providerConfig.apiKey is already decrypted by getSystemRAGProviderConfig()
+		if (providerConfig.anthropicBearerSource) {
+			throw new Error(
+				"Delegated Fabric patterns require an API key. Use direct execution for Anthropic federation.",
+			);
+		}
 		const apiKey = providerConfig.apiKey;
 		const modelString = metadata.modelString;
 		const provider = metadata.provider || providerConfig.provider;

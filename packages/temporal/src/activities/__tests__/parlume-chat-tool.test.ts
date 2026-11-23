@@ -277,6 +277,7 @@ describe("post_to_meeting_chat links", () => {
 		expect(state.post).toHaveBeenCalledWith({
 			sessionId: "session-1",
 			turnId: "turn-1",
+			voiceGeneration: 1,
 			message: lastMessage(),
 		});
 		expect(result).toEqual({
@@ -578,6 +579,19 @@ describe("get_meeting_links", () => {
 			{ toolCallId: "call-1", messages: [], context: {} },
 		);
 
+	// A question asked on the Parlume page is answered there alone.
+	it("gives a page question the link lookup and no way to post in the meeting", () => {
+		const tools = createParlumeMeetingChatTool({
+			...context,
+			pageOnly: true,
+		});
+
+		expect(Object.keys(tools)).toEqual(["get_meeting_links"]);
+		expect(
+			Object.keys(createParlumeMeetingChatTool(context)).sort(),
+		).toEqual(["get_meeting_links", "post_to_meeting_chat"]);
+	});
+
 	// A typed or realtime answer is posted by Parlume itself: the agent only
 	// needs the exact addresses to write them into it.
 	it("returns exact addresses without posting anything", async () => {
@@ -774,6 +788,19 @@ describe("post_to_meeting_chat limits and failures", () => {
 			delivered: false,
 			reason: "chat_unavailable",
 			error: "This meeting's chat is not available to Parlume. Say the content aloud instead.",
+		});
+	});
+
+	it("tells the agent the answer stays on the Parlume page while a guest is in the meeting", async () => {
+		state.post.mockResolvedValue({ sent: false, reason: "guests_present" });
+
+		const result = await post({ text: "Hello" });
+
+		expect(result).toEqual({
+			sent: false,
+			delivered: false,
+			reason: "guests_present",
+			error: "A guest is in this meeting, so Parlume does not post in its chat. Give the content in your answer: it stays on the Parlume page.",
 		});
 	});
 

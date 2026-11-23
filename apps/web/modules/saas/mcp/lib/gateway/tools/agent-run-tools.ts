@@ -11,6 +11,7 @@ import {
 } from "@repo/api/modules/agent-deployments/lib/run-contracts";
 import type { FabricToolDefinition } from "@repo/temporal/fabric-tool-definition";
 import { z } from "zod";
+import { parlumeAuditActor } from "../parlume-audit-actor";
 import { errorResult, jsonResult } from "../tool-results";
 import type { GatewaySession } from "../types";
 import { type PlatformToolHandler, toolFamily } from "./tool-family";
@@ -203,7 +204,7 @@ async function audit(
 	const { recordAudit } = await import("@repo/database");
 	return recordAudit({
 		...event,
-		actor: {
+		actor: parlumeAuditActor(session) ?? {
 			type:
 				session.credential === "session"
 					? "user"

@@ -113,13 +113,16 @@ vi.mock("@databricks/aibi-client", () => ({
 		}
 	},
 }));
-function setup() {
+function setup({ excludesParlumeCosts = false } = {}) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
 	const view = render(
 		<QueryClientProvider client={client}>
-			<ProjectUsage projectId="example-project" />
+			<ProjectUsage
+				projectId="example-project"
+				excludesParlumeCosts={excludesParlumeCosts}
+			/>
 		</QueryClientProvider>,
 	);
 	return {
@@ -128,7 +131,10 @@ function setup() {
 		redraw: () =>
 			view.rerender(
 				<QueryClientProvider client={client}>
-					<ProjectUsage projectId="example-project" />
+					<ProjectUsage
+						projectId="example-project"
+						excludesParlumeCosts={excludesParlumeCosts}
+					/>
 				</QueryClientProvider>,
 			),
 	};
@@ -420,6 +426,32 @@ it("Cost range and breakdown work and range survives switching views", async () 
 			expect.anything(),
 		),
 	);
+});
+
+it("Cost says Parlume meeting costs are left out only for a viewer whose totals exclude them", async () => {
+	mocks.search = "tab=usage";
+	const excluded = setup({ excludesParlumeCosts: true });
+	expect(await screen.findByText("$3.00")).toBeInTheDocument();
+	expect(
+		screen.getByText("Excludes Parlume meeting costs."),
+	).toBeInTheDocument();
+
+	mocks.search = "tab=usage&usageView=outcomes";
+	excluded.redraw();
+	expect(
+		await screen.findByRole("heading", { name: "AI outcomes" }),
+	).toBeInTheDocument();
+	expect(
+		screen.queryByText("Excludes Parlume meeting costs."),
+	).not.toBeInTheDocument();
+	excluded.unmount();
+
+	mocks.search = "tab=usage";
+	setup();
+	expect(await screen.findByText("$3.00")).toBeInTheDocument();
+	expect(
+		screen.queryByText("Excludes Parlume meeting costs."),
+	).not.toBeInTheDocument();
 });
 
 it("all-time with observations omits comparisons and requests all", async () => {

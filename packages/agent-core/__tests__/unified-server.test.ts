@@ -3,6 +3,7 @@ import { EventSchemas } from "@ag-ui/core/schemas";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { applyPatch, type Operation } from "fast-json-patch";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildAgentConfigurable } from "../src/services/agent-configurable";
 import {
 	createUnifiedServer,
 	EMPTY_RESPONSE_FALLBACK,
@@ -38,7 +39,6 @@ function createTestApp(events: LangGraphStreamEvent[]) {
 			response:
 				typeof output.response === "string" ? output.response : "",
 		}),
-		undefined,
 		async function* () {
 			for (const event of events) {
 				if (event.nodeName === "throw") {
@@ -774,7 +774,6 @@ describe("createUnifiedServer AG-UI streaming", () => {
 				},
 				async () => ({ response: "ok" }),
 				() => ({ response: "ok" }),
-				undefined,
 				async function* (_messages, config) {
 					configs.push(config?.configurable ?? {});
 					yield { nodeName: "chat", state: { messages: [] } };
@@ -819,7 +818,6 @@ describe("createUnifiedServer AG-UI streaming", () => {
 				},
 				async () => ({ response: "ok" }),
 				() => ({ response: "ok" }),
-				undefined,
 				async function* (_messages, config) {
 					configs.push(config?.configurable ?? {});
 					yield { nodeName: "chat", state: { messages: [] } };
@@ -862,7 +860,6 @@ describe("createUnifiedServer AG-UI streaming", () => {
 				},
 				async () => ({ response: "ok" }),
 				(output) => ({ response: String(output.response ?? "") }),
-				undefined,
 				async function* (_messages, config) {
 					configs.push(config?.configurable ?? {});
 					yield {
@@ -1885,7 +1882,6 @@ describe("usage conversation runtime config", () => {
 					},
 					async () => ({}),
 					() => ({ response: "done" }),
-					undefined,
 					async function* (_input, config) {
 						received = config?.configurable;
 						yield {
@@ -1946,7 +1942,6 @@ describe("usage conversation runtime config", () => {
 					},
 					async () => ({}),
 					() => ({ response: "done" }),
-					undefined,
 					async function* (_input, config) {
 						received = config?.configurable;
 						yield {
@@ -2157,7 +2152,6 @@ describe("server-resolved graph configuration", () => {
 			},
 			invoke,
 			() => ({ response: "done" }),
-			undefined,
 			platform
 				? async function* (_input, config) {
 						runtime = config?.configurable;
@@ -2627,17 +2621,14 @@ describe("model hint source selection", () => {
 		["/threads/example-thread/runs/stream", "sync"],
 		["/threads/example-thread/runs/stream", "platform"],
 		["/", "sync"],
-		["/", "basic"],
 		["/", "platform"],
 		["/a2a/send", "sync"],
 		["/a2a/send/stream", "sync"],
-		["/a2a/send/stream", "basic"],
 		["/runs", "sync"],
 		["/threads/example-thread/runs", "sync"],
 		["/run", "sync"],
 		["/invoke", "sync"],
 		["/stream", "sync"],
-		["/stream", "basic"],
 	] as const;
 	it.each(
 		routes.flatMap(([path, mode]) =>
@@ -2719,12 +2710,6 @@ describe("model hint source selection", () => {
 				},
 				invoke,
 				() => ({ response: "done" }),
-				mode === "basic"
-					? async function* (input) {
-							captured.push(input);
-							yield { type: "text", content: "done" };
-						}
-					: undefined,
 				mode === "platform"
 					? async function* (input, config) {
 							captured.push(input, config?.configurable ?? {});
@@ -3037,7 +3022,6 @@ describe("executor input credential boundary", () => {
 			pinned: false,
 		},
 		{ path: "/", mode: "platform", pinned: false },
-		{ path: "/", mode: "basic", pinned: false },
 		{ path: "/", mode: "sync", pinned: false },
 		{ path: "/runs/stream", mode: "platform", pinned: true },
 		{
@@ -3078,12 +3062,6 @@ describe("executor input credential boundary", () => {
 					return { response: "done" };
 				},
 				() => ({ response: "done" }),
-				mode === "basic"
-					? async function* (input) {
-							executorInput = input;
-							yield { type: "text", content: "done" };
-						}
-					: undefined,
 				mode === "platform"
 					? async function* (input, config) {
 							executorInput = input;
@@ -3136,12 +3114,8 @@ describe("executor input credential boundary", () => {
 			} else {
 				expect(executorInput?.ai_token).toBe("example-server-token");
 			}
-			if (mode !== "basic") {
-				expect(runtime?.ai_api_key).toBe("example-decrypted-key");
-				expect(runtime?.runtime_only_secret).toBe(
-					"example-runtime-secret",
-				);
-			}
+			expect(runtime?.ai_api_key).toBe("example-decrypted-key");
+			expect(runtime?.runtime_only_secret).toBe("example-runtime-secret");
 		},
 	);
 });
@@ -3776,7 +3750,6 @@ describe("run timing output attribution", () => {
 				},
 				async () => ({}),
 				(output) => output,
-				undefined,
 				async function* () {
 					yield {
 						nodeName: "chat_node",
@@ -3930,7 +3903,6 @@ describe("run timing early exits", () => {
 				},
 				async () => ({}),
 				(output) => output,
-				undefined,
 				async function* () {
 					entered();
 					await gate;
@@ -4030,3 +4002,88 @@ describe("run timing early exits", () => {
 		}
 	});
 });
+
+it.each(["/runs/stream", "/"])(
+	"can re-exchange a Bearer credential inside the platform stream at %s",
+	async (path) => {
+		const exchange = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const request = new Request(input, init);
+				expect(request.headers.get("x-ai-token")).toBe(
+					"example-fabric-token",
+				);
+				return Response.json({
+					apiKey: "",
+					credentialKind: "bearer",
+					accessToken: "example-access",
+					credentialExpiresAt: Date.now() + 300_000,
+					provider: "ANTHROPIC_DIRECT",
+					model: "example-claude",
+					expiresIn: 300,
+				});
+			},
+		);
+		vi.stubGlobal("fetch", exchange);
+		try {
+			let streamContext: Promise<unknown> | undefined;
+			let streamInput: Record<string, unknown> | undefined;
+			const { app } = createUnifiedServer(
+				{
+					name: "example-bearer-stream",
+					description: "Example",
+					baseUrl: "http://localhost:3000",
+					port: 3000,
+					skills: [],
+				},
+				async () => ({ response: "done" }),
+				() => ({ response: "done" }),
+				async function* (input, runtime) {
+					streamInput = input;
+					const graphConfig = buildAgentConfigurable(
+						input,
+						runtime?.configurable,
+					);
+					// Exercise re-exchange across a graph boundary that exposes only usage-scoped credentials.
+					const { ai_token: _flat, ...configurable } = graphConfig;
+					streamContext = Promise.resolve().then(() =>
+						extractProviderConfig({
+							configurable,
+						})?.anthropicBearerSource?.(),
+					);
+					// Await the dispatch before the stream ends.
+					await streamContext.catch(() => {});
+					yield {
+						nodeName: "end",
+						state: {
+							messages: [{ role: "assistant", content: "done" }],
+						},
+					};
+				},
+			);
+			const messages = [{ role: "user", content: "hello" }];
+			const response = await app.request(path, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-AI-Token": "example-fabric-token",
+					"X-Real-IP": "192.0.2.243",
+				},
+				body: JSON.stringify({ messages, input: { messages } }),
+			});
+			await response.text();
+			expect(streamInput).toBeDefined();
+			expect(streamInput).not.toHaveProperty("ai_token");
+			expect(JSON.stringify(streamInput)).not.toContain(
+				"example-fabric-token",
+			);
+			expect(streamContext).toBeDefined();
+			await expect(streamContext).resolves.toMatchObject({
+				kind: "bearer",
+				token: "example-access",
+			});
+			expect(exchange).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	},
+);

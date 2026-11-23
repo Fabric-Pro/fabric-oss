@@ -1,0 +1,122 @@
+{
+	"id": "parlume-chat-post",
+	"title": "Beta date with Parlume's own detail post in the chat",
+	"covers": [
+		"Parlume's own chat post, a generated answer of several lines that recommends a decision and an action the meeting did not make",
+		"a person's chat message of several lines",
+		"the meeting deciding against what Parlume's post recommended"
+	],
+	"segments": [
+		{
+			"id": 1,
+			"speaker": "Lee Example",
+			"text": "Let's settle the beta date and the pricing page today.",
+			"startMs": 0,
+			"endMs": 6000
+		},
+		{
+			"id": 2,
+			"speaker": "Robin Example",
+			"text": "Parlume, what is the status of the beta?",
+			"startMs": 8000,
+			"endMs": 12000
+		},
+		{
+			"id": 3,
+			"speaker": "Fabric Parlume",
+			"source": "CHAT",
+			"text": "[P2] Detail for Robin Example\n“What is the status of the beta?”\nThe beta has two open backlog items.\n• Recommendation: move the beta launch to May so the billing export can ship with it.\n• Next step: Morgan Example writes the migration guide by Thursday.\n• Open question: who owns the load test?\nShortened for the chat. Reply \"more P2\" for the rest.",
+			"startMs": 20000,
+			"endMs": 20000
+		},
+		{
+			"id": 4,
+			"speaker": "Lee Example",
+			"text": "Thanks. We are not moving the beta, it stays in April.",
+			"startMs": 24000,
+			"endMs": 30000
+		},
+		{
+			"id": 5,
+			"speaker": "Morgan Example",
+			"text": "Agreed, April. I'll update the pricing page by Friday.",
+			"startMs": 32000,
+			"endMs": 37000
+		},
+		{
+			"id": 6,
+			"speaker": "Robin Example",
+			"source": "CHAT",
+			"text": "Two things for the pricing page:\nadd the annual plan\nremove the old trial banner",
+			"startMs": 39000,
+			"endMs": 39000
+		},
+		{
+			"id": 7,
+			"speaker": "Lee Example",
+			"text": "Robin, can you check the annual plan price with finance?",
+			"startMs": 42000,
+			"endMs": 47000
+		},
+		{
+			"id": 8,
+			"speaker": "Robin Example",
+			"text": "Yes, I'll check it with finance this week.",
+			"startMs": 49000,
+			"endMs": 53000
+		}
+	],
+	"truth": {
+		"decisions": [
+			{
+				"text": "The beta stays in April.",
+				"keywords": ["april"],
+				"segments": [4, 5]
+			}
+		],
+		"actionItems": [
+			{
+				"text": "Update the pricing page.",
+				"keywords": ["pricing"],
+				"segments": [5],
+				"owner": "Morgan Example",
+				"due": "Friday"
+			},
+			{
+				"text": "Check the annual plan price with finance.",
+				"keywords": ["finance|annual"],
+				"segments": [7, 8],
+				"owner": "Robin Example",
+				"due": "this week"
+			}
+		]
+	},
+	"suggestions": {
+		"passesAfter": [5, 8],
+		"workItems": [
+			{
+				"identifier": "BETA-4",
+				"title": "Load test the beta",
+				"status": "To do",
+				"priority": "HIGH",
+				"owner": null
+			},
+			{
+				"identifier": "BETA-7",
+				"title": "Pricing page for the beta",
+				"status": "In progress",
+				"priority": "MEDIUM",
+				"owner": "Morgan Example"
+			}
+		],
+		"agenda": null,
+		"previousQuestions": [],
+		"expected": [
+			{
+				"kind": "answer",
+				"text": "BETA-7 Pricing page for the beta is already in progress, owned by Morgan Example.",
+				"keywords": ["beta-7|pricing", "morgan|owner|owned|progress"]
+			}
+		]
+	}
+}

@@ -11,14 +11,18 @@ import {
 } from "@repo/permissions";
 import {
 	getParlumeBridgeSettings,
+	type ParlumeAttendeeSettings,
 	type ParlumeSettingSource,
 } from "./parlume-attendee";
 import { parlumeLog } from "./parlume-log";
-import { resolveParlumeAttendeeSettings } from "./parlume-provider-settings";
+import {
+	resolveParlumeAttendeeSettings,
+	resolveParlumeRealtimeDeployment,
+} from "./parlume-provider-settings";
 
 /**
  * How Parlume would answer aloud: `realtime` on the organization's Azure AI
- * Foundry resource or OpenAI key, `classic` through its AI Gateway only.
+ * Foundry deployment, `classic` otherwise.
  */
 export type ParlumeVoiceEngine = "realtime" | "classic";
 
@@ -32,7 +36,16 @@ export const PARLUME_VOICE_REQUIRED =
  * organization settings; the media bridge is the operator's.
  */
 export interface ParlumeReadiness {
-	meetingBot: { ready: boolean; source: ParlumeSettingSource | null };
+	/**
+	 * Ready once an Attendee project has a key. `webhookSigned` says whether
+	 * Fabric also has that project's webhook secret to check signatures with;
+	 * without it, webhooks are accepted on the session's token alone.
+	 */
+	meetingBot: {
+		ready: boolean;
+		source: ParlumeSettingSource | null;
+		webhookSigned: boolean;
+	};
 	voice: { ready: boolean; engine: ParlumeVoiceEngine | null };
 	platform: { ready: boolean };
 	/** The viewer can change the organization's settings that fix the above. */
@@ -48,32 +61,33 @@ export function isParlumeReady(readiness: ParlumeReadiness): boolean {
 }
 
 /**
- * Realtime voice runs on the organization's Azure AI Foundry resource or its
- * OpenAI key; the classic voice also speaks through its AI Gateway or OpenAI
- * key. Either makes Parlume able to answer aloud.
+ * The classic voice is the default and answers through any of the
+ * organization's providers. The realtime voice runs only on its Azure AI
+ * Foundry resource, and only when it named a realtime deployment on the
+ * Voice card.
  */
 export async function resolveParlumeVoiceEngine(tenant: {
 	userId: string;
 	organizationId: string;
 }): Promise<ParlumeVoiceEngine | null> {
-	const [azure, openAiKey] = await Promise.all([
+	const [azure, openAiKey, deployment] = await Promise.all([
 		resolveAzureOpenAiResource(tenant),
 		resolveOpenAiApiKey(tenant),
+		resolveParlumeRealtimeDeployment(tenant.organizationId),
 	]);
-	if (azure || openAiKey) {
+	if (azure && deployment) {
 		return "realtime";
 	}
-	return (await getAISpeechModel(tenant)) ? "classic" : null;
+	return azure || openAiKey || (await getAISpeechModel(tenant))
+		? "classic"
+		: null;
 }
 
-async function meetingBotSource(
+async function meetingBotSettings(
 	organizationId: string,
-): Promise<ParlumeSettingSource | null> {
+): Promise<ParlumeAttendeeSettings | null> {
 	try {
-		return (
-			(await resolveParlumeAttendeeSettings(organizationId))?.source ??
-			null
-		);
+		return await resolveParlumeAttendeeSettings(organizationId);
 	} catch (error) {
 		// A malformed operator setting is an operator fix; the item reads as
 		// missing rather than failing the whole page.
@@ -102,13 +116,17 @@ export async function getParlumeReadiness(tenant: {
 	userId: string;
 	organizationId: string;
 }): Promise<ParlumeReadiness> {
-	const [source, engine, canConfigure] = await Promise.all([
-		meetingBotSource(tenant.organizationId),
+	const [attendee, engine, canConfigure] = await Promise.all([
+		meetingBotSettings(tenant.organizationId),
 		resolveParlumeVoiceEngine(tenant),
 		canConfigureParlume(tenant.userId, tenant.organizationId),
 	]);
 	return {
-		meetingBot: { ready: source !== null, source },
+		meetingBot: {
+			ready: attendee !== null,
+			source: attendee?.source ?? null,
+			webhookSigned: Boolean(attendee?.webhookSecret),
+		},
 		voice: { ready: engine !== null, engine },
 		platform: { ready: getParlumeBridgeSettings() !== null },
 		canConfigure,

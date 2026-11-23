@@ -12,6 +12,7 @@ import {
 	STREAM_URL,
 	say,
 	sleep,
+	slowAura,
 } from "./parlume-meeting-harness.mts";
 
 test("the bot's audio is verified on its first chunk, transcribed, attributed, and a woken request reaches Fabric", async () => {
@@ -215,6 +216,7 @@ test("a request that follows a bare wake phrase is held briefly, and only words 
 		audio_window_end: 3,
 		transcript: "How many items are on the roadmap?",
 	});
+	const requestEndedAt = Date.now();
 	await sleep(150);
 	flux.turn({
 		event: "StartOfTurn",
@@ -224,9 +226,22 @@ test("a request that follows a bare wake phrase is held briefly, and only words 
 		transcript: "",
 	});
 	await sleep(100);
-	assert.equal(dispatched(), 0, "an empty start of turn does not hold it");
+	// A loaded machine can oversleep past the quiet window itself.
+	if (Date.now() - requestEndedAt < 300) {
+		assert.equal(dispatched(), 0, "still inside the short quiet window");
+	}
 	await sleep(150);
-	assert.equal(dispatched(), 1, "dispatched after the short quiet window");
+	assert.equal(
+		dispatched(),
+		1,
+		"an empty start of turn does not hold it past the quiet window",
+	);
+	// Its answer is played: the next request need not wait for it.
+	const keepAlive = setInterval(() => {}, 1_000);
+	const answer = await bridge
+		.onRequest(say(["Twelve."], {}, "1"))
+		.finally(() => clearInterval(keepAlive));
+	assert.equal(plain(await answer.json()).played, true);
 
 	flux.turn({
 		event: "EndOfTurn",
@@ -255,6 +270,118 @@ test("a request that follows a bare wake phrase is held briefly, and only words 
 	assert.equal(dispatched(), 1, "a continuing speaker holds the request");
 	await sleep(300);
 	assert.equal(dispatched(), 2);
+});
+
+// "Hey, Fabric." came with no speaker and the request four seconds later with
+// its speaker: the two were not joined, and nothing was answered.
+test("a bare wake phrase with no speaker joins the next speaker's request", async () => {
+	const { bridge, bot, flux, requests } = meeting();
+	await bridge.onStart();
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+	for (let end = 1_000_010; end <= 1_000_080; end += 10) {
+		await bridge.onMessage(bot, audio(end));
+	}
+	await flush();
+
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 0,
+		audio_window_start: 0.5,
+		audio_window_end: 1.2,
+		transcript: "Hey, Fabric.",
+	});
+	await flush();
+	await flush();
+	assert.equal(
+		requests.find((r) => r.path.endsWith("/segments"))?.body.speakerId,
+		null,
+	);
+	await bridge.onRequest(
+		control("speakers", {
+			updates: [
+				{
+					name: "Dev One",
+					id: "participant-1",
+					timestamp: 1_001_800,
+					isSpeaking: true,
+				},
+			],
+		}),
+	);
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 1,
+		audio_window_start: 2,
+		audio_window_end: 4,
+		transcript:
+			"please post the direct link to the coding instructions in the chat.",
+	});
+	await sleep(700);
+
+	const turn = requests.find((r) => r.path.endsWith("/turns"))?.body;
+	assert.equal(
+		turn?.text,
+		"please post the direct link to the coding instructions in the chat.",
+	);
+	assert.equal(turn?.speakerId, "participant-1");
+});
+
+test("a bare wake phrase from one speaker does not take another speaker's words as its request", async () => {
+	const { bridge, bot, flux, requests } = meeting();
+	await bridge.onStart();
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+	for (let end = 1_000_010; end <= 1_000_080; end += 10) {
+		await bridge.onMessage(bot, audio(end));
+	}
+	await bridge.onRequest(
+		control("speakers", {
+			updates: [
+				{
+					name: "Dev One",
+					id: "participant-1",
+					timestamp: 1_000_400,
+					isSpeaking: true,
+				},
+				{
+					name: "Dev One",
+					id: "participant-1",
+					timestamp: 1_001_300,
+					isSpeaking: false,
+				},
+				{
+					name: "Dev Two",
+					id: "participant-2",
+					timestamp: 1_001_800,
+					isSpeaking: true,
+				},
+			],
+		}),
+	);
+	await flush();
+
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 0,
+		audio_window_start: 0.5,
+		audio_window_end: 1.2,
+		transcript: "Hey, Fabric.",
+	});
+	await flush();
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 1,
+		audio_window_start: 2,
+		audio_window_end: 4,
+		transcript: "I think the export still fails.",
+	});
+	await sleep(700);
+
+	const segments = requests.filter((r) => r.path.endsWith("/segments"));
+	assert.deepEqual(
+		segments.map((r) => r.body.speakerId),
+		["participant-1", "participant-2"],
+	);
+	assert.equal(requests.filter((r) => r.path.endsWith("/turns")).length, 0);
 });
 
 test("chunks that arrive while the stream is being verified are verified once and transcribed in order", async () => {
@@ -569,7 +696,6 @@ test("say is refused without the service secret, the right content type or a cur
 	assert.deepEqual(plain(await stale.json()), {
 		played: false,
 		interrupted: true,
-		muted: false,
 		heard: 0,
 	});
 	await bridge.onClose(bot, 1000, "done");
@@ -587,10 +713,11 @@ test("say before the bot has streamed any meeting audio is refused", async () =>
 	await bridge.onClose(bot, 1000, "done");
 });
 
+// Aura is asked once more first; only a second failure is handed back.
 test("when Aura fails the bridge reports where, so the worker can speak the rest", async () => {
-	const { bridge, bot, sent } = await connectedMeeting({
-		aura: (_text, index) =>
-			index === 1
+	const { bridge, bot, sent, auraCalls } = await connectedMeeting({
+		aura: (text) =>
+			text === "Second sentence."
 				? new Response("unavailable", { status: 503 })
 				: new Response(new Uint8Array(4_800)),
 	});
@@ -607,6 +734,13 @@ test("when Aura fails the bridge reports where, so the worker can speak the rest
 	assert.equal(result.interrupted, false);
 	assert.equal(result.failedAt, 1);
 	assert.match(result.error, /HTTP 503/);
+	assert.equal(
+		auraCalls.filter(
+			(call) =>
+				(call.inputs as { text: string }).text === "Second sentence.",
+		).length,
+		2,
+	);
 	assert.ok(sent.length > 0, "the sentence before the failure was played");
 	await bridge.onClose(bot, 1000, "done");
 });
@@ -641,20 +775,9 @@ test("a failed say leaves the reply pending for the worker's fallback on the sam
 	await bridge.onClose(bot, 1000, "done");
 });
 
-test("speech from another participant mid-sentence silences a say reply and ends it as interrupted", async () => {
-	const { bridge, bot, flux, sent } = await connectedMeeting({
-		aura: () =>
-			new Response(
-				new ReadableStream<Uint8Array>({
-					async start(controller) {
-						for (let part = 0; part < 20; part++) {
-							controller.enqueue(new Uint8Array(4_800));
-							await sleep(40);
-						}
-						controller.close();
-					},
-				}),
-			),
+test("'wait' from another participant mid-sentence leaves a say reply playing to its end", async () => {
+	const { bridge, bot, flux, sent, requests } = await connectedMeeting({
+		aura: slowAura,
 	});
 	const keepAlive = setInterval(() => {}, 1_000);
 	await bridge.onRequest(
@@ -681,15 +804,27 @@ test("speech from another participant mid-sentence silences a say reply and ends
 		transcript: "wait",
 	});
 	await flush();
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 9,
+		audio_window_start: 0.02,
+		audio_window_end: 0.06,
+		transcript: "Wait.",
+	});
+	await flush();
 	const response = await playing;
 	clearInterval(keepAlive);
 
 	const result = plain(await response.json());
-	assert.equal(result.played, false);
-	assert.equal(result.interrupted, true);
-	assert.equal(result.failedAt, undefined);
-	assert.ok(framesBefore > 0, "it was speaking when interrupted");
-	assert.ok(sent.length < framesBefore + 6, "playback stopped");
+	assert.equal(result.played, true);
+	assert.equal(result.interrupted, false);
+	assert.ok(framesBefore > 0, "it was speaking");
+	// 300 ms of preroll and the sentence's two seconds, every frame sent.
+	assert.equal(sent.length, 3 + 20);
+	assert.equal(
+		requests.filter((r) => r.path.endsWith("/interrupt")).length,
+		0,
+	);
 	await bridge.onClose(bot, 1000, "done");
 });
 
@@ -807,7 +942,6 @@ test("an acknowledgement over Parlume does not interrupt it", async () => {
 	clearInterval(keepAlive);
 
 	assert.equal(result.played, true);
-	assert.equal(result.muted, false);
 	assert.equal(
 		requests.filter((r) => r.path.endsWith("/interrupt")).length,
 		0,
@@ -815,7 +949,7 @@ test("an acknowledgement over Parlume does not interrupt it", async () => {
 	await bridge.onClose(bot, 1000, "done");
 });
 
-test("speech over Parlume mutes the reply but keeps its turn running and answering in the chat", async () => {
+test("speech over Parlume leaves the reply playing to its end and its turn running", async () => {
 	const { bridge, bot, flux, requests } = await answeringMeeting();
 	const keepAlive = setInterval(() => {}, 1_000);
 
@@ -831,44 +965,30 @@ test("speech over Parlume mutes the reply but keeps its turn running and answeri
 		transcript: "I think we should",
 	});
 	await flush();
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 1,
+		audio_window_start: 0.06,
+		audio_window_end: 0.09,
+		transcript: "I think we should ship it on Friday.",
+	});
+	await flush();
+	assert.equal((await generationState(bridge, 1)).current, true);
 	const result = plain(await (await playing).json());
-	const late = plain(
-		await (await bridge.onRequest(say(["More."], {}, "1"))).json(),
-	);
 	clearInterval(keepAlive);
 
-	assert.equal(result.played, false);
-	assert.equal(result.interrupted, true);
-	assert.equal(result.muted, true);
-	assert.equal(result.heard, 0);
-	assert.deepEqual(late, {
-		played: false,
-		interrupted: true,
-		muted: true,
-		heard: 0,
-	});
+	assert.equal(result.played, true);
+	assert.equal(result.interrupted, false);
+	assert.equal(result.heard, 2);
+	assert.equal(result.muted, undefined);
 	assert.deepEqual(
-		requests
-			.filter((r) => r.path.endsWith("/interrupt"))
-			.map((r) => r.body),
-		[
-			{
-				sessionId: "session-1",
-				botId: "bot_abc123",
-				voiceGeneration: 1,
-				kind: "mute",
-			},
-		],
+		requests.filter((r) => r.path.endsWith("/interrupt")),
+		[],
 	);
-	assert.deepEqual(await generationState(bridge, 1), {
-		current: true,
-		muted: true,
-		chatAvailable: true,
-	});
 	await bridge.onClose(bot, 1000, "done");
 });
 
-test("a cancel phrase abandons the answer, and is never a request of its own", async () => {
+test("a spoken stop ends the answer as stopped by voice, and is never a request of its own", async () => {
 	const { bridge, bot, flux, requests } = await answeringMeeting();
 
 	flux.turn({
@@ -891,7 +1011,20 @@ test("a cancel phrase abandons the answer, and is never a request of its own", a
 		requests
 			.filter((r) => r.path.endsWith("/interrupt"))
 			.map((r) => r.body),
-		[{ sessionId: "session-1", botId: "bot_abc123", voiceGeneration: 2 }],
+		[
+			{
+				sessionId: "session-1",
+				botId: "bot_abc123",
+				voiceGeneration: 2,
+				stop: { cause: "VOICE", by: null },
+			},
+		],
+	);
+	assert.deepEqual(
+		requests
+			.filter((r) => r.path.endsWith("/chat"))
+			.map((r) => r.body.message),
+		["[P1] **Stopped** · Someone stopped the answer"],
 	);
 	assert.equal(requests.filter((r) => r.path.endsWith("/turns")).length, 1);
 	assert.equal((await generationState(bridge, 1)).current, false);

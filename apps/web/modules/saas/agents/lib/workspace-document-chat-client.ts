@@ -7,6 +7,7 @@ import { collectRequestReplyRun } from "@saas/agents/lib/request-reply-outcome";
 import {
 	LIBRARY_CHAT_AGENT_ID,
 	LIBRARY_CHAT_EVENT,
+	libraryHistoryEventSchema,
 	librarySourcesEventSchema,
 	type WorkspaceDocumentSource,
 } from "./workspace-document-chat-protocol";
@@ -95,6 +96,7 @@ export async function askWorkspaceDocumentRuntime(
 		text: string;
 		sources?: WorkspaceDocumentSource[];
 		model?: AnswerModelInfo;
+		historyPersisted?: boolean;
 	} = { text: "" };
 	await collectRequestReplyRun({
 		agentId: LIBRARY_CHAT_AGENT_ID,
@@ -124,6 +126,14 @@ export async function askWorkspaceDocumentRuntime(
 				if (parsed.success) {
 					reply.model = parsed.data;
 				}
+			} else if (
+				event.type === EventType.CUSTOM &&
+				event.name === LIBRARY_CHAT_EVENT.history
+			) {
+				const parsed = libraryHistoryEventSchema.safeParse(event.value);
+				if (parsed.success) {
+					reply.historyPersisted = parsed.data.persisted;
+				}
 			} else if (event.type === EventType.TEXT_MESSAGE_CONTENT) {
 				reply.text += event.delta;
 				question.onText(reply.text);
@@ -134,6 +144,7 @@ export async function askWorkspaceDocumentRuntime(
 		response: reply.text || NO_ANSWER,
 		sources: reply.sources,
 		model: reply.model,
+		historyPersisted: reply.historyPersisted,
 	};
 }
 

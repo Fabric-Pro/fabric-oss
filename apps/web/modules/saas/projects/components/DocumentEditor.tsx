@@ -1085,13 +1085,13 @@ export function DocumentEditor({
 	});
 
 	const project = projectData?.project;
-	// Who may edit, as the page decides it for the title and a run's Retry
-	// (and the collaboration server for writes to the room). `null` until the
-	// project has loaded: such a client is not elected to converge a room and
-	// does not seed one, but its editor stays editable meanwhile.
-	const canEdit: boolean | null = project
-		? project.userRole === "owner" || project.userRole === "editor"
-		: null;
+	// Who may edit the document: the server's own answer, from the check the
+	// document save and the collaboration server's room writes both make, so
+	// an organization admin with no project role may edit and a project viewer
+	// may not. `null` until the project has loaded: such a client is not
+	// elected to converge a room and does not seed one, but its editor stays
+	// editable meanwhile.
+	const canEdit: boolean | null = project ? project.canEditDocuments : null;
 
 	// `!orgContextReady` belongs in the loading test, not beside it: the two
 	// queries above are disabled until the org resolves, and a disabled query
@@ -4172,14 +4172,18 @@ function DocumentEditorInner({
 	// a run while the room still holds the body before it, nor while another
 	// editor reviews an assistant proposal, and never from a client that may
 	// not edit it.
+	// A caller who may not edit the document gets no write control and a
+	// read-only editor, in a room or not: the server refuses every write it
+	// sends.
+	const viewOnly = canEdit === false;
 	const roomFreezesEditor =
-		roomStampsOn &&
-		(roomStatus === "updating" ||
-			roomStatus === "failed" ||
-			roomStatus === "behindReadOnly" ||
-			(roomStatus === "checking" && checkingView !== "room") ||
-			proposalUnderReviewElsewhere ||
-			canEdit === false);
+		viewOnly ||
+		(roomStampsOn &&
+			(roomStatus === "updating" ||
+				roomStatus === "failed" ||
+				roomStatus === "behindReadOnly" ||
+				(roomStatus === "checking" && checkingView !== "room") ||
+				proposalUnderReviewElsewhere));
 	// Typing that waited for the room, or for the answer to an assistant
 	// proposal, is saved once saves may go again: the autosave that fell
 	// due meanwhile stood down without rescheduling (Fizzy #2946). After a
@@ -8547,7 +8551,7 @@ function DocumentEditorInner({
 	useLayoutEffect(() => () => settleUndoneAcceptsOnCloseRef.current(), []);
 
 	const handleSave = () => {
-		if (!document) {
+		if (!document || viewOnly) {
 			// As below: no save runs, so clear the intent here.
 			isManualSaveRef.current = false;
 			shouldRedirectAfterSaveRef.current = false;
@@ -9280,7 +9284,7 @@ function DocumentEditorInner({
 
 	// Direct regeneration handler - called by the Regenerate button (bypasses agent)
 	const handleDirectRegenerate = async () => {
-		if (isRegenerating || isLoading) {
+		if (viewOnly || isRegenerating || isLoading) {
 			return;
 		}
 		// Not while another editor reviews a proposal (Fizzy #2946): the run's
@@ -10677,6 +10681,7 @@ function DocumentEditorInner({
 																		handleDirectRegenerate
 																	}
 																	disabled={
+																		viewOnly ||
 																		isSaving ||
 																		isRegenerating ||
 																		isGenerationRunning ||
@@ -10743,6 +10748,7 @@ function DocumentEditorInner({
 																			void contextUpdate.start()
 																		}
 																		disabled={
+																			viewOnly ||
 																			isSaving ||
 																			isRegenerating ||
 																			isGenerationRunning ||
@@ -10879,6 +10885,7 @@ function DocumentEditorInner({
 																	handleDirectRegenerate()
 																}
 																disabled={
+																	viewOnly ||
 																	isSaving ||
 																	isRegenerating ||
 																	isGenerationRunning ||
@@ -10901,6 +10908,7 @@ function DocumentEditorInner({
 																		void contextUpdate.start()
 																	}
 																	disabled={
+																		viewOnly ||
 																		isSaving ||
 																		isRegenerating ||
 																		isGenerationRunning ||
@@ -12527,6 +12535,7 @@ function DocumentEditorInner({
 												)
 											: null;
 									const isPrimaryDisabled =
+										viewOnly ||
 										isSaving ||
 										isSaved ||
 										saveBlockedText !== null;

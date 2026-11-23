@@ -34,6 +34,7 @@
  * logic runs.
  */
 
+import { AnthropicFederationUnavailableError } from "@repo/database/prisma/queries/anthropic-federation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -54,6 +55,7 @@ const {
 
 vi.mock("@repo/database", () => ({
 	GATEWAY_PROVIDERS: ["VERCEL_GATEWAY", "OPENROUTER", "CLOUDFLARE_AI"],
+	TEXT_TASK_TYPES: ["SIMPLE"],
 	getActiveModels: vi.fn(),
 	getAiProviderApiKey: getAiProviderApiKeyMock,
 	getAiProviderApiKeyByProvider: getAiProviderApiKeyByProviderMock,
@@ -303,5 +305,149 @@ describe("provider-mismatch fallback key", () => {
 
 			expect(getAiProviderApiKeyByProviderMock).not.toHaveBeenCalled();
 		});
+	});
+});
+
+it.each(["apiKey", "federated", "revoked"] as const)(
+	"uses the selected organization Gateway with an Anthropic %s default",
+	async (authMode) => {
+		const context = {
+			userId: "example-user",
+			organizationId: "example-org",
+			excludeChatGptPlan: true,
+		};
+		selectOntoAnotherProvider();
+		const defaultProvider = {
+			...EMPTY_PROVIDER_CONFIG,
+			provider: "ANTHROPIC_DIRECT",
+			source: "organization",
+			configId: "example-anthropic-config",
+			...(authMode === "apiKey"
+				? { apiKey: "encrypted:example-anthropic-key" }
+				: { federatedOrganizationId: context.organizationId }),
+		};
+		getAiProviderApiKeyMock.mockImplementation(
+			async ({ retainUnavailableFederation }) => {
+				if (authMode === "revoked" && !retainUnavailableFederation) {
+					throw new AnthropicFederationUnavailableError();
+				}
+				return defaultProvider;
+			},
+		);
+		getAiProviderApiKeyByProviderMock.mockResolvedValue({
+			...TENANT_OWNED_CONFIG,
+			source: "organization",
+		});
+		const { getAIModelWithMetadata, getRAGProviderConfigForModel } =
+			await import("../lib/dynamic-model-selector");
+
+		const resolved = await resolveModelWithProvider("SIMPLE", context);
+		expect(resolved).toMatchObject({
+			provider: "VERCEL_GATEWAY",
+			apiKey: "encrypted:tenant-own-key",
+			configId: "cfg-1",
+		});
+		expect(resolved).not.toHaveProperty("federatedOrganizationId");
+		const { model, metadata } = await getAIModelWithMetadata(
+			{ taskType: "SIMPLE" },
+			context,
+		);
+		expect(model).toMatchObject({ modelId: "openai/gpt-4o-mini" });
+		expect(metadata.configId).toBe("cfg-1");
+		const credential = await getRAGProviderConfigForModel(
+			context,
+			metadata,
+		);
+		expect(credential).toMatchObject({
+			provider: "VERCEL_GATEWAY",
+			apiKey: "tenant-own-key",
+		});
+		expect(credential).not.toHaveProperty("anthropicBearerSource");
+	},
+);
+
+it.each([{ configId: "example-replacement" }, { provider: "OPENAI_DIRECT" }])(
+	"refuses a credential that no longer matches the selected route (%o)",
+	async (changed) => {
+		const { getRAGProviderConfigForModel } = await import(
+			"../lib/dynamic-model-selector"
+		);
+		getAiProviderApiKeyByProviderMock.mockResolvedValue({
+			...TENANT_OWNED_CONFIG,
+			source: "organization",
+			...changed,
+		});
+		await expect(
+			getRAGProviderConfigForModel(
+				{ userId: "example-user", organizationId: "example-org" },
+				{
+					provider: "VERCEL_GATEWAY",
+					configId: "cfg-1",
+					configSource: "organization",
+				},
+			),
+		).rejects.toThrow("The selected AI provider configuration changed");
+	},
+);
+
+it("selects metadata for an explicitly chosen provider when the Anthropic default is revoked", async () => {
+	const { selectModelDynamic } = await import(
+		"../lib/dynamic-model-selector"
+	);
+	getAiProviderApiKeyMock.mockImplementation(
+		async ({ retainUnavailableFederation }) => {
+			if (!retainUnavailableFederation) {
+				throw new AnthropicFederationUnavailableError();
+			}
+			return { provider: "ANTHROPIC_DIRECT" };
+		},
+	);
+	getAiProviderApiKeyByProviderMock.mockResolvedValue({
+		...TENANT_OWNED_CONFIG,
+		source: "organization",
+	});
+	selectOntoAnotherProvider();
+	await expect(
+		selectModelDynamic(
+			{ taskType: "SIMPLE", preferredProvider: "VERCEL_GATEWAY" },
+			{ userId: "example-user", organizationId: "example-org" },
+		),
+	).resolves.toMatchObject({
+		provider: "VERCEL_GATEWAY",
+		providerModelId: "openai/gpt-4o-mini",
+	});
+});
+
+it("propagates revocation when a task selects a separate Anthropic record", async () => {
+	const context = {
+		userId: "example-user",
+		organizationId: "example-org",
+		excludeChatGptPlan: true,
+	};
+	getAiProviderApiKeyMock.mockResolvedValue({
+		...TENANT_OWNED_CONFIG,
+		source: "organization",
+	});
+	getModelForTaskMock.mockResolvedValue(null);
+	getTaskDefaultModelMock.mockResolvedValue({
+		canonicalName: "example-claude",
+		providerMappings: [
+			{
+				provider: "ANTHROPIC_DIRECT",
+				providerModelId: "example-claude",
+			},
+		],
+	});
+	getAiProviderApiKeyByProviderMock.mockRejectedValue(
+		new AnthropicFederationUnavailableError(),
+	);
+
+	await expect(
+		resolveModelWithProvider("SIMPLE", context),
+	).rejects.toBeInstanceOf(AnthropicFederationUnavailableError);
+	expect(getAiProviderApiKeyByProviderMock).toHaveBeenLastCalledWith({
+		userId: context.userId,
+		organizationId: context.organizationId,
+		provider: "ANTHROPIC_DIRECT",
 	});
 });

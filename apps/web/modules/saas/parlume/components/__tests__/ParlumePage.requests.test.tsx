@@ -233,6 +233,44 @@ describe("ParlumePage requests", () => {
 		).toHaveClass("text-destructive");
 	});
 
+	it("says how a stopped request was stopped, and by whom", async () => {
+		mocks.history.mockResolvedValue(
+			historyPage([
+				request({
+					id: "t1",
+					requestText: "Stopped by voice",
+					responseText: null,
+					status: "STOPPED",
+					stopCause: "VOICE",
+					stoppedBy: "Dev Example",
+				}),
+				request({
+					id: "t2",
+					requestText: "Stopped on the page",
+					responseText: null,
+					status: "STOPPED",
+					stopCause: "PAGE",
+					stoppedBy: null,
+				}),
+			]),
+		);
+		await openRequests();
+
+		const spoken = (await screen.findByText("Stopped by voice")).closest(
+			"li",
+		) as HTMLElement;
+		expect(
+			within(spoken).getByText(/· stopped by voice \(Dev Example\)/),
+		).toBeInTheDocument();
+		const page = (await screen.findByText("Stopped on the page")).closest(
+			"li",
+		) as HTMLElement;
+		expect(
+			within(page).getByText(/· stopped on the Parlume page($| ·)/),
+		).toBeInTheDocument();
+		expect(within(page).queryByText(/\(/)).toBeNull();
+	});
+
 	it("filters to questions or to actions without reloading", async () => {
 		mocks.history.mockResolvedValue(
 			historyPage([
@@ -303,6 +341,41 @@ describe("ParlumePage requests", () => {
 		expect(item.queryByText(/blocked/)).toBeNull();
 	});
 
+	it("marks a guest's line as an unverified speaker's, and no member's or unknown speaker's", async () => {
+		mocks.history.mockResolvedValue(
+			historyPage([
+				request({
+					id: "guest",
+					requestText: "Guest line",
+					speakerName: "Pat",
+					speakerMark: "guest",
+				}),
+				request({ id: "member", requestText: "Member line" }),
+				request({
+					id: "unknown",
+					requestText: "Unknown line",
+					speakerName: "Sam",
+					speakerMark: "unknown",
+				}),
+			]),
+		);
+		await openRequests();
+
+		const line = (text: string) =>
+			within(screen.getByText(text).closest("li") as HTMLElement);
+		await screen.findByText("Guest line");
+		expect(line("Guest line").getByText("Pat")).toBeInTheDocument();
+		expect(
+			line("Guest line").getByText("Unverified speaker"),
+		).toBeInTheDocument();
+		expect(
+			line("Member line").queryByText("Unverified speaker"),
+		).toBeNull();
+		expect(
+			line("Unknown line").queryByText("Unverified speaker"),
+		).toBeNull();
+	});
+
 	it("shows an action's status, steps, outcome and exact arguments", async () => {
 		mocks.history.mockResolvedValue(
 			historyPage([actionRequest("t1", "Move EX-1")]),
@@ -331,6 +404,75 @@ describe("ParlumePage requests", () => {
 		expect(view.queryByText(/"itemKey"/)).not.toBeVisible();
 		await user.click(details);
 		expect(view.getByText(/"itemKey": "EX-1"/)).toBeVisible();
+	});
+
+	it("links a proposed change, by its tag, to the page where a member confirms or dismisses it", async () => {
+		mocks.history.mockResolvedValue(
+			historyPage([
+				request({
+					id: "t1",
+					requestText: "Move EX-1",
+					actions: [
+						action({
+							id: "proposal-1",
+							status: "PROPOSED",
+							chatTag: "P8",
+							completedAt: null,
+							outcome: null,
+						}),
+						action({ id: "done-1", chatTag: "P9" }),
+					],
+				}),
+			]),
+		);
+		await openRequests();
+
+		expect(
+			await screen.findByRole("link", { name: "Confirm or dismiss" }),
+		).toHaveAttribute(
+			"href",
+			`${PROJECT_BASE_PATH}/parlume/actions/proposal-1`,
+		);
+		expect(
+			screen.getByRole("link", { name: "Open the proposal" }),
+		).toHaveAttribute(
+			"href",
+			`${PROJECT_BASE_PATH}/parlume/actions/done-1`,
+		);
+		expect(screen.getByText("Action · P8")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /confirm/i })).toBeNull();
+	});
+
+	// The chat only queues a post: the page says which ones it showed.
+	it("shows which of a request's posts the chat showed, and a proposal the chat never showed", async () => {
+		mocks.history.mockResolvedValue(
+			historyPage([
+				request({
+					id: "t1",
+					requestText: "Move EX-1",
+					chatTags: ["P4"],
+					chatUnshownTags: ["P6"],
+					actions: [
+						action({
+							id: "proposal-1",
+							status: "PROPOSED",
+							chatTag: "P5",
+							chatDelivery: "NOT_SHOWN",
+							completedAt: null,
+							outcome: null,
+						}),
+					],
+				}),
+			]),
+		);
+		await openRequests();
+
+		expect(
+			await screen.findByText(/Posted as P4 · Not shown in the chat: P6/),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("Action · Not shown in the chat (P5)"),
+		).toBeInTheDocument();
 	});
 
 	it("shows a change that is still running with only its request", async () => {

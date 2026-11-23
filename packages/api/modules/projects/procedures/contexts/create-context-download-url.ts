@@ -48,6 +48,10 @@ import { verifyOrganizationMembership } from "../../../organizations/lib/members
 import { buildContextTextPayload } from "../../lib/build-context-text-payload";
 import { contextDownloadFilename } from "../../lib/context-download-filename";
 import {
+	PARLUME_TRANSCRIPT_WITHHELD,
+	resolveParlumeTranscriptAccess,
+} from "../../lib/parlume-transcript-access";
+import {
 	buildPathPrefixMarkdown,
 	isPathPrefixLink,
 } from "../../lib/path-prefix-link-markdown";
@@ -150,6 +154,17 @@ export const createContextDownloadUrlProcedure = tenantProtectedProcedure
 		if (!projectContext) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Project context not found",
+			});
+		}
+		if (
+			(await resolveParlumeTranscriptAccess({
+				projectId: input.projectId,
+				userId: user.id,
+				contextId: projectContext.id,
+			})) === "withheld"
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message: PARLUME_TRANSCRIPT_WITHHELD,
 			});
 		}
 

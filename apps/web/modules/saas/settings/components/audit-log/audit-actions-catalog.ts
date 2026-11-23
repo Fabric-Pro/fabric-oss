@@ -2040,6 +2040,87 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"A project administrator requested that Parlume leave a meeting and finalize its session.",
 	},
 	{
+		key: "project.parlume.speech_stopped",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.speech_stopped",
+		description:
+			"A project member stopped the answer Parlume was giving in a meeting, from the Parlume page.",
+	},
+	{
+		key: "project.parlume.listening_paused",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.listening_paused",
+		description:
+			"A project member paused Parlume's listening in a meeting, from the Parlume page. While paused, Parlume hears and stores nothing.",
+	},
+	{
+		key: "project.parlume.listening_resumed",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.listening_resumed",
+		description:
+			"A project member let Parlume listen again in a meeting, from the Parlume page.",
+	},
+	{
+		key: "project.parlume.reading_continued",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.reading_continued",
+		description:
+			"A project member asked Parlume to read the next part of a long chat post aloud in a meeting, from the Parlume page.",
+	},
+	{
+		key: "project.parlume.suggestion_spoken",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.suggestion_spoken",
+		description:
+			"A project member had Parlume say one of its suggestions in a meeting, from the Parlume page. Refused while a guest is in the meeting.",
+	},
+	{
+		key: "project.parlume.suggestion_dismissed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.parlume.suggestion_dismissed",
+		description:
+			"A project member dismissed one of Parlume's suggestions on the Parlume page. It is no longer listed for anyone.",
+	},
+	{
+		key: "project.parlume.session_deleted",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.session_deleted",
+		description:
+			"The person who invited Parlume, or a project manager, deleted a finished meeting's transcript, requests and suggestions. The meeting notes stay.",
+	},
+	{
+		key: "project.parlume.notes_regenerated",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.notes_regenerated",
+		description:
+			"The person who invited Parlume, or a project manager, had a finished meeting's notes written again from its transcript. The new notes replace the earlier ones for everyone who reads them.",
+	},
+	{
+		key: "project.parlume.action_item_proposed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.parlume.action_item_proposed",
+		description:
+			"A member who may read a meeting's transcript proposed an action item from its Parlume notes as a ticket. The proposal waits in the Proposal Inbox for approval and links to the transcript line, without a copy of the transcript.",
+	},
+	{
+		key: "project.parlume.confidential_marked",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.parlume.confidential_marked",
+		description:
+			"A project member marked a Parlume meeting confidential from the Parlume page: from that moment while Parlume was in the meeting, or the whole meeting once it was over. Its notes, requests, suggestions and transcript then read only for the people Fabric confirmed in the meeting and the project's managers.",
+	},
+	{
+		key: "project.parlume.confidential_cleared",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.parlume.confidential_cleared",
+		description:
+			"The person who invited Parlume, or a project manager, ended a meeting's confidential part or removed its confidential mark from the Parlume page.",
+	},
+	{
 		key: "project.parlume.auto_join_changed",
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.project.parlume.auto_join_changed",
@@ -2051,7 +2132,28 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.project.parlume.action_confirmed",
 		description:
-			"Parlume made a change a meeting attendee asked for, using the inviter's current permissions. The result is recorded in Parlume history.",
+			"A project member confirmed a change Parlume proposed in a meeting. The change runs with that member's permissions, and its result is recorded in Parlume history.",
+	},
+	{
+		key: "project.parlume.action_executed",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.action_executed",
+		description:
+			"The agent Fabric Parlume ran a change a project member confirmed, as that member. The row records whether the change was made and any work item it created, never the meeting's words.",
+	},
+	{
+		key: "project.parlume.action_dismissed",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.action_dismissed",
+		description:
+			"A project member dismissed a change Parlume proposed in a meeting. Nothing was changed.",
+	},
+	{
+		key: "project.parlume.request_answered",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.request_answered",
+		description:
+			"The agent Fabric Parlume answered a request in a meeting, reading project data with the access of the person who invited it. The row records the outcome and the tools used, never the question or the answer.",
 	},
 	{
 		key: "project.recipient_brand.fetched",

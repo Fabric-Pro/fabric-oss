@@ -622,9 +622,16 @@ export function CreateInstanceForm({
 							<div className="space-y-2">
 								<Button
 									onClick={handleCreate}
-									disabled={!suite && generateOff}
+									// Never `disabled` mid-run: that drops
+									// focus from the button just pressed,
+									// and the duplicate warning that may
+									// follow would have nowhere to return it.
+									disabled={
+										!suite && !isWorking && generateOff
+									}
 									aria-disabled={
-										(suite && generateOff) || undefined
+										(generateOff && (suite || isWorking)) ||
+										undefined
 									}
 									aria-describedby={
 										problem ? problemId : undefined

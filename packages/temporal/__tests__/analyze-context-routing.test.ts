@@ -670,6 +670,13 @@ describe("allowRouting wiring", () => {
 			created: 0,
 			failed: 0,
 		});
+		// A merge held to the enrichment: it adds only the enrichment's text.
+		mocks.reanalyzeBodyByKind.mockResolvedValueOnce({
+			description:
+				"Exports need a queue.\n\nLarge exports lock the worker.",
+			acceptanceCriteria: undefined,
+			fallbackUsed: false,
+		});
 
 		const proposal = await analyzeContextAndPropose({
 			...BASE_INPUT,
@@ -683,9 +690,10 @@ describe("allowRouting wiring", () => {
 		expect(mocks.reanalyzeBodyByKind).toHaveBeenCalledOnce();
 		const change = proposal.changes[0];
 		expect(change.description?.from).toBe("Exports need a queue.");
-		expect(change.description?.to).toContain(
-			"Also rate limit the endpoint.",
+		expect(change.description?.to).toBe(
+			"Exports need a queue.\n\nLarge exports lock the worker.",
 		);
+		expect(change.bodyMergeFallback).toBeFalsy();
 		expect(change.structurePreserved).toBe(true);
 		expect(proposal.summary).toBe(
 			"1 proposed item was matched to existing work item (F-12) and will update it.\n\nCapture export improvements.",

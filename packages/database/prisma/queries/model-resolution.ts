@@ -286,6 +286,7 @@ export async function resolveModelWithCredentials(
 	// silently collapses back to `string`, hiding the null case from callers.
 	Omit<ResolvedModel, "apiKey"> & {
 		apiKey: string | null;
+		federatedOrganizationId?: string;
 		clientId: string | null;
 		encryptedClientSecret: string | null;
 	}
@@ -338,6 +339,9 @@ export async function resolveModelWithCredentials(
 
 	return {
 		...resolved,
+		...(providerConfig.federatedOrganizationId && {
+			federatedOrganizationId: providerConfig.federatedOrganizationId,
+		}),
 		apiKey: providerConfig.apiKey,
 		// Carried so a consumer can mint a token for a service-principal config
 		// via `resolveProviderApiKey` from `@repo/ai`.

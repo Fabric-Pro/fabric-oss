@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/client";
 import {
+	canEditProject,
 	countProjectInitiatives,
 	getProjectById,
 	getProjectRole,
@@ -107,6 +108,7 @@ export const getProjectProcedure = tenantProtectedProcedure
 		const [
 			effective,
 			hasAccess,
+			canEditDocuments,
 			recommendationsEnabled,
 			aiRecommendedLifecycleEnabled,
 			providerAvailable,
@@ -115,6 +117,13 @@ export const getProjectProcedure = tenantProtectedProcedure
 		] = await Promise.all([
 			resolveEffectiveProjectPermissions(input.id, user.id),
 			hasProjectAccess(input.id, user.id),
+			// Whether the caller may change the project's documents: the very
+			// check the document save (`requireProjectPermission(PROJECT_UPDATE)`)
+			// and the collaboration server's room writes (`/api/collab/verify`)
+			// make, so the editor freezes exactly when a write would be
+			// refused — for a project role, and for an organization role with
+			// no project role.
+			canEditProject(input.id, user.id),
 			isFeatureEnabled(
 				"ROADMAP_RECOMMENDATIONS",
 				projectOrganizationId ?? undefined,
@@ -214,6 +223,7 @@ export const getProjectProcedure = tenantProtectedProcedure
 				userRole,
 				canEditSettings,
 				canUpdateProject,
+				canEditDocuments,
 				canPublish,
 				canEditInstructions,
 				canReviewInstructions,

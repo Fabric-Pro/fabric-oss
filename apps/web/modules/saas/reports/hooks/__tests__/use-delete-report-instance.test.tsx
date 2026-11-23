@@ -9,7 +9,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	deleteReport: vi.fn(),
-	toast: { success: vi.fn(), info: vi.fn(), error: vi.fn() },
+	toast: {
+		success: vi.fn(),
+		info: vi.fn(),
+		error: vi.fn(),
+		dismiss: vi.fn(),
+	},
 }));
 vi.mock("sonner", () => ({ toast: mocks.toast }));
 // Keys shaped as oRPC builds them: a partial input matches the full one.
@@ -115,6 +120,28 @@ describe("useDeleteReportInstance", () => {
 		expect(mocks.toast.info).toHaveBeenCalledTimes(1);
 		expect(onDeleted).toHaveBeenCalledTimes(1);
 		expect(client.getQueryData(reportPageKey)).toBeUndefined();
+	});
+
+	it("closes the earlier failure when a retry deletes the report", async () => {
+		mocks.deleteReport.mockRejectedValueOnce(
+			Object.assign(new Error("Unavailable"), {
+				code: "INTERNAL_SERVER_ERROR",
+			}),
+		);
+		const failed = deleteReport();
+		await waitFor(() => expect(failed.result.current.isError).toBe(true));
+		const [, failure] = mocks.toast.error.mock.calls[0] ?? [];
+		expect(failure).toMatchObject({ id: `report-delete-failed-${REPORT}` });
+
+		const retried = deleteReport();
+		await waitFor(() =>
+			expect(retried.result.current.isSuccess).toBe(true),
+		);
+
+		expect(mocks.toast.dismiss).toHaveBeenCalledWith(
+			`report-delete-failed-${REPORT}`,
+		);
+		expect(mocks.toast.success).toHaveBeenCalledWith("Report deleted");
 	});
 
 	it("keeps the page when the deletion is refused", async () => {

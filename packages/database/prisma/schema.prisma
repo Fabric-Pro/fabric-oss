@@ -2144,9 +2144,11 @@ model ConversationTurn {
   /// The conversation the turn runs in; null for a surface with no
   /// conversation (Nexus) and after the conversation is deleted.
   conversationId      String?
-  /// Immutable copy of the conversation id the turn was created for. Unlike
-  /// `conversationId` it survives the conversation's deletion, so the turn
-  /// stays attributable.
+  /// Immutable copy of the conversation id the turn was created for. A turn
+  /// does not outlive its conversation: deleting the conversation deletes
+  /// its finished turns, and a turn still running then keeps this id (its
+  /// workflow and the cancel route still find it) until the write that ends
+  /// it deletes it (queries/conversation-turns.ts).
   scopeConversationId String?
   /// The browser's per-message idempotency key (a uuid it reuses on retries
   /// of the same message).
@@ -6733,6 +6735,8 @@ model ProjectLinkedMeeting {
   /// Who turned auto-join on: their calendar, Microsoft connection and project
   /// permissions are what each join uses.
   parlumeAutoJoinUserId             String?
+  /// When they turned it on.
+  parlumeAutoJoinEnabledAt          DateTime?
   parlumeAutoJoinToolsReadOnly      Boolean                   @default(true)
   parlumeAutoJoinSuggestions        Boolean                   @default(true)
   parlumeAutoJoinSuggestionAudience ParlumeSuggestionAudience @default(TEAM)
@@ -7177,6 +7181,12 @@ enum ParlumeMeetingEndReason {
   /// Nobody admitted the bot from the meeting lobby, or the organizer
   /// declined its request to join.
   NOT_ADMITTED
+  /// An external guest joined, and the organization keeps Parlume to
+  /// internal meetings.
+  EXTERNAL_GUEST
+  /// Someone in the meeting could not be confirmed as able to read the
+  /// project, or its chat was a Teams channel's.
+  ATTENDEE_NOT_AUTHORIZED
 
   @@map("parlume_meeting_end_reason")
 }
@@ -7196,23 +7206,56 @@ enum ParlumeTeamsLoginMode {
 /// project, so they apply together and only while the organization has its own
 /// key; otherwise the operator's environment applies as a whole.
 model OrganizationParlumeSettings {
-  id                      String                 @id @default(cuid())
-  organizationId          String                 @unique
-  encryptedAttendeeApiKey String?                @db.Text
+  id                             String                 @id @default(cuid())
+  organizationId                 String                 @unique
+  encryptedAttendeeApiKey        String?                @db.Text
+  /// The Attendee project's webhook secret, which signs every webhook it sends.
+  encryptedAttendeeWebhookSecret String?                @db.Text
   /// https origin of a self-hosted Attendee; null is app.attendee.dev.
-  attendeeBaseUrl         String?
-  teamsLoginMode          ParlumeTeamsLoginMode?
+  attendeeBaseUrl                String?
+  teamsLoginMode                 ParlumeTeamsLoginMode?
+  /// The Teams login group on the Attendee project whose Microsoft 365
+  /// account the bot signs in with (`teams_settings.login_group_name`). Null
+  /// is the project's oldest group. Applies with `teamsLoginMode`, so only
+  /// while the organization has its own key.
+  teamsLoginGroup                String?
   /// The Azure AI Foundry deployment that serves the realtime voice model.
-  realtimeDeployment      String?
-  updatedById             String?
-  createdAt               DateTime               @default(now())
-  updatedAt               DateTime               @updatedAt
+  /// Without one, Parlume uses the classic voice.
+  realtimeDeployment             String?
+  /// What Parlume does in a meeting with an external guest.
+  guestPolicy                    ParlumeGuestPolicy     @default(NOTES_ONLY)
+  /// The organization-shared Microsoft connection Parlume replies in a Teams
+  /// channel meeting with, before the inviter's own. Checked again on every
+  /// use; a connection that is no longer shared or active is skipped.
+  channelIntegrationId           String?
+  updatedById                    String?
+  createdAt                      DateTime               @default(now())
+  updatedAt                      DateTime               @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   updatedBy    User?        @relation("OrganizationParlumeSettingsUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
 
   @@index([updatedById])
   @@map("organization_parlume_settings")
+}
+
+/// What Parlume does while an external guest is in the meeting: keep notes
+/// and stay quiet, or leave, because the organization keeps it to internal
+/// meetings.
+enum ParlumeGuestPolicy {
+  NOTES_ONLY
+  INTERNAL_ONLY
+
+  @@map("parlume_guest_policy")
+}
+
+/// The Attendee project a session's bot was created on: the operator's, from
+/// the environment, or the organization's own.
+enum ParlumeAttendeeSource {
+  ENVIRONMENT
+  ORGANIZATION
+
+  @@map("parlume_attendee_source")
 }
 
 /// The source of configuration for a Parlume meeting agent.
@@ -7256,8 +7299,24 @@ enum ParlumeMeetingTurnStatus {
   RUNNING
   COMPLETED
   FAILED
+  /// Someone stopped the answer; `stopCause` says how.
+  STOPPED
 
   @@map("parlume_meeting_turn_status")
+}
+
+/// How someone stopped a meeting answer.
+enum ParlumeStopCause {
+  /// A stop phrase typed in the meeting chat.
+  CHAT
+  /// The Stop speaking button on the Parlume page.
+  PAGE
+  /// A pause, by voice, in the chat or on the Parlume page.
+  PAUSE
+  /// A stop phrase said aloud in the meeting.
+  VOICE
+
+  @@map("parlume_stop_cause")
 }
 
 /// Where a meeting segment was captured.
@@ -7266,6 +7325,8 @@ enum ParlumeMeetingSegmentSource {
   SPEECH
   /// A message in the meeting chat.
   CHAT
+  /// Something that happened to Parlume itself: listening paused or resumed.
+  EVENT
 
   @@map("parlume_meeting_segment_source")
 }
@@ -7276,6 +7337,9 @@ enum ParlumeMeetingReplyChannel {
   VOICE
   /// Sent to the meeting chat, for a request typed there.
   CHAT
+  /// Shown only on the Parlume page, for a question a member typed there.
+  /// Nothing is spoken or posted in the meeting.
+  PAGE
 
   @@map("parlume_meeting_reply_channel")
 }
@@ -7313,6 +7377,13 @@ model ParlumeMeetingSession {
   agentInstanceVersion         Int?
   providerBotId                String?                     @unique
   streamTokenDigest            String
+  /// SHA-256 of the bot's random webhook token. Cleared once Attendee's data
+  /// for the bot is deleted, after which the session accepts no webhook.
+  callbackTokenDigest          String?
+  /// The Attendee project the bot was created on. Its webhooks are verified
+  /// with that project's secret, whatever the organization saves later. Null
+  /// on a session from before this was recorded.
+  attendeeSource               ParlumeAttendeeSource?
   status                       ParlumeMeetingSessionStatus @default(PENDING)
   wakePhrase                   String                      @default("Hey Fabric")
   toolsReadOnly                Boolean                     @default(true)
@@ -7340,8 +7411,75 @@ model ParlumeMeetingSession {
   /// The linked series an automatic join came from, and which occurrence.
   linkedMeetingId              String?
   occurrenceStart              DateTime?
+  /// When the join notice reached the meeting, and the tag of its chat post.
+  /// A notice spoken because the chat was out of reach has no tag.
+  joinNoticeAt                 DateTime?
+  joinNoticeTag                String?
+  /// The highest chat tag Fabric relayed for this session. A re-invited
+  /// session numbers its posts after it: the last post before a leave shows
+  /// back in the chat only after the session has ended, so no segment
+  /// records it.
+  lastChatTag                  Int?
+  /// The calendar invitation of an automatic join named someone outside the
+  /// organization, so the meeting counts as having a guest from the start.
+  externalInvitees             Boolean                     @default(false)
+  /// The lower-cased addresses of an automatic join's invitees from inside
+  /// the organization, as its calendar invitation named them. They may read
+  /// the transcript. Empty for a manual invitation.
+  inviteeEmails                String[]                    @default([])
+  /// The Fabric accounts Fabric confirmed in the meeting as able to read the
+  /// project, each once. They are the meeting's verified attendees: with the
+  /// project's managers, the only readers of its confidential discussion.
+  attendeeUserIds              String[]                    @default([])
+  /// The Teams ids of the participants Fabric checked in the meeting, by how
+  /// it marked them: a member it confirmed as able to read the project, or a
+  /// guest it could not confirm. The transcript and the Parlume page mark
+  /// each speaker by them; a speaker in neither is unknown. Cleared with the
+  /// meeting's segments.
+  memberSpeakerIds             String[]                    @default([])
+  guestSpeakerIds              String[]                    @default([])
+  /// Part or all of the meeting is confidential. Its notes, requests, proposed
+  /// changes, suggestions and transcript are then kept to its verified
+  /// attendees and the project's managers, and an earlier meeting's recap
+  /// never draws on it.
+  confidential                 Boolean                     @default(false)
+  /// While set, what the meeting says is stored as confidential. Cleared when
+  /// the confidential part ends. `confidentialBy` is who last started or
+  /// ended it, as the meeting chat or Fabric names them.
+  confidentialSince            DateTime?
+  confidentialBy               String?
+  /// When an external guest was first seen in the meeting.
+  guestJoinedAt                DateTime?
+  /// While set, Parlume's listening is paused: the bridge sends no meeting
+  /// audio to speech-to-text and stores no segment. `pausedBy` is the name of
+  /// whoever paused it, as the meeting chat shows them.
+  pausedAt                     DateTime?
+  pausedBy                     String?
+  /// The media bridge's speech telemetry for the meeting: totals since it
+  /// began (time spoken, audio underrun, stops said aloud and how fast they
+  /// silenced Parlume, resumes, realtime fallbacks, Aura retries), as its
+  /// latest report gave them. Counts only.
+  speechHealth                 Json?
+  /// When what the meeting said was deleted: its segments, the transcript
+  /// context's text and vectors, and its webhook receipts. Set by a member's
+  /// delete, which also removes the requests, proposed changes and
+  /// suggestions, or by the retention sweep 90 days after the meeting, which
+  /// clears the requests' text and the suggestions' quotes. The notes, kept
+  /// on the transcript context, stay until someone deletes that context.
+  transcriptDeletedAt          DateTime?
+  /// When the meeting's internal invitees were told its notes are ready, in
+  /// Fabric and by email. Claimed once.
+  notesNotifiedAt              DateTime?
   /// Private join path for exact chat resolution; query credentials are omitted.
   meetingUrl                   String?                     @db.Text
+  /// The meeting `meetingUrl` names, as one key for every spelling of its
+  /// link (`parlumeMeetingKey`). The partial unique index
+  /// `parlume_meeting_session_one_live_per_meeting` in migration
+  /// 20261121140100_parlume_session_meeting_key allows one session per key in
+  /// an organization while it is PENDING, JOINING, ACTIVE or LEAVING; Prisma
+  /// cannot express a partial index, so it is not declared here. Null when
+  /// the link names no meeting, and on ended sessions from before the key.
+  meetingKey                   String?                     @db.Text
   channelChatStatus            String                      @default("ATTENDEE")
   channelChatError             String?                     @db.Text
   channelIntegrationId         String?
@@ -7354,14 +7492,15 @@ model ParlumeMeetingSession {
   createdAt                    DateTime                    @default(now())
   updatedAt                    DateTime                    @updatedAt
 
-  project       Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  organization  Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user          User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  linkedMeeting ProjectLinkedMeeting?   @relation(fields: [linkedMeetingId], references: [id], onDelete: SetNull)
-  segments      ParlumeMeetingSegment[]
-  turns         ParlumeMeetingTurn[]
-  channelPosts  ParlumeChannelPost[]
-  suggestions   ParlumeSuggestion[]
+  project         Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization    Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user            User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  linkedMeeting   ProjectLinkedMeeting?   @relation(fields: [linkedMeetingId], references: [id], onDelete: SetNull)
+  segments        ParlumeMeetingSegment[]
+  turns           ParlumeMeetingTurn[]
+  channelPosts    ParlumeChannelPost[]
+  suggestions     ParlumeSuggestion[]
+  webhookReceipts ParlumeWebhookReceipt[]
 
   /// One session per occurrence of a series, however often its join is requested.
   @@unique([linkedMeetingId, occurrenceStart])
@@ -7394,6 +7533,26 @@ model ParlumeChannelPost {
   @@map("parlume_channel_post")
 }
 
+/// One Attendee webhook delivery a session handled. A redelivery with the same
+/// idempotency key is acknowledged and not acted on again. The receipts go
+/// when the session's webhook token is revoked.
+model ParlumeWebhookReceipt {
+  sessionId      String
+  idempotencyKey String
+  projectId      String
+  organizationId String
+  userId         String
+  trigger        String
+  createdAt      DateTime @default(now())
+
+  session ParlumeMeetingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@id([sessionId, idempotencyKey])
+  @@index([projectId])
+  @@index([organizationId])
+  @@map("parlume_webhook_receipt")
+}
+
 /// One unprompted contribution Parlume made in a session, whoever it was for.
 /// The Parlume page lists them to the project's readers; `chatTag` is set when
 /// it was also posted in the meeting chat.
@@ -7411,6 +7570,11 @@ model ParlumeSuggestion {
   quote          String?
   topic          String?
   chatTag        String?
+  /// Whether the meeting chat showed the post; null until the bridge reports it.
+  chatDelivery   ParlumeChatDelivery?
+  /// A member dismissed it on the Parlume page; the page no longer lists it.
+  dismissedAt    DateTime?
+  dismissedById  String?
   createdAt      DateTime                  @default(now())
 
   session ParlumeMeetingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -7418,6 +7582,15 @@ model ParlumeSuggestion {
   @@index([sessionId, createdAt])
   @@index([projectId])
   @@map("parlume_suggestion")
+}
+
+/// What became of a Parlume chat post: the meeting chat showed it back to
+/// the bridge, or it did not within the confirmation window.
+enum ParlumeChatDelivery {
+  SHOWN
+  NOT_SHOWN
+
+  @@map("parlume_chat_delivery")
 }
 
 /// One bounded response request made from a final meeting utterance.
@@ -7430,6 +7603,11 @@ model ParlumeMeetingTurn {
   dedupeKey       String
   speakerName     String?
   speakerId       String?
+  /// The Fabric account of the confirmed participant who asked. Every lookup
+  /// the turn makes runs with this account's project access; null when
+  /// Parlume could not tell which confirmed participant asked, and the turn
+  /// then looks nothing up.
+  requesterUserId String?
   requestText     String                     @db.Text
   responseText    String?                    @db.Text
   status          ParlumeMeetingTurnStatus   @default(PENDING)
@@ -7445,6 +7623,15 @@ model ParlumeMeetingTurn {
   firstAudioAt    DateTime?
   spokenAt        DateTime?
   interruptedAt   DateTime?
+  /// Set with STOPPED. `stoppedBy` is who stopped the answer, as the meeting
+  /// chat names them: a member for the page button, the sender of a typed
+  /// stop, or whoever paused Parlume.
+  stopCause       ParlumeStopCause?
+  stoppedBy       String?
+  /// The tags of the request's posts that the meeting chat showed, and of
+  /// those it did not, as the bridge reports them.
+  chatTags        String[]                   @default([])
+  chatUnshownTags String[]                   @default([])
   actions         ParlumeAction[]
 
   session      ParlumeMeetingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -7459,6 +7646,9 @@ model ParlumeMeetingTurn {
   @@map("parlume_meeting_turn")
 }
 
+/// A change Parlume proposed in a meeting. It is PROPOSED until a signed-in
+/// member with edit rights confirms it in Fabric, or dismisses it, before
+/// `expiresAt`; a confirmed change runs as that member, not the inviter.
 model ParlumeAction {
   id                 String              @id @default(cuid())
   turnId             String
@@ -7481,6 +7671,16 @@ model ParlumeAction {
   expiresAt          DateTime
   confirmationTurnId String?
   confirmedAt        DateTime?
+  /// The member who confirmed or dismissed the proposal.
+  decidedByUserId    String?
+  /// When the run of a confirmed change claimed it. Claimed once: a second
+  /// run does nothing, and a confirmation whose start failed reopens the
+  /// proposal only while no run has claimed it.
+  startedAt          DateTime?
+  /// The proposal's post in the meeting chat ("P7"), when it was posted there.
+  chatTag            String?
+  /// Whether the meeting chat showed that post; null until the bridge reports it.
+  chatDelivery       ParlumeChatDelivery?
   completedAt        DateTime?
   outcome            String?             @db.Text
   createdAt          DateTime            @default(now())
@@ -7511,6 +7711,9 @@ model ParlumeMeetingSegment {
   text             String                      @db.Text
   utteranceStartMs Int?
   utteranceEndMs   Int?
+  /// Said or typed while the meeting's confidential part ran, or in a meeting
+  /// marked confidential as a whole.
+  confidential     Boolean                     @default(false)
   createdAt        DateTime                    @default(now())
 
   session      ParlumeMeetingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -8303,6 +8506,7 @@ model PendingBacklogProposal {
   seenSlackMessages    ProjectLinkedSlackChannelSeenMessage[]
   drafts               BacklogProposalDraft[]
   duplicateResolutions PendingBacklogProposalDuplicateResolution[]
+  duplicateVerdicts    ProposalItemDuplicateVerdict[]
   applications         PendingBacklogProposalApplication[]
   reviews              PendingBacklogProposalReview[]              @relation("ProposalReviews")
   reviewEntries        PendingBacklogProposalReviewEntry[]
@@ -8349,6 +8553,45 @@ model PendingBacklogProposalDuplicateResolution {
   @@unique([proposalId, changeIndex])
   @@index([proposalId])
   @@map("pending_backlog_proposal_duplicate_resolution")
+}
+
+/// The duplicate verifier's verdict on one Proposal Inbox item against a
+/// roadmap ticket or another inbox item: the same verifier, prompt and
+/// second opinion as the roadmap scan's `StoryDuplicateLink` verdicts, which
+/// cannot hold these because an inbox item is not a story yet. The inbox shows
+/// a pair only while its verdict is flagged and both hashes still match the
+/// two texts; an edit to either side makes the pair wait for a new verdict.
+/// A pair whose verification keeps failing waits before it is tried again.
+///
+/// Tenancy is the proposal's (parent-scoped, `proposal_parent` RLS).
+model ProposalItemDuplicateVerdict {
+  id              String            @id @default(cuid())
+  proposalId      String
+  changeIndex     Int
+  // "story:<storyId>" or "item:<proposalId>:<changeIndex>". A pair of two
+  // inbox items is stored once, on the item whose own key sorts first.
+  counterpartKey  String
+  // detectionVerdictHash of the item and of the counterpart at the verdict,
+  // or at the failed verifications counted in failedAttempts.
+  contentHash     String
+  counterpartHash String
+  // Null until the verifier first decides the pair.
+  flagged         Boolean?
+  linkType        DuplicateLinkType @default(DUPLICATE)
+  similarity      Float // candidate score when verified
+  confidence      Float? // verifier confidence 0..1, null until decided
+  reasoning       String?           @db.Text
+  // Verifications in a row that failed on the hashed texts; a verdict
+  // resets it.
+  failedAttempts  Int               @default(0)
+  lastFailedAt    DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  proposal PendingBacklogProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  @@unique([proposalId, changeIndex, counterpartKey], map: "proposal_item_duplicate_verdict_pair_key")
+  @@map("proposal_item_duplicate_verdict")
 }
 
 model PendingBacklogProposalReview {
@@ -22956,6 +23199,27 @@ enum NotificationType {
   /// the file.
   /// Category PROJECT, gated by the `syncProject` toggle.
   DECISION_CANDIDATES_READY
+
+  /// A Parlume bot could not join its meeting: the start failed
+  /// (`START_FAILED`) or nobody admitted it (`NOT_ADMITTED`). Sent once per
+  /// session, with the reason the session row holds, to whoever invited
+  /// Parlume or, for an automatic join, whoever turned auto-join on.
+  ///
+  /// Category SYSTEM, always on: the bot is not in the meeting, and only that
+  /// person can fix the link, the settings or the lobby.
+  PARLUME_JOIN_FAILED
+
+  /// A Parlume bot is waiting in its meeting's lobby, and leaves at the time
+  /// the row names unless someone admits it. Sent once per session to the
+  /// same person as PARLUME_JOIN_FAILED. Category SYSTEM, always on.
+  PARLUME_WAITING_IN_LOBBY
+
+  /// A Parlume meeting's notes are ready. Sent once per session
+  /// (`ParlumeMeetingSession.notesNotifiedAt`) to the inviter and the
+  /// internal invitees who may read its transcript, never to a guest. An
+  /// email with the link goes with it. Category PROJECT, gated by the
+  /// `syncProject` toggle.
+  PARLUME_NOTES_READY
 }
 
 model Notification {

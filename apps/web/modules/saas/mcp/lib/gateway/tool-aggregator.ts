@@ -29,7 +29,11 @@ import {
 	unknownServerNamesMessage,
 	unknownToolNamesMessage,
 } from "./server-selection";
-import { scopeSatisfied } from "./tool-scope";
+import {
+	SERVICE_GRANT_MAX_SCOPES,
+	scopeSatisfied,
+	serviceSessionScopes,
+} from "./tool-scope";
 import type {
 	ConnectedServerInfo,
 	GatewaySession,
@@ -124,11 +128,22 @@ export async function getAggregatedTools(
 		const { PLATFORM_TOOL_DEFINITIONS, platformToolScope } = await import(
 			"./platform-tools"
 		);
+		// A meeting's live turn holds reads only, yet proposes the changes it
+		// is asked for, so a session pinned to a project lists what the
+		// ceiling reaches there. A call is still held to the grant's scopes.
+		const pinned = pinnedProjectId(session);
+		const listed =
+			pinned === null
+				? session.scopes
+				: serviceSessionScopes({
+						projectId: pinned,
+						scopes: SERVICE_GRANT_MAX_SCOPES,
+					});
 		const reachable = PLATFORM_TOOL_DEFINITIONS.filter(
 			(tool) =>
 				serviceSessionHasTool(session, tool.name) &&
 				scopeSatisfied(
-					session.scopes,
+					listed,
 					platformToolScope(tool.name),
 					session.credential,
 				),
@@ -136,10 +151,7 @@ export async function getAggregatedTools(
 		return {
 			// A session limited to a meeting's project is offered its portal
 			// and runtime-family tools and no other, whatever its scopes reach.
-			tools:
-				pinnedProjectId(session) === null
-					? reachable
-					: pinnedSessionTools(reachable),
+			tools: pinned === null ? reachable : pinnedSessionTools(reachable),
 			servers: [],
 		};
 	}

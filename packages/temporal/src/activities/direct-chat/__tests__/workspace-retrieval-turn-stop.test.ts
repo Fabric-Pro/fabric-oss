@@ -38,7 +38,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	getRAGProviderConfig: vi.fn().mockResolvedValue({}),
+	getEmbeddingRAGProviderConfig: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock("@repo/rag/lib/workspace-documents/store", () => ({

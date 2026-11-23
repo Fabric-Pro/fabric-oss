@@ -99,8 +99,6 @@ const updateInputSchema = z
 		// External API exposure
 		isApiExposed: z.boolean().optional(),
 		apiConfig: z.any().optional(),
-		/** Parlume meeting turns may use the agent's MCP servers, integrations and workspaces. */
-		meetingExternalTools: z.boolean().optional(),
 		/**
 		 * If true, creates a new version instead of updating in place.
 		 * The old version will be archived, and a new version with incremented
@@ -292,7 +290,6 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 			// External API exposure
 			isApiExposed: input.isApiExposed,
 			apiConfig: input.apiConfig as Prisma.InputJsonValue | undefined,
-			meetingExternalTools: input.meetingExternalTools,
 			// Versioning
 			createNewVersion: input.createNewVersion,
 		});

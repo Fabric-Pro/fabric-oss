@@ -24,7 +24,8 @@ Be concise and direct. Focus on what the agents need to know:
 Respond in this format:
 FEEDBACK: <your clarifying question or confirmation>
 UPDATED_MESSAGE: <the improved request incorporating all context so far>
-READY: <true if the request is clear enough, false if more detail would help>`;
+READY: <true if the request is clear enough, false if more detail would help>
+DECLINED: <true if you will not help with this request at all, false otherwise>`;
 
 export interface RefineResult {
 	feedback: string;
@@ -53,6 +54,14 @@ export function parseRefineResponse(
 		updatedMessage: updatedMessageMatch?.[1]?.trim() || currentMessage,
 		isReady: readyMatch?.[1]?.toLowerCase() === "true",
 	};
+}
+
+/**
+ * Whether a whole reply declines the request, as its `DECLINED:` line says.
+ * A reply without the line is not a refusal.
+ */
+export function isDeclinedRefineReply(text: string): boolean {
+	return /^DECLINED:\s*true\b/im.test(text);
 }
 
 const FEEDBACK_MARKER = "FEEDBACK:";

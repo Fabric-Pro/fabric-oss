@@ -23,16 +23,27 @@ vi.mock("@shared/lib/orpc-client", () => ({
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
-function settings(overrides: { attendee?: object; voice?: object } = {}) {
+function settings(
+	overrides: {
+		attendee?: object;
+		voice?: object;
+		guests?: object;
+		channel?: object;
+	} = {},
+) {
 	return {
 		attendee: {
 			maskedApiKey: "••••1234",
+			hasWebhookSecret: true,
 			baseUrl: null,
 			teamsLoginMode: null,
+			teamsLoginGroup: null,
 			effectiveSource: "organization",
 			...overrides.attendee,
 		},
 		voice: { realtimeDeployment: null, ...overrides.voice },
+		guests: { policy: "NOTES_ONLY", ...overrides.guests },
+		channel: { integrationId: null, connections: [], ...overrides.channel },
 		defaults: {
 			attendeeBaseUrl: "https://app.attendee.dev",
 			realtimeDeployment: "gpt-realtime-2.1",
@@ -103,8 +114,10 @@ describe("MeetingAssistantSettings", () => {
 		expect(mocks.update).toHaveBeenCalledWith({
 			organizationId: "org-1",
 			attendeeApiKey: "",
+			attendeeWebhookSecret: "",
 			attendeeBaseUrl: "https://attendee.example.com",
 			teamsLoginMode: "only_if_required",
+			teamsLoginGroup: null,
 		});
 	});
 
@@ -134,9 +147,113 @@ describe("MeetingAssistantSettings", () => {
 		expect(mocks.update).toHaveBeenCalledWith({
 			organizationId: "org-1",
 			attendeeApiKey: "typed-attendee-key",
+			attendeeWebhookSecret: "",
 			attendeeBaseUrl: "https://attendee.example.com",
 			teamsLoginMode: null,
+			teamsLoginGroup: null,
 		});
+	});
+
+	it("saves the Teams login group a signed-in bot uses, and hides it for an anonymous bot", async () => {
+		const user = userEvent.setup();
+		showSettings();
+		await keyField();
+
+		expect(screen.queryByLabelText("Teams login group")).toBeNull();
+		await user.click(screen.getByLabelText(/^Always sign in/));
+		await user.type(
+			screen.getByLabelText("Teams login group"),
+			"example-org bot",
+		);
+		await user.click(saveButtons()[0]);
+
+		expect(mocks.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				teamsLoginMode: "always",
+				teamsLoginGroup: "example-org bot",
+			}),
+		);
+	});
+
+	it("shows the saved Teams login group", async () => {
+		mocks.get.mockResolvedValue(
+			settings({
+				attendee: {
+					teamsLoginMode: "always",
+					teamsLoginGroup: "example-org bot",
+				},
+			}),
+		);
+		showSettings();
+		await keyField();
+
+		expect(screen.getByLabelText("Teams login group")).toHaveValue(
+			"example-org bot",
+		);
+	});
+
+	it("chooses the shared Microsoft connection Parlume replies in channels with", async () => {
+		const user = userEvent.setup();
+		mocks.get.mockResolvedValue(
+			settings({
+				channel: {
+					integrationId: null,
+					connections: [
+						{
+							id: "shared-1",
+							name: "Microsoft 365",
+							connectedBy: "Dana Admin",
+						},
+					],
+				},
+			}),
+		);
+		showSettings();
+		await keyField();
+
+		expect(
+			screen.getByLabelText(/^The inviter's own Microsoft connection/),
+		).toBeChecked();
+		await user.click(screen.getByLabelText(/^Microsoft 365/));
+		await user.click(saveButtons()[3]);
+
+		expect(mocks.update).toHaveBeenCalledWith({
+			organizationId: "org-1",
+			channelIntegrationId: "shared-1",
+		});
+	});
+
+	it("says how to share a Parlume account when the organization shares none", async () => {
+		showSettings();
+		await keyField();
+
+		expect(
+			screen.getByText(
+				/Your organization shares no Microsoft connection yet/,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("saves a typed webhook secret and never shows the saved one", async () => {
+		const user = userEvent.setup();
+		showSettings();
+		await keyField();
+
+		const field = screen.getByLabelText("Attendee webhook secret");
+		expect(field).toHaveValue("");
+		expect(field).toHaveAttribute("type", "password");
+		expect(field).toHaveAttribute(
+			"placeholder",
+			"Saved. Leave empty to keep it.",
+		);
+
+		const secret = btoa("example-webhook-secret");
+		await user.type(field, secret);
+		await user.click(saveButtons()[0]);
+
+		expect(mocks.update).toHaveBeenCalledWith(
+			expect.objectContaining({ attendeeWebhookSecret: secret }),
+		);
 	});
 
 	it("removes the saved key on request", async () => {
@@ -194,7 +311,7 @@ describe("MeetingAssistantSettings", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it("reports each realtime voice host by name and deployment", async () => {
+	it("reports the realtime deployment by name", async () => {
 		const user = userEvent.setup();
 		mocks.get.mockResolvedValue(
 			settings({ voice: { realtimeDeployment: "example-realtime" } }),
@@ -207,13 +324,6 @@ describe("MeetingAssistantSettings", () => {
 					ok: false,
 					status: 404,
 					message: "Deployment not found",
-				},
-				{
-					provider: "OPENAI_DIRECT",
-					model: "gpt-realtime-2.1",
-					ok: true,
-					status: null,
-					message: null,
 				},
 			],
 		});
@@ -229,11 +339,54 @@ describe("MeetingAssistantSettings", () => {
 				"Azure AI Foundry (example-realtime) refused (HTTP 404: Deployment not found).",
 			),
 		).toBeInTheDocument();
+	});
+
+	it("says Parlume keeps its standard voice until a realtime deployment is named", async () => {
+		const user = userEvent.setup();
+		mocks.testRealtimeVoice.mockResolvedValue({ hosts: [] });
+		showSettings();
+		await keyField();
+
+		await user.click(
+			screen.getByRole("button", { name: "Test realtime voice" }),
+		);
+
 		expect(
-			screen.getByText(
-				"OpenAI (gpt-realtime-2.1): ready for realtime voice.",
+			await screen.findByText(
+				"Parlume uses its standard voice. Name a realtime deployment in your Azure AI Foundry resource to use the realtime voice.",
 			),
 		).toBeInTheDocument();
+	});
+
+	it("saves what Parlume does when a guest is in the meeting", async () => {
+		const user = userEvent.setup();
+		mocks.update.mockResolvedValue(
+			settings({ guests: { policy: "INTERNAL_ONLY" } }),
+		);
+		showSettings();
+		await keyField();
+
+		expect(screen.getByLabelText(/^Notes only/)).toBeChecked();
+		await user.click(screen.getByLabelText(/^Internal meetings only/));
+		await user.click(saveButtons()[2]);
+
+		expect(mocks.update).toHaveBeenCalledWith({
+			organizationId: "org-1",
+			guestPolicy: "INTERNAL_ONLY",
+		});
+	});
+
+	// The bare model name in an empty field read as a deployment already set.
+	it("shows an empty realtime deployment field as an example, not a value", async () => {
+		showSettings();
+		await keyField();
+
+		const field = screen.getByLabelText("Azure realtime deployment");
+		expect(field).toHaveValue("");
+		expect(field).toHaveAttribute(
+			"placeholder",
+			"For example, gpt-realtime-2.1",
+		);
 	});
 
 	it("asks to save a changed deployment name before testing it", async () => {

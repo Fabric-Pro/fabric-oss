@@ -130,7 +130,7 @@ svg.i.s35{width:14px;height:14px}
           <span class="label">What Parlume can do</span>
           <div style="display:flex;gap:8px">
             <div class="radio-card on"><span class="radio on"></span><span style="display:flex;flex-direction:column;gap:2px"><span class="sm medium">Read-only</span><span class="xs muted">Answers questions and looks up information. It cannot make changes.</span></span></div>
-            <div class="radio-card"><span class="radio"></span><span style="display:flex;flex-direction:column;gap:2px"><span class="sm medium">Actions</span><span class="xs muted">Makes the changes attendees ask for, with your permissions, as soon as they ask.</span></span></div>
+            <div class="radio-card"><span class="radio"></span><span style="display:flex;flex-direction:column;gap:2px"><span class="sm medium">Actions</span><span class="xs muted">Proposes the changes attendees ask for. Nothing changes until a project member confirms it in Fabric.</span></span></div>
           </div>
         </div>
       </div>
@@ -149,104 +149,6 @@ svg.i.s35{width:14px;height:14px}
   </div>
 </section>
 
-<!-- ParlumeLiveCard above ParlumeActivityPanel's Requests tab (ParlumeRequestsPanel, ParlumeRequestItem). Synthetic data. -->
-<section id="shot-live" class="shot">
-  <div class="card" style="border-color:color-mix(in srgb,var(--success) 35%,transparent)">
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:24px 24px 20px">
-      <div style="display:flex;align-items:flex-start;gap:14px">
-        <span style="padding-top:8px;display:flex"><span class="dot"></span></span>
-        <div style="display:flex;flex-direction:column;gap:4px">
-          <h3 class="card-title">Live in meeting</h3>
-          <p class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="mono tabular success">31:08</span><span class="muted">Joined 10:02 AM</span></p>
-        </div>
-      </div>
-      <button class="btn btn-outline btn-danger"><svg class="i" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>Remove from meeting</button>
-    </div>
-    <dl style="display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
-      <div style="padding:14px 24px"><dt class="mono-label">Agent</dt><dd class="sm" style="margin-top:2px">Fabric Agent — this project</dd></div>
-      <div style="padding:14px 24px;border-left:1px solid var(--border)"><dt class="mono-label">Mode</dt><dd class="sm" style="margin-top:2px">Actions</dd></div>
-      <div style="padding:14px 24px;border-left:1px solid var(--border)"><dt class="mono-label">Spend so far</dt><dd class="sm tabular" style="margin-top:2px">$0.38</dd><dd class="xs muted" style="margin-top:2px">Bot time is added after the meeting.</dd></div>
-    </dl>
-    <div style="padding:18px 24px 22px;display:flex;flex-direction:column;gap:12px">
-      <div class="row" style="justify-content:space-between">
-        <span class="mono-label">Live activity</span>
-        <span class="xs muted row" style="gap:6px"><svg class="i s35" viewBox="0 0 24 24"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg>Listening for “Hey Fabric”</span>
-      </div>
-      <div style="display:flex;gap:12px">
-        <span class="avatar" style="width:28px;height:28px;font-size:10.5px">P</span>
-        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
-          <div style="display:flex;justify-content:space-between;font-size:13px;line-height:18px"><span class="medium">Priya</span><span class="muted">10:31 AM</span></div>
-          <p class="sm">Hey Parlume, who owns F-142?</p>
-          <p class="muted" style="font-size:13px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Jonas owns F-142. It is in progress, with three of five tasks done.</p>
-        </div>
-      </div>
-      <div style="display:flex;gap:12px">
-        <span class="avatar" style="width:28px;height:28px;font-size:10.5px">J</span>
-        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
-          <div style="display:flex;justify-content:space-between;font-size:13px;line-height:18px"><span class="medium">Jonas</span><span class="muted">10:27 AM</span></div>
-          <p class="sm">put the link to F-142 in the chat</p>
-          <p class="muted" style="font-size:13px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">I've sent the link to F-142 to the meeting chat as P3.</p>
-        </div>
-      </div>
-      <div style="display:flex;gap:12px">
-        <span class="avatar" style="width:28px;height:28px;font-size:10.5px">M</span>
-        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
-          <div style="display:flex;justify-content:space-between;font-size:13px;line-height:18px"><span class="medium">Maya</span><span class="muted">10:24 AM</span></div>
-          <p class="sm">Hey Fabric, create a feature for exporting invoices to CSV.</p>
-          <p class="muted" style="font-size:13px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">I didn't create it because I was interrupted. Reply "go P2" in the chat to do it.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="card" style="margin-top:24px;overflow:hidden">
-    <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border);padding:0 24px">
-      <div style="display:flex;gap:24px;align-items:flex-end">
-        <span class="row muted" style="height:52px;font-size:15px;border-bottom:2px solid transparent;margin-bottom:-1px">Sessions<span class="mono-label tabular" style="margin-left:8px">6</span></span>
-        <span class="row medium" style="height:52px;font-size:15px;border-bottom:2px solid var(--foreground);margin-bottom:-1px">Requests<span class="mono-label tabular" style="margin-left:8px">41</span></span>
-      </div>
-      <button class="btn btn-ghost-icon" style="margin-bottom:10px" aria-label="Refresh"><svg class="i" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>
-    </div>
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--muted) 40%,transparent);padding:14px 24px">
-      <div class="select" style="height:32px;width:300px;font-size:13px;padding:6px 12px"><span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Oct 23, 2026, 10:02 AM · Fabric Agent — this project (live)</span><svg class="i" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div>
-      <div style="display:inline-flex;gap:2px;border-radius:var(--radius-md);background:var(--muted);padding:2px">
-        <span class="row muted" style="height:28px;padding:0 12px;font-size:13px;border:1px solid transparent">All</span>
-        <span class="row muted" style="height:28px;padding:0 12px;font-size:13px;border:1px solid transparent">Questions</span>
-        <span class="row" style="height:28px;padding:0 12px;font-size:13px;border:1px solid var(--border);border-radius:5px;background:var(--card)">Actions</span>
-      </div>
-    </div>
-    <ol style="list-style:none">
-      <li style="display:flex;gap:14px;padding:18px 24px">
-        <span class="avatar" style="width:32px;height:32px;font-size:11px">M</span>
-        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:10px">
-          <div style="display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 12px">
-            <span class="sm medium">Maya</span>
-            <span class="xs muted">Oct 23, 2026, 10:24 AM · Actions</span>
-          </div>
-          <p class="sm" style="line-height:21px">Hey Fabric, create a feature for exporting invoices to CSV.</p>
-          <div style="display:flex;gap:10px">
-            <span class="logo-tile" style="width:20px;height:20px"><img src="../../../apps/web/public/images/fabric-icon-white.svg" alt="" style="width:12px;height:12px"></span>
-            <p class="sm muted" style="line-height:21px">I didn't create it because I was interrupted. Reply "go P2" in the chat to do it.</p>
-          </div>
-          <div style="margin-left:30px;border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;display:flex;flex-direction:column;gap:10px">
-            <div class="row" style="justify-content:space-between">
-              <span class="mono-label row" style="gap:6px"><svg class="i" style="width:13px;height:13px" viewBox="0 0 24 24"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>Action</span>
-              <span class="badge">Cancelled</span>
-            </div>
-            <p class="sm">Create feature “Export invoices to CSV”</p>
-            <ol class="xs muted row" style="list-style:none;gap:6px">
-              <li class="row" style="gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:var(--muted-foreground)"></span>Requested <span class="tabular" style="color:var(--foreground)">10:24 AM</span> <span style="color:var(--border);margin-left:2px">—</span></li>
-              <li class="row" style="gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:var(--muted-foreground)"></span>Finished <span class="tabular" style="color:var(--foreground)">10:24 AM</span></li>
-            </ol>
-            <p style="font-size:13px;line-height:18px">Held before dispatch: the meeting spoke over Parlume. Offered again in the meeting chat.</p>
-            <p class="xs muted">▸ Exact action details</p>
-          </div>
-        </div>
-      </li>
-    </ol>
-  </div>
-</section>
-
 <!-- A neutral meeting chat panel in Fabric's own styling: no meeting-provider branding or chrome. Synthetic data. -->
 <section id="shot-chat" class="shot" style="width:620px">
   <div class="card" style="overflow:hidden">
@@ -255,6 +157,15 @@ svg.i.s35{width:14px;height:14px}
       <span class="mono-label">Atlas Billing · weekly sync</span>
     </div>
     <ol style="list-style:none;padding:8px 0">
+      <li style="display:flex;gap:12px;padding:10px 20px;background:color-mix(in srgb,var(--muted) 55%,transparent)">
+        <span class="logo-tile" style="width:28px;height:28px;border-radius:50%"><img src="../../../apps/web/public/images/fabric-icon-white.svg" alt="" style="width:14px;height:14px"></span>
+        <div style="flex:1;min-width:0">
+          <div class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="medium">Fabric Parlume</span><span class="muted">10:02 AM</span></div>
+          <p class="sm" style="margin-top:2px">[P1] <strong class="medium">Fabric Parlume (AI assistant) is in this meeting</strong></p>
+          <p class="sm">I transcribe the meeting and write notes. I keep transcripts for 90 days, and notes until someone deletes them.</p>
+          <p class="sm">To pause me, say or type "Parlume, pause". <span style="text-decoration:underline;text-underline-offset:3px">Parlume page</span></p>
+        </div>
+      </li>
       <li style="display:flex;gap:12px;padding:10px 20px">
         <span class="avatar" style="width:28px;height:28px;font-size:10.5px">J</span>
         <div style="flex:1;min-width:0">
@@ -266,27 +177,39 @@ svg.i.s35{width:14px;height:14px}
         <span class="logo-tile" style="width:28px;height:28px;border-radius:50%"><img src="../../../apps/web/public/images/fabric-icon-white.svg" alt="" style="width:14px;height:14px"></span>
         <div style="flex:1;min-width:0">
           <div class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="medium">Fabric Parlume</span><span class="muted">10:27 AM</span></div>
-          <p class="sm" style="margin-top:2px">[P3] F-142 · Usage-based invoice line items — <span style="text-decoration:underline;text-underline-offset:3px">https://fabric.example.com/example-org/atlas-billing/F-142</span></p>
+          <p class="sm" style="margin-top:2px">[P2] <span style="text-decoration:underline;text-underline-offset:3px">F-142 · Usage-based invoice line items</span></p>
         </div>
       </li>
       <li style="display:flex;gap:12px;padding:10px 20px">
-        <span class="avatar" style="width:28px;height:28px;font-size:10.5px">P</span>
+        <span class="avatar" style="width:28px;height:28px;font-size:10.5px">M</span>
         <div style="flex:1;min-width:0">
-          <div class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="medium">Priya</span><span class="muted">10:28 AM</span></div>
-          <p class="sm" style="margin-top:2px">say P3</p>
+          <div class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="medium">Maya</span><span class="muted">10:29 AM</span></div>
+          <p class="sm" style="margin-top:2px">@Fabric Parlume create a feature for exporting invoices to CSV</p>
+        </div>
+      </li>
+      <li style="display:flex;gap:12px;padding:10px 20px;background:color-mix(in srgb,var(--muted) 55%,transparent)">
+        <span class="logo-tile" style="width:28px;height:28px;border-radius:50%"><img src="../../../apps/web/public/images/fabric-icon-white.svg" alt="" style="width:14px;height:14px"></span>
+        <div style="flex:1;min-width:0">
+          <div class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="medium">Fabric Parlume</span><span class="muted">10:29 AM</span></div>
+          <p class="sm" style="margin-top:2px">[P3] <strong class="medium">Proposed change</strong> · not made yet</p>
+          <p class="sm">Create feature “Export invoices to CSV” in Atlas Billing</p>
+          <p class="sm">Asked by Maya: “create a feature for exporting invoices to CSV”</p>
+          <p class="sm">Kind: Feature</p>
+          <p class="sm"><span style="text-decoration:underline;text-underline-offset:3px">Confirm in Fabric</span> · <span style="text-decoration:underline;text-underline-offset:3px">Dismiss</span></p>
+          <p class="sm">Only a signed-in project member can confirm. Open for 24 hours.</p>
         </div>
       </li>
       <li style="display:flex;gap:12px;padding:10px 20px;background:color-mix(in srgb,var(--muted) 55%,transparent)">
         <span class="logo-tile" style="width:28px;height:28px;border-radius:50%"><img src="../../../apps/web/public/images/fabric-icon-white.svg" alt="" style="width:14px;height:14px"></span>
         <div style="flex:1;min-width:0">
           <div class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="medium">Fabric Parlume</span><span class="muted">10:33 AM</span></div>
-          <p class="sm" style="margin-top:2px">[P4] Suggestion: F-142 has no acceptance criterion for invoices that span two billing cycles, which Jonas just described. (reply "go P4" and I'll say it)</p>
+          <p class="sm" style="margin-top:2px">[P4] Suggestion on billing cycles, re Jonas: "invoices that span two billing cycles". F-142 has no acceptance criterion for them. (reply "go P4" and I'll say it)</p>
         </div>
       </li>
       <li style="display:flex;gap:12px;padding:10px 20px">
-        <span class="avatar" style="width:28px;height:28px;font-size:10.5px">M</span>
+        <span class="avatar" style="width:28px;height:28px;font-size:10.5px">P</span>
         <div style="flex:1;min-width:0">
-          <div class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="medium">Maya</span><span class="muted">10:33 AM</span></div>
+          <div class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="medium">Priya</span><span class="muted">10:33 AM</span></div>
           <p class="sm" style="margin-top:2px">go P4</p>
         </div>
       </li>

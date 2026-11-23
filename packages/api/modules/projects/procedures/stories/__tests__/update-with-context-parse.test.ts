@@ -442,3 +442,39 @@ describe("parseUpdatedDocument — a reworded acceptance heading is not a deleti
 		expect(parsed.acceptanceCriteria).toBeUndefined();
 	});
 });
+
+describe("parseUpdatedDocument — a heading-shaped line in a code fence is code", () => {
+	it("splits at the real heading, not at one inside a fence", () => {
+		const code = "```md\n## Acceptance Criteria\n- in the snippet\n```";
+		const doc = `## Description\n\nExample:\n\n${code}\n\n## Acceptance Criteria\n\n- AC 1`;
+
+		const parsed = parseUpdatedDocument(doc, true);
+
+		expect(parsed).toEqual({
+			description: `Example:\n\n${code}`,
+			acceptanceCriteria: "- AC 1",
+		});
+	});
+
+	it("takes a demoted heading below a nested-list fence, not the fenced line", () => {
+		const doc = [
+			"## Description",
+			"",
+			"- Step",
+			"    - Nested",
+			"",
+			"        ```bash",
+			"        # Acceptance check",
+			"        ```",
+			"",
+			"### Acceptance Criteria",
+			"",
+			"- AC 1",
+		].join("\n");
+
+		const parsed = parseUpdatedDocument(doc, true);
+
+		expect(parsed.acceptanceCriteria).toBe("- AC 1");
+		expect(parsed.description).toContain("# Acceptance check");
+	});
+});

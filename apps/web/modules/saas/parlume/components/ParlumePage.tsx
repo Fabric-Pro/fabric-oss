@@ -7,21 +7,25 @@ import {
 	useQueryClient,
 } from "@tanstack/react-query";
 import { Card } from "@ui/components/card";
-import { useMemo, useState } from "react";
-import { isLiveSession } from "../lib/parlume-format";
+import { useEffect, useMemo, useState } from "react";
+import { isLiveSession, isSessionChanging } from "../lib/parlume-format";
 import {
 	LIVE_ACTIVITY_QUERY_KEY,
 	SESSIONS_QUERY_KEY,
 	USAGE_QUERY_KEY,
 } from "../lib/query-keys";
 import { ParlumeActivityPanel } from "./ParlumeActivityPanel";
+import { ParlumeAskComposer } from "./ParlumeAskComposer";
+import { ParlumeConfidentialControl } from "./ParlumeConfidentialControl";
 import { ParlumeHowItWorks } from "./ParlumeHowItWorks";
 import { ParlumeInviteCard } from "./ParlumeInviteCard";
 import { ParlumeJoiningCard } from "./ParlumeJoiningCard";
 import { ParlumeLiveCard } from "./ParlumeLiveCard";
+import { ParlumeLiveTranscript } from "./ParlumeLiveTranscript";
 import { ParlumeLockedCard } from "./ParlumeLockedCard";
 import { ParlumeSpendCard } from "./ParlumeSpendCard";
 import { ParlumeSuggestionsList } from "./ParlumeSuggestionsList";
+import { ParlumeVoiceControls } from "./ParlumeVoiceControls";
 
 const POLL_MS = 10_000;
 
@@ -30,6 +34,7 @@ export function ParlumePage({
 	projectBasePath,
 	settingsBasePath,
 	canEdit,
+	canAct = false,
 }: {
 	projectId: string;
 	/** `/app/{org}/projects/{id}`, where a session's transcript lives under `/contexts`. */
@@ -37,8 +42,20 @@ export function ParlumePage({
 	/** `/app/{org}/settings`, where a missing setup item is fixed. */
 	settingsBasePath: string;
 	canEdit: boolean;
+	/**
+	 * A project member (PROJECT_UPDATE), not a viewer: may ask Parlume on this
+	 * page and use a suggestion's buttons, as the procedures require.
+	 */
+	canAct?: boolean;
 }) {
 	const queryClient = useQueryClient();
+	// A "Say it" link in the meeting chat opens the page on `?suggestion=P3`.
+	const [highlightTag, setHighlightTag] = useState<string | null>(null);
+	useEffect(() => {
+		setHighlightTag(
+			new URLSearchParams(window.location.search).get("suggestion"),
+		);
+	}, []);
 	const [stoppingSessionId, setStoppingSessionId] = useState<string | null>(
 		null,
 	);
@@ -58,10 +75,16 @@ export function ParlumePage({
 			}),
 		getNextPageParam: (page) => page.nextCursor ?? undefined,
 		retry: false,
-		refetchInterval: (query) =>
-			query.state.data?.pages[0]?.sessions.some(isLiveSession)
+		// Also while notes are being written, so new notes appear without a
+		// reload.
+		refetchInterval: (query) => {
+			const now = Date.now();
+			return query.state.data?.pages[0]?.sessions.some((session) =>
+				isSessionChanging(session, now),
+			)
 				? POLL_MS
-				: false,
+				: false;
+		},
 	});
 	const sessions =
 		sessionsQuery.data?.pages.flatMap((page) => page.sessions) ?? [];
@@ -162,6 +185,19 @@ export function ParlumePage({
 								canStop={canEdit}
 								isStopping={isStopping(liveSession.id)}
 								onStop={stop}
+								voiceControls={
+									<>
+										<ParlumeVoiceControls
+											projectId={projectId}
+											session={liveSession}
+										/>
+										<ParlumeConfidentialControl
+											projectId={projectId}
+											session={liveSession}
+											className="px-6 pb-5"
+										/>
+									</>
+								}
 							/>
 						) : (
 							<ParlumeJoiningCard
@@ -179,6 +215,14 @@ export function ParlumePage({
 					) : (
 						<ParlumeLockedCard />
 					)}
+					{liveSession?.joinedAt && canAct && (
+						<ParlumeAskComposer
+							projectId={projectId}
+							sessionId={liveSession.id}
+							projectBasePath={projectBasePath}
+							requests={liveActivityQuery.data?.items ?? []}
+						/>
+					)}
 					{liveSession?.joinedAt &&
 						liveSession.suggestionsEnabled && (
 							<Card className="p-6">
@@ -187,9 +231,26 @@ export function ParlumePage({
 									sessionId={liveSession.id}
 									refetchInterval={POLL_MS}
 									variant="card"
+									controls={
+										canAct &&
+										liveSession.status === "ACTIVE"
+											? {
+													guestsPresent:
+														liveSession.guestsPresent,
+													highlightTag,
+												}
+											: null
+									}
 								/>
 							</Card>
 						)}
+					{liveSession?.joinedAt && liveSession.canReadTranscript && (
+						<ParlumeLiveTranscript
+							projectId={projectId}
+							sessionId={liveSession.id}
+							refetchInterval={POLL_MS}
+						/>
+					)}
 					<ParlumeActivityPanel
 						projectId={projectId}
 						projectBasePath={projectBasePath}

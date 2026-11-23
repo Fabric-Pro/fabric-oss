@@ -65,14 +65,13 @@ export function buildProjectKnowledgeSearchQuery(
 		CASE WHEN jsonb_typeof(c.metadata->'sourceTitle') = 'string' THEN NULLIF(c.metadata->>'sourceTitle', '') END,
 		CASE WHEN jsonb_typeof(c.metadata->'filename') = 'string' THEN NULLIF(c.metadata->>'filename', '') END,
 		NULLIF(c."originalFilename", ''), 'Untitled context')`;
-	// A confidential series' transcripts, synced or from Parlume, stay out of
-	// later answers.
+	// A confidential series' synced transcripts, and every Parlume transcript,
+	// stay out of later answers.
 	const notConfidentialTranscript = Prisma.sql`AND NOT EXISTS (SELECT 1 FROM project_meeting_transcript t
      JOIN project_linked_meeting l ON l.id = t."linkedMeetingId"
      WHERE t."contextId" = c.id AND l.confidential)
     AND NOT EXISTS (SELECT 1 FROM parlume_meeting_session s
-     JOIN project_linked_meeting l ON l.id = s."linkedMeetingId"
-     WHERE s."transcriptContextId" = c.id AND l.confidential)`;
+     WHERE s."transcriptContextId" = c.id)`;
 	const continuation = after
 		? Prisma.sql`AND (rank < ${after.rank}::integer OR
     (rank = ${after.rank}::integer AND ("sourceKind" COLLATE "C", "sourceId" COLLATE "C") >

@@ -62,6 +62,7 @@ const builtIn = {
 };
 const input = {
 	session,
+	requesterUserId: "user",
 	turnId: "turn",
 	message: "Question",
 	voiceInstructions: "Voice",
@@ -117,6 +118,7 @@ describe("Parlume agent timing", () => {
 			builtIn,
 			session,
 			"Question",
+			"user",
 		);
 		await executeParlumeAgent({ ...input, agent: builtIn, gathered });
 		expect(mocks.workspaceKnowledge).toHaveBeenCalledTimes(1);

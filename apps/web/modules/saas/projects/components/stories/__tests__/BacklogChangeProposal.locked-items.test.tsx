@@ -4,7 +4,7 @@
  * Features only, and nothing is drafted while it is in review.
  */
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { orpcClient } from "../../../../../shared/lib/orpc-client";
@@ -13,6 +13,7 @@ import {
 	type ChangeItem,
 } from "../BacklogChangeProposal";
 import type { LockedReason } from "../proposal-item-state";
+import { renderWithQueryClient } from "./render-with-query-client";
 
 vi.mock("../../../../../shared/lib/orpc-client", () => ({
 	orpcClient: {
@@ -55,7 +56,7 @@ function renderBatch(
 	props: Partial<Parameters<typeof BacklogChangeProposal>[0]> = {},
 ) {
 	const onApprove = vi.fn();
-	render(
+	renderWithQueryClient(
 		<BacklogChangeProposal
 			summary="Recommended features"
 			contextSummary="From project context"

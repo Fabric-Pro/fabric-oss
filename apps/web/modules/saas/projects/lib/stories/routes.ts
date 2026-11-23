@@ -167,6 +167,23 @@ export function buildStoryQaRoute(
 	return `${buildStoryDetailsRoute(basePath, projectId, storyId)}?${STORY_TAB_PARAM}=${STORY_TAB_QA}`;
 }
 
+const STORY_TAB_CLEAN_SPEC = "cleanSpec";
+
+/**
+ * Build the route that opens a work item on its specification editor, where
+ * a proposed update from the Proposal Inbox is reviewed line by line.
+ *
+ * Without Maturation V2 the editor is always shown and the param finds no
+ * tab to select, so the user lands on the same editor.
+ */
+export function buildStoryCleanSpecRoute(
+	basePath: string,
+	projectId: string,
+	storyId: string,
+): string {
+	return `${buildStoryDetailsRoute(basePath, projectId, storyId)}?${STORY_TAB_PARAM}=${STORY_TAB_CLEAN_SPEC}`;
+}
+
 /**
  * Query param addressing a backlog proposal. Proposals live in a drawer on the
  * Roadmap with no route of their own, so this is how a link elsewhere in the

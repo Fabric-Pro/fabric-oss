@@ -88,7 +88,10 @@ export interface DeepResearcherInput {
 	knowledgeSources?: string[];
 	/** Workspace IDs for RAG document retrieval */
 	workspaceIds?: string[];
-	/** Project ID for RAG context scoping */
+	/**
+	 * The project the run belongs to, verified at admission: every model
+	 * call checks its usage limits and counts its usage.
+	 */
 	projectId?: string;
 	/** Reasoning effort level */
 	reasoningEffort?: "none" | "light" | "medium" | "high";
@@ -401,6 +404,7 @@ export async function deepResearcherWorkflow(
 			context: input.context,
 			userId: input.userId,
 			organizationId: input.organizationId,
+			projectId: input.projectId,
 		});
 
 		state.complexity = complexityResult.complexity;
@@ -467,6 +471,7 @@ export async function deepResearcherWorkflow(
 						context: input.context,
 						userId: input.userId,
 						organizationId: input.organizationId,
+						projectId: input.projectId,
 					});
 
 				if (clarificationCheck.needsClarification) {
@@ -533,6 +538,7 @@ export async function deepResearcherWorkflow(
 			maxSubTasks: maxSubAgents,
 			userId: input.userId,
 			organizationId: input.organizationId,
+			projectId: input.projectId,
 		});
 
 		state.subTasks = decompositionResult.subTasks;
@@ -626,6 +632,7 @@ export async function deepResearcherWorkflow(
 					context: input.context,
 					userId: input.userId,
 					organizationId: input.organizationId,
+					projectId: input.projectId,
 				});
 
 			state.aggregatedResult = aggregationResult.synthesizedResult;
@@ -648,6 +655,7 @@ export async function deepResearcherWorkflow(
 						"Has the research question been comprehensively answered with evidence from multiple sources?",
 					userId: input.userId,
 					organizationId: input.organizationId,
+					projectId: input.projectId,
 				});
 
 			state.goalAchieved = evaluationResult.goalAchieved;
@@ -679,6 +687,7 @@ export async function deepResearcherWorkflow(
 							feedback: evaluationResult.feedback,
 							userId: input.userId,
 							organizationId: input.organizationId,
+							projectId: input.projectId,
 						});
 					state.subTasks = refinedTasks.subTasks;
 				}

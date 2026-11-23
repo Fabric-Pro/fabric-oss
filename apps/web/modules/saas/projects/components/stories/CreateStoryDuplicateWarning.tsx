@@ -34,6 +34,7 @@ import {
 import type { PendingDocAttachment } from "../../lib/text-attachment-validation";
 import { ProposalDiffField } from "./ProposalDiffField";
 import {
+	matchKey,
 	type ProposalInboxMatch,
 	ProposalInboxMatches,
 } from "./ProposalInboxMatches";
@@ -66,6 +67,9 @@ export type CheckDuplicateResult = {
 	error?: string;
 	/** Similar unreviewed Proposal Inbox items (absent from older servers). */
 	proposalMatches?: ProposalInboxMatch[];
+	/** Inbox candidates a typing prefetch left for the final check to
+	 * verify (absent from older servers). */
+	unverifiedProposalMatches?: number;
 };
 
 /** What this step renders: a matched work item ("enrich"), similar Proposal
@@ -187,6 +191,13 @@ export function CreateStoryDuplicateWarning({
 	const storyResult = result.decision === "enrich" ? result : null;
 	const alternatives = storyResult?.alternatives ?? [];
 	const proposalMatches = result.proposalMatches ?? [];
+	// Inbox matches the person moved to Rejected from this step.
+	const [rejectedMatchKeys, setRejectedMatchKeys] = useState<
+		ReadonlySet<string>
+	>(() => new Set());
+	const remainingMatches = proposalMatches.filter(
+		(match) => !rejectedMatchKeys.has(matchKey(match)),
+	);
 	const [selectedStoryId, setSelectedStoryId] = useState(
 		storyResult?.matchedStoryId ?? alternatives[0]?.storyId,
 	);
@@ -243,13 +254,18 @@ export function CreateStoryDuplicateWarning({
 	const inboxMatches =
 		proposalMatches.length > 0 ? (
 			<ProposalInboxMatches
-				matches={proposalMatches}
+				matches={remainingMatches}
 				projectId={projectId}
 				organizationId={organizationId}
 				description={description}
 				hasAttachments={hasAttachments}
 				disabled={confirmMutation.isPending}
 				onMerged={onMergedIntoProposal}
+				onRejected={(match) =>
+					setRejectedMatchKeys((prev) =>
+						new Set(prev).add(matchKey(match)),
+					)
+				}
 			/>
 		) : null;
 
@@ -265,13 +281,15 @@ export function CreateStoryDuplicateWarning({
 				tabIndex={-1}
 				className="space-y-4 outline-none"
 			>
-				<Alert variant="warning">
-					<AlertTriangleIcon aria-hidden="true" />
-					<AlertTitle>{t("inboxOnlyTitle")}</AlertTitle>
-					<AlertDescription>
-						<p>{t("inboxOnlyBody")}</p>
-					</AlertDescription>
-				</Alert>
+				{remainingMatches.length > 0 && (
+					<Alert variant="warning">
+						<AlertTriangleIcon aria-hidden="true" />
+						<AlertTitle>{t("inboxOnlyTitle")}</AlertTitle>
+						<AlertDescription>
+							<p>{t("inboxOnlyBody")}</p>
+						</AlertDescription>
+					</Alert>
+				)}
 				{inboxMatches}
 				<div className="flex flex-wrap justify-end gap-2">
 					<Button type="button" variant="ghost" onClick={onBack}>

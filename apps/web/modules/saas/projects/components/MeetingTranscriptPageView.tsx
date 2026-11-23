@@ -25,6 +25,17 @@ import remarkGfm from "remark-gfm";
 import { TranscriptDeepLinkHighlighter } from "./TranscriptDeepLinkHighlighter";
 
 /**
+ * A transcript is line by line: one speaker turn per line. Markdown joins
+ * lines that a blank line does not separate into one paragraph, so each
+ * line break is kept as one.
+ */
+function withLineBreaks(content: string): string {
+	return content
+		.replace(/\r\n/g, "\n")
+		.replace(/([^\n])\n(?=[^\n])/g, "$1  \n");
+}
+
+/**
  * Plain-JSON view model fed by the server route. Defined here so the server
  * page can pass plain props without dragging Prisma types across the
  * server/client boundary.
@@ -39,6 +50,8 @@ export type MeetingTranscriptViewData = {
 	speakerNames: string[];
 	wasSummarized: boolean;
 	content: string;
+	/** Why the transcript is not shown: a Parlume meeting's, to a reader who was not in it, or deleted. */
+	withheldReason?: string | null;
 	/** ISO string. */
 	syncedAt: string;
 };
@@ -235,7 +248,7 @@ export function MeetingTranscriptPageView({ transcript, backHref }: Props) {
 							data-testid="meeting-transcript-markdown"
 						>
 							<ReactMarkdown remarkPlugins={[remarkGfm]}>
-								{transcript.content}
+								{withLineBreaks(transcript.content)}
 							</ReactMarkdown>
 							{/* #1896: scroll to + highlight the line named by a
 							    `#t-<line>` deep link (e.g. the digest's "Open
@@ -253,7 +266,8 @@ export function MeetingTranscriptPageView({ transcript, backHref }: Props) {
 								Transcript content is unavailable.
 							</p>
 							<p className="mt-1 text-xs">
-								The stored transcript body could not be loaded.
+								{transcript.withheldReason ??
+									"The stored transcript body could not be loaded."}
 							</p>
 						</div>
 					)}

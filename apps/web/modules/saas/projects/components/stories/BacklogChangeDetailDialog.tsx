@@ -1,5 +1,6 @@
 "use client";
 
+import type { UpdateBodies } from "@repo/utils/proposal-update-edits";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -39,15 +40,9 @@ import {
 	DetailKindSelector,
 	DetailReadOnlyKindBadge,
 } from "./DetailKindControls";
+import { itemApproveLabel } from "./ProposalItemActions";
 import { TargetChangedNote } from "./ProposalItemNotes";
-import { LineReviewSection } from "./ProposalLineReview";
 import { ProposalUpdateSummary } from "./ProposalUpdateSummary";
-import {
-	type LineDecisions,
-	type LineReviewField,
-	lineReviewAvailability,
-	rejectsEveryChange,
-} from "./proposal-line-review";
 import { StoryNewTabLink } from "./StoryNewTabLink";
 
 /**
@@ -63,19 +58,11 @@ export type DetailItemDecision = {
 	/** A proposal action is in flight. */
 	busy: boolean;
 	/**
-	 * Offers line-by-line review on an update: apply only the accepted
-	 * changes, or, when every change was rejected, reject the item and note
-	 * that on its target ticket.
+	 * Offers line-by-line review on an update: opens its target ticket with
+	 * the changes pending there, where only the accepted ones are applied.
 	 */
-	lineReview?: {
-		onApplyReviewed: (decisions: LineDecisions) => void;
-		onRejectAll: () => void;
-	};
-	/** Why line-by-line review is off for this update, if it is. */
-	lineReviewBlockedReason?: string | null;
+	onReviewOnTicket?: () => void;
 };
-
-const NO_HUNKS: ReadonlySet<number> = new Set();
 
 /** An item already applied or moved to Rejected, with its ticket if known. */
 export type DetailItemResolution = {
@@ -176,10 +163,13 @@ type Props = {
 	panel?: BacklogProposalPanel;
 	itemDecision?: DetailItemDecision;
 	resolution?: DetailItemResolution;
-	/** Open an update in line-by-line review ("Review line by line"). */
-	initialLineReview?: boolean;
 	/** The update's ticket changed after the proposal was made. */
 	targetChanged?: boolean;
+	/**
+	 * The update's ticket bodies as they are now, when its body has no
+	 * `from`: the summary counts its change against them.
+	 */
+	targetBodies?: UpdateBodies;
 };
 
 /**
@@ -213,8 +203,8 @@ export function BacklogChangeDetailDialog({
 	panel,
 	itemDecision,
 	resolution,
-	initialLineReview = false,
 	targetChanged = false,
+	targetBodies,
 }: Props) {
 	const showKindSelector =
 		change.action === "create" &&
@@ -252,40 +242,18 @@ export function BacklogChangeDetailDialog({
 		bodyRef.current?.scrollTo({ top: 0, behavior: "auto" });
 	}, [index]);
 
-	// Line-by-line review: offered on an update the reviewer can commit
-	// here. Its per-change decisions belong to one item, so they reset when
-	// Prev / Next opens another.
+	// Line-by-line review of an update the reviewer can commit here happens
+	// on its ticket, the same review the AI assistant's edits get.
 	const isUpdate = change.action === "update";
-	const lineReview = isUpdate ? itemDecision?.lineReview : undefined;
-	const lineReviewBlockedReason = isUpdate
-		? (itemDecision?.lineReviewBlockedReason ?? null)
-		: null;
-	const lineReviewReasonId = useId();
-	const [lineReviewOn, setLineReviewOn] = useState(initialLineReview);
-	const thorough = lineReviewOn && lineReview !== undefined;
-	const [lineDecisions, setLineDecisions] = useState<LineDecisions>({});
-	useEffect(() => {
-		setLineDecisions({});
-	}, [index]);
-	const toggleHunk = (field: LineReviewField, id: number) =>
-		setLineDecisions((prev) => {
-			const next = new Set(prev[field]);
-			if (next.has(id)) {
-				next.delete(id);
-			} else {
-				next.add(id);
-			}
-			return { ...prev, [field]: next };
-		});
-	const restoreHunks = (field: LineReviewField) =>
-		setLineDecisions((prev) => ({ ...prev, [field]: new Set<number>() }));
-	const rejectsAll =
-		thorough && rejectsEveryChange(change, skippedFields, lineDecisions);
-	const approveLabel = thorough
-		? "Apply approved changes"
-		: lineReview
-			? "Apply all changes"
-			: "Approve";
+	const onReviewOnTicket = isUpdate
+		? itemDecision?.onReviewOnTicket
+		: undefined;
+	const approveLabel = itemApproveLabel(
+		change,
+		onReviewOnTicket !== undefined,
+		skippedFields,
+	);
+	const lineReviewHintId = useId();
 
 	// Count-up elapsed counter for the drafting banner. Ticks every 1s while a
 	// draft is in flight; derived from the SERVER `draftStartedAt` so it reads
@@ -474,9 +442,15 @@ export function BacklogChangeDetailDialog({
 								<span className="font-medium">
 									{selectedKind === "BUG" ? "Bug" : "Feature"}
 								</span>{" "}
-								through your project's prompt — generated once
-								and shared with your team. This can take up to a
-								minute.
+								through your project's prompt
+								{/* Only the server-persisted draft (it carries a
+								    status) is stored and shared; any other row's
+								    draft lives in this session and is drafted
+								    again after a reload. */}
+								{draftStatus
+									? " — generated once and shared with your team."
+									: "."}{" "}
+								This can take up to a minute.
 								{elapsedLabel ? (
 									<span className="ml-1.5 font-medium tabular-nums text-primary">
 										{elapsedLabel}
@@ -580,6 +554,7 @@ export function BacklogChangeDetailDialog({
 					{isUpdate && (
 						<ProposalUpdateSummary
 							change={change}
+							current={targetBodies}
 							applied={
 								resolution && !resolution.rejected
 									? {
@@ -591,15 +566,19 @@ export function BacklogChangeDetailDialog({
 							panel={panel}
 						/>
 					)}
-					{lineReviewBlockedReason && (
+					{onReviewOnTicket && (
 						<div className="flex flex-wrap items-center gap-2">
 							<Button
 								type="button"
 								variant="outline"
 								size="sm"
 								className="h-7 shrink-0"
-								disabled
-								aria-describedby={lineReviewReasonId}
+								onClick={onReviewOnTicket}
+								disabled={
+									itemDecision?.busy ||
+									decisionBlockedReason !== null
+								}
+								aria-describedby={lineReviewHintId}
 							>
 								<ListChecksIcon
 									className="mr-1.5 size-3.5"
@@ -608,36 +587,13 @@ export function BacklogChangeDetailDialog({
 								Review line by line
 							</Button>
 							<p
-								id={lineReviewReasonId}
+								id={lineReviewHintId}
 								className="text-xs text-muted-foreground"
 							>
-								{lineReviewBlockedReason}
+								Opens the ticket with each change marked. Accept
+								or reject them there; only accepted changes are
+								applied.
 							</p>
-						</div>
-					)}
-					{lineReview && (
-						<div className="flex flex-wrap items-center gap-2">
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								className="h-7 shrink-0"
-								onClick={() => setLineReviewOn((on) => !on)}
-							>
-								<ListChecksIcon
-									className="mr-1.5 size-3.5"
-									aria-hidden="true"
-								/>
-								{thorough
-									? "Back to whole-field review"
-									: "Review line by line"}
-							</Button>
-							{thorough && (
-								<p className="text-xs text-muted-foreground">
-									Accept or reject each change. Only accepted
-									changes are applied.
-								</p>
-							)}
 						</div>
 					)}
 
@@ -661,8 +617,7 @@ export function BacklogChangeDetailDialog({
 
 					{/* Description, then acceptance criteria — typically the
 					    longest field; the one that hurt most under the old
-					    line-clamp-2. In line-by-line review each changed
-					    region gets its own decision. */}
+					    line-clamp-2. */}
 					{(
 						[
 							["description", "Description"],
@@ -673,38 +628,8 @@ export function BacklogChangeDetailDialog({
 						if (value === undefined) {
 							return null;
 						}
-						const availability = lineReviewAvailability(
-							change,
-							field,
-						);
-						if (thorough && availability.kind === "available") {
-							return (
-								<LineReviewSection
-									key={field}
-									label={label}
-									from={availability.from}
-									to={availability.to}
-									rejectedHunks={
-										lineDecisions[field] ?? NO_HUNKS
-									}
-									onToggleHunk={(id) => toggleHunk(field, id)}
-									fieldRejected={skippedFields.has(field)}
-									onToggleField={() => onToggleField(field)}
-									onRestoreHunks={() => restoreHunks(field)}
-								/>
-							);
-						}
 						return (
 							<div key={field} className="space-y-2">
-								{thorough &&
-									availability.kind === "merged-at-apply" && (
-										<p className="text-xs text-muted-foreground">
-											{label} can't be reviewed line by
-											line: it is merged into the ticket
-											when you apply. Accept or reject it
-											as a whole.
-										</p>
-									)}
 								<DetailDiffSection
 									label={label}
 									from={value.from}
@@ -858,49 +783,28 @@ export function BacklogChangeDetailDialog({
 									<ArchiveIcon className="mr-1 size-4" />
 									Move to Rejected
 								</Button>
-								{thorough && lineReview && rejectsAll ? (
-									<Button
-										size="sm"
-										variant="outline"
-										onClick={lineReview.onRejectAll}
-										disabled={itemDecision.busy}
-										aria-label={`Reject all changes to ${change.title.to}`}
-										className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-									>
-										<XIcon className="mr-1 size-4" />
-										Reject all changes
-									</Button>
-								) : (
-									<Button
-										size="sm"
-										onClick={
-											thorough && lineReview
-												? () =>
-														lineReview.onApplyReviewed(
-															lineDecisions,
-														)
-												: itemDecision.onApprove
-										}
-										disabled={
-											itemDecision.busy ||
-											decisionBlockedReason !== null
-										}
-										aria-label={
-											lineReview
-												? `${approveLabel} to ${change.title.to}`
-												: `Approve ${change.title.to}`
-										}
-										aria-describedby={
-											decisionBlockedReason
-												? approveReasonId
-												: undefined
-										}
-										className="bg-success text-success-foreground hover:bg-success/90"
-									>
-										<CheckIcon className="mr-1 size-4" />
-										{approveLabel}
-									</Button>
-								)}
+								<Button
+									size="sm"
+									onClick={itemDecision.onApprove}
+									disabled={
+										itemDecision.busy ||
+										decisionBlockedReason !== null
+									}
+									aria-label={
+										approveLabel === "Approve"
+											? `Approve ${change.title.to}`
+											: `${approveLabel} to ${change.title.to}`
+									}
+									aria-describedby={
+										decisionBlockedReason
+											? approveReasonId
+											: undefined
+									}
+									className="bg-success text-success-foreground hover:bg-success/90"
+								>
+									<CheckIcon className="mr-1 size-4" />
+									{approveLabel}
+								</Button>
 							</>
 						) : isSelected ? (
 							<Button

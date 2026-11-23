@@ -39,6 +39,13 @@ export function isIntentionalAbortRunError(error: AgUiRunError): boolean {
 }
 
 /**
+ * The RUN_ERROR code of a run the model declined (a content filter or
+ * safety refusal). The surface that ran it reports the decline, so it is
+ * not a failure to toast.
+ */
+export const DECLINED_RUN_ERROR_CODE = "RUN_DECLINED";
+
+/**
  * How long a run may send **nothing at all** before the user is told.
  *
  * Deliberately a gap between frames rather than a cap on total duration. A long

@@ -827,6 +827,75 @@ describe("/api/fabric-kanban/queue", () => {
 	});
 });
 
+/**
+ * An organization role alone does not open a project, and a caller who cannot
+ * open a project must not act on it through Kanban either. The resolver still
+ * grants the organization member its role's permissions; `isVisible: false`
+ * is what refuses them.
+ */
+describe("Kanban — an organization member who cannot open the project", () => {
+	beforeEach(() => {
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: organizationKey.organizationId,
+			isVisible: false,
+			permissions: ["story:read", "story:update"],
+			source: "org",
+		});
+	});
+
+	it("does not list the project's queue", async () => {
+		const response = await listQueue(
+			request(
+				"/api/fabric-kanban/queue?repoUrl=https://example.com/example/project",
+			),
+		);
+
+		expect(response.status).toBe(404);
+		expect(mocks.queueFindMany).not.toHaveBeenCalled();
+	});
+
+	it("cannot pull the project's items", async () => {
+		const response = await pullQueue(
+			request("/api/fabric-kanban/queue", {
+				body: { itemIds: [queueItem.id] },
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		expect(mocks.queueUpdateMany).not.toHaveBeenCalled();
+	});
+
+	it("cannot complete the project's items", async () => {
+		const response = await complete(
+			request("/api/fabric-kanban/complete", {
+				body: { queueItemId: queueItem.id, branchName: "fix/example" },
+			}),
+		);
+
+		expect(response.status).toBe(403);
+		expect(mocks.queueUpdate).not.toHaveBeenCalled();
+		expect(mocks.queueUpdateMany).not.toHaveBeenCalled();
+	});
+
+	it("the project's creator, with the same organization role, can complete them", async () => {
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: organizationKey.organizationId,
+			isVisible: true,
+			permissions: ["story:read", "story:update"],
+			source: "org",
+		});
+
+		const response = await complete(
+			request("/api/fabric-kanban/complete", {
+				body: { queueItemId: queueItem.id, branchName: "fix/example" },
+			}),
+		);
+
+		expect(response.status).toBe(200);
+		expect(mocks.queueUpdateMany).toHaveBeenCalled();
+	});
+});
+
 describe("GET /api/fabric-kanban/me", () => {
 	it("does not accept a valid launch token", async () => {
 		useLaunchToken();

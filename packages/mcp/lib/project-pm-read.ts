@@ -49,7 +49,7 @@ export async function resolveProjectPmRead(args: {
 		return {
 			status: "not_configured" as const,
 			message:
-				"Configure project management in this Fabric project's Development settings.",
+				"Configure project management in this Fabric project's Project Management settings.",
 		};
 	}
 	const refusal = await checkMcpConfigOrganizationAccess({
@@ -89,7 +89,7 @@ export async function resolveProjectPmRead(args: {
 		return {
 			status: "not_connected" as const,
 			message:
-				"Connect to the Azure DevOps organization selected in this project's Development settings. Reselect its project if the original connection was removed.",
+				"Connect to the Azure DevOps organization selected in this project's Project Management settings. Reselect its project if the original connection was removed.",
 		};
 	}
 	let config: Awaited<ReturnType<typeof resolveProjectPMConfigForUser>>;
@@ -141,7 +141,7 @@ export async function resolveProjectPmRead(args: {
 		return {
 			status: "not_connected" as const,
 			message:
-				"Connect to the Azure DevOps organization selected in this project's Development settings. Reselect its project if the original connection was removed.",
+				"Connect to the Azure DevOps organization selected in this project's Project Management settings. Reselect its project if the original connection was removed.",
 		};
 	}
 	const pat = resolveAdoPat(config.encryptedApiKey);

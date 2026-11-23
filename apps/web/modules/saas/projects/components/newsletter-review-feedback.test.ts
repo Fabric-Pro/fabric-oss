@@ -214,6 +214,23 @@ describe("describeImageFailure", () => {
 		).toEqual({ level: "error", message, refresh: false });
 	});
 
+	it("a readiness gate shows its own reason", () => {
+		const message =
+			"Generate release notes is not ready yet. It needs a connected repository.";
+		expect(
+			describeImageFailure(
+				new OrpcErrorLike("PRECONDITION_FAILED", message),
+			),
+		).toEqual({ level: "error", message, refresh: false });
+	});
+
+	it("a readiness gate without a message gets the generic retry copy", () => {
+		expect(
+			describeImageFailure(new OrpcErrorLike("PRECONDITION_FAILED", ""))
+				.message,
+		).toBe("Could not save the image. Try again.");
+	});
+
 	it.each([
 		{
 			name: "an unknown data code",

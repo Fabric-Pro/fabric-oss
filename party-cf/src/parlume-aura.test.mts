@@ -206,6 +206,7 @@ test("reports the first sentence as failed when Aura answers with an error", asy
 		sentences: source("One.", "Two."),
 		outlet: sink,
 		isCurrent: () => true,
+		retryMs: 1,
 	});
 
 	assert.equal(result.complete, false);
@@ -215,24 +216,51 @@ test("reports the first sentence as failed when Aura answers with an error", asy
 	assert.ok(!sink.events.includes("drained"), "does not wait for a drain");
 });
 
-test("falls back from the sentence that failed and keeps the ones already played", async () => {
-	const { ai } = binding((_text, index) => {
-		if (index === 1) {
+// A Workers AI call that never answered held the realtime voice for good.
+test("a sentence Aura never starts answering fails once its time is up", async () => {
+	const { ai } = binding(() => new Promise<Response>(() => {}));
+	const sink = outlet();
+
+	const result = await playParlumeAuraSentences({
+		ai,
+		sentences: source("One."),
+		outlet: sink,
+		isCurrent: () => true,
+		clipStartMs: 20,
+		retryMs: 1,
+	});
+
+	assert.equal(result.complete, false);
+	assert.equal(result.failedAt, 0);
+	assert.match(result.error ?? "", /did not answer within 20 ms/);
+	assert.equal(sink.bytes(), 0);
+});
+
+test("falls back from the sentence that failed twice and keeps the ones already played", async () => {
+	const { ai, calls } = binding((text) => {
+		if (text === "Two.") {
 			throw new Error("Workers AI unavailable");
 		}
 		return pcmResponse([pcm(200)]);
 	});
 	const sink = outlet();
+	const retries: unknown[] = [];
 
 	const result = await playParlumeAuraSentences({
 		ai,
 		sentences: source("One.", "Two.", "Three."),
 		outlet: sink,
 		isCurrent: () => true,
+		retryMs: 1,
+		onRetry: (retry) => retries.push(retry),
 	});
 
 	assert.equal(result.complete, false);
 	assert.equal(result.failedAt, 1);
+	assert.equal(calls.filter((call) => call.text === "Two.").length, 2);
+	assert.deepEqual(retries, [
+		{ sentence: 1, replayed: false, played: false },
+	]);
 	assert.equal(sink.bytes(), 200);
 	assert.equal(result.sentences[0]?.ok, true);
 	assert.equal(result.sentences[1]?.ok, false);
@@ -241,19 +269,90 @@ test("falls back from the sentence that failed and keeps the ones already played
 	assert.ok(!sink.events.includes("clear"));
 });
 
-test("a clip that dies midway is not repeated by the fallback", async () => {
-	const { ai } = binding(
-		() =>
-			new Response(
-				new ReadableStream<Uint8Array>({
-					async start(controller) {
-						controller.enqueue(pcm(300));
-						await sleep(20);
-						controller.error(new Error("connection reset"));
-					},
-				}),
-			),
+/** A clip that sends `bytes` of audio, then dies. */
+function dyingClip(bytes: Uint8Array): Response {
+	return new Response(
+		new ReadableStream<Uint8Array>({
+			async start(controller) {
+				controller.enqueue(bytes);
+				await sleep(20);
+				controller.error(new Error("connection reset"));
+			},
+		}),
 	);
+}
+
+test("an Aura error on the second sentence is retried once, and every sentence plays with no failedAt", async () => {
+	let failed = false;
+	const { ai, calls } = binding((text) => {
+		if (text === "Two." && !failed) {
+			failed = true;
+			return new Response("busy", { status: 503 });
+		}
+		return pcmResponse([pcm(200)]);
+	});
+	const sink = outlet();
+	const retries: unknown[] = [];
+
+	const result = await playParlumeAuraSentences({
+		ai,
+		sentences: source("One.", "Two.", "Three."),
+		outlet: sink,
+		isCurrent: () => true,
+		retryMs: 1,
+		onRetry: (retry) => retries.push(retry),
+	});
+
+	assert.equal(result.complete, true);
+	assert.equal(result.failedAt, undefined);
+	assert.equal(result.error, undefined);
+	assert.equal(result.heard, 3);
+	assert.equal(sink.bytes(), 600);
+	assert.equal(calls.filter((call) => call.text === "Two.").length, 2);
+	assert.deepEqual(retries, [{ sentence: 1, replayed: false, played: true }]);
+});
+
+test("a clip that dies midway is played again from its start", async () => {
+	let attempts = 0;
+	const { ai } = binding((text) => {
+		if (text !== "One.") {
+			return pcmResponse([pcm(200, 9)]);
+		}
+		attempts++;
+		return attempts === 1
+			? dyingClip(pcm(300, 1))
+			: pcmResponse([pcm(300, 1), pcm(300, 2)]);
+	});
+	const sink = outlet();
+	const retries: unknown[] = [];
+
+	const result = await playParlumeAuraSentences({
+		ai,
+		sentences: source("One.", "Two."),
+		outlet: sink,
+		isCurrent: () => true,
+		retryMs: 1,
+		onRetry: (retry) => retries.push(retry),
+	});
+
+	assert.equal(result.complete, true);
+	assert.equal(result.failedAt, undefined);
+	// The clause cut short, then the whole sentence, then the next one.
+	assert.deepEqual(
+		sink.queued.map((chunk) => [chunk.byteLength, chunk[0]]),
+		[
+			[300, 1],
+			[300, 1],
+			[300, 2],
+			[200, 9],
+		],
+	);
+	assert.deepEqual(retries, [{ sentence: 0, replayed: true, played: true }]);
+	assert.equal(result.heard, 2);
+});
+
+test("a clip that dies midway twice is spoken again from its start by the fallback", async () => {
+	const { ai } = binding(() => dyingClip(pcm(300)));
 	const sink = outlet();
 
 	const result = await playParlumeAuraSentences({
@@ -261,14 +360,48 @@ test("a clip that dies midway is not repeated by the fallback", async () => {
 		sentences: source("One.", "Two."),
 		outlet: sink,
 		isCurrent: () => true,
+		retryMs: 1,
 	});
 
-	assert.equal(
-		result.failedAt,
-		1,
-		"resumes after the partly spoken sentence",
-	);
-	assert.equal(sink.bytes(), 300);
+	assert.equal(result.failedAt, 0, "a short repeat beats a lost clause");
+	assert.equal(sink.bytes(), 600);
+	assert.equal(result.heard, 0);
+});
+
+test("reports each sentence as heard once the outlet has sent it", async () => {
+	const { ai } = binding(() => pcmResponse([pcm(100)]));
+	const heard: number[] = [];
+
+	await playParlumeAuraSentences({
+		ai,
+		sentences: source("First one.", "Second one."),
+		outlet: outlet(),
+		isCurrent: () => true,
+		onHeard: (count) => heard.push(count),
+	});
+	await sleep(0);
+
+	assert.deepEqual(heard, [1, 2]);
+});
+
+test("reports nothing more as heard once a stop dropped speech", async () => {
+	const { ai } = binding(() => pcmResponse([pcm(100)]));
+	const sink = outlet();
+	const heard: number[] = [];
+	sink.drained = async () => {
+		sink.droppedBytes += 50;
+	};
+
+	await playParlumeAuraSentences({
+		ai,
+		sentences: source("First one."),
+		outlet: sink,
+		isCurrent: () => true,
+		onHeard: (count) => heard.push(count),
+	});
+	await sleep(0);
+
+	assert.deepEqual(heard, []);
 });
 
 test("a response with no audio is a failure", async () => {
@@ -324,6 +457,32 @@ test("barge-in mid-sentence stops playback, clears the outlet and is not a failu
 	assert.equal(sink.events.at(-1), "clear");
 	assert.ok(!sink.events.includes("end"));
 	assert.equal(result.heard, 0);
+});
+
+test("a reply told to end at a sentence plays the one in progress to its end, starts no other, and drains the outlet", async () => {
+	let ending = false;
+	const { ai } = binding(() =>
+		pcmResponse([pcm(100), pcm(100), pcm(100), pcm(100)], 40),
+	);
+	const sink = outlet();
+
+	const playing = playParlumeAuraSentences({
+		ai,
+		sentences: source("A long sentence.", "Another.", "A third."),
+		outlet: sink,
+		isCurrent: () => true,
+		endAtSentence: () => ending,
+	});
+	await sleep(70);
+	ending = true;
+	const result = await playing;
+
+	assert.equal(result.complete, false);
+	assert.equal(result.failedAt, undefined);
+	assert.equal(sink.bytes(), 400, "the sentence in progress, whole");
+	assert.deepEqual(sink.events.slice(-2), ["end", "drained"]);
+	assert.ok(!sink.events.includes("clear"));
+	assert.equal(result.heard, 1);
 });
 
 test("a silenced reply counts as heard only the sentences played to their end", async () => {

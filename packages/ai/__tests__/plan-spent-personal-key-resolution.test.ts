@@ -290,6 +290,45 @@ describe("getRAGProviderConfigForModel", () => {
 			source: "organization",
 		});
 	});
+
+	it("keeps a matching tenant default available to legacy metadata without a record ID", async () => {
+		await expect(
+			getRAGProviderConfigForModel(CONTEXT, {
+				provider: "OPENAI_DIRECT",
+				configId: null,
+				configSource: null,
+			}),
+		).resolves.toMatchObject({
+			provider: "OPENAI_DIRECT",
+			apiKey: "example-org-key",
+		});
+	});
+
+	it("does not give a ChatGPT plan the tenant's unrelated API key", async () => {
+		await expect(
+			getRAGProviderConfigForModel(CONTEXT, {
+				provider: "OPENAI_CHATGPT_PLAN",
+				configId: null,
+				configSource: null,
+			}),
+		).rejects.toBeInstanceOf(AIProviderNotConfiguredError);
+	});
+
+	it("does not export a platform embedding gateway credential", async () => {
+		mocks.getAiProviderApiKey.mockResolvedValue(EMPTY);
+		mocks.getAiProviderApiKeyByProvider.mockResolvedValue({
+			...EMPTY,
+			provider: "VERCEL_GATEWAY",
+			apiKey: "encrypted:example-platform-key",
+		});
+		await expect(
+			getRAGProviderConfigForModel(CONTEXT, {
+				provider: "VERCEL_GATEWAY",
+				configId: null,
+				configSource: null,
+			}),
+		).rejects.toBeInstanceOf(AIProviderNotConfiguredError);
+	});
 });
 
 it("runs the task default for a pick with no selectable mapping off a plan", async () => {

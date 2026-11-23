@@ -56,7 +56,15 @@ import {
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	memo,
+	useCallback,
+	useEffect,
+	useId,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { ChatMessageDiagramErrorBanner } from "./ChatMessageDiagramErrorBanner";
 import type { PickerPick } from "./InsertDiagramPickerDialog";
 import { writePickerIntent } from "./pickerHandoff";
@@ -65,6 +73,7 @@ import type { UseActiveTipTapEditorOptions } from "./useActiveTipTapEditor";
 import type { ChatScope } from "./useChatScopedProject";
 import type { InsertDiagramToolResult } from "./useInsertDiagramAction";
 import { useInsertDiagramAction } from "./useInsertDiagramAction";
+import { useProjectName } from "./useProjectName";
 
 /**
  * Lazy-load the picker dialog. Without `next/dynamic`, the
@@ -293,6 +302,15 @@ function ChatMessageInsertDiagramButtonBody({
 		toolResult,
 		blockedReason: computedBlockedReason,
 	});
+	// Only the error banner and the cross-project tooltip name the project.
+	const chatProjectName = useProjectName({
+		projectId: chatScope.projectId,
+		organizationId: chatScope.organizationId,
+		knownName: chatScopeProjectName,
+		enabled:
+			action.status === "error" ||
+			computedBlockedReason === "cross_project",
+	});
 
 	const [showCopyConfirm, setShowCopyConfirm] = useState<boolean>(false);
 	const copyConfirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -313,6 +331,7 @@ function ChatMessageInsertDiagramButtonBody({
 	// open mechanism by passing `onOpenPicker`; otherwise we manage the
 	// dialog state here.
 	const [pickerOpen, setPickerOpen] = useState<boolean>(false);
+	const pickerHintId = useId();
 	const router = useRouter();
 	const { basePath, organizationSlug: activeOrgSlug } =
 		useOrganizationContext();
@@ -432,12 +451,13 @@ function ChatMessageInsertDiagramButtonBody({
 							? "insertFeatureButton"
 							: "insertDocumentButton",
 					)}
-					tooltip={tTip("insertCrossProject", {
-						projectName:
-							chatScopeProjectName ??
-							chatScope.projectId ??
-							"this chat's project",
-					})}
+					tooltip={
+						chatProjectName
+							? tTip("insertCrossProject", {
+									projectName: chatProjectName,
+								})
+							: tTip("insertCrossProjectUnnamed")
+					}
 				/>
 				<CopyEmbedCodeButton
 					t={t}
@@ -498,9 +518,7 @@ function ChatMessageInsertDiagramButtonBody({
 			>
 				<ChatMessageDiagramErrorBanner
 					docName={resolverTarget?.documentLabel ?? ""}
-					projectName={
-						chatScopeProjectName ?? chatScope.projectId ?? ""
-					}
+					projectName={chatProjectName}
 					onRetry={() => {
 						void action.retry();
 					}}
@@ -522,6 +540,9 @@ function ChatMessageInsertDiagramButtonBody({
 	const docName = resolverTarget?.documentLabel ?? "";
 
 	if (!hasResolverTarget) {
+		// Without a project the picker has nothing to list, so the button
+		// says how to get one instead of opening nothing.
+		const pickerNeedsProject = !onOpenPicker && !chatScope.projectId;
 		return (
 			<>
 				<div
@@ -533,7 +554,11 @@ function ChatMessageInsertDiagramButtonBody({
 						variant="outline"
 						size="sm"
 						onClick={handleOpenPicker}
+						disabled={pickerNeedsProject}
 						aria-label={t("openPickerButton")}
+						aria-describedby={
+							pickerNeedsProject ? pickerHintId : undefined
+						}
 					>
 						{t("openPickerButton")}
 					</Button>
@@ -544,6 +569,14 @@ function ChatMessageInsertDiagramButtonBody({
 						onClick={handleCopyClick}
 					/>
 				</div>
+				{pickerNeedsProject ? (
+					<p
+						id={pickerHintId}
+						className="text-xs text-muted-foreground"
+					>
+						{t("openPickerNoProject")}
+					</p>
+				) : null}
 				{/*
 				 * Picker is only rendered when `pickerOpen === true` so the
 				 * `next/dynamic` bundle is fetched lazily.
@@ -559,9 +592,7 @@ function ChatMessageInsertDiagramButtonBody({
 						surface={surface}
 						projectId={chatScope.projectId}
 						organizationId={chatScope.organizationId}
-						projectName={
-							chatScopeProjectName ?? chatScope.projectId ?? ""
-						}
+						projectName={chatScopeProjectName}
 						onPick={handlePickerPick}
 					/>
 				) : null}

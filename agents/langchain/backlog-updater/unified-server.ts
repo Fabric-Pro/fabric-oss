@@ -99,8 +99,6 @@ const { app, start } = createUnifiedServer(
 			},
 		};
 	},
-	// Stream agent (A2A streaming) - not used
-	undefined,
 	// Platform stream agent for CopilotKit AG-UI protocol
 	async function* (
 		input: { messages: Array<{ role: string; content: string }> } & Record<

@@ -75,6 +75,8 @@ const state = {
 	workflows: new Map<string, FakeWorkflow>(),
 	starts: [] as WorkflowInput[],
 	admittedBodies: [] as Array<Record<string, unknown>>,
+	/** The project each conversation is attached to, by conversation id. */
+	conversationProjects: new Map<string, string>(),
 	cancels: [] as string[],
 	saves: [] as SavedTurn[],
 	finalizes: [] as Array<Record<string, unknown>>,
@@ -126,6 +128,7 @@ function reset(owner: { userId: string; organizationId: string }) {
 	state.workflows.clear();
 	state.starts.length = 0;
 	state.admittedBodies.length = 0;
+	state.conversationProjects.clear();
 	state.cancels.length = 0;
 	state.saves.length = 0;
 	state.finalizes.length = 0;
@@ -253,6 +256,10 @@ const database = {
 	isFeatureEnabled: async (flag: string, organizationId?: string) => {
 		state.flagChecks.push({ flag, organizationId });
 		return state.flags.has(flag);
+	},
+	getConversationProject: async (conversationId: string) => {
+		const projectId = state.conversationProjects.get(conversationId);
+		return projectId ? { project: { id: projectId } } : null;
 	},
 	createAgentConversation: async (
 		args: Omit<FakeConversation, "messages">,

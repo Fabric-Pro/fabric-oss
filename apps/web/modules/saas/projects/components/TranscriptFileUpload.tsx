@@ -28,7 +28,12 @@ import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
-import { Loader2Icon, Trash2Icon, UploadIcon } from "lucide-react";
+import {
+	CheckCircle2Icon,
+	Loader2Icon,
+	Trash2Icon,
+	UploadIcon,
+} from "lucide-react";
 import {
 	type ChangeEvent,
 	useCallback,
@@ -78,14 +83,17 @@ export function uploadedTranscriptTitle(row: UploadedTranscriptRow): string {
 
 /**
  * How often to read the list again: while a file is being processed, and while
- * a removed row is still there, since `delete` returns once the deletion has
- * started and a worker takes the row away later.
+ * a session upload is missing or a removed row is still there. The delete
+ * call starts a workflow, so a worker takes the row away later.
  */
 export function transcriptListPollInterval(
 	rows: UploadedTranscriptRow[],
 	removedIds: ReadonlySet<string>,
+	trackedIds?: ReadonlySet<string>,
 ): number | false {
-	return rows.some((row) => isProcessing(row) || removedIds.has(row.id))
+	return rows.some((row) => isProcessing(row) || removedIds.has(row.id)) ||
+		(trackedIds &&
+			[...trackedIds].some((id) => !rows.some((row) => row.id === id)))
 		? POLL_WHILE_PROCESSING_MS
 		: false;
 }
@@ -127,9 +135,11 @@ function usePendingRemovals(projectId: string): ReadonlySet<string> {
 export function useUploadedTranscripts({
 	projectId,
 	organizationId,
+	trackedIds,
 }: {
 	projectId: string;
 	organizationId: string | null;
+	trackedIds?: ReadonlySet<string>;
 }) {
 	const queryClient = useQueryClient();
 	const removedIds = usePendingRemovals(projectId);
@@ -145,6 +155,7 @@ export function useUploadedTranscripts({
 			transcriptListPollInterval(
 				(query.state.data?.contexts ?? []) as UploadedTranscriptRow[],
 				removedIds,
+				trackedIds,
 			),
 	});
 
@@ -237,12 +248,14 @@ function UploadRow({
 export function TranscriptFileUpload({
 	projectId,
 	organizationId,
+	onClose,
 	canEdit = true,
 	className = "space-y-3 border-t p-6",
 }: {
 	projectId: string;
 	organizationId: string | null;
 	canEdit?: boolean;
+	onClose?: () => void;
 	/** The settings card draws a divider and padding; a dialog has its own. */
 	className?: string;
 }) {
@@ -251,11 +264,29 @@ export function TranscriptFileUpload({
 	const inputRef = useRef<HTMLInputElement>(null);
 	const inputId = useId();
 	const [isUploading, setIsUploading] = useState(false);
+	const [trackedIds, setTrackedIds] = useState<ReadonlySet<string>>(
+		() => new Set(),
+	);
 
 	const { uploads, isLoading, markRemoved } = useUploadedTranscripts({
 		projectId,
 		organizationId,
+		trackedIds: onClose ? trackedIds : undefined,
 	});
+
+	const sessionComplete =
+		!isUploading &&
+		trackedIds.size > 0 &&
+		[...trackedIds].every(
+			(id) =>
+				uploads.find((row) => row.id === id)?.extractionStatus ===
+				"COMPLETED",
+		);
+
+	const onStored = onClose
+		? (contextId: string) =>
+				setTrackedIds((previous) => new Set(previous).add(contextId))
+		: undefined;
 
 	const refreshContexts = () =>
 		queryClient.invalidateQueries({
@@ -263,14 +294,25 @@ export function TranscriptFileUpload({
 		});
 
 	const reprocessFiles = async (files: File[]) => {
+		const setDialogUploading = onClose ? setIsUploading : undefined;
+		setDialogUploading?.(true);
 		for (const file of files) {
 			try {
-				await uploadTranscriptFile({
+				const outcome = await uploadTranscriptFile({
 					file,
 					projectId,
 					organizationId,
+					onStored,
 					reprocess: true,
 				});
+				// A reprocessed transcript may already be read. This tracks ingestion,
+				// independently of the analysis scheduled by Process again.
+				if (
+					outcome.status === "reprocessing" &&
+					typeof outcome.contextId === "string"
+				) {
+					onStored?.(outcome.contextId);
+				}
 				toast.success(`Processing ${file.name} again`);
 			} catch (error) {
 				toast.error(
@@ -280,6 +322,7 @@ export function TranscriptFileUpload({
 				);
 			}
 		}
+		setDialogUploading?.(false);
 	};
 
 	const handleFiles = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -303,6 +346,7 @@ export function TranscriptFileUpload({
 					file,
 					projectId,
 					organizationId,
+					onStored,
 				});
 				if (outcome.status === "duplicate") {
 					duplicates.push(file);
@@ -353,6 +397,11 @@ export function TranscriptFileUpload({
 					return;
 				}
 				markRemoved(row.id);
+				setTrackedIds((previous) => {
+					const remaining = new Set(previous);
+					remaining.delete(row.id);
+					return remaining;
+				});
 				await refreshContexts();
 			},
 		});
@@ -418,6 +467,37 @@ export function TranscriptFileUpload({
 						appear in the Meeting Digest once a file is processed.
 					</p>
 				)
+			)}
+
+			{onClose && (
+				<>
+					<output
+						className={
+							sessionComplete
+								? "flex items-start gap-2 text-sm"
+								: "sr-only"
+						}
+					>
+						{sessionComplete && (
+							<>
+								<CheckCircle2Icon
+									aria-hidden="true"
+									className="size-5 shrink-0 text-success"
+								/>
+								{trackedIds.size === 1
+									? "Transcript read. It now appears in the Meeting Digest and on the Context tab."
+									: "Transcripts read. They now appear in the Meeting Digest and on the Context tab."}
+							</>
+						)}
+					</output>
+					{sessionComplete && (
+						<div className="flex justify-end">
+							<Button type="button" onClick={onClose}>
+								Close
+							</Button>
+						</div>
+					)}
+				</>
 			)}
 		</div>
 	);

@@ -230,8 +230,6 @@ const { app, start } = createUnifiedServer(
 			},
 		};
 	},
-	// A2A streaming executor — unused (this agent is non-streaming).
-	undefined,
 	// Platform streaming executor for CopilotKit's LangGraph agent (/runs/stream).
 	// REQUIRED: it is the only executor createUnifiedServer hands the runtime
 	// `config`, which carries the token-exchanged AI credentials on the CopilotKit

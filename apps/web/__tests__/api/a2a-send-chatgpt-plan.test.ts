@@ -16,11 +16,21 @@ vi.mock("@repo/auth", () => ({
 	auth: { api: { getSession: (args: unknown) => getSession(args) } },
 }));
 
+const getAiProviderApiKey = vi.fn();
 vi.mock("@repo/database", () => ({
+	GATEWAY_PROVIDERS: ["VERCEL_GATEWAY"],
 	getActiveSystemRegisteredAgent: vi
 		.fn()
 		.mockResolvedValue({ deploymentUrl: "https://agent.example.com" }),
+	getAiProviderApiKey: (...args: unknown[]) => getAiProviderApiKey(...args),
+	getAiProviderApiKeyByProvider: (...args: unknown[]) =>
+		getAiProviderApiKey(...args),
 	isOrganizationMember: vi.fn().mockResolvedValue(true),
+}));
+
+vi.mock("@repo/utils", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@repo/utils")>()),
+	decryptApiKey: () => "example-org-key",
 }));
 
 const sendMessageSecure = vi.fn();
@@ -31,14 +41,13 @@ vi.mock("@repo/agent-core/a2a", () => ({
 }));
 
 const getAIModelWithMetadata = vi.fn();
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
 	buildEffectiveBaseUrl: (_provider: string, custom?: string) =>
 		custom ?? "https://provider.example.com",
 	getAIModelWithMetadata: (...args: unknown[]) =>
 		getAIModelWithMetadata(...args),
-	getRAGProviderConfigForModel: vi
-		.fn()
-		.mockResolvedValue({ baseUrl: "https://org-gateway.example.com" }),
+	getRAGProviderConfigForModel: (await import("@repo/ai/model-selector"))
+		.getRAGProviderConfigForModel,
 }));
 
 const issueAIToken = vi.fn();
@@ -66,9 +75,30 @@ function send() {
 	);
 }
 
-function resolvesTo(provider: string) {
+function resolvesTo(provider: string, defaultProvider = "AZURE_AI_FOUNDRY") {
+	const onPlan = provider === "OPENAI_CHATGPT_PLAN";
+	getAiProviderApiKey.mockResolvedValue({
+		provider: onPlan ? defaultProvider : provider,
+		configId: "example-org-config",
+		source: "organization",
+		apiKey: "example-encrypted-key",
+		baseUrl: "https://org-gateway.example.com",
+		enabledProviders: [],
+	});
 	getAIModelWithMetadata.mockResolvedValue({
-		metadata: { modelString: "gpt-5.6-sol", provider },
+		metadata: {
+			modelString: "gpt-5.6-sol",
+			provider,
+			configId: onPlan ? null : "example-org-config",
+			configSource: onPlan ? null : "organization",
+			...(onPlan && {
+				planSource: {
+					kind: "org",
+					organizationId: "org-1",
+					accountId: "example-plan-account",
+				},
+			}),
+		},
 		trackUsage: () => {},
 	});
 }
@@ -99,22 +129,26 @@ describe("a message a person sends to an agent", () => {
 		);
 	});
 
-	it("hands the agent a plan-eligible token and no base URL when a plan serves it", async () => {
-		resolvesTo("OPENAI_CHATGPT_PLAN");
-		const res = await send();
-		expect(res.status).toBe(200);
-		expect(issueAIToken).toHaveBeenCalledWith(
-			expect.objectContaining({
-				planEligible: true,
-				impersonated: false,
-			}),
-		);
-		expect(aiConfigSent()).toMatchObject({
-			provider: "OPENAI_CHATGPT_PLAN",
-			model: "gpt-5.6-sol",
-			baseUrl: undefined,
-		});
-	});
+	it.each(["ANTHROPIC_DIRECT", "VERCEL_GATEWAY"])(
+		"hands the agent a plan token and no base URL with a %s API-key default",
+		async (defaultProvider) => {
+			resolvesTo("OPENAI_CHATGPT_PLAN", defaultProvider);
+			const res = await send();
+			expect(res.status).toBe(200);
+			expect(issueAIToken).toHaveBeenCalledWith(
+				expect.objectContaining({
+					planEligible: true,
+					impersonated: false,
+				}),
+			);
+			expect(aiConfigSent()).toMatchObject({
+				token: "ai-token",
+				provider: "OPENAI_CHATGPT_PLAN",
+				model: "gpt-5.6-sol",
+				baseUrl: undefined,
+			});
+		},
+	);
 
 	it("keeps the token off any plan when the organization's provider serves it", async () => {
 		resolvesTo("AZURE_AI_FOUNDRY");

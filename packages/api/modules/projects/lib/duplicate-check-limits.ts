@@ -53,35 +53,3 @@ export function startRequestDeadline(): RequestDeadline {
 		clear: () => clearTimeout(timer),
 	};
 }
-
-/** Request time the judge stage leaves for returning what is done. */
-const JUDGE_STAGE_RESERVE_MS = 5_000;
-/** The judge stage always gets at least this long. */
-const JUDGE_STAGE_MIN_MS = 3_000;
-
-/**
- * A shorter deadline inside a request deadline for an optional judge stage,
- * so the stage stops while the request can still return the results it
- * already has. Aborts with the request too.
- */
-export function startJudgeStageDeadline(
-	request: Pick<RequestDeadline, "ms" | "signal">,
-): {
-	signal: AbortSignal;
-	clear: () => void;
-} {
-	const controller = new AbortController();
-	const abort = () => controller.abort();
-	const timer = setTimeout(
-		abort,
-		Math.max(JUDGE_STAGE_MIN_MS, request.ms - JUDGE_STAGE_RESERVE_MS),
-	);
-	request.signal.addEventListener("abort", abort, { once: true });
-	return {
-		signal: controller.signal,
-		clear: () => {
-			clearTimeout(timer);
-			request.signal.removeEventListener("abort", abort);
-		},
-	};
-}

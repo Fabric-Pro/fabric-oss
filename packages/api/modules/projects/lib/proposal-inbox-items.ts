@@ -4,13 +4,17 @@ import {
 	listProposalApplications,
 	listProposalDuplicateResolutions,
 	listProposalItemStates,
+	listRestoredProposalItems,
 	type ProposalItemState,
 	type ProposalItemStateRow,
 	proposalRevision,
 	readRejectedChangeIndexes,
 	readStoredProposalChanges,
+	type StoredProposalChange,
 	targetChangedSinceProposal,
 } from "@repo/database";
+import { readProposalChanges } from "../procedures/backlog/change-item-schema";
+import { listHeldBackUpdateIndexes } from "../procedures/backlog/proposal-approval-guards";
 
 const ITEM_TITLE_MAX_LENGTH = 200;
 
@@ -76,26 +80,71 @@ export async function toProposalInboxRows<
 }
 
 /**
- * Indexes of the unresolved update items whose target ticket no longer has
- * the description or acceptance criteria the proposed diff was computed
- * against. Only Fabric tickets of the proposal's own project are compared.
+ * Whether the change proposes a description or acceptance criteria with no
+ * `from`: its diff has no text it was computed against.
  */
-async function listTargetsChangedSinceProposal(
+function proposesBodyWithoutFrom(change: StoredProposalChange): boolean {
+	return (["description", "acceptanceCriteria"] as const).some((field) => {
+		const edit = change.raw[field];
+		return (
+			typeof edit === "object" &&
+			edit !== null &&
+			"to" in edit &&
+			typeof edit.to === "string" &&
+			edit.to !== "" &&
+			!("from" in edit && typeof edit.from === "string")
+		);
+	});
+}
+
+/** The description and acceptance criteria of an update item's ticket now. */
+type UpdateTargetBodies = {
+	changeIndex: number;
+	description: string;
+	acceptanceCriteria: string;
+};
+
+/**
+ * The unresolved update items' tickets as they are now, read once. Only
+ * Fabric tickets of the proposal's own project are read.
+ *
+ * - `targetChangedSinceProposalIndexes`: the items whose ticket no longer
+ *   has the description or acceptance criteria the proposed diff was
+ *   computed against.
+ * - `updateTargetBodies`: the ticket's bodies for each item that proposes a
+ *   body with no `from`, so its change is summarized against the ticket and
+ *   not against an empty body.
+ */
+async function readUpdateTargets(
 	proposal: { projectId: string; proposal: unknown },
 	resolved: ReadonlySet<number>,
-): Promise<number[]> {
+): Promise<{
+	targetChangedSinceProposalIndexes: number[];
+	updateTargetBodies: UpdateTargetBodies[];
+}> {
 	const updates = readStoredProposalChanges(proposal.proposal).flatMap(
-		(change) =>
-			change.action === "update" &&
-			change.existingId !== null &&
-			!resolved.has(change.index) &&
-			(change.descriptionFrom !== null ||
-				change.acceptanceCriteriaFrom !== null)
-				? [{ change, storyId: change.existingId }]
-				: [],
+		(change) => {
+			if (
+				change.action !== "update" ||
+				change.existingId === null ||
+				resolved.has(change.index)
+			) {
+				return [];
+			}
+			const hasFrom =
+				change.descriptionFrom !== null ||
+				change.acceptanceCriteriaFrom !== null;
+			const withoutFrom = proposesBodyWithoutFrom(change);
+			return hasFrom || withoutFrom
+				? [{ change, storyId: change.existingId, hasFrom, withoutFrom }]
+				: [];
+		},
 	);
 	if (updates.length === 0) {
-		return [];
+		return {
+			targetChangedSinceProposalIndexes: [],
+			updateTargetBodies: [],
+		};
 	}
 	const stories = await db.userStory.findMany({
 		where: {
@@ -105,12 +154,33 @@ async function listTargetsChangedSinceProposal(
 		select: { id: true, description: true, acceptanceCriteria: true },
 	});
 	const byId = new Map(stories.map((story) => [story.id, story]));
-	return updates
-		.filter(({ change, storyId }) => {
-			const story = byId.get(storyId);
-			return !!story && targetChangedSinceProposal(change, story);
-		})
-		.map(({ change }) => change.index);
+	return {
+		targetChangedSinceProposalIndexes: updates.flatMap(
+			({ change, storyId, hasFrom }) => {
+				const story = byId.get(storyId);
+				return hasFrom &&
+					story &&
+					targetChangedSinceProposal(change, story)
+					? [change.index]
+					: [];
+			},
+		),
+		updateTargetBodies: updates.flatMap(
+			({ change, storyId, withoutFrom }) => {
+				const story = byId.get(storyId);
+				return withoutFrom && story
+					? [
+							{
+								changeIndex: change.index,
+								description: story.description ?? "",
+								acceptanceCriteria:
+									story.acceptanceCriteria ?? "",
+							},
+						]
+					: [];
+			},
+		),
+	};
 }
 
 /**
@@ -124,7 +194,12 @@ async function listTargetsChangedSinceProposal(
  * `proposalRevision` identifies the proposal content the reviewer sees; an
  * approval sends it back so a proposal changed since is refused.
  * `targetChangedSinceProposalIndexes` lists the update items whose ticket
- * was edited after the proposal was analyzed.
+ * was edited after the proposal was analyzed, `updateTargetBodies` the
+ * ticket bodies an update with no `from` is summarized against, and
+ * `heldBackUpdateIndexes` the open update items an approval would hold back
+ * for an invalid target.
+ * `restoredItems` lists the items moved to Rejected and then restored from
+ * there, with the ticket each one created.
  */
 export async function loadProposalItemOutcomes(
 	proposal: ProposalItemStateRow & {
@@ -147,14 +222,27 @@ export async function loadProposalItemOutcomes(
 		duplicateIndexes: duplicateResolutions.map((d) => d.changeIndex),
 		rejectedChangeIndexes,
 	});
+	const [updateTargets, heldBackUpdateIndexes, restoredItems] =
+		await Promise.all([
+			readUpdateTargets(proposal, state.resolved),
+			listHeldBackUpdateIndexes(
+				proposal.projectId,
+				readProposalChanges(proposal.proposal),
+				state.resolved,
+			),
+			rejectedChangeIndexes.length > 0
+				? listRestoredProposalItems(proposal)
+				: [],
+		]);
 	return {
 		applications,
 		createdChangeIndexes: applications.map((a) => a.changeIndex),
 		duplicateResolutions,
 		rejectedChangeIndexes,
+		restoredItems,
 		...itemStateFields(state),
 		proposalRevision: proposalRevision(proposal.proposal),
-		targetChangedSinceProposalIndexes:
-			await listTargetsChangedSinceProposal(proposal, state.resolved),
+		...updateTargets,
+		heldBackUpdateIndexes,
 	};
 }

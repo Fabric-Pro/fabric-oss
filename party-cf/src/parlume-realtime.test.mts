@@ -200,7 +200,7 @@ test("the session is told never to answer or interrupt on its own", () => {
 						format: { type: "audio/pcm", rate: 24_000 },
 						turn_detection: {
 							type: "semantic_vad",
-							eagerness: "auto",
+							eagerness: "low",
 							create_response: false,
 							interrupt_response: false,
 						},
@@ -209,6 +209,9 @@ test("the session is told never to answer or interrupt on its own", () => {
 					},
 					output: { format: { type: "audio/pcm", rate: 24_000 } },
 				},
+				// 45 s of speech at the provisional 20 audio tokens a second,
+				// and 300 for text.
+				max_output_tokens: 1_200,
 			},
 		},
 	]);
@@ -288,6 +291,7 @@ test("a finished response reports its usage split the way it is priced", () => {
 		type: "response_done",
 		responseId: "resp_1",
 		status: "completed",
+		reason: null,
 		usage: {
 			inputTextTokens: 100,
 			inputAudioTokens: 300,
@@ -325,6 +329,36 @@ test("audio deltas decode to PCM; unknown events are ignored", () => {
 		null,
 	);
 	assert.equal(realtime.parseParlumeRealtimeEvent("not json"), null);
+});
+
+test("a new session says when it ends, and a response's words stream as they are said", () => {
+	const created = (session: Record<string, unknown>) =>
+		plain(
+			realtime.parseParlumeRealtimeEvent(
+				JSON.stringify({ type: "session.created", session }),
+			),
+		);
+	assert.deepEqual(created({ expires_at: 1_700_003_600 }), {
+		type: "session_created",
+		expiresAt: 1_700_003_600_000,
+	});
+	assert.deepEqual(created({}), {
+		type: "session_created",
+		expiresAt: null,
+	});
+	assert.deepEqual(
+		plain(
+			realtime.parseParlumeRealtimeEvent(
+				JSON.stringify({
+					type: "response.output_audio_transcript.delta",
+					response_id: "resp_1",
+					item_id: "item_1",
+					delta: "F-12 is ",
+				}),
+			),
+		),
+		{ type: "transcript_delta", responseId: "resp_1", delta: "F-12 is " },
+	);
 });
 
 test("an error keeps OpenAI's code, parameter and message for the log", () => {

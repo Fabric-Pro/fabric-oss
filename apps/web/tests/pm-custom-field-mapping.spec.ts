@@ -26,8 +26,9 @@ import { expect, type Page, test } from "@playwright/test";
 const PROJECT_ID = process.env.TEST_PERSONAL_PROJECT_ID ?? "";
 
 async function openProjectManagementTab(_page: Page): Promise<void> {
-	// TODO(7.9): navigate to the project settings, open the flag-gated
-	// "Project Management" tab, and wait for the field-mapping panel to mount.
+	// TODO(7.9): navigate to the project settings, open the "Project Management"
+	// tab (the flag now gates only the field-mapping panel), and wait for the
+	// field-mapping panel to mount.
 	throw new Error("skeleton — wire against live app per Task 7.9");
 }
 

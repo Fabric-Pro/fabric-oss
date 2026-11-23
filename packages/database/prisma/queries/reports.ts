@@ -2180,11 +2180,8 @@ export async function createTemplateInstanceArtifact(
 	});
 }
 
-export async function getTemplateInstanceArtifact(
-	id: string,
-	caller?: ReportCaller,
-) {
-	const artifact = await db.templateInstanceArtifact.findUnique({
+function findTemplateInstanceArtifact(id: string) {
+	return db.templateInstanceArtifact.findUnique({
 		where: { id },
 		include: {
 			execution: {
@@ -2209,6 +2206,13 @@ export async function getTemplateInstanceArtifact(
 			},
 		},
 	});
+}
+
+export async function getTemplateInstanceArtifact(
+	id: string,
+	caller?: ReportCaller,
+) {
+	const artifact = await findTemplateInstanceArtifact(id);
 	if (!artifact) {
 		return null;
 	}
@@ -2233,6 +2237,39 @@ export async function getTemplateInstanceArtifact(
 		}
 	}
 	return artifact;
+}
+
+/**
+ * An artifact read in its own report's organization rather than the one the
+ * caller's session has active, so a report page keeps opening its runs after
+ * another tab switches the session's workspace. The organization comes from
+ * the report, never from the request, and the usual access rules decide: the
+ * caller must be a member there who may read the report and reach its
+ * projects. A report with no organization, or in a deleted one, is refused,
+ * as the session's workspace resolution refuses a deleted workspace.
+ */
+export async function getTemplateInstanceArtifactForMember(
+	id: string,
+	userId: string,
+) {
+	const artifact = await findTemplateInstanceArtifact(id);
+	const organizationId = artifact?.execution.instance.organizationId;
+	if (!artifact || !organizationId) {
+		return null;
+	}
+	const liveOrganization = await db.organization.findFirst({
+		where: { id: organizationId, deletedAt: null },
+		select: { id: true },
+	});
+	if (!liveOrganization) {
+		return null;
+	}
+	const readable = await canAccessReportInstance(
+		artifact.execution.instance,
+		{ userId, organizationId },
+		artifact.execution.parameters,
+	);
+	return readable ? artifact : null;
 }
 
 export async function updateTemplateInstanceArtifactRag({

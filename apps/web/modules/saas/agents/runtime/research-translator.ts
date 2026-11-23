@@ -19,7 +19,10 @@ import {
 	buildWorkflowErrorEvent,
 	type WorkflowErrorEvent,
 } from "../../../../app/api/agents/fabric-ai/stream/turn-events";
-import type { ResearchRunEnding } from "./research-run-record";
+import {
+	type ResearchRunEnding,
+	researchFailureText,
+} from "./research-run-record";
 import type { Emit } from "./turn-translator";
 
 /**
@@ -276,11 +279,13 @@ export class ResearchRunTranslator {
 
 	/** A run that failed, as the stream route's error mapping words it. */
 	fail(event: WorkflowErrorEvent): void {
+		// The words saved for the run, never the limit id or provider text.
+		const shown = { ...event, message: researchFailureText(event.message) };
 		this.run.emit({
 			type: EventType.RUN_ERROR,
-			message: event.message,
-			code: "code" in event ? event.code : "RESEARCH_FAILED",
-			metadata: { fabric: event },
+			message: shown.message,
+			code: "code" in shown ? shown.code : "RESEARCH_FAILED",
+			metadata: { fabric: shown },
 		});
 	}
 }

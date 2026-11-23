@@ -22,18 +22,47 @@ export function isParlumeServiceRequestAuthorized(
 	return constantTimeEqual(provided, process.env.AGENT_SERVICE_SECRET);
 }
 
-export function streamTokenDigest(token: string): string {
+/** How a session's stream and webhook tokens are stored: only as this digest. */
+export function sessionTokenDigest(token: string): string {
 	return createHash("sha256").update(token).digest("hex");
 }
 
-export function callbackSecret(sessionId: string): string | null {
-	const serviceSecret = process.env.AGENT_SERVICE_SECRET;
-	if (!serviceSecret) {
-		return null;
+// The JSON Attendee signs: keys sorted at every level, no spaces, text as is
+// (Python's `json.dumps(sort_keys=True, ensure_ascii=False,
+// separators=(",", ":"))`).
+function attendeeCanonicalJson(value: unknown): string {
+	if (Array.isArray(value)) {
+		return `[${value.map(attendeeCanonicalJson).join(",")}]`;
 	}
-	return createHmac("sha256", serviceSecret)
-		.update(`parlume-callback:${sessionId}`)
-		.digest("base64url");
+	if (typeof value === "object" && value !== null) {
+		const fields = Object.entries(value)
+			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+			.map(
+				([key, field]) =>
+					`${JSON.stringify(key)}:${attendeeCanonicalJson(field)}`,
+			);
+		return `{${fields.join(",")}}`;
+	}
+	return JSON.stringify(value);
+}
+
+/**
+ * Whether `X-Webhook-Signature` is Attendee's signature of this payload: the
+ * base64 HMAC-SHA256 of its canonical JSON, keyed with the project's webhook
+ * secret, which Attendee shows base64-encoded.
+ */
+export function isAttendeeWebhookSigned(
+	payload: unknown,
+	signature: string | null,
+	webhookSecret: string,
+): boolean {
+	if (!signature) {
+		return false;
+	}
+	const expected = createHmac("sha256", Buffer.from(webhookSecret, "base64"))
+		.update(attendeeCanonicalJson(payload), "utf8")
+		.digest("base64");
+	return constantTimeEqual(signature, expected);
 }
 
 /**
@@ -69,6 +98,24 @@ export function realtimeJobDedupeKey(input: {
 				input.voiceGeneration,
 				input.job,
 				input.text,
+			]),
+		)
+		.digest("hex");
+}
+
+/** A pause or resume is one transcript marker, however often the bridge reports it. */
+export function listeningEventDedupeKey(input: {
+	sessionId: string;
+	paused: boolean;
+	at: number;
+}): string {
+	return createHash("sha256")
+		.update(
+			JSON.stringify([
+				"listening",
+				input.sessionId,
+				input.paused,
+				input.at,
 			]),
 		)
 		.digest("hex");

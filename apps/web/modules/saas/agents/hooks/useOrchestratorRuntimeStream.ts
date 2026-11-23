@@ -34,6 +34,10 @@ import {
 	isChatGptPlanSpentCode,
 } from "@saas/shared/lib/ai-error-message";
 import { useCallback, useRef } from "react";
+import {
+	aiUsageLimitPausedMessage,
+	aiUsageLimitPausedText,
+} from "../../../../app/api/agents/fabric-ai/stream/ai-usage-limit-paused-message";
 import { windowUntypedHistory } from "../../../../app/api/agents/fabric-ai/stream/history-window";
 import type { ApprovalSendResult } from "../lib/approval-response";
 import { runtimeHeaders } from "../lib/direct-runtime-transport";
@@ -131,7 +135,20 @@ export function useOrchestratorRuntimeStream(
 						if (payload) {
 							current.showAiUsageLimitToastRef.current(payload);
 						}
-						current.settleUsageLimitRefusal();
+						// The answer ends with the paused state, as the saved
+						// turn reads after a reload (never the limit's id).
+						const paused = payload
+							? aiUsageLimitPausedMessage(payload.window)
+							: aiUsageLimitPausedText(refusal.message);
+						if (paused) {
+							current.failWithoutDiscardingContent(
+								started.assistantMessage.id,
+								paused,
+								true,
+							);
+						} else {
+							current.settleUsageLimitRefusal();
+						}
 						return true;
 					}
 					default:

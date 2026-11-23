@@ -77,6 +77,7 @@ import {
 	type OrchestratorRunOpening,
 	OrchestratorTurnFollow,
 } from "./orchestrator-turn-follow";
+import { saveRefusedOrchestratorTurn } from "./orchestrator-turn-record";
 import {
 	abandonOrchestratorStart,
 	claimFollowUp,
@@ -84,7 +85,7 @@ import {
 	refuseOrchestratorDisabled,
 	refuseOrchestratorStart,
 } from "./orchestrator-turn-start";
-import { refuse, refuseWithResponse } from "./run-errors";
+import { refusalRecordText, refuse, refuseWithResponse } from "./run-errors";
 import {
 	ensureThread,
 	readThreadAccess,
@@ -881,6 +882,14 @@ export class OrchestratorEngine implements RuntimeEngine {
 			temporalClient,
 		);
 		if (prepared instanceof Response) {
+			// A limit's refusal is saved with its question, so reopening the
+			// chat shows it; other refusals leave nothing behind.
+			if (prepared.status === 429) {
+				await saveRefusedOrchestratorTurn(
+					turn,
+					await refusalRecordText(prepared),
+				);
+			}
 			await abandonOrchestratorStart(turn, `refused: ${prepared.status}`);
 			await refuseWithResponse(stream, prepared);
 			return;

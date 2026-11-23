@@ -362,7 +362,7 @@ describe("applyResearchRuntimeEvent — how a response ends", () => {
 		expect(apply(stoppedHere, cancelled).state).toBe(stoppedHere);
 	});
 
-	it("a usage-limit RUN_ERROR returns the chat to idle and hands over the limit", () => {
+	it("a usage-limit RUN_ERROR ends the run in the paused state and hands over the limit", () => {
 		const data = {
 			limitId: "limit-example",
 			dimension: "TOKENS",
@@ -374,14 +374,16 @@ describe("applyResearchRuntimeEvent — how a response ends", () => {
 		const update = apply(running, {
 			type: EventType.RUN_ERROR,
 			code: "AI_USAGE_LIMIT_EXCEEDED",
-			message: "AI usage limit exceeded",
+			message:
+				"AI calls are paused — the usage limit for today is reached.",
 			metadata: { fabric: { code: "AI_USAGE_LIMIT_EXCEEDED", data } },
 		});
 
+		// Not left on its last phase ("Analyzing request complexity").
 		expect(update.state).toMatchObject({
-			status: "idle",
-			phase: "idle",
-			error: null,
+			status: "failed",
+			phase: "failed",
+			error: "AI calls are paused — the usage limit for today is reached.",
 		});
 		expect(update.effect).toEqual({ kind: "usageLimit", payload: data });
 	});

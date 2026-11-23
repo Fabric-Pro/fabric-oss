@@ -212,17 +212,19 @@ export const todoLinkedWorkItemsProcedure = tenantProtectedProcedure
 		// cannot stand in for: the meeting belongs to a project, and naming a
 		// to-do id must not let somebody read a project's digest links they were
 		// never granted. The project comes from the TRANSCRIPT, never from the
-		// caller.
+		// caller. It admits an organization member who cannot open the
+		// project, because the reach check below degrades for them instead.
 		await assertProjectPermission(
 			binding.projectId,
 			context.user.id,
 			Permissions.PROJECT_READ,
 			context,
+			{ admitUnreachableOrganizationMember: true },
 		);
 
 		// THE THIRD LAYER, AND IT IS NOT THE SECOND ONE RESTATED (#2615).
-		// `assertProjectPermission` falls back to the caller's ORGANIZATION
-		// role when they hold no active `ProjectMember` row, so it passes for
+		// `assertProjectPermission` is told above to admit a caller who holds
+		// permissions only through their ORGANIZATION role, so it passes for
 		// every member of the tenant — including the ones `getProjectById`
 		// refuses. `openableProjectWhere` is that refusal, asked here, so this
 		// response never carries a project id the page cannot route to, nor the

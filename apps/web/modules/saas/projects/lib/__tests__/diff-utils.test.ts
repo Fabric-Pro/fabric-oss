@@ -24,6 +24,10 @@ import {
 	stripDiffMarkup,
 	toAgentDocument,
 } from "../diff-utils";
+import {
+	MOVED_TABLES_AFTER,
+	MOVED_TABLES_BEFORE,
+} from "./moved-list-block-fixtures";
 
 describe("diffPartialText", () => {
 	it("should mark added text with diff markers", () => {
@@ -1592,5 +1596,233 @@ describe("diffPartialText - a plain-text review (Fizzy #2946)", () => {
 
 		expect(diff).toContain(`/a${ENC_DEL_START}b${ENC_DEL_END}/c`);
 		expect(acceptAll(diff)).toBe(proposed);
+	});
+});
+
+describe("diffPartialText - fenced code in a list item moved to another level", () => {
+	/** The text `diff` marks between `start` and `end`, joined by lines. */
+	const marked = (diff: string, start: string, end: string) =>
+		Array.from(
+			diff.matchAll(new RegExp(`${start}([\\s\\S]*?)${end}`, "g")),
+			(match) => match[1],
+		).join("\n");
+
+	it("moves the code with its item, on both sides of the move", () => {
+		const diff = diffPartialText(
+			"- Setup\n- Run it\n  ```\n  npm start\n  ```\n- Done",
+			"- Setup\n  - Run it\n    ```\n    npm start\n    ```\n- Done",
+			true,
+		);
+
+		expect(marked(diff, DIFF_DEL_START, DIFF_DEL_END)).toContain(
+			"npm start",
+		);
+		expect(marked(diff, DIFF_ADD_START, DIFF_ADD_END)).toContain(
+			"npm start",
+		);
+	});
+
+	const before = "- Setup\n- Run it\n  ```\n  npm start\n  ```\n- Done";
+	const after =
+		"- Setup\n  - Run it\n    ```\n    npm start\n    ```\n- Done";
+	const ZERO_WIDTH_SPACE = String.fromCodePoint(0x200b);
+
+	it("renders every mark of the moved block, its code too, as that one block", () => {
+		const html = fromMarkdown(diffPartialText(before, after, true));
+		const blocks = Array.from(
+			html.matchAll(
+				/<(?:ins|del) class="diff-(?:ins|del)"(?: data-diff-move="(\d+)")?>/g,
+			),
+			(match) => match[1] ?? null,
+		);
+
+		expect(blocks.length).toBeGreaterThanOrEqual(4);
+		expect(new Set(blocks)).toEqual(new Set(["1"]));
+		expect(html).toMatch(
+			/<code[^>]*><del class="diff-del" data-diff-move="1">/,
+		);
+		expect(html).toMatch(
+			/<code[^>]*><ins class="diff-ins" data-diff-move="1">/,
+		);
+		expect(html).not.toContain(ZERO_WIDTH_SPACE);
+	});
+
+	it.each([
+		{
+			block: "heading",
+			old: "## Steps\n\n- a\n- b",
+			next: "## Next\n\n- A\n  - b",
+			opens: /<h2><(?:ins|del) class="diff-(?:ins|del)" data-diff-move="1">/g,
+		},
+		{
+			block: "quote",
+			old: "- p\n- step\n  > Note: careful",
+			next: "- p\n  - step\n    > Note: careful",
+			opens: /<blockquote>\s*<p><(?:ins|del) class="diff-(?:ins|del)" data-diff-move="1">/g,
+		},
+	])(
+		"keeps a $block in a moved block a $block, its mark inside it",
+		({ old, next, opens }) => {
+			const html = fromMarkdown(diffPartialText(old, next, true));
+
+			expect(html.match(opens)).toHaveLength(2);
+			expect(html).not.toMatch(
+				/<p>\s*(?:<(?:ins|del)[^>]*>)?\s*(?:##|&gt;)/,
+			);
+		},
+	);
+
+	it("gives a table in a moved block the block's number, and no empty mark", () => {
+		const html = fromMarkdown(
+			diffPartialText(
+				"| a | b |\n| --- | --- |\n| 1 | 2 |\n\n- a\n- b",
+				"| a | b |\n| --- | --- |\n| 1 | 3 |\n\n- A\n  - b",
+				true,
+			),
+		);
+
+		expect(
+			html.match(/<table data-diff="\w+" data-diff-move="1"/g),
+		).toHaveLength(2);
+		expect(html).not.toMatch(/<(ins|del)[^>]*>\s*<\/\1>/);
+		expect(
+			new Set(
+				Array.from(
+					html.matchAll(/data-diff-move="(\d+)"/g),
+					(match) => match[1],
+				),
+			),
+		).toEqual(new Set(["1"]));
+	});
+
+	it("gives an HTML table in a moved block the block's number", () => {
+		const html = fromMarkdown(
+			diffPartialText(
+				"<table><tr><td>1</td></tr></table>\n\n- a\n- b\n\nNotes follow.",
+				"<table><tr><td>2</td></tr></table>\n\n- A\n  - b\n\nNotes follow.",
+				true,
+			),
+		);
+
+		expect(
+			html.match(/<table data-diff="\w+" data-diff-move="1"/g),
+		).toHaveLength(2);
+		expect(
+			new Set(
+				Array.from(
+					html.matchAll(/data-diff-move="(\d+)"/g),
+					(match) => match[1],
+				),
+			),
+		).toEqual(new Set(["1"]));
+	});
+
+	it("tags no line of a plain-text review, which has no renderer to read it", () => {
+		const diff = diffPartialText(before, after, true, { markdown: false });
+
+		expect(
+			[DIFF_ADD_START, DIFF_ADD_END, DIFF_DEL_START, DIFF_DEL_END]
+				.reduce((text, marker) => text.replaceAll(marker, ""), diff)
+				.includes(ZERO_WIDTH_SPACE),
+		).toBe(false);
+	});
+});
+
+describe("fromMarkdown - fenced code in a list item", () => {
+	it.each([
+		{
+			label: "an item",
+			markdown: "- Setup\n- Run it\n  ```\n  npm start\n  ```\n- Done",
+			lists: 1,
+		},
+		{
+			label: "a nested item",
+			markdown:
+				"- Setup\n  - Run it\n    ```\n    npm start\n    ```\n- Done",
+			lists: 2,
+		},
+	])("keeps the code inside $label, in one list", ({ markdown, lists }) => {
+		const html = fromMarkdown(markdown, { repairLegacyBullets: false });
+
+		expect(html).toMatch(
+			/<li>Run it\s*<pre><code[^>]*>npm start\s*<\/code><\/pre>\s*<\/li>/,
+		);
+		expect(html.match(/<ul[^>]*>/g)).toHaveLength(lists);
+	});
+});
+
+describe("diffPartialText - tables in a moved list block", () => {
+	/** Whether `index` of `html` lies inside a list item. */
+	const insideListItem = (html: string, index: number) => {
+		const before = html.slice(0, index);
+		return (
+			(before.match(/<li>/g) ?? []).length >
+			(before.match(/<\/li>/g) ?? []).length
+		);
+	};
+
+	it("keeps each table, on both sides, a whole table in its item, numbered with its block", () => {
+		const html = fromMarkdown(
+			diffPartialText(MOVED_TABLES_BEFORE, MOVED_TABLES_AFTER, true),
+			{ repairLegacyBullets: false },
+		);
+		const tables = Array.from(
+			html.matchAll(
+				/<table data-diff="(added|deleted)" data-diff-move="(\d+)"/g,
+			),
+		);
+
+		// The Markdown table and the HTML table, each removed and added.
+		expect(tables.map((match) => match[1]).sort()).toEqual([
+			"added",
+			"added",
+			"deleted",
+			"deleted",
+		]);
+		for (const match of tables) {
+			expect(insideListItem(html, match.index)).toBe(true);
+		}
+		// Each table goes with the lines of its own block.
+		const moves = new Set(tables.map((match) => match[2]));
+		expect(moves.size).toBe(2);
+		for (const move of moves) {
+			expect(html).toMatch(
+				new RegExp(
+					`<(?:ins|del) class="diff-(?:ins|del)" data-diff-move="${move}">`,
+				),
+			);
+		}
+		// No cell is marked on its own: a table is answered whole.
+		expect(html).not.toMatch(/<t[dh][^>]*>\s*<(?:ins|del)\b/);
+		expect(html).not.toContain("DIFF_TABLE");
+	});
+
+	it("restores an unchanged table in a list item at its item's indentation", () => {
+		const ticket = MOVED_TABLES_BEFORE;
+		const diff = diffPartialText(
+			ticket,
+			ticket.replace("Close the comparison", "Close the review"),
+			true,
+		);
+
+		expect(diff).toContain(
+			"    | Plan | Price |\n    | --- | --- |\n    | Basic | 5 |",
+		);
+	});
+
+	it("keeps a changed table indented outside a list a table, not code", () => {
+		const html = fromMarkdown(
+			diffPartialText(
+				"<div>\n    <table><tr><td>1</td></tr></table>\n</div>",
+				"<div>\n    <table><tr><td>2</td></tr></table>\n</div>",
+				true,
+			),
+			{ repairLegacyBullets: false },
+		);
+
+		expect(html).toMatch(/<table data-diff="deleted"/);
+		expect(html).toMatch(/<table data-diff="added"/);
+		expect(html).not.toContain("DIFF_HTML_TABLE");
+		expect(html).not.toContain("<pre");
 	});
 });

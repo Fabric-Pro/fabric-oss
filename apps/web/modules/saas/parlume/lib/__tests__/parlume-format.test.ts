@@ -1,5 +1,56 @@
 import { describe, expect, it } from "vitest";
-import { formatCost } from "../parlume-format";
+import { liveSession, session } from "../../components/__tests__/fixtures";
+import { formatCost, isSessionChanging } from "../parlume-format";
+
+describe("isSessionChanging", () => {
+	const now = new Date("2026-10-01T12:00:00Z").getTime();
+	const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000);
+	const ended = session({ notesStatus: "PENDING", endedAt: minutesAgo(10) });
+
+	it("polls a live session", () => {
+		expect(isSessionChanging(liveSession(), now)).toBe(true);
+	});
+
+	it("polls notes being written for half an hour after the meeting ends", () => {
+		expect(isSessionChanging(ended, now)).toBe(true);
+		expect(
+			isSessionChanging({ ...ended, endedAt: minutesAgo(31) }, now),
+		).toBe(false);
+	});
+
+	it("polls again for half an hour after the notes are asked for again", () => {
+		expect(
+			isSessionChanging(
+				{
+					...ended,
+					endedAt: minutesAgo(600),
+					notesRequestedAt: minutesAgo(5).toISOString(),
+				},
+				now,
+			),
+		).toBe(true);
+		expect(
+			isSessionChanging(
+				{
+					...ended,
+					endedAt: minutesAgo(600),
+					notesRequestedAt: minutesAgo(45).toISOString(),
+				},
+				now,
+			),
+		).toBe(false);
+	});
+
+	it("does not poll written or failed notes, or notes with no time to wait from", () => {
+		expect(
+			isSessionChanging({ ...ended, notesStatus: "COMPLETED" }, now),
+		).toBe(false);
+		expect(
+			isSessionChanging({ ...ended, notesStatus: "FAILED" }, now),
+		).toBe(false);
+		expect(isSessionChanging({ ...ended, endedAt: null }, now)).toBe(false);
+	});
+});
 
 describe("formatCost", () => {
 	it("shows exactly zero as $0.00", () => {

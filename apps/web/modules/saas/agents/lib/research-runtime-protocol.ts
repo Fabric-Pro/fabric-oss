@@ -85,6 +85,8 @@ export const researchRunPropsSchema = z
 		executionMode: z
 			.enum(["lite", "balanced", "deep", "planner"])
 			.optional(),
+		/** The project selected for the run; admission keeps it only when usable. */
+		projectId: z.string().max(200).optional(),
 	})
 	.strict();
 

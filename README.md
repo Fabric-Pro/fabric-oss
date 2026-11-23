@@ -13,7 +13,7 @@ flowchart TB
     subgraph Aspire[".NET Aspire (orchestrates everything)"]
         subgraph Infra["Infrastructure (Docker)"]
             PG["PostgreSQL\n:5432"]
-            Redis["Redis\n:6379"]
+            Redis["Redis"]
             Qdrant["Qdrant\n:6333"]
             Temporal["Temporal\n:7233"]
             MinIO["MinIO\n:9000"]
@@ -61,6 +61,8 @@ pnpm dev
 
 ### Option B: .NET Aspire (recommended)
 
+Install the [Aspire CLI 17.0.0 bundle and other prerequisites](aspire/README.md#prerequisites).
+
 ```bash
 cp .env.example .env.local
 # Add at least one AI provider key to .env.local
@@ -80,7 +82,7 @@ cp aspire/Fabric.AppHost/appsettings.Development.json.example aspire/Fabric.AppH
 
 pnpm install
 pnpm build
-cd aspire/Fabric.AppHost && dotnet run
+cd aspire/Fabric.AppHost && aspire run
 # In a second terminal:
 pnpm --filter @repo/database generate
 pnpm --filter @repo/database migrate

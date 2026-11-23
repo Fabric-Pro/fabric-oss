@@ -66,9 +66,11 @@ vi.mock("ioredis", () => {
 			return this;
 		}
 		async connect() {}
-		disconnect() {}
+		disconnect() {
+			h.commands.push(["disconnect"]);
+		}
 		async quit() {
-			h.commands.push(["quit"]);
+			throw new Error("Redis did not acknowledge QUIT");
 		}
 		multi() {
 			return new FakeTransaction();
@@ -283,6 +285,13 @@ describe("openAgUiRunStore", () => {
 			["xrange", EVENTS_KEY, "(1-0", "+"],
 			["xread", "BLOCK", 5000, "STREAMS", EVENTS_KEY, "1-0"],
 		]);
+	});
+
+	it("releases the run connection without waiting for QUIT", async () => {
+		const store = await openAgUiRunStore();
+
+		await expect(store.close()).resolves.toBeUndefined();
+		expect(h.commands).toEqual([["disconnect"]]);
 	});
 
 	it("refuses to open without a configured Redis", async () => {

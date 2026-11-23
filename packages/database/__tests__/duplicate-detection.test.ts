@@ -13,6 +13,7 @@ import {
 	DETECTION_VERSION,
 	type DetectionItem,
 	detectionTextForStory,
+	detectionVerdictHash,
 	effectiveCandidateThreshold,
 	FOCUS_CANDIDATE_MARGIN,
 	hashDetectionText,
@@ -22,6 +23,7 @@ import {
 	PROXIMITY_WINDOW_MS,
 	pairKey,
 	rescoreFlaggedFeaturePairs,
+	scoreDetectionPair,
 	selectCandidatePairs,
 	selectCandidatePairsForTargets,
 } from "../prisma/queries/projects/duplicate-detection";
@@ -602,6 +604,142 @@ describe("selectCandidatePairs — feature sections", () => {
 		expect(droppedPairs).toEqual([
 			expect.objectContaining({ storyAId: "doc", storyBId: "ref" }),
 		]);
+	});
+});
+
+describe("scoreDetectionPair", () => {
+	const reference: DetectionItem = {
+		storyId: "ref",
+		embedding: [1, 0, 0],
+		focusVectors: { scope: [1, 0, 0] },
+	};
+
+	it("scores a pair exactly as candidate selection does", () => {
+		const other: DetectionItem = {
+			storyId: "f",
+			embedding: vectorAtSimilarity(0.5),
+			focusVectors: { scope: vectorAtSimilarity(1) },
+		};
+		const { pairs } = selectCandidatePairs([reference, other]);
+
+		const scored = scoreDetectionPair(reference, other);
+
+		expect(scored.threshold).toBe(CANDIDATE_COSINE_THRESHOLD);
+		expect(scored.score).toBeCloseTo(candidateScore(pairs[0]), 12);
+		expect(scored.score).toBeGreaterThanOrEqual(scored.threshold);
+	});
+
+	it("keeps the whole-document cosine when only one side has a section", () => {
+		const bug: DetectionItem = {
+			storyId: "b",
+			embedding: vectorAtSimilarity(0.72),
+		};
+
+		expect(scoreDetectionPair(reference, bug).score).toBeCloseTo(0.72, 12);
+	});
+
+	it("keeps out features whose Scope sections differ", () => {
+		const scored = scoreDetectionPair(reference, {
+			storyId: "f",
+			embedding: vectorAtSimilarity(0.95),
+			focusVectors: { scope: vectorAtSimilarity(0) },
+		});
+
+		expect(scored.score).toBeLessThan(scored.threshold);
+	});
+
+	it("relaxes the threshold for items created close together", () => {
+		const createdAt = "2026-11-02T09:00:00.000Z";
+		const scored = scoreDetectionPair(
+			{ storyId: "a", embedding: [1, 0, 0], createdAt },
+			{ storyId: "b", embedding: vectorAtSimilarity(0.68), createdAt },
+		);
+
+		expect(scored.threshold).toBeCloseTo(
+			CANDIDATE_COSINE_THRESHOLD - PROXIMITY_RELAXATION,
+			12,
+		);
+		expect(scored.score).toBeGreaterThanOrEqual(scored.threshold);
+		expect(scored.proximate).toBe(true);
+	});
+
+	it("names the section a pair was scored on, for the verifier", () => {
+		const scope = scoreDetectionPair(reference, {
+			storyId: "f",
+			embedding: vectorAtSimilarity(0.5),
+			focusVectors: { scope: vectorAtSimilarity(1) },
+		});
+		const whole = scoreDetectionPair(reference, {
+			storyId: "b",
+			embedding: vectorAtSimilarity(0.72),
+		});
+
+		expect(scope.focusKind).toBe("scope");
+		expect(scope.proximate).toBe(false);
+		expect(whole.focusKind).toBeNull();
+	});
+});
+
+describe("detectionVerdictHash", () => {
+	const text = "Queue exports\n\nExports need a queue.";
+	const scope = "In scope:\n- Queue large exports";
+	const criteria = "Given a large export";
+
+	// The roadmap scan's verdict hash before it moved here: a cached verdict
+	// stays valid only while this does not change.
+	type HashSubject = {
+		kind: string;
+		focusTexts: Record<string, string> | null;
+	};
+	const roadmapHash = (s: HashSubject & { text: string }) => {
+		const sections = ["scope", "acceptance_criteria"].flatMap(
+			(kind) => s.focusTexts?.[kind] ?? [],
+		);
+		const parts =
+			sections.length > 0
+				? sections
+				: s.kind === "FEATURE"
+					? ["kind:FEATURE"]
+					: [];
+		return parts.length > 0
+			? hashDetectionText([s.text, ...parts].join("\n\n"))
+			: hashDetectionText(s.text);
+	};
+
+	it.each<HashSubject>([
+		{ kind: "BUG", focusTexts: null },
+		{ kind: "FEATURE", focusTexts: {} },
+		{ kind: "FEATURE", focusTexts: { scope } },
+		{ kind: "FEATURE", focusTexts: { acceptance_criteria: criteria } },
+		{
+			kind: "FEATURE",
+			focusTexts: { scope, acceptance_criteria: criteria },
+		},
+	])("hashes $kind $focusTexts as the roadmap scan did", (subject) => {
+		const withText = { text, ...subject };
+
+		expect(detectionVerdictHash(withText)).toBe(roadmapHash(withText));
+	});
+
+	it("changes with a section, or with the kind of a sectionless item", () => {
+		const bug = detectionVerdictHash({
+			text,
+			kind: "BUG",
+			focusTexts: null,
+		});
+		const feature = detectionVerdictHash({
+			text,
+			kind: "FEATURE",
+			focusTexts: {},
+		});
+		const scoped = detectionVerdictHash({
+			text,
+			kind: "FEATURE",
+			focusTexts: { scope },
+		});
+
+		expect(new Set([bug, feature, scoped]).size).toBe(3);
+		expect(bug).toBe(hashDetectionText(text));
 	});
 });
 

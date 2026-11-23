@@ -49,7 +49,6 @@ export const DATA_ANALYST_WIRE: BaseEvent[] = [
 				},
 			],
 			mcpTools: "private-state",
-			error: "private-state",
 			artifacts: [{ id: "other-tenant-chart", type: "chart" }],
 			reasoningByTurn: "private-state",
 		},

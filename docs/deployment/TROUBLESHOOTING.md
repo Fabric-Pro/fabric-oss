@@ -311,6 +311,19 @@ helm rollback fabric <REVISION> -n fabric --wait --timeout 10m
 
 This re-applies the manifest set from `<REVISION>`. The migrate hook does NOT run on rollback (Helm hooks fire only on the install/upgrade/delete that you name) — so the database schema stays at whatever forward migration the failed deploy applied. See §7 on migration discipline.
 
+**Proposal Inbox items moved to Rejected one at a time.** A release with per-item review records such an item in the proposal's `sourceMetadata.rejectedChangeIndexes` and copies it to its own Rejected entry. A release without per-item review does not read that key: it shows the item as approvable again, and approving it there creates a ticket that a later Restore & Apply of its Rejected entry would create a second time. The key stays on the proposal when the rest of it is later moved to Rejected as a whole (status `BACKLOG`), so a Restore & Apply of that proposal in the older release applies the split items again too. Before you roll back across that change, list the affected proposals (read-only):
+
+```sql
+SELECT "id", "projectId", "status", "changeCount",
+       "sourceMetadata"->'rejectedChangeIndexes' AS "rejectedChangeIndexes"
+FROM "pending_backlog_proposal"
+WHERE "status" IN ('PENDING', 'FAILED', 'BACKLOG')
+  AND jsonb_typeof("sourceMetadata"->'rejectedChangeIndexes') = 'array'
+  AND "sourceMetadata"->'rejectedChangeIndexes' <> '[]'::jsonb;
+```
+
+If the query returns rows, finish reviewing the `PENDING` and `FAILED` proposals before the rollback, and tell reviewers not to approve the listed item indexes, or Restore & Apply the listed `BACKLOG` proposals, until the newer release is back.
+
 ### 3.4 Stuck in `pending-upgrade`
 
 **Symptom.** `helm status fabric -n fabric` shows status `pending-upgrade` indefinitely.

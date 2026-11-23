@@ -41,6 +41,15 @@ function forgetReportPage(queryClient: QueryClient, id: string) {
 }
 
 /**
+ * The id of a report's delete-failure toast. The failure stays until it is
+ * closed, so a later attempt for the same report closes it: a retry that
+ * succeeds must not leave "Couldn't delete" beside "Report deleted".
+ */
+function deleteFailureToastId(id: string) {
+	return `report-delete-failed-${id}`;
+}
+
+/**
  * Deletes a report and keeps every cached report list in step: the report
  * leaves the lists at once, comes back if the deletion fails, and the lists
  * are read again either way. Once the report is gone its cached page is
@@ -63,6 +72,7 @@ export function useDeleteReportInstance({
 	return useMutation(
 		orpc.reports.instances.delete.mutationOptions({
 			onMutate: async ({ id }) => {
+				toast.dismiss(deleteFailureToastId(id));
 				await queryClient.cancelQueries({ queryKey: listKey });
 				const previous = queryClient.getQueriesData<ReportListPage>({
 					queryKey: listKey,
@@ -88,6 +98,7 @@ export function useDeleteReportInstance({
 					queryClient.setQueryData(key, page);
 				}
 				toast.error(failure.message, {
+					id: deleteFailureToastId(id),
 					duration: Number.POSITIVE_INFINITY,
 					closeButton: true,
 				});

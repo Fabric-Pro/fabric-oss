@@ -265,6 +265,37 @@ describe("restorePendingDecisions", () => {
 		expect(saved.acceptanceCriteria).not.toContain(Q_ARCHIVED);
 	});
 
+	it("splices above the real criteria heading, not above one in a code fence", () => {
+		const fencedExample = [
+			"## Example template",
+			"",
+			"```md",
+			"## Acceptance Criteria",
+			"- written by the template",
+			"```",
+		].join("\n");
+		const baseline = `${SPEC_BODY}\n\n${fencedExample}\n\n${ACCEPTANCE_SECTION}`;
+		const serverDescription = withAppendix(
+			`${SPEC_BODY}\n\n${fencedExample}`,
+			[storedEntry(Q_ARCHIVED, A_ARCHIVED)],
+		);
+		const content = `${REWRITTEN_SPEC_BODY}\n\n${fencedExample}\n\n${ACCEPTANCE_SECTION}`;
+
+		const result = restorePendingDecisions({
+			baseline,
+			serverDescription,
+			content,
+		});
+
+		expect(result).toContain(fencedExample);
+		expect(result.indexOf(Q_ARCHIVED)).toBeGreaterThan(
+			result.indexOf(fencedExample) + fencedExample.length,
+		);
+		expect(result.indexOf(Q_ARCHIVED)).toBeLessThan(
+			result.lastIndexOf("## Acceptance Criteria"),
+		);
+	});
+
 	it("re-creates the appendix heading with the exact constant when the saved content has none", () => {
 		// KTD2c. The model is told to DELETE the heading once it integrates, so
 		// this is the common case. Bullets restored without the heading survive as

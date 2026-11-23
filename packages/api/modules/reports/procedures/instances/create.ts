@@ -57,10 +57,14 @@ export const createInstanceProcedure = tenantProtectedProcedure
 		// organization resolves, so the organization becomes the project's own
 		// and a different input organization is refused.
 		if (input.projectId) {
+			// Reach is `canCreateProjectReport`'s, which admits an organization
+			// admin to every project's reports.
 			await assertProjectPermission(
 				input.projectId,
 				context.user.id,
 				Permissions.REPORT_READ,
+				undefined,
+				{ admitUnreachableOrganizationMember: true },
 			);
 			if (
 				!(await canCreateProjectReport(input.projectId, context.user))

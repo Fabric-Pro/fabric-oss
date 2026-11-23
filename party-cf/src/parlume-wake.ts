@@ -31,8 +31,8 @@ const FABRIC = new Set(["fbrk"]);
 const FABRIC_AFTER_GREETING = new Set([...FABRIC, "fbr"]);
 const PARLUME = new Set(["prlm", "prlmn"]);
 const SPOKEN_REFERENCE =
-	/^(?:please\s+)?(say|read|go(?:\s+(?:with|ahead\s+with))?|(?:tell\s+(?:me|us)\s+)?more(?:\s+(?:on|about))?)\s+(?:post\s+)?(?:p|pee)[\s.-]*(\d{1,6}|[a-z]+)[\s.!?]*$/i;
-const SPOKEN_NUMBERS = [
+	/^(?:please\s+)?(say|read|go(?:\s+(?:with|ahead\s+with))?|(?:tell\s+(?:me|us)\s+)?more(?:\s+(?:on|about))?)\s+(?:post\s+)?\[?(?:pee|p)[\s.-]*(\d{1,6}|[a-z]+(?:[\s-]+[a-z]+)?)\]?[\s.!?]*$/i;
+const SPOKEN_UNITS = [
 	"zero",
 	"one",
 	"two",
@@ -53,8 +53,37 @@ const SPOKEN_NUMBERS = [
 	"seventeen",
 	"eighteen",
 	"nineteen",
-	"twenty",
 ];
+const SPOKEN_TENS = [
+	"",
+	"",
+	"twenty",
+	"thirty",
+	"forty",
+	"fifty",
+	"sixty",
+	"seventy",
+	"eighty",
+	"ninety",
+];
+
+/**
+ * A tag number as speech recognition writes it in words: "three", "thirty",
+ * "thirty one" or "thirty-one". Tags go on counting through every session in
+ * a meeting, so they pass twenty early. -1 for anything else.
+ */
+function spokenNumber(spoken: string): number {
+	const [first, second, ...rest] = spoken.split(/[\s-]+/);
+	const tens = SPOKEN_TENS.indexOf(first);
+	if (rest.length > 0) {
+		return -1;
+	}
+	if (second === undefined) {
+		return tens > 1 ? tens * 10 : SPOKEN_UNITS.indexOf(first);
+	}
+	const unit = SPOKEN_UNITS.indexOf(second);
+	return tens > 1 && unit >= 1 && unit <= 9 ? tens * 10 + unit : -1;
+}
 
 const POST_COMMAND_START = /^(?:please\s+)?(?:say|read|go|more|tell)\b/i;
 
@@ -72,9 +101,12 @@ export type ParlumeSpokenReference = {
 };
 
 /**
- * A spoken request, after its wake phrase, that names a chat post: "go P3",
- * "read P3", "tell me more about P3". Speech recognition writes the tag as
- * "P3", "P 3" or "P three".
+ * A request that names a chat post: "go P3", "read P3", "tell me more about
+ * P3", with or without a closing question mark. Spoken after the wake phrase
+ * or typed in the chat, it is the one grammar both use. Speech recognition
+ * writes the tag as "P3", "P 3", "P three" or "P thirty one"; a typed one may
+ * keep the post's brackets, "[P3]". The verb always comes first, so a message
+ * that opens with a tag is never a command.
  */
 export function parseParlumeSpokenReference(
 	text: string,
@@ -84,9 +116,7 @@ export function parseParlumeSpokenReference(
 		return null;
 	}
 	const spoken = match[2].toLowerCase();
-	const number = /^\d+$/.test(spoken)
-		? Number(spoken)
-		: SPOKEN_NUMBERS.indexOf(spoken);
+	const number = /^\d+$/.test(spoken) ? Number(spoken) : spokenNumber(spoken);
 	if (number < 1) {
 		return null;
 	}
@@ -223,4 +253,43 @@ export function parseParlumeWake(
 	options?: { midTurn?: boolean },
 ): string | null {
 	return findParlumeWake(text, options)?.request ?? null;
+}
+
+type ParlumeWakeNearMiss = "clipped_name" | "post_command" | "name";
+
+const FULL_NAMES = ["fbrk", "prlm"];
+
+/**
+ * Why a segment that did not wake Parlume looks addressed to it all the same:
+ * a greeting before a clipped name ("Hey, Fab"), a chat post command without
+ * the name before it ("go P3"), or "Parlume" where the wake rule does not
+ * take it. Overlapping speech clips and drops wake phrases this way. "Fabric"
+ * alone is left out: meetings say the product's name all the time.
+ */
+export function findParlumeWakeNearMiss(
+	text: string,
+): ParlumeWakeNearMiss | null {
+	if (findParlumeWake(text) !== null) {
+		return null;
+	}
+	for (const greeting of text.matchAll(GREETING)) {
+		const next = NEXT_WORD.exec(
+			text.slice(greeting.index + greeting[0].length),
+		);
+		const name = next ? skeleton(next[1]) : "";
+		if (
+			name.length >= 2 &&
+			FULL_NAMES.some((full) => full.startsWith(name))
+		) {
+			return "clipped_name";
+		}
+	}
+	if (parseParlumeSpokenReference(text)) {
+		return "post_command";
+	}
+	return (text.match(/[a-z']+/gi) ?? []).some((word) =>
+		PARLUME.has(skeleton(word)),
+	)
+		? "name"
+		: null;
 }

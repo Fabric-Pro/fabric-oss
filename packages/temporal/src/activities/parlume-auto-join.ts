@@ -74,6 +74,32 @@ export interface AutoJoinCalendarMeeting {
 	start?: string | null;
 	joinUrl?: string | null;
 	isCancelled?: boolean;
+	/** The invitees' email domains; the web app tells guests by them. */
+	attendeeDomains?: string[];
+	/**
+	 * The addresses of the invitees from the enabler's own domain, when the
+	 * read asked for them: they may read the meeting's transcript.
+	 */
+	inviteeEmails?: string[];
+}
+
+/** At most this many invitee addresses go on with a join. */
+const PARLUME_AUTO_JOIN_MAX_INVITEE_EMAILS = 200;
+
+/**
+ * The domain of the enabler's address: an invitee from it is from inside the
+ * organization, as the web app tells guests.
+ */
+function parlumeEmailDomain(email: string | null | undefined): string | null {
+	const at = email?.lastIndexOf("@") ?? -1;
+	const domain =
+		email && at > 0
+			? email
+					.slice(at + 1)
+					.trim()
+					.toLowerCase()
+			: "";
+	return domain || null;
 }
 
 export interface AutoJoinOccurrence {
@@ -181,6 +207,7 @@ export function parlumeAutoJoinWorkflowId(occurrence: {
 async function readCalendar(
 	owner: { userId: string; organizationId: string },
 	window: { start: number; end: number },
+	inviteeEmailDomain: string | null = null,
 ): Promise<AutoJoinCalendarMeeting[]> {
 	const result = (await executeMicrosoftTeamsTool(
 		"list_calendar_meetings",
@@ -190,6 +217,8 @@ async function readCalendar(
 		},
 		owner.userId,
 		owner.organizationId,
+		undefined,
+		inviteeEmailDomain ? { inviteeEmailDomain } : {},
 	)) as { meetings?: AutoJoinCalendarMeeting[]; error?: string };
 	if (result.error) {
 		throw new Error(result.error);
@@ -385,17 +414,17 @@ export const PARLUME_AUTO_JOIN_CONFIRM_UNREADABLE =
 	"Parlume did not join a meeting of this series because the Teams calendar of the person who turned on auto-join could not be read just before it started.";
 
 /**
- * Whether the calendar still has the occurrence a join was scheduled for: the
- * series' join link, a start within a minute of the scheduled one, and not
- * cancelled.
+ * The calendar's entry for the occurrence a join was scheduled for, if it
+ * still has one: the series' join link, a start within a minute of the
+ * scheduled one, and not cancelled.
  */
-export function isOccurrenceStillScheduled(input: {
+export function findScheduledOccurrence(input: {
 	joinUrl: string;
 	occurrenceStartMs: number;
 	meetings: AutoJoinCalendarMeeting[];
-}): boolean {
+}): AutoJoinCalendarMeeting | undefined {
 	const joinUrl = normalizeJoinUrl(input.joinUrl);
-	return input.meetings.some((meeting) => {
+	return input.meetings.find((meeting) => {
 		const startMs = parseGraphStart(meeting.start);
 		return (
 			!meeting.isCancelled &&
@@ -416,10 +445,13 @@ type ConfirmCalendarRead =
 async function readCalendarToConfirm(
 	owner: { userId: string; organizationId: string },
 	window: { start: number; end: number },
+	inviteeEmailDomain: string | null,
 ): Promise<ConfirmCalendarRead> {
 	for (let attempt = 1; ; attempt++) {
 		try {
-			return { meetings: await readCalendar(owner, window) };
+			return {
+				meetings: await readCalendar(owner, window, inviteeEmailDomain),
+			};
 		} catch (error) {
 			const message =
 				error instanceof Error ? error.message : String(error);
@@ -435,7 +467,11 @@ async function readCalendarToConfirm(
 }
 
 export type ConfirmParlumeAutoJoinResult =
-	| { proceed: true }
+	/**
+	 * `inviteeDomains`: the email domains of the occurrence's invitees;
+	 * `inviteeEmails`: the addresses of those from the enabler's domain.
+	 */
+	| { proceed: true; inviteeDomains: string[]; inviteeEmails: string[] }
 	| {
 			proceed: false;
 			outcome: "skipped";
@@ -451,6 +487,10 @@ export type ConfirmParlumeAutoJoinResult =
  * planner saw it. A moved meeting is the planner's to schedule again, under
  * the id of its new start. When the series is no longer on, the web app is
  * asked anyway: it checks the series itself and records why it does not join.
+ * The occurrence's invitee domains go on with the join, for the web app to
+ * tell a meeting with external guests, and so do the addresses of the
+ * invitees from the enabler's own domain, who may read its transcript. No
+ * other invitee's address is read.
  */
 export async function confirmParlumeAutoJoinOccurrence(input: {
 	linkedMeetingId: string;
@@ -463,6 +503,7 @@ export async function confirmParlumeAutoJoinOccurrence(input: {
 			parlumeAutoJoin: true,
 			parlumeAutoJoinUserId: true,
 			deactivatedAt: true,
+			parlumeAutoJoinUser: { select: { email: true } },
 			project: { select: { organizationId: true } },
 		},
 	});
@@ -474,7 +515,7 @@ export async function confirmParlumeAutoJoinOccurrence(input: {
 		!userId ||
 		!organizationId
 	) {
-		return { proceed: true };
+		return { proceed: true, inviteeDomains: [], inviteeEmails: [] };
 	}
 	const occurrenceStartMs = Date.parse(input.occurrenceStart);
 	const read = await readCalendarToConfirm(
@@ -483,6 +524,7 @@ export async function confirmParlumeAutoJoinOccurrence(input: {
 			start: occurrenceStartMs - PARLUME_AUTO_JOIN_CONFIRM_WINDOW_MS,
 			end: occurrenceStartMs + PARLUME_AUTO_JOIN_CONFIRM_WINDOW_MS,
 		},
+		parlumeEmailDomain(series.parlumeAutoJoinUser?.email),
 	);
 	if ("error" in read) {
 		parlumeActivityLog("warn", "auto_join.confirm_failed", {
@@ -507,13 +549,12 @@ export async function confirmParlumeAutoJoinOccurrence(input: {
 				: "calendar_unreadable",
 		};
 	}
-	if (
-		!isOccurrenceStillScheduled({
-			joinUrl: series.joinUrl,
-			occurrenceStartMs,
-			meetings: read.meetings,
-		})
-	) {
+	const occurrence = findScheduledOccurrence({
+		joinUrl: series.joinUrl,
+		occurrenceStartMs,
+		meetings: read.meetings,
+	});
+	if (!occurrence) {
 		parlumeActivityLog("info", "auto_join.skipped", {
 			...input,
 			reason: "occurrence_moved_or_cancelled",
@@ -524,7 +565,14 @@ export async function confirmParlumeAutoJoinOccurrence(input: {
 			reason: "occurrence_moved_or_cancelled",
 		};
 	}
-	return { proceed: true };
+	return {
+		proceed: true,
+		inviteeDomains: occurrence.attendeeDomains ?? [],
+		inviteeEmails: (occurrence.inviteeEmails ?? []).slice(
+			0,
+			PARLUME_AUTO_JOIN_MAX_INVITEE_EMAILS,
+		),
+	};
 }
 
 /** Thrown for a refusal the web app answered with a 4xx: never retried. */
@@ -540,7 +588,11 @@ const AUTO_JOIN_REQUEST_TIMEOUT_MS = 90_000;
 export async function requestParlumeAutoJoin(input: {
 	linkedMeetingId: string;
 	occurrenceStart: string;
+	inviteeDomains: string[];
+	inviteeEmails: string[];
 }): Promise<{ outcome: string }> {
+	// The logs carry no invitee's address.
+	const { inviteeEmails: _inviteeEmails, ...logged } = input;
 	const secret = process.env.AGENT_SERVICE_SECRET;
 	if (!secret) {
 		throw ApplicationFailure.nonRetryable(
@@ -562,7 +614,7 @@ export async function requestParlumeAutoJoin(input: {
 	);
 	if (response.status >= 400 && response.status < 500) {
 		parlumeActivityLog("warn", "auto_join.rejected", {
-			...input,
+			...logged,
 			status: response.status,
 		});
 		throw ApplicationFailure.nonRetryable(
@@ -575,6 +627,6 @@ export async function requestParlumeAutoJoin(input: {
 	}
 	const body = (await response.json()) as { outcome?: unknown };
 	const outcome = typeof body.outcome === "string" ? body.outcome : "unknown";
-	parlumeActivityLog("info", "auto_join.requested", { ...input, outcome });
+	parlumeActivityLog("info", "auto_join.requested", { ...logged, outcome });
 	return { outcome };
 }

@@ -14,7 +14,7 @@ const MODES = [
 		value: "act",
 		title: "Actions",
 		description:
-			"Makes the changes attendees ask for, with your permissions, as soon as they ask.",
+			"Proposes the changes attendees ask for. Nothing changes until a project member confirms it in Fabric.",
 	},
 ] as const;
 

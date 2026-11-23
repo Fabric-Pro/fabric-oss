@@ -306,3 +306,38 @@ it("preserves explanatory descriptions for moved actions", async () => {
 		);
 	}
 });
+
+it("shows the Rejected count on the Rejected proposals entry, and none at 0", async () => {
+	const actions = {
+		onClassify: vi.fn(),
+		classifyDisabledReason: null,
+		onScan: vi.fn(),
+		scanning: false,
+		onExport: vi.fn(),
+		exporting: false,
+		onRefresh: vi.fn(),
+		onHistory: vi.fn(),
+		onRejected: vi.fn(),
+	};
+	const user = userEvent.setup();
+	const { rerender } = render(
+		<RoadmapActionsMenu
+			items={[]}
+			actions={{ ...actions, rejectedCount: 3 }}
+		/>,
+	);
+	await user.click(screen.getByRole("button", { name: "Actions" }));
+	expect(
+		screen.getByRole("menuitem", { name: /^Rejected proposals/ }),
+	).toHaveTextContent(/^Rejected proposals3Recover/);
+
+	rerender(
+		<RoadmapActionsMenu
+			items={[]}
+			actions={{ ...actions, rejectedCount: 0 }}
+		/>,
+	);
+	expect(
+		screen.getByRole("menuitem", { name: /^Rejected proposals/ }),
+	).toHaveTextContent(/^Rejected proposalsRecover/);
+});

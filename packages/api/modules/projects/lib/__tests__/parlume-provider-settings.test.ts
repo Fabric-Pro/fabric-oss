@@ -17,9 +17,12 @@ vi.mock("@repo/utils", () => ({
 }));
 
 import {
+	attendeeSourceToStored,
 	resolveParlumeAttendeeSettings,
 	resolveParlumeAttendeeSettingsForSession,
+	resolveParlumeGuestPolicy,
 	resolveParlumeRealtimeDeployment,
+	resolveParlumeWebhookSecret,
 	teamsLoginModeFromStored,
 	teamsLoginModeToStored,
 } from "../parlume-provider-settings";
@@ -27,6 +30,7 @@ import {
 function storedRow(overrides: Record<string, unknown> = {}) {
 	return {
 		encryptedAttendeeApiKey: "cipher",
+		encryptedAttendeeWebhookSecret: "secret-cipher",
 		attendeeBaseUrl: null,
 		teamsLoginMode: null,
 		realtimeDeployment: null,
@@ -40,6 +44,7 @@ beforeEach(() => {
 	vi.stubEnv("PARLUME_ATTENDEE_API_KEY", "operator-key");
 	vi.stubEnv("PARLUME_ATTENDEE_BASE_URL", "");
 	vi.stubEnv("PARLUME_ATTENDEE_TEAMS_LOGIN", "always");
+	vi.stubEnv("PARLUME_ATTENDEE_WEBHOOK_SECRET", "operator-webhook-secret");
 });
 
 afterEach(() => {
@@ -59,6 +64,7 @@ describe("resolveParlumeAttendeeSettings", () => {
 			apiKey: "decrypted:cipher",
 			baseUrl: "https://attendee.example.com",
 			teamsLoginMode: "only_if_required",
+			webhookSecret: "decrypted:secret-cipher",
 			source: "organization",
 		});
 		expect(mocks.settingsFindUnique).toHaveBeenCalledWith(
@@ -73,7 +79,21 @@ describe("resolveParlumeAttendeeSettings", () => {
 			apiKey: "decrypted:cipher",
 			baseUrl: "https://app.attendee.dev",
 			teamsLoginMode: null,
+			webhookSecret: "decrypted:secret-cipher",
 			source: "organization",
+		});
+	});
+
+	it("never lends the operator's webhook secret to the organization's own project", async () => {
+		mocks.settingsFindUnique.mockResolvedValue(
+			storedRow({ encryptedAttendeeWebhookSecret: null }),
+		);
+
+		await expect(
+			resolveParlumeAttendeeSettings("org-1"),
+		).resolves.toMatchObject({
+			source: "organization",
+			webhookSecret: null,
 		});
 	});
 
@@ -90,7 +110,42 @@ describe("resolveParlumeAttendeeSettings", () => {
 			apiKey: "operator-key",
 			baseUrl: "https://app.attendee.dev",
 			teamsLoginMode: "always",
+			teamsLoginGroup: null,
+			webhookSecret: "operator-webhook-secret",
 			source: "environment",
+		});
+	});
+
+	it("signs the organization's bot in with its own Teams login group", async () => {
+		mocks.settingsFindUnique.mockResolvedValue(
+			storedRow({
+				teamsLoginMode: "ALWAYS",
+				teamsLoginGroup: "example-org bot",
+			}),
+		);
+
+		await expect(
+			resolveParlumeAttendeeSettings("org-1"),
+		).resolves.toMatchObject({
+			source: "organization",
+			teamsLoginMode: "always",
+			teamsLoginGroup: "example-org bot",
+		});
+	});
+
+	it("never carries an organization's login group to the operator's project", async () => {
+		mocks.settingsFindUnique.mockResolvedValue(
+			storedRow({
+				encryptedAttendeeApiKey: null,
+				teamsLoginGroup: "example-org bot",
+			}),
+		);
+
+		await expect(
+			resolveParlumeAttendeeSettings("org-1"),
+		).resolves.toMatchObject({
+			source: "environment",
+			teamsLoginGroup: null,
 		});
 	});
 
@@ -136,35 +191,106 @@ describe("resolveParlumeAttendeeSettings", () => {
 	});
 });
 
+describe("resolveParlumeWebhookSecret", () => {
+	it("records the project a bot is created on", () => {
+		expect(attendeeSourceToStored("environment")).toBe("ENVIRONMENT");
+		expect(attendeeSourceToStored("organization")).toBe("ORGANIZATION");
+	});
+
+	it("verifies an operator-created bot against the operator's secret after the organization saves its own key", async () => {
+		mocks.settingsFindUnique.mockResolvedValue(storedRow());
+
+		await expect(
+			resolveParlumeWebhookSecret({
+				organizationId: "org-1",
+				attendeeSource: "ENVIRONMENT",
+			}),
+		).resolves.toBe("operator-webhook-secret");
+		expect(mocks.settingsFindUnique).not.toHaveBeenCalled();
+	});
+
+	it("verifies an organization-created bot against the organization's secret after it removes its key", async () => {
+		mocks.settingsFindUnique.mockResolvedValue(
+			storedRow({ encryptedAttendeeApiKey: null }),
+		);
+
+		await expect(
+			resolveParlumeWebhookSecret({
+				organizationId: "org-1",
+				attendeeSource: "ORGANIZATION",
+			}),
+		).resolves.toBe("decrypted:secret-cipher");
+	});
+
+	it("never lends the operator's secret to an organization-created bot", async () => {
+		mocks.settingsFindUnique.mockResolvedValue(null);
+
+		await expect(
+			resolveParlumeWebhookSecret({
+				organizationId: "org-1",
+				attendeeSource: "ORGANIZATION",
+			}),
+		).resolves.toBeNull();
+	});
+
+	it("resolves the organization's current settings for a session from before the source was recorded", async () => {
+		mocks.settingsFindUnique.mockResolvedValue(storedRow());
+
+		await expect(
+			resolveParlumeWebhookSecret({
+				organizationId: "org-1",
+				attendeeSource: null,
+			}),
+		).resolves.toBe("decrypted:secret-cipher");
+
+		mocks.settingsFindUnique.mockResolvedValue(null);
+		await expect(
+			resolveParlumeWebhookSecret({
+				organizationId: "org-1",
+				attendeeSource: null,
+			}),
+		).resolves.toBe("operator-webhook-secret");
+	});
+});
+
 describe("resolveParlumeRealtimeDeployment", () => {
 	it("uses the organization's deployment name", async () => {
 		mocks.settingsFindUnique.mockResolvedValue({
 			realtimeDeployment: "example-realtime",
 		});
 
-		await expect(
-			resolveParlumeRealtimeDeployment("org-1"),
-		).resolves.toEqual({
-			deployment: "example-realtime",
-			source: "organization",
-		});
+		await expect(resolveParlumeRealtimeDeployment("org-1")).resolves.toBe(
+			"example-realtime",
+		);
 	});
 
-	it("names the deployment after the model otherwise, even with a key saved", async () => {
+	it("names none otherwise, so the meeting keeps the classic voice", async () => {
 		mocks.settingsFindUnique.mockResolvedValue({
 			realtimeDeployment: null,
 		});
 
 		await expect(
 			resolveParlumeRealtimeDeployment("org-1"),
-		).resolves.toEqual({
-			deployment: "gpt-realtime-2.1",
-			source: "default",
+		).resolves.toBeNull();
+		await expect(
+			resolveParlumeRealtimeDeployment(null),
+		).resolves.toBeNull();
+	});
+});
+
+describe("resolveParlumeGuestPolicy", () => {
+	it("keeps notes and stays quiet unless the organization chose internal meetings only", async () => {
+		mocks.settingsFindUnique.mockResolvedValue(null);
+		await expect(resolveParlumeGuestPolicy("org-1")).resolves.toBe(
+			"NOTES_ONLY",
+		);
+
+		mocks.settingsFindUnique.mockResolvedValue({
+			guestPolicy: "INTERNAL_ONLY",
 		});
-		await expect(resolveParlumeRealtimeDeployment(null)).resolves.toEqual({
-			deployment: "gpt-realtime-2.1",
-			source: "default",
-		});
+		await expect(resolveParlumeGuestPolicy("org-1")).resolves.toBe(
+			"INTERNAL_ONLY",
+		);
 	});
 });
 

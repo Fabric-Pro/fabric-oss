@@ -174,6 +174,20 @@ describe("ParlumeLiveCard details", () => {
 		expect(screen.queryByText("Question 4")).toBeNull();
 	});
 
+	it("shows an answer's Markdown as plain text on its one line", () => {
+		showCard({
+			requests: [
+				request({
+					responseText:
+						"**Status:** on track.\n\n---\n\n- Export is in [review](https://example.com/r)",
+				}),
+			],
+		});
+		expect(
+			screen.getByText("Status: on track. Export is in review"),
+		).toBeInTheDocument();
+	});
+
 	it("names an unidentified speaker rather than leaving the line blank", () => {
 		showCard({
 			requests: [request({ speakerId: null, speakerName: null })],

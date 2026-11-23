@@ -30,14 +30,57 @@ export type MoveProposalItemResult =
 	/** Another change to the proposal landed first; reopen it and retry. */
 	| { outcome: "proposal_changed" };
 
-interface MoveProposalItemParams {
+/** `sourceMetadata` key of the note saying why an item was moved. */
+const REJECTION_NOTE_KEY = "rejectionNote";
+
+/**
+ * `sourceMetadata` key on a split row naming the item it was moved out of,
+ * `{ proposalId, changeIndex }`, so the original can show the item restored
+ * once the split row leaves the Rejected list.
+ */
+export const SPLIT_FROM_KEY = "splitFrom";
+
+/** Split-row statuses that mean its item left the Rejected list. */
+const RESTORED_SPLIT_STATUSES = [
+	"PENDING",
+	"APPROVED",
+	"APPLYING",
+	"APPLIED",
+	"FAILED",
+] as const;
+
+/** A per-item rejection that was restored, with the ticket it created. */
+export interface RestoredProposalItem {
+	changeIndex: number;
+	storyId: string | null;
+}
+
+export interface MoveProposalItemParams {
 	proposalId: string;
 	changeIndex: number;
 	reviewedBy: string;
+	/** Kept on the Rejected row under {@link REJECTION_NOTE_KEY}. */
+	rejectionNote?: Record<string, unknown>;
 }
 
 /** Thrown inside the transaction so the split row rolls back on a lost race. */
-class ProposalItemMoveConflict extends Error {}
+export class ProposalItemMoveConflict extends Error {}
+
+/** `sourceMetadata` with the move's note added, when it has one. */
+function withRejectionNote(
+	sourceMetadata: unknown,
+	note: Record<string, unknown> | undefined,
+): Prisma.InputJsonValue | undefined {
+	if (!note) {
+		return sourceMetadata === undefined || sourceMetadata === null
+			? undefined
+			: toJson(sourceMetadata);
+	}
+	return toJson({
+		...(asJsonRecord(sourceMetadata) ?? {}),
+		[REJECTION_NOTE_KEY]: note,
+	});
+}
 
 const toJson = (value: unknown): Prisma.InputJsonValue =>
 	JSON.parse(JSON.stringify(value));
@@ -133,7 +176,12 @@ async function copyItemDrafts(
 	});
 }
 
-async function moveItemInTransaction(
+/**
+ * {@link movePendingProposalItemToBacklog} inside a caller's transaction.
+ * Throws {@link ProposalItemMoveConflict} when the original changed under
+ * the split, so the whole transaction rolls back.
+ */
+export async function moveItemInTransaction(
 	tx: Prisma.TransactionClient,
 	params: MoveProposalItemParams,
 ): Promise<MoveProposalItemResult> {
@@ -176,6 +224,14 @@ async function moveItemInTransaction(
 				status: "BACKLOG",
 				reviewedAt,
 				reviewedBy: params.reviewedBy,
+				...(params.rejectionNote
+					? {
+							sourceMetadata: withRejectionNote(
+								row.sourceMetadata,
+								params.rejectionNote,
+							),
+						}
+					: {}),
 			},
 		});
 		return moved.count === 1
@@ -192,10 +248,21 @@ async function moveItemInTransaction(
 			proposal: splitProposal,
 			summary: deriveProposalHeadline(splitProposal) || row.summary,
 			changeCount: 1,
-			sourceMetadata: splitItemSourceMetadata(
-				row.sourceMetadata,
-				params.changeIndex,
-			),
+			sourceMetadata: toJson({
+				...(asJsonRecord(
+					withRejectionNote(
+						splitItemSourceMetadata(
+							row.sourceMetadata,
+							params.changeIndex,
+						),
+						params.rejectionNote,
+					),
+				) ?? {}),
+				[SPLIT_FROM_KEY]: {
+					proposalId: params.proposalId,
+					changeIndex: params.changeIndex,
+				},
+			}),
 			userId: row.userId,
 			organizationId: row.organizationId,
 			reviewedAt,
@@ -267,4 +334,59 @@ export async function movePendingProposalItemToBacklog(
 		}
 		throw error;
 	}
+}
+
+/**
+ * The items of a proposal that were moved to Rejected one at a time and then
+ * restored from the Rejected list (Restore & Apply), with the ticket each
+ * one created or updated once its split row applied: a split row still
+ * applying, or whose apply failed, wrote no ticket. Found through their
+ * split rows' {@link SPLIT_FROM_KEY}; a split row still in the Rejected
+ * list, or deleted, is not restored.
+ */
+export async function listRestoredProposalItems(proposal: {
+	id: string;
+	projectId: string;
+}): Promise<RestoredProposalItem[]> {
+	const splits = await db.pendingBacklogProposal.findMany({
+		where: {
+			projectId: proposal.projectId,
+			status: { in: [...RESTORED_SPLIT_STATUSES] },
+			sourceMetadata: {
+				path: [SPLIT_FROM_KEY, "proposalId"],
+				equals: proposal.id,
+			},
+		},
+		select: {
+			status: true,
+			sourceMetadata: true,
+			applications: {
+				select: { createdEntityId: true },
+				orderBy: { changeIndex: "asc" },
+				take: 1,
+			},
+		},
+	});
+	return splits.flatMap((split): RestoredProposalItem[] => {
+		const from = asJsonRecord(
+			asJsonRecord(split.sourceMetadata)?.[SPLIT_FROM_KEY],
+		);
+		const changeIndex = from?.changeIndex;
+		if (
+			typeof changeIndex !== "number" ||
+			!Number.isInteger(changeIndex) ||
+			changeIndex < 0
+		) {
+			return [];
+		}
+		return [
+			{
+				changeIndex,
+				storyId:
+					split.status === "APPLIED"
+						? (split.applications[0]?.createdEntityId ?? null)
+						: null,
+			},
+		];
+	});
 }

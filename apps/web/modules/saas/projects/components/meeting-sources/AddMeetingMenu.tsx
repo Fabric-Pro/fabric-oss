@@ -78,6 +78,7 @@ function UploadTranscriptDialog({
 					projectId={projectId}
 					organizationId={organizationId}
 					className="space-y-3"
+					onClose={() => onOpenChange(false)}
 				/>
 			</DialogContent>
 		</Dialog>

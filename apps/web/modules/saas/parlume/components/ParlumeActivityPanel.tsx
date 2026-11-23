@@ -181,6 +181,7 @@ export function ParlumeActivityPanel({
 				</TabsContent>
 				<TabsContent value="requests" className="mt-0">
 					<ParlumeRequestsPanel
+						projectBasePath={projectBasePath}
 						sessions={sessions.items}
 						sessionFilter={sessionFilter}
 						onSessionFilterChange={setSessionFilter}

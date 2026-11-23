@@ -287,3 +287,85 @@ describe("resolveEffectiveProjectPermissions", () => {
 		);
 	});
 });
+
+/**
+ * `isVisible` is "can the caller open this project", the answer
+ * `hasProjectAccess` gives. The org-role fallback resolves permissions for
+ * every organization member, but only the project's creator can open the
+ * project through it; `assertProjectPermission` refuses everyone else.
+ */
+describe("resolveEffectiveProjectPermissions — isVisible", () => {
+	it("an organization member who did not create the project resolves org permissions but is not visible", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+
+		const resolve = await load();
+		const access = await resolve(PROJECT_ID, USER_ID);
+
+		expect(access?.source).toBe("org");
+		expect(access?.permissions).toContain(Permissions.STORY_UPDATE);
+		expect(access?.isVisible).toBe(false);
+	});
+
+	it("the creator of an organization project is visible through the org-role path", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: USER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "member" });
+
+		const resolve = await load();
+		const access = await resolve(PROJECT_ID, USER_ID);
+
+		expect(access?.source).toBe("org");
+		expect(access?.isVisible).toBe(true);
+	});
+
+	it("an active ProjectMember is visible", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role: "VIEWER",
+			acceptedAt: new Date(),
+			expiresAt: null,
+		});
+
+		const resolve = await load();
+		expect((await resolve(PROJECT_ID, USER_ID))?.isVisible).toBe(true);
+	});
+
+	it("a personal-project owner is visible", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: null,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+
+		const resolve = await load();
+		expect((await resolve(PROJECT_ID, OWNER_ID))?.isVisible).toBe(true);
+	});
+
+	it("a caller with no tie is not visible", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue(null);
+
+		const resolve = await load();
+		expect((await resolve(PROJECT_ID, USER_ID))?.isVisible).toBe(false);
+	});
+});

@@ -52,7 +52,7 @@ const TABS: TabItem[] = [
 		id: "general",
 		label: "General",
 		icon: SettingsIcon,
-		description: "Name, brief, types, stack",
+		description: "Name, phase, retention",
 	},
 	{
 		id: "engagement",
@@ -70,7 +70,7 @@ const TABS: TabItem[] = [
 		id: "navigation",
 		label: "Navigation",
 		icon: LayoutListIcon,
-		description: "Tabs and feature stages",
+		description: "Project tabs",
 	},
 	{
 		id: "knowledge",
@@ -88,7 +88,7 @@ const TABS: TabItem[] = [
 		id: "project-management",
 		label: "Project Management",
 		icon: ListTodoIcon,
-		description: "PM tool connection & field mapping",
+		description: "PM tool, feature stages, work item types",
 	},
 	{
 		id: "agent-runtime",
@@ -157,9 +157,6 @@ type Props = {
 	 *  reason as its screen-reader text. */
 	attention?: Partial<Record<SettingsTab, string>>;
 	showDanger?: boolean;
-	/** Gates the new Project Management tab behind the per-project
-	 *  `pmFieldMappingEnabled` flag. When off, the PM card lives on Development. */
-	showProjectManagement?: boolean;
 	/** Gates the QA pair (Environments, Testing) behind the same flag as the QA
 	 *  project tab. Both configure QA only, so showing them while the QA page is
 	 *  hidden offers settings for a surface the user cannot open. */
@@ -179,7 +176,6 @@ export function ProjectSettingsNav({
 	status,
 	attention,
 	showDanger = false,
-	showProjectManagement = false,
 	showQa = false,
 	showPublishing = false,
 	showTimeTracking = false,
@@ -187,9 +183,6 @@ export function ProjectSettingsNav({
 	const visibleTabs = TABS.filter((tab) => {
 		if (tab.id === "danger") {
 			return showDanger;
-		}
-		if (tab.id === "project-management") {
-			return showProjectManagement;
 		}
 		if (tab.id === "environments" || tab.id === "testing") {
 			return showQa;

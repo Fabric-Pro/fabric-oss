@@ -315,6 +315,9 @@ export async function executeSubAgent(
 		input.userId,
 		input.organizationId,
 		false,
+		undefined,
+		undefined,
+		{ projectId: input.projectId },
 	);
 
 	// Load RAG context and web search tools in parallel
@@ -449,6 +452,9 @@ export async function executeDirectResearch(
 		input.userId,
 		input.organizationId,
 		false,
+		undefined,
+		undefined,
+		{ projectId: input.projectId },
 	);
 
 	// Load RAG context and web search tools in parallel

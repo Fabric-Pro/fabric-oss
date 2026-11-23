@@ -1,5 +1,7 @@
+import { PARLUME_BOT_NAME } from "@repo/utils/parlume-notes";
 import { createOutboundHostAllowlist } from "@repo/utils/url-security";
-import { parlumeChatHtml } from "./parlume-chat-html";
+import { parlumeChatHtml, parlumePlainChatHtml } from "./parlume-chat-html";
+import { PARLUME_LOBBY_WAIT_SECONDS } from "./parlume-lobby";
 
 /** Attendee's hosted service; an organization can point at its own instance. */
 export const DEFAULT_ATTENDEE_BASE_URL = "https://app.attendee.dev";
@@ -9,12 +11,13 @@ const MEETING_AUDIO_SAMPLE_RATE = 16_000;
 // The bot outlives the session's hard stop only if Fabric's own leave never
 // lands, and never by more than this.
 const MAX_UPTIME_BACKSTOP_SECONDS = 120;
-/**
- * How long the bot waits in a Teams lobby to be admitted before it gives up.
- * The provider bills that wait as bot time.
- */
-export const PARLUME_LOBBY_WAIT_SECONDS = 600;
 const PROVIDER_DETAIL_CHARS = 200;
+// The leaving line is best effort, and the bridge's own calls into Fabric
+// that lead to a leave (idle, a failed stream) allow 15 seconds in all.
+const PARLUME_LEAVING_NOTICE_TIMEOUT_MS = 4_000;
+// The purge is best effort too, and finalization often runs inside one of
+// those calls.
+const PARLUME_BRIDGE_PURGE_TIMEOUT_MS = 4_000;
 
 /**
  * A self-hosted Attendee is a URL an organization admin saves and Fabric
@@ -46,6 +49,18 @@ export interface ParlumeAttendeeSettings {
 	/** Origin, plus a path prefix for a proxied instance; no trailing slash. */
 	baseUrl: string;
 	teamsLoginMode: ParlumeTeamsLoginMode | null;
+	/**
+	 * The project's Teams login group the bot signs in with; null is
+	 * Attendee's default, the project's oldest group. Sent only with a mode.
+	 */
+	teamsLoginGroup: string | null;
+	/**
+	 * The project's webhook secret, as Attendee's dashboard shows it (base64).
+	 * Attendee signs every webhook with it. When set, an unsigned or wrongly
+	 * signed webhook is refused; without it the session's token alone is
+	 * checked.
+	 */
+	webhookSecret: string | null;
 	source: ParlumeSettingSource;
 }
 
@@ -85,8 +100,33 @@ export interface ParlumeChatMessageRelay {
 	text: string;
 	senderName: string | null;
 	senderId: string | null;
+	/** Fabric took the sender for an external guest; their commands are not acted on. */
+	senderExternal?: boolean;
 	toBot: boolean;
 	timestampMs: number;
+}
+
+/**
+ * Someone Parlume must not answer in front of joined or left the meeting:
+ * an external guest, or anyone Fabric could not confirm.
+ */
+interface ParlumeGuestUpdate {
+	id: string;
+	joined: boolean;
+}
+
+/**
+ * Where Fabric is with checking one participant: `pending` while it looks
+ * them up, then done, with the Fabric account of a confirmed project reader
+ * (`userId`) or without one for someone who left or was refused. `at` is
+ * when Attendee saw the join or leave, so the bridge can tell a delivery
+ * repeated after a leave from someone joining again.
+ */
+interface ParlumePlacement {
+	id: string;
+	pending: boolean;
+	userId?: string;
+	at?: number;
 }
 
 export const PARLUME_TEAMS_LOGIN_MODES = [
@@ -162,7 +202,8 @@ export function getAttendeeBaseUrlBlockReason(value: string): string | null {
 
 /**
  * The operator's Attendee project from the environment, or null without a
- * key. `PARLUME_ATTENDEE_BASE_URL` points at a self-hosted instance.
+ * key. `PARLUME_ATTENDEE_BASE_URL` points at a self-hosted instance, and
+ * `PARLUME_ATTENDEE_WEBHOOK_SECRET` is the project's webhook secret.
  */
 export function getEnvironmentAttendeeSettings(): ParlumeAttendeeSettings | null {
 	const apiKey = configured(process.env.PARLUME_ATTENDEE_API_KEY);
@@ -180,8 +221,17 @@ export function getEnvironmentAttendeeSettings(): ParlumeAttendeeSettings | null
 		apiKey,
 		baseUrl: normalized,
 		teamsLoginMode: environmentTeamsLoginMode(),
+		// One operator project serves every organization without its own
+		// key, so none of them may pick another's login group on it.
+		teamsLoginGroup: null,
+		webhookSecret: getEnvironmentAttendeeWebhookSecret(),
 		source: "environment",
 	};
+}
+
+/** The operator's Attendee project's webhook secret, or null. */
+export function getEnvironmentAttendeeWebhookSecret(): string | null {
+	return configured(process.env.PARLUME_ATTENDEE_WEBHOOK_SECRET);
 }
 
 function derivedBridgeUrl(): string | null {
@@ -264,7 +314,7 @@ function bridgeUrlForSession(
 	return url.toString();
 }
 
-function bridgeControlUrlForSession(
+export function bridgeControlUrlForSession(
 	bridgeUrl: string,
 	sessionId: string,
 ): string {
@@ -274,16 +324,17 @@ function bridgeControlUrlForSession(
 	return url.toString();
 }
 
-// Attendee signs webhooks with one project-wide secret it shows only in its
-// dashboard, so each bot's webhook URL carries its own session secret instead.
+// Attendee signs every webhook with one secret for the whole project. The
+// session's own random token in the URL also ties a delivery to its bot, and
+// stops working once the session needs no more deliveries.
 function callbackUrlForSession(
 	callbackUrl: string,
 	sessionId: string,
-	callbackSecret: string,
+	callbackToken: string,
 ): string {
 	const url = new URL(callbackUrl);
 	url.searchParams.set("sessionId", sessionId);
-	url.searchParams.set("token", callbackSecret);
+	url.searchParams.set("token", callbackToken);
 	return url.toString();
 }
 
@@ -343,8 +394,18 @@ async function providerFailure(
 	return new ParlumeProviderError(response.status, detail);
 }
 
-function teamsSettings(mode: ParlumeTeamsLoginMode | null) {
-	return mode ? { use_login: true, login_mode: mode } : null;
+function teamsSettings(attendee: ParlumeAttendeeSettings) {
+	const mode = attendee.teamsLoginMode;
+	if (!mode) {
+		return null;
+	}
+	return attendee.teamsLoginGroup
+		? {
+				use_login: true,
+				login_mode: mode,
+				login_group_name: attendee.teamsLoginGroup,
+			}
+		: { use_login: true, login_mode: mode };
 }
 
 export async function startParlumeMeetingBot(input: {
@@ -353,7 +414,7 @@ export async function startParlumeMeetingBot(input: {
 	sessionId: string;
 	meetingUrl: string;
 	streamToken: string;
-	callbackSecret: string;
+	callbackToken: string;
 	hardStopAt: Date;
 }): Promise<string> {
 	const maxUptimeSeconds =
@@ -361,12 +422,12 @@ export async function startParlumeMeetingBot(input: {
 			1,
 			Math.ceil((input.hardStopAt.getTime() - Date.now()) / 1_000),
 		) + MAX_UPTIME_BACKSTOP_SECONDS;
-	const teams = teamsSettings(input.attendee.teamsLoginMode);
+	const teams = teamsSettings(input.attendee);
 	const response = await attendeeFetch(botsUrl(input.attendee), {
 		method: "POST",
 		headers: attendeeHeaders(input.attendee.apiKey, true),
 		body: JSON.stringify({
-			bot_name: "Fabric Parlume",
+			bot_name: PARLUME_BOT_NAME,
 			meeting_url: input.meetingUrl,
 			metadata: { parlume_session_id: input.sessionId },
 			deduplication_key: `parlume-${input.sessionId}`,
@@ -377,6 +438,10 @@ export async function startParlumeMeetingBot(input: {
 				format: "none",
 				record_participant_speech_start_stop_events: true,
 			},
+			// Attendee would otherwise save the Teams captions as a transcript
+			// of its own. The bridge keeps Parlume's transcript, so Attendee
+			// transcribes nothing.
+			transcription_settings: { enabled: false },
 			// Raw audio both ways on one socket: Attendee streams the mixed
 			// meeting audio to the bridge and plays whatever the bridge sends
 			// back. It connects to this URL as given, so the stream token rides in
@@ -396,22 +461,25 @@ export async function startParlumeMeetingBot(input: {
 					url: callbackUrlForSession(
 						input.settings.callbackUrl,
 						input.sessionId,
-						input.callbackSecret,
+						input.callbackToken,
 					),
 					// The meeting chat comes back too: participants can type to
 					// Parlume, and its own posts showing up confirm delivery.
+					// Joins and leaves tell Parlume when an external guest is in.
 					triggers: [
 						"bot.state_change",
 						"participant_events.speech_start_stop",
+						"participant_events.join_leave",
 						"chat_messages.update",
 					],
 				},
 			],
 			...(teams ? { teams_settings: teams } : {}),
-			// Ten minutes leaves an organizer time to admit the bot; three minutes
-			// alone is the floor for a meeting that never happened. Attendee's
-			// default silence timeout stays; the bridge's own idle rule leaves a
-			// silent meeting at three minutes.
+			// The lobby wait is billed, so it stays short (see
+			// PARLUME_LOBBY_WAIT_SECONDS); three minutes alone is the floor for
+			// a meeting that never happened. Attendee's default silence timeout
+			// stays; the bridge's own idle rule leaves a silent meeting at three
+			// minutes.
 			automatic_leave_settings: {
 				waiting_room_timeout_seconds: PARLUME_LOBBY_WAIT_SECONDS,
 				only_participant_in_meeting_timeout_seconds: 180,
@@ -439,6 +507,8 @@ export async function armParlumeMeetingBridge(input: {
 	settings: ParlumeBridgeSettings;
 	sessionId: string;
 	hardStopAt: Date;
+	/** The session's first chat tag number; see `parlumeChatTagStart`. */
+	chatTagStart: number;
 }): Promise<void> {
 	const response = await fetch(
 		bridgeControlUrlForSession(input.settings.bridgeUrl, input.sessionId),
@@ -450,6 +520,7 @@ export async function armParlumeMeetingBridge(input: {
 			},
 			body: JSON.stringify({
 				hardStopAt: input.hardStopAt.toISOString(),
+				chatTagStart: input.chatTagStart,
 			}),
 		},
 	);
@@ -483,6 +554,115 @@ export async function closeParlumeMeetingBridge(input: {
 }
 
 /**
+ * Tells the bridge Fabric is about to have the bot leave, while the bot can
+ * still post: the bridge says once in the meeting chat that the posts this
+ * session offered can no longer be played, after `notice`, which says why
+ * Parlume is leaving, when there is one. False when the bridge says it could
+ * not post the notice.
+ */
+export async function noteParlumeLeaving(input: {
+	settings: ParlumeBridgeSettings;
+	sessionId: string;
+	notice?: string;
+}): Promise<boolean> {
+	const url = new URL(
+		bridgeControlUrlForSession(input.settings.bridgeUrl, input.sessionId),
+	);
+	url.searchParams.set("action", "leaving");
+	const response = await fetch(url, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			Authorization: `Bearer ${input.settings.serviceSecret}`,
+		},
+		body: JSON.stringify(input.notice ? { notice: input.notice } : {}),
+		signal: AbortSignal.timeout(PARLUME_LEAVING_NOTICE_TIMEOUT_MS),
+	});
+	if (!response.ok) {
+		throw new ParlumeBridgeUnavailableError();
+	}
+	const body: unknown = await response.json().catch(() => null);
+	return !(
+		typeof body === "object" &&
+		body !== null &&
+		"noticed" in body &&
+		body.noticed === false
+	);
+}
+
+/**
+ * Asks the bridge to delete what it still holds of a session that is over.
+ * `purged` is false when the bridge refused because a stream is still
+ * connected; its hard-stop alarm purges it later.
+ */
+export async function purgeParlumeBridgeStorage(input: {
+	settings: ParlumeBridgeSettings;
+	sessionId: string;
+}): Promise<{ purged: boolean }> {
+	const url = new URL(
+		bridgeControlUrlForSession(input.settings.bridgeUrl, input.sessionId),
+	);
+	url.searchParams.set("action", "purge");
+	const response = await fetch(url, {
+		method: "POST",
+		headers: { Authorization: `Bearer ${input.settings.serviceSecret}` },
+		signal: AbortSignal.timeout(PARLUME_BRIDGE_PURGE_TIMEOUT_MS),
+	});
+	if (response.status === 409) {
+		return { purged: false };
+	}
+	if (!response.ok) {
+		throw new ParlumeBridgeUnavailableError();
+	}
+	return { purged: true };
+}
+
+/** A control a member uses on the Parlume page while the meeting runs. */
+export type ParlumeLiveControl =
+	| "stop-speech"
+	| "pause"
+	| "resume"
+	| "continue-reading";
+
+/**
+ * Stops Parlume's answer, pauses or resumes its listening, or reads the next
+ * chapter of a long post, for a member on the Parlume page. `changed` is
+ * false when there was nothing to change: no answer to stop, already paused,
+ * already listening, or no chapter waiting.
+ */
+export async function sendParlumeLiveControl(input: {
+	settings: ParlumeBridgeSettings;
+	sessionId: string;
+	control: ParlumeLiveControl;
+	actor: { id: string; name: string | null };
+}): Promise<{ changed: boolean }> {
+	const url = new URL(
+		bridgeControlUrlForSession(input.settings.bridgeUrl, input.sessionId),
+	);
+	url.searchParams.set("action", input.control);
+	const response = await fetch(url, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			Authorization: `Bearer ${input.settings.serviceSecret}`,
+		},
+		body: JSON.stringify({ actor: input.actor }),
+		signal: AbortSignal.timeout(10_000),
+	});
+	if (!response.ok) {
+		throw new ParlumeBridgeUnavailableError();
+	}
+	const body: unknown = await response.json();
+	return {
+		changed:
+			typeof body === "object" &&
+			body !== null &&
+			"changed" in body &&
+			body.changed === true,
+	};
+}
+
+/**
  * Hands the bridge who started or stopped speaking, as Attendee reports it, so
  * the bridge can attribute transcribed turns. Attendee posts these to the
  * webhook, not to the audio socket.
@@ -503,6 +683,40 @@ export async function sendParlumeSpeakerUpdates(input: {
 			Authorization: `Bearer ${input.settings.serviceSecret}`,
 		},
 		body: JSON.stringify({ updates: input.updates }),
+		signal: AbortSignal.timeout(10_000),
+	});
+	if (!response.ok) {
+		throw new ParlumeBridgeUnavailableError();
+	}
+}
+
+/**
+ * Hands the bridge who joined or left, and where Fabric is with checking
+ * them. While a guest is in the meeting, or anyone is being checked,
+ * Parlume does not speak or answer in the chat. Guests go in `updates`, the
+ * one field a bridge older than the checks reads, so for that bridge a
+ * check changes nothing.
+ */
+export async function sendParlumeGuestUpdates(input: {
+	settings: ParlumeBridgeSettings;
+	sessionId: string;
+	updates: ParlumeGuestUpdate[];
+	placing: ParlumePlacement[];
+}): Promise<void> {
+	const url = new URL(
+		bridgeControlUrlForSession(input.settings.bridgeUrl, input.sessionId),
+	);
+	url.searchParams.set("action", "guests");
+	const response = await fetch(url, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			Authorization: `Bearer ${input.settings.serviceSecret}`,
+		},
+		body: JSON.stringify({
+			updates: input.updates,
+			placing: input.placing,
+		}),
 		signal: AbortSignal.timeout(10_000),
 	});
 	if (!response.ok) {
@@ -539,6 +753,24 @@ export async function sendParlumeChatMessage(input: {
 }
 
 /**
+ * Whether the session's posts go to a Teams channel thread through Graph
+ * rather than to the meeting chat through Attendee.
+ */
+export function isParlumeChannelChatSession(session: {
+	channelId: string | null;
+	channelRootMessageId: string | null;
+	channelChatStatus: string | null;
+}): boolean {
+	return Boolean(
+		session.channelId ||
+			session.channelRootMessageId ||
+			(session.channelChatStatus &&
+				session.channelChatStatus !== "ATTENDEE" &&
+				session.channelChatStatus !== "UNRESOLVED"),
+	);
+}
+
+/**
  * Sends a message to the meeting chat as the bot. Attendee only queues it: its
  * Teams bot drops a message silently when the meeting gives it no chat box
  * (an anonymous guest in a channel meeting, or where chat excludes anonymous
@@ -550,6 +782,8 @@ export async function sendParlumeMeetingChat(input: {
 	attendee: ParlumeAttendeeSettings;
 	providerBotId: string;
 	message: string;
+	/** A suggestion or the recap: one paragraph, unformatted. */
+	plain?: boolean;
 }): Promise<void> {
 	const response = await attendeeFetch(
 		botUrl(input.attendee, input.providerBotId, "send_chat_message"),
@@ -558,7 +792,9 @@ export async function sendParlumeMeetingChat(input: {
 			headers: attendeeHeaders(input.attendee.apiKey, true),
 			body: JSON.stringify({
 				to: "everyone",
-				message: parlumeChatHtml(input.message),
+				message: input.plain
+					? parlumePlainChatHtml(input.message)
+					: parlumeChatHtml(input.message),
 			}),
 			signal: AbortSignal.timeout(10_000),
 		},
@@ -568,20 +804,98 @@ export async function sendParlumeMeetingChat(input: {
 	}
 }
 
-export async function deleteParlumeMeetingBotData(input: {
+/**
+ * How long a notice waits for the bot to be in the call. Attendee refuses a
+ * chat message while the bot is still joining or in the lobby.
+ */
+export const PARLUME_IN_CALL_WAIT_MS = 30_000;
+const PARLUME_IN_CALL_POLL_MS = 2_000;
+// The bot left or failed: it can post nothing any more.
+const GONE_BOT_STATES = new Set([
+	"leaving",
+	"post_processing",
+	"ended",
+	"data_deleted",
+	"fatal_error",
+]);
+
+type ParlumeBotCallState = "in_call" | "gone" | "timeout";
+
+/**
+ * Waits, at most `timeoutMs`, for the bot to be in the call, where Attendee
+ * lets it post in the meeting chat: every `joined_*` state. A state that
+ * cannot be read counts as not yet in the call.
+ */
+export async function waitForParlumeBotInCall(input: {
 	attendee: ParlumeAttendeeSettings;
 	providerBotId: string;
-}): Promise<void> {
+	timeoutMs?: number;
+}): Promise<ParlumeBotCallState> {
+	const deadline = Date.now() + (input.timeoutMs ?? PARLUME_IN_CALL_WAIT_MS);
+	for (;;) {
+		const state = await readBotState(input).catch(() => null);
+		if (state?.startsWith("joined")) {
+			return "in_call";
+		}
+		if (state && GONE_BOT_STATES.has(state)) {
+			return "gone";
+		}
+		if (Date.now() + PARLUME_IN_CALL_POLL_MS > deadline) {
+			return "timeout";
+		}
+		await new Promise((resolve) =>
+			setTimeout(resolve, PARLUME_IN_CALL_POLL_MS),
+		);
+	}
+}
+
+async function readBotState(input: {
+	attendee: ParlumeAttendeeSettings;
+	providerBotId: string;
+}): Promise<string | null> {
 	const response = await attendeeFetch(
-		botUrl(input.attendee, input.providerBotId, "delete_data"),
+		botUrl(input.attendee, input.providerBotId),
+		{
+			headers: attendeeHeaders(input.attendee.apiKey),
+			signal: AbortSignal.timeout(5_000),
+		},
+	);
+	if (!response.ok) {
+		return null;
+	}
+	const body: unknown = await response.json();
+	return typeof body === "object" &&
+		body !== null &&
+		"state" in body &&
+		typeof body.state === "string"
+		? body.state
+		: null;
+}
+
+/** A bot action whose answer Parlume does not read: `delete_data`, `output_image`. */
+export async function postParlumeBotAction(
+	input: { attendee: ParlumeAttendeeSettings; providerBotId: string },
+	action: string,
+	body?: object,
+): Promise<void> {
+	const response = await attendeeFetch(
+		botUrl(input.attendee, input.providerBotId, action),
 		{
 			method: "POST",
-			headers: attendeeHeaders(input.attendee.apiKey),
+			headers: attendeeHeaders(input.attendee.apiKey, body !== undefined),
+			...(body === undefined ? {} : { body: JSON.stringify(body) }),
 		},
 	);
 	if (!response.ok) {
 		throw await providerFailure(response, input.attendee.apiKey);
 	}
+}
+
+export function deleteParlumeMeetingBotData(input: {
+	attendee: ParlumeAttendeeSettings;
+	providerBotId: string;
+}): Promise<void> {
+	return postParlumeBotAction(input, "delete_data");
 }
 
 export async function leaveParlumeMeetingBot(input: {

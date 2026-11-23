@@ -12,6 +12,27 @@ export type ParlumeRealtimeCheck = Awaited<
 	ReturnType<typeof orpcClient.parlumeSettings.testRealtimeVoice>
 >["hosts"][number];
 
+export type GuestPolicy = ParlumeSettings["guests"]["policy"];
+
+export const GUEST_POLICY_CHOICES: ReadonlyArray<{
+	value: GuestPolicy;
+	label: string;
+	description: string;
+}> = [
+	{
+		value: "NOTES_ONLY",
+		label: "Notes only",
+		description:
+			"Parlume joins a meeting whose invitation names a guest, posts its notice and keeps notes. It does not speak, answers nothing in the meeting chat and takes no command from a guest. Its answers are on the Parlume page.",
+	},
+	{
+		value: "INTERNAL_ONLY",
+		label: "Internal meetings only",
+		description:
+			"Parlume does not join a meeting whose invitation names a guest.",
+	},
+];
+
 export type TeamsLoginChoice = "anonymous" | "only_if_required" | "always";
 
 export const TEAMS_LOGIN_CHOICES: ReadonlyArray<{

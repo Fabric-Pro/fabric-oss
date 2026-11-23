@@ -12,8 +12,7 @@ describe("describeParlumeProviderFailure", () => {
 	it("reports a lobby timeout as not admitted, with the wait in minutes", () => {
 		expect(couldNotJoin("waiting_room_timeout_exceeded")).toEqual({
 			endReason: "NOT_ADMITTED",
-			message:
-				"Nobody admitted Parlume from the lobby within 10 minutes.",
+			message: "Nobody admitted Parlume from the lobby within 5 minutes.",
 		});
 	});
 

@@ -245,6 +245,7 @@ const USER_OWNED_TABLES = new Set([
 	"ProjectTranscriptFolderFile", // Files seen in those folders (#3507)
 	"ParlumeMeetingSession", // Project-scoped Teams bot lifecycle
 	"ParlumeChannelPost",
+	"ParlumeWebhookReceipt", // Attendee deliveries a session handled, until its webhook token is revoked
 	"ParlumeSuggestion", // Unprompted suggestions and recaps, listed on the Parlume page
 	"ParlumeMeetingSegment", // Final live transcript segment for a project bot
 	"ParlumeMeetingTurn", // Project-scoped spoken agent response
@@ -443,6 +444,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectTranscriptFolderFile: "projectId",
 	ParlumeMeetingSession: "projectId",
 	ParlumeChannelPost: "projectId",
+	ParlumeWebhookReceipt: "projectId",
 	ParlumeSuggestion: "projectId",
 	ParlumeMeetingSegment: "projectId",
 	ParlumeMeetingTurn: "projectId",
@@ -568,6 +570,10 @@ const PARENT_SCOPED_TABLES: Record<
 		projectPath: "proposal.projectId",
 	},
 	PendingBacklogProposalReviewEntry: {
+		relation: "proposal",
+		projectPath: "proposal.projectId",
+	},
+	ProposalItemDuplicateVerdict: {
 		relation: "proposal",
 		projectPath: "proposal.projectId",
 	},

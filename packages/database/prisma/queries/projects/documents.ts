@@ -26,6 +26,7 @@ import {
 	type ProjectDocumentStatus,
 	type ProjectDocumentType,
 } from "../../client";
+import { deleteFinishedTurnsOfConversations } from "../conversation-turns";
 
 /**
  * Freshly compute the content hash the document editor's decision-precheck
@@ -917,8 +918,10 @@ export async function deleteDocument(documentId: string) {
 		});
 
 		if (attachments.length > 0) {
+			const conversationIds = attachments.map((a) => a.conversationId);
+			await deleteFinishedTurnsOfConversations(tx, conversationIds);
 			await tx.agentConversation.deleteMany({
-				where: { id: { in: attachments.map((a) => a.conversationId) } },
+				where: { id: { in: conversationIds } },
 			});
 		}
 

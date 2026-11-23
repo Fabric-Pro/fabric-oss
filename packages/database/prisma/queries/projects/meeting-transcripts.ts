@@ -637,10 +637,11 @@ export async function markMeetingTranscriptAnalysisFailed(
 }
 
 /**
- * The project contexts that hold a transcript of one of the project's
- * confidential series: a synced transcript's context, or the transcript of a
- * Parlume session of the series. Later answers, recaps and summaries leave
- * these out. With `contextIds`, only those candidates are checked.
+ * The project contexts that hold a transcript later answers, recaps and
+ * summaries leave out: a synced transcript of one of the project's
+ * confidential series, and the transcript of every Parlume session, whose
+ * raw text only the people in the meeting read (its notes are used instead).
+ * With `contextIds`, only those candidates are checked.
  */
 export async function findConfidentialTranscriptContextIds(params: {
 	projectId: string;
@@ -665,7 +666,6 @@ export async function findConfidentialTranscriptContextIds(params: {
 				transcriptContextId: contextIds
 					? { in: contextIds }
 					: { not: null },
-				linkedMeeting: { confidential: true },
 			},
 			select: { transcriptContextId: true },
 		}),

@@ -1,0 +1,175 @@
+{
+	"id": "retro-actions",
+	"title": "Sprint retrospective with many action items",
+	"covers": [
+		"many action items in a short meeting",
+		"owners named by themselves, by someone else, or not at all",
+		"vague commitments with no owner or date",
+		"one decision among the actions"
+	],
+	"segments": [
+		{
+			"id": 1,
+			"speaker": "Alex Example",
+			"text": "Retro time. What went well, what didn't, and what we change.",
+			"startMs": 0,
+			"endMs": 8000
+		},
+		{
+			"id": 2,
+			"speaker": "Sam Example",
+			"text": "Went well: the release went out on time.",
+			"startMs": 10000,
+			"endMs": 16000
+		},
+		{
+			"id": 3,
+			"speaker": "Riley Example",
+			"text": "Didn't go well: the flaky checkout test failed six times this sprint.",
+			"startMs": 18000,
+			"endMs": 26000
+		},
+		{
+			"id": 4,
+			"speaker": "Sam Example",
+			"text": "I'll take the flaky checkout test triage.",
+			"startMs": 28000,
+			"endMs": 34000
+		},
+		{
+			"id": 5,
+			"speaker": "Dev Example",
+			"text": "Someone should clean up the stale feature flags.",
+			"startMs": 36000,
+			"endMs": 42000
+		},
+		{
+			"id": 6,
+			"speaker": "Alex Example",
+			"text": "Riley, could you update the on-call runbook by Thursday?",
+			"startMs": 44000,
+			"endMs": 50000
+		},
+		{
+			"id": 7,
+			"speaker": "Riley Example",
+			"text": "Yes, Thursday works.",
+			"startMs": 52000,
+			"endMs": 55000
+		},
+		{
+			"id": 8,
+			"speaker": "Dev Example",
+			"text": "We should look at the alert noise at some point.",
+			"startMs": 57000,
+			"endMs": 63000
+		},
+		{
+			"id": 9,
+			"speaker": "Alex Example",
+			"text": "We decided to cap work in progress at three items per person.",
+			"startMs": 65000,
+			"endMs": 72000
+		},
+		{
+			"id": 10,
+			"speaker": "Sam Example",
+			"text": "Dev, you mentioned the staging database is slow. Can you open a ticket for it today?",
+			"startMs": 74000,
+			"endMs": 82000
+		},
+		{
+			"id": 11,
+			"speaker": "Dev Example",
+			"text": "Sure, I'll open it today.",
+			"startMs": 84000,
+			"endMs": 88000
+		},
+		{
+			"id": 12,
+			"speaker": "Alex Example",
+			"text": "Good retro, thanks.",
+			"startMs": 90000,
+			"endMs": 93000
+		}
+	],
+	"truth": {
+		"decisions": [
+			{
+				"text": "Cap work in progress at three items per person.",
+				"keywords": ["work in progress|wip|cap", "three|3"],
+				"segments": [9]
+			}
+		],
+		"actionItems": [
+			{
+				"text": "Triage the flaky checkout test.",
+				"keywords": ["flaky|checkout"],
+				"segments": [4],
+				"owner": "Sam Example",
+				"due": null
+			},
+			{
+				"text": "Clean up the stale feature flags.",
+				"keywords": ["flag|flags"],
+				"segments": [5],
+				"owner": null,
+				"due": null
+			},
+			{
+				"text": "Update the on-call runbook.",
+				"keywords": ["runbook"],
+				"segments": [6, 7],
+				"owner": "Riley Example",
+				"due": "Thursday"
+			},
+			{
+				"text": "Look at the alert noise.",
+				"keywords": ["alert|alerts", "noise"],
+				"segments": [8],
+				"owner": null,
+				"due": null
+			},
+			{
+				"text": "Open a ticket for the slow staging database.",
+				"keywords": ["staging|database"],
+				"segments": [10, 11],
+				"owner": "Dev Example",
+				"due": "today"
+			}
+		]
+	},
+	"suggestions": {
+		"passesAfter": [5, 11],
+		"workItems": [
+			{
+				"identifier": "QA-17",
+				"title": "Flaky checkout test",
+				"status": "In progress",
+				"priority": "HIGH",
+				"owner": "Sam Example"
+			},
+			{
+				"identifier": "ENG-40",
+				"title": "Remove stale feature flags",
+				"status": "To do",
+				"priority": "LOW",
+				"owner": null
+			}
+		],
+		"agenda": null,
+		"previousQuestions": [],
+		"expected": [
+			{
+				"kind": "answer",
+				"text": "ENG-40 Remove stale feature flags already exists and has no owner.",
+				"keywords": ["eng-40|flags", "owner|unassigned|assign"]
+			},
+			{
+				"kind": "missed_question",
+				"text": "Who owns the alert noise follow-up, and by when?",
+				"keywords": ["alert|noise", "who|owner|own|when"]
+			}
+		]
+	}
+}

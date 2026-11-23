@@ -108,13 +108,14 @@ import {
 	apiBillingNotice,
 	DIRECT_EXECUTION_MODE,
 	recordDirectQuestion,
+	recordRefusedDirectTurn,
 	settleDirectTurn,
 	settleUnwatchedDirectTurn,
 } from "./direct-turn-record";
 import type { RunStream, RuntimeCaller, RuntimeEngine } from "./engine";
 import { settleLatestResearchRun } from "./research-run-follow";
 import { isResearchTurn } from "./research-run-record";
-import { refuse, refuseWithResponse } from "./run-errors";
+import { refusalRecordText, refuse, refuseWithResponse } from "./run-errors";
 import {
 	ensureThread,
 	readThreadAccess,
@@ -614,6 +615,17 @@ export class DirectEngine implements RuntimeEngine {
 			approvedToolCall: request.approvedToolCall ?? null,
 		}));
 		if (admitted instanceof Response) {
+			// A limit's refusal is saved with its question, so reopening the
+			// chat shows it; other refusals leave nothing behind.
+			if (admitted.status === 429) {
+				await recordRefusedDirectTurn(
+					turn,
+					await refusalRecordText(admitted),
+					isRecord(request.forwardedProps)
+						? request.forwardedProps.attachmentNames
+						: undefined,
+				);
+			}
 			await abandonConversationTurnStart({
 				turnId: turn.id,
 				executionId,
@@ -626,9 +638,15 @@ export class DirectEngine implements RuntimeEngine {
 		}
 
 		// Saved only once the turn may run: a refused turn leaves no question
-		// behind. A turn that then fails to start is saved with its answer
+		// behind, unless a limit refused it (saved above with the refusal).
+		// A turn that then fails to start is saved with its answer
 		// below, as the Direct chat saves a turn whose request failed.
-		await recordDirectQuestion(turn);
+		await recordDirectQuestion(
+			turn,
+			isRecord(request.forwardedProps)
+				? request.forwardedProps.attachmentNames
+				: undefined,
+		);
 		try {
 			await startAdmittedTurn({
 				turn,

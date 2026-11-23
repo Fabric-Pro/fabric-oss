@@ -35,7 +35,9 @@ const mocks = vi.hoisted(() => ({
 		shutdown: vi.fn(),
 	})),
 	// Never settles, so `run()` stays parked where a live worker would.
-	startWorkerRuntime: vi.fn(() => new Promise<never>(() => {})),
+	startWorkerRuntime: vi.fn(() => new Promise<void>(() => {})),
+	disconnectRedisPublisher: vi.fn<() => Promise<void>>(),
+	shutdownTelemetry: vi.fn(),
 }));
 
 vi.mock("@temporalio/worker", () => ({
@@ -47,6 +49,9 @@ vi.mock("../src/activities", () => ({ exampleActivity: vi.fn() }));
 vi.mock("../src/worker-startup", () => ({
 	startWorkerRuntime: mocks.startWorkerRuntime,
 }));
+vi.mock("../src/lib/redis-publisher", () => ({
+	disconnectRedisPublisher: mocks.disconnectRedisPublisher,
+}));
 vi.mock("../src/schedules", () => ({
 	PUBLISHING_RECONCILE_TASK_QUEUE: "publishing-reconcile",
 }));
@@ -55,7 +60,7 @@ vi.mock("../src/telemetry", () => ({
 	initTelemetry: vi.fn(),
 	installTemporalRuntime: vi.fn(),
 	isTelemetryEnabled: () => false,
-	shutdownTelemetry: vi.fn(),
+	shutdownTelemetry: mocks.shutdownTelemetry,
 }));
 vi.mock("../src/client", () => ({
 	assertInsecureConnectionAllowed: vi.fn(),
@@ -383,11 +388,15 @@ describe("task queue selection (Fizzy #2730)", () => {
 // process actually creates, runs and sizes its pool from the selected queues,
 // rather than only that the selector returns them.
 describe("booting the CPU-bound copy (WORKER_TASK_QUEUES=atlas,code-indexing)", () => {
+	let finishDrain = () => {};
+	const drain = new Promise<void>((resolve) => {
+		finishDrain = resolve;
+	});
 	const savedSelection = process.env.WORKER_TASK_QUEUES;
 
 	beforeAll(async () => {
 		mocks.create.mockClear();
-		mocks.startWorkerRuntime.mockClear();
+		mocks.startWorkerRuntime.mockClear().mockReturnValueOnce(drain);
 		process.env.WORKER_TASK_QUEUES = "atlas,code-indexing";
 		delete process.env.DATABASE_POOL_MAX;
 		vi.resetModules();
@@ -422,5 +431,34 @@ describe("booting the CPU-bound copy (WORKER_TASK_QUEUES=atlas,code-indexing)", 
 
 	it("never exits during startup", () => {
 		expect(process.exit).not.toHaveBeenCalled();
+	});
+
+	it("drains before closing Redis and continues shutdown when Redis hangs", async () => {
+		const handler = vi
+			.mocked(process.on)
+			.mock.calls.filter(([signal]) => signal === "SIGTERM")
+			.at(-1)?.[1] as () => Promise<void>;
+		mocks.disconnectRedisPublisher.mockReturnValueOnce(
+			new Promise(() => {}),
+		);
+		vi.useFakeTimers();
+		try {
+			const shutdown = handler();
+			expect(mocks.disconnectRedisPublisher).not.toHaveBeenCalled();
+
+			finishDrain();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(mocks.disconnectRedisPublisher).toHaveBeenCalledOnce();
+			expect(mocks.shutdownTelemetry).not.toHaveBeenCalled();
+
+			await vi.advanceTimersByTimeAsync(2_999);
+			expect(process.exit).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(1);
+			await shutdown;
+			expect(mocks.shutdownTelemetry).toHaveBeenCalledOnce();
+			expect(process.exit).toHaveBeenCalledWith(0);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

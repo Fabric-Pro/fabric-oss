@@ -219,8 +219,10 @@ export const chatMarkdownComponents = {
 			{children}
 		</ul>
 	),
+	// The message content clips what overflows it, and a list's numbers sit
+	// outside its padding: pl-8 leaves room for a two-digit number ("26.").
 	ol: ({ children, ...props }: any) => (
-		<ol className="my-3 list-decimal space-y-1.5 pl-6" {...props}>
+		<ol className="my-3 list-decimal space-y-1.5 pl-8" {...props}>
 			{children}
 		</ol>
 	),

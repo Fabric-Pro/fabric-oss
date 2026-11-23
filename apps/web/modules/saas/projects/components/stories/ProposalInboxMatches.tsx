@@ -35,10 +35,11 @@ export type ProposalInboxMatch = {
 
 type PendingAction = { key: string; kind: "merge" | "reject" };
 
-const matchKey = (match: ProposalInboxMatch) =>
+export const matchKey = (match: ProposalInboxMatch) =>
 	`${match.proposalId}:${match.changeIndex}`;
 
 type Props = {
+	/** The matches still waiting; the parent drops each one moved to Rejected. */
 	matches: ProposalInboxMatch[];
 	projectId: string;
 	organizationId: string | null;
@@ -50,6 +51,8 @@ type Props = {
 	disabled?: boolean;
 	/** The text was merged; the parent closes the dialog without creating. */
 	onMerged: () => void;
+	/** The inbox item was moved to Rejected. */
+	onRejected: (match: ProposalInboxMatch) => void;
 };
 
 export function ProposalInboxMatches({
@@ -60,13 +63,11 @@ export function ProposalInboxMatches({
 	hasAttachments = false,
 	disabled = false,
 	onMerged,
+	onRejected,
 }: Props) {
 	const t = useTranslations("projects.stories.create.duplicateWarning.inbox");
 	const headingId = useId();
 	const queryClient = useQueryClient();
-	const [rejectedKeys, setRejectedKeys] = useState<Set<string>>(
-		() => new Set(),
-	);
 	const [pending, setPending] = useState<PendingAction | null>(null);
 	const [status, setStatus] = useState<{
 		text: string;
@@ -117,7 +118,7 @@ export function ProposalInboxMatches({
 				projectId,
 				organizationId,
 			);
-			setRejectedKeys((prev) => new Set(prev).add(matchKey(match)));
+			onRejected(match);
 			setStatus({
 				text: t("rejectedStatus", { title: match.title }),
 				error: false,
@@ -127,111 +128,117 @@ export function ProposalInboxMatches({
 		onSettled: () => setPending(null),
 	});
 
-	const visible = matches.filter(
-		(match) => !rejectedKeys.has(matchKey(match)),
-	);
 	const busy = disabled || pending !== null;
+	// Once every match was moved to Rejected only the outcome stays: no
+	// heading announces items that are no longer there. The status region
+	// keeps its place so its message is still announced.
+	const hasMatches = matches.length > 0;
 
 	return (
-		<section aria-labelledby={headingId} className="min-w-0 space-y-2">
-			<h3 id={headingId} className="font-medium text-sm">
-				{t("title")}
-			</h3>
-			<p className="text-muted-foreground text-xs">{t("body")}</p>
-			{hasAttachments && (
-				<p className="text-muted-foreground text-xs">
-					{t("attachmentsNotMerged")}
-				</p>
-			)}
-			{visible.length > 0 && (
-				<ul className="space-y-1.5">
-					{visible.map((match) => {
-						const key = matchKey(match);
-						const source = PROPOSAL_SOURCE_LABELS[match.source];
-						return (
-							<li
-								key={key}
-								className="min-w-0 space-y-2 rounded-md border p-2 text-sm"
-							>
-								<div className="flex min-w-0 items-center gap-2">
-									<span className="min-w-0 flex-1 truncate">
-										{match.title}
-									</span>
-									<Badge variant="outline">
-										{t("similarity", {
-											percent: similarityPercent(
-												match.similarity,
-											),
-										})}
-									</Badge>
-								</div>
-								{(source || match.summary) && (
-									<p className="truncate text-muted-foreground text-xs">
-										{[source, match.summary]
-											.filter(Boolean)
-											.join(" · ")}
-									</p>
-								)}
-								<div className="flex flex-wrap gap-2">
-									<Button
-										type="button"
-										size="sm"
-										variant="outline"
-										className="h-7 px-2 text-xs"
-										disabled={busy}
-										aria-label={t("mergeLabel", {
-											title: match.title,
-										})}
-										onClick={() =>
-											mergeMutation.mutate(match)
-										}
-									>
-										{pending?.key === key &&
-										pending.kind === "merge" ? (
-											<Loader2Icon
-												aria-hidden="true"
-												className="size-3.5 motion-safe:animate-spin"
-											/>
-										) : (
-											<MergeIcon
-												aria-hidden="true"
-												className="size-3.5"
-											/>
-										)}
-										{t("merge")}
-									</Button>
-									<Button
-										type="button"
-										size="sm"
-										variant="ghost"
-										className="h-7 px-2 text-xs"
-										disabled={busy}
-										aria-label={t("rejectLabel", {
-											title: match.title,
-										})}
-										onClick={() =>
-											rejectMutation.mutate(match)
-										}
-									>
-										{pending?.key === key &&
-										pending.kind === "reject" ? (
-											<Loader2Icon
-												aria-hidden="true"
-												className="size-3.5 motion-safe:animate-spin"
-											/>
-										) : (
-											<ArchiveIcon
-												aria-hidden="true"
-												className="size-3.5"
-											/>
-										)}
-										{t("reject")}
-									</Button>
-								</div>
-							</li>
-						);
-					})}
-				</ul>
+		<section
+			aria-labelledby={hasMatches ? headingId : undefined}
+			className="min-w-0 space-y-2"
+		>
+			{hasMatches && (
+				<>
+					<h3 id={headingId} className="font-medium text-sm">
+						{t("title")}
+					</h3>
+					<p className="text-muted-foreground text-xs">{t("body")}</p>
+					{hasAttachments && (
+						<p className="text-muted-foreground text-xs">
+							{t("attachmentsNotMerged")}
+						</p>
+					)}
+					<ul className="space-y-1.5">
+						{matches.map((match) => {
+							const key = matchKey(match);
+							const source = PROPOSAL_SOURCE_LABELS[match.source];
+							return (
+								<li
+									key={key}
+									className="min-w-0 space-y-2 rounded-md border p-2 text-sm"
+								>
+									<div className="flex min-w-0 items-center gap-2">
+										<span className="min-w-0 flex-1 truncate">
+											{match.title}
+										</span>
+										<Badge variant="outline">
+											{t("similarity", {
+												percent: similarityPercent(
+													match.similarity,
+												),
+											})}
+										</Badge>
+									</div>
+									{(source || match.summary) && (
+										<p className="truncate text-muted-foreground text-xs">
+											{[source, match.summary]
+												.filter(Boolean)
+												.join(" · ")}
+										</p>
+									)}
+									<div className="flex flex-wrap gap-2">
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											className="h-7 px-2 text-xs"
+											disabled={busy}
+											aria-label={t("mergeLabel", {
+												title: match.title,
+											})}
+											onClick={() =>
+												mergeMutation.mutate(match)
+											}
+										>
+											{pending?.key === key &&
+											pending.kind === "merge" ? (
+												<Loader2Icon
+													aria-hidden="true"
+													className="size-3.5 motion-safe:animate-spin"
+												/>
+											) : (
+												<MergeIcon
+													aria-hidden="true"
+													className="size-3.5"
+												/>
+											)}
+											{t("merge")}
+										</Button>
+										<Button
+											type="button"
+											size="sm"
+											variant="ghost"
+											className="h-7 px-2 text-xs"
+											disabled={busy}
+											aria-label={t("rejectLabel", {
+												title: match.title,
+											})}
+											onClick={() =>
+												rejectMutation.mutate(match)
+											}
+										>
+											{pending?.key === key &&
+											pending.kind === "reject" ? (
+												<Loader2Icon
+													aria-hidden="true"
+													className="size-3.5 motion-safe:animate-spin"
+												/>
+											) : (
+												<ArchiveIcon
+													aria-hidden="true"
+													className="size-3.5"
+												/>
+											)}
+											{t("reject")}
+										</Button>
+									</div>
+								</li>
+							);
+						})}
+					</ul>
+				</>
 			)}
 			<output aria-live="polite" className="block min-h-4">
 				{status && (

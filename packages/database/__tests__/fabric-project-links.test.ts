@@ -11,6 +11,8 @@ import {
 	buildFabricDocumentUrl,
 	buildFabricProjectTabUrl,
 	buildFabricStoryUrl,
+	buildParlumeActionUrl,
+	buildParlumePageUrl,
 } from "../prisma/queries/projects/fabric-url";
 
 beforeEach(() => {
@@ -37,6 +39,32 @@ describe("project links", () => {
 		);
 		expect(await buildFabricStoryUrl({ ...org, storyId: "s1" })).toBe(
 			"https://app.test/app/example-org/projects/p1/stories/s1",
+		);
+	});
+
+	it("opens the project's Parlume page, which the join notice links to", async () => {
+		expect(
+			await buildParlumePageUrl({
+				projectId: "p1",
+				organizationId: "o1",
+			}),
+		).toBe("https://app.test/app/example-org/projects/p1/parlume");
+	});
+
+	it("opens a Parlume proposal's action page, and the same page ready to dismiss", async () => {
+		const org = { projectId: "p1", organizationId: "o1" };
+
+		expect(await buildParlumeActionUrl({ ...org, actionId: "a1" })).toBe(
+			"https://app.test/app/example-org/projects/p1/parlume/actions/a1",
+		);
+		expect(
+			await buildParlumeActionUrl({
+				...org,
+				actionId: "a1",
+				intent: "dismiss",
+			}),
+		).toBe(
+			"https://app.test/app/example-org/projects/p1/parlume/actions/a1?intent=dismiss",
 		);
 	});
 

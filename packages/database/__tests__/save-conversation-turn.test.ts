@@ -923,6 +923,38 @@ describe("updateConversationSettings", () => {
 		expect(written().metadata).not.toHaveProperty("selectedMcpConfigIds");
 	});
 
+	describe("the chat's plan model", () => {
+		const stored = { canonicalName: "gpt-6-luna", name: "GPT-6 Luna" };
+
+		it("is kept when the settings leave it out", async () => {
+			lockedRow([], { mode: "direct", planModel: stored });
+
+			await update({ settings: { instanceId: null } });
+
+			expect(written().metadata).toMatchObject({ planModel: stored });
+		});
+
+		it("is replaced by a new pick", async () => {
+			const picked = {
+				canonicalName: "gpt-6-terra",
+				name: "GPT-6 Terra",
+			};
+			lockedRow([], { mode: "direct", planModel: stored });
+
+			await update({ settings: { planModel: picked } });
+
+			expect(written().metadata).toMatchObject({ planModel: picked });
+		});
+
+		it("is removed on null", async () => {
+			lockedRow([], { mode: "direct", planModel: stored });
+
+			await update({ settings: { planModel: null } });
+
+			expect(written().metadata).not.toHaveProperty("planModel");
+		});
+	});
+
 	it("throws ConversationNotFoundError for a row outside the user and tenant", async () => {
 		mocks.queryRawMock.mockResolvedValueOnce([]);
 

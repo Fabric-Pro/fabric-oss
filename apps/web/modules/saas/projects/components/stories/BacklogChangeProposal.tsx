@@ -50,14 +50,26 @@ import {
 	type SkippableField,
 } from "./BacklogChangeDetailDialog";
 import { DecisionConflictNote } from "./DecisionConflictNote";
+import {
+	mergeKeepsTargetBody,
+	useEnrichmentPreviews,
+	withEnrichmentPreview,
+} from "./enrichment-preview";
 import { ProposalDiffField } from "./ProposalDiffField";
 import { ProposalDuplicateNote } from "./ProposalDuplicateNote";
 import { LockedRowStatus, ProposalItemActions } from "./ProposalItemActions";
-import { MergedOnApplyNote, TargetChangedNote } from "./ProposalItemNotes";
+import {
+	missingTargetBlockedReason,
+	RerouteSummaryNote,
+	rerouteSummaryBlockedReason,
+	TargetChangedNote,
+} from "./ProposalItemNotes";
 import {
 	ProposalRoutingControl,
 	type RoutingAnnotation,
+	type RoutingBlocker,
 	type RoutingOverride,
+	rerouteTargetStoryId,
 	resolveEffectiveRouting,
 	routingBlocker,
 } from "./ProposalRoutingControl";
@@ -66,6 +78,7 @@ import { PmSyncConflictBadge } from "./pm-sync/PmSyncConflictBadge";
 import { PmSyncDiffModal } from "./pm-sync/PmSyncDiffModal";
 import { PmSyncOutageRollup } from "./pm-sync/PmSyncOutageRollup";
 import type { PmSyncError } from "./pm-sync/pmSyncError";
+import { approvedChangesText } from "./proposal-approve-outcome";
 import {
 	duplicateRoutingAnnotation,
 	enrichOverrideFor,
@@ -81,6 +94,7 @@ import {
 	canLinkBoardStory,
 	isMissingFromBoard,
 } from "./useBoardStoryIds";
+import { useItemActionRefocus } from "./useItemActionRefocus";
 import {
 	type ProposalItemReview,
 	useProposalItemReview,
@@ -137,7 +151,8 @@ export type ChangeItem = {
 	needsMoreInfo?: boolean;
 	/**
 	 * Safe-hold flag from the structure-preserving update pass: AI could not
-	 * safely produce a targeted edit, so the existing body was kept unchanged.
+	 * safely produce a targeted edit, so the existing body was kept with the
+	 * update's new detail appended unchanged.
 	 */
 	bodyMergeFallback?: boolean;
 	bodyMergeDeferred?: boolean;
@@ -390,8 +405,9 @@ export function normalizeChange(raw: any, forbidEpics = false): ChangeItem {
 		),
 		kindOverride,
 		// Safe-hold flag stamped by the structure-preserving update pass when AI
-		// kept the existing body unchanged. Carried through so the review row can
-		// surface a "description kept as-is" note and apply records it in the audit.
+		// could not merge the update, so the existing body was kept with the
+		// update's new detail appended. Carried through so the review row can
+		// surface a note and apply records it in the audit.
 		bodyMergeFallback:
 			typeof raw.bodyMergeFallback === "boolean"
 				? raw.bodyMergeFallback
@@ -687,6 +703,23 @@ function listTitles(titles: string[]): string {
 	return `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
 }
 
+/** What Apply Selected waits for on the rows one routing blocker holds. */
+function routingBlockedApplyText(
+	blocker: RoutingBlocker,
+	titles: string,
+): string {
+	switch (blocker) {
+		case "target-required":
+			return `Choose a ticket to enrich for ${titles} before applying.`;
+		case "closed-target-unconfirmed":
+			return `Choose 'Enrich it anyway' for ${titles} or pick another ticket before applying.`;
+		default: {
+			const unhandled: never = blocker;
+			return unhandled;
+		}
+	}
+}
+
 const TYPE_COLORS: Record<string, string> = {
 	epic: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
 	feature: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
@@ -828,6 +861,18 @@ export function BacklogChangeProposal({
 			"noopener,noreferrer",
 		);
 	};
+	// An inbox update can carry only the target's identifier; its label then
+	// names the identifier alone instead of ending in an empty title.
+	const openExistingLabel = (change: ChangeItem): string => {
+		const identifier =
+			change.targetResolution?.resolvedIdentifier ??
+			change.existingIdentifier ??
+			"";
+		const title = change.targetResolution?.resolvedTitle?.trim();
+		return title
+			? t("openExisting", { identifier, title })
+			: t("openExistingIdentifierOnly", { identifier });
+	};
 	// In the inbox an update's target is linked only once the board lists
 	// it: a deleted target reads as "Ticket not found".
 	const isLinkableTarget = (storyId: string | null | undefined): boolean =>
@@ -859,6 +904,8 @@ export function BacklogChangeProposal({
 		"approved" | "rejected" | "backlog" | null
 	>(null);
 	const [localApprovedCount, setApprovedCount] = useState(0);
+	// Of the approved changes, the updates held back for a missing target.
+	const [heldBackCount, setHeldBackCount] = useState(0);
 	const [localTotalCount, setTotalCount] = useState(0);
 	const resolved = approval
 		? approval.state === "approved"
@@ -889,7 +936,6 @@ export function BacklogChangeProposal({
 	// badge in the list so the PM can pick up where they left off if
 	// they get interrupted mid-review (acceptance criterion #4).
 	const [detailIndex, setDetailIndex] = useState<number | null>(null);
-	const [detailLineReview, setDetailLineReview] = useState(false);
 	const [reviewedIndexes, setReviewedIndexes] = useState<Set<number>>(
 		() => initialPersisted.reviewed ?? new Set(),
 	);
@@ -1193,10 +1239,8 @@ export function BacklogChangeProposal({
 		});
 	};
 
-	// `lineReview` opens an update straight into line-by-line review.
-	const openDetail = (index: number, lineReview = false) => {
+	const openDetail = (index: number) => {
 		setDetailIndex(index);
-		setDetailLineReview(lineReview);
 		// Sidebar (non-persisted) only: lazily draft the CREATE body through its
 		// kind's prompt on open, so the reviewer sees the proper draft (cached once
 		// per kind). The inbox (persisted) flow does NOT auto-draft — the reviewer
@@ -1246,16 +1290,49 @@ export function BacklogChangeProposal({
 			? runningDraftKindAt(primaryDraftIndex)
 			: null;
 
+	// An open item re-routed to a ticket is merged into that ticket now, so
+	// its summary, line review and apply share one merge.
+	const enrichmentPreviews = useEnrichmentPreviews({
+		projectId,
+		organizationId,
+		rerouted: changes.flatMap((change, index) => {
+			const targetStoryId = lockedIndexes.has(index)
+				? undefined
+				: rerouteTargetStoryId(
+						change.routing ?? undefined,
+						routingOverridesByIndex.get(index),
+					);
+			return targetStoryId && change.routing
+				? [{ index, targetStoryId, routing: change.routing }]
+				: [];
+		}),
+	});
+	// The update a re-routed item applies, once its merge is read.
+	const reroutedUpdateOf = (i: number): ChangeItem | undefined => {
+		const preview = enrichmentPreviews.get(i);
+		const change = changes[i];
+		return preview?.status === "ready" && change
+			? withEnrichmentPreview(
+					applyRoutingOverride(
+						buildEffectiveChange(i, change),
+						routingOverridesByIndex.get(i),
+					),
+					preview.preview,
+				)
+			: undefined;
+	};
+
 	// The change as the reviewer left it: routing folds in first (it decides
 	// create-vs-update, and the kind override only applies to creates), then
 	// the kind override, then the per-field skips.
 	const buildApprovedChange = (i: number): ChangeItem =>
 		applyFieldSkips(
 			applyKindOverride(
-				applyRoutingOverride(
-					buildEffectiveChange(i, changes[i]),
-					routingOverridesByIndex.get(i),
-				),
+				reroutedUpdateOf(i) ??
+					applyRoutingOverride(
+						buildEffectiveChange(i, changes[i]),
+						routingOverridesByIndex.get(i),
+					),
 				kindOverridesByIndex.get(i),
 			),
 			skippedFieldsByIndex.get(i),
@@ -1276,6 +1353,22 @@ export function BacklogChangeProposal({
 			: undefined;
 	};
 
+	// An update the server would hold back for an invalid target, by its own
+	// rule (the board can hide or not yet list a ticket, so it does not
+	// decide). Neither offered on its own nor counted as approved;
+	// a re-route names another target, which the server checks on approve.
+	const updateHeldBack = (index: number): boolean => {
+		if (!itemReview?.heldBackUpdateIndexes?.has(index)) {
+			return false;
+		}
+		return (
+			resolveEffectiveRouting(
+				changes[index]?.routing ?? undefined,
+				routingOverridesByIndex.get(index),
+			)?.overridden !== true
+		);
+	};
+
 	// Build + submit the approved changes. A COMPLETED persisted draft is created
 	// verbatim (predrafted via getEffectiveBody); otherwise the apply drafts the
 	// body through the kind prompt (createStoryFromProposal) — so the ticket is
@@ -1293,6 +1386,7 @@ export function BacklogChangeProposal({
 			buildApprovedChange(i),
 		);
 		setApprovedCount(approvedChanges.length);
+		setHeldBackCount(selectedIndexes.filter(updateHeldBack).length);
 		setTotalCount(changes.length);
 		setResolved("approved");
 		const overrides: PmSyncOverrideMap = {};
@@ -1326,7 +1420,15 @@ export function BacklogChangeProposal({
 				void persistedDrafts.cancelDraft(runningKind);
 			}
 		},
+		itemBlockedReasonOf: (index) =>
+			updateHeldBack(index)
+				? missingTargetBlockedReason(changes[index]?.existingIdentifier)
+				: rerouteSummaryBlockedReason(
+						enrichmentPreviews.get(index)?.status,
+					),
+		skippedFieldsOf: (index) => skippedFieldsByIndex.get(index),
 	});
+	const itemFocus = useItemActionRefocus(lockedIndexes);
 
 	const handleRetryOutage = async () => {
 		if (!projectId || !applyResult?.pmSyncOutage) {
@@ -1460,33 +1562,51 @@ export function BacklogChangeProposal({
 	// no target chosen, or aimed at a closed ticket the reviewer has not
 	// acknowledged. Blocks Apply for the whole proposal — approving the rest and
 	// silently dropping these would be worse than saying what is unfinished.
-	const routingBlockedIndexes = Array.from(selected)
-		.sort((a, b) => a - b)
-		.filter((index) => {
-			if (lockedIndexes.has(index)) {
-				return false;
-			}
-			const change = changes[index];
-			return (
-				change?.routing != null &&
-				routingBlocker(
-					change.routing,
-					routingOverridesByIndex.get(index),
-				) !== null
-			);
-		});
+	const routingBlockedTitles = new Map<RoutingBlocker, string[]>();
+	for (const index of Array.from(selected).sort((a, b) => a - b)) {
+		const change = changes[index];
+		if (lockedIndexes.has(index) || change?.routing == null) {
+			continue;
+		}
+		const blocker = routingBlocker(
+			change.routing,
+			routingOverridesByIndex.get(index),
+		);
+		if (blocker !== null) {
+			routingBlockedTitles.set(blocker, [
+				...(routingBlockedTitles.get(blocker) ?? []),
+				change.title?.to ?? "",
+			]);
+		}
+	}
 
 	// Name the items, don't just count them. The row list scrolls, so a bare
 	// count leaves the reviewer hunting for which row is holding up Apply — and
 	// a screen-reader user with no visual scan at all.
-	const routingBlockedMessage =
-		routingBlockedIndexes.length === 0
+	// A re-routed item applies only once its change summary is shown.
+	const summaryBlockedIndexes = Array.from(selected)
+		.sort((a, b) => a - b)
+		.filter(
+			(index) =>
+				!lockedIndexes.has(index) &&
+				rerouteSummaryBlockedReason(
+					enrichmentPreviews.get(index)?.status,
+				) !== null,
+		);
+	const routingBlockedMessage = [
+		...Array.from(routingBlockedTitles, ([blocker, titles]) =>
+			routingBlockedApplyText(blocker, listTitles(titles)),
+		),
+		summaryBlockedIndexes.length === 0
 			? ""
-			: `Choose a ticket to enrich for ${listTitles(
-					routingBlockedIndexes.map(
+			: `Wait for the summary of what ${listTitles(
+					summaryBlockedIndexes.map(
 						(i) => changes[i]?.title?.to ?? "",
 					),
-				)} before applying.`;
+				)} changes before applying.`,
+	]
+		.filter(Boolean)
+		.join(" ");
 
 	const _handleToggleKeyDown = (
 		e: KeyboardEvent<HTMLElement>,
@@ -1501,6 +1621,11 @@ export function BacklogChangeProposal({
 
 	// Collapsed view after user approves or rejects
 	if (resolved) {
+		const approvedText = approvedChangesText(
+			approvedCount,
+			totalCount,
+			heldBackCount,
+		);
 		return (
 			<div className="rounded-lg border bg-card p-3 max-w-full space-y-2">
 				<div className="flex items-center gap-2">
@@ -1508,11 +1633,12 @@ export function BacklogChangeProposal({
 						<>
 							<CheckIcon className="size-4 text-success dark:text-green-400" />
 							<p className="text-sm text-muted-foreground">
-								Approved {approvedCount} of {totalCount}{" "}
-								proposed changes
+								{approvedText.approved}
 								{syncToPM
 									? ` (syncing to ${pmToolName ?? "PM Tool"})`
 									: ""}
+								{approvedText.heldBack &&
+									`. ${approvedText.heldBack}`}
 							</p>
 						</>
 					) : resolved === "backlog" ? (
@@ -1751,7 +1877,8 @@ export function BacklogChangeProposal({
 			<div>
 				<div className="flex flex-wrap items-center gap-2">
 					<h4 className="font-semibold text-sm">
-						Proposed Backlog Changes ({changes.length} items)
+						Proposed Backlog Changes ({changes.length}{" "}
+						{changes.length === 1 ? "item" : "items"})
 					</h4>
 					{proposalStatus === "BACKLOG" && (
 						<Badge
@@ -1861,7 +1988,10 @@ export function BacklogChangeProposal({
 
 			{/* Change Items. Below md the list flows in the page's own scroll
 			    rather than a short inner one. */}
-			<div className="space-y-2 md:max-h-[400px] md:overflow-y-auto">
+			<div
+				ref={itemFocus.listRef}
+				className="space-y-2 md:max-h-[400px] md:overflow-y-auto"
+			>
 				{changes.map((change, index) => {
 					const checkboxId = `backlog-change-${index}`;
 					// Per-change findings resolve solely from the proposal-level
@@ -1913,32 +2043,48 @@ export function BacklogChangeProposal({
 						!isResolvedUpdate;
 					const targetOnBoard =
 						isResolvedUpdate && isLinkableTarget(change.existingId);
+					// The server's verdict decides when the inbox has it: a
+					// target the board hides (an initiative while initiatives
+					// are off) is still a ticket, and its update applies.
+					const heldBackIndexes = itemReview?.heldBackUpdateIndexes;
 					const targetMissing =
 						isResolvedUpdate &&
-						isMissingFromBoard(
-							boardStoryIds,
-							change.existingId ?? "",
-						);
+						(heldBackIndexes
+							? heldBackIndexes.has(index)
+							: isMissingFromBoard(
+									boardStoryIds,
+									change.existingId ?? "",
+								));
 					const rowLockedReason = review.lockedReasonOf(index);
 					const showsUpdateSummary =
 						change.action === "update" && !routingOverridden;
 					// An applied update reads "As proposed", with the ticket
-					// whose Decision Log records what was written.
+					// whose Decision Log records what was written. A restored
+					// item counts only once its restore wrote a ticket: one
+					// still applying, or whose apply failed, wrote nothing.
 					const rowApplied =
-						rowLockedReason && rowLockedReason !== "rejected"
+						rowLockedReason &&
+						rowLockedReason !== "rejected" &&
+						(rowLockedReason !== "restored" ||
+							review.lockedTargetOf(index))
 							? {
 									projectId,
 									storyId: review.lockedTargetOf(index),
 								}
 							: undefined;
-					// Re-routed to a ticket: merged into it at apply, so
-					// there is no change summary to show yet.
-					const mergedOnApply =
-						routingOverridden &&
-						effectiveRouting?.decision === "enrich";
+					// Re-routed to a ticket: summarized from its merge into
+					// that ticket, once the merge is read.
+					const reroutedUpdate = reroutedUpdateOf(index);
+					const reroutePreview = enrichmentPreviews.get(index);
+					const rerouteKeptBodyOn =
+						reroutePreview?.status === "ready" &&
+						mergeKeepsTargetBody(reroutePreview.preview)
+							? reroutePreview.preview.targetIdentifier
+							: undefined;
 					return (
 						<div
 							key={index}
+							data-proposal-item={index}
 							className={cn(
 								"rounded-md border p-3 space-y-2 transition-colors",
 								selected.has(index)
@@ -2145,21 +2291,8 @@ export function BacklogChangeProposal({
 														<TooltipTrigger asChild>
 															<button
 																type="button"
-																aria-label={t(
-																	"openExisting",
-																	{
-																		identifier:
-																			change
-																				.targetResolution
-																				?.resolvedIdentifier ??
-																			change.existingIdentifier ??
-																			"",
-																		title:
-																			change
-																				.targetResolution
-																				?.resolvedTitle ??
-																			"",
-																	},
+																aria-label={openExistingLabel(
+																	change,
 																)}
 																onClick={() =>
 																	openExistingTicket(
@@ -2223,6 +2356,7 @@ export function BacklogChangeProposal({
 														)
 													: !selected.has(index)
 											}
+											resolved={!!rowLockedReason}
 											itemTitle={change.title.to}
 											panel={panel}
 										/>
@@ -2233,10 +2367,18 @@ export function BacklogChangeProposal({
 											matches={review.duplicateMatchesOf(
 												index,
 											)}
+											checking={review.stillCheckingOf(
+												index,
+											)}
 											itemTitle={change.title.to}
 											projectId={projectId}
 											organizationId={organizationId}
 											proposalId={proposalId}
+											changeIndex={
+												proposalStatus === "PENDING"
+													? index
+													: undefined
+											}
 											enrichTargetStoryId={review.enrichTargetOf(
 												index,
 											)}
@@ -2262,12 +2404,32 @@ export function BacklogChangeProposal({
 									{showsUpdateSummary && (
 										<ProposalUpdateSummary
 											change={change}
+											current={review.targetBodiesOf(
+												index,
+											)}
 											applied={rowApplied}
 											panel={panel}
 											className="mt-2"
 										/>
 									)}
-									{mergedOnApply && <MergedOnApplyNote />}
+									{reroutedUpdate ? (
+										<ProposalUpdateSummary
+											change={reroutedUpdate}
+											keptBodyOn={rerouteKeptBodyOn}
+											panel={panel}
+											className="mt-2"
+										/>
+									) : (
+										reroutePreview &&
+										reroutePreview.status !== "ready" && (
+											<RerouteSummaryNote
+												state={reroutePreview}
+												targetIdentifier={
+													effectiveRouting?.targetIdentifier
+												}
+											/>
+										)
+									)}
 
 									{/* Diff fields for updates */}
 									{change.action === "update" &&
@@ -2374,9 +2536,7 @@ export function BacklogChangeProposal({
 
 									{change.bodyMergeFallback && (
 										<p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
-											AI kept the existing description —
-											it couldn't safely merge the new
-											info without losing structure.
+											{t("backlogProposalMergeFallback")}
 										</p>
 									)}
 									{change.bodyMergeDeferred && (
@@ -2434,7 +2594,8 @@ export function BacklogChangeProposal({
 									</div>
 									{/* An update's reasoning is its summary's "Why". */}
 									{change.reasoning &&
-										!showsUpdateSummary && (
+										!showsUpdateSummary &&
+										!reroutedUpdate && (
 											<p className="text-xs text-muted-foreground italic mt-0.5 line-clamp-2">
 												{stripMarkdown(
 													change.reasoning,
@@ -2468,12 +2629,14 @@ export function BacklogChangeProposal({
 										!rowLockedReason && (
 											<ProposalItemActions
 												itemTitle={change.title.to}
-												onApprove={() =>
-													review.approveItem(index)
-												}
-												onMoveToRejected={() =>
-													review.rejectItem(index)
-												}
+												onApprove={() => {
+													itemFocus.markActed(index);
+													review.approveItem(index);
+												}}
+												onMoveToRejected={() => {
+													itemFocus.markActed(index);
+													review.rejectItem(index);
+												}}
 												disabled={review.isActionDisabled(
 													index,
 												)}
@@ -2483,16 +2646,10 @@ export function BacklogChangeProposal({
 												pendingAction={review.pendingActionOf(
 													index,
 												)}
-												onReviewLineByLine={
-													showsUpdateSummary
-														? () =>
-																openDetail(
-																	index,
-																	true,
-																)
-														: undefined
-												}
-												lineReviewBlockedReason={review.lineReviewBlockedReasonOf(
+												approveLabel={review.approveLabelOf(
+													index,
+												)}
+												onReviewLineByLine={review.reviewOnTicketOf(
 													index,
 												)}
 											/>
@@ -2538,7 +2695,8 @@ export function BacklogChangeProposal({
 						disabled={
 							actionsBusy ||
 							selectedCount === 0 ||
-							routingBlockedIndexes.length > 0 ||
+							routingBlockedTitles.size > 0 ||
+							summaryBlockedIndexes.length > 0 ||
 							(reformattingIndex !== null &&
 								selected.has(reformattingIndex))
 						}
@@ -2688,7 +2846,10 @@ export function BacklogChangeProposal({
 									setDetailIndex(null);
 								}
 							}}
-							change={buildEffectiveChange(di, detailChange)}
+							change={
+								reroutedUpdateOf(di) ??
+								buildEffectiveChange(di, detailChange)
+							}
 							index={di}
 							totalCount={changes.length}
 							isSelected={selected.has(di)}
@@ -2751,8 +2912,8 @@ export function BacklogChangeProposal({
 							panel={panel}
 							resolution={review.resolutionOf(di)}
 							itemDecision={review.decisionOf(di)}
-							initialLineReview={detailLineReview}
 							targetChanged={review.targetChanged(di)}
+							targetBodies={review.targetBodiesOf(di)}
 						/>
 					);
 				})()}

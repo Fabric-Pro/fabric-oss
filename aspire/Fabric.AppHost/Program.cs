@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Aspire.Hosting;
+using Aspire.Hosting.DevTunnels;
 using DotNetEnv;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -18,7 +19,7 @@ const string dockerProjectName = "fabric";
 // DEPLOYMENT MODE DETECTION
 // ============================================================================
 // IsPublishMode = true when running `azd up` or `azd deploy`
-// IsPublishMode = false when running `dotnet run` locally
+// IsPublishMode = false when running `aspire run` locally
 var isPublishMode = builder.ExecutionContext.IsPublishMode;
 
 // Load .env.local file from repository root (for local development)
@@ -162,30 +163,20 @@ IResourceBuilder<T> WithLocalModels<T>(IResourceBuilder<T> resource, string olla
     return WithTask(resource, "FABRIC_LOCAL_IMAGES", localImageModel, localAiOrigin, "LocalAI");
 }
 
-// Opt-in (default OFF) public tunnel for OAuth callbacks and inbound webhooks.
-// Set Parameters:ngrok-domain (a reserved ngrok domain, e.g. example-org.ngrok-free.app)
-// and Parameters:ngrok-auth-token in appsettings.Development.json or user-secrets.
-// When both are present the AppHost runs the ngrok agent as a container, serves
-// the web app through it, points NEXT_PUBLIC_SITE_URL at the tunnel so redirect
-// URIs and links derived from the site URL use the public origin, and shows the
-// URL on the resource in the dashboard. A reserved domain is required because
-// the URL must be known before the web app starts (and OAuth providers need a
-// stable callback anyway). Local-dev only — publish mode never runs a tunnel.
-var ngrokDomain = builder.Configuration["Parameters:ngrok-domain"]?.Trim();
-var hasNgrokAuthToken = !string.IsNullOrWhiteSpace(builder.Configuration["Parameters:ngrok-auth-token"]);
-string? devTunnelUrl = null;
-if (!isPublishMode && !string.IsNullOrWhiteSpace(ngrokDomain))
+// Public access to the local web app is opt-in and only available in run mode.
+// A fixed tunnel ID gives OAuth providers a stable callback and gives webhook
+// senders a stable target. See docs/ASPIRE_USAGE.md for setup and precedence.
+var devTunnelId = builder.ExecutionContext.IsRunMode
+    ? builder.Configuration["Parameters:dev-tunnel-id"]?.Trim()
+    : null;
+if (devTunnelId is { Length: > 0 } && !Regex.IsMatch(devTunnelId, @"\A[a-z0-9][a-z0-9-]{1,58}[a-z0-9]\z"))
 {
-    if (!hasNgrokAuthToken)
-    {
-        Console.WriteLine("[WARN] Parameters:ngrok-domain is set but Parameters:ngrok-auth-token is empty — starting without a public tunnel.");
-    }
-    else
-    {
-        var tunnelHost = Regex.Replace(ngrokDomain, "^https?://", "").TrimEnd('/');
-        devTunnelUrl = $"https://{tunnelHost}";
-        Console.WriteLine($"[DEBUG] Public tunnel enabled — the web app will be served at {devTunnelUrl}");
-    }
+    throw new ArgumentException("Parameters:dev-tunnel-id must contain 3–60 lowercase ASCII letters, digits, or hyphens, and start and end with a letter or digit.");
+}
+if (!string.IsNullOrWhiteSpace(builder.Configuration["Parameters:ngrok-domain"])
+    || !string.IsNullOrWhiteSpace(builder.Configuration["Parameters:ngrok-auth-token"]))
+{
+    Console.WriteLine("[WARN] Parameters:ngrok-domain and Parameters:ngrok-auth-token are ignored. Set Parameters:dev-tunnel-id to enable the Aspire public tunnel.");
 }
 
 // ============================================================================
@@ -241,12 +232,31 @@ if (!isPublishMode)
         .WithContainerRuntimeArgs("--label", $"com.docker.compose.project={dockerProjectName}")
         .WithContainerRuntimeArgs("--label", "com.docker.compose.service=postgres")
         .WithLifetime(ContainerLifetime.Persistent);
-    fabricDb = postgres.AddDatabase("fabric-db");
+    fabricDb = postgres.AddDatabase("fabric-db", "fabric");
+    if (!useExternalDb)
+    {
+        // WithPostgresMcp is experimental in Aspire 17.
+#pragma warning disable ASPIREPOSTGRES001
+        fabricDb.WithPostgresMcp(mcp => mcp
+#pragma warning restore ASPIREPOSTGRES001
+            .WithImageTag("0.3.0")
+            .WithEndpoint("http", endpoint => endpoint.Port = 8150)
+            .WithContainerRuntimeArgs("--label", $"com.docker.compose.project={dockerProjectName}")
+            .WithContainerRuntimeArgs("--label", "com.docker.compose.service=fabric-db-mcp")
+            .WithArgs(context =>
+            {
+                // Replace Aspire's unrestricted defaults and retain the SSE transport.
+                context.Args.Clear();
+                context.Args.Add("--access-mode=restricted");
+                context.Args.Add("--transport=sse");
+            }));
+    }
 
-    // Redis Cache (local only)
+    // Redis Cache (local only). Keep the previous 8.6 image for the existing volume.
     // WithoutHttpsCertificate() disables TLS - agents use redis:// (non-TLS) connections
 #pragma warning disable ASPIRECERTIFICATES001 // WithoutHttpsCertificate is experimental
     redis = builder.AddRedis("cache")
+        .WithImageTag("8.6")
         .WithoutHttpsCertificate()
         .WithDataVolume("fabric-redis-data")
         .WithContainerRuntimeArgs("--label", $"com.docker.compose.project={dockerProjectName}")
@@ -1143,7 +1153,7 @@ else
         .WithBindMount("../../", "/app");
     weaveReaders = AddHostGateway(AddNodeModulesVolume(weaveReadersBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/weave-readers && ensure_agent_built dist/index.js && echo 'Starting weave-readers...' && node dist/index.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/weave-readers && ensure_agent_built dist/index.js && echo 'Starting weave-readers...' && exec node dist/index.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8140")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1205,7 +1215,7 @@ else
         .WithBindMount("../../", "/app");
     weaveShuttle = AddHostGateway(AddNodeModulesVolume(weaveShuttleBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/weave-shuttle && ensure_agent_built dist/index.js && echo 'Starting weave-shuttle...' && node dist/index.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/weave-shuttle && ensure_agent_built dist/index.js && echo 'Starting weave-shuttle...' && exec node dist/index.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8141")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1258,7 +1268,7 @@ else
         .WithBindMount("../../", "/app");
     weavePlanners = AddHostGateway(AddNodeModulesVolume(weavePlannersBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/weave-planners && ensure_agent_built dist/index.js && echo 'Starting weave-planners...' && node dist/index.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/weave-planners && ensure_agent_built dist/index.js && echo 'Starting weave-planners...' && exec node dist/index.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8142")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1330,7 +1340,7 @@ else
         .WithBindMount("../../", "/app");
     documentGenerator = AddHostGateway(AddNodeModulesVolume(docGenBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/document-generator && ensure_agent_built dist/unified-server.js && echo 'Starting Unified Server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/document-generator && ensure_agent_built dist/unified-server.js && echo 'Starting Unified Server (AG-UI + A2A)...' && exec node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8124")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1384,7 +1394,7 @@ else
         .WithBindMount("../../", "/app");
     projectDocumentGenerator = AddHostGateway(AddNodeModulesVolume(projDocGenBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/project-document-generator && ensure_agent_built dist/unified-server.js && echo 'Starting Unified Server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/project-document-generator && ensure_agent_built dist/unified-server.js && echo 'Starting Unified Server (AG-UI + A2A)...' && exec node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8125")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1437,7 +1447,7 @@ else
         .WithBindMount("../../", "/app");
     taskPlanner = AddHostGateway(AddNodeModulesVolume(taskPlannerBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/task-planner && ensure_agent_built dist/unified-server.js && echo 'Starting Unified server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/task-planner && ensure_agent_built dist/unified-server.js && echo 'Starting Unified server (AG-UI + A2A)...' && exec node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8126")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1490,7 +1500,7 @@ else
         .WithBindMount("../../", "/app");
     storyBreakdown = AddHostGateway(AddNodeModulesVolume(storyBreakdownBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/story-breakdown && ensure_agent_built dist/unified-server.js && echo 'Starting Unified server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/story-breakdown && ensure_agent_built dist/unified-server.js && echo 'Starting Unified server (AG-UI + A2A)...' && exec node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8127")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1596,7 +1606,7 @@ else
         .WithBindMount("../../", "/app");
     apiAgent = AddHostGateway(AddNodeModulesVolume(apiAgentBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/api-agent && ensure_agent_built dist/unified-server.js && echo 'Starting Unified server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/api-agent && ensure_agent_built dist/unified-server.js && echo 'Starting Unified server (AG-UI + A2A)...' && exec node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8131")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1649,7 +1659,7 @@ else
         .WithBindMount("../../", "/app");
     promptEnhancer = AddHostGateway(AddNodeModulesVolume(promptEnhancerBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/prompt-enhancer && ensure_agent_built dist/unified-server.js && echo 'Starting Unified Server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/prompt-enhancer && ensure_agent_built dist/unified-server.js && echo 'Starting Unified Server (AG-UI + A2A)...' && exec node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8134")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1702,7 +1712,7 @@ else
         .WithBindMount("../../", "/app");
     backlogUpdater = AddHostGateway(AddNodeModulesVolume(backlogUpdaterBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/backlog-updater && ensure_agent_built dist/unified-server.js && echo 'Starting Unified Server (AG-UI + A2A)...' && node dist/unified-server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/backlog-updater && ensure_agent_built dist/unified-server.js && echo 'Starting Unified Server (AG-UI + A2A)...' && exec node dist/unified-server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8135")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1755,7 +1765,7 @@ else
         .WithBindMount("../../", "/app");
     customAgentRuntime = AddHostGateway(AddNodeModulesVolume(customAgentBase))
         .WithEntrypoint("/bin/sh")
-        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/custom-agent-runtime && ensure_agent_built dist/server.js && echo 'Starting Custom Agent Runtime...' && node dist/server.js")
+        .WithArgs("-c", $"{agentRetryScript} && corepack enable && cd /app/agents/langchain/custom-agent-runtime && ensure_agent_built dist/server.js && echo 'Starting Custom Agent Runtime...' && exec node dist/server.js")
         .WithEnvironment("NODE_ENV", "development")
         .WithEnvironment("PORT", "8240")
         .WithEnvironment("HOST", "0.0.0.0")
@@ -1816,6 +1826,8 @@ if (!isPublishMode)
 
     foreach (var agent in rebuildableAgents)
     {
+        // The init process forwards stop signals to Node after exec replaces the setup shell.
+        agent.WithContainerRuntimeArgs("--init");
         WithAgentRebuildCommand(agent);
     }
 }
@@ -1909,9 +1921,6 @@ else
         .WaitFor(redis!)
         .WaitFor(temporal!)
         .WaitFor(qdrant!)
-        // The worker reaches the web app's MCP gateway at this origin, so it must
-        // be the origin the web app is served on, not whatever .env.local holds.
-        .WithEnvironment("NEXT_PUBLIC_SITE_URL", devTunnelUrl ?? "http://localhost:3001")
         // Worker -> web bridge calls (scheduled code index refresh, Living
         // Memory -> code index, ...) go straight to the local web app. Unset,
         // they fall back to http://localhost:3000, where nothing listens.
@@ -1921,20 +1930,17 @@ else
     {
         if (!useExternalDb && (key == "DATABASE_URL" || key == "DIRECT_URL")) continue;
         if (key.StartsWith("OTEL_")) continue;
-        if (key == "NEXT_PUBLIC_SITE_URL") continue; // pinned to the web origin above
+        if (key == "NEXT_PUBLIC_SITE_URL") continue; // set from the web origin below
         if (key == "FABRIC_INTERNAL_URL") continue; // pinned to the web app above
         temporalWorker = temporalWorker.WithEnvironment(key, value);
     }
     temporalWorker = WithLocalModels(temporalWorker, "http://localhost:11434", "http://localhost:8090");
-}
 
-// ============================================================================
-// LOCAL-ONLY SERVICES (PartyKit, Web App, Sandbox Worker)
-// ============================================================================
-// These are deployed separately (Cloudflare for PartyKit/Sandbox, Vercel for Web)
+    // ============================================================================
+    // LOCAL-ONLY SERVICES (PartyKit, Web App, Sandbox Worker)
+    // ============================================================================
+    // These are deployed separately (Cloudflare for PartyKit/Sandbox, Vercel for Web)
 
-if (!isPublishMode)
-{
     // PartyKit (deployed to Cloudflare in production)
     // Use HTTP protocol for OTLP to avoid gRPC credentials issues with self-signed certs
     var partykit = builder.AddExecutable("partykit", "sh", "../../party", "./start-dev.sh")
@@ -1953,21 +1959,20 @@ if (!isPublishMode)
 
     // Web App (deployed to Vercel in production)
     // Use HTTP protocol for OTLP to avoid gRPC credentials issues with self-signed certs
-#pragma warning disable ASPIREBROWSERLOGS001 // WithBrowserLogs is still experimental in 13.6
-    // The canonical origin the web app derives absolute URLs from (Better Auth
-    // baseURL, OAuth redirect URIs, magic links, webhook targets). Localhost
-    // unless the opt-in public tunnel is on.
-    var webSiteUrl = devTunnelUrl ?? "http://localhost:3001";
-    var web = builder.AddExecutable("web", "pnpm", "../../apps/web", "run", "dev")
+#pragma warning disable ASPIREBROWSERLOGS001 // WithBrowserLogs is experimental
+    var web = builder.AddNextJsApp("web", "../../apps/web", runScriptName: "dev")
+        .WithPnpm(install: false)
         .WithBrowserLogs()
-        .WithHttpEndpoint(port: 3001, env: "PORT", isProxied: false)
+        .WithEndpoint("http", endpoint =>
+        {
+            endpoint.Port = 3001;
+            endpoint.IsProxied = false;
+        })
         .WithEnvironment("NODE_ENV", "development")
-        .WithEnvironment("NEXT_PUBLIC_SITE_URL", webSiteUrl)
         .WithEnvironment("MCP_STDIO_WRAPPER_URL", "http://localhost:3100")  // MCP STDIO wrapper for Azure DevOps, etc.
         .WithEnvironment("WEAVE_READERS_URL", "http://localhost:8140")
         .WithEnvironment("WEAVE_SHUTTLE_URL", "http://localhost:8141")
         .WithEnvironment("WEAVE_PLANNERS_URL", "http://localhost:8142")
-        .WithOtlpExporter()
         .WithEnvironment("NODE_TLS_REJECT_UNAUTHORIZED", "0") // Accept Aspire Dashboard's self-signed cert
         .WithEnvironment(context =>
         {
@@ -1998,32 +2003,31 @@ if (!isPublishMode)
     {
         if (!useExternalDb && (key == "DATABASE_URL" || key == "DIRECT_URL")) continue;
         if (key.StartsWith("OTEL_")) continue;
-        if (key == "NEXT_PUBLIC_SITE_URL") continue; // pinned to webSiteUrl above
+        if (key == "NEXT_PUBLIC_SITE_URL") continue; // set from the web origin below
         web = web.WithEnvironment(key, value);
     }
     web = WithLocalModels(web, "http://localhost:11434", "http://localhost:8090");
 
-    if (devTunnelUrl is not null)
+    ReferenceExpression? devTunnelUrl = null;
+    if (devTunnelId is { Length: > 0 })
     {
+        var tunnel = builder.AddDevTunnel("tunnel", tunnelId: devTunnelId,
+            options: new DevTunnelOptions { ExpirationHours = 720 })
+            .WithReference(web.GetEndpoint("http"), allowAnonymous: true);
+        var tunnelEndpoint = tunnel.GetEndpoint(web, "http");
+        devTunnelUrl = ReferenceExpression.Create($"https://{tunnelEndpoint.Property(EndpointProperty.Host)}");
+
         // DEV_TUNNEL_URL adds the tunnel to Better Auth's trusted origins
         // (packages/auth/lib/trusted-origins.ts) and to Next's allowedDevOrigins
         // (apps/web/next.config.ts). Set after the .env.local loop so it wins.
-        web = web.WithEnvironment("DEV_TUNNEL_URL", devTunnelUrl);
-
-        var ngrokAuthToken = builder.AddParameter("ngrok-auth-token", secret: true);
-        var tunnel = builder.AddContainer("tunnel", "ngrok/ngrok", "3")
-            .WithContainerRuntimeArgs("--label", $"com.docker.compose.project={dockerProjectName}")
-            .WithContainerRuntimeArgs("--label", "com.docker.compose.service=tunnel")
-            .WithEnvironment("NGROK_AUTHTOKEN", ngrokAuthToken)
-            // The web app is a host process, so the agent reaches it through
-            // host.docker.internal (mapped by AddHostGateway on Linux).
-            .WithArgs("http", "--url", devTunnelUrl, "--log", "stdout", "http://host.docker.internal:3001")
-            // ngrok's local inspector and status API; the image binds it to 0.0.0.0:4040.
-            .WithHttpEndpoint(targetPort: 4040, name: "inspect")
-            .WithUrl(devTunnelUrl, "Public URL")
-            .WaitFor(web);
-        AddHostGateway(tunnel);
+        web.WithEnvironment("DEV_TUNNEL_URL", devTunnelUrl);
     }
+
+    // The web app builds absolute URLs from this origin and the worker uses it
+    // to reach the web app's MCP gateway. Set it after both .env.local loops.
+    var webSiteUrl = devTunnelUrl ?? ReferenceExpression.Create($"http://localhost:3001");
+    web.WithEnvironment("NEXT_PUBLIC_SITE_URL", webSiteUrl);
+    temporalWorker.WithEnvironment("NEXT_PUBLIC_SITE_URL", webSiteUrl);
 }
 
 // ============================================================================

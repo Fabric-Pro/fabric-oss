@@ -30,6 +30,15 @@ let lastFailureTime = 0;
 /** Backoff before retrying after a connection failure */
 const RETRY_BACKOFF_MS = 30_000; // 30 seconds
 
+function retireRedisClient(client: NonNullable<typeof redisClient>): void {
+	if (redisClient === client) {
+		// ioredis schedules its reconnect before emitting close. Cancel it
+		// before allowing another caller to create a replacement.
+		client.disconnect();
+		redisClient = null;
+	}
+}
+
 /**
  * Get or create the singleton Redis publisher client.
  * Returns null if Redis is unavailable.
@@ -55,10 +64,9 @@ async function connectRedis(): Promise<import("ioredis").default | null> {
 		return null;
 	}
 
-	let client: import("ioredis").default | null = null;
 	try {
 		const Redis = (await import("ioredis")).default;
-		client = new Redis(redisUrl, {
+		const client = new Redis(redisUrl, {
 			maxRetriesPerRequest: 1,
 			// Without this, ioredis disables TCP keepalive and an idle
 			// connection is reaped upstream, surfacing as ECONNRESET on the
@@ -70,6 +78,8 @@ async function connectRedis(): Promise<import("ioredis").default | null> {
 			enableOfflineQueue: false,
 		});
 
+		redisClient = client;
+
 		// Attach before connect() so errors during the connection attempt are
 		// handled (not logged as "[ioredis] Unhandled error event").
 		// Also covers post-connect errors (drops, reconnects).
@@ -79,18 +89,16 @@ async function connectRedis(): Promise<import("ioredis").default | null> {
 			});
 		});
 
-		client.on("close", () => {
+		client.once("close", () => {
 			logger.debug("[RedisPublisher] Redis connection closed");
-			redisClient = null;
-			connectionPromise = null;
+			retireRedisClient(client);
 		});
 
 		await client.connect();
 
-		redisClient = client;
 		lastFailureTime = 0;
 		logger.info("[RedisPublisher] Connected to Redis");
-		return client;
+		return redisClient;
 	} catch (err) {
 		// Error already surfaced by the error event handler above
 		logger.warn(
@@ -100,16 +108,20 @@ async function connectRedis(): Promise<import("ioredis").default | null> {
 			},
 		);
 		// Disconnect so ioredis doesn't leak background reconnect timers
-		try {
-			client?.disconnect();
-		} catch {}
+		if (redisClient) {
+			retireRedisClient(redisClient);
+		}
 		lastFailureTime = Date.now();
-		connectionPromise = null;
 		return null;
 	}
 }
 
 async function getRedisPublisher(): Promise<import("ioredis").default | null> {
+	// Keep the connection attempt reserved until it settles, even if the
+	// socket closes during the handshake.
+	if (connectionPromise) {
+		return connectionPromise;
+	}
 	if (redisClient) {
 		return redisClient;
 	}
@@ -120,12 +132,9 @@ async function getRedisPublisher(): Promise<import("ioredis").default | null> {
 	) {
 		return null;
 	}
-	// Concurrent callers share the same connection promise
-	if (connectionPromise) {
-		return connectionPromise;
-	}
-
-	connectionPromise = connectRedis();
+	connectionPromise = connectRedis().finally(() => {
+		connectionPromise = null;
+	});
 	return connectionPromise;
 }
 
@@ -490,13 +499,14 @@ export async function getRedisClient(): Promise<
  * Called during worker shutdown.
  */
 export async function disconnectRedisPublisher(): Promise<void> {
-	if (redisClient) {
+	const client = connectionPromise ? await connectionPromise : redisClient;
+	if (client) {
 		try {
-			await redisClient.quit();
+			await client.quit();
 		} catch {
-			// Ignore disconnect errors
+			// Shutdown still retires the connection when QUIT fails.
+		} finally {
+			retireRedisClient(client);
 		}
-		redisClient = null;
-		connectionPromise = null;
 	}
 }

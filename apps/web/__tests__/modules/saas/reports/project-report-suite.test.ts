@@ -1,14 +1,84 @@
 import {
 	canCreateReportTemplate,
 	canManageReportTemplate,
+	isReportRunning,
 	isReportTemplateListed,
 	listedReportTemplates,
+	listShowsStartedRun,
 	pickDefaultProjectReportsTab,
 	projectReportsHref,
 	type ReportSuiteCapabilities,
+	RUNNING_REPORTS_POLL_MS,
+	runningReportsPollInterval,
 	withProjectContext,
 } from "@saas/reports/lib/project-report-suite";
 import { describe, expect, it } from "vitest";
+
+describe("running reports", () => {
+	it("counts a started or running latest run as running", () => {
+		expect(isReportRunning({ latestExecutionStatus: "PENDING" })).toBe(
+			true,
+		);
+		expect(isReportRunning({ latestExecutionStatus: "RUNNING" })).toBe(
+			true,
+		);
+		expect(isReportRunning({ latestExecutionStatus: "COMPLETED" })).toBe(
+			false,
+		);
+		expect(isReportRunning({ latestExecutionStatus: null })).toBe(false);
+	});
+
+	it("polls the report list while any listed report runs", () => {
+		expect(
+			runningReportsPollInterval([
+				{ latestExecutionStatus: "COMPLETED" },
+				{ latestExecutionStatus: "RUNNING" },
+			]),
+		).toBe(RUNNING_REPORTS_POLL_MS);
+	});
+
+	it("waits for the refetched list to show the run a press started", () => {
+		const pressed = {
+			instanceId: "report-1",
+			executionCount: 3,
+			lastRunAt: "2026-01-05T10:00:00.000Z",
+		};
+		const before = {
+			latestExecutionStatus: "COMPLETED",
+			executionCount: 3,
+			lastRunAt: "2026-01-05T10:00:00.000Z",
+		};
+
+		expect(listShowsStartedRun(before, pressed)).toBe(false);
+		expect(
+			listShowsStartedRun(
+				{ ...before, latestExecutionStatus: "PENDING" },
+				pressed,
+			),
+		).toBe(true);
+		expect(
+			listShowsStartedRun({ ...before, executionCount: 4 }, pressed),
+		).toBe(true);
+		expect(
+			listShowsStartedRun(
+				{ ...before, lastRunAt: "2026-01-05T11:00:00.000Z" },
+				pressed,
+			),
+		).toBe(true);
+	});
+
+	it("stops polling once the refetched list shows every run finished", () => {
+		expect(
+			runningReportsPollInterval([
+				{ latestExecutionStatus: "COMPLETED" },
+				{ latestExecutionStatus: "FAILED" },
+				{ latestExecutionStatus: null },
+			]),
+		).toBe(false);
+		expect(runningReportsPollInterval([])).toBe(false);
+		expect(runningReportsPollInterval(undefined)).toBe(false);
+	});
+});
 
 describe("project context links", () => {
 	it("leads back to the project's Reports tab", () => {
@@ -56,6 +126,14 @@ describe("pickDefaultProjectReportsTab", () => {
 
 	it("opens on templates for a viewer without reports here", () => {
 		expect(pickDefaultProjectReportsTab(0)).toBe("templates");
+	});
+
+	it("opens on templates when the count never loaded", () => {
+		expect(pickDefaultProjectReportsTab(undefined, true)).toBe("templates");
+	});
+
+	it("keeps the last count when its refresh failed", () => {
+		expect(pickDefaultProjectReportsTab(3, true)).toBe("instances");
 	});
 });
 

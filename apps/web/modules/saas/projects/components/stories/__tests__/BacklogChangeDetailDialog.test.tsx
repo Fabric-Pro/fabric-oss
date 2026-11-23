@@ -378,6 +378,28 @@ describe("BacklogChangeDetailDialog", () => {
 		expect(screen.getByText(/drafting this proposal/i)).toBeInTheDocument();
 	});
 
+	it("claims a shared draft only for the server-persisted draft", () => {
+		const { unmount } = render(
+			<BacklogChangeDetailDialog
+				{...makeProps({ change: createChange, reformatting: true })}
+			/>,
+		);
+		expect(screen.queryByText(/shared with your team/i)).toBeNull();
+		unmount();
+
+		render(
+			<BacklogChangeDetailDialog
+				{...makeProps({
+					change: createChange,
+					reformatting: true,
+					draftStatus: "RUNNING",
+					draftStartedAt: new Date().toISOString(),
+				})}
+			/>,
+		);
+		expect(screen.getByText(/shared with your team/i)).toBeInTheDocument();
+	});
+
 	it("does not show the drafting banner when not reformatting", () => {
 		render(
 			<BacklogChangeDetailDialog
@@ -745,21 +767,16 @@ describe("BacklogChangeDetailDialog — committing one item (inbox)", () => {
 describe("BacklogChangeDetailDialog — update summary and line review", () => {
 	const TITLE = "New title with significantly more detail";
 
-	// Already merged at analysis, so its `to` is what apply writes.
-	const mergedUpdate: ChangeItem = {
-		...updateChange,
-		structurePreserved: true,
-		description: { from: "Intro\nOld step", to: "Intro\nNew step\nExtra" },
-		acceptanceCriteria: { from: "- A", to: "- A\n- B" },
-	};
-
-	function lineDecision() {
+	function lineDecision(
+		overrides: Partial<{ approveBlockedReason: string | null }> = {},
+	) {
 		return {
 			onApprove: vi.fn(),
 			onMoveToRejected: vi.fn(),
 			approveBlockedReason: null,
 			busy: false,
-			lineReview: { onApplyReviewed: vi.fn(), onRejectAll: vi.fn() },
+			onReviewOnTicket: vi.fn(),
+			...overrides,
 		};
 	}
 
@@ -785,157 +802,118 @@ describe("BacklogChangeDetailDialog — update summary and line review", () => {
 		expect(screen.queryByTestId("proposal-update-summary")).toBeNull();
 	});
 
-	it("applies only the line changes the reviewer accepted", async () => {
+	it("takes the update to its ticket for a line-by-line review", async () => {
 		const user = userEvent.setup();
 		const itemDecision = lineDecision();
-		render(
-			<BacklogChangeDetailDialog
-				{...makeProps({
-					change: mergedUpdate,
-					itemDecision,
-					initialLineReview: true,
-				})}
-			/>,
-		);
+		render(<BacklogChangeDetailDialog {...makeProps({ itemDecision })} />);
 
-		await user.click(
-			screen.getByRole("button", {
-				name: "Reject Description change 1 of 1",
-			}),
-		);
-		await user.click(
-			screen.getByRole("button", {
-				name: `Apply approved changes to ${TITLE}`,
-			}),
-		);
-
-		expect(itemDecision.lineReview.onApplyReviewed).toHaveBeenCalledWith({
-			description: new Set([0]),
+		const review = screen.getByRole("button", {
+			name: "Review line by line",
 		});
+		expect(review).toHaveAccessibleDescription(
+			/Opens the ticket with each change marked/,
+		);
+		await user.click(review);
+
+		expect(itemDecision.onReviewOnTicket).toHaveBeenCalledOnce();
 		expect(itemDecision.onApprove).not.toHaveBeenCalled();
 	});
 
-	it("rejects the item when every change is rejected", async () => {
+	it("holds line review back with Approve while the item is blocked", () => {
+		render(
+			<BacklogChangeDetailDialog
+				{...makeProps({
+					itemDecision: lineDecision({
+						approveBlockedReason:
+							"Choose a ticket to enrich before approving this item.",
+					}),
+				})}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", { name: "Review line by line" }),
+		).toBeDisabled();
+	});
+
+	it("applies every change at once with Apply all changes", async () => {
 		const user = userEvent.setup();
 		const itemDecision = lineDecision();
-		render(
-			<BacklogChangeDetailDialog
-				{...makeProps({
-					change: mergedUpdate,
-					itemDecision,
-					initialLineReview: true,
-					skippedFields: new Set(["title", "priority", "size"]),
-				})}
-			/>,
-		);
-
-		await user.click(
-			screen.getByRole("button", {
-				name: "Reject Description change 1 of 1",
-			}),
-		);
-		expect(
-			screen.queryByRole("button", { name: /Reject all changes/ }),
-		).toBeNull();
-		await user.click(
-			screen.getByRole("button", {
-				name: "Reject Acceptance criteria change 1 of 1",
-			}),
-		);
-		await user.click(
-			screen.getByRole("button", {
-				name: `Reject all changes to ${TITLE}`,
-			}),
-		);
-
-		expect(itemDecision.lineReview.onRejectAll).toHaveBeenCalledOnce();
-		expect(itemDecision.lineReview.onApplyReviewed).not.toHaveBeenCalled();
-	});
-
-	it("shows a field as rejected once every line in it is rejected, and restores the lines", async () => {
-		const user = userEvent.setup();
-		const onToggleField = vi.fn();
-		render(
-			<BacklogChangeDetailDialog
-				{...makeProps({
-					change: mergedUpdate,
-					itemDecision: lineDecision(),
-					initialLineReview: true,
-					onToggleField,
-				})}
-			/>,
-		);
-
-		await user.click(
-			screen.getByRole("button", {
-				name: "Reject Description change 1 of 1",
-			}),
-		);
-		const fieldToggle = screen.getByRole("button", {
-			name: "Restore Description change",
-		});
-		expect(fieldToggle).toHaveTextContent("Rejected");
-		expect(fieldToggle).toHaveAttribute("aria-pressed", "true");
-
-		await user.click(fieldToggle);
-
-		expect(
-			screen.getByRole("button", { name: "Reject Description change" }),
-		).toHaveTextContent("Accepted");
-		expect(
-			screen.getByRole("button", {
-				name: "Reject Description change 1 of 1",
-			}),
-		).toBeInTheDocument();
-		expect(onToggleField).not.toHaveBeenCalled();
-	});
-
-	it("keeps a body merged at apply as one decision, and says why", () => {
-		render(
-			<BacklogChangeDetailDialog
-				{...makeProps({
-					itemDecision: lineDecision(),
-					initialLineReview: true,
-				})}
-			/>,
-		);
-
-		expect(
-			screen.getAllByText(/can't be reviewed line by line/),
-		).toHaveLength(2);
-		expect(
-			screen.getByRole("button", { name: "Reject Description change" }),
-		).toBeInTheDocument();
-		expect(
-			screen.queryByRole("button", {
-				name: "Reject Description change 1 of 1",
-			}),
-		).toBeNull();
-	});
-
-	it("switches between applying everything and line review", async () => {
-		const user = userEvent.setup();
-		const itemDecision = lineDecision();
-		render(
-			<BacklogChangeDetailDialog
-				{...makeProps({ change: mergedUpdate, itemDecision })}
-			/>,
-		);
+		render(<BacklogChangeDetailDialog {...makeProps({ itemDecision })} />);
 
 		await user.click(
 			screen.getByRole("button", {
 				name: `Apply all changes to ${TITLE}`,
 			}),
 		);
-		expect(itemDecision.onApprove).toHaveBeenCalledOnce();
 
-		await user.click(
-			screen.getByRole("button", { name: "Review line by line" }),
+		expect(itemDecision.onApprove).toHaveBeenCalledOnce();
+		expect(itemDecision.onReviewOnTicket).not.toHaveBeenCalled();
+	});
+
+	it("reads Apply accepted changes once a proposed field is rejected", () => {
+		render(
+			<BacklogChangeDetailDialog
+				{...makeProps({
+					itemDecision: lineDecision(),
+					skippedFields: new Set(["priority"] as const),
+				})}
+			/>,
 		);
+
 		expect(
 			screen.getByRole("button", {
-				name: "Reject Acceptance criteria change 1 of 1",
+				name: `Apply accepted changes to ${TITLE}`,
 			}),
 		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /Apply all changes/ }),
+		).toBeNull();
+	});
+
+	it("reads Approve on a create routed to enrich an existing ticket", () => {
+		render(
+			<BacklogChangeDetailDialog
+				{...makeProps({
+					change: {
+						...updateChange,
+						routing: {
+							decision: "enrich",
+							confidence: 0.9,
+							matchedStoryId: "story-1",
+							matchedIdentifier: "S-101",
+							matchedTitle: "Old title",
+							reasoning: "Same work as an existing ticket.",
+							proposedTitle: TITLE,
+							proposedDescription: "Captured text.",
+							alternatives: [],
+						},
+					},
+					itemDecision: lineDecision(),
+				})}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", { name: `Approve ${TITLE}` }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /Apply all changes/ }),
+		).toBeNull();
+	});
+
+	it("offers no line review on a create", () => {
+		render(
+			<BacklogChangeDetailDialog
+				{...makeProps({
+					change: createChange,
+					itemDecision: lineDecision(),
+				})}
+			/>,
+		);
+
+		expect(
+			screen.queryByRole("button", { name: "Review line by line" }),
+		).toBeNull();
 	});
 });

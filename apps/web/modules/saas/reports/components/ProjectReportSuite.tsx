@@ -11,6 +11,7 @@ import { useOneClickReport } from "@saas/reports/hooks/use-one-click-report";
 import {
 	type ProjectReportsTab,
 	pickDefaultProjectReportsTab,
+	runningReportsPollInterval,
 } from "@saas/reports/lib/project-report-suite";
 import { parseTemplateDefinition } from "@saas/reports/lib/report-template-definition";
 import { Pagination } from "@saas/shared/components/Pagination";
@@ -76,6 +77,8 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 				},
 			}),
 			placeholderData: keepPreviousData,
+			refetchInterval: (query) =>
+				runningReportsPollInterval(query.state.data?.instances),
 		});
 	const { data: ownReportsData, isError: ownReportsFailed } = useQuery(
 		orpc.reports.instances.list.queryOptions({
@@ -168,13 +171,10 @@ export function ProjectReportSuite({ projectId }: { projectId: string }) {
 		}
 	}, [instancesData, isPreviousReportsPage, reportsPage, lastReportsPage]);
 	// The default waits for the viewer's own report count, so the tab never
-	// flashes from Templates to My Instances once it arrives. A failed count
-	// opens on Templates rather than spinning forever.
+	// flashes from Templates to My Instances once it arrives.
 	const activeTab =
 		chosenTab ??
-		pickDefaultProjectReportsTab(
-			ownReportsFailed ? 0 : ownReportsData?.total,
-		);
+		pickDefaultProjectReportsTab(ownReportsData?.total, ownReportsFailed);
 	const canEdit = capabilities?.canEditProjectReports !== false;
 
 	return (

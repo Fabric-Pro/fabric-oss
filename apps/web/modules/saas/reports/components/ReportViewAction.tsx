@@ -4,7 +4,7 @@ import { Button } from "@ui/components/button";
 import { cn } from "@ui/lib";
 import { EyeIcon, Loader2Icon } from "lucide-react";
 import Link from "next/link";
-import { useId } from "react";
+import { type Ref, useId } from "react";
 
 export const NO_SUCCESSFUL_REPORT_MESSAGE =
 	"No successful report available yet.";
@@ -30,6 +30,7 @@ export function ReportViewAction({
 	isOpening = false,
 	size = "sm",
 	className,
+	buttonRef,
 }: {
 	hasSuccessfulReport: boolean;
 	/** Where View goes; give this or `onView`. */
@@ -38,6 +39,8 @@ export function ReportViewAction({
 	isOpening?: boolean;
 	size?: "sm" | "default";
 	className?: string;
+	/** The View button that `onView` uses. */
+	buttonRef?: Ref<HTMLButtonElement>;
 }) {
 	const reasonId = useId();
 	const icon = isOpening ? (
@@ -78,12 +81,22 @@ export function ReportViewAction({
 
 	return (
 		<Button
+			ref={buttonRef}
 			variant="outline"
 			size={size}
-			onClick={onView}
-			disabled={isOpening}
+			onClick={() => {
+				if (!isOpening) {
+					onView?.();
+				}
+			}}
+			// Not `disabled`: that would drop focus from the button just
+			// pressed, and the report would have nowhere to return it.
+			aria-disabled={isOpening || undefined}
 			aria-label="View latest successful report"
-			className={className}
+			className={cn(
+				"aria-disabled:cursor-not-allowed aria-disabled:opacity-50",
+				className,
+			)}
 		>
 			{icon}
 			View

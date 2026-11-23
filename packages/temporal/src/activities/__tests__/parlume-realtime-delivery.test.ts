@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { executeParlumeMeetingTurn } from "../parlume";
+import { executeParlumeMeetingTurn, failParlumeMeetingTurn } from "../parlume";
+import { prepareAgentTools } from "../shared/agent-tool-runtime";
 
 const mocks = vi.hoisted(() => ({
 	turn: vi.fn(),
@@ -17,6 +18,9 @@ const mocks = vi.hoisted(() => ({
 	result: vi.fn(),
 	voiceState: vi.fn(),
 	actions: vi.fn(),
+	audit: vi.fn(),
+	user: vi.fn(),
+	toolContext: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
 	db: {
@@ -29,17 +33,22 @@ vi.mock("@repo/database", () => ({
 		parlumeMeetingSession: { updateMany: mocks.session },
 		parlumeMeetingSegment: { findMany: mocks.segments },
 		parlumeAction: { updateMany: mocks.actions },
+		user: { findUnique: mocks.user },
 		$transaction: (operations: Promise<unknown>[]) =>
 			Promise.all(operations),
 	},
 	hasProjectAccess: mocks.hasAccess,
+	recordAudit: mocks.audit,
 }));
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 vi.mock("@temporalio/activity", () => ({
 	Context: {
-		current: () => ({ cancellationSignal: new AbortController().signal }),
+		current: () => ({
+			cancellationSignal: new AbortController().signal,
+			heartbeat: vi.fn(),
+		}),
 	},
 }));
 vi.mock("../parlume-agent", () => ({
@@ -48,10 +57,13 @@ vi.mock("../parlume-agent", () => ({
 	executeParlumeAgent: mocks.execute,
 }));
 vi.mock("../parlume-actions", () => ({
-	createParlumeToolRuntime: () => ({ invoke: vi.fn() }),
+	createParlumeToolRuntime: (context: { proposalTags?: string[] }) => {
+		mocks.toolContext(context);
+		return { invoke: vi.fn() };
+	},
 }));
 vi.mock("../parlume-voice", () => ({
-	PARLUME_MAX_SPOKEN_CHARS: 800,
+	PARLUME_MAX_SPOKEN_CHARS: 675,
 	PARLUME_HEADLINE_SPOKEN_CHARS: 350,
 	readParlumeVoiceState: mocks.voiceState,
 	speakParlumeResponse: mocks.speak,
@@ -72,16 +84,22 @@ const SESSION = {
 	status: "ACTIVE",
 	toolsReadOnly: false,
 	voiceGeneration: 3,
+	user: { email: "dana@example.com" },
 };
 
 beforeEach(() => {
 	vi.resetAllMocks();
 	mocks.turn.mockResolvedValue({
 		id: "turn",
+		sessionId: "session",
+		projectId: "project",
+		organizationId: "org",
+		userId: "user",
 		status: "PENDING",
 		voiceGeneration: 3,
 		speakerId: null,
 		speakerName: "Dev One",
+		requesterUserId: "user",
 		requestText: "File a bug for the export",
 		replyChannel: "VOICE",
 		createdAt: new Date(),
@@ -100,6 +118,7 @@ beforeEach(() => {
 	mocks.history.mockResolvedValue([]);
 	mocks.result.mockResolvedValue(true);
 	mocks.chat.mockResolvedValue({ sent: true, tag: "P5" });
+	mocks.user.mockResolvedValue({ email: "dana@example.com" });
 });
 
 function lastStatusWrite() {
@@ -122,6 +141,7 @@ describe("Parlume turns for the realtime voice", () => {
 		expect(voiceInstructions).not.toContain("Before you call any tool");
 		expect(mocks.result).toHaveBeenCalledWith({
 			sessionId: "session",
+			turnId: "turn",
 			job: "J2",
 			status: "completed",
 			text: "Filed B-12, Export fails.",
@@ -167,6 +187,41 @@ describe("Parlume turns for the realtime voice", () => {
 
 		expect(mocks.chat).toHaveBeenCalledWith(
 			expect.objectContaining({ final: true, voiceGeneration: 3 }),
+		);
+		expect(mocks.result).toHaveBeenCalledWith(
+			expect.objectContaining({ job: "J2", chatTags: ["P5"] }),
+		);
+	});
+
+	// A short answer carrying a looked-up link was never posted, while the
+	// voice told the meeting it was in the chat.
+	it("posts a short answer holding a link to the chat and tells the voice where it is", async () => {
+		const linked =
+			"The roadmap is at https://app.example.com/projects/p?tab=stories.";
+		mocks.execute.mockResolvedValue({ success: true, response: linked });
+
+		await executeParlumeMeetingTurn({ turnId: "turn", realtimeJob: "J2" });
+
+		expect(mocks.chat).toHaveBeenCalledWith(
+			expect.objectContaining({ message: linked, final: true }),
+		);
+		expect(mocks.result).toHaveBeenCalledWith(
+			expect.objectContaining({ job: "J2", chatTags: ["P5"] }),
+		);
+	});
+
+	it("posts a short answer that says what its proposal leaves out to the chat", async () => {
+		const qualified =
+			"P4 waits for a member to confirm it in Fabric; assigning it is not available through my tools.";
+		mocks.execute.mockImplementation(async () => {
+			mocks.toolContext.mock.calls[0]?.[0].proposalTags.push("P4");
+			return { success: true, response: qualified };
+		});
+
+		await executeParlumeMeetingTurn({ turnId: "turn", realtimeJob: "J2" });
+
+		expect(mocks.chat).toHaveBeenCalledWith(
+			expect.objectContaining({ message: qualified, final: true }),
 		);
 		expect(mocks.result).toHaveBeenCalledWith(
 			expect.objectContaining({ job: "J2", chatTags: ["P5"] }),
@@ -230,7 +285,6 @@ describe("Parlume turns for the realtime voice", () => {
 		mocks.speak.mockResolvedValue({ played: true, interrupted: false });
 		mocks.voiceState.mockResolvedValue({
 			current: true,
-			muted: false,
 			chatAvailable: true,
 		});
 
@@ -238,5 +292,102 @@ describe("Parlume turns for the realtime voice", () => {
 
 		expect(mocks.speak).toHaveBeenCalledTimes(1);
 		expect(mocks.result).not.toHaveBeenCalled();
+	});
+});
+
+describe("The audit row of a Parlume meeting turn", () => {
+	it("records an answered turn once, as Fabric Parlume for the participant who asked, with the tools it called", async () => {
+		mocks.execute.mockImplementation(async () => {
+			const tools: Record<string, unknown> = {
+				fabric_list_stories: { inputSchema: {}, execute: vi.fn() },
+			};
+			await prepareAgentTools(tools);
+			await (
+				tools.fabric_list_stories as {
+					execute: (args: unknown) => Promise<unknown>;
+				}
+			).execute({ query: "csv-tool-argument" });
+			return { success: true, response: "Filed B-12, Export fails." };
+		});
+
+		await executeParlumeMeetingTurn({ turnId: "turn", realtimeJob: "J2" });
+
+		expect(mocks.audit).toHaveBeenCalledTimes(1);
+		expect(mocks.audit).toHaveBeenCalledWith({
+			action: "project.parlume.request_answered",
+			category: "project",
+			outcome: "success",
+			actor: {
+				type: "agent",
+				userId: "user",
+				nameSnapshot: "Fabric Parlume",
+				emailSnapshot: "dana@example.com",
+			},
+			organizationId: "org",
+			projectId: "project",
+			resource: { type: "parlume_meeting_turn", id: "turn" },
+			metadata: {
+				status: "COMPLETED",
+				sessionId: "session",
+				source: "spoken",
+				invitedBy: "user",
+				toolNames: ["fabric_list_stories"],
+			},
+		});
+		// Meeting content: the question, the answer and the tool's arguments.
+		const row = JSON.stringify(mocks.audit.mock.calls);
+		expect(row).not.toContain("File a bug for the export");
+		expect(row).not.toContain("Filed B-12");
+		expect(row).not.toContain("csv-tool-argument");
+	});
+
+	it("records a turn that failed as a failure", async () => {
+		mocks.execute.mockResolvedValue({
+			success: false,
+			error: "No access.",
+		});
+
+		await executeParlumeMeetingTurn({ turnId: "turn", realtimeJob: "J2" });
+
+		expect(mocks.audit).toHaveBeenCalledTimes(1);
+		expect(mocks.audit).toHaveBeenCalledWith(
+			expect.objectContaining({
+				action: "project.parlume.request_answered",
+				outcome: "failure",
+				actor: expect.objectContaining({
+					type: "agent",
+					userId: "user",
+					emailSnapshot: "dana@example.com",
+				}),
+				metadata: expect.objectContaining({ status: "FAILED" }),
+			}),
+		);
+		const row = JSON.stringify(mocks.audit.mock.calls);
+		expect(row).not.toContain("No access.");
+	});
+
+	it("records nothing when another write had already ended the turn", async () => {
+		// The interrupt route stopped the turn first, and audited it.
+		mocks.updateMany.mockImplementation(
+			async ({ data }: { data: { status?: string } }) => ({
+				count: data.status === "COMPLETED" ? 0 : 1,
+			}),
+		);
+
+		await executeParlumeMeetingTurn({ turnId: "turn", realtimeJob: "J2" });
+
+		expect(mocks.audit).not.toHaveBeenCalled();
+	});
+
+	it("records nothing when a failed turn had already ended", async () => {
+		mocks.updateMany.mockImplementation(
+			async ({ data }: { data: { status?: string } }) => ({
+				count: data.status === "FAILED" ? 0 : 1,
+			}),
+		);
+
+		await failParlumeMeetingTurn({ turnId: "turn", error: "Timed out." });
+
+		expect(mocks.audit).not.toHaveBeenCalled();
 	});
 });

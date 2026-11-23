@@ -145,6 +145,7 @@ vi.mock("@repo/database", async () => {
 	};
 });
 
+import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 import { detectAndFlagDuplicateStories } from "../detect-duplicate-stories";
 import { RUN_TIME_BUDGET_MS } from "../duplicate-scan-core";
 
@@ -2229,5 +2230,142 @@ describe("embedding configuration refusals", () => {
 				targetStoryIds: ["b"],
 			}),
 		).rejects.toBe(error);
+	});
+});
+
+// Fizzy #3538: the verifier may run on the organization's shared ChatGPT
+// plans. A run resolves its model before it verifies any pair; when that
+// resolution is refused because the plans are spent, the activity fails with
+// the plan's own error, which the workflow reads to wait for a reset. This
+// pins that the refusal leaves the activity unwrapped.
+describe("a spent ChatGPT plan", () => {
+	const threeStories: Story[] = [
+		{
+			id: "e1",
+			identifier: "F-1",
+			title: "Add SSO login",
+			description: null,
+		},
+		{
+			id: "e2",
+			identifier: "F-2",
+			title: "SSO sign-in support",
+			description: null,
+		},
+		{
+			id: "new",
+			identifier: "F-3",
+			title: "Single sign-on (SSO)",
+			description: null,
+		},
+	];
+	const arrangeTwoPairs = () =>
+		arrange(threeStories, (id) => {
+			if (id === "e1") {
+				return [1, 1, 0];
+			}
+			return id === "e2" ? [1, 1, 0.01] : [1, 1, 0.02];
+		});
+	const spent = () =>
+		new SubscriptionPlanExhaustedError(
+			"Every ChatGPT plan this work may use has no usage left in this window.",
+			null,
+		);
+
+	it("rethrows the refusal from model resolution as it is", async () => {
+		arrangeTwoPairs();
+		const error = spent();
+		mockGetAIModelWithMetadata.mockRejectedValue(error);
+
+		await expect(
+			detectAndFlagDuplicateStories({
+				...baseParams,
+				targetStoryIds: ["new"],
+			}),
+		).rejects.toBe(error);
+		expect(mockGenerateText).not.toHaveBeenCalled();
+	});
+});
+
+// The verifier call and the verdict hash moved into shared helpers
+// (`verifyDuplicatePair`, `detectionVerdictHash`) that the Proposal Inbox
+// also uses. The roadmap scan must call the verifier and store its verdicts
+// exactly as it did before: a changed hash would re-verify every pair.
+describe("roadmap verification after the shared helpers", () => {
+	const story = (
+		id: string,
+		kind: "FEATURE" | "BUG",
+		description: string | null = null,
+	): Story => ({ id, identifier: id, title: "Login", description, kind });
+	const nearlyAlike = (id: string) =>
+		id === "existing" ? [1, 1, 0] : [1, 1, 0.02];
+	const run = () =>
+		detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+	async function pureHelpers() {
+		const detection = await vi.importActual<
+			typeof import("@repo/database/prisma/queries/projects/duplicate-detection")
+		>("@repo/database/prisma/queries/projects/duplicate-detection");
+		const focus = await vi.importActual<
+			typeof import("@repo/database/prisma/queries/projects/duplicate-focus")
+		>("@repo/database/prisma/queries/projects/duplicate-focus");
+		return { ...detection, ...focus };
+	}
+
+	it("calls the verifier with the model, the verdict schema and the prompt only", async () => {
+		arrange([story("existing", "BUG"), story("new", "BUG")], nearlyAlike);
+
+		await run();
+
+		expect(mockGenerateText).toHaveBeenCalledTimes(1);
+		const [call] = mockGenerateText.mock.calls[0] as [object];
+		expect(Object.keys(call).sort()).toEqual(["model", "output", "prompt"]);
+		expect(mockTrackUsage).toHaveBeenCalledTimes(1);
+	});
+
+	it("stores a bug pair's verdict on each side's detection-text hash", async () => {
+		const { detectionTextForStory, hashDetectionText } =
+			await pureHelpers();
+		const stories = [story("existing", "BUG"), story("new", "BUG")];
+		arrange(stories, nearlyAlike);
+
+		await run();
+
+		const expected = hashDetectionText(detectionTextForStory(stories[0]));
+		expect(mockUpsertPendingDuplicateLink).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contentHashA: expected,
+				contentHashB: expected,
+			}),
+		);
+	});
+
+	it("stores a feature pair's verdict on its text and Scope section, joined as before", async () => {
+		const { detectionTextForStory, extractFocusTexts, hashDetectionText } =
+			await pureHelpers();
+		const description = "## Scope\n### In Scope\n- Single sign-on";
+		const stories = [
+			story("existing", "FEATURE", description),
+			story("new", "FEATURE", description),
+		];
+		// Every text, sections included, embeds alike.
+		arrange(stories, () => [1, 1, 0]);
+
+		await run();
+
+		const scope = extractFocusTexts(stories[0])?.scope;
+		expect(scope).toBeTruthy();
+		const expected = hashDetectionText(
+			[detectionTextForStory(stories[0]), scope].join("\n\n"),
+		);
+		expect(mockUpsertPendingDuplicateLink).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contentHashA: expected,
+				contentHashB: expected,
+			}),
+		);
 	});
 });

@@ -32,6 +32,7 @@ const { handlers, mocks, resolveOrganizationIdMock } = vi.hoisted(() => {
 		listDecisionLogThreads: vi.fn(),
 		getLatestRunChangeSummary: vi.fn(),
 		createDecisionLogEntry: vi.fn(),
+		getDecisionLogEntryById: vi.fn(),
 		findDecisionByQuestionId: vi.fn(),
 		resolveQuestionThread: vi.fn(),
 		setDecisionMetadata: vi.fn(),
@@ -70,6 +71,7 @@ vi.mock("@repo/database", () => ({
 	isAiAnswerRecommendationsEnabledForProject:
 		mocks.isAiAnswerRecommendationsEnabledForProject,
 	createDecisionLogEntry: mocks.createDecisionLogEntry,
+	getDecisionLogEntryById: mocks.getDecisionLogEntryById,
 	findDecisionByQuestionId: mocks.findDecisionByQuestionId,
 	resolveQuestionThread: mocks.resolveQuestionThread,
 	setDecisionMetadata: mocks.setDecisionMetadata,
@@ -318,6 +320,49 @@ describe("ownership / tenant enforcement", () => {
 			}),
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
 		expect(mocks.createDecisionLogEntry).not.toHaveBeenCalled();
+	});
+
+	it("appendDecisionEntry answers NOT_FOUND for a parent outside this feature and project, with nothing written", async () => {
+		mocks.getDecisionLogEntryById.mockResolvedValue(null);
+		await expect(
+			appendDecisionEntry({
+				input: {
+					...base,
+					parentId: "entry-elsewhere",
+					content: "reply",
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(mocks.getDecisionLogEntryById).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userStoryId: "story-1",
+				projectId: "project-1",
+				id: "entry-elsewhere",
+			}),
+		);
+		expect(mocks.createDecisionLogEntry).not.toHaveBeenCalled();
+	});
+
+	it("appendDecisionEntry replies to a parent on this feature", async () => {
+		mocks.getDecisionLogEntryById.mockResolvedValue({ id: "entry-root" });
+		mocks.createDecisionLogEntry.mockResolvedValue({
+			id: "entry-reply",
+			parentId: "entry-root",
+			status: "OPEN",
+			summary: null,
+			content: "reply",
+			impactedSection: null,
+			questionId: null,
+			createdAt: new Date(),
+		});
+		await appendDecisionEntry({
+			input: { ...base, parentId: "entry-root", content: "reply" },
+			context: ctx,
+		});
+		expect(mocks.createDecisionLogEntry).toHaveBeenCalledWith(
+			expect.objectContaining({ parentId: "entry-root" }),
+		);
 	});
 });
 
@@ -1252,6 +1297,21 @@ describe("listDecisionLog", () => {
 		await expect(
 			listDecisionLog({ input: base, context: ctx }),
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
+	});
+
+	it("answers NOT_FOUND, reading no threads, for a story outside the project", async () => {
+		mocks.getFeatureMaturationState.mockResolvedValue(null);
+		await expect(
+			listDecisionLog({
+				input: { ...base, storyId: "story-elsewhere" },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(mocks.getFeatureMaturationState).toHaveBeenCalledWith({
+			userStoryId: "story-elsewhere",
+			projectId: "project-1",
+		});
+		expect(mocks.listDecisionLogThreads).not.toHaveBeenCalled();
 	});
 
 	// #2300: the REST read must not show more than the editor. Before this, the

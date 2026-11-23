@@ -20,16 +20,13 @@ vi.mock("@repo/database", async () => {
 	return {
 		db,
 		recordAuditTx,
+		buildParlumeActionUrl: async () => "https://app.example.com/action",
 		hasProjectAccess: async () => true,
 		canEditProject: async () => true,
 	};
 });
 vi.mock("../parlume-voice", () => ({
-	readParlumeVoiceState: async () => ({
-		current: true,
-		muted: false,
-		chatAvailable: true,
-	}),
+	postParlumeProposal: async () => ({ sent: true, tag: "P1" }),
 }));
 
 const prefix = `parlume-claim-${randomUUID()}`;
@@ -51,7 +48,7 @@ const context = {
 	voiceGeneration: 1,
 	toolsReadOnly: false,
 };
-const source = { configId: "connection", originalName: "create_ticket" };
+const source = { configId: "builtin", originalName: "fabric_create_story" };
 const execute = vi.fn(async () => ({ success: true }));
 const definition = { inputSchema: z.object({ title: z.string() }), execute };
 
@@ -130,29 +127,22 @@ describe.skipIf(process.env.RUN_DB_INTEGRATION !== "1")(
 				execute: () => execute(),
 			});
 
-		it("dispatches and audits once under concurrent identical calls", async () => {
+		it("proposes once under concurrent identical calls, and runs nothing", async () => {
 			await Promise.all(Array.from({ length: 4 }, invoke));
-			expect(execute).toHaveBeenCalledTimes(1);
-			expect(
-				await db.auditLog.count({
-					where: {
-						projectId,
-						action: "project.parlume.action_confirmed",
-					},
-				}),
-			).toBe(1);
+			expect(execute).not.toHaveBeenCalled();
 			expect(
 				await db.parlumeAction.findMany({ where: { sessionId } }),
 			).toMatchObject([
 				{
-					status: "COMPLETED",
+					status: "PROPOSED",
 					speakerId: "speaker",
 					arguments: { title: "Exact requested title" },
+					chatTag: "P1",
 				},
 			]);
 		});
 
-		it("cannot dispatch after a committed interruption advances the session", async () => {
+		it("cannot propose after a committed interruption advances the session", async () => {
 			await db.parlumeMeetingSession.update({
 				where: { id: sessionId },
 				data: { activeTurnId: null, voiceGeneration: 2 },

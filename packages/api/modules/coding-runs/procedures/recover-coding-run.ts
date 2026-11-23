@@ -3,6 +3,7 @@ import {
 	canEditProject,
 	db,
 	getCodingRun,
+	hasProjectAccess,
 	recordAuditTx,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
@@ -52,7 +53,9 @@ export const recoverCodingRunProcedure = tenantProtectedProcedure
 			context.user.id,
 			organizationId,
 		);
-		if (!run) {
+		// The read side's rule (`publicCodingRuns`): a run on a project the
+		// caller cannot open is not found, whatever their organization role.
+		if (!run || !(await hasProjectAccess(run.projectId, context.user.id))) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Coding run not found",
 			});

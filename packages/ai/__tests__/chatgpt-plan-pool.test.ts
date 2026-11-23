@@ -772,6 +772,7 @@ describe("PLAN_POOL_BACKGROUND_JOB_TYPES", () => {
 			"batch-document-generation",
 			"project-setup",
 			"atlas-analysis",
+			"duplicate-detection",
 		]);
 	});
 

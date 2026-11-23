@@ -12,25 +12,30 @@ const bodySchema = z.object({
 	openConnections: z.number().int().min(0).optional(),
 });
 
-// The bot has left and the bridge holds no socket for it, so no stream-closed
-// report can ever arrive: record the close here and finalize. The hard-stop
+// The bot has left and its stream is closed, or the bridge holds no socket for
+// it, so no stream-closed report can ever arrive: record the close here and
+// finalize. A stream close and a terminal callback that arrive together can
+// each find the other not yet recorded, and neither finalizes. The hard-stop
 // watchdog stays the backstop if finalization fails now.
-async function finalizeWithoutStream(session: {
+async function finalizeGoneBot(session: {
 	id: string;
 	streamGeneration: number;
+	streamClosedAt: Date | null;
 }): Promise<void> {
-	const closed = await db.parlumeMeetingSession.updateMany({
-		where: {
-			id: session.id,
-			status: { in: ["ACTIVE", "LEAVING"] },
-			streamGeneration: session.streamGeneration,
-			finalizedAt: null,
-			streamClosedAt: null,
-		},
-		data: { streamClosedAt: new Date() },
-	});
-	if (closed.count === 0) {
-		return;
+	if (!session.streamClosedAt) {
+		const closed = await db.parlumeMeetingSession.updateMany({
+			where: {
+				id: session.id,
+				status: { in: ["ACTIVE", "LEAVING"] },
+				streamGeneration: session.streamGeneration,
+				finalizedAt: null,
+				streamClosedAt: null,
+			},
+			data: { streamClosedAt: new Date() },
+		});
+		if (closed.count === 0) {
+			return;
+		}
 	}
 	try {
 		await finalizeParlumeSession(session.id, {
@@ -82,8 +87,8 @@ export async function POST(request: NextRequest) {
 		return NextResponse.json({ accepted: true, captureStopped: true });
 	}
 	if (session.terminalCallbackAt) {
-		if (!session.streamClosedAt && parsed.data.openConnections === 0) {
-			await finalizeWithoutStream(session);
+		if (session.streamClosedAt || parsed.data.openConnections === 0) {
+			await finalizeGoneBot(session);
 		}
 		return NextResponse.json({ accepted: true, captureStopped: true });
 	}

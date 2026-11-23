@@ -35,7 +35,10 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { canCreateProjectReport } from "../../lib/report-access";
+import {
+	canCreateProjectReport,
+	canReachProjectReports,
+} from "../../lib/report-access";
 
 /** A sample is a short illustration; this bounds what one click can spend. */
 const MAX_SAMPLE_OUTPUT_TOKENS = 1_500;
@@ -126,11 +129,23 @@ export const sampleTemplateProcedure = tenantProtectedProcedure
 	.input(sampleTemplateInputSchema)
 	.handler(async ({ input, context, path }) => {
 		if (input.projectId) {
+			// Reach is `canReachProjectReports`'s, which admits an organization
+			// admin to every project's reports and nobody else who cannot open
+			// the project. It runs before the project reaches any lookup.
 			await assertProjectPermission(
 				input.projectId,
 				context.user.id,
 				Permissions.REPORT_READ,
+				undefined,
+				{ admitUnreachableOrganizationMember: true },
 			);
+			if (
+				!(await canReachProjectReports(input.projectId, context.user))
+			) {
+				throw new ORPCError("NOT_FOUND", {
+					message: "Project not found",
+				});
+			}
 		}
 		const organizationId = resolveOrganizationId(
 			input.organizationId,

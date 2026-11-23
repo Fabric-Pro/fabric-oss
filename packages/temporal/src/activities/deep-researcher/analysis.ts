@@ -17,7 +17,7 @@ import type {
 	ResearchComplexity,
 	SubTask,
 } from "../../workflows/deep-researcher";
-import { getAiModel } from "../orchestrator/utils/model-selector";
+import { researchModel } from "./research-model";
 
 // =============================================================================
 // Heartbeat Helper
@@ -74,6 +74,8 @@ export interface AnalyzeComplexityInput {
 	context?: string;
 	userId: string;
 	organizationId?: string;
+	/** The run's project: its usage limits apply and its usage is counted. */
+	projectId?: string;
 }
 
 export interface AnalyzeComplexityOutput {
@@ -89,6 +91,8 @@ export interface DecomposeTaskInput {
 	maxSubTasks: number;
 	userId: string;
 	organizationId?: string;
+	/** The run's project: its usage limits apply and its usage is counted. */
+	projectId?: string;
 }
 
 export interface DecomposeTaskOutput {
@@ -110,6 +114,8 @@ export interface RefineSubTasksInput {
 	feedback: string;
 	userId: string;
 	organizationId?: string;
+	/** The run's project: its usage limits apply and its usage is counted. */
+	projectId?: string;
 }
 
 export interface RefineSubTasksOutput {
@@ -174,7 +180,7 @@ export async function analyzeComplexity(
 		queryPreview: input.query.slice(0, 100),
 	});
 
-	const model = await getAiModel(input.userId, input.organizationId, false);
+	const model = await researchModel(input);
 
 	const prompt = `You are analyzing the complexity of a research question to determine how to investigate it.
 
@@ -246,7 +252,7 @@ export async function decomposeTask(
 		maxSubTasks: input.maxSubTasks,
 	});
 
-	const model = await getAiModel(input.userId, input.organizationId, false);
+	const model = await researchModel(input);
 
 	// Determine number of sub-tasks based on complexity
 	const targetSubTasks =
@@ -327,7 +333,7 @@ export async function refineSubTasks(
 		previousResultsCount: input.previousResults.length,
 	});
 
-	const model = await getAiModel(input.userId, input.organizationId, false);
+	const model = await researchModel(input);
 
 	// Build summary of previous results
 	const previousSummary = input.previousResults
@@ -404,6 +410,8 @@ export interface CheckClarificationInput {
 	context?: string;
 	userId: string;
 	organizationId?: string;
+	/** The run's project: its usage limits apply and its usage is counted. */
+	projectId?: string;
 }
 
 export interface CheckClarificationOutput {
@@ -439,7 +447,7 @@ export async function checkClarificationNeeded(
 		queryLength: input.query.length,
 	});
 
-	const model = await getAiModel(input.userId, input.organizationId);
+	const model = await researchModel(input);
 
 	const prompt = `You are evaluating whether a research query needs clarification before a deep research workflow proceeds.
 

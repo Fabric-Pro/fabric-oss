@@ -171,6 +171,24 @@ describe("Parlume active access verification", () => {
 		});
 	});
 
+	// The stream close and the terminal callback arrived together: each read
+	// the other as not yet recorded, and the session stayed LEAVING.
+	it("finalizes a departed bot's session whose stream close was recorded but did not finalize it", async () => {
+		mocks.findFirst.mockResolvedValue({
+			...session,
+			status: "LEAVING",
+			terminalCallbackAt: new Date("2026-09-30T18:00:00Z"),
+			streamClosedAt: new Date("2026-09-30T18:00:00Z"),
+		});
+
+		await POST(request());
+
+		expect(mocks.updateMany).not.toHaveBeenCalled();
+		expect(mocks.finalize).toHaveBeenCalledWith("session-1", {
+			expectedStreamGeneration: 2,
+		});
+	});
+
 	it("leaves finalization to the stream close while a socket is still open", async () => {
 		mocks.findFirst.mockResolvedValue({
 			...session,

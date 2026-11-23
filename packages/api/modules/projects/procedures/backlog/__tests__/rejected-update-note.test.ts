@@ -1,6 +1,8 @@
 /**
- * The note a fully rejected update leaves: only for an update item whose
- * target is a ticket of the proposal's own project, and never thrown.
+ * The note a fully rejected update leaves: on the ticket the review ran on
+ * when the request names one (an item re-routed in the inbox), otherwise on
+ * the stored update's target; only when that is a ticket of the proposal's
+ * own project, and never thrown.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -76,7 +78,7 @@ describe("noteRejectedProposalUpdate", () => {
 		});
 	});
 
-	it("skips a create item", async () => {
+	it("skips a create item that was not reviewed on a ticket", async () => {
 		await noteRejectedProposalUpdate({
 			proposal: proposalWith(updateItem),
 			changeIndex: 0,
@@ -86,6 +88,52 @@ describe("noteRejectedProposalUpdate", () => {
 
 		expect(mocks.findStory).not.toHaveBeenCalled();
 		expect(mocks.recordNote).not.toHaveBeenCalled();
+	});
+
+	it("notes a create item re-routed to a ticket on the ticket the review ran on", async () => {
+		mocks.findStory.mockResolvedValue({ id: "story-9" });
+
+		await noteRejectedProposalUpdate({
+			proposal: proposalWith(updateItem),
+			changeIndex: 0,
+			tenantFilter,
+			reviewerName: "Example Reviewer",
+			reviewedTicketId: "story-9",
+		});
+
+		// Still checked to be a ticket of the proposal's own project.
+		expect(mocks.findStory).toHaveBeenCalledWith({
+			where: { id: "story-9", projectId: "project-1" },
+			select: { id: true },
+		});
+		expect(mocks.recordNote).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userStoryId: "story-9",
+				proposalId: "prop-1",
+				changeIndex: 0,
+				outcome: "rejected",
+			}),
+		);
+	});
+
+	it("notes an update re-routed to another ticket on the ticket the review ran on", async () => {
+		mocks.findStory.mockResolvedValue({ id: "story-9" });
+
+		await noteRejectedProposalUpdate({
+			proposal: proposalWith(updateItem),
+			changeIndex: 1,
+			tenantFilter,
+			reviewerName: null,
+			reviewedTicketId: "story-9",
+		});
+
+		expect(mocks.findStory).toHaveBeenCalledWith({
+			where: { id: "story-9", projectId: "project-1" },
+			select: { id: true },
+		});
+		expect(mocks.recordNote).toHaveBeenCalledWith(
+			expect.objectContaining({ userStoryId: "story-9" }),
+		);
 	});
 
 	it("skips a target outside the proposal's project", async () => {

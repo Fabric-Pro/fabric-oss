@@ -8,7 +8,9 @@ const h = vi.hoisted(() => ({
 	})),
 }));
 vi.mock("@repo/ai", () => ({
-	getRAGProviderConfig: vi.fn(async () => ({ apiKey: "key-example" })),
+	getEmbeddingRAGProviderConfig: vi.fn(async () => ({
+		apiKey: "key-example",
+	})),
 	getSystemEmbeddingRAGProviderConfig: vi.fn(async () => ({
 		apiKey: "key-example",
 	})),

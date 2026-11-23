@@ -10,6 +10,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({ rows: vi.fn(), search: vi.fn(async () => []) }));
 vi.mock("@repo/database", () => ({
 	logAiUsageAsync: h.rows,
+	findConfidentialTranscriptContextIds: async () => new Set<string>(),
 	fetchCredentialsByIdInTenant: vi.fn(),
 	getRetrievableContextById: vi.fn(),
 	loadProjectDatabricksKnowledgeBinding: vi.fn(),

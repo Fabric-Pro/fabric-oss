@@ -18,8 +18,16 @@ import {
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
 import { runWithAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import type { AiTaskType } from "@repo/database";
+import { AnthropicFederationUnavailableError } from "@repo/database/prisma/queries/anthropic-federation";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import { type NextRequest, NextResponse } from "next/server";
+
+function federationUnavailable(error: AnthropicFederationUnavailableError) {
+	return NextResponse.json(
+		{ error: error.message, code: "ANTHROPIC_FEDERATION_UNAVAILABLE" },
+		{ status: 409 },
+	);
+}
 
 export async function GET(req: NextRequest) {
 	const auth = verifySignedTenantRequest(req.headers);
@@ -59,6 +67,9 @@ export async function GET(req: NextRequest) {
 					)
 				: await resolve();
 		} catch (error) {
+			if (error instanceof AnthropicFederationUnavailableError) {
+				return federationUnavailable(error);
+			}
 			const reconnect = chatGptPlanReconnectRefusal(error);
 			if (reconnect) {
 				return NextResponse.json(reconnect.body, {
@@ -131,6 +142,16 @@ export async function GET(req: NextRequest) {
 			{ userId, organizationId },
 			metadata,
 		);
+		const bearer = Boolean(providerConfig.anthropicBearerSource);
+		if (bearer && req.headers.get("X-AI-Credential-Kind") !== "bearer") {
+			return NextResponse.json(
+				{
+					error: "Use the AI token exchange to obtain an Anthropic Bearer credential.",
+					code: "ANTHROPIC_BEARER_REQUIRED",
+				},
+				{ status: 409 },
+			);
+		}
 
 		const gatewayUrl = providerConfig.baseUrl
 			? buildEffectiveBaseUrl(metadata.provider, providerConfig.baseUrl)
@@ -140,7 +161,9 @@ export async function GET(req: NextRequest) {
 
 		return NextResponse.json({
 			provider: metadata.provider,
-			apiKey: providerConfig.apiKey,
+			...(bearer
+				? { credentialKind: "bearer" }
+				: { apiKey: providerConfig.apiKey }),
 			model: metadata.modelString,
 			gatewayUrl: gatewayUrl || null,
 			source: metadata.selectionSource,
@@ -161,6 +184,9 @@ export async function GET(req: NextRequest) {
 			contextWindow: metadata.contextWindow ?? null,
 		});
 	} catch (error) {
+		if (error instanceof AnthropicFederationUnavailableError) {
+			return federationUnavailable(error);
+		}
 		console.error("[AI Config Task API] Error:", error);
 		return NextResponse.json(
 			{

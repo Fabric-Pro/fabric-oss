@@ -11,6 +11,12 @@
  * text change aborts whatever was running for the previous text and starts
  * fresh (after the debounce), so a later, larger edit is never checked
  * against wording the user has already changed.
+ *
+ * A prefetch while typing asks the server not to verify Proposal Inbox
+ * candidates (each verification is a model call), so it lists only the
+ * ones an earlier check confirmed. The final check verifies: the blur,
+ * which comes before a click on Create, or the submit itself. Either reuses
+ * a typing prefetch for the same text only when it left nothing to verify.
  */
 
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -40,10 +46,20 @@ const CHECK_DUPLICATE_CLIENT_TIMEOUT_MS = 30_000;
 
 type PrefetchEntry = {
 	text: string;
+	/** Whether the check verifies the inbox candidates it finds. */
+	verifies: boolean;
 	promise: Promise<CheckDuplicateResult>;
 	controller: AbortController;
 	status: "pending" | "settled" | "rejected";
+	/** Inbox candidates the settled check left unverified. */
+	unverified: number | null;
 };
+
+/** Whether `entry` answers a final, verifying check: it verified, or it
+ * settled with no inbox candidate left to verify. */
+function answersFinalCheck(entry: PrefetchEntry): boolean {
+	return entry.verifies || entry.unverified === 0;
+}
 
 export interface UseDuplicateCheckPrefetchParams {
 	projectId: string;
@@ -52,18 +68,21 @@ export interface UseDuplicateCheckPrefetchParams {
 
 export interface DuplicateCheckPrefetch {
 	/** Call on every keystroke. Debounces, then prefetches once the trimmed
-	 * text clears the length threshold; a text change cancels whatever was
-	 * running for the previous text, debounced or not. */
+	 * text clears the length threshold, without inbox verification; a text
+	 * change cancels whatever was running for the previous text, debounced
+	 * or not. */
 	onDescriptionChange: (text: string) => void;
-	/** Call when the description textarea loses focus. Prefetches
-	 * immediately (no debounce) under the same length threshold. */
+	/** Call when the description textarea loses focus. Starts the final,
+	 * verifying check immediately (no debounce) under the same length
+	 * threshold. */
 	onDescriptionBlur: (text: string) => void;
 	/**
 	 * The request `checkBeforeCreate` should run for `text` at submit time:
 	 * the settled or in-flight prefetch for that EXACT text when there is
-	 * one, otherwise a fresh call — never both, and never a prefetch that
-	 * already rejected (network error, abort, rate limit), which gets a
-	 * fresh attempt instead of its own stale failure.
+	 * one that answers a final check, otherwise a fresh, verifying call —
+	 * never both, and never a prefetch that already rejected (network
+	 * error, abort, rate limit), which gets a fresh attempt instead of its
+	 * own stale failure.
 	 */
 	getCheckRun: (text: string) => () => Promise<CheckDuplicateResult>;
 	/** Drops any cached or in-flight prefetch and cancels its request. Call
@@ -96,18 +115,23 @@ export function useDuplicateCheckPrefetch({
 	}, [reset]);
 
 	const startPrefetch = useCallback(
-		(text: string) => {
+		(text: string, verifies: boolean) => {
 			const trimmed = text.trim();
 			if (trimmed.length < PREFETCH_MIN_LENGTH) {
 				return;
 			}
-			if (entryRef.current?.text === trimmed) {
+			const current = entryRef.current;
+			if (
+				current?.text === trimmed &&
+				(!verifies || answersFinalCheck(current))
+			) {
 				// Already covered — settled, or already in flight.
 				return;
 			}
-			// A different text superseded whatever was in flight; cancel it
-			// so its eventual result is never mistaken for this text's.
-			entryRef.current?.controller.abort();
+			// A different text, or a final check for a typing prefetch's
+			// text, superseded whatever was in flight; cancel it so its
+			// eventual result is never mistaken for this one's.
+			current?.controller.abort();
 
 			const controller = new AbortController();
 			const signal = AbortSignal.any([
@@ -115,22 +139,30 @@ export function useDuplicateCheckPrefetch({
 				AbortSignal.timeout(CHECK_DUPLICATE_CLIENT_TIMEOUT_MS),
 			]);
 			const promise = orpcClient.projects.stories.checkDuplicate(
-				{ projectId, organizationId, description: trimmed },
+				{
+					projectId,
+					organizationId,
+					description: trimmed,
+					verifyProposalMatches: verifies,
+				},
 				{ signal },
 			);
 			const entry: PrefetchEntry = {
 				text: trimmed,
+				verifies,
 				promise,
 				controller,
 				status: "pending",
+				unverified: null,
 			};
 			entryRef.current = entry;
 			// Side-channel status only — `entry.promise` stays the original,
 			// unwrapped promise, so awaiting it later reproduces exactly what
 			// the caller would have seen resolving or rejecting it directly.
 			promise.then(
-				() => {
+				(result) => {
 					entry.status = "settled";
+					entry.unverified = result.unverifiedProposalMatches ?? 0;
 				},
 				() => {
 					entry.status = "rejected";
@@ -153,7 +185,7 @@ export function useDuplicateCheckPrefetch({
 			}
 			debounceTimerRef.current = setTimeout(() => {
 				debounceTimerRef.current = null;
-				startPrefetch(text);
+				startPrefetch(text, false);
 			}, PREFETCH_DEBOUNCE_MS);
 		},
 		[clearDebounce, startPrefetch],
@@ -162,7 +194,7 @@ export function useDuplicateCheckPrefetch({
 	const onDescriptionBlur = useCallback(
 		(text: string) => {
 			clearDebounce();
-			startPrefetch(text);
+			startPrefetch(text, true);
 		},
 		[clearDebounce, startPrefetch],
 	);
@@ -174,13 +206,19 @@ export function useDuplicateCheckPrefetch({
 			if (
 				entry &&
 				entry.text === trimmed &&
-				entry.status !== "rejected"
+				entry.status !== "rejected" &&
+				answersFinalCheck(entry)
 			) {
 				return () => entry.promise;
 			}
 			return () =>
 				orpcClient.projects.stories.checkDuplicate(
-					{ projectId, organizationId, description: trimmed },
+					{
+						projectId,
+						organizationId,
+						description: trimmed,
+						verifyProposalMatches: true,
+					},
 					{
 						signal: AbortSignal.timeout(
 							CHECK_DUPLICATE_CLIENT_TIMEOUT_MS,

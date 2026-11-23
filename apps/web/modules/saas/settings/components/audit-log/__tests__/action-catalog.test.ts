@@ -100,14 +100,77 @@ const EXPECTED_KEYS = [
 ];
 
 describe("ACTION_CATALOG", () => {
-	it("describes an executed Parlume action", () => {
+	it("describes a confirmed, a run and a dismissed Parlume change", () => {
 		expect(
 			describeAction("project.parlume.action_confirmed"),
 		).toMatchObject({
-			label: "Parlume action executed",
+			label: "Parlume change confirmed",
 			defaultSeverity: "info",
 			category: "project",
 		});
+		expect(describeAction("project.parlume.action_executed")).toMatchObject(
+			{
+				label: "Parlume confirmed change ran",
+				defaultSeverity: "info",
+				category: "project",
+			},
+		);
+		expect(
+			describeAction("project.parlume.action_dismissed"),
+		).toMatchObject({
+			label: "Parlume change dismissed",
+			defaultSeverity: "info",
+			category: "project",
+		});
+	});
+
+	it("describes a meeting request Parlume answered", () => {
+		expect(
+			describeAction("project.parlume.request_answered"),
+		).toMatchObject({
+			label: "Parlume answered a meeting request",
+			defaultSeverity: "info",
+			category: "project",
+		});
+	});
+
+	it("describes a Parlume answer stopped, its listening paused and resumed, and a read continued, from the page", () => {
+		expect(describeAction("project.parlume.speech_stopped")).toMatchObject({
+			label: "Parlume answer stopped",
+			defaultSeverity: "info",
+			category: "project",
+		});
+		expect(
+			describeAction("project.parlume.listening_paused"),
+		).toMatchObject({
+			label: "Parlume listening paused",
+			defaultSeverity: "info",
+			category: "project",
+		});
+		expect(
+			describeAction("project.parlume.listening_resumed"),
+		).toMatchObject({
+			label: "Parlume listening resumed",
+			defaultSeverity: "info",
+			category: "project",
+		});
+		expect(
+			describeAction("project.parlume.reading_continued"),
+		).toMatchObject({
+			label: "Parlume reading continued",
+			defaultSeverity: "info",
+			category: "project",
+		});
+	});
+
+	it("describes a deleted Parlume session as a warning", () => {
+		expect(describeAction("project.parlume.session_deleted")).toMatchObject(
+			{
+				label: "Parlume session deleted",
+				defaultSeverity: "warning",
+				category: "project",
+			},
+		);
 	});
 
 	it("covers the listed closed-taxonomy keys", () => {

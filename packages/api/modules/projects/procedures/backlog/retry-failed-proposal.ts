@@ -28,7 +28,10 @@ import {
 } from "../../../../orpc/procedures";
 import { isChannelMonitorSource } from "../../lib/channel-monitor-source";
 import type { PmSyncOverride } from "./change-item-schema";
-import { lostClaimConflict } from "./proposal-approval-guards";
+import {
+	lostClaimConflict,
+	partitionUpdateTargets,
+} from "./proposal-approval-guards";
 
 /**
  * Minimal shape of a stored proposal change. The stored JSON came from the
@@ -38,6 +41,9 @@ import { lostClaimConflict } from "./proposal-approval-guards";
 interface StoredChange {
 	type: "epic" | "feature" | "story" | "bug";
 	action: "create" | "update";
+	existingId?: string | null;
+	existingIdentifier?: string | null;
+	existingExternalId?: string | null;
 	title: { from?: string | null; to: string };
 	kindOverride?: "BUG" | "FEATURE" | null;
 	[key: string]: unknown;
@@ -80,6 +86,8 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 			runId: z.string().optional(),
 			dedupCollisionCount: z.number(),
 			message: z.string(),
+			/** Why each update left out of the retry was held back; those items return to review. */
+			heldBack: z.array(z.string()).optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -204,8 +212,6 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 						review.pmConfig as StoredSourceMetadata["pmConfig"],
 				}
 			: sourceMetadata;
-		const workflowOverrides: Record<number, PmSyncOverride> = {};
-
 		// 3. Dedup guard pass on every remaining CREATE.
 		const dedupGuard = await buildBacklogDedupGuard(input.projectId);
 		const duplicateResolutions: Parameters<
@@ -227,8 +233,11 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 			}
 		};
 		const newlyApplied: number[] = [];
-		const workflowChanges: StoredChange[] = [];
-		const workflowIndexes: number[] = [];
+		const workflowEntries: Array<{
+			change: StoredChange;
+			index: number;
+			override: PmSyncOverride | null;
+		}> = [];
 		let dedupCollisionCount = 0;
 
 		for (const entry of replayEntries) {
@@ -272,11 +281,56 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 			}
 
 			// Miss or non-create — include in the workflow payload.
-			if (entry.override) {
-				workflowOverrides[workflowChanges.length] = entry.override;
+			workflowEntries.push({
+				change,
+				index: i,
+				override: entry.override,
+			});
+		}
+
+		// The same target check as an approval: an update whose target is not
+		// a work item in this project is left out and returns to review. With
+		// nothing else to replay, the whole proposal returns to review below.
+		const targets = await partitionUpdateTargets(
+			input.projectId,
+			workflowEntries.map(({ change }) => change),
+		);
+		const replayed = workflowEntries.filter(
+			({ change }) => !targets.heldBack.has(change),
+		);
+		const workflowChanges = replayed.map(({ change }) => change);
+		const workflowIndexes = replayed.map(({ index }) => index);
+		const workflowOverrides: Record<number, PmSyncOverride> = {};
+		replayed.forEach(({ override }, position) => {
+			if (override) {
+				workflowOverrides[position] = override;
 			}
-			workflowChanges.push(change);
-			workflowIndexes.push(i);
+		});
+		const heldBack =
+			targets.refusals.length > 0 ? { heldBack: targets.refusals } : {};
+
+		// Every remaining item is held back and nothing else resolved: the
+		// proposal goes back to review, where the reviewer picks another
+		// target, instead of staying FAILED.
+		if (
+			workflowChanges.length === 0 &&
+			newlyApplied.length === 0 &&
+			targets.refusals.length > 0
+		) {
+			const returned = await returnFailedProposalToReview(proposal.id, {
+				applyWorkflowId: proposal.applyWorkflowId ?? null,
+				applyReviewId: proposal.applyReviewId ?? null,
+			});
+			if (!returned) {
+				throw await lostClaimConflict(input.proposalId, ["FAILED"]);
+			}
+			return {
+				workflowId: null,
+				dedupCollisionCount,
+				message:
+					"No item could be retried. The proposal is back in review.",
+				heldBack: targets.refusals,
+			};
 		}
 
 		// 4. Full-dedup short-circuit. All remaining changes already exist by
@@ -315,6 +369,7 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 					dedupCollisionCount,
 					message:
 						"Already on roadmap. The remaining items are back in review.",
+					...heldBack,
 				};
 			}
 			// This terminal flip bypasses the apply workflow's finalize
@@ -453,6 +508,7 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 						? `; ${dedupCollisionCount} resolved via dedup`
 						: ""
 				}.`,
+				...heldBack,
 			};
 		} catch (error) {
 			console.error("[backlog] retry-failed-proposal failed:", error);

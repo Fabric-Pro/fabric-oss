@@ -162,18 +162,40 @@ export function parlumeActionArguments(value: unknown) {
 	return args;
 }
 
-export function summarizeParlumeAction(
+const MAX_TITLE_CHARS = 80;
+/** The arguments that name what a change makes or changes. */
+export const PARLUME_TITLE_KEYS = ["title", "name", "subject", "summary"];
+
+/**
+ * A proposed change in the product's own words: the tool's words, with a story
+ * called by the kind it is given (a bug, or a feature when no kind is given),
+ * and the title it was given when it has one ("Create feature “Export to
+ * CSV”"). The other arguments are shown beside it.
+ */
+export function describeParlumeChange(
 	name: string,
 	args: Record<string, JsonValue>,
 ): string {
-	const action = name.replace(/^fabric_/, "").replace(/[_-]+/g, " ");
-	const details = Object.entries(args)
-		.map(
-			([key, value]) =>
-				`${key.replace(/[_-]+/g, " ")}: ${typeof value === "string" ? value : JSON.stringify(value)}`,
-		)
-		.join("; ");
-	const excerpt =
-		details.length <= 430 ? details : `${details.slice(0, 430)}…`;
-	return `${action.charAt(0).toUpperCase()}${action.slice(1)}${excerpt ? `. ${excerpt}` : ""}`;
+	const kind =
+		typeof args.kind === "string" && /^[a-z]+$/i.test(args.kind.trim())
+			? args.kind.trim().toLowerCase()
+			: "feature";
+	const action = name
+		.replace(/^fabric_/, "")
+		.replace(/[_-]+/g, " ")
+		.trim()
+		.toLowerCase()
+		.replace(/\bstor(y|ies)\b/g, (_, ending: string) =>
+			ending === "y" ? kind : `${kind}s`,
+		);
+	const sentence = `${action.charAt(0).toUpperCase()}${action.slice(1)}`;
+	const title = PARLUME_TITLE_KEYS.map((key) => args[key]).find(
+		(value): value is string =>
+			typeof value === "string" && value.trim() !== "",
+	);
+	if (!title) {
+		return sentence;
+	}
+	const trimmed = title.trim();
+	return `${sentence} “${trimmed.length > MAX_TITLE_CHARS ? `${trimmed.slice(0, MAX_TITLE_CHARS - 1)}…` : trimmed}”`;
 }

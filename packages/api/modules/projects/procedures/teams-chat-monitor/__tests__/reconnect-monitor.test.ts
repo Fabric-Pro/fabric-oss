@@ -228,8 +228,26 @@ describe("reconnectMonitorProcedure", () => {
 		expect(mocks.rebind).not.toHaveBeenCalled();
 	});
 
+	it("refuses the rebind when Graph denies access to the chats", async () => {
+		mocks.teamsTool.mockRejectedValue(
+			new Error(
+				'Microsoft Graph API error: 403 Forbidden - {"error":{"code":"Forbidden","message":"UnknownError"}}',
+			),
+		);
+
+		await expect(call(false)).rejects.toThrow(/visible to your account/);
+		expect(mocks.rebind).not.toHaveBeenCalled();
+	});
+
 	it("asks for a retry when the provider could not be reached at all", async () => {
 		mocks.teamsTool.mockResolvedValue({ error: "429 Too Many Requests" });
+
+		await expect(call(false)).rejects.toThrow(/could not check/);
+		expect(mocks.rebind).not.toHaveBeenCalled();
+	});
+
+	it("asks for a retry when the response has no chat messages", async () => {
+		mocks.teamsTool.mockResolvedValue({ threads: [] });
 
 		await expect(call(false)).rejects.toThrow(/could not check/);
 		expect(mocks.rebind).not.toHaveBeenCalled();

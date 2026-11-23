@@ -4,7 +4,16 @@ import {
 	getDatabricksOAuthToken,
 	resolveAzureDeploymentTarget,
 } from "@repo/ai";
+import {
+	type AnthropicBearerSource,
+	anthropicBearerFetch,
+	getAnthropicFederatedToken,
+} from "@repo/ai/lib/anthropic-federation";
 import { type AIProvider, db } from "@repo/database";
+import {
+	ANTHROPIC_FEDERATION_UNAVAILABLE,
+	getAnthropicFederationConfig,
+} from "@repo/database/prisma/queries/anthropic-federation";
 import { hasPermission, resolveOrgPermissions } from "@repo/permissions";
 import { decryptApiKey } from "@repo/utils";
 import {
@@ -20,6 +29,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { requireOrgMembership } from "../../../organizations/lib/membership";
 import {
 	listDatabricksModels,
 	validateDatabricksToken,
@@ -154,19 +164,28 @@ async function testOpenAICompatible(
 /**
  * Test Anthropic connection
  */
-async function testAnthropic(apiKey: string): Promise<ConnectionTestResult> {
+async function testAnthropic(
+	apiKey: string,
+	bearerSource?: AnthropicBearerSource,
+): Promise<ConnectionTestResult> {
 	const start = Date.now();
 	try {
-		// Anthropic doesn't have a /models endpoint, use a minimal message request
-		const response = await fetch("https://api.anthropic.com/v1/messages", {
+		// Exercise the Messages API with the selected credential.
+		const send = bearerSource ? anthropicBearerFetch(bearerSource) : fetch;
+		const response = await send("https://api.anthropic.com/v1/messages", {
 			method: "POST",
 			headers: {
-				"x-api-key": apiKey,
-				"anthropic-version": "2024-01-01",
+				...(!bearerSource && { "x-api-key": apiKey }),
+				// The key probe keeps its historical header: Anthropic rejects it
+				// with a 400 after authenticating, which that probe counts as
+				// success. The federated probe needs a 200, so it sends a valid one.
+				"anthropic-version": bearerSource ? "2023-06-01" : "2024-01-01",
 				"content-type": "application/json",
 			},
 			body: JSON.stringify({
-				model: "claude-3-5-haiku-latest",
+				model: bearerSource
+					? "claude-haiku-4-5-20251001"
+					: "claude-3-5-haiku-latest",
 				max_tokens: 1,
 				messages: [{ role: "user", content: "." }],
 			}),
@@ -180,17 +199,23 @@ async function testAnthropic(apiKey: string): Promise<ConnectionTestResult> {
 			};
 		}
 
-		// 200 or any client error that's not auth-related means key is valid
-		if (response.status === 200 || response.status === 400) {
+		// Preserve the legacy key probe’s 400 handling. For federation, verify
+		// that the workspace token can run a model.
+		if (
+			response.status === 200 ||
+			(!bearerSource && response.status === 400)
+		) {
 			return {
 				success: true,
 				message: "Connected to Anthropic successfully",
 				latencyMs: Date.now() - start,
-				models: [
-					"claude-3-5-sonnet-latest",
-					"claude-3-5-haiku-latest",
-					"claude-3-opus-latest",
-				],
+				models: bearerSource
+					? ["claude-haiku-4-5-20251001"]
+					: [
+							"claude-3-5-sonnet-latest",
+							"claude-3-5-haiku-latest",
+							"claude-3-opus-latest",
+						],
 			};
 		}
 
@@ -719,7 +744,7 @@ function getProviderTester(
 					"Together AI",
 				);
 		case "ANTHROPIC_DIRECT":
-			return testAnthropic;
+			return (apiKey) => testAnthropic(apiKey);
 		case "VERCEL_GATEWAY":
 			return testVercelGateway;
 		case "DEEPSEEK":
@@ -810,6 +835,7 @@ export const testProviderConnectionProcedure = tenantProtectedProcedure
 				provider: AIProviderEnum,
 				// Optional so a Databricks service principal can be tested
 				// instead; the superRefine below requires one of the two.
+				authMode: z.literal("federated").optional(),
 				apiKey: z.string().min(1).optional(),
 				clientId: z.string().min(1).optional(),
 				clientSecret: z.string().min(1).optional(),
@@ -871,6 +897,37 @@ export const testProviderConnectionProcedure = tenantProtectedProcedure
 			throw new ORPCError("TOO_MANY_REQUESTS", {
 				message: `Too many connection test attempts. Please try again in ${rateLimitResult.resetInSeconds} seconds.`,
 			});
+		}
+
+		if (input.authMode === "federated") {
+			const organizationId = resolveOrganizationId(
+				input.organizationId,
+				context.session,
+			);
+			if (
+				input.organizationId === null ||
+				!organizationId ||
+				!getAnthropicFederationConfig(organizationId)
+			) {
+				return {
+					success: false,
+					message: ANTHROPIC_FEDERATION_UNAVAILABLE,
+				};
+			}
+			const membership = await requireOrgMembership(
+				context.user.id,
+				organizationId,
+				["owner", "admin"],
+			);
+			if (!membership) {
+				throw new ORPCError("FORBIDDEN", {
+					message:
+						"Only organization admins can test Anthropic federation.",
+				});
+			}
+			return testAnthropic("", () =>
+				getAnthropicFederatedToken(organizationId),
+			);
 		}
 
 		// Validate baseUrl if provided (SSRF protection)
@@ -983,6 +1040,7 @@ export const testSavedProviderConnectionProcedure = tenantProtectedProcedure
 		// Get the saved provider config
 		let config: {
 			provider: string;
+			organizationId?: string;
 			encryptedApiKey: string | null;
 			clientId: string | null;
 			encryptedClientSecret: string | null;
@@ -1017,6 +1075,22 @@ export const testSavedProviderConnectionProcedure = tenantProtectedProcedure
 		}
 
 		const configData = (config.config as Record<string, unknown>) || {};
+		if (configData.authMode === "federated") {
+			const recordOrganizationId = config.organizationId;
+			if (
+				config.provider !== "ANTHROPIC_DIRECT" ||
+				!recordOrganizationId ||
+				!getAnthropicFederationConfig(recordOrganizationId)
+			) {
+				return {
+					success: false,
+					message: ANTHROPIC_FEDERATION_UNAVAILABLE,
+				};
+			}
+			return testAnthropic("", () =>
+				getAnthropicFederatedToken(recordOrganizationId),
+			);
+		}
 		// Check both new encryptedApiKey column and legacy config.apiKey for backward compatibility
 		const encryptedApiKey =
 			config.encryptedApiKey || (configData.apiKey as string | undefined);

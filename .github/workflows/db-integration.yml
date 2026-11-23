@@ -1109,6 +1109,57 @@ jobs:
           }
           EOF
 
+      - name: Run the likely-duplicate reports suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        # `report-duplicates.integration.test.ts` is the only proof that the
+        # duplicate check's SQL compares every report in scope, however old,
+        # with the same case and whitespace rules as the JavaScript check and
+        # only each report's latest version. The unit test mocks Prisma, so it
+        # can only pin the SQL the query sends.
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/report-duplicates.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=report-duplicates-results.json
+
+      - name: 'Guard: assert the likely-duplicate reports suite actually executed (zero skips)'
+        # The file self-skips via `describe.skipIf(!hasReachableDatabaseUrl())`,
+        # so a green step proves nothing on its own.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const path = "packages/database/report-duplicates-results.json";
+          const report = JSON.parse(fs.readFileSync(path, "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped =
+            (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(
+            `report-duplicates results: ${files} file(s), ${passed} passed, ${skipped} skipped`,
+          );
+          if (files !== 1) {
+            console.error(
+              `::error::Expected exactly 1 test file (report-duplicates.integration.test.ts) to run, got ${files}.`,
+            );
+            process.exit(1);
+          }
+          if (skipped > 0) {
+            console.error(
+              `::error::${skipped} test(s) were skipped — the suite self-skipped instead of executing against Postgres, so a green run here would be a false pass.`,
+            );
+            process.exit(1);
+          }
+          // Bump this floor whenever the suite gains a test.
+          if (passed < 5) {
+            console.error(
+              `::error::Only ${passed} test(s) passed — expected at least 5. The suite failed to collect its full set.`,
+            );
+            process.exit(1);
+          }
+          EOF
+
       - name: Run the governed stage-request RLS suite against real Postgres
         env:
           RUN_DB_INTEGRATION: '1'

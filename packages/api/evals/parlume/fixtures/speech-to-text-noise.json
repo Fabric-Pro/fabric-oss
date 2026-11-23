@@ -1,0 +1,158 @@
+{
+	"id": "speech-to-text-noise",
+	"title": "Platform sync with transcription errors",
+	"covers": [
+		"speech-to-text noise: misheard product names, fillers and repeated words",
+		"a due date confirmed again after a dropped line",
+		"a topic parked for later, which is not a decision"
+	],
+	"segments": [
+		{
+			"id": 1,
+			"speaker": "Taylor Example",
+			"text": "okay so um the the cash layer is still timing out on the search page",
+			"startMs": 0,
+			"endMs": 8000
+		},
+		{
+			"id": 2,
+			"speaker": "Quinn Example",
+			"text": "yeah the red is cluster hits a hundred percent CPU at peak",
+			"startMs": 10000,
+			"endMs": 18000
+		},
+		{
+			"id": 3,
+			"speaker": "Taylor Example",
+			"text": "so lets uh lets move the session store off red is and onto post gress",
+			"startMs": 20000,
+			"endMs": 28000
+		},
+		{
+			"id": 4,
+			"speaker": "Robin Example",
+			"text": "agreed we move sessions to post gress this week",
+			"startMs": 30000,
+			"endMs": 38000
+		},
+		{
+			"id": 5,
+			"speaker": "Quinn Example",
+			"text": "I'll write the migration script by Thursday",
+			"startMs": 40000,
+			"endMs": 48000
+		},
+		{
+			"id": 6,
+			"speaker": "Taylor Example",
+			"text": "and the Jason payload for the export is too big we should gzip it",
+			"startMs": 50000,
+			"endMs": 58000
+		},
+		{
+			"id": 7,
+			"speaker": "Robin Example",
+			"text": "can we can we just paginate it instead",
+			"startMs": 60000,
+			"endMs": 68000
+		},
+		{
+			"id": 8,
+			"speaker": "Taylor Example",
+			"text": "no paginate breaks the client, gzip it, decision made",
+			"startMs": 70000,
+			"endMs": 78000
+		},
+		{
+			"id": 9,
+			"speaker": "Robin Example",
+			"text": "fine i'll add the gzip header to the export end point on monday",
+			"startMs": 80000,
+			"endMs": 88000
+		},
+		{
+			"id": 10,
+			"speaker": "Quinn Example",
+			"text": "uh sorry my my mic cut out, did we say Thursday for the migration",
+			"startMs": 90000,
+			"endMs": 98000
+		},
+		{
+			"id": 11,
+			"speaker": "Taylor Example",
+			"text": "yes Thursday",
+			"startMs": 100000,
+			"endMs": 104000
+		},
+		{
+			"id": 12,
+			"speaker": "Taylor Example",
+			"text": "next the search ranking hmm lets park that till next week",
+			"startMs": 110000,
+			"endMs": 118000
+		}
+	],
+	"truth": {
+		"decisions": [
+			{
+				"text": "Move the session store from Redis to Postgres this week.",
+				"keywords": ["session", "postgres|postgre|gress"],
+				"segments": [3, 4]
+			},
+			{
+				"text": "Gzip the JSON export payload instead of paginating it.",
+				"keywords": ["gzip|compress|compression"],
+				"segments": [6, 8]
+			}
+		],
+		"actionItems": [
+			{
+				"text": "Write the session store migration script.",
+				"keywords": ["migration"],
+				"segments": [5, 10, 11],
+				"owner": "Quinn Example",
+				"due": "Thursday"
+			},
+			{
+				"text": "Add the gzip header to the export endpoint.",
+				"keywords": ["gzip|compress|header"],
+				"segments": [9],
+				"owner": "Robin Example",
+				"due": "Monday"
+			}
+		]
+	},
+	"suggestions": {
+		"passesAfter": [5, 12],
+		"workItems": [
+			{
+				"identifier": "SRCH-8",
+				"title": "Cache layer timeouts on search",
+				"status": "In progress",
+				"priority": "HIGH",
+				"owner": "Taylor Example"
+			},
+			{
+				"identifier": "SRCH-14",
+				"title": "Move session store to Postgres",
+				"status": "To do",
+				"priority": "MEDIUM",
+				"owner": null
+			}
+		],
+		"agenda": null,
+		"previousQuestions": [],
+		"expected": [
+			{
+				"kind": "answer",
+				"text": "SRCH-14 Move session store to Postgres is already a work item and still unassigned.",
+				"keywords": ["srch-14|session", "unassigned|owner|assign"]
+			},
+			{
+				"kind": "missed_question",
+				"text": "When does the search ranking come back, and who brings it?",
+				"keywords": ["ranking", "who|when"]
+			}
+		]
+	}
+}

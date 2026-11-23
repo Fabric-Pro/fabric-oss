@@ -3,6 +3,8 @@ import {
 	executeParlumeChannelOperation,
 	isShortTeamsMeetingUrl,
 	parseChannelMeetingUrl,
+	teamsMeetingIdentity,
+	teamsMeetingJoinUrl,
 } from "../parlume-channel";
 
 const channelId = "19:example@thread.tacv2";
@@ -226,5 +228,136 @@ describe("Parlume exact Teams channel binding", () => {
 			resource: `/teams/example-team/channels/${channelId}/messages`,
 			expirationDateTime: "2026-11-02T10:45:00Z",
 		});
+	});
+});
+
+describe("teamsMeetingJoinUrl", () => {
+	const meetupJoin =
+		"https://teams.microsoft.com/l/meetup-join/19:meeting_example@thread.v2/0";
+
+	it("keeps the join path of an invitation link without its query", () => {
+		expect(
+			teamsMeetingJoinUrl(
+				"https://teams.microsoft.com/l/meetup-join/19%3ameeting_example%40thread.v2/0/?context=%7b%22Tid%22%3a%22example%22%7d",
+			),
+		).toBe(
+			"https://teams.microsoft.com/l/meetup-join/19%3ameeting_example%40thread.v2/0",
+		);
+	});
+
+	it("takes the join path out of each Teams web link's fragment", () => {
+		for (const webLink of [
+			"https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/19:meeting_example@thread.v2/0?context=%7b%7d&anon=true",
+			"https://teams.microsoft.com/_#/l/meetup-join/19:meeting_example@thread.v2/0?context=%7b%7d",
+		]) {
+			expect(teamsMeetingJoinUrl(webLink)).toBe(meetupJoin);
+			expect(teamsMeetingIdentity(webLink)).toBe(
+				teamsMeetingIdentity(meetupJoin),
+			);
+		}
+	});
+
+	// The web client's `/meet/<id>` link was stored as the bare `/v2/`, so
+	// meetings invited that way continued one another's tags.
+	it("gives a short link the same meeting from the web client and directly, without its passcode", () => {
+		const direct = teamsMeetingJoinUrl(
+			"https://teams.microsoft.com/meet/1234567890123?p=example-passcode",
+		);
+		const web = teamsMeetingJoinUrl(
+			"https://teams.microsoft.com/v2/#/meet/1234567890123?p=example-passcode",
+		);
+
+		expect(direct).toBe("https://teams.microsoft.com/meet/1234567890123");
+		expect(web).toBe(direct);
+		expect(
+			teamsMeetingJoinUrl(
+				"https://teams.microsoft.com/v2/#/meet/9876543210987?p=example-passcode",
+			),
+		).toBe("https://teams.microsoft.com/meet/9876543210987");
+		expect(isShortTeamsMeetingUrl(web ?? "")).toBe(true);
+		expect(teamsMeetingIdentity(web ?? "")).toBeNull();
+	});
+
+	it("names no meeting for a link without one", () => {
+		for (const link of [
+			"https://teams.microsoft.com/v2/",
+			"https://teams.microsoft.com/v2/#/calendarv2",
+			"https://teams.microsoft.com/l/meetup-join/",
+			"not a link",
+		]) {
+			expect(teamsMeetingJoinUrl(link)).toBeNull();
+			expect(teamsMeetingIdentity(link)).toBeNull();
+		}
+	});
+});
+
+describe("Parlume meeting participant lookup", () => {
+	const userId = "00000000-0000-4000-8000-000000000001";
+
+	it("reads only the participant's addresses, by their object id", async () => {
+		const fetch = vi.fn().mockResolvedValue(
+			ok({
+				id: userId,
+				mail: "dev@example.com",
+				userPrincipalName: "dev@example.onmicrosoft.com",
+			}),
+		);
+
+		await expect(
+			executeParlumeChannelOperation(fetch, { kind: "user", userId }),
+		).resolves.toEqual({
+			emails: ["dev@example.com", "dev@example.onmicrosoft.com"],
+		});
+		expect(fetch).toHaveBeenCalledWith(
+			`https://graph.microsoft.com/v1.0/users/${userId}?$select=id,mail,userPrincipalName`,
+		);
+	});
+
+	it("fails for a participant outside the tenant or another user's record", async () => {
+		await expect(
+			executeParlumeChannelOperation(
+				vi.fn().mockResolvedValue(new Response(null, { status: 404 })),
+				{ kind: "user", userId },
+			),
+		).rejects.toThrow("HTTP 404");
+		await expect(
+			executeParlumeChannelOperation(
+				vi
+					.fn()
+					.mockResolvedValue(
+						ok({ id: "00000000-0000-4000-8000-000000000002" }),
+					),
+				{ kind: "user", userId },
+			),
+		).rejects.toThrow("mismatch");
+	});
+
+	it("refuses an id that is not an object id", async () => {
+		const fetch = vi.fn();
+
+		await expect(
+			executeParlumeChannelOperation(fetch, {
+				kind: "user",
+				userId: "8:teamsvisitor:example",
+			}),
+		).rejects.toThrow();
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	it("checks the connection with one call for its own id", async () => {
+		const fetch = vi.fn().mockResolvedValue(ok({ id: userId }));
+
+		await expect(
+			executeParlumeChannelOperation(fetch, { kind: "me" }),
+		).resolves.toEqual({ id: userId });
+		expect(fetch).toHaveBeenCalledWith(
+			"https://graph.microsoft.com/v1.0/me?$select=id",
+		);
+		await expect(
+			executeParlumeChannelOperation(
+				vi.fn().mockResolvedValue(new Response(null, { status: 401 })),
+				{ kind: "me" },
+			),
+		).rejects.toThrow("HTTP 401");
 	});
 });

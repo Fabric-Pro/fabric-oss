@@ -29,12 +29,16 @@ import {
 } from "../../../../orpc/procedures";
 import { isChannelMonitorSource } from "../../lib/channel-monitor-source";
 import type { PmSyncOverride } from "./change-item-schema";
+import { partitionUpdateTargets } from "./proposal-approval-guards";
 
 const RETRY_BATCH_LIMIT = 50;
 
 interface StoredChange {
 	type: "epic" | "feature" | "story" | "bug";
 	action: "create" | "update";
+	existingId?: string | null;
+	existingIdentifier?: string | null;
+	existingExternalId?: string | null;
 	title: { from?: string | null; to: string };
 	kindOverride?: "BUG" | "FEATURE" | null;
 	[key: string]: unknown;
@@ -272,8 +276,6 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 							review.pmConfig as StoredSourceMetadata["pmConfig"],
 					}
 				: sourceMetadata;
-			const workflowOverrides: Record<number, PmSyncOverride> = {};
-
 			const dedupGuard = await buildBacklogDedupGuard(input.projectId);
 			const duplicateResolutions: Parameters<
 				typeof recordProposalDuplicateResolution
@@ -294,8 +296,11 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 				}
 			};
 			const newlyApplied: number[] = [];
-			const workflowChanges: StoredChange[] = [];
-			const workflowIndexes: number[] = [];
+			const workflowEntries: Array<{
+				change: StoredChange;
+				index: number;
+				override: PmSyncOverride | null;
+			}> = [];
 			let dedupCollisionCount = 0;
 
 			for (const entry of replayEntries) {
@@ -338,12 +343,70 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 						continue;
 					}
 				}
-				if (entry.override) {
-					workflowOverrides[workflowChanges.length] = entry.override;
-				}
-				workflowChanges.push(change);
-				workflowIndexes.push(i);
+				workflowEntries.push({
+					change,
+					index: i,
+					override: entry.override,
+				});
 			}
+
+			// The same target check as an approval: an update whose target
+			// is not a work item in this project is left out and returns to
+			// review; a row with nothing else to replay returns to review. A
+			// failed check fails this row only.
+			const targets = await partitionUpdateTargets(
+				input.projectId,
+				workflowEntries.map(({ change }) => change),
+			).catch((error: unknown) => {
+				console.error(
+					"[backlog] retry-all update target check failed:",
+					error,
+				);
+				return null;
+			});
+			if (!targets) {
+				results.push({
+					proposalId: fresh.id,
+					workflowId: null,
+					status: "error",
+					message: "Couldn't check the update targets. Try again.",
+				});
+				continue;
+			}
+			const heldBack = targets.refusals;
+			const replayed = workflowEntries.filter(
+				({ change }) => !targets.heldBack.has(change),
+			);
+			if (
+				replayed.length === 0 &&
+				newlyApplied.length === 0 &&
+				heldBack.length > 0
+			) {
+				const returned = await returnFailedProposalToReview(fresh.id, {
+					applyWorkflowId: fresh.applyWorkflowId ?? null,
+					applyReviewId: fresh.applyReviewId ?? null,
+				});
+				results.push({
+					proposalId: fresh.id,
+					workflowId: null,
+					status: returned ? "returned_to_review" : "error",
+					message: returned
+						? [
+								"No item could be retried. The proposal is back in review.",
+								...heldBack,
+							].join("\n")
+						: "Skipped — proposal is no longer FAILED",
+				});
+				continue;
+			}
+			const workflowChanges = replayed.map(({ change }) => change);
+			const workflowIndexes = replayed.map(({ index }) => index);
+			const workflowOverrides: Record<number, PmSyncOverride> = {};
+			replayed.forEach(({ override }, position) => {
+				if (override) {
+					workflowOverrides[position] = override;
+				}
+			});
 
 			const mergedApplied = Array.from(
 				new Set([...alreadyApplied, ...newlyApplied]),
@@ -517,8 +580,15 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 					workflowId: handle.workflowId,
 					status: "queued",
 					message:
-						dedupCollisionCount > 0
-							? `Queued; ${dedupCollisionCount} resolved via dedup.`
+						dedupCollisionCount > 0 || heldBack.length > 0
+							? [
+									...(dedupCollisionCount > 0
+										? [
+												`Queued; ${dedupCollisionCount} resolved via dedup.`,
+											]
+										: []),
+									...heldBack,
+								].join("\n")
 							: undefined,
 				});
 			} catch (error) {

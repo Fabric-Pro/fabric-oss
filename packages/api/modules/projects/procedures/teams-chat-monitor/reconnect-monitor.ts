@@ -1,6 +1,5 @@
 import { ORPCError } from "@orpc/server";
 import { db } from "@repo/database";
-import { executeMicrosoftTeamsTool } from "@repo/integrations/microsoft";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
@@ -10,10 +9,10 @@ import {
 } from "../../../../orpc/procedures";
 import {
 	assertPreflightAllowsRebind,
-	classifyProviderError,
 	rebindMonitorWorkflow,
 	runMonitorPreflight,
 } from "../../lib/monitor-reconnect";
+import { probeTeamsMonitorAccess } from "../../lib/teams-monitor-preflight";
 
 /**
  * AUTHORIZATION: `PROJECT_UPDATE` (EDITOR+), deliberately looser than
@@ -93,18 +92,13 @@ export const reconnectMonitorProcedure = tenantProtectedProcedure
 			// different Graph endpoint is what made the meeting preflight report
 			// every meeting as invisible: `/me/onlineMeetings` answers only for
 			// the organizer, so it was answering a question nobody had asked.
-			probe: async (conversation) => {
-				const result = (await executeMicrosoftTeamsTool(
+			probe: (conversation) =>
+				probeTeamsMonitorAccess(
 					"list_chat_messages_for_monitor",
-					{ chatId: conversation.id, top: 1 },
+					{ chatId: conversation.id },
 					user.id,
 					organizationId,
-				)) as { error?: string };
-
-				return result?.error
-					? classifyProviderError(result.error)
-					: "reachable";
-			},
+				),
 		});
 
 		if (input.preflightOnly) {

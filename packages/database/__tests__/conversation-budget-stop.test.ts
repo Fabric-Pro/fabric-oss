@@ -14,6 +14,7 @@ vi.mock("../prisma/client", () => {
 			update: m.update,
 			create: m.create,
 			findFirst: m.findFirst,
+			deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
 		},
 		$queryRaw: m.raw,
 		$executeRaw: vi.fn(),

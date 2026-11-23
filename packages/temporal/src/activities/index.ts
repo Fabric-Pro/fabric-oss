@@ -485,8 +485,12 @@ export * from "./parlume";
 export * from "./code-index-refresh";
 export * from "./parlume-auto-join";
 export * from "./parlume-notes";
+export * from "./parlume-notes-ready";
 export * from "./parlume-recap";
+export * from "./parlume-retention";
+export * from "./parlume-sweep";
 export * from "./parlume-channel-chat";
+export * from "./parlume-confirmed-action";
 export * from "./parlume-warmup";
 export * from "./publishing-short-post";
 export * from "./publishing-stakeholder-email";
@@ -705,6 +709,12 @@ export {
 	type VerifyGoalInput,
 	verifyGoalAchievement,
 } from "./goal-oriented-agent";
+// Proposal Inbox duplicate verifier (run by verifyInboxDuplicatesWorkflow)
+export {
+	type VerifyInboxDuplicatesParams,
+	type VerifyInboxDuplicatesResult,
+	verifyInboxDuplicatesActivity,
+} from "./inbox-duplicate-verification";
 // Letta memory activities
 export {
 	cacheToolResult,

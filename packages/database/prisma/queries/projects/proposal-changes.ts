@@ -112,6 +112,13 @@ export function readStoredProposalChange(
 		: null;
 }
 
+/** Proposed acceptance criteria (`acceptanceCriteria.to`, or a bare string). */
+export function proposedAcceptanceCriteria(
+	change: StoredProposalChange,
+): string {
+	return readDescription(change.raw.acceptanceCriteria);
+}
+
 /** A titled create item: the only kind of item duplicate matching considers. */
 export function isNewWorkChange(change: StoredProposalChange): boolean {
 	return change.action === "create" && change.title !== "";

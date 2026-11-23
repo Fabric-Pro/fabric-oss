@@ -7,9 +7,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	instanceFindMany: vi.fn(),
+	queryRaw: vi.fn(),
 	executionFindMany: vi.fn(),
 	artifactFindUnique: vi.fn(),
 	memberFindUnique: vi.fn(),
+	organizationFindFirst: vi.fn(),
 	projectFindFirst: vi.fn(),
 	hasProjectAccess: vi.fn(),
 }));
@@ -21,16 +23,24 @@ vi.mock("../prisma/queries/projects/projects", async (importOriginal) => ({
 	hasProjectAccess: mocks.hasProjectAccess,
 }));
 
-vi.mock("../prisma/client", () => ({
-	db: {
-		templateInstance: { findMany: mocks.instanceFindMany },
-		templateInstanceExecution: { findMany: mocks.executionFindMany },
-		templateInstanceArtifact: { findUnique: mocks.artifactFindUnique },
-		member: { findUnique: mocks.memberFindUnique },
-		user: { findUnique: async () => ({ role: "user" }) },
-		project: { findFirst: mocks.projectFindFirst },
-	},
-}));
+vi.mock("../prisma/client", async () => {
+	// The real `Prisma` namespace builds the duplicate check's SQL; only the
+	// client itself is stubbed.
+	const { Prisma } = await import("../prisma/generated/client");
+	return {
+		db: {
+			templateInstance: { findMany: mocks.instanceFindMany },
+			$queryRaw: mocks.queryRaw,
+			templateInstanceExecution: { findMany: mocks.executionFindMany },
+			templateInstanceArtifact: { findUnique: mocks.artifactFindUnique },
+			member: { findUnique: mocks.memberFindUnique },
+			organization: { findFirst: mocks.organizationFindFirst },
+			user: { findUnique: async () => ({ role: "user" }) },
+			project: { findFirst: mocks.projectFindFirst },
+		},
+		Prisma,
+	};
+});
 
 import { reportInstructions } from "../prisma/queries/lib/report-instructions";
 import {
@@ -38,7 +48,10 @@ import {
 	getLatestSuccessfulReports,
 	normalizeReportText,
 } from "../prisma/queries/report-instance-lookups";
-import { getTemplateInstanceArtifact } from "../prisma/queries/reports";
+import {
+	getTemplateInstanceArtifact,
+	getTemplateInstanceArtifactForMember,
+} from "../prisma/queries/reports";
 
 const ORG = "example-org";
 const PROJECT = "example-project";
@@ -47,8 +60,10 @@ const CALLER = "example-member";
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.instanceFindMany.mockResolvedValue([]);
+	mocks.queryRaw.mockResolvedValue([]);
 	mocks.executionFindMany.mockResolvedValue([]);
 	mocks.memberFindUnique.mockResolvedValue({ role: "member" });
+	mocks.organizationFindFirst.mockResolvedValue({ id: ORG });
 	mocks.projectFindFirst.mockImplementation(
 		async ({ where }: { where: { id: string } }) => ({ id: where.id }),
 	);
@@ -184,30 +199,104 @@ describe("findLikelyDuplicateReports", () => {
 		prompt: "A new prompt",
 	};
 
-	it("compares the project's listed reports inside the tenant", async () => {
+	/** Postgres finds `rows` as the candidates; loading returns those asked for. */
+	function candidates(rows: Array<ReturnType<typeof row>>) {
+		mocks.queryRaw.mockResolvedValue(rows.map(({ id }) => ({ id })));
+		mocks.instanceFindMany.mockImplementation(
+			async ({ where }: { where: { id: { in: string[] } } }) =>
+				rows.filter(({ id }) => where.id.in.includes(id)),
+		);
+	}
+	function sentSql(): { sql: string; values: unknown[] } {
+		return mocks.queryRaw.mock.calls[0][0];
+	}
+
+	it("compares every listed report of the project in Postgres, inside the tenant", async () => {
 		await findLikelyDuplicateReports(query);
 
-		const { where } = mocks.instanceFindMany.mock.calls[0][0];
-		expect(where).toEqual({
-			organizationId: ORG,
-			projectId: PROJECT,
-			status: { in: ["ACTIVE", "DRAFT"] },
-		});
+		const { sql, values } = sentSql();
+		expect(sql).toContain(`"organizationId" = ?`);
+		expect(sql).toContain(`"projectId" = ?`);
+		expect(sql).not.toContain(`"userId"`);
+		expect(sql).toContain("status IN ('ACTIVE', 'DRAFT')");
+		expect(sql).not.toMatch(/\bLIMIT\b/i);
+		expect(values).toEqual(expect.arrayContaining([ORG, PROJECT]));
 	});
 
 	it("compares only the caller's own reports without a project", async () => {
 		await findLikelyDuplicateReports({ ...query, projectId: undefined });
 
-		const { where } = mocks.instanceFindMany.mock.calls[0][0];
-		expect(where).toEqual({
+		const { sql, values } = sentSql();
+		expect(sql).toContain(`"userId" = ?`);
+		expect(sql).not.toContain(`"projectId" = ?`);
+		expect(values).toEqual(expect.arrayContaining([ORG, CALLER]));
+	});
+
+	it("compares only each report's latest version, newest first", async () => {
+		await findLikelyDuplicateReports(query);
+
+		const { sql } = sentSql();
+		expect(sql).toContain(`max(version) OVER (PARTITION BY "sId")`);
+		expect(sql).toContain("ti.version = ti.newest_version");
+		expect(sql).toContain(`ORDER BY ti."updatedAt" DESC`);
+	});
+
+	it("sends the normalized title and prompt, and only the ones given", async () => {
+		await findLikelyDuplicateReports({
+			...query,
+			name: "  Weekly   STATUS ",
+			prompt: "",
+		});
+
+		const { sql, values } = sentSql();
+		expect(values).toContain("weekly status");
+		expect(sql).toContain("ti.name");
+		expect(sql).not.toContain("promptOverride");
+	});
+
+	it("loads the candidates inside the tenant", async () => {
+		candidates([row()]);
+
+		await findLikelyDuplicateReports({ ...query, name: "Weekly status" });
+
+		expect(mocks.instanceFindMany.mock.calls[0][0].where).toEqual({
+			id: { in: ["existing-report"] },
 			organizationId: ORG,
-			userId: CALLER,
-			status: { in: ["ACTIVE", "DRAFT"] },
 		});
 	});
 
+	it("keeps looking past candidates the caller may not open, in Postgres order", async () => {
+		const hidden = Array.from({ length: 60 }, (_, n) =>
+			row({ id: `hidden-${n}`, projectId: "another-project" }),
+		);
+		candidates([...hidden, row({ id: "visible" })]);
+
+		const matches = await findLikelyDuplicateReports({
+			...query,
+			name: "Weekly status",
+		});
+
+		expect(matches.map((match) => match.id)).toEqual(["visible"]);
+		expect(mocks.instanceFindMany).toHaveBeenCalledTimes(2);
+	});
+
+	it("lists at most ten matches and loads no more once it has them", async () => {
+		candidates(
+			Array.from({ length: 120 }, (_, n) => row({ id: `match-${n}` })),
+		);
+
+		const matches = await findLikelyDuplicateReports({
+			...query,
+			name: "Weekly status",
+		});
+
+		expect(matches).toHaveLength(10);
+		expect(matches[0].id).toBe("match-0");
+		expect(mocks.instanceFindMany).toHaveBeenCalledTimes(1);
+	});
+
 	it("matches the same title alone, ignoring case and spacing", async () => {
-		mocks.instanceFindMany.mockResolvedValue([row()]);
+		candidates([row()]);
 
 		const matches = await findLikelyDuplicateReports({
 			...query,
@@ -225,7 +314,7 @@ describe("findLikelyDuplicateReports", () => {
 	});
 
 	it("matches the same prompt alone, the template's when the report has none", async () => {
-		mocks.instanceFindMany.mockResolvedValue([row()]);
+		candidates([row()]);
 
 		const matches = await findLikelyDuplicateReports({
 			...query,
@@ -238,7 +327,7 @@ describe("findLikelyDuplicateReports", () => {
 	});
 
 	it("compares a report's own prompt over its template's", async () => {
-		mocks.instanceFindMany.mockResolvedValue([
+		candidates([
 			row({
 				connections: {
 					promptOverride: "Only blockers.",
@@ -259,7 +348,7 @@ describe("findLikelyDuplicateReports", () => {
 	});
 
 	it("compares the template's prompt for an unmarked copy of an older one, as a run does", async () => {
-		mocks.instanceFindMany.mockResolvedValue([
+		candidates([
 			row({
 				connections: { promptOverride: "An older template prompt." },
 			}),
@@ -279,27 +368,14 @@ describe("findLikelyDuplicateReports", () => {
 		).resolves.toHaveLength(1);
 	});
 
-	it("finds nothing when neither the title nor the prompt matches", async () => {
-		mocks.instanceFindMany.mockResolvedValue([row()]);
+	it("finds nothing when a candidate matches neither the title nor the prompt", async () => {
+		candidates([row()]);
 
 		await expect(findLikelyDuplicateReports(query)).resolves.toEqual([]);
 	});
 
-	it("ignores an older version of a report", async () => {
-		mocks.instanceFindMany.mockResolvedValue([
-			row({ id: "current", version: 2, name: "Renamed" }),
-			row({ id: "previous", version: 1 }),
-		]);
-
-		await expect(
-			findLikelyDuplicateReports({ ...query, name: "Weekly status" }),
-		).resolves.toEqual([]);
-	});
-
 	it("names no report the caller may not open", async () => {
-		mocks.instanceFindMany.mockResolvedValue([
-			row({ projectId: "another-project" }),
-		]);
+		candidates([row({ projectId: "another-project" })]);
 
 		await expect(
 			findLikelyDuplicateReports({ ...query, name: "Weekly status" }),
@@ -308,7 +384,7 @@ describe("findLikelyDuplicateReports", () => {
 
 	it("names nothing for a non-member", async () => {
 		mocks.memberFindUnique.mockResolvedValue(null);
-		mocks.instanceFindMany.mockResolvedValue([row()]);
+		candidates([row()]);
 
 		await expect(
 			findLikelyDuplicateReports({ ...query, name: "Weekly status" }),
@@ -318,6 +394,7 @@ describe("findLikelyDuplicateReports", () => {
 	it("reads nothing for an empty title and prompt", async () => {
 		await findLikelyDuplicateReports({ ...query, name: " ", prompt: "" });
 
+		expect(mocks.queryRaw).not.toHaveBeenCalled();
 		expect(mocks.instanceFindMany).not.toHaveBeenCalled();
 	});
 });
@@ -372,6 +449,93 @@ describe("getTemplateInstanceArtifact", () => {
 		await expect(
 			getTemplateInstanceArtifact("example-artifact", caller),
 		).resolves.toBeNull();
+	});
+
+	describe("for a member, in the report's own organization", () => {
+		it("opens the run whichever workspace the session has active", async () => {
+			mocks.artifactFindUnique.mockResolvedValue(artifactOf(PROJECT));
+
+			await expect(
+				getTemplateInstanceArtifactForMember(
+					"example-artifact",
+					CALLER,
+				),
+			).resolves.toMatchObject({ id: "example-artifact" });
+			expect(mocks.memberFindUnique).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: {
+						organizationId_userId: {
+							organizationId: ORG,
+							userId: CALLER,
+						},
+					},
+				}),
+			);
+		});
+
+		it("refuses a caller who is not a member of that organization", async () => {
+			mocks.artifactFindUnique.mockResolvedValue(artifactOf(PROJECT));
+			mocks.memberFindUnique.mockResolvedValue(null);
+
+			await expect(
+				getTemplateInstanceArtifactForMember(
+					"example-artifact",
+					CALLER,
+				),
+			).resolves.toBeNull();
+		});
+
+		it("refuses a member who cannot reach the report's project", async () => {
+			mocks.artifactFindUnique.mockResolvedValue(
+				artifactOf("another-project"),
+			);
+
+			await expect(
+				getTemplateInstanceArtifactForMember(
+					"example-artifact",
+					CALLER,
+				),
+			).resolves.toBeNull();
+		});
+
+		it("refuses a run of a deleted organization", async () => {
+			mocks.artifactFindUnique.mockResolvedValue(artifactOf(PROJECT));
+			mocks.organizationFindFirst.mockResolvedValue(null);
+
+			await expect(
+				getTemplateInstanceArtifactForMember(
+					"example-artifact",
+					CALLER,
+				),
+			).resolves.toBeNull();
+			expect(mocks.organizationFindFirst).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: { id: ORG, deletedAt: null },
+				}),
+			);
+		});
+
+		it("refuses a report with no organization", async () => {
+			const artifact = artifactOf(PROJECT);
+			mocks.artifactFindUnique.mockResolvedValue({
+				...artifact,
+				execution: {
+					...artifact.execution,
+					instance: {
+						...artifact.execution.instance,
+						organizationId: null,
+					},
+				},
+			});
+
+			await expect(
+				getTemplateInstanceArtifactForMember(
+					"example-artifact",
+					CALLER,
+				),
+			).resolves.toBeNull();
+			expect(mocks.memberFindUnique).not.toHaveBeenCalled();
+		});
 	});
 });
 

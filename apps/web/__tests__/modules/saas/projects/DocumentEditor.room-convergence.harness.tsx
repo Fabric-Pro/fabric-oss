@@ -116,7 +116,11 @@ interface Tab {
 	awareness: FakeAwareness;
 	provider: { awareness: FakeAwareness };
 	synced: boolean;
-	role: "owner" | "editor" | "viewer";
+	/**
+	 * `orgAdmin` reaches the project through an organization role: no
+	 * project role, yet the document write permission.
+	 */
+	role: "owner" | "editor" | "viewer" | "orgAdmin";
 	attachToServerRun: boolean;
 	/** The assistant conversation the page was loaded with, if any. */
 	conversationId: string | null;
@@ -367,12 +371,14 @@ function cannedResponseFor(path: string[], tab?: Tab): unknown {
 		return serverDocument();
 	}
 	if (joined === "projects.get") {
+		const role = tab?.role ?? "owner";
 		return {
 			project: {
 				name: "proj-1",
 				techStack: [],
 				features: [],
-				userRole: tab?.role ?? "owner",
+				userRole: role === "orgAdmin" ? null : role,
+				canEditDocuments: role !== "viewer",
 			},
 		};
 	}

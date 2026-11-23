@@ -28,6 +28,7 @@ export interface AICredentials {
 	modelPinned?: boolean;
 	/** The decrypted API key */
 	apiKey: string;
+	credentialKind?: "bearer";
 	/** The AI provider type */
 	provider: string;
 	/** The configured model string */
@@ -64,7 +65,7 @@ export interface TokenExtractionOptions {
  * 3. NEXT_PUBLIC_APP_URL - Next.js app URL
  * 4. Default to localhost:3000 for local development
  */
-function getDefaultFabricBaseUrl(): string {
+export function getDefaultFabricBaseUrl(): string {
 	return (
 		process.env.FABRIC_API_URL ||
 		process.env.RUNTIME_API_URL ||
@@ -144,6 +145,7 @@ async function exchangeTokenForCredentials(
 	const result = await exchangeTokenForKey(token, {
 		fabricBaseUrl,
 		enableCache: true,
+		acceptBearer: true,
 	});
 
 	// So a plan that refuses a call as spent can be swapped for another.
@@ -164,6 +166,7 @@ async function exchangeTokenForCredentials(
 		maxOutputTokens: result.maxOutputTokens,
 		contextWindow: result.contextWindow,
 		apiKey: result.apiKey,
+		...(result.credentialKind && { credentialKind: result.credentialKind }),
 		provider: result.provider,
 		model: result.model,
 		baseUrl: result.baseUrl,

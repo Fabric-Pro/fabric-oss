@@ -1480,3 +1480,38 @@ describe("decision vendor after connection removal", () => {
 		]);
 	});
 });
+
+it("saves federation on the allowed organization and clears the old key", async () => {
+	seedOrgRow({
+		provider: "ANTHROPIC_DIRECT",
+		isDefault: true,
+		config: { apiKey: "legacy-key" },
+	});
+	vi.stubEnv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_example");
+	vi.stubEnv(
+		"ANTHROPIC_ORGANIZATION_ID",
+		"00000000-0000-0000-0000-000000000000",
+	);
+	vi.stubEnv("ANTHROPIC_FEDERATION_AUDIENCE", "example-audience");
+	vi.stubEnv("ANTHROPIC_FEDERATION_ALLOWED_ORGANIZATION_IDS", ORG);
+	try {
+		await expect(
+			call(upsertUserProviderProcedure, {
+				provider: "ANTHROPIC_DIRECT",
+				authMode: "federated",
+			}),
+		).resolves.toMatchObject({ success: true });
+		expect(orgRow("ANTHROPIC_DIRECT")).toMatchObject({
+			organizationId: ORG,
+			config: { authMode: "federated" },
+			encryptedApiKey: null,
+			clientId: null,
+			encryptedClientSecret: null,
+		});
+		expect(
+			(orgRow("ANTHROPIC_DIRECT")?.config as { apiKey?: string }).apiKey,
+		).toBeUndefined();
+	} finally {
+		vi.unstubAllEnvs();
+	}
+});

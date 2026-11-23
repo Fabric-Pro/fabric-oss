@@ -2,7 +2,7 @@
  * Real-Postgres proof of which notes `listRecentTimeEntryNotes` offers.
  *
  * The unit test pins the WHERE the query sends. Only Postgres can show what
- * the grouping returns: one note per text, dated by its latest save, newest
+ * the grouping returns: one note per reading, dated by its latest save, newest
  * first, with other people's, other projects' and confirmed suggestions'
  * notes left out.
  *
@@ -128,6 +128,21 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				"Note 9",
 				"Note 8",
 				"Note 7",
+			]);
+		});
+
+		it("offers five notes when two of the newest differ only in spacing", async () => {
+			for (let n = 1; n <= 6; n++) {
+				await seedEntry({ description: `Note ${n}`, minute: n });
+			}
+			await seedEntry({ description: "Note  6", minute: 7 });
+
+			expect(await recentNotes()).toEqual([
+				"Note  6",
+				"Note 5",
+				"Note 4",
+				"Note 3",
+				"Note 2",
 			]);
 		});
 

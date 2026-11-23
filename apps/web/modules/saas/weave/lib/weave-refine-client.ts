@@ -9,6 +9,7 @@ import { streamRequestReplyRun } from "@saas/agents/lib/request-reply-runtime";
 import { orpcClient } from "@shared/lib/orpc-client";
 import {
 	WEAVE_REFINE_AGENT_ID,
+	WEAVE_REFINE_DECLINED,
 	WEAVE_REFINE_EVENT,
 	weaveRefineResultEventSchema,
 } from "./weave-refine-runtime-protocol";
@@ -44,6 +45,14 @@ export interface RefineReply {
 }
 
 const EARLY_END_MESSAGE = "The reply ended early. Please try again.";
+
+/** The model declined to refine the request; nothing failed. */
+export class RefinementDeclinedError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "RefinementDeclinedError";
+	}
+}
 
 /** `weave.plans.refine`: the whole reply at once. */
 export async function refineOverRoute(
@@ -85,6 +94,7 @@ export async function refineOverRuntime(
 			model?: AnswerModelInfo;
 		};
 		failure?: string;
+		declined?: boolean;
 		finished: boolean;
 	} = { text: "", finished: false };
 	try {
@@ -119,6 +129,7 @@ export async function refineOverRuntime(
 					}
 				} else if (event.type === EventType.RUN_ERROR) {
 					reply.failure = event.message;
+					reply.declined = event.code === WEAVE_REFINE_DECLINED;
 				} else if (event.type === EventType.RUN_FINISHED) {
 					reply.finished = true;
 				}
@@ -137,7 +148,9 @@ export async function refineOverRuntime(
 		throw new Error(reply.failure ?? EARLY_END_MESSAGE);
 	}
 	if (reply.failure !== undefined) {
-		throw new Error(reply.failure);
+		throw reply.declined
+			? new RefinementDeclinedError(reply.failure)
+			: new Error(reply.failure);
 	}
 	if (!reply.finished || !reply.result) {
 		throw new Error(EARLY_END_MESSAGE);

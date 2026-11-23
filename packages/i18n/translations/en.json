@@ -784,6 +784,12 @@
 			"body": "A release-notes draft for “{projectName}” has been prepared and needs approval before it goes out. If someone has already reviewed it, the page will say so.",
 			"cta": "Open review"
 		},
+		"parlumeNotesReady": {
+			"subject": "Meeting notes for \"{meetingName}\" are ready",
+			"headline": "Your meeting notes are ready",
+			"body": "Parlume's notes for “{meetingName}” in “{projectName}” are ready. Open the Parlume page to read them.",
+			"cta": "Read the notes"
+		},
 		"reportExecutionReady": {
 			"subject": "Your report \"{instanceName}\" is ready",
 			"headline": "Your report is ready",
@@ -795,6 +801,18 @@
 			"headline": "Your report failed to generate",
 			"body": "“{instanceName}” didn’t finish generating. Open the Execution History to see what went wrong.",
 			"cta": "Open Execution History"
+		},
+		"parlumeJoinFailed": {
+			"subject": "Parlume could not join your meeting",
+			"headline": "Parlume could not join your meeting",
+			"body": "Parlume is not in the meeting. This is the reason it recorded:",
+			"cta": "Open the Parlume page"
+		},
+		"parlumeWaitingInLobby": {
+			"subject": "Parlume is waiting to join: admit Fabric Parlume from the lobby by {admitBy}",
+			"headline": "Parlume is waiting to join",
+			"body": "Parlume is not in the meeting yet. Admit Fabric Parlume from the meeting’s lobby by {admitBy}. If nobody admits it by then, it leaves the meeting.",
+			"cta": "Open the Parlume page"
 		},
 		"releaseNotesNewsletter": {
 			"subject": "{projectName}: Product update",
@@ -1476,7 +1494,9 @@
 				"impersonation": "via impersonation",
 				"deletedResource": "deleted",
 				"system": "system",
-				"apiKey": "API key"
+				"apiKey": "API key",
+				"agent": "AI agent",
+				"actingFor": "for {email}"
 			},
 			"outcomes": {
 				"success": "Success",
@@ -1835,10 +1855,24 @@
 						"sync_stopped": "Meeting syncing stopped or resumed"
 					},
 					"parlume": {
-						"action_confirmed": "Parlume action executed",
+						"action_confirmed": "Parlume change confirmed",
+						"action_dismissed": "Parlume change dismissed",
+						"action_executed": "Parlume confirmed change ran",
+						"action_item_proposed": "Parlume action item proposed",
 						"auto_join_changed": "Parlume auto-join changed",
+						"confidential_cleared": "Parlume confidential mark removed",
+						"confidential_marked": "Parlume meeting marked confidential",
+						"listening_paused": "Parlume listening paused",
+						"listening_resumed": "Parlume listening resumed",
+						"notes_regenerated": "Parlume notes regenerated",
+						"reading_continued": "Parlume reading continued",
+						"request_answered": "Parlume answered a meeting request",
+						"session_deleted": "Parlume session deleted",
 						"session_started": "Parlume meeting session started",
-						"session_stopped": "Parlume meeting session stop requested"
+						"session_stopped": "Parlume meeting session stop requested",
+						"speech_stopped": "Parlume answer stopped",
+						"suggestion_dismissed": "Parlume suggestion dismissed",
+						"suggestion_spoken": "Parlume suggestion said in a meeting"
 					},
 					"invitation": {
 						"widget_dismissed": "Invitation widget dismissed"
@@ -10739,6 +10773,7 @@
 			"resetColumnTitles": "Revert renamed columns back to their default status names.",
 			"swimlaneGroup": "Group kanban cards into swimlanes by priority.",
 			"reviewProposals": "Review backlog proposals queued by the Teams channel monitor. Each proposal can be accepted as a new work item or rejected.",
+			"backlogProposalMergeFallback": "AI couldn't merge this update into the existing description, so any new detail it adds was added at the end, unchanged.",
 			"storyDownload": "Download this work item as Markdown, PDF, or Word.",
 			"storyOpenDetails": "Open the full story editor for this work item.",
 			"storyCopyLink": "Copy",
@@ -10796,6 +10831,7 @@
 				"warning": "Warning: this cannot be undone. The proposal is removed from the queue."
 			},
 			"openExisting": "Open existing ticket: {identifier} — {title}",
+			"openExistingIdentifierOnly": "Open existing ticket: {identifier}",
 			"openExistingTooltip": "Open this existing feature in a new tab to review its current content.",
 			"ticketNotFound": "Ticket not found",
 			"kanbanColumnRename": "Rename this column's title.",
@@ -10962,6 +10998,7 @@
 		},
 		"diagrams": {
 			"insertCrossProject": "Chat is scoped to {projectName}; open a {projectName} document to insert.",
+			"insertCrossProjectUnnamed": "Chat is scoped to another project; open a document from that project to insert.",
 			"insertNoPermission": "You don't have edit permission on {docName}.",
 			"insertNoCreatePermission": "You can't create diagrams in this project.",
 			"insertNotReady": "Diagram isn't ready yet.",
@@ -11129,21 +11166,28 @@
 			"insertFeatureButton": "Insert into feature",
 			"insertDocumentButton": "Insert into document",
 			"openPickerButton": "Open a document to insert",
+			"openPickerNoProject": "Add a project to this chat to choose a document or feature for the diagram.",
 			"insertedFeatureButton": "Inserted into feature",
 			"insertedDocumentButton": "Inserted into document",
 			"saveToDiagramsButton": "Save to Diagrams",
 			"copyEmbedCodeButton": "Copy embed code",
 			"pickerTitle": "Insert diagram into…",
 			"pickerDescription": "Pick a document or feature in {projectName}.",
+			"pickerDescriptionThisProject": "Pick a document or feature in this project.",
 			"pickerTabDocuments": "Documents",
 			"pickerTabFeatures": "Features",
-			"pickerEmpty": "No documents or features yet.",
+			"pickerSearchDocuments": "Search documents",
+			"pickerSearchFeatures": "Search features",
+			"pickerEmptyDocuments": "No documents yet.",
+			"pickerEmptyFeatures": "No features yet.",
+			"pickerNoMatches": "No matches.",
 			"toastSuccess": "Diagram inserted into {docName}",
 			"toastSuccessAction": "Go to embed",
 			"toastErrorDb": "Couldn't save diagram. Try again.",
 			"toastErrorForbidden": "This feature isn't available in your workspace yet.",
 			"toastCopyFailed": "Copy failed — your browser blocked clipboard access.",
 			"bannerEditorFailure": "Saved to {projectName} diagrams — couldn't add it to {docName}.",
+			"bannerEditorFailureThisProject": "Saved to this project's diagrams — couldn't add it to {docName}.",
 			"bannerEditorFailureRetry": "Retry"
 		}
 	},
@@ -11340,9 +11384,9 @@
 				"description": "Push Roadmap status updates back to your PM tool.",
 				"tooltip": "Two-way sync keeps Roadmap and your issue tracker aligned without manual status updates.",
 				"unmet": {
-					"autoPush": "Still needed: turn on “Auto-push status changes to PM tool” in Settings → Development. Connecting the system does not start syncing on its own.",
+					"autoPush": "Still needed: turn on “Auto-push status changes to PM tool” in Settings → Project Management. Connecting the system does not start syncing on its own.",
 					"connect": "Still needed: connect a project management system first.",
-					"readOnly": "Still needed: read-only mode is on, which blocks every outbound write. Turn it off in Settings → Development."
+					"readOnly": "Still needed: read-only mode is on, which blocks every outbound write. Turn it off in Settings → AI assistant."
 				}
 			},
 			"terminalStatuses": {
@@ -11350,7 +11394,7 @@
 				"description": "Define which PM statuses mark work as closed.",
 				"tooltip": "Terminal statuses tell Fabric which PM statuses represent completed or canceled work.",
 				"unmet": {
-					"define": "Still needed: name at least one terminal status in Settings → Development — the statuses your PM tool uses for closed work."
+					"define": "Still needed: name at least one terminal status in Settings → Project Management — the statuses your PM tool uses for closed work."
 				}
 			},
 			"teamMembers": {
@@ -11516,6 +11560,7 @@
 		},
 		"warnings": {
 			"duplicate": "You already logged {duration} of {activity} on {target} for this date. Is this separate work?",
+			"duplicateUnlisted": "You already logged time that matches this entry. Is this separate work?",
 			"duplicateConfirm": "Yes, add it",
 			"overLimit": "This makes {date} {total}. Keep it?",
 			"overLimitConfirm": "Yes, keep it",

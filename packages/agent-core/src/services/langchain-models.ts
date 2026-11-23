@@ -1,4 +1,24 @@
+import type {
+	AnthropicBearerSource,
+	AnthropicBearerToken,
+} from "@repo/ai/lib/anthropic-federation";
+import * as anthropicFederationModule from "@repo/ai/lib/anthropic-federation";
+import { exchangeTokenForKey, TokenExchangeError } from "@repo/ai-token";
 import { stripTrailingSlashes } from "@repo/utils/strip-trailing-slashes";
+import { getDefaultFabricBaseUrl } from "./token-exchange";
+import { readUsageScopedAiToken } from "./usage-logging";
+
+// Under the tsx-run Temporal worker this ESM package sees `@repo/ai` (CommonJS)
+// with its named exports only on `default`, so unwrap it either way.
+const { anthropicBearerFetch } =
+	typeof anthropicFederationModule.anthropicBearerFetch === "function"
+		? anthropicFederationModule
+		: ((
+				anthropicFederationModule as {
+					default?: typeof anthropicFederationModule;
+				}
+			).default ?? anthropicFederationModule);
+
 /**
  * LangChain Model Factory
  *
@@ -183,6 +203,7 @@ interface AiConfigResponse {
  */
 interface UserPreferenceResponse {
 	provider: string;
+	credentialKind?: "bearer";
 	apiKey: string;
 	model: string;
 	gatewayUrl: string | null;
@@ -274,6 +295,16 @@ async function fetchAiConfigFromApi(
 			`[LangChainModels] Failed to fetch AI config: ${response.status}`,
 			body,
 		);
+		if (
+			body &&
+			typeof body === "object" &&
+			"code" in body &&
+			body.code === "ANTHROPIC_BEARER_REQUIRED"
+		) {
+			throw new Error(
+				"Anthropic Bearer authentication requires a Fabric AI token.",
+			);
+		}
 		const failure = Object.assign(
 			new Error(
 				`[LangChainModels] AI config lookup failed with HTTP ${response.status}`,
@@ -330,6 +361,7 @@ async function fetchTaskSpecificConfig(
 	userId: string,
 	organizationId?: string,
 	taskType?: string,
+	acceptBearer?: boolean,
 ): Promise<UserPreferenceResponse | null> {
 	const apiUrl =
 		process.env.FABRIC_API_URL ||
@@ -359,6 +391,7 @@ async function fetchTaskSpecificConfig(
 				method: "GET",
 				headers: {
 					"Content-Type": "application/json",
+					...(acceptBearer && { "X-AI-Credential-Kind": "bearer" }),
 					...createSecurityHeaders(
 						signedTenant(userId, organizationId),
 					),
@@ -367,6 +400,26 @@ async function fetchTaskSpecificConfig(
 		);
 
 		if (!response.ok) {
+			if (response.status === 409) {
+				const failure = (await response.json().catch(() => null)) as {
+					code?: string;
+				} | null;
+				if (
+					failure?.code === "ANTHROPIC_FEDERATION_UNAVAILABLE" ||
+					failure?.code === "ANTHROPIC_BEARER_REQUIRED"
+				) {
+					throw new TokenExchangeError(
+						failure.code === "ANTHROPIC_BEARER_REQUIRED"
+							? "The selected task requires an Anthropic Bearer credential."
+							: "Anthropic federation is unavailable for this organization.",
+						{
+							status: response.status,
+							code: failure.code,
+							resetAt: null,
+						},
+					);
+				}
+			}
 			// 404 is expected if no task-specific preference exists
 			if (response.status !== 404) {
 				console.warn(
@@ -384,6 +437,9 @@ async function fetchTaskSpecificConfig(
 
 		return data;
 	} catch (error) {
+		if (error instanceof TokenExchangeError) {
+			throw error;
+		}
 		console.warn(
 			"[LangChainModels] Error fetching task-specific config:",
 			error,
@@ -411,6 +467,7 @@ export interface LangChainModelConfig {
  * Provider configuration from runtime (passed via CopilotKit properties)
  */
 export interface RuntimeProviderConfig {
+	anthropicBearerSource?: AnthropicBearerSource;
 	/** Provider type (e.g., "VERCEL_GATEWAY", "OPENROUTER", "GROQ") */
 	provider?: string;
 	/** API key for the provider */
@@ -1811,7 +1868,17 @@ function createUninstrumentedProviderModel(
 			);
 			const baseKwargs: Record<string, unknown> = {
 				model: resolvedName,
-				apiKey,
+				...(config.anthropicBearerSource
+					? {
+							apiKey: "resolved-at-dispatch",
+							clientOptions: {
+								baseURL: "https://api.anthropic.com",
+								fetch: anthropicBearerFetch(
+									config.anthropicBearerSource,
+								),
+							},
+						}
+					: { apiKey }),
 				temperature,
 				maxTokens,
 				maxRetries,
@@ -2054,6 +2121,54 @@ export function extractProviderConfig(
 			: undefined;
 	};
 
+	if (configurable.ai_credential_kind === "bearer") {
+		const aiToken = readUsageScopedAiToken(configurable);
+		if (
+			!aiToken ||
+			aiProvider !== "ANTHROPIC_DIRECT" ||
+			typeof aiModel !== "string"
+		) {
+			throw new Error(
+				"Missing Anthropic Bearer credential exchange context.",
+			);
+		}
+		// Keep the exchanged credential private to this source. A client can
+		// keep using it even if the Fabric token expires before Anthropic's.
+		let credential: AnthropicBearerToken | undefined;
+		return {
+			provider: aiProvider,
+			model: aiModel,
+			apiKey: "",
+			anthropicBearerSource: async () => {
+				if (credential && credential.expiresAt - Date.now() > 15_000) {
+					return credential;
+				}
+				const result = await exchangeTokenForKey(aiToken, {
+					fabricBaseUrl: getDefaultFabricBaseUrl(),
+					enableCache: false,
+					acceptBearer: true,
+				});
+				if (
+					result.credentialKind !== "bearer" ||
+					result.provider !== aiProvider ||
+					result.model !== aiModel ||
+					!result.accessToken ||
+					!result.credentialExpiresAt
+				) {
+					throw new Error(
+						"Fabric did not return an Anthropic Bearer credential for this model.",
+					);
+				}
+				credential = {
+					kind: "bearer",
+					token: result.accessToken,
+					expiresAt: result.credentialExpiresAt,
+				};
+				return credential;
+			},
+		};
+	}
+
 	if (aiApiKey && aiModel) {
 		return {
 			provider: aiProvider ? String(aiProvider) : undefined,
@@ -2179,6 +2294,7 @@ export async function getAgentModelAsync(
 			tenantUserId,
 			tenantOrgId,
 			options.taskType,
+			Boolean(providerConfig.anthropicBearerSource),
 		);
 
 		console.log("[LangChainModels] Task config result:", {
@@ -2194,16 +2310,41 @@ export async function getAgentModelAsync(
 				`[LangChainModels] Using task config for ${options.taskType}: ${taskConfig.provider}/${taskConfig.model} (source: ${taskConfig.source}, hasApiKey: ${!!taskConfig.apiKey})`,
 			);
 
+			const bearer =
+				taskConfig.credentialKind === "bearer"
+					? providerConfig.anthropicBearerSource
+					: undefined;
+			if (
+				taskConfig.credentialKind === "bearer" &&
+				(!bearer || taskConfig.provider !== "ANTHROPIC_DIRECT")
+			) {
+				throw new Error(
+					"Missing Anthropic Bearer credential exchange context for this task.",
+				);
+			}
+			const sameProvider =
+				taskConfig.provider === providerConfig.provider;
+			if (
+				!bearer &&
+				!taskConfig.apiKey &&
+				(!sameProvider || providerConfig.anthropicBearerSource)
+			) {
+				throw new Error(
+					"The selected task provider did not return a credential.",
+				);
+			}
 			// Use the task-specific config, falling back to the token-exchanged API key
 			// if the task config doesn't include one (e.g. decryption mismatch in dev).
 			providerConfig = {
 				provider: taskConfig.provider,
-				apiKey: taskConfig.apiKey || providerConfig.apiKey,
+				apiKey: bearer
+					? ""
+					: taskConfig.apiKey || providerConfig.apiKey,
+				...(bearer && { anthropicBearerSource: bearer }),
 				model: taskConfig.model,
 				baseUrl:
 					taskConfig.gatewayUrl ||
-					providerConfig.baseUrl ||
-					undefined,
+					(sameProvider ? providerConfig.baseUrl : undefined),
 				deploymentName: taskConfig.deploymentName || undefined,
 				canonicalModelName: taskConfig.canonicalModelName,
 				// Canonical-derived reasoning signal (Bug #1942 review); fall back

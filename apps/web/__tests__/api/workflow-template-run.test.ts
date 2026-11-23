@@ -23,6 +23,7 @@ const m = vi.hoisted(() => ({
 	membership: vi.fn(),
 	instance: vi.fn(),
 	filterWorkspaces: vi.fn(),
+	projectAccess: vi.fn(),
 	start: vi.fn(),
 }));
 
@@ -35,6 +36,7 @@ vi.mock("@repo/database", async () => {
 		getOrganizationMembership: m.membership,
 		getInstanceWithTemplate: m.instance,
 		filterAccessibleWorkspaceIds: m.filterWorkspaces,
+		getProjectAccessContext: m.projectAccess,
 	};
 });
 vi.mock("@repo/temporal", () => ({
@@ -218,7 +220,50 @@ describe("admitWorkflowTemplateRun", () => {
 			successCriteria: undefined,
 			reasoningEffort: "high",
 			workspaceIds: undefined,
+			projectId: undefined,
 		});
+		expect(m.projectAccess).not.toHaveBeenCalled();
+	});
+
+	it("runs under a project the caller opens in the run's organization, so its limits apply and count the run", async () => {
+		m.projectAccess.mockResolvedValue({ organizationId: ORG });
+
+		const run = await admitted(
+			await admitWorkflowTemplateRun(USER, {
+				templateSlug: "deep-researcher",
+				query: "Q",
+				organizationId: ORG,
+				projectId: "project-example-1",
+			}),
+		);
+
+		expect(m.projectAccess).toHaveBeenCalledWith("project-example-1", USER);
+		expect(run.input.projectId).toBe("project-example-1");
+	});
+
+	it.each([
+		["the caller cannot open", null, ORG],
+		["of another organization", { organizationId: "org-example-2" }, ORG],
+		[
+			"of an organization, for a personal run",
+			{ organizationId: ORG },
+			null,
+		],
+		["personal, for an organization's run", { organizationId: null }, ORG],
+	])("drops a project %s", async (_name, access, organizationId) => {
+		m.projectAccess.mockResolvedValue(access);
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const run = await admitted(
+			await admitWorkflowTemplateRun(USER, {
+				templateSlug: "deep-researcher",
+				query: "Q",
+				organizationId,
+				projectId: "project-example-1",
+			}),
+		);
+
+		expect(run.input.projectId).toBeUndefined();
 	});
 });
 

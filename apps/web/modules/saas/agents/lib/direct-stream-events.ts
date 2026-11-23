@@ -4,6 +4,10 @@ import {
 	isAiUsageLimitExceededPayload,
 } from "@saas/payments/lib/ai-usage-limit-toast";
 import type { Dispatch, RefObject, SetStateAction } from "react";
+import {
+	aiUsageLimitPausedMessage,
+	aiUsageLimitPausedText,
+} from "../../../../app/api/agents/fabric-ai/stream/ai-usage-limit-paused-message";
 import type {
 	ContextInfo,
 	DirectStreamMessage,
@@ -432,13 +436,12 @@ export function applyDirectStreamEvent(
 
 		case "error": {
 			// AI usage-limit short-circuit. When the chokepoint
-			// blocks mid-stream (e.g., from a tool-side AI call
-			// after the stream has begun), the route emits a
-			// structured SSE error event with
-			// `code: "AI_USAGE_LIMIT_EXCEEDED"`. Surface the shared
-			// destructive toast and drop the streaming placeholder
-			// — the toast is the single source of truth; nothing
-			// should appear in the chat transcript.
+			// blocks the turn, the route emits a structured error
+			// event with `code: "AI_USAGE_LIMIT_EXCEEDED"`. Surface
+			// the shared destructive toast, and end the answer with
+			// the paused state, as the saved turn reads after a
+			// reload (never the limit's internal id). The chat goes
+			// idle: the toast and banner carry the way on.
 			//
 			// A `partial` refusal stopped a later step after part of
 			// the answer had streamed: the toast still fires, and the
@@ -453,8 +456,27 @@ export function applyDirectStreamEvent(
 					showAiUsageLimitToastRef.current(payload);
 				}
 				if (data.partial !== true) {
+					const paused = payload
+						? aiUsageLimitPausedMessage(payload.window)
+						: aiUsageLimitPausedText(data.message);
 					setMessages((prev) =>
-						prev.filter((m) => m.id !== assistantMessageId),
+						paused
+							? prev.map((m) =>
+									m.id === assistantMessageId
+										? {
+												...m,
+												errorMessage: paused,
+												isError: true,
+												isStreaming: false,
+												streamStatus: "error",
+												toolCalls:
+													settleUnfinishedToolCalls(
+														m.toolCalls,
+													),
+											}
+										: m,
+								)
+							: prev.filter((m) => m.id !== assistantMessageId),
 					);
 					setState({ status: "idle" });
 					break;

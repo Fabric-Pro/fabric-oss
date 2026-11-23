@@ -1,0 +1,200 @@
+{
+	"id": "sprint-planning-short",
+	"title": "Sprint planning for the payments board",
+	"covers": [
+		"short meeting",
+		"decisions, owners and due dates said plainly",
+		"an owner named by someone other than the owner",
+		"an open question",
+		"answer and missed-question suggestions"
+	],
+	"segments": [
+		{
+			"id": 1,
+			"speaker": "Alex Example",
+			"text": "Morning everyone, this is sprint twelve planning for the payments board.",
+			"startMs": 0,
+			"endMs": 8000
+		},
+		{
+			"id": 2,
+			"speaker": "Alex Example",
+			"text": "First item is the refund export. Finance asked for it twice this month.",
+			"startMs": 10000,
+			"endMs": 18000
+		},
+		{
+			"id": 3,
+			"speaker": "Dev Example",
+			"text": "The export is mostly done. The CSV format is settled, we only need the date filter.",
+			"startMs": 20000,
+			"endMs": 28000
+		},
+		{
+			"id": 4,
+			"speaker": "Sam Example",
+			"text": "I can finish the date filter. I'll have it ready by Wednesday.",
+			"startMs": 30000,
+			"endMs": 38000
+		},
+		{
+			"id": 5,
+			"speaker": "Alex Example",
+			"text": "Great. So we agreed the refund export ships in this sprint.",
+			"startMs": 40000,
+			"endMs": 48000
+		},
+		{
+			"id": 6,
+			"speaker": "Riley Example",
+			"text": "One question. Do we keep the old PDF export or retire it?",
+			"startMs": 50000,
+			"endMs": 58000
+		},
+		{
+			"id": 7,
+			"speaker": "Dev Example",
+			"text": "Let's keep the PDF export until finance confirms nobody uses it.",
+			"startMs": 60000,
+			"endMs": 68000
+		},
+		{
+			"id": 8,
+			"speaker": "Alex Example",
+			"text": "Agreed, the PDF export stays for now.",
+			"startMs": 70000,
+			"endMs": 78000
+		},
+		{
+			"id": 9,
+			"speaker": "Alex Example",
+			"text": "Next, the retry queue. The on-call saw duplicate charges last week.",
+			"startMs": 80000,
+			"endMs": 88000
+		},
+		{
+			"id": 10,
+			"speaker": "Riley Example",
+			"text": "That was the retry worker running twice. I want to add an idempotency key to every charge request.",
+			"startMs": 90000,
+			"endMs": 98000
+		},
+		{
+			"id": 11,
+			"speaker": "Dev Example",
+			"text": "Makes sense. Riley, can you write the design note for the idempotency key by Friday?",
+			"startMs": 100000,
+			"endMs": 108000
+		},
+		{
+			"id": 12,
+			"speaker": "Riley Example",
+			"text": "Yes, I'll write it by Friday.",
+			"startMs": 110000,
+			"endMs": 118000
+		},
+		{
+			"id": 13,
+			"speaker": "Sam Example",
+			"text": "Who owns the alert for duplicate charges? I don't think anyone does.",
+			"startMs": 120000,
+			"endMs": 128000
+		},
+		{
+			"id": 14,
+			"speaker": "Alex Example",
+			"text": "Not decided yet. Let's come back to that.",
+			"startMs": 130000,
+			"endMs": 138000
+		},
+		{
+			"id": 15,
+			"speaker": "Dev Example",
+			"text": "Last thing, I will be out on Thursday, so code review goes to Sam that day.",
+			"startMs": 140000,
+			"endMs": 148000
+		},
+		{
+			"id": 16,
+			"speaker": "Alex Example",
+			"text": "Okay, that's the plan. Thanks all.",
+			"startMs": 150000,
+			"endMs": 158000
+		}
+	],
+	"truth": {
+		"decisions": [
+			{
+				"text": "The refund export ships in this sprint.",
+				"keywords": ["refund|export", "sprint"],
+				"segments": [5]
+			},
+			{
+				"text": "The PDF export stays until finance confirms nobody uses it.",
+				"keywords": ["pdf", "keep|kept|stay|remain|retain"],
+				"segments": [7, 8]
+			},
+			{
+				"text": "Sam does code review on Thursday while Dev is out.",
+				"keywords": ["review", "sam"],
+				"segments": [15]
+			}
+		],
+		"actionItems": [
+			{
+				"text": "Finish the date filter for the refund export.",
+				"keywords": ["date", "filter"],
+				"segments": [4],
+				"owner": "Sam Example",
+				"due": "Wednesday"
+			},
+			{
+				"text": "Write the design note for the idempotency key.",
+				"keywords": ["idempotency"],
+				"segments": [11, 12],
+				"owner": "Riley Example",
+				"due": "Friday"
+			}
+		]
+	},
+	"suggestions": {
+		"passesAfter": [8, 12, 14, 16],
+		"workItems": [
+			{
+				"identifier": "PAY-41",
+				"title": "Refund export with date filter",
+				"status": "In progress",
+				"priority": "HIGH",
+				"owner": "Sam Example"
+			},
+			{
+				"identifier": "PAY-57",
+				"title": "Alert on duplicate charges",
+				"status": "To do",
+				"priority": "HIGH",
+				"owner": null
+			},
+			{
+				"identifier": "PAY-60",
+				"title": "Idempotency key for charge requests",
+				"status": "To do",
+				"priority": "MEDIUM",
+				"owner": "Riley Example"
+			}
+		],
+		"agenda": "1. Refund export\n2. Retry queue and duplicate charges\n3. Review cover",
+		"previousQuestions": [],
+		"expected": [
+			{
+				"kind": "answer",
+				"text": "PAY-57 Alert on duplicate charges is open, high priority and unassigned.",
+				"keywords": ["pay-57|alert", "unassigned|owner|nobody|assign"]
+			},
+			{
+				"kind": "missed_question",
+				"text": "Who will confirm with finance whether anyone still uses the PDF export, and by when?",
+				"keywords": ["finance", "pdf"]
+			}
+		]
+	}
+}

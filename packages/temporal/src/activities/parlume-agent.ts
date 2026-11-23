@@ -2,7 +2,6 @@ import { getAgentImplementationAvailability } from "@repo/agent-types/agent-impl
 import { FABRIC_AGENT_IDENTITY } from "@repo/ai/lib/fabric-agent-identity";
 import {
 	db,
-	filterWorkspaceIdsForTenant,
 	getBuiltInToolConfig,
 	getOrchestratorPreferences,
 } from "@repo/database";
@@ -41,92 +40,13 @@ interface ParlumeAgentSession {
 
 const jsonObject = z.record(z.string(), z.unknown());
 
-async function loadConnectionBindings(
-	session: ParlumeAgentSession,
-	mcpConfigIds: string[],
-	integrationConfigurations: DeploymentConfig["integrationConfigurations"] = [],
-) {
-	const integrationIds = integrationConfigurations.map(
-		({ integrationId }) => integrationId,
-	);
-	const usesMicrosoftGraph = integrationConfigurations.some(
-		({ integrationType }) =>
-			integrationType.toUpperCase() === "MICROSOFT_GRAPH",
-	);
-	const [mcp, integrations] = await Promise.all([
-		mcpConfigIds.length
-			? db.mCPConfig.findMany({
-					where: {
-						id: { in: mcpConfigIds },
-						userId: session.userId,
-						organizationId: session.organizationId,
-					},
-					orderBy: { id: "asc" },
-					select: {
-						id: true,
-						mcpServerId: true,
-						baseUrl: true,
-						commandArgs: true,
-						transport: true,
-						authType: true,
-						apiKeyMethod: true,
-						oauthClientId: true,
-						scopes: true,
-						enabled: true,
-						failoverUrl: true,
-						atlassianCloudSiteUrl: true,
-						atlassianCloudCloudId: true,
-						mcpServer: {
-							select: {
-								defaultUrl: true,
-								command: true,
-								transport: true,
-							},
-						},
-					},
-				})
-			: [],
-		integrationIds.length
-			? db.workflowIntegration.findMany({
-					where: {
-						organizationId: session.organizationId,
-						OR: [
-							{ id: { in: integrationIds } },
-							...(usesMicrosoftGraph
-								? [
-										{
-											provider:
-												"MICROSOFT_GRAPH" as const,
-											isActive: true,
-											NOT: {
-												name: "MICROSOFT_GRAPH_OAUTH_APP",
-											},
-										},
-									]
-								: []),
-						],
-					},
-					orderBy: { id: "asc" },
-					select: {
-						id: true,
-						provider: true,
-						settings: true,
-						isActive: true,
-					},
-				})
-			: [],
-	]);
-	return { mcp, integrations };
-}
-
 /**
- * The agent a meeting turn runs, as configured now. External MCP servers,
- * OAuth integrations and RAG workspaces reach a meeting only when the agent
- * opts in (`meetingExternalTools`): otherwise a meeting answer draws on the
- * meeting's project and Fabric's own tools alone. The Fabric Agent has no
- * agent row to opt in with, so in a meeting it never uses them. An empty list
- * is passed on as "none" rather than "unset", which `collectMcpToolsActivity`
- * would read back from the saved chat preference.
+ * The agent a meeting turn runs, as configured now. A meeting answer draws
+ * on the meeting's project and Fabric's own tools alone: the agent's MCP
+ * servers, OAuth integrations and workspaces never reach a meeting, as they
+ * would show what other systems hold to people who may not have access to
+ * them. An empty list is passed on as "none" rather than "unset", which
+ * `collectMcpToolsActivity` would read back from the saved chat preference.
  */
 export async function loadParlumeAgent(session: ParlumeAgentSession) {
 	if (session.agentKind === "FABRIC_AGENT") {
@@ -162,21 +82,7 @@ export async function loadParlumeAgent(session: ParlumeAgentSession) {
 			status: "ACTIVE",
 		},
 		orderBy: { version: "desc" },
-		include: {
-			template: true,
-			mcpServerConfigurations: {
-				where: { isEnabled: true },
-				select: { mcpConfigId: true },
-			},
-			integrationConfigurations: {
-				where: { isEnabled: true },
-				select: {
-					integrationId: true,
-					integrationType: true,
-					allowedResources: true,
-				},
-			},
-		},
+		include: { template: true },
 	});
 	if (
 		!instance ||
@@ -195,14 +101,6 @@ export async function loadParlumeAgent(session: ParlumeAgentSession) {
 			"The selected agent implementation is unavailable for execution.",
 		);
 	}
-	const external = instance.meetingExternalTools;
-	const { allowed: workspaceIds } = external
-		? await filterWorkspaceIdsForTenant({
-				workspaceIds: instance.workspaceIds,
-				userId: session.userId,
-				organizationId: session.organizationId,
-			})
-		: { allowed: [] };
 	const config: DeploymentConfig = {
 		deploymentId: `parlume-${session.id}`,
 		template: { ...instance.template, knowledgeSources: [], tools: [] },
@@ -216,32 +114,17 @@ export async function loadParlumeAgent(session: ParlumeAgentSession) {
 			modelOverride: instance.modelOverride,
 			modelConfig: jsonObject.nullable().parse(instance.modelConfig),
 		},
-		integrationConfigurations: external
-			? instance.integrationConfigurations
-			: [],
-		mcpConfigIds: external
-			? instance.mcpServerConfigurations.map(
-					({ mcpConfigId }) => mcpConfigId,
-				)
-			: [],
+		integrationConfigurations: [],
+		mcpConfigIds: [],
 		toolConnections: z
 			.record(z.string(), jsonObject)
 			.parse(instance.toolConnections ?? {}),
-		workspaceIds,
+		workspaceIds: [],
 	};
 	return {
 		kind: "TEMPLATE_INSTANCE" as const,
-		revision: parlumeFingerprint({
-			config,
-			meetingExternalTools: external,
-			connections: await loadConnectionBindings(
-				session,
-				config.mcpConfigIds,
-				config.integrationConfigurations,
-			),
-		}),
+		revision: parlumeFingerprint({ config }),
 		config,
-		meetingExternalTools: external,
 	};
 }
 
@@ -251,12 +134,14 @@ type ParlumeAgent = Awaited<ReturnType<typeof loadParlumeAgent>>;
  * What the Fabric Agent looks up for a request before it runs: its MCP tools
  * and the agent's workspace documents. None of it depends on the meeting
  * context, so a turn starts it alongside that context's lookups. A meeting
- * turn recalls no memories: the inviter's are not the room's to hear.
+ * turn recalls no memories: the inviter's are not the room's to hear. The
+ * workspace documents are searched as the participant who asked.
  */
 export function gatherParlumeAgentContext(
 	agent: Extract<ParlumeAgent, { kind: "FABRIC_AGENT" }>,
 	session: ParlumeAgentSession,
 	message: string,
+	requesterUserId: string,
 ) {
 	const gathered = timeTurnStep("agent.gatherMs", () =>
 		Promise.all([
@@ -270,7 +155,7 @@ export function gatherParlumeAgentContext(
 			timeTurnStep("agent.workspaceMs", () =>
 				retrieveWorkspaceDocumentsActivity(
 					message,
-					session.userId,
+					requesterUserId,
 					session.organizationId,
 					agent.workspaceIds,
 					undefined,
@@ -287,6 +172,12 @@ export function gatherParlumeAgentContext(
 export async function executeParlumeAgent(input: {
 	agent: ParlumeAgent;
 	session: ParlumeAgentSession;
+	/**
+	 * The confirmed participant who asked. The agent's knowledge is searched
+	 * with their access; Fabric's own tools read with it through the acting
+	 * grant. The agent, its model and its spend stay the inviter's.
+	 */
+	requesterUserId: string;
 	turnId: string;
 	message: string;
 	voiceInstructions: string;
@@ -300,7 +191,12 @@ export async function executeParlumeAgent(input: {
 	const { agent, session } = input;
 	if (agent.kind === "FABRIC_AGENT") {
 		const [{ mcpToolInfo }, workspace] = await (input.gathered ??
-			gatherParlumeAgentContext(agent, session, input.message));
+			gatherParlumeAgentContext(
+				agent,
+				session,
+				input.message,
+				input.requesterUserId,
+			));
 		const result = await executeDirectChatActivity(
 			{
 				executionId: `parlume-${input.turnId}`,
@@ -313,12 +209,17 @@ export async function executeParlumeAgent(input: {
 				projectId: session.projectId,
 				enabledMcpConfigIds: agent.enabledMcpConfigIds,
 				// What the interactive Fabric Agent has: Fabric's own tools from
-				// Fabric MCP as the inviter, and the story capability on top of
+				// Fabric MCP as the participant who asked (the acting grant is
+				// theirs), and the story capability on top of
 				// the default tool set. Parlume's action gate decides what any
 				// of them may do in a meeting.
 				fabricPlatformTools: true,
 				fabricPortalTools: true,
 				actingGrant: input.actingGrant,
+				actingUserId: input.requesterUserId,
+				// Tells Fabric MCP the call is Parlume's, so its audit rows
+				// name Parlume acting for the inviter.
+				surface: "parlume",
 				additionalFabricToolIds:
 					BUILT_IN_TO_FABRIC_TOOLS["create-story"],
 				reasoningMode: agent.reasoningMode,
@@ -355,7 +256,7 @@ export async function executeParlumeAgent(input: {
 			executionId: `parlume-${input.turnId}`,
 			context,
 			query: input.message,
-			userId: session.userId,
+			userId: input.requesterUserId,
 			organizationId: session.organizationId,
 		}),
 	);
@@ -369,12 +270,9 @@ export async function executeParlumeAgent(input: {
 			.filter(Boolean)
 			.join("\n\n"),
 		// The built context falls back to MCP servers named in the agent's
-		// legacy tool connections, so an agent that has not opted in gets
-		// none here whatever the context found.
-		mcpConfigIds: agent.meetingExternalTools ? context.mcpConfigIds : [],
-		integrationConfigurations: agent.meetingExternalTools
-			? context.integrationConfigurations
-			: [],
+		// legacy tool connections, so none are passed whatever it found.
+		mcpConfigIds: [],
+		integrationConfigurations: [],
 		builtInToolNames: context.builtInToolNames.filter(
 			(name) => name !== AGENT_MEMORY_TOOL,
 		),

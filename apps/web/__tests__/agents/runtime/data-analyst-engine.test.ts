@@ -345,6 +345,48 @@ describe("Data Analyst run boundary", () => {
 			]);
 		},
 	);
+	it("ends a failed model call in the error state, not as an ordinary reply", async () => {
+		// The agent reports the failure as graph state, then streams its
+		// apology as text and finishes the run.
+		m.events = [
+			{ type: EventType.RUN_STARTED, threadId: "t", runId: "r" },
+			{
+				type: EventType.STATE_SNAPSHOT,
+				snapshot: {
+					error: "401 Incorrect API key provided: sk-test-****wxyz",
+					response:
+						"I ran into a problem completing that request. Please try again or rephrase.",
+				},
+			},
+			{
+				type: EventType.TEXT_MESSAGE_START,
+				messageId: "apology",
+				role: "assistant",
+			},
+			{
+				type: EventType.TEXT_MESSAGE_CONTENT,
+				messageId: "apology",
+				delta: "I ran into a problem completing that request.",
+			},
+			{ type: EventType.TEXT_MESSAGE_END, messageId: "apology" },
+			{ type: EventType.RUN_FINISHED, threadId: "t", runId: "r" },
+		];
+
+		const events = await start().done;
+
+		expect(events.at(-1)).toMatchObject({
+			type: EventType.RUN_ERROR,
+			code: "RUN_FAILED",
+			message:
+				"The AI provider rejected the request (authentication). Check the provider settings.",
+		});
+		expect(
+			events.some(
+				(event) => event.type === EventType.TEXT_MESSAGE_CONTENT,
+			),
+		).toBe(false);
+		expect(JSON.stringify(events)).not.toContain("sk-test");
+	});
 	it("finishes and releases a terminal run even if the upstream connection remains open", async () => {
 		m.hold = true;
 		const events = await start().done;

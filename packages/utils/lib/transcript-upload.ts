@@ -38,6 +38,7 @@ export const TRANSCRIPT_UPLOAD_FORMATS = {
 	txt: "text/plain",
 	vtt: "text/vtt",
 	docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	md: "text/markdown",
 } as const;
 
 export type TranscriptUploadFormat = keyof typeof TRANSCRIPT_UPLOAD_FORMATS;
@@ -46,10 +47,10 @@ const EXTENSIONS = Object.keys(TRANSCRIPT_UPLOAD_FORMATS).map(
 	(format) => `.${format}`,
 );
 
-/** ".txt, .vtt, .docx", for messages. */
+/** ".txt, .vtt, .docx, .md", for messages. */
 export const TRANSCRIPT_UPLOAD_FORMAT_LIST: string = EXTENSIONS.join(", ");
 
-/** ".txt,.vtt,.docx", for a file input's `accept`. */
+/** ".txt,.vtt,.docx,.md", for a file input's `accept`. */
 export const TRANSCRIPT_UPLOAD_ACCEPT_ATTR: string = EXTENSIONS.join(",");
 
 /**

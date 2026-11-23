@@ -91,7 +91,9 @@ describe("useResearchRuntimeStream — failures", () => {
 		expect(requests.map((request) => request.url)).toEqual([RUN_URL]);
 	});
 
-	it("a run the AI usage limit refuses shows the limit's toast once and returns to idle with no error and no connect", async () => {
+	it("a run the AI usage limit refuses shows the limit's toast once and ends in the paused state with no connect", async () => {
+		const paused =
+			"AI calls are paused — the usage limit for today is reached. Manage limits to raise it, or try again after it resets.";
 		const limit = {
 			limitId: "limit-example",
 			dimension: "TOKENS",
@@ -106,7 +108,7 @@ describe("useResearchRuntimeStream — failures", () => {
 				{
 					type: "RUN_ERROR",
 					code: "AI_USAGE_LIMIT_EXCEEDED",
-					message: "AI usage limit exceeded",
+					message: paused,
 					metadata: {
 						fabric: {
 							code: "AI_USAGE_LIMIT_EXCEEDED",
@@ -124,8 +126,8 @@ describe("useResearchRuntimeStream — failures", () => {
 		expect(toastMock).toHaveBeenCalledTimes(1);
 		expect(toastMock).toHaveBeenCalledWith(limit);
 		expect(result.current.state).toMatchObject({
-			status: "idle",
-			error: null,
+			status: "failed",
+			error: paused,
 		});
 		expect(requests.map((request) => request.url)).toEqual([RUN_URL]);
 	});

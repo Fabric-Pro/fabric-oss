@@ -29,14 +29,14 @@ export const SERVICE_CREDENTIAL_SCOPES: readonly string[] = [
 ];
 
 /**
- * The most a service session may hold beyond the base set, whatever its grant
- * names, and only when the grant also names the one project they are for. It
- * is every scope the portal tools need and nothing beyond: never `mcp:write`
- * (which is what requesting or revoking delegated authority and calling a
- * connected server's changes need), never `chats:read` (a meeting is not
- * given the inviter's chats) and never a wildcard. `mcp:read` is in the base
- * set and satisfies any read, so what holds a session to its tools is the named
- * list in `./project-binding`, not the scope.
+ * The most a service session whose grant names a project may hold, whatever
+ * the grant names. It is every scope the portal tools and the runtime's
+ * workflow and frame tools need and nothing beyond: never `mcp:write` (which
+ * is what requesting or revoking delegated authority and calling a connected
+ * server's changes need), never `chats:read` (a meeting is not given the
+ * inviter's chats) and never a wildcard. `mcp:read` is in the base set and
+ * satisfies any read, so what holds a session to its tools is the named list
+ * in `./project-binding`, not the scope.
  */
 export const SERVICE_GRANT_MAX_SCOPES: readonly string[] = [
 	"orgs:read",
@@ -48,26 +48,32 @@ export const SERVICE_GRANT_MAX_SCOPES: readonly string[] = [
 	"instructions:read",
 	"instructions:write",
 	"workspaces:read",
+	"workflows:write",
+	"workflows:run",
+	"frames:write",
 ];
 
 /**
- * The scopes a service session holds: the base set, plus the grant's scopes
- * that are within the ceiling, and the latter only for a grant that names a
- * project. A grant with scopes and no project, or with scopes outside the
- * ceiling, is held to what is within it, and a chat grant (neither) to the base
- * set exactly.
+ * The scopes a service session holds. A chat grant, which names no project,
+ * holds the base set exactly. A grant that names a project holds the base
+ * set's reads plus the grant's own scopes within the ceiling, so a grant that
+ * names only reads (a meeting's live turn) can change nothing, workflows and
+ * frames included. Scopes on a grant without a project add nothing.
  */
 export function serviceSessionScopes(grant: {
 	scopes?: readonly string[];
 	projectId?: string;
 }): string[] {
-	const extra =
-		grant.projectId && grant.scopes
-			? grant.scopes.filter((scope) =>
-					SERVICE_GRANT_MAX_SCOPES.includes(scope),
-				)
-			: [];
-	return [...new Set([...SERVICE_CREDENTIAL_SCOPES, ...extra])];
+	if (!grant.projectId) {
+		return [...SERVICE_CREDENTIAL_SCOPES];
+	}
+	const reads = SERVICE_CREDENTIAL_SCOPES.filter((scope) =>
+		scope.endsWith(":read"),
+	);
+	const granted = (grant.scopes ?? []).filter((scope) =>
+		SERVICE_GRANT_MAX_SCOPES.includes(scope),
+	);
+	return [...new Set([...reads, ...granted])];
 }
 
 /** What a scope refusal calls the caller, so the message names what it holds. */

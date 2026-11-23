@@ -25,6 +25,7 @@ export default defineConfig({
 			"lib/__tests__/**/*.test.ts",
 			"orpc/**/__tests__/**/*.test.ts",
 			"__tests__/**/*.test.ts",
+			"evals/**/__tests__/**/*.test.ts",
 		],
 		// Cold-cache TS transform of this package's dep graph (Prisma client,
 		// ai-sdk, @repo/temporal, etc.) is slow on the first import. Vitest 4's

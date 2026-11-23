@@ -541,3 +541,61 @@ describe.each([
 		expect(getSaveButton().disabled).toBe(true);
 	});
 });
+
+describe("Anthropic federation", () => {
+	it("offers organization federation from server status and tests and saves its mode", async () => {
+		mockGetStatus.mockResolvedValue({
+			isConfigured: false,
+			configuredProviders: [],
+			anthropicFederationAvailable: true,
+		});
+		renderForm(OrgAiProvidersSettingsForm);
+		await openConfigureDialog("Anthropic");
+		fireEvent.click(
+			await screen.findByRole("radio", {
+				name: "Workload identity federation",
+			}),
+		);
+		expect(screen.queryByLabelText("API Key")).toBeNull();
+		fireEvent.click(getTestButton());
+		await waitFor(() => expect(getSaveButton()).toBeEnabled());
+		fireEvent.click(getSaveButton());
+		for (const request of [mockTestConnection, mockUpsert]) {
+			await waitFor(() =>
+				expect(request).toHaveBeenCalledWith(
+					expect.objectContaining({
+						provider: "ANTHROPIC_DIRECT",
+						authMode: "federated",
+						organizationId: "org_example",
+					}),
+				),
+			);
+			expect(request.mock.lastCall?.[0].apiKey).toBeUndefined();
+		}
+	});
+
+	it("hides federation from an organization without server availability", async () => {
+		renderForm(OrgAiProvidersSettingsForm);
+		await openConfigureDialog("Anthropic");
+		expect(
+			screen.queryByRole("radio", {
+				name: "Workload identity federation",
+			}),
+		).toBeNull();
+	});
+
+	it("keeps personal key configuration separate from federation", async () => {
+		mockGetStatus.mockResolvedValue({
+			isConfigured: false,
+			configuredProviders: [],
+			anthropicFederationAvailable: true,
+		});
+		renderForm();
+		await openConfigureDialog("Anthropic");
+		expect(
+			screen.queryByRole("radio", {
+				name: "Workload identity federation",
+			}),
+		).toBeNull();
+	});
+});

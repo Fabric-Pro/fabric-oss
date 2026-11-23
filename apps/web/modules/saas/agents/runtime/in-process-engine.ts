@@ -10,6 +10,10 @@ import {
 	chatGptPlanExhaustedChatResponse,
 	chatGptPlanReconnectRefusal,
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
+import {
+	isProviderCallFailure,
+	providerFailureMessage,
+} from "@repo/ai/lib/provider-failure-message";
 import { aiUsageLimitToORPCError } from "@repo/api/lib/ai-usage-limit-errors";
 import { rpcRateLimitRefusal } from "@repo/api/orpc/middleware/rpc-rate-limit-middleware";
 import { RetryError } from "ai";
@@ -297,7 +301,16 @@ export abstract class InProcessEngine<Props, Turn> implements RuntimeEngine {
 			return;
 		}
 		console.error(`[Agent Runtime] ${this.agentId} turn failed`, error);
-		refuse(stream, "RUN_FAILED", "The reply failed. Please try again.");
+		// A provider's failure names its cause, in the words every chat
+		// engine uses; anything else stays generic.
+		const providerFailure = causesOf(error).find(isProviderCallFailure);
+		refuse(
+			stream,
+			"RUN_FAILED",
+			providerFailure === undefined
+				? "The reply failed. Please try again."
+				: providerFailureMessage(providerFailure),
+		);
 	}
 }
 

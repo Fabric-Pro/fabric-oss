@@ -126,9 +126,17 @@ vi.mock("@repo/database", async () => {
 	const routing = await vi.importActual<
 		typeof import("@repo/database/prisma/queries/projects/action-item-routing")
 	>("@repo/database/prisma/queries/projects/action-item-routing");
+	const focus = await vi.importActual<
+		typeof import("@repo/database/prisma/queries/projects/duplicate-focus")
+	>("@repo/database/prisma/queries/projects/duplicate-focus");
+	const pairs = await vi.importActual<
+		typeof import("@repo/database/prisma/queries/projects/proposal-item-duplicate-pairs")
+	>("@repo/database/prisma/queries/projects/proposal-item-duplicate-pairs");
 	return {
 		...detection,
 		...routing,
+		...focus,
+		...pairs,
 		hasProjectAccess: (...a: unknown[]) => mockHasProjectAccess(...a),
 		getProjectTenantId: (...a: unknown[]) => mockGetProjectTenantId(...a),
 		listActiveStoriesForDetection: (...a: unknown[]) =>
@@ -218,6 +226,7 @@ type CheckDuplicateResult = {
 		source: string;
 		similarity: number;
 	}>;
+	unverifiedProposalMatches: number;
 };
 
 const ctx = {
@@ -225,10 +234,19 @@ const ctx = {
 	session: { id: "session-1", activeOrganizationId: null },
 };
 
-function runCheck(description = "Rate limit the export endpoint") {
+function runCheck(
+	description = "Rate limit the export endpoint",
+	options: { verifyProposalMatches?: boolean; signal?: AbortSignal } = {},
+) {
 	return handlers.checkDuplicate({
-		input: { projectId: "proj-1", organizationId: null, description },
+		input: {
+			projectId: "proj-1",
+			organizationId: null,
+			description,
+			verifyProposalMatches: options.verifyProposalMatches,
+		},
 		context: ctx,
+		signal: options.signal,
 	}) as Promise<CheckDuplicateResult>;
 }
 
@@ -240,6 +258,13 @@ async function errorFrom(promise: Promise<unknown>) {
 	}
 	throw new Error("expected the handler to throw");
 }
+
+/** A resolved model, as `getAIModelWithMetadata` returns it. */
+const TEST_MODEL = {
+	model: { id: "test-model" },
+	metadata: { provider: "VERCEL_GATEWAY", modelString: "test-model" },
+	trackUsage: vi.fn(),
+};
 
 const TICKET = {
 	id: "story-1",
@@ -267,10 +292,7 @@ function arrange(
 		embeddings: texts.map(() => [1, 0, 0]),
 		model: "text-embedding-3-small",
 	}));
-	mockGetAIModelWithMetadata.mockResolvedValue({
-		model: { id: "test-model" },
-		trackUsage: vi.fn(),
-	});
+	mockGetAIModelWithMetadata.mockResolvedValue(TEST_MODEL);
 	mockGenerateObject.mockResolvedValue({ output: verdict });
 }
 
@@ -403,10 +425,7 @@ describe("checkDuplicateProcedure — decision outcomes", () => {
 			embeddings: texts.map((_t, i) => (i === 0 ? [1, 0] : [0, 1])),
 			model: "text-embedding-3-small",
 		}));
-		mockGetAIModelWithMetadata.mockResolvedValue({
-			model: { id: "test-model" },
-			trackUsage: vi.fn(),
-		});
+		mockGetAIModelWithMetadata.mockResolvedValue(TEST_MODEL);
 
 		const result = await runCheck();
 
@@ -681,6 +700,7 @@ describe("checkDuplicateProcedure — Proposal Inbox matches", () => {
 		proposalId: string,
 		changeIndex: number,
 		title: string,
+		focusTexts: Record<string, string> | null = null,
 	) => ({
 		proposalId,
 		changeIndex,
@@ -688,6 +708,32 @@ describe("checkDuplicateProcedure — Proposal Inbox matches", () => {
 		proposalSummary: `Summary of ${proposalId}`,
 		title,
 		description: "",
+		focusTexts,
+	});
+
+	const VERIFIER_PROMPT = "de-duplicating a software project's backlog";
+
+	/** The duplicate verifier answers `relationship` for every inbox
+	 * candidate; any other model call (the ticket judge) answers `judge`. */
+	function verifierSays(relationship: string, judge?: unknown) {
+		mockGetAIModelWithMetadata.mockResolvedValue(TEST_MODEL);
+		mockGenerateObject.mockImplementation(
+			async ({ prompt }: { prompt?: string }) => ({
+				output: prompt?.includes(VERIFIER_PROMPT)
+					? { relationship, confidence: 0.95 }
+					: judge,
+			}),
+		);
+	}
+
+	/** The model calls made to the duplicate verifier. */
+	const verifierCalls = () =>
+		mockGenerateObject.mock.calls.filter(([call]) =>
+			call?.prompt?.includes(VERIFIER_PROMPT),
+		);
+
+	beforeEach(() => {
+		verifierSays("same_work_item");
 	});
 
 	/** The description and "Queue exports" embed identically, "Throttle
@@ -734,7 +780,11 @@ describe("checkDuplicateProcedure — Proposal Inbox matches", () => {
 			}),
 		]);
 		expect(mockListInboxItems).toHaveBeenCalledWith(
-			expect.objectContaining({ projectId: "proj-1", maxItems: 150 }),
+			expect.objectContaining({
+				projectId: "proj-1",
+				maxItems: 150,
+				signal: expect.any(AbortSignal),
+			}),
 		);
 	});
 
@@ -754,12 +804,125 @@ describe("checkDuplicateProcedure — Proposal Inbox matches", () => {
 		expect(texts[1]).toContain("Queue exports");
 	});
 
+	it("weighs a description with a Scope section against inbox features on their Scope, as the roadmap scan does", async () => {
+		const queueScope = "In scope:\n- Queue large exports";
+		const otherScope = "In scope:\n- Dark mode toggle";
+		mockListActiveStories.mockResolvedValue([]);
+		mockListInboxItems.mockResolvedValue([
+			inboxItem("p-alike", 0, "Throttle exports", { scope: otherScope }),
+			inboxItem("p-scope", 1, "Dark mode", { scope: queueScope }),
+		]);
+		// The description reads like "Throttle exports" (0.8) and apart from
+		// "Dark mode" (0); its Scope matches only "Dark mode"'s.
+		mockGenerateEmbeddings.mockImplementation(async (texts: string[]) => ({
+			embeddings: texts.map((text) =>
+				text.startsWith("Rate limit") || text === queueScope
+					? [1, 0]
+					: text.startsWith("Throttle exports")
+						? [0.8, 0.6]
+						: [0, 1],
+			),
+			model: "text-embedding-3-small",
+		}));
+
+		const result = await runCheck(
+			"Rate limit the export endpoint\n\n## Scope\n### In Scope\n- Queue large exports",
+		);
+
+		expect(mockGenerateEmbeddings).toHaveBeenCalledTimes(1);
+		const [texts] = mockGenerateEmbeddings.mock.calls[0] as [string[]];
+		expect(texts.slice(1)).toEqual([
+			"Throttle exports",
+			"Dark mode",
+			queueScope,
+			otherScope,
+			queueScope,
+		]);
+		// 0.75 × 1 + 0.25 × 0 = 0.75, on the threshold's scale.
+		expect(result.proposalMatches).toEqual([
+			expect.objectContaining({
+				proposalId: "p-scope",
+				changeIndex: 1,
+				similarity: expect.closeTo(
+					0.7 + ((0.75 - 0.62) * 0.3) / 0.38,
+					10,
+				),
+			}),
+		]);
+	});
+
+	it("lists only the inbox candidates the duplicate verifier confirms", async () => {
+		mockListActiveStories.mockResolvedValue([]);
+		mockListInboxItems.mockResolvedValue([
+			inboxItem("p-new", 0, "Queue exports"),
+		]);
+		arrangeInboxEmbeddings();
+		verifierSays("distinct");
+
+		const result = await runCheck();
+
+		expect(result.proposalMatches).toEqual([]);
+		expect(verifierCalls()).toHaveLength(1);
+		const prompt = verifierCalls()[0]?.[0]?.prompt;
+		expect(prompt).toContain("Rate limit the export endpoint");
+		expect(prompt).toContain("Queue exports");
+	});
+
+	it("lists no inbox candidate whose verification fails", async () => {
+		mockListActiveStories.mockResolvedValue([]);
+		mockListInboxItems.mockResolvedValue([
+			inboxItem("p-new", 0, "Queue exports"),
+		]);
+		arrangeInboxEmbeddings();
+		mockGenerateObject.mockRejectedValue(new Error("provider outage"));
+
+		const result = await runCheck();
+
+		expect(result.proposalMatches).toEqual([]);
+		expect(result.error).toBeUndefined();
+	});
+
+	it("bills no inbox verification on a typing prefetch, and counts what is left for the final check", async () => {
+		mockListActiveStories.mockResolvedValue([]);
+		mockListInboxItems.mockResolvedValue([
+			inboxItem("p-new", 0, "Queue exports"),
+		]);
+		arrangeInboxEmbeddings();
+
+		const result = await runCheck(undefined, {
+			verifyProposalMatches: false,
+		});
+
+		expect(result.proposalMatches).toEqual([]);
+		expect(result.unverifiedProposalMatches).toBe(1);
+		expect(verifierCalls()).toHaveLength(0);
+	});
+
+	it("stops the inbox verifier when the caller abandons the request", async () => {
+		mockListActiveStories.mockResolvedValue([]);
+		mockListInboxItems.mockResolvedValue([
+			inboxItem("p-new", 0, "Queue exports"),
+		]);
+		arrangeInboxEmbeddings();
+		const request = new AbortController();
+
+		const result = await runCheck(undefined, { signal: request.signal });
+
+		expect(result.unverifiedProposalMatches).toBe(0);
+		const signal = verifierCalls()[0]?.[0]?.abortSignal;
+		expect(signal?.aborted).toBe(false);
+		request.abort();
+		expect(signal?.aborted).toBe(true);
+	});
+
 	it("embeds the description once, in the ticket corpus request, beside the inbox items", async () => {
-		arrange({
+		const judge = {
 			decision: "enrich",
 			targetIdentifier: "F-12",
 			confidence: 0.92,
-		});
+		} as const;
+		arrange(judge);
+		verifierSays("same_work_item", judge);
 		mockListInboxItems.mockResolvedValue([
 			inboxItem("p-1", 0, "Queue exports"),
 		]);

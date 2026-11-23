@@ -17,6 +17,7 @@
  * detection was merely skipped.
  */
 
+import { runWithDefaultAiJobType } from "@repo/ai/lib/job-context";
 import { logger } from "@repo/logs";
 import {
 	rethrowIfDispatchStopped,
@@ -57,18 +58,26 @@ export async function triggerDuplicateDetection(
 		const workflowId = `dup-detect-${projectId}-${Date.now()}`;
 		// Immediately before the start (see the header).
 		throwIfDispatchStopped();
-		const handle = await client.workflow.start("detectDuplicatesWorkflow", {
-			taskQueue: TASK_QUEUE,
-			workflowId,
-			args: [
-				{
-					projectId,
-					userId,
-					organizationId: organizationId ?? null,
-					targetStoryIds: uniqueTargetIds,
-				},
-			],
-		});
+		// Background work no one waits on (Fizzy #3538). The client interceptor
+		// stamps the ambient job type on the start, so the verifier's model
+		// calls can run on the organization's shared ChatGPT plans. An ambient
+		// job type (the recurring-error scan) wins; this is only the default.
+		const handle = await runWithDefaultAiJobType(
+			"duplicate-detection",
+			() =>
+				client.workflow.start("detectDuplicatesWorkflow", {
+					taskQueue: TASK_QUEUE,
+					workflowId,
+					args: [
+						{
+							projectId,
+							userId,
+							organizationId: organizationId ?? null,
+							targetStoryIds: uniqueTargetIds,
+						},
+					],
+				}),
+		);
 
 		logger.info("[Auto Dup Detect] enqueued background detection", {
 			projectId,

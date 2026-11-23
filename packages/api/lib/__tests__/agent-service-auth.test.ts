@@ -16,6 +16,7 @@ import {
 	checkActingGrant,
 	mintActingGrant,
 	mintActingGrantForTurn,
+	mintParlumeActingGrantForConfirmedAction,
 	mintParlumeActingGrantForTurn,
 	PARLUME_GRANT_SCOPES,
 	PARLUME_READ_ONLY_GRANT_SCOPES,
@@ -365,17 +366,21 @@ describe("a grant limited to a project", () => {
 });
 
 describe("mintParlumeActingGrantForTurn", () => {
-	it("mints the meeting's portal scopes for the meeting's project", () => {
-		const grant = mintParlumeActingGrantForTurn({
-			...subject,
+	it("mints a confirmed change's portal scopes, writes included, for the confirming member on the meeting's project", () => {
+		const member = { userId: "member-1", organizationId: ORGANIZATION };
+		const grant = mintParlumeActingGrantForConfirmedAction({
+			...member,
 			projectId: "project-meeting",
-			readOnly: false,
 		});
 
-		expect(checkActingGrant(grant, subject)).toEqual({
+		expect(checkActingGrant(grant, member)).toEqual({
 			ok: true,
 			scopes: [...PARLUME_GRANT_SCOPES],
 			projectId: "project-meeting",
+		});
+		expect(checkActingGrant(grant, subject)).toEqual({
+			ok: false,
+			reason: "mismatch",
 		});
 		expect(PARLUME_GRANT_SCOPES).toEqual(
 			expect.arrayContaining([
@@ -391,11 +396,10 @@ describe("mintParlumeActingGrantForTurn", () => {
 		expect(PARLUME_GRANT_SCOPES).not.toContain("chats:read");
 	});
 
-	it("mints a read-only meeting's grant without the portal writes", () => {
+	it("mints a live turn's grant with read scopes only, whatever the meeting's mode", () => {
 		const grant = mintParlumeActingGrantForTurn({
 			...subject,
 			projectId: "project-meeting",
-			readOnly: true,
 		});
 
 		const checked = checkActingGrant(grant, subject);
@@ -407,8 +411,8 @@ describe("mintParlumeActingGrantForTurn", () => {
 		expect(PARLUME_READ_ONLY_GRANT_SCOPES).toEqual(
 			expect.arrayContaining(["projects:read", "features:read"]),
 		);
-		for (const scope of PARLUME_READ_ONLY_GRANT_SCOPES) {
-			expect(scope).not.toMatch(/:write$/);
+		for (const scope of checked.ok ? (checked.scopes ?? []) : []) {
+			expect(scope).toMatch(/:read$/);
 		}
 	});
 
@@ -430,7 +434,6 @@ describe("mintParlumeActingGrantForTurn", () => {
 			mintParlumeActingGrantForTurn({
 				...subject,
 				projectId: "p",
-				readOnly: false,
 			}),
 		).toBeUndefined();
 		expect(log).toHaveBeenCalled();

@@ -31,6 +31,7 @@ import {
 } from "@ag-ui/client";
 import {
 	type ConversationTurn,
+	getConversationProject,
 	getConversationTurnByClientKey,
 	isFeatureEnabled,
 	requestConversationTurnCancel,
@@ -187,12 +188,17 @@ export class ResearchEngine implements RuntimeEngine {
 
 		// The stream route's checks run before anything is written: a
 		// refused run leaves no conversation and no turn behind.
+		// The run is counted under the selected project, else the thread's,
+		// as a Direct turn is; admission keeps it only when usable.
 		const { executionMode, ...workflowProps } = props.data;
 		const admitted = await admitWorkflowTemplateRun(this.caller.userId, {
 			templateSlug: RESEARCH_AGENT_ID,
 			query: question,
 			organizationId: this.caller.organizationId,
 			...workflowProps,
+			projectId:
+				workflowProps.projectId ??
+				(await getConversationProject(threadId))?.project.id,
 		});
 		if (admitted instanceof Response) {
 			await refuseWithResponse(stream, admitted);

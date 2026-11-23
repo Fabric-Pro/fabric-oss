@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/server";
 import { getLatestProjectTemplateRun } from "@repo/database";
 import { z } from "zod";
 import {
@@ -6,6 +7,7 @@ import {
 	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { canReachProjectReports } from "../../lib/report-access";
 
 const previewTemplateInputSchema = z.object({
 	templateId: z.string().min(1),
@@ -24,11 +26,18 @@ export const previewTemplateProcedure = tenantProtectedProcedure
 	.handler(async ({ input, context }) => {
 		// A project's reports are shared with everyone who may read them, so the
 		// organization is the authorized project's own, never the caller's input.
+		// Reach is `canReachProjectReports`'s, which admits an organization admin
+		// to every project's reports and nobody else who cannot open the project.
 		const project = await assertProjectPermission(
 			input.projectId,
 			context.user.id,
 			Permissions.REPORT_READ,
+			undefined,
+			{ admitUnreachableOrganizationMember: true },
 		);
+		if (!(await canReachProjectReports(input.projectId, context.user))) {
+			throw new ORPCError("NOT_FOUND", { message: "Project not found" });
+		}
 
 		// The query returns only a run the caller may open as a report.
 		const run = await getLatestProjectTemplateRun({

@@ -311,6 +311,16 @@ describe("a run that fails after the response already succeeded", () => {
 		expect(toast.error).not.toHaveBeenCalled();
 	});
 
+	it("does not toast a declined run, which its surface reports", async () => {
+		await fireAt("/api/copilotkit", () =>
+			runErrorStream(
+				'data: {"type":"RUN_ERROR","message":"The AI declined to refine this request.","code":"RUN_DECLINED"}\n',
+			),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(toast.error).not.toHaveBeenCalled();
+	});
+
 	it("toasts an incomplete stream with an abort message", async () => {
 		await fireAt("/api/copilotkit", () =>
 			runErrorStream(

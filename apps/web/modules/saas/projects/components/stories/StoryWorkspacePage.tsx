@@ -749,6 +749,7 @@ export function StoryWorkspacePage({
 					storyId={storyId}
 					story={story}
 					projectName={project.name}
+					canEdit={canEdit}
 					canExecuteAgents={canExecuteAgents}
 					readOnlyMode={readOnlyMode}
 					hasActiveCodingRun={storyHasActiveRun}

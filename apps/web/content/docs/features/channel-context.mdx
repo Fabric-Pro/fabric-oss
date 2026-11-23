@@ -45,13 +45,48 @@ Link a channel (or a Teams group chat) to a project, and Fabric analyzes new mes
   <Step>
     ### Review proposals
 
-    Fabric drafts **backlog change proposals** from the conversation. Review and **approve** the ones you want — only then do they become features in your backlog. Each proposal names the channel or chat it came from, links back to it, and lets you read the original conversation before you decide. The features and bugs you approve keep that link in their details.
+    Fabric drafts **backlog change proposals** from the conversation and queues them in the [Proposal Inbox](#review-proposals-in-the-proposal-inbox). Review and **approve** the ones you want — only then do they become features in your backlog. Each proposal names the channel or chat it came from, links back to it, and lets you read the original conversation before you decide. The features and bugs you approve keep that link in their details.
   </Step>
 </Steps>
 
 <Callout type="warning">
 Monitoring proposes; it never writes silently. Every suggestion goes through your review before it touches the backlog. Unlink a channel at any time to stop monitoring it.
 </Callout>
+
+## Review proposals in the Proposal Inbox
+
+When proposals are waiting, the roadmap shows a **Review N proposals** button. It opens the **Proposal Inbox**, which lists every pending proposal and, separately, the ones whose apply failed.
+
+### Find a proposal
+
+Type in **Search proposals and items** to narrow the lists. Search looks at each proposal's summary and at the titles and ticket IDs of its items, ignoring case. It also works in **Rejected proposals**, and it stays in place while you open proposals and go back, until you close the inbox.
+
+### Decide one item at a time
+
+A proposal can hold several items. You decide each one on its own, from its row or from its full-detail view:
+
+- **Approve** applies that item now. The other items stay in review.
+- **Move to Rejected** takes the item out of the proposal. It is listed under **Rejected proposals**, where **Restore & Apply** brings it back if you change your mind.
+
+Decided items stay in the proposal, marked with their outcome. The proposal leaves the inbox when no item is left to decide.
+
+### Review an update: Fast or Thorough
+
+An item that changes an existing ticket offers two ways to review it:
+
+- **Fast — Apply all changes** applies every proposed change to the ticket at once.
+- **Thorough — Review line by line** opens the ticket with the proposed changes to its description and acceptance criteria marked in the editor, the same review the AI assistant's edits get. Accept or reject each change, then choose **Apply accepted changes**: only what you accepted is written, a change you have not decided is left out, and the button stays off until you accept something. The ticket's Decision Log records what was applied. **Reject all** moves the item to Rejected and records your review in the Decision Log. **Cancel review** puts the ticket back and applies nothing; the item stays in the inbox.
+
+The review shows the changes as they apply to the ticket as it is now, so it is available even when the ticket changed after the proposal was made. Title, priority and size changes apply as you left them in the inbox. While the review is open, the ticket's text can't be edited or saved, and an unfinished review is dropped after 30 minutes or once the item is decided elsewhere.
+
+### Possible duplicates
+
+When a new item looks like a ticket already on your roadmap, or like another item waiting in the inbox, it shows a **Possible duplicate** note with how similar the two are. The inbox uses the same similarity bar as the roadmap's duplicate detection, and compares two features mainly on their Scope sections. From the note you can:
+
+- open the matching ticket, or choose **Use as Enrich target** to add this item's content to that ticket instead of creating a new one;
+- open the proposal that holds a matching inbox item, choose **Merge into this proposal** to add that item's content to this one and move it to Rejected, where it shows the item it was merged into, or move that item to Rejected.
+
+The note is advisory: you still approve, reject or merge the item yourself. In a large inbox the check runs in steps, so notes can appear a little while after you open a proposal.
 
 ## Teams meeting transcripts
 

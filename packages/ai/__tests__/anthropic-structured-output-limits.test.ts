@@ -278,3 +278,48 @@ describe("getModel provider wiring", () => {
 		}
 	});
 });
+
+it.each([false, true])(
+	"uses the correct Anthropic authorization header (bearer=%s)",
+	async (bearer) => {
+		const requests: Headers[] = [];
+		fetchMock.mockImplementation(
+			async (input: string | Request, init?: RequestInit) => {
+				requests.push(new Request(input, init).headers);
+				return new Response(null, { status: 401 });
+			},
+		);
+		const { getModel } = await import("../model-factory");
+		const model = getModel("anthropic/claude-sonnet-4-5", {
+			provider: "ANTHROPIC_DIRECT",
+			apiKey: "example-api-key",
+			...(bearer && {
+				anthropicBearerSource: async () => ({
+					kind: "bearer" as const,
+					token: "example-access-token",
+					expiresAt: Date.now() + 60_000,
+				}),
+			}),
+		}) as Parameters<
+			NonNullable<LanguageModelMiddleware["transformParams"]>
+		>[0]["model"];
+		await expect(
+			model.doGenerate({
+				...paramsFor(schemaWith(1)),
+				prompt: [
+					{
+						role: "user",
+						content: [{ type: "text", text: "Hello" }],
+					},
+				],
+			} as never),
+		).rejects.toThrow();
+		expect(requests).toHaveLength(1);
+		expect(requests[0].get("x-api-key")).toBe(
+			bearer ? null : "example-api-key",
+		);
+		expect(requests[0].get("authorization")).toBe(
+			bearer ? "Bearer example-access-token" : null,
+		);
+	},
+);

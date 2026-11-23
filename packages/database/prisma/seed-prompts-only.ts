@@ -30,6 +30,10 @@ import {
 	PAGE_ASK_PROMPT_AGENT_KEY,
 } from "@repo/utils/page-ask-prompt";
 import {
+	PARLUME_NOTES_FALLBACK_BODY,
+	PARLUME_NOTES_PROMPT_AGENT_KEY,
+} from "@repo/utils/parlume-notes-prompt";
+import {
 	PARLUME_REALTIME_VOICE_FALLBACK_BODY,
 	PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY,
 } from "@repo/utils/parlume-realtime-voice-prompt";
@@ -502,6 +506,17 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: PARLUME_RECAP_PROMPT_AGENT_KEY,
+	},
+	// parlume_meeting_notes: the notes Parlume writes from a finished
+	// meeting's transcript, each citing the line that supports it. Dedicated
+	// agent key, GENERAL + null: one prompt per tenant covers every meeting.
+	// The transcript lines and Fabric's records are fenced as untrusted data
+	// code-side, and the output fields and the anchor check are the
+	// activity's.
+	[PARLUME_NOTES_PROMPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PARLUME_NOTES_PROMPT_AGENT_KEY,
 	},
 	// living_memory_decision_extractor: reads the decisions a synced Living
 	// Memory file records, which the Decisions tab offers as review
@@ -7283,6 +7298,34 @@ Rules:
 		format: "HANDLEBARS" as const,
 		isPublic: true,
 		content: PARLUME_RECAP_FALLBACK_BODY,
+	},
+	{
+		// parlume_meeting_notes: the notes of a finished meeting. A model
+		// reads the meeting's numbered transcript lines, or for a long
+		// meeting the checkpoint notes of its parts, and writes the
+		// discussion, decisions, action items and open questions, each citing
+		// one line with an exact quote.
+		//
+		// The body lives in @repo/utils (PARLUME_NOTES_FALLBACK_BODY) so this
+		// seed and the activity that resolves the binding share ONE
+		// definition. No variables. Structured JSON output: the fields are the
+		// activity's schema, and it keeps a note only when its quote is in the
+		// line it cites.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: PARLUME_NOTES_PROMPT_AGENT_KEY,
+		name: "Parlume Meeting Notes",
+		description:
+			"The notes Parlume writes after a meeting from its transcript: discussion, decisions, action items and open questions, each linked to the transcript line that supports it.",
+		category: "meetings",
+		tags: ["meetings", "parlume", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: PARLUME_NOTES_FALLBACK_BODY,
 	},
 	{
 		// living_memory_decision_extractor: when a synced Living Memory file's

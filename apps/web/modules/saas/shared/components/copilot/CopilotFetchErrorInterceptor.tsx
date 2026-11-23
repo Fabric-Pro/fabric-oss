@@ -18,6 +18,7 @@ import {
 import { useRouter } from "next/navigation";
 import { useEffect, useRef } from "react";
 import {
+	DECLINED_RUN_ERROR_CODE,
 	findAgUiRunError,
 	isIntentionalAbortRunError,
 } from "./ag-ui-run-error";
@@ -181,7 +182,10 @@ function watchStreamForSilentFailure(
 				return;
 			}
 			clearStallNotice();
-			if (isIntentionalAbortRunError(runError)) {
+			if (
+				isIntentionalAbortRunError(runError) ||
+				runError.code === DECLINED_RUN_ERROR_CODE
+			) {
 				return;
 			}
 			// The agent runtime ends a run with the refusal its chat route

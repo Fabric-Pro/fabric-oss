@@ -1,9 +1,12 @@
 /**
  * Possible-duplicate flags for the whole Proposal Inbox of a project: read
- * access to the project is required, and every failure or the request
- * deadline degrades to an error result with no flags instead of throwing.
+ * access to the project is required, the result says how many items are
+ * still to be checked, only a call that embeds counts against the AI rate
+ * limit, and every other failure, the request deadline included, degrades
+ * to an error result with no flags instead of throwing.
  */
 
+import { ORPCError } from "@orpc/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { handlers, uses, mocks } = vi.hoisted(() => ({
@@ -76,11 +79,32 @@ const FLAG = {
 	],
 };
 
+/** A finished check: every item compared and every candidate verified. */
+const CHECKED = {
+	flags: [FLAG],
+	stillChecking: 0,
+	verifying: 0,
+	checking: [],
+};
+
+const PATH = ["projects", "backlog", "proposals", "duplicateFlags"];
+
 const call = () =>
 	handlers.flags({
 		input: { projectId: "project-1", organizationId: null },
 		context: { user: { id: "user-1" } },
+		path: PATH,
 	});
+
+/** A check that embeds: it asks `beforeEmbed` first. */
+function embeddingCheck() {
+	mocks.detect.mockImplementation(
+		async ({ beforeEmbed }: { beforeEmbed: () => Promise<void> }) => {
+			await beforeEmbed();
+			return CHECKED;
+		},
+	);
+}
 
 async function errorFrom(promise: unknown) {
 	try {
@@ -95,16 +119,15 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.getTenant.mockResolvedValue({ organizationId: "org-1" });
 	mocks.hasAccess.mockResolvedValue(true);
-	mocks.detect.mockResolvedValue([FLAG]);
+	mocks.detect.mockResolvedValue(CHECKED);
 	delete process.env.DUPLICATE_CHECK_TIMEOUT_MS;
 });
 
 describe("proposalDuplicateFlagsProcedure — access", () => {
-	it("needs read permission and is rate-limited like the other AI checks", () => {
+	it("needs read permission", () => {
 		expect(uses).toContainEqual({
 			requireProjectPermission: "project:read",
 		});
-		expect(uses.some((use) => typeof use === "function")).toBe(true);
 	});
 
 	it("refuses a caller without access to the project", async () => {
@@ -122,9 +145,36 @@ describe("proposalDuplicateFlagsProcedure — access", () => {
 	});
 });
 
+describe("proposalDuplicateFlagsProcedure — AI rate limit", () => {
+	it("counts a call that embeds, like the other AI checks", async () => {
+		embeddingCheck();
+		mocks.rateLimit.mockResolvedValue(undefined);
+
+		await expect(call()).resolves.toEqual(CHECKED);
+		expect(mocks.rateLimit).toHaveBeenCalledWith("user-1", PATH, {
+			limit: 20,
+		});
+	});
+
+	it("does not count a call answered from the cache", async () => {
+		await call();
+
+		expect(mocks.rateLimit).not.toHaveBeenCalled();
+	});
+
+	it("throws the refusal when the limit is reached", async () => {
+		embeddingCheck();
+		mocks.rateLimit.mockRejectedValue(
+			new ORPCError("TOO_MANY_REQUESTS", { message: "Slow down" }),
+		);
+
+		expect((await errorFrom(call())).code).toBe("TOO_MANY_REQUESTS");
+	});
+});
+
 describe("proposalDuplicateFlagsProcedure — results", () => {
-	it("returns the whole inbox's flags in one call, with the tenant taken from the project", async () => {
-		await expect(call()).resolves.toEqual({ flags: [FLAG] });
+	it("returns the flags found, with the tenant taken from the project", async () => {
+		await expect(call()).resolves.toEqual(CHECKED);
 		expect(mocks.detect).toHaveBeenCalledTimes(1);
 		expect(mocks.detect).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -133,11 +183,33 @@ describe("proposalDuplicateFlagsProcedure — results", () => {
 				organizationId: "org-1",
 				maxStaleEmbeds: 200,
 				abortSignal: expect.any(AbortSignal),
-				judgeSignal: expect.any(AbortSignal),
 			}),
 		);
-		const [args] = mocks.detect.mock.calls[0] ?? [];
-		expect(args?.judgeSignal).not.toBe(args?.abortSignal);
+	});
+
+	it("says which items are still to be compared or verified", async () => {
+		const pending = {
+			flags: [FLAG],
+			stillChecking: 40,
+			verifying: 1,
+			checking: [{ proposalId: "prop-2", changeIndex: 1 }],
+		};
+		mocks.detect.mockResolvedValue(pending);
+
+		await expect(call()).resolves.toEqual(pending);
+	});
+
+	it("waits for nothing when the check fails", async () => {
+		mocks.detect.mockRejectedValue(new Error("embedding outage"));
+
+		await expect(call()).resolves.toEqual(
+			expect.objectContaining({
+				flags: [],
+				stillChecking: 0,
+				verifying: 0,
+				checking: [],
+			}),
+		);
 	});
 
 	it("returns an error result, never throwing, when the check fails", async () => {

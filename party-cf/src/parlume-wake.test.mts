@@ -2,9 +2,30 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	findParlumeWake,
+	findParlumeWakeNearMiss,
 	parseParlumeSpokenReference,
 	parseParlumeWake,
 } from "./parlume-wake.ts";
+
+test("a segment that looks addressed to Parlume but did not wake it is a near miss", () => {
+	const nearMiss = findParlumeWakeNearMiss;
+	assert.equal(nearMiss("Hey, Fab what is the status?"), "clipped_name");
+	assert.equal(nearMiss("hi parl, are you there"), "clipped_name");
+	assert.equal(nearMiss("go P3"), "post_command");
+	assert.equal(nearMiss("read P three."), "post_command");
+	assert.equal(nearMiss("Maybe Parlume knows the answer."), "name");
+	for (const text of [
+		"Hey Fabric, what is the status?",
+		"Parlume, go P3",
+		"Fabric is slow today.",
+		"Hey Paul, can you share your screen?",
+		"Hey everyone.",
+		"Go to the release plan.",
+		"The Parliament vote moved.",
+	]) {
+		assert.equal(nearMiss(text), null, text);
+	}
+});
 
 test("a spoken request can name a chat post however speech recognition writes the tag", () => {
 	const parse = parseParlumeSpokenReference;
@@ -17,8 +38,18 @@ test("a spoken request can name a chat post however speech recognition writes th
 		kind: "more",
 		tag: "P4",
 	});
+	assert.deepEqual(parse("say P twenty"), { kind: "say", tag: "P20" });
+	// Verbatim from a staging transcript on 2026-11-20: tags pass twenty once
+	// a meeting has had a few sessions.
+	assert.deepEqual(parse("go p thirty"), { kind: "go", tag: "P30" });
+	assert.deepEqual(parse("go P thirty one."), { kind: "go", tag: "P31" });
+	assert.deepEqual(parse("read P ninety-nine"), { kind: "say", tag: "P99" });
+	assert.deepEqual(parse("go pee twenty one"), { kind: "go", tag: "P21" });
 	assert.equal(parse("go to the release plan"), null);
 	assert.equal(parse("say P zero"), null);
+	assert.equal(parse("go P thirty ten"), null);
+	assert.equal(parse("go P one two"), null);
+	assert.equal(parse("go P three please"), null);
 	assert.equal(parse("what does P3 mean for the release?"), null);
 });
 

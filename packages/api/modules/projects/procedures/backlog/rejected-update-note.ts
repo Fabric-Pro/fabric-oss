@@ -12,7 +12,12 @@ import { proposalUpdateRejectedNoteLines } from "@repo/utils/proposal-update-sum
  * review in the Proposal Inbox) and the item moved to Rejected, note on the
  * target ticket that it was reviewed and nothing was applied.
  *
- * Only for an update whose target is a ticket of the proposal's own project.
+ * The target is `reviewedTicketId`, the ticket the review ran on, when the
+ * request names one: an item the reviewer re-routed in the inbox is still
+ * stored with its first target (or as a create), so only that ticket shows
+ * what was reviewed. Without it, the target is the stored update's ticket.
+ *
+ * Only for a target that is a ticket of the proposal's own project.
  * Best-effort: the item has already moved, so a failed note is logged, not
  * thrown. Idempotent: a repeated request finds the earlier note.
  */
@@ -21,18 +26,22 @@ export async function noteRejectedProposalUpdate(params: {
 	changeIndex: number;
 	tenantFilter: MaturationTenantFilter;
 	reviewerName: string | null;
+	reviewedTicketId?: string;
 }): Promise<void> {
 	const item = readStoredProposalChange(
 		params.proposal.proposal,
 		params.changeIndex,
 	);
-	if (item?.action !== "update" || !item.existingId) {
+	const targetId =
+		params.reviewedTicketId ??
+		(item?.action === "update" ? item.existingId : undefined);
+	if (!item || !targetId) {
 		return;
 	}
 	try {
 		const story = await db.userStory.findFirst({
 			where: {
-				id: item.existingId,
+				id: targetId,
 				projectId: params.proposal.projectId,
 			},
 			select: { id: true },

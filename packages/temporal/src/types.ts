@@ -4,6 +4,7 @@
 
 import type { AiFeatureKey } from "@repo/ai";
 import type { LimitSignal } from "@repo/ai/limits";
+import type { ActingSurface } from "./lib/fabric-mcp-service-headers";
 
 /**
  * Workflow status enum matching Prisma schema
@@ -467,12 +468,19 @@ export interface DirectChatWorkflowInput {
 	 */
 	actingGrant?: string;
 	/**
+	 * Whom the acting grant was minted for, when that is not `userId`: a
+	 * Parlume turn reads with the access of the participant who asked, while
+	 * the agent, its model and its spend stay the inviter's.
+	 */
+	actingUserId?: string;
+	/**
 	 * Where the chat was opened: the workspace the page belongs to and whether
 	 * the page is itself an artifact or workspace surface. Tools read it as
 	 * the default placement for what they create; it never widens access.
+	 * `parlume` marks a meeting turn, which places nothing.
 	 */
 	workspaceId?: string;
-	surface?: "artifact" | "workspace";
+	surface?: ActingSurface;
 	/**
 	 * A call the person approved in the chat card, with exactly the arguments
 	 * the card showed. The turn runs it first and tells the model the result,

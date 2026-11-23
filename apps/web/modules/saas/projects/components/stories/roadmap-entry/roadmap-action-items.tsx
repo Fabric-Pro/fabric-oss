@@ -34,6 +34,8 @@ export interface RoadmapActionItem {
 	warning?: string | null;
 	/** The fix for a disabled item, rendered as its own menu item. */
 	remedy?: ({ label: string } & GateLink) | null;
+	/** How many entries the item leads to, beside its label when above 0. */
+	count?: number;
 }
 
 interface RoadmapActionItemsArgs {

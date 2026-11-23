@@ -1,9 +1,18 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
+const resolveEffectiveProjectPermissions = vi.hoisted(() => vi.fn());
+
 vi.mock("@repo/database", () => ({
 	db: {},
 	fetchContextQualityExecutionCredentials: vi.fn(),
+	Permissions: {
+		PROJECT_UPDATE: "project:update",
+		CONTEXT_READ: "context:read",
+	},
+}));
+vi.mock("@repo/rag/lib/context-quality/project-access", () => ({
+	resolveEffectiveProjectPermissions,
 }));
 vi.mock("@repo/database/prisma/queries/projects/context-quality-runs", () => ({
 	CONTEXT_QUALITY_RUN_STATUSES: [
@@ -433,6 +442,51 @@ describe("saved context quality worker", () => {
 		expect(f.transport.admit).not.toHaveBeenCalled();
 		expect(f.transport.uploadSnapshot).not.toHaveBeenCalled();
 		expect(f.run.errorCode).toBe("PROJECT_ACCESS_REVOKED");
+	});
+
+	describe("the live permission check", () => {
+		function editAccess(isVisible: boolean) {
+			resolveEffectiveProjectPermissions.mockResolvedValue({
+				source: "org",
+				organizationId: input.organizationId,
+				organizationDeleted: false,
+				isVisible,
+				permissions: ["project:update", "context:read"],
+			});
+		}
+
+		function workerWithLiveCheck(f: ReturnType<typeof setup>) {
+			const { assertCanExecute, ...deps } = f.deps;
+			return {
+				worker: createContextQualityEvaluationActivities(deps),
+				stub: assertCanExecute,
+			};
+		}
+
+		it("stops dispatch for a requester whose org role edits but who cannot open the project", async () => {
+			const f = setup();
+			editAccess(false);
+			const { worker, stub } = workerWithLiveCheck(f);
+
+			expect(await worker.execute(input)).toEqual({ status: "FAILED" });
+			expect(stub).not.toHaveBeenCalled();
+			expect(resolveEffectiveProjectPermissions).toHaveBeenCalledWith(
+				input.projectId,
+				input.requesterUserId,
+			);
+			expect(f.transport.admit).not.toHaveBeenCalled();
+			expect(f.run.errorCode).toBe("PROJECT_ACCESS_REVOKED");
+		});
+
+		it("keeps running for a requester who can open the project and edit it", async () => {
+			const f = setup();
+			editAccess(true);
+			const { worker } = workerWithLiveCheck(f);
+
+			expect(await worker.execute(input)).toEqual({
+				status: "SUCCEEDED",
+			});
+		});
 	});
 
 	it("retries a transient poll failure without cancelling a healthy native run or erasing input", async () => {

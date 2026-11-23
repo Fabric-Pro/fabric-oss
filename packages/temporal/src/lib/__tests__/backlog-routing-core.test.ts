@@ -270,6 +270,62 @@ describe("loadRoutingCorpus", () => {
 		expect(corpus.candidateVectors).toHaveLength(1);
 	});
 
+	it("asks beforeEmbed first when only stale candidates need embedding", async () => {
+		mockListActiveStories.mockResolvedValue([TICKET_A]);
+		mockGenerateEmbeddings.mockResolvedValue({
+			embeddings: [[1, 0, 0]],
+			model: "text-embedding-3-small",
+		});
+		const beforeEmbed = vi.fn().mockResolvedValue(undefined);
+
+		await loadRoutingCorpus({ ...BASE, itemTexts: [], beforeEmbed });
+
+		expect(beforeEmbed).toHaveBeenCalledOnce();
+		const [asked] = beforeEmbed.mock.invocationCallOrder;
+		const [embedded] = mockGenerateEmbeddings.mock.invocationCallOrder;
+		expect(asked).toBeLessThan(embedded ?? 0);
+	});
+
+	it("does not ask beforeEmbed when nothing needs embedding", async () => {
+		mockListActiveStories.mockResolvedValue([TICKET_A]);
+		const { buildDetectionText, hashDetectionText } = await vi.importActual<
+			typeof import("@repo/database/prisma/queries/projects/duplicate-detection")
+		>("@repo/database/prisma/queries/projects/duplicate-detection");
+		const text = buildDetectionText(TICKET_A.title, TICKET_A.description);
+		const cached = {
+			storyId: TICKET_A.id,
+			contentHash: hashDetectionText(text),
+			model: "text-embedding-3-small",
+		};
+		mockListCacheMeta.mockResolvedValue([cached]);
+		mockListCacheRows.mockResolvedValue([
+			{ ...cached, embedding: [1, 0, 0] },
+		]);
+		mockGenerateEmbeddings.mockResolvedValue({
+			embeddings: [],
+			model: "text-embedding-3-small",
+		});
+		const beforeEmbed = vi.fn().mockResolvedValue(undefined);
+
+		await loadRoutingCorpus({ ...BASE, itemTexts: [], beforeEmbed });
+
+		expect(beforeEmbed).not.toHaveBeenCalled();
+	});
+
+	it("embeds nothing when beforeEmbed refuses the call", async () => {
+		mockListActiveStories.mockResolvedValue([TICKET_A]);
+		const refusal = new Error("rate limited");
+
+		await expect(
+			loadRoutingCorpus({
+				...BASE,
+				itemTexts: ["item text"],
+				beforeEmbed: vi.fn().mockRejectedValue(refusal),
+			}),
+		).rejects.toBe(refusal);
+		expect(mockGenerateEmbeddings).not.toHaveBeenCalled();
+	});
+
 	it("rethrows when the candidate query fails, so a caller can treat this as a wholesale failure", async () => {
 		mockListActiveStories.mockRejectedValue(new Error("db down"));
 

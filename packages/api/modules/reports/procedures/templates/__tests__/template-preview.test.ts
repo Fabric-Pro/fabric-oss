@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 	assertProjectPermission: vi.fn(),
 	requireOrganizationMembership: vi.fn(),
 	canCreateProjectReport: vi.fn(),
+	canReachProjectReports: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	generateText: vi.fn(),
 	logModelUsageAsync: vi.fn(),
@@ -47,6 +48,7 @@ vi.mock("../../../../../lib/chatgpt-plan-errors", () => ({
 
 vi.mock("../../../lib/report-access", () => ({
 	canCreateProjectReport: mocks.canCreateProjectReport,
+	canReachProjectReports: mocks.canReachProjectReports,
 }));
 
 // Chainable oRPC procedure stub — captures each handler in module import order.
@@ -123,6 +125,7 @@ beforeEach(() => {
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.enforceAiRateLimit.mockResolvedValue(undefined);
 	mocks.canCreateProjectReport.mockResolvedValue(true);
+	mocks.canReachProjectReports.mockResolvedValue(true);
 	mocks.getReportTemplate.mockResolvedValue(template);
 	mocks.getBoundPromptForAgent.mockResolvedValue(null);
 	mocks.getAIModelWithMetadata.mockResolvedValue({
@@ -167,6 +170,8 @@ describe("reports.templates.preview", () => {
 			"example-project",
 			"example-member",
 			"REPORT_READ",
+			undefined,
+			{ admitUnreachableOrganizationMember: true },
 		);
 		expect(mocks.getLatestProjectTemplateRun).toHaveBeenCalledWith({
 			templateId: "example-template",
@@ -200,6 +205,21 @@ describe("reports.templates.preview", () => {
 		await expect(
 			mocks.handlers.preview({ input, context: ctx }),
 		).rejects.toThrow("FORBIDDEN");
+		expect(mocks.getLatestProjectTemplateRun).not.toHaveBeenCalled();
+	});
+});
+
+describe("reports.templates.preview — report reach", () => {
+	it("answers NOT_FOUND to a member who cannot reach the project's reports, before any run is read", async () => {
+		mocks.canReachProjectReports.mockResolvedValue(false);
+
+		await expect(
+			mocks.handlers.preview({ input, context: ctx }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(mocks.canReachProjectReports).toHaveBeenCalledWith(
+			"example-project",
+			ctx.user,
+		);
 		expect(mocks.getLatestProjectTemplateRun).not.toHaveBeenCalled();
 	});
 });
@@ -274,11 +294,29 @@ describe("reports.templates.sample", () => {
 			"example-project",
 			"example-member",
 			"REPORT_READ",
+			undefined,
+			{ admitUnreachableOrganizationMember: true },
 		);
 		expect(mocks.enforceAiRateLimit).not.toHaveBeenCalled();
 		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
 		expect(mocks.generateText).not.toHaveBeenCalled();
 		expect(mocks.saveReportTemplateSample).not.toHaveBeenCalled();
+	});
+
+	it("answers NOT_FOUND to a member who cannot reach the project's reports, before any lookup", async () => {
+		mocks.canReachProjectReports.mockResolvedValue(false);
+
+		await expect(
+			mocks.handlers.sample({ input, context: ctx }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(mocks.canReachProjectReports).toHaveBeenCalledWith(
+			"example-project",
+			ctx.user,
+		);
+		expect(mocks.getReportTemplate).not.toHaveBeenCalled();
+		expect(mocks.getBoundPromptForAgent).not.toHaveBeenCalled();
+		expect(mocks.getReportTemplateSample).not.toHaveBeenCalled();
+		expect(mocks.generateText).not.toHaveBeenCalled();
 	});
 
 	it("reads a stored sample from the template alone, without a project", async () => {

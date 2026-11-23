@@ -9,7 +9,7 @@
  * or a read path could pick up a stale key that the user believes they removed.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockDb,
@@ -513,4 +513,40 @@ describe("upsert input validation — ChatGPT plan (Fizzy #2939)", () => {
 			"A ChatGPT plan is connected with `fabric connect chatgpt`, not configured as a provider",
 		]);
 	});
+});
+
+describe("Anthropic federation persistence", () => {
+	beforeEach(() => {
+		vi.stubEnv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_example");
+		vi.stubEnv(
+			"ANTHROPIC_ORGANIZATION_ID",
+			"00000000-0000-0000-0000-000000000000",
+		);
+		vi.stubEnv("ANTHROPIC_FEDERATION_AUDIENCE", "example-audience");
+		vi.stubEnv(
+			"ANTHROPIC_FEDERATION_ALLOWED_ORGANIZATION_IDS",
+			"example-org",
+		);
+	});
+
+	afterEach(() => vi.unstubAllEnvs());
+
+	it.each([null, "different-org"])(
+		"refuses a federated save for %s",
+		async (organizationId) => {
+			await expect(
+				upsert._handler({
+					input: {
+						provider: "ANTHROPIC_DIRECT",
+						authMode: "federated",
+						organizationId,
+					},
+					context: personalContext,
+				}),
+			).rejects.toThrow(
+				"Anthropic federation is unavailable for this organization.",
+			);
+			expect(mockDb.$transaction).not.toHaveBeenCalled();
+		},
+	);
 });

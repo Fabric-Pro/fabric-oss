@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseRefineResponse, refineFeedbackPreview } from "../refine-response";
+import {
+	isDeclinedRefineReply,
+	parseRefineResponse,
+	refineFeedbackPreview,
+} from "../refine-response";
 
 const CURRENT = "CURRENT";
 
@@ -128,5 +132,25 @@ describe("refineFeedbackPreview", () => {
 			).not.toContain("UPDATED");
 		}
 		expect(refineFeedbackPreview(WELL_FORMED)).toBe("What auth provider?");
+	});
+});
+
+describe("isDeclinedRefineReply", () => {
+	it("is true only for a reply whose DECLINED line says true", () => {
+		expect(
+			isDeclinedRefineReply(
+				`FEEDBACK: I can't help with that.\nUPDATED_MESSAGE: ${CURRENT}\nREADY: false\nDECLINED: true`,
+			),
+		).toBe(true);
+		expect(isDeclinedRefineReply(`${WELL_FORMED}\nDECLINED: false`)).toBe(
+			false,
+		);
+		expect(isDeclinedRefineReply(WELL_FORMED)).toBe(false);
+	});
+
+	it("leaves the parsed parts of a reply that carries the line unchanged", () => {
+		expect(
+			parseRefineResponse(`${WELL_FORMED}\nDECLINED: false`, CURRENT),
+		).toEqual(parseRefineResponse(WELL_FORMED, CURRENT));
 	});
 });

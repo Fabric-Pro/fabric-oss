@@ -106,7 +106,17 @@ function formatModel(raw: string | null | undefined): string {
 	return slash >= 0 ? raw.slice(slash + 1) : raw;
 }
 
-export function ProjectUsage({ projectId }: { projectId: string }) {
+/**
+ * `excludesParlumeCosts`: the viewer may not manage the project's members, so
+ * the usage API leaves Parlume's calls out of every figure here.
+ */
+export function ProjectUsage({
+	projectId,
+	excludesParlumeCosts = false,
+}: {
+	projectId: string;
+	excludesParlumeCosts?: boolean;
+}) {
 	const [range, setRange] = useState<Range>("30d");
 	const flag = useFeatureFlag("DECISION_REPLAY");
 	const params = useSearchParams();
@@ -317,6 +327,11 @@ export function ProjectUsage({ projectId }: { projectId: string }) {
 									? "What people did with AI suggestions in this project."
 									: "AI spend attributed to this project across chats, documents, agents, and workflows."}
 							</p>
+							{!outcomes && excludesParlumeCosts && (
+								<p className="mt-1 text-xs text-muted-foreground">
+									Excludes Parlume meeting costs.
+								</p>
+							)}
 							{!outcomes && configured && (
 								<div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
 									{configured.patternModel && (

@@ -163,6 +163,14 @@ describe("rejectProposalItemProcedure", () => {
 		});
 	});
 
+	it("passes the ticket a line-by-line review ran on to the note", async () => {
+		await call({ noteRejectedUpdate: true, reviewedTicketId: "story-9" });
+
+		expect(mocks.note).toHaveBeenCalledWith(
+			expect.objectContaining({ reviewedTicketId: "story-9" }),
+		);
+	});
+
 	it("takes the note's organization from the proposal, not the input", async () => {
 		await call({
 			organizationId: "example-org-2",

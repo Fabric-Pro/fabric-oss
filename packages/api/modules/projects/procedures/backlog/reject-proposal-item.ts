@@ -25,7 +25,9 @@ import { noteRejectedProposalUpdate } from "./rejected-update-note";
  * The item moves into its own Rejected row (`splitProposalId`), unless it is
  * the proposal's only undecided item, in which case the whole proposal moves.
  * With `noteRejectedUpdate` (the reviewer rejected every change of an update
- * line by line), the target ticket's Decision Log records that review.
+ * line by line), the Decision Log of the ticket the review ran on
+ * (`reviewedTicketId`, checked to be a ticket of the proposal's project)
+ * records that review, or the stored update's target when none is named.
  *
  * AUTHORIZATION: project edit permission (`PROJECT_UPDATE` plus
  * `canEditProject`), the same bar as approving the proposal. The move is a
@@ -53,6 +55,9 @@ export const rejectProposalItemProcedure = tenantProtectedProcedure
 				.min(0)
 				.max(PROPOSAL_REVIEW_MAX_CHANGES),
 			noteRejectedUpdate: z.boolean().optional(),
+			/** The ticket a line-by-line review ran on: the note's target
+			 * for a new-ticket item the reviewer re-routed to it. */
+			reviewedTicketId: z.string().optional(),
 		}),
 	)
 	.output(
@@ -119,6 +124,7 @@ export const rejectProposalItemProcedure = tenantProtectedProcedure
 					userId: user.id,
 				},
 				reviewerName: user.name,
+				reviewedTicketId: input.reviewedTicketId,
 			});
 		}
 		return result.outcome === "split"

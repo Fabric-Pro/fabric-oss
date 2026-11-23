@@ -368,7 +368,7 @@ addLogSink((record) => {
 
 ### Local Development (Aspire Dashboard)
 
-1. Start the Aspire AppHost: `cd aspire/Fabric.AppHost && dotnet run`
+1. From the repository root, start the AppHost with Aspire CLI 17.0.0 using `cd aspire/Fabric.AppHost && aspire run`.
 2. Open the Aspire Dashboard URL shown in the terminal
 3. View:
    - **Traces** - Distributed traces across services

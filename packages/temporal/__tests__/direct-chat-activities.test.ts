@@ -52,7 +52,7 @@ vi.mock("@repo/ai", () => ({
 		providerModelId: "openai/gpt-oss-120b",
 		selectionSource: "system-default",
 	}),
-	getRAGProviderConfig: vi.fn().mockResolvedValue({
+	getEmbeddingRAGProviderConfig: vi.fn().mockResolvedValue({
 		apiKey: "test-api-key",
 		provider: "OPENAI_DIRECT",
 	}),
@@ -253,7 +253,10 @@ describe("Direct Chat Activities", () => {
 				documentIds: ["doc-123"],
 				topK: 5,
 				minSimilarity: 0.1,
-				apiKey: "test-api-key", // From getRAGProviderConfig mock
+				providerConfig: {
+					apiKey: "test-api-key",
+					provider: "OPENAI_DIRECT",
+				},
 				// These are user-attached documents, so the activity marks the
 				// retrieval as an explicit attachment to drop the similarity floor.
 				explicitAttachment: true,
@@ -383,11 +386,14 @@ describe("Direct Chat Activities", () => {
 				["doc-123"],
 			);
 
-			// Should have been called with a generated chatId and API key from getRAGProviderConfig
+			// Should have been called with a generated chatId and the documents provider
 			expect(retrieveContext).toHaveBeenCalledWith(
 				expect.objectContaining({
 					chatId: expect.stringContaining("direct-chat-"),
-					apiKey: "test-api-key", // From getRAGProviderConfig mock
+					providerConfig: {
+						apiKey: "test-api-key",
+						provider: "OPENAI_DIRECT",
+					},
 				}),
 			);
 		});

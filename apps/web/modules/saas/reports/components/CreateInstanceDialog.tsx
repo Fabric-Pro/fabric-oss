@@ -575,8 +575,15 @@ export function CreateInstanceDialog({
 						</Button>
 						<Button
 							onClick={handleCreate}
-							disabled={!suite && generateOff}
-							aria-disabled={(suite && generateOff) || undefined}
+							// Never `disabled` mid-run: that drops focus
+							// from the button just pressed, and the
+							// duplicate warning that may follow would
+							// have nowhere to return it.
+							disabled={!suite && !isWorking && generateOff}
+							aria-disabled={
+								(generateOff && (suite || isWorking)) ||
+								undefined
+							}
 							aria-describedby={problem ? problemId : undefined}
 							className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
 						>

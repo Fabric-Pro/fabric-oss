@@ -124,6 +124,11 @@ function resolveIcon(notification: {
 	if (notification.type === "CHATGPT_PLAN_WORK_STOPPED") {
 		return AlertCircleIcon;
 	}
+	// A Parlume bot in the lobby waits for someone to admit it until a set
+	// time: a clock, like the paused work above, not SYSTEM's alert.
+	if (notification.type === "PARLUME_WAITING_IN_LOBBY") {
+		return ClockIcon;
+	}
 	// A new Coding Instructions version: PROJECT's flag would read as a
 	// status change, and this row is about the files agents now read.
 	if (notification.type === "CODING_INSTRUCTIONS_PUBLISHED") {

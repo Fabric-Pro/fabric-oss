@@ -1,5 +1,9 @@
 import type { Editor } from "@tiptap/core";
-import type { Node as ProseMirrorNode, ResolvedPos } from "@tiptap/pm/model";
+import {
+	Fragment,
+	type Node as ProseMirrorNode,
+	type ResolvedPos,
+} from "@tiptap/pm/model";
 import type { Transaction } from "@tiptap/pm/state";
 
 /**
@@ -8,8 +12,22 @@ import type { Transaction } from "@tiptap/pm/state";
  * a proposal nobody answers any more is rejected by (Fizzy #2946).
  */
 
-/** The marks an assistant proposal under review carries in the editor. */
-const DIFF_MARK_NAMES = new Set(["diffInsert", "diffDelete"]);
+/**
+ * The marks an assistant proposal under review carries in the editor, and
+ * the kind of change each marks.
+ */
+const DIFF_MARK_TYPES = new Map<string, DiffRange["type"]>([
+	["diffInsert", "addition"],
+	["diffDelete", "deletion"],
+]);
+
+/**
+ * The meta key of a transaction that answers changes under review. The
+ * editor marks what a transaction inserts as an addition the reviewer typed;
+ * an answer inserts too, when it moves the items a removed line held
+ * (`liftNestedItems`), and those items are not new text.
+ */
+export const DIFF_ANSWER_META = "diffAnswer";
 
 /** One change of a proposal under review. */
 export interface DiffRange {
@@ -18,6 +36,12 @@ export interface DiffRange {
 	type: "addition" | "deletion";
 	/** A whole table the AI added or removed, carried as the table's `diff` attribute. */
 	table?: boolean;
+	/**
+	 * A list block moved to another level: the whole-line deletions and
+	 * additions it is shown as, answered together as one change. The range
+	 * spans them all, and `type` is its first line's.
+	 */
+	moved?: DiffRange[];
 }
 
 /**
@@ -32,9 +56,11 @@ export interface DiffRange {
  * carry them too. Counting only text left an image change off the bar, and
  * split a link holding a hard break into several changes whose marked breaks
  * no accept or reject ever reached (Fizzy #2946).
+ *
+ * A list block moved to another level is one change (`withMovedBlocks`).
  */
 export function findDiffRanges(doc: ProseMirrorNode): DiffRange[] {
-	const ranges: DiffRange[] = [];
+	const ranges: MarkedRange[] = [];
 
 	doc.descendants((node, pos) => {
 		if (!node.isText && !node.isInline) {
@@ -42,33 +68,32 @@ export function findDiffRanges(doc: ProseMirrorNode): DiffRange[] {
 			if (diff !== "added" && diff !== "deleted") {
 				return;
 			}
+			const { move } = node.attrs;
 			ranges.push({
 				from: pos,
 				to: pos + node.nodeSize,
 				type: diff === "added" ? "addition" : "deletion",
 				table: true,
+				move: typeof move === "string" ? move : null,
 			});
 			return false;
 		}
 		for (const mark of node.marks) {
-			if (mark.type.name === "diffInsert") {
+			const type = DIFF_MARK_TYPES.get(mark.type.name);
+			if (type !== undefined) {
+				const { move } = mark.attrs;
 				ranges.push({
 					from: pos,
 					to: pos + node.nodeSize,
-					type: "addition",
-				});
-			} else if (mark.type.name === "diffDelete") {
-				ranges.push({
-					from: pos,
-					to: pos + node.nodeSize,
-					type: "deletion",
+					type,
+					move: typeof move === "string" ? move : null,
 				});
 			}
 		}
 	});
 
-	// Merge adjacent ranges of the same type
-	const merged: DiffRange[] = [];
+	// Merge adjacent ranges of the same type, and of the same moved block
+	const merged: MarkedRange[] = [];
 	for (const range of ranges) {
 		const prev = merged[merged.length - 1];
 		if (
@@ -76,6 +101,7 @@ export function findDiffRanges(doc: ProseMirrorNode): DiffRange[] {
 			!prev.table &&
 			!range.table &&
 			prev.type === range.type &&
+			prev.move === range.move &&
 			prev.to === range.from
 		) {
 			prev.to = range.to;
@@ -84,8 +110,69 @@ export function findDiffRanges(doc: ProseMirrorNode): DiffRange[] {
 		}
 	}
 
-	return merged;
+	return withMovedBlocks(doc, merged);
 }
+
+/** A change found in the document, with the moved block it is part of. */
+type MarkedRange = DiffRange & { move: string | null };
+
+/** Whether `doc` holds inline content between `from` and `to`. */
+function inlineBetween(
+	doc: ProseMirrorNode,
+	from: number,
+	to: number,
+): boolean {
+	let found = false;
+	doc.nodesBetween(from, to, (node) => {
+		if (node.isInline) {
+			found = true;
+		}
+		return !found;
+	});
+	return found;
+}
+
+/**
+ * `ranges` with each list block moved to another level taken as one change:
+ * the ranges in a row whose marks carry the same `move`, the block the
+ * review diff planned (`planLineChunks` in `diff-list-moves`) and tagged
+ * its lines with. Answered line by line, a line that stays could be left
+ * under one that goes. A block's lines are all marked, so text left
+ * unmarked between two ranges ends it: a document seeded from two diffs
+ * can hold two blocks of the same number.
+ */
+function withMovedBlocks(
+	doc: ProseMirrorNode,
+	ranges: MarkedRange[],
+): DiffRange[] {
+	const result: DiffRange[] = [];
+	let block: {
+		move: string;
+		range: DiffRange & { moved: DiffRange[] };
+	} | null = null;
+	for (const { move, ...range } of ranges) {
+		if (
+			block !== null &&
+			move === block.move &&
+			!inlineBetween(doc, block.range.to, range.from)
+		) {
+			block.range.moved.push(range);
+			block.range.to = range.to;
+			continue;
+		}
+		block = null;
+		if (move === null) {
+			result.push(range);
+			continue;
+		}
+		const created = { ...range, moved: [range] };
+		block = { move, range: created };
+		result.push(created);
+	}
+	return result;
+}
+
+const LIST_ITEM_NAMES = new Set(["listItem", "taskItem"]);
 
 /**
  * Whether an editor's body holds an assistant proposal still waiting for its
@@ -118,7 +205,7 @@ export function editorHoldsDiffMarks(
 				return false;
 			}
 		}
-		if (node.marks.some((mark) => DIFF_MARK_NAMES.has(mark.type.name))) {
+		if (node.marks.some((mark) => DIFF_MARK_TYPES.has(mark.type.name))) {
 			found = true;
 			return false;
 		}
@@ -133,8 +220,9 @@ export function editorHoldsDiffMarks(
  * itself, or the list item, list or quote that held nothing but it, which
  * would otherwise be left empty. `null` keeps the emptied textblock: its parent
  * holds other content the textblock cannot go without (a list item's
- * paragraph before its nested list), it is the document's only block, or it
- * sits in a table cell, which keeps its place in the table.
+ * paragraph before its nested list, see `liftNestedItems`), it is the
+ * document's only block, or it sits in a table cell, which keeps its place
+ * in the table.
  */
 function emptiedBlockDepth($from: ResolvedPos): number | null {
 	for (let depth = $from.depth; depth > 0; depth--) {
@@ -154,6 +242,105 @@ function emptiedBlockDepth($from: ResolvedPos): number | null {
 	return null;
 }
 
+/** Whether `node` is a list: a block of list items only. */
+function isList(node: ProseMirrorNode): boolean {
+	let items = node.childCount > 0;
+	node.forEach((child) => {
+		if (!LIST_ITEM_NAMES.has(child.type.name)) {
+			items = false;
+		}
+	});
+	return items;
+}
+
+/**
+ * Delete the line of the list item at `$from` and keep the items nested in
+ * it where the other side of the diff has them. Each nested line is a change
+ * of its own, or none: deleting the line it sits under decides nothing for
+ * it, and must not leave it under an empty bullet, or move it.
+ *
+ * A nested list the diff leaves unmarked has the same depth on both sides,
+ * so where this line is absent its items sit under the item before it: they
+ * join that item's nested list (`nestUnderPrevious`). Only an item first in
+ * its list has no item before it, and its nested items take its place, one
+ * level out. Says whether it did: not when the line is not its item's first
+ * block, the item holds more than its line and nested lists, or the list
+ * cannot hold the items.
+ */
+function liftNestedItems(tr: Transaction, $from: ResolvedPos): boolean {
+	const itemDepth = $from.depth - 1;
+	if (itemDepth < 2 || $from.index(itemDepth) !== 0) {
+		return false;
+	}
+	const item = $from.node(itemDepth);
+	if (!LIST_ITEM_NAMES.has(item.type.name) || item.childCount < 2) {
+		return false;
+	}
+	const lists: ProseMirrorNode[] = [];
+	for (let index = 1; index < item.childCount; index++) {
+		const child = item.child(index);
+		if (!isList(child)) {
+			return false;
+		}
+		lists.push(child);
+	}
+	const list = $from.node(itemDepth - 1);
+	const index = $from.index(itemDepth - 1);
+	const from = $from.before(itemDepth);
+	const to = $from.after(itemDepth);
+	if (index > 0) {
+		return nestUnderPrevious(tr, list.child(index - 1), from, to, lists);
+	}
+	let nested = Fragment.empty;
+	for (const child of lists) {
+		nested = nested.append(child.content);
+	}
+	if (!list.canReplace(index, index + 1, nested)) {
+		return false;
+	}
+	tr.replaceWith(from, to, nested);
+	return true;
+}
+
+/**
+ * Delete the list item at `from`..`to` and append its nested `lists` to
+ * `previous`, the item right before it: the first one's items to the end of
+ * `previous`'s own nested list of that kind, when it ends with one, and the
+ * rest as nested lists of its own. Says whether `previous` could hold them.
+ */
+function nestUnderPrevious(
+	tr: Transaction,
+	previous: ProseMirrorNode,
+	from: number,
+	to: number,
+	lists: ProseMirrorNode[],
+): boolean {
+	const last = previous.lastChild;
+	const [first, ...rest] = lists;
+	const end = previous.childCount;
+	if (
+		last !== null &&
+		last.type === first.type &&
+		last.canReplace(last.childCount, last.childCount, first.content) &&
+		previous.canReplace(end, end, Fragment.from(rest))
+	) {
+		tr.delete(from, to);
+		// `from` is where `previous` ends: one back is the end of its content,
+		// and two back the end of its last nested list's.
+		if (rest.length > 0) {
+			tr.insert(from - 1, Fragment.from(rest));
+		}
+		tr.insert(from - 2, first.content);
+		return true;
+	}
+	if (!previous.canReplace(end, end, Fragment.from(lists))) {
+		return false;
+	}
+	tr.delete(from, to);
+	tr.insert(from - 1, Fragment.from(lists));
+	return true;
+}
+
 /**
  * Delete a change's text. A code block or diagram that held nothing else goes
  * with it: a removed or added fence is reviewed as one mark over its whole
@@ -165,7 +352,9 @@ function emptiedBlockDepth($from: ResolvedPos): number | null {
  * addition is rejected, and one it deleted whole, when that deletion is
  * accepted. Deleting only the text left an empty paragraph in the document
  * and the room. A change that covers only part of a block, its other text
- * unmarked or marked the other way, leaves the block in place.
+ * unmarked or marked the other way, leaves the block in place. A list
+ * item's whole line goes from an item with lists nested in it, and their
+ * items stay where the other side has them (`liftNestedItems`).
  */
 function deleteChangeText(tr: Transaction, from: number, to: number) {
 	const $from = tr.doc.resolve(from);
@@ -179,10 +368,10 @@ function deleteChangeText(tr: Transaction, from: number, to: number) {
 		return;
 	}
 	const depth = wholeBlock ? emptiedBlockDepth($from) : null;
-	if (depth === null) {
-		tr.delete(from, to);
-	} else {
+	if (depth !== null) {
 		tr.delete($from.before(depth), $from.after(depth));
+	} else if (!wholeBlock || !liftNestedItems(tr, $from)) {
+		tr.delete(from, to);
 	}
 }
 
@@ -191,9 +380,12 @@ function deleteChangeText(tr: Transaction, from: number, to: number) {
  * - Addition (diffInsert / <ins>): remove the mark, keep the text
  * - Deletion (diffDelete / <del>): delete the text entirely, and the block
  *   it emptied when the proposal deleted that block whole
+ * - A moved list block: each of its lines, as above
  */
 function acceptRange(tr: Transaction, range: DiffRange) {
-	if (range.table) {
+	if (range.moved) {
+		answerLastToFirst(tr, range.moved, acceptRange);
+	} else if (range.table) {
 		if (range.type === "addition") {
 			tr.setNodeAttribute(range.from, "diff", null);
 		} else {
@@ -214,9 +406,12 @@ function acceptRange(tr: Transaction, range: DiffRange) {
  * - Addition (diffInsert / <ins>): delete the text entirely, and the block
  *   it filled when the proposal added that block whole
  * - Deletion (diffDelete / <del>): remove the mark, keep the text
+ * - A moved list block: each of its lines, as above
  */
 function rejectRange(tr: Transaction, range: DiffRange) {
-	if (range.table) {
+	if (range.moved) {
+		answerLastToFirst(tr, range.moved, rejectRange);
+	} else if (range.table) {
 		if (range.type === "addition") {
 			tr.delete(range.from, range.to);
 		} else {
@@ -232,18 +427,32 @@ function rejectRange(tr: Transaction, range: DiffRange) {
 	}
 }
 
+/**
+ * Answer `ranges` into `tr` from the last to the first, so the positions of
+ * the ones still to go do not move.
+ */
+function answerLastToFirst(
+	tr: Transaction,
+	ranges: DiffRange[],
+	answer: (tr: Transaction, range: DiffRange) => void,
+) {
+	for (const range of [...ranges].reverse()) {
+		answer(tr, range);
+	}
+}
+
 /** Accept a single change of the proposal under review in `editor`. */
 export function acceptChange(editor: Editor, range: DiffRange) {
 	const { tr } = editor.state;
 	acceptRange(tr, range);
-	editor.view.dispatch(tr);
+	editor.view.dispatch(tr.setMeta(DIFF_ANSWER_META, true));
 }
 
 /** Reject a single change of the proposal under review in `editor`. */
 export function rejectChange(editor: Editor, range: DiffRange) {
 	const { tr } = editor.state;
 	rejectRange(tr, range);
-	editor.view.dispatch(tr);
+	editor.view.dispatch(tr.setMeta(DIFF_ANSWER_META, true));
 }
 
 /**
@@ -257,14 +466,51 @@ export function rejectChange(editor: Editor, range: DiffRange) {
  * room merges into one. Says whether anything was rejected.
  */
 export function rejectAllChanges(editor: Editor): boolean {
-	const ranges = findDiffRanges(editor.state.doc);
-	if (ranges.length === 0) {
+	return answerAllChanges(editor, rejectRange);
+}
+
+/**
+ * Accept every change of the proposal `editor` holds, in one transaction,
+ * the counterpart of {@link rejectAllChanges}: what it proposed to add stays
+ * unmarked, what it proposed to delete goes. Says whether anything was
+ * accepted.
+ */
+export function acceptAllChanges(editor: Editor): boolean {
+	return answerAllChanges(editor, acceptRange);
+}
+
+/**
+ * The document `editor` would hold once every change still under review is
+ * rejected: the changes already accepted, and none of the undecided ones.
+ * The editor is not changed.
+ */
+export function documentWithoutUndecidedChanges(
+	editor: Editor,
+): ProseMirrorNode {
+	const { tr } = editor.state;
+	answerEveryRange(tr, rejectRange);
+	return tr.doc;
+}
+
+/** Answer every change of `tr`'s document into it, last to first. */
+function answerEveryRange(
+	tr: Transaction,
+	answer: (tr: Transaction, range: DiffRange) => void,
+): number {
+	const ranges = findDiffRanges(tr.doc);
+	answerLastToFirst(tr, ranges, answer);
+	return ranges.length;
+}
+
+/** Answer every change in one transaction, from the last to the first. */
+function answerAllChanges(
+	editor: Editor,
+	answer: (tr: Transaction, range: DiffRange) => void,
+): boolean {
+	const { tr } = editor.state;
+	if (answerEveryRange(tr, answer) === 0) {
 		return false;
 	}
-	const { tr } = editor.state;
-	for (const range of [...ranges].reverse()) {
-		rejectRange(tr, range);
-	}
-	editor.view.dispatch(tr);
+	editor.view.dispatch(tr.setMeta(DIFF_ANSWER_META, true));
 	return true;
 }

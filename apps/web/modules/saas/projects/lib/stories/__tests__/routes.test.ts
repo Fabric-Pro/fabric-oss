@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildGlossyEditionRoute,
+	buildStoryCleanSpecRoute,
 	buildStoryDetailsRoute,
 	buildStoryQaRoute,
 } from "../routes";
@@ -46,6 +47,14 @@ describe("buildStoryQaRoute", () => {
 	it("opens the feature on its QA tab (case→criterion direction)", () => {
 		expect(buildStoryQaRoute("/app/acme", "p1", "s1")).toBe(
 			"/app/acme/projects/p1/stories/s1?storyTab=qa",
+		);
+	});
+});
+
+describe("buildStoryCleanSpecRoute", () => {
+	it("opens the work item on its specification editor", () => {
+		expect(buildStoryCleanSpecRoute("/app/example-org", "p1", "s1")).toBe(
+			"/app/example-org/projects/p1/stories/s1?storyTab=cleanSpec",
 		);
 	});
 });

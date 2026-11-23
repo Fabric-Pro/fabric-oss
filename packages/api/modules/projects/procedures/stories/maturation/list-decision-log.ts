@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/client";
 import {
+	getFeatureMaturationState,
 	hasProjectAccess,
 	isAiAnswerRecommendationsEnabledForProject,
 	listDecisionLogThreads,
@@ -56,6 +57,16 @@ export const listDecisionLogProcedure = tenantProtectedProcedure
 			throw new ORPCError("FORBIDDEN", {
 				message: "You don't have access to this project",
 			});
+		}
+
+		// The tenant filter below is organization-wide, so the story must be
+		// confirmed in the authorized project before its threads are read.
+		const feature = await getFeatureMaturationState({
+			userStoryId: input.storyId,
+			projectId: input.projectId,
+		});
+		if (!feature) {
+			throw new ORPCError("NOT_FOUND", { message: "Feature not found" });
 		}
 
 		const tenantFilter: MaturationTenantFilter = {

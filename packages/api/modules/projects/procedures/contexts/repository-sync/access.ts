@@ -34,7 +34,9 @@ export async function resolveContextSyncAccess(
 	canEnableDirectPush: boolean;
 }> {
 	const access = await resolveEffectiveProjectPermissions(projectId, userId);
-	if (!access) {
+	// As at the permission gate, a caller who cannot open the project hears
+	// what an unknown project gets, whatever their organization role.
+	if (!access || access.isVisible === false) {
 		throw new ORPCError("NOT_FOUND", {
 			message: PROJECT_NOT_FOUND_MESSAGE,
 		});

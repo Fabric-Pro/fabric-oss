@@ -3220,7 +3220,10 @@ describe("chatNode — deterministic provider 400", () => {
 
 		expect(Array.isArray(goto) ? goto : [goto]).toContain("__end__");
 		expect(update).toMatchObject({ retryCount: 0 });
-		expect(update.error).toContain("Bad Request");
+		// The provider's own text is replaced by the shared provider-failure message.
+		expect(update.error).toBe(
+			"The AI provider rejected the request (invalid request). Try again, or check the provider settings.",
+		);
 		expect(mockInvoke).toHaveBeenCalledTimes(1);
 	});
 

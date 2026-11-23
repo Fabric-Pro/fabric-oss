@@ -1,15 +1,18 @@
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { ORPCError } from "@orpc/server";
 import {
 	db,
 	getBuiltInToolConfig,
+	type Prisma,
 	resolveWorkflowIntegrationForProvider,
 } from "@repo/database";
+import type { ParlumeMeetingSessionStatus } from "@repo/database/prisma/generated/enums";
 import {
 	executeMicrosoftTeamsTool,
 	extractChannelThreadId,
 	isShortTeamsMeetingUrl,
 	teamsMeetingIdentity,
+	teamsMeetingJoinUrl,
 } from "@repo/integrations/microsoft";
 import { z } from "zod";
 import {
@@ -25,15 +28,33 @@ import {
 	ParlumeProviderError,
 	startParlumeMeetingBot,
 } from "./parlume-attendee";
+import { parlumeChatTagStart } from "./parlume-chat-tags";
 import { parlumeLog } from "./parlume-log";
-import { resolveParlumeAttendeeSettings } from "./parlume-provider-settings";
-import type { ParlumeSuggestionAudience } from "./parlume-suggestion-audience";
+import {
+	findParlumeMeetingSessions,
+	parlumeMeetingKey,
+} from "./parlume-meeting-sessions";
+import { notifyParlumeJoinFailure } from "./parlume-notices";
+import {
+	attendeeSourceToStored,
+	resolveParlumeAttendeeSettings,
+} from "./parlume-provider-settings";
 import {
 	PARLUME_VOICE_REQUIRED,
 	resolveParlumeVoiceEngine,
 } from "./parlume-readiness";
+import type { ParlumeSuggestionAudience } from "./parlume-suggestion-audience";
 
 const PARLUME_MAX_DURATION_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * Parlume answers only while it can check everyone in the meeting, which it
+ * does through the inviter's Microsoft Teams connection.
+ */
+const PARLUME_TEAMS_REQUIRED =
+	"Parlume checks who is in the meeting through your Microsoft Teams connection. Connect Microsoft Teams in Settings → Integrations, then invite Parlume again.";
+const PARLUME_TEAMS_RECONNECT =
+	"Parlume could not use your Microsoft Teams connection to check who is in the meeting. Reconnect Microsoft Teams in Settings → Integrations, then invite Parlume again.";
 export const FABRIC_AGENT_KIND = "FABRIC_AGENT";
 export const TEMPLATE_INSTANCE_KIND = "TEMPLATE_INSTANCE";
 export const FABRIC_AGENT_LABEL = "Fabric Agent — this project";
@@ -73,7 +94,10 @@ function startFailureMessage(error: unknown): string | null {
 	return null;
 }
 
-/** Why a start is refused while Parlume's bot is already in that meeting. */
+/**
+ * Why a start is refused while Parlume's bot is already in that meeting and
+ * its session cannot be handed back. The refusal goes on to say why.
+ */
 export const PARLUME_ALREADY_IN_MEETING = "Parlume is already in this meeting.";
 
 /** The session states in which Parlume's bot is in a meeting or on its way. */
@@ -83,6 +107,45 @@ const LIVE_SESSION_STATUSES = [
 	"ACTIVE",
 	"LEAVING",
 ] as const;
+
+/**
+ * Two starts for one meeting at once wait for each other on this advisory
+ * lock class, keyed by the meeting, so the second sees the first's session.
+ */
+const PARLUME_START_ADVISORY_CLASS = 0x50726c6d;
+
+/**
+ * What a start gets while a session of the organization is live in its
+ * meeting: null when that session is handed back, so a second invitation
+ * from the project lands on the Parlume page of the bot already there, or
+ * why the start is refused. A session that is leaving cannot take the
+ * invitation, and one of another project is not this project's to show.
+ */
+function refusalForLiveSession(
+	live: { status: ParlumeMeetingSessionStatus; projectId: string },
+	projectId: string,
+): string | null {
+	if (live.projectId !== projectId) {
+		return `${PARLUME_ALREADY_IN_MEETING} It was invited from another project.`;
+	}
+	switch (live.status) {
+		case "PENDING":
+		case "JOINING":
+		case "ACTIVE":
+			return null;
+		case "LEAVING":
+			return `${PARLUME_ALREADY_IN_MEETING} Its session is leaving; invite Parlume again once it has left.`;
+		case "FINALIZING":
+		case "STOP_FAILED":
+		case "ENDED":
+		case "FAILED":
+			return PARLUME_ALREADY_IN_MEETING;
+		default: {
+			const unreachable: never = live.status;
+			return unreachable;
+		}
+	}
+}
 
 /**
  * Match the original linked invitation first. A numeric short link can also
@@ -114,16 +177,13 @@ async function findLinkedSeriesId(
 		where: { projectId, deactivatedAt: null },
 		select: { id: true, joinUrl: true },
 	});
-	const shortPath = isShortTeamsMeetingUrl(meetingUrl)
-		? new URL(meetingUrl).pathname.replace(/\/$/, "")
-		: null;
+	const joinUrl = teamsMeetingJoinUrl(meetingUrl);
+	const shortUrl =
+		joinUrl && isShortTeamsMeetingUrl(joinUrl) ? joinUrl : null;
 	const matches = candidates.filter(
 		(candidate) =>
 			teamsMeetingIdentity(candidate.joinUrl) === identity ||
-			(shortPath &&
-				isShortTeamsMeetingUrl(candidate.joinUrl) &&
-				new URL(candidate.joinUrl).pathname.replace(/\/$/, "") ===
-					shortPath),
+			(shortUrl && teamsMeetingJoinUrl(candidate.joinUrl) === shortUrl),
 	);
 	if (matches.length > 1) {
 		throw new ORPCError("CONFLICT", {
@@ -137,7 +197,8 @@ async function findLinkedSeriesId(
 async function resolveShortInvitation(
 	input: StartParlumeMeetingSessionInput,
 ): Promise<{ joinUrl: string; integrationId: string } | null> {
-	if (!isShortTeamsMeetingUrl(input.meetingUrl)) {
+	const meetingUrl = teamsMeetingJoinUrl(input.meetingUrl);
+	if (!meetingUrl || !isShortTeamsMeetingUrl(meetingUrl)) {
 		return null;
 	}
 	try {
@@ -154,7 +215,7 @@ async function resolveShortInvitation(
 			.parse(
 				await executeMicrosoftTeamsTool(
 					"parlume_channel",
-					{ kind: "canonical", meetingUrl: input.meetingUrl },
+					{ kind: "canonical", meetingUrl },
 					input.userId,
 					input.organizationId,
 					integration.id,
@@ -173,21 +234,66 @@ async function resolveShortInvitation(
  * whoever started it. An unresolved short invitation cannot be associated
  * with a linked series safely and is not checked through this identity.
  */
-export async function findLiveParlumeSession(linkedMeetingId: string) {
-	return db.parlumeMeetingSession.findFirst({
+export async function findLiveParlumeSession(
+	linkedMeetingId: string,
+	client: Prisma.TransactionClient = db,
+) {
+	return client.parlumeMeetingSession.findFirst({
 		where: { linkedMeetingId, status: { in: [...LIVE_SESSION_STATUSES] } },
-		select: { id: true, status: true },
+		select: { id: true, status: true, projectId: true },
 	});
 }
 
-function digestStreamToken(token: string): string {
-	return createHash("sha256").update(token).digest("hex");
+/**
+ * The organization's session that is live in the same meeting, if any: its
+ * linked series, or the meeting its join link names. Two bots in one meeting
+ * each count the other as a guest they cannot confirm, and both leave. Runs
+ * in the transaction that creates the session, after the meeting's locks,
+ * so of two starts at once only the first creates one and the second finds
+ * it. The partial unique index on the stored meeting key backs this up.
+ */
+async function findLiveSessionUnderLock(
+	tx: Prisma.TransactionClient,
+	meeting: {
+		organizationId: string;
+		meetingKey: string | null;
+		meetingUrl: string | null;
+		linkedMeetingId: string | null;
+	},
+) {
+	const keys = [
+		meeting.linkedMeetingId && `series:${meeting.linkedMeetingId}`,
+		meeting.meetingKey &&
+			`meeting:${meeting.organizationId}:${meeting.meetingKey}`,
+	]
+		.filter((key): key is string => Boolean(key))
+		.sort();
+	// One at a time and in one order, so two starts cannot hold one each.
+	for (const key of keys) {
+		await tx.$executeRaw`SELECT pg_advisory_xact_lock(${PARLUME_START_ADVISORY_CLASS}::int, hashtext(${key}))`;
+	}
+	return (
+		(meeting.linkedMeetingId
+			? await findLiveParlumeSession(meeting.linkedMeetingId, tx)
+			: null) ??
+		(meeting.meetingUrl
+			? (
+					await findParlumeMeetingSessions(
+						{
+							organizationId: meeting.organizationId,
+							meetingUrl: meeting.meetingUrl,
+						},
+						{ take: 20, statuses: LIVE_SESSION_STATUSES },
+						tx,
+					)
+				)[0]
+			: undefined) ??
+		null
+	);
 }
 
-function callbackSecret(serviceSecret: string, sessionId: string): string {
-	return createHmac("sha256", serviceSecret)
-		.update(`parlume-callback:${sessionId}`)
-		.digest("base64url");
+function digestSessionToken(token: string): string {
+	return createHash("sha256").update(token).digest("hex");
 }
 
 export const sessionSelect = {
@@ -205,10 +311,16 @@ export const sessionSelect = {
 	channelChatStatus: true,
 	channelChatError: true,
 	joinedAt: true,
+	pausedAt: true,
+	pausedBy: true,
+	confidential: true,
+	confidentialSince: true,
+	confidentialBy: true,
 	hardStopAt: true,
 	leaveRequestedAt: true,
 	endedAt: true,
 	transcriptContextId: true,
+	transcriptDeletedAt: true,
 	trigger: true,
 	linkedMeeting: { select: { subject: true } },
 	createdAt: true,
@@ -323,6 +435,16 @@ export interface StartParlumeMeetingSessionInput {
 	 */
 	linkedMeetingId?: string;
 	occurrenceStart?: Date;
+	/**
+	 * An automatic join's calendar invitation named someone outside the
+	 * organization: the meeting counts as having a guest from the start.
+	 */
+	externalInvitees?: boolean;
+	/**
+	 * An automatic join's invitees from inside the organization, lower-cased:
+	 * they may read the meeting's transcript.
+	 */
+	inviteeEmails?: string[];
 }
 
 /**
@@ -340,6 +462,10 @@ export interface StartParlumeMeetingSessionInput {
  * occurrence fails the create with Prisma's P2002 before any bot exists.
  * A manual invitation to a linked series' meeting records that series too,
  * so neither path sends a second bot into a meeting one is already in.
+ *
+ * While the project's session is live in the meeting and not leaving, a
+ * start sends no bot and returns that session with `alreadyInMeeting`, so a
+ * second invitation lands on the same Parlume page.
  */
 export async function startParlumeMeetingSession(
 	input: StartParlumeMeetingSessionInput,
@@ -358,11 +484,6 @@ export async function startParlumeMeetingSession(
 			input.meetingUrl,
 			canonicalInvitation?.joinUrl ?? null,
 		));
-	if (linkedMeetingId && (await findLiveParlumeSession(linkedMeetingId))) {
-		throw new ORPCError("CONFLICT", {
-			message: PARLUME_ALREADY_IN_MEETING,
-		});
-	}
 
 	const settings = getParlumeBridgeSettings();
 	if (!settings) {
@@ -385,6 +506,27 @@ export async function startParlumeMeetingSession(
 			message: PARLUME_MEETING_BOT_REQUIRED,
 		});
 	}
+	const teams = await resolveWorkflowIntegrationForProvider(
+		"MICROSOFT_GRAPH",
+		input.userId,
+		input.organizationId,
+	);
+	if (!teams) {
+		throw new ORPCError("CONFLICT", { message: PARLUME_TEAMS_REQUIRED });
+	}
+	// One cheap call: a connection whose token no longer works could check
+	// no one, and Parlume would leave at the first join.
+	try {
+		await executeMicrosoftTeamsTool(
+			"parlume_channel",
+			{ kind: "me" },
+			input.userId,
+			input.organizationId,
+			teams.id,
+		);
+	} catch {
+		throw new ORPCError("CONFLICT", { message: PARLUME_TEAMS_RECONNECT });
+	}
 
 	const agent = await resolveParlumeAgentSelection({
 		projectId: input.projectId,
@@ -404,44 +546,90 @@ export async function startParlumeMeetingSession(
 		});
 	}
 	const streamToken = randomBytes(32).toString("base64url");
-	const chatMeetingUrl = new URL(
+	const callbackToken = randomBytes(32).toString("base64url");
+	// A link that names no meeting is not stored: kept as the web client's
+	// bare path, it would continue the tags of every meeting stored that way.
+	const chatMeetingUrl = teamsMeetingJoinUrl(
 		canonicalInvitation?.joinUrl ?? input.meetingUrl,
 	);
-	chatMeetingUrl.search = "";
-	chatMeetingUrl.hash = "";
+	const chatTagStart = chatMeetingUrl
+		? await parlumeChatTagStart({
+				organizationId: input.organizationId,
+				meetingUrl: chatMeetingUrl,
+			})
+		: 1;
+	const meetingKey = chatMeetingUrl
+		? parlumeMeetingKey(chatMeetingUrl)
+		: null;
 	const hardStopAt = new Date(Date.now() + PARLUME_MAX_DURATION_MS);
-	const session = await db.parlumeMeetingSession.create({
-		data: {
-			projectId: input.projectId,
+	const claim = await db.$transaction(async (tx) => {
+		const live = await findLiveSessionUnderLock(tx, {
 			organizationId: input.organizationId,
-			userId: input.userId,
-			agentKind: agent.agentKind,
-			agentLabel: agent.agentLabel,
-			agentInstanceSId: agent.agentInstanceSId,
-			agentInstanceVersionId: agent.agentInstanceVersionId,
-			agentInstanceVersion: agent.agentInstanceVersion,
-			streamTokenDigest: digestStreamToken(streamToken),
-			toolsReadOnly: input.toolsReadOnly,
-			suggestionsEnabled: input.suggestionsEnabled,
-			suggestionAudience: input.suggestionAudience,
-			hardStopAt,
-			trigger: input.trigger,
+			meetingKey,
+			meetingUrl: chatMeetingUrl,
 			linkedMeetingId,
-			occurrenceStart: input.occurrenceStart ?? null,
-			meetingUrl: chatMeetingUrl.href,
-			channelIntegrationId:
-				canonicalInvitation &&
-				extractChannelThreadId(canonicalInvitation.joinUrl)
-					? canonicalInvitation.integrationId
-					: null,
-			channelChatStatus:
-				extractChannelThreadId(chatMeetingUrl.href) ||
-				isShortTeamsMeetingUrl(chatMeetingUrl.href)
-					? "PENDING"
-					: "ATTENDEE",
-		},
-		select: { id: true },
+		});
+		if (live) {
+			const refusal = refusalForLiveSession(live, input.projectId);
+			if (refusal) {
+				throw new ORPCError("CONFLICT", { message: refusal });
+			}
+			return { id: live.id, alreadyInMeeting: true };
+		}
+		const created = await tx.parlumeMeetingSession.create({
+			data: {
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				userId: input.userId,
+				agentKind: agent.agentKind,
+				agentLabel: agent.agentLabel,
+				agentInstanceSId: agent.agentInstanceSId,
+				agentInstanceVersionId: agent.agentInstanceVersionId,
+				agentInstanceVersion: agent.agentInstanceVersion,
+				streamTokenDigest: digestSessionToken(streamToken),
+				callbackTokenDigest: digestSessionToken(callbackToken),
+				attendeeSource: attendeeSourceToStored(attendee.source),
+				toolsReadOnly: input.toolsReadOnly,
+				suggestionsEnabled: input.suggestionsEnabled,
+				suggestionAudience: input.suggestionAudience,
+				hardStopAt,
+				trigger: input.trigger,
+				linkedMeetingId,
+				occurrenceStart: input.occurrenceStart ?? null,
+				externalInvitees: input.externalInvitees ?? false,
+				inviteeEmails: input.inviteeEmails ?? [],
+				meetingUrl: chatMeetingUrl,
+				meetingKey,
+				channelIntegrationId:
+					canonicalInvitation &&
+					extractChannelThreadId(canonicalInvitation.joinUrl)
+						? canonicalInvitation.integrationId
+						: null,
+				channelChatStatus:
+					chatMeetingUrl &&
+					(extractChannelThreadId(chatMeetingUrl) ||
+						isShortTeamsMeetingUrl(chatMeetingUrl))
+						? "PENDING"
+						: "ATTENDEE",
+			},
+			select: { id: true },
+		});
+		return { id: created.id, alreadyInMeeting: false };
 	});
+	if (claim.alreadyInMeeting) {
+		parlumeLog("info", "start.already_in_meeting", {
+			sessionId: claim.id,
+			trigger: input.trigger,
+		});
+		return {
+			session: await db.parlumeMeetingSession.findUniqueOrThrow({
+				where: { id: claim.id },
+				select: sessionSelect,
+			}),
+			alreadyInMeeting: true,
+		};
+	}
+	const session = { id: claim.id };
 
 	let providerBotId: string | null = null;
 	try {
@@ -449,6 +637,7 @@ export async function startParlumeMeetingSession(
 			settings,
 			sessionId: session.id,
 			hardStopAt,
+			chatTagStart,
 		});
 		providerBotId = await startParlumeMeetingBot({
 			settings,
@@ -456,7 +645,7 @@ export async function startParlumeMeetingSession(
 			sessionId: session.id,
 			meetingUrl: input.meetingUrl,
 			streamToken,
-			callbackSecret: callbackSecret(settings.serviceSecret, session.id),
+			callbackToken,
 			hardStopAt,
 		});
 		// A stop can arrive while the provider is creating the bot. Claim the
@@ -492,6 +681,7 @@ export async function startParlumeMeetingSession(
 					where: { id: session.id },
 					select: sessionSelect,
 				}),
+				alreadyInMeeting: false,
 			};
 		}
 		const started = await db.parlumeMeetingSession.findUniqueOrThrow({
@@ -536,7 +726,7 @@ export async function startParlumeMeetingSession(
 			trigger: input.trigger,
 			hardStopAt: hardStopAt.toISOString(),
 		});
-		return { session: started };
+		return { session: started, alreadyInMeeting: false };
 	} catch (error) {
 		parlumeLog("error", "start.failed", {
 			sessionId: session.id,
@@ -563,6 +753,11 @@ export async function startParlumeMeetingSession(
 				endedAt: new Date(),
 			},
 		});
+		// A person who invited Parlume reads the refusal on the page; an
+		// automatic join has nobody watching, so its enabler is told.
+		if (markedFailed.count > 0 && input.trigger === "AUTO") {
+			await notifyParlumeJoinFailure(session.id);
+		}
 		if (markedFailed.count === 0 && !providerBotId) {
 			// A stop arrived before the provider returned an id and provider
 			// creation failed, so there is no bot left for the start request to

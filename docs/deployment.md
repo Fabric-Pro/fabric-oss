@@ -49,11 +49,11 @@ Multi-environment deployment strategy for Fabric Portal.
 # Optional: copy .env.compose.example to .env.compose for local overrides.
 docker compose up -d postgres minio temporal temporal-ui qdrant redis && pnpm dev
 
-# Option B: .NET Aspire (recommended)
-cd aspire/Fabric.AppHost && dotnet run
+# Option B: .NET Aspire (recommended, requires the Aspire CLI 17.0.0 bundle)
+cd aspire/Fabric.AppHost && aspire run
 ```
 
-See `docs/ASPIRE_USAGE.md` for detailed Aspire orchestration guide.
+See the [Aspire CLI usage guide](ASPIRE_USAGE.md) for setup and orchestration commands.
 
 ## Azure Deployment
 

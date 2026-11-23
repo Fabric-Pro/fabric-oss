@@ -107,6 +107,7 @@
 
 import { PENDING_DECISIONS_HEADING } from "@repo/agent-prompts";
 import {
+	findHeadingLine,
 	findHeadingLineEnd,
 	stripInlineDecoration,
 } from "@repo/utils/markdown-heading";
@@ -343,18 +344,11 @@ function countByKey(entries: PendingDecisionEntry[]): Map<string, number> {
  * doc comment records what happened the last time this pattern existed in two
  * places (the editor broadened to `#{1,6}` while the backend stayed at `#{1,2}`,
  * and the two split the same document differently). The split this insert has to
- * respect is the one that regex performs.
+ * respect is the one that regex performs, skipping the same fenced code lines
+ * (`findHeadingLine`).
  */
 function findAcceptanceHeadingStart(text: string): number {
-	let offset = 0;
-	for (const line of text.split("\n")) {
-		if (ACCEPTANCE_HEADING_RE.test(stripInlineDecoration(line))) {
-			return offset;
-		}
-		// + 1 for the "\n" that `split` consumed.
-		offset += line.length + 1;
-	}
-	return -1;
+	return findHeadingLine(text, ACCEPTANCE_HEADING_RE)?.start ?? -1;
 }
 
 /**

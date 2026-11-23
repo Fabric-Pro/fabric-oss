@@ -122,11 +122,9 @@ vi.mock("../../shared/read-only-gate", () => ({
 	guardToolWriteForReadOnly: vi.fn(),
 }));
 
+import { UNBACKED_CLAIM_NOTICE } from "@repo/utils/unbacked-claim-notice";
 import { executeDirectChatActivity } from "../ai-execution";
-import {
-	UNBACKED_CLAIM_NOTICE,
-	withUnbackedClaimNotice,
-} from "../completion-claim-notice";
+import { withUnbackedClaimNotice } from "../completion-claim-notice";
 
 const REQUEST =
 	"Every Monday, publish a status page here. Run it once now too.";

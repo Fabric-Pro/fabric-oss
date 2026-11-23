@@ -104,6 +104,27 @@ export class ParlumeTurnEndpoint<T extends EndpointedTurn> {
 		}
 	}
 
+	/** The request being held, if any. */
+	pending(): T | null {
+		return this.draft?.turn ?? null;
+	}
+
+	/** The request being held for this speaker, if any. */
+	heldFor(speakerKey: string): T | null {
+		const draft = this.draft;
+		return draft?.speakerKey === speakerKey ? draft.turn : null;
+	}
+
+	/** Hands the request being held over now, as its speaker had finished. */
+	complete(): void {
+		const draft = this.draft;
+		if (draft) {
+			clearTimeout(draft.timer);
+			this.draft = null;
+			this.onComplete(draft.turn);
+		}
+	}
+
 	private schedule(
 		deadline: number,
 		quietMs: number,

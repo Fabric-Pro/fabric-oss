@@ -79,6 +79,7 @@ import {
 	resolveActionLabel,
 	resourceIcon,
 } from "./action-catalog";
+import { auditActingFor, auditActorLabel } from "./actor-label";
 import { describeActionKey } from "./audit-actions-catalog";
 import { SeverityBadge } from "./SeverityBadge";
 import {
@@ -869,31 +870,11 @@ export function AuditLogTable({
 									descriptor,
 								);
 
-								// Actor display (item 16): for API key rows prefer
-								// the human-readable `actorNameSnapshot` (e.g.,
-								// "SRE laptop"). Fall back to the opaque prefix
-								// only when the snapshot is null — this happens for
-								// older rows written before the name was captured.
-								const apiKeyPrefix =
-									row.actorType === "api_key"
-										? (
-												row.metadata as
-													| { keyPrefix?: string }
-													| null
-													| undefined
-											)?.keyPrefix
-										: undefined;
-								const actorLabel =
-									row.actorType === "api_key"
-										? (row.actorNameSnapshot ??
-											apiKeyPrefix ??
-											t(
-												"settings.auditLog.badges.apiKey",
-											))
-										: (row.actorEmailSnapshot ??
-											t(
-												"settings.auditLog.badges.system",
-											));
+								const actorLabel = auditActorLabel(
+									row,
+									t as (key: string) => string,
+								);
+								const actingFor = auditActingFor(row);
 
 								return (
 									<TableRow
@@ -967,6 +948,20 @@ export function AuditLogTable({
 														Click to copy
 													</TooltipContent>
 												</Tooltip>
+												{actingFor ? (
+													<span
+														className="truncate text-xs text-muted-foreground"
+														title={actingFor}
+														data-testid="audit-actor-acting-for"
+													>
+														{t(
+															"settings.auditLog.badges.actingFor",
+															{
+																email: actingFor,
+															},
+														)}
+													</span>
+												) : null}
 												<div className="mt-1 flex gap-1">
 													{row.actorType ===
 													"api_key" ? (
@@ -976,6 +971,17 @@ export function AuditLogTable({
 														>
 															{t(
 																"settings.auditLog.badges.apiKey",
+															)}
+														</Badge>
+													) : null}
+													{row.actorType ===
+													"agent" ? (
+														<Badge
+															variant="outline"
+															className="text-[10px] uppercase tracking-wider text-muted-foreground"
+														>
+															{t(
+																"settings.auditLog.badges.agent",
 															)}
 														</Badge>
 													) : null}

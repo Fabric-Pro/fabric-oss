@@ -375,6 +375,15 @@ const testCasesDraftedPayload = z.object({
 	totalFeatures: z.number().int().nonnegative(),
 });
 
+// PARLUME_NOTES_READY payload — written directly by the temporal
+// `notifyParlumeNotesReady` activity when a meeting's notes are written, one
+// row per internal invitee; registered here so the validator stays total over
+// NotificationType. Ids only: the notes stay behind the link.
+const parlumeNotesReadyPayload = z.object({
+	sessionId: z.string(),
+	projectId: z.string(),
+});
+
 // PUBLISHING_TOPICS_READY payload — written directly by the Temporal
 // `notifyPublishingTopicsReady` activity (Fizzy #1850, 1C-2b) when a publishing
 // suggestion cycle reaches READY, one row per eligible contributor. The
@@ -438,6 +447,23 @@ const decisionCandidatesReadyPayload = z.object({
 	projectId: z.string(),
 	candidateCount: z.number().int().positive(),
 	fileCount: z.number().int().positive(),
+});
+
+// PARLUME_JOIN_FAILED / PARLUME_WAITING_IN_LOBBY — written by
+// `parlume-notices.ts` in the projects module. The reason itself is the
+// session row's own `lastError`, in the snippet.
+const parlumeSessionBase = z.object({
+	sessionId: z.string(),
+	projectId: z.string(),
+	trigger: z.enum(["MANUAL", "AUTO"]),
+});
+
+const parlumeJoinFailedPayload = parlumeSessionBase.extend({
+	endReason: z.enum(["START_FAILED", "NOT_ADMITTED"]),
+});
+
+const parlumeWaitingInLobbyPayload = parlumeSessionBase.extend({
+	admitBy: z.string(),
 });
 
 /**
@@ -616,6 +642,9 @@ const NotificationPayloadByType = {
 		codingInstructionsPublishedPayload,
 	[NotificationType.DECISION_CANDIDATES_READY]:
 		decisionCandidatesReadyPayload,
+	[NotificationType.PARLUME_NOTES_READY]: parlumeNotesReadyPayload,
+	[NotificationType.PARLUME_JOIN_FAILED]: parlumeJoinFailedPayload,
+	[NotificationType.PARLUME_WAITING_IN_LOBBY]: parlumeWaitingInLobbyPayload,
 } as const;
 
 export function validatePayload(

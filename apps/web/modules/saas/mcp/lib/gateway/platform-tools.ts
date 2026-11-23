@@ -124,6 +124,7 @@ import {
 } from "./knowledge-search";
 import { createKnowledgeTools } from "./knowledge-tools";
 import { createMemoryWriteTools } from "./memory-write-tools";
+import { parlumeAuditActor } from "./parlume-audit-actor";
 import {
 	bindToolCall,
 	boundProjectId,
@@ -3446,6 +3447,7 @@ function announceStoryCreated(params: {
 				{
 					action: "story.created",
 					category: "story",
+					actor: parlumeAuditActor(session),
 					organizationId: session.organizationId,
 					projectId,
 					resource: {
@@ -4186,7 +4188,7 @@ async function handleListDocuments(
 const DOCUMENT_UNAVAILABLE = "Document not found or access denied";
 const CONTEXT_UNAVAILABLE = "Context not found or access denied";
 const CONFIDENTIAL_TRANSCRIPT =
-	"This transcript belongs to a confidential meeting series, so it is kept out of answers. Project members can still read it in the Meeting Digest.";
+	"This transcript is kept out of answers: it belongs to a confidential meeting series, or it is a Parlume meeting transcript, whose notes are on the project's Parlume page.";
 
 async function handleGetDocument(
 	args: Record<string, unknown>,
@@ -5046,15 +5048,18 @@ async function handleUpdateProjectContext(
 						activeOrganizationId: session.organizationId,
 					},
 				},
-				buildContextMetadataAuditEvent({
-					organizationId: hostOrganizationId,
-					projectId,
-					context: ctx,
-					before: result.before,
-					after: result.after,
-					changed: result.changed,
-					via: "mcp-gateway",
-				}),
+				{
+					...buildContextMetadataAuditEvent({
+						organizationId: hostOrganizationId,
+						projectId,
+						context: ctx,
+						before: result.before,
+						after: result.after,
+						changed: result.changed,
+						via: "mcp-gateway",
+					}),
+					actor: parlumeAuditActor(session),
+				},
 			);
 		} catch (error) {
 			console.warn(

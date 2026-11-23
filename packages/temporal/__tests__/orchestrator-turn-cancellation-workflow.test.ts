@@ -2161,7 +2161,7 @@ describe("optional answer snapshot failures", () => {
 			ok: true,
 			value: {
 				status: "failed",
-				error: "LLM stream error: Example HARD usage limit",
+				error: "Example HARD usage limit",
 				usageLimit: {
 					message: "Example HARD usage limit",
 					limitId: "example-limit",

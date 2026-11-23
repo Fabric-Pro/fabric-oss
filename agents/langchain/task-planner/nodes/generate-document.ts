@@ -1,3 +1,4 @@
+import { extractProviderConfig } from "@repo/agent-core";
 /**
  * Generate Document Node
  *
@@ -242,7 +243,9 @@ export async function generateDocumentNode(
 
 		// Extract provider config from runtime config
 		let providerConfig: ProviderConfig | undefined;
-		if (config?.configurable) {
+		if (config?.configurable?.ai_credential_kind === "bearer") {
+			providerConfig = extractProviderConfig(config);
+		} else if (config?.configurable) {
 			const configurable = config.configurable as Record<string, unknown>;
 			if (configurable.ai_api_key && configurable.ai_model) {
 				providerConfig = {

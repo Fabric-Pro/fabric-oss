@@ -12,8 +12,8 @@ import {
 import { orpcClient } from "@shared/lib/orpc-client";
 
 export type TranscriptUploadOutcome =
-	| { status: "started" }
-	| { status: "reprocessing" }
+	| { status: "started"; contextId: string }
+	| { status: "reprocessing"; contextId: string | null }
 	| {
 			status: "duplicate";
 			meetingSubject: string | null;
@@ -48,6 +48,8 @@ export async function uploadTranscriptFile(params: {
 	projectId: string;
 	organizationId: string | null;
 	reprocess?: boolean;
+	/** Called after a successful PUT, before requesting ingestion. */
+	onStored?: (contextId: string) => void;
 }): Promise<TranscriptUploadOutcome> {
 	const { file, projectId, organizationId, reprocess } = params;
 
@@ -87,10 +89,11 @@ export async function uploadTranscriptFile(params: {
 		);
 	}
 
+	params.onStored?.(contextId);
 	await orpcClient.projects.meetingTranscriptSync.startUploadIngest({
 		projectId,
 		organizationId,
 		contextId,
 	});
-	return { status: "started" };
+	return { status: "started", contextId: answer.contextId };
 }

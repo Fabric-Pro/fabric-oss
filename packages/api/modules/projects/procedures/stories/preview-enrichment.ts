@@ -80,6 +80,8 @@ export const previewEnrichmentProcedure = tenantProtectedProcedure
 				kind: true,
 				description: true,
 				acceptanceCriteria: true,
+				priority: true,
+				size: true,
 				draftingStage: true,
 			},
 		});
@@ -122,6 +124,10 @@ export const previewEnrichmentProcedure = tenantProtectedProcedure
 			),
 			currentDescription: target.description ?? "",
 			currentAcceptanceCriteria: target.acceptanceCriteria ?? "",
+			// So the item's priority and size are compared with the target's:
+			// a value the target already has is not a change.
+			currentPriority: target.priority,
+			currentSize: target.size,
 			mergedDescription: merged.description,
 			// `undefined` from the merge means "leave acceptance criteria alone";
 			// echoing the current value keeps the diff a no-op rather than

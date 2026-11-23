@@ -67,7 +67,7 @@ import {
 	APPROVABLE_PROPOSAL_STATUSES,
 	assertProposalItemsUnresolved,
 	assertProposalRevision,
-	assertUpdateTargetsInProject,
+	holdBackInvalidUpdateTargets,
 	lostClaimConflict,
 	PROPOSAL_ALREADY_ACTIONED_MESSAGE,
 } from "../backlog/proposal-approval-guards";
@@ -642,7 +642,30 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		for (const idx of proposal.appliedChangeIndexes ?? []) {
 			alreadyApplied.add(idx);
 		}
-		const remaining = indexedChanges.filter(
+		// Refuse before the claim: an item another reviewer resolved.
+		assertProposalItemsUnresolved({
+			indexes,
+			applied: alreadyApplied,
+			sourceMetadata: proposal.sourceMetadata,
+			allowApplied: proposal.status === "FAILED",
+		});
+		// An update whose target is not a work item in this project is left
+		// out and stays in review, named in `heldBack`; the other items apply.
+		const { heldBack, refusals: heldBackRefusals } =
+			await holdBackInvalidUpdateTargets(
+				input.projectId,
+				indexedChanges
+					.filter(({ index }) => !alreadyApplied.has(index))
+					.map(({ change }) => change),
+			);
+		const approved = indexedChanges.filter(
+			({ change }) => !heldBack.has(change),
+		);
+		const approvedChanges = approved.map(({ change }) => change);
+		const approvedChangeIds = approved.map(({ position }) =>
+			String(position),
+		);
+		const remaining = approved.filter(
 			({ index }) => !alreadyApplied.has(index),
 		);
 		const creates = remaining.filter(
@@ -650,18 +673,6 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		);
 		const updates = remaining.filter(
 			({ change }) => change.action === "update",
-		);
-		// Refuse before the claim: an item another reviewer resolved, or an
-		// update whose target is not a work item in this project.
-		assertProposalItemsUnresolved({
-			indexes,
-			applied: alreadyApplied,
-			sourceMetadata: proposal.sourceMetadata,
-			allowApplied: proposal.status === "FAILED",
-		});
-		await assertUpdateTargetsInProject(
-			input.projectId,
-			updates.map(({ change }) => change),
 		);
 
 		// Claim the row (plan §F3): PENDING|FAILED → APPLYING in one
@@ -694,8 +705,8 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			offeredListComplete: true,
 			entries: buildProposalReviewEntries(
 				proposalChanges,
-				submittedChanges,
-				indexes,
+				approved.map(({ position }) => submittedChanges[position]!),
+				approved.map(({ index }) => index),
 			),
 		});
 		if (!claimed) {
@@ -1404,15 +1415,14 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 				rawApplyError: joinedErrors,
 			});
 			return {
-				approvedChangeIds: input.approvedChanges.map((_c, i) =>
-					String(i),
-				),
+				approvedChangeIds,
 				createdStoryIds,
 				updateWorkflowId: null,
 				status: "failed" as const,
 				remainingChangeCount: null,
 				errors: createErrors,
 				skipped,
+				heldBack: heldBackRefusals,
 			};
 		}
 
@@ -1527,15 +1537,14 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 					rawApplyError: msg,
 				});
 				return {
-					approvedChangeIds: input.approvedChanges.map((_c, i) =>
-						String(i),
-					),
+					approvedChangeIds,
 					createdStoryIds,
 					updateWorkflowId: null,
 					status: "failed" as const,
 					remainingChangeCount: null,
 					errors: [msg],
 					skipped,
+					heldBack: heldBackRefusals,
 				};
 			}
 		}
@@ -1576,7 +1585,7 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			precheck: persistedPrecheck
 				? filterFindingsToApprovedChanges(
 						persistedPrecheck,
-						input.approvedChanges,
+						approvedChanges,
 					)
 				: persistedPrecheck,
 			resolveSnapshot: (finding) =>
@@ -1584,12 +1593,13 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		});
 
 		return {
-			approvedChangeIds: input.approvedChanges.map((_c, i) => String(i)),
+			approvedChangeIds,
 			createdStoryIds,
 			updateWorkflowId,
 			status: finalStatus,
 			remainingChangeCount,
 			errors: createErrors,
 			skipped,
+			heldBack: heldBackRefusals,
 		};
 	});

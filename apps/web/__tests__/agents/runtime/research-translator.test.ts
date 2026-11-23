@@ -260,14 +260,17 @@ describe("ResearchRunTranslator — the end", () => {
 	it("a run an activity's usage limit refused is AI_USAGE_LIMIT_EXCEEDED with the limit", () => {
 		translator().finish({ kind: "failed", message: USAGE_LIMIT_MESSAGE });
 
+		const paused =
+			"AI calls are paused — the usage limit for today is reached. Manage limits to raise it, or try again after it resets.";
 		expect(emitted).toEqual([
 			expect.objectContaining({
 				type: EventType.RUN_ERROR,
 				code: "AI_USAGE_LIMIT_EXCEEDED",
-				message: USAGE_LIMIT_MESSAGE,
+				message: paused,
 				metadata: {
 					fabric: expect.objectContaining({
 						code: "AI_USAGE_LIMIT_EXCEEDED",
+						message: paused,
 						data: expect.objectContaining({
 							limitId: "limit-example",
 							dimension: "TOKENS",
@@ -276,6 +279,29 @@ describe("ResearchRunTranslator — the end", () => {
 							max: "5",
 						}),
 					}),
+				},
+			}),
+		]);
+	});
+});
+
+describe("ResearchRunTranslator — a provider failure", () => {
+	it("shows the shared provider-failure message, never the provider's text", () => {
+		translator().finish({
+			kind: "failed",
+			message:
+				"Incorrect API key provided: sk-test-****wxyz. See https://platform.example.com/account/api-keys.",
+		});
+
+		const auth =
+			"The AI provider rejected the request (authentication). Check the provider settings.";
+		expect(emitted).toEqual([
+			expect.objectContaining({
+				type: EventType.RUN_ERROR,
+				code: "RESEARCH_FAILED",
+				message: auth,
+				metadata: {
+					fabric: expect.objectContaining({ message: auth }),
 				},
 			}),
 		]);

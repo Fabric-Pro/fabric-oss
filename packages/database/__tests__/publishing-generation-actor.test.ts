@@ -62,9 +62,12 @@ const run = (organizationId: string | null = ORG_ID) =>
 		actorUserId: USER_ID,
 	});
 
-function orgProject(organizationId: string = ORG_ID) {
+function orgProject(
+	organizationId: string = ORG_ID,
+	creatorId: string = OWNER_ID,
+) {
 	mocks.projectFindUnique.mockResolvedValue({
-		userId: OWNER_ID,
+		userId: creatorId,
 		organizationId,
 	});
 }
@@ -112,18 +115,31 @@ describe("the actor half — it asks the gate's question", () => {
 		expect(mocks.memberFindFirst).not.toHaveBeenCalled();
 	});
 
-	it("ALLOWS a plain organization member with no project row", () => {
-		orgProject();
+	it("ALLOWS the project's creator through a plain organization role, with no project row", () => {
+		orgProject(ORG_ID, USER_ID);
 		mocks.memberFindFirst.mockResolvedValue({ role: "member" });
 
 		return expect(run()).resolves.toEqual({ ok: true });
 	});
 
+	it("REFUSES an organization admin with no project row who did not create the project", () => {
+		// The gate's reach refusal: an organization role grants nothing on a
+		// project the actor cannot open.
+		orgProject();
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+
+		return expect(run()).resolves.toEqual({
+			ok: false,
+			reason: "NOT_AUTHORIZED",
+			currentOrganizationId: ORG_ID,
+		});
+	});
+
 	it("REFUSES an organization viewer — membership alone is not the question", () => {
 		// The other direction of the same defect. `isCurrentOrgMember` answered
 		// yes for this actor; the gate answers no, because the org `viewer` role
-		// does not carry PUBLISHING_TOPIC_UPDATE.
-		orgProject();
+		// does not carry PUBLISHING_TOPIC_UPDATE, even for the project's creator.
+		orgProject(ORG_ID, USER_ID);
 		mocks.memberFindFirst.mockResolvedValue({ role: "viewer" });
 
 		return expect(run()).resolves.toEqual({
@@ -143,8 +159,8 @@ describe("the actor half — it asks the gate's question", () => {
 		});
 	});
 
-	it("treats an expired project row as absent and falls back to the org role", () => {
-		orgProject();
+	it("treats an expired project row as absent and falls back to the creator's org role", () => {
+		orgProject(ORG_ID, USER_ID);
 		mocks.projectMemberFindUnique.mockResolvedValue({
 			role: "VIEWER",
 			acceptedAt: new Date(),

@@ -18,6 +18,8 @@ vi.mock("@repo/database", () => ({
 			updateManyAndReturn: mocks.updateManyAndReturn,
 		},
 	},
+	buildParlumePageUrl: async () =>
+		"https://fabric.example/app/example-org/projects/p1/parlume",
 }));
 vi.mock("next/server", async (original) => ({
 	...(await original<typeof import("next/server")>()),

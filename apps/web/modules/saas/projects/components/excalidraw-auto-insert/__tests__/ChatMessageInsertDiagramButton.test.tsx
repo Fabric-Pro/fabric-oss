@@ -29,7 +29,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Editor } from "@tiptap/react";
 import type { ReactNode } from "react";
@@ -54,6 +54,12 @@ vi.mock("next-intl", () => ({
 						return "Inserted into feature";
 					case "openPickerButton":
 						return "Open a document to insert";
+					case "bannerEditorFailure":
+						return `Saved to ${values?.projectName ?? ""} diagrams — couldn't add it to ${values?.docName ?? ""}.`;
+					case "bannerEditorFailureThisProject":
+						return `Saved to this project's diagrams — couldn't add it to ${values?.docName ?? ""}.`;
+					case "openPickerNoProject":
+						return "Add a project to this chat to choose a document or feature for the diagram.";
 					case "saveToDiagramsButton":
 						return "Save to Diagrams";
 					case "copyEmbedCodeButton":
@@ -66,6 +72,8 @@ vi.mock("next-intl", () => ({
 				switch (key) {
 					case "insertCrossProject":
 						return `Chat is scoped to ${values?.projectName ?? ""}; open a ${values?.projectName ?? ""} document to insert.`;
+					case "insertCrossProjectUnnamed":
+						return "Chat is scoped to another project; open a document from that project to insert.";
 					case "insertNoPermission":
 						return `You don't have edit permission on ${values?.docName ?? ""}.`;
 					case "insertNoCreatePermission":
@@ -81,6 +89,20 @@ vi.mock("next-intl", () => ({
 			return key;
 		};
 		return t;
+	},
+}));
+
+const getProjectMock = vi.hoisted(() => vi.fn());
+vi.mock("@shared/lib/orpc-query-utils", () => ({
+	orpc: {
+		projects: {
+			get: {
+				queryOptions: ({ input }: { input: unknown }) => ({
+					queryKey: ["projects.get", input],
+					queryFn: () => getProjectMock(input),
+				}),
+			},
+		},
 	},
 }));
 
@@ -184,6 +206,12 @@ vi.mock("next/dynamic", () => ({
 					>
 						Pick feature
 					</button>
+					<span data-testid="picker-project-id">
+						{String(props.projectId ?? "")}
+					</span>
+					<span data-testid="picker-project-name">
+						{String(props.projectName ?? "")}
+					</span>
 				</div>
 			);
 		};
@@ -274,6 +302,7 @@ function renderWithProviders(node: ReactNode) {
 }
 
 beforeEach(() => {
+	getProjectMock.mockReset();
 	trackEvent.mockReset();
 	hookResult.enabled = true;
 	hookResult.status = "idle";
@@ -377,6 +406,74 @@ describe("ChatMessageInsertDiagramButton -- render-decision branches", () => {
 			"diagram_auto_insert_blocked",
 			expect.objectContaining({ reason: "cross_project" }),
 		);
+	});
+
+	it("names the chat project in the cross-project tooltip, never its id", async () => {
+		getProjectMock.mockResolvedValue({ project: { name: "Atlas" } });
+		renderWithProviders(
+			<ChatMessageInsertDiagramButton
+				{...buildProps({
+					chatScopeProjectName: null,
+					resolverTarget: {
+						kind: "document",
+						editor: makeFakeEditor(),
+						projectId: "proj_OTHER",
+						documentLabel: "Other doc",
+					},
+				})}
+			/>,
+		);
+
+		await waitFor(() => {
+			expect(getProjectMock).toHaveBeenCalledWith({
+				id: "proj_1",
+				organizationId: "org_1",
+			});
+		});
+		const trigger = screen.getByRole("button", {
+			name: /Insert into document/i,
+		}).parentElement;
+		if (!trigger) {
+			throw new Error("tooltip trigger missing");
+		}
+		fireEvent.focus(trigger);
+
+		await waitFor(() => {
+			expect(screen.getByRole("tooltip")).toHaveTextContent(
+				"Chat is scoped to Atlas; open a Atlas document to insert.",
+			);
+		});
+		expect(screen.queryByText(/proj_1/)).not.toBeInTheDocument();
+	});
+
+	it("does not name a project in the cross-project tooltip while the name is unknown", async () => {
+		getProjectMock.mockReturnValue(new Promise(() => {}));
+		renderWithProviders(
+			<ChatMessageInsertDiagramButton
+				{...buildProps({
+					chatScopeProjectName: null,
+					resolverTarget: {
+						kind: "document",
+						editor: makeFakeEditor(),
+						projectId: "proj_OTHER",
+						documentLabel: "Other doc",
+					},
+				})}
+			/>,
+		);
+
+		const trigger = screen.getByRole("button", {
+			name: /Insert into document/i,
+		}).parentElement;
+		if (!trigger) {
+			throw new Error("tooltip trigger missing");
+		}
+		fireEvent.focus(trigger);
+
+		expect(await screen.findByRole("tooltip")).toHaveTextContent(
+			"Chat is scoped to another project; open a document from that project to insert.",
+		);
+		expect(screen.queryByText(/proj_1/)).not.toBeInTheDocument();
 	});
 
 	it("renders disabled + Save-to-Diagrams when target denies edit (FR-8)", () => {
@@ -487,6 +584,54 @@ describe("ChatMessageInsertDiagramButton -- active path", () => {
 		expect(
 			screen.getByRole("button", { name: /retry/i }),
 		).toBeInTheDocument();
+	});
+
+	it("names the project in the banner without a known name, never its id", async () => {
+		hookResult.status = "error";
+		getProjectMock.mockResolvedValue({ project: { name: "Atlas" } });
+		renderWithProviders(
+			<ChatMessageInsertDiagramButton
+				{...buildProps({ chatScopeProjectName: null })}
+			/>,
+		);
+
+		expect(
+			await screen.findByText(
+				"Saved to Atlas diagrams — couldn't add it to Architecture.",
+			),
+		).toBeInTheDocument();
+		expect(getProjectMock).toHaveBeenCalledWith({
+			id: "proj_1",
+			organizationId: "org_1",
+		});
+		expect(screen.queryByText(/proj_1/)).not.toBeInTheDocument();
+	});
+
+	it("says 'this project' in the banner while the name is unknown", () => {
+		hookResult.status = "error";
+		getProjectMock.mockReturnValue(new Promise(() => {}));
+		renderWithProviders(
+			<ChatMessageInsertDiagramButton
+				{...buildProps({ chatScopeProjectName: null })}
+			/>,
+		);
+
+		expect(
+			screen.getByText(
+				"Saved to this project's diagrams — couldn't add it to Architecture.",
+			),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/proj_1/)).not.toBeInTheDocument();
+	});
+
+	it("does not look the project up outside the error state", () => {
+		renderWithProviders(
+			<ChatMessageInsertDiagramButton
+				{...buildProps({ chatScopeProjectName: null })}
+			/>,
+		);
+
+		expect(getProjectMock).not.toHaveBeenCalled();
 	});
 });
 
@@ -729,5 +874,93 @@ describe("ChatMessageInsertDiagramButton -- picker handoff (E2)", () => {
 		);
 		expect(onOpenPicker).toHaveBeenCalledTimes(1);
 		expect(screen.queryByTestId("picker-dialog")).not.toBeInTheDocument();
+	});
+
+	it("says what to do instead of doing nothing when the chat has no project", () => {
+		renderWithProviders(
+			<ChatMessageInsertDiagramButton
+				{...buildProps({
+					resolverTarget: null,
+					chatScopeProjectName: null,
+					chatScope: {
+						projectId: null,
+						organizationId: "org_1",
+						lastUserPromptForMessage: () => null,
+					},
+				})}
+			/>,
+		);
+
+		const button = screen.getByRole("button", {
+			name: /Open a document to insert/i,
+		});
+		expect(button).toBeDisabled();
+		expect(button).toHaveAccessibleDescription(
+			"Add a project to this chat to choose a document or feature for the diagram.",
+		);
+		expect(
+			screen.getByText(
+				"Add a project to this chat to choose a document or feature for the diagram.",
+			),
+		).toBeVisible();
+	});
+
+	it("keeps the button enabled without a project when the parent opens its own picker", () => {
+		renderWithProviders(
+			<ChatMessageInsertDiagramButton
+				{...buildProps({
+					resolverTarget: null,
+					onOpenPicker: vi.fn(),
+					chatScope: {
+						projectId: null,
+						organizationId: "org_1",
+						lastUserPromptForMessage: () => null,
+					},
+				})}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", { name: /Open a document to insert/i }),
+		).toBeEnabled();
+		expect(
+			screen.queryByText(/Add a project to this chat/i),
+		).not.toBeInTheDocument();
+	});
+
+	it("never passes the project id to the picker as the project name", async () => {
+		const user = userEvent.setup();
+		renderWithProviders(
+			<ChatMessageInsertDiagramButton
+				{...buildProps({
+					resolverTarget: null,
+					chatScopeProjectName: null,
+				})}
+			/>,
+		);
+		await user.click(
+			screen.getByRole("button", { name: /Open a document to insert/i }),
+		);
+
+		expect(
+			await screen.findByTestId("picker-project-id"),
+		).toHaveTextContent("proj_1");
+		expect(screen.getByTestId("picker-project-name").textContent).toBe("");
+	});
+
+	it("passes the known project name to the picker", async () => {
+		const user = userEvent.setup();
+		renderWithProviders(
+			<ChatMessageInsertDiagramButton
+				{...buildProps({ resolverTarget: null })}
+			/>,
+		);
+		await user.click(
+			screen.getByRole("button", { name: /Open a document to insert/i }),
+		);
+
+		expect(
+			await screen.findByTestId("picker-project-name"),
+		).toHaveTextContent("Atlas");
 	});
 });

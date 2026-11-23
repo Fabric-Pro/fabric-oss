@@ -2,8 +2,9 @@
 
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
+import { stripMarkdown } from "@ui/lib/strip-markdown";
 import { AudioLinesIcon, LogOutIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
 	formatClock,
 	formatCost,
@@ -14,7 +15,9 @@ import {
 	type ParlumeSession,
 } from "../lib/parlume-format";
 import { CARD_TITLE, MONO_LABEL } from "../lib/parlume-styles";
+import { actionStatus } from "../lib/parlume-view";
 import { useNow } from "../lib/use-now";
+import { ParlumeSpeakerMark } from "./ParlumeSpeakerMark";
 
 const LIVE_ACTIVITY_ITEMS = 3;
 
@@ -36,12 +39,30 @@ function Elapsed({ joinedAt }: { joinedAt: Date | string }) {
 	);
 }
 
+/**
+ * A request's latest line: where its proposed changes stand now, which the
+ * answer written when they were proposed no longer says, or else the answer
+ * as plain text, since one truncated line cannot hold its Markdown blocks.
+ */
+function requestSummary(request: ParlumeRequest): string {
+	return request.actions.length > 0
+		? request.actions
+				.map(
+					(action) =>
+						`${action.chatTag ?? "Change"} · ${actionStatus(action).label}`,
+				)
+				.join(", ")
+		: stripMarkdown(request.responseText);
+}
+
 function LiveActivity({
 	requests,
 	isLoading,
+	paused,
 }: {
 	requests: ParlumeRequest[];
 	isLoading: boolean;
+	paused: boolean;
 }) {
 	return (
 		<div className="space-y-3 px-6 pt-4.5 pb-5.5">
@@ -49,7 +70,7 @@ function LiveActivity({
 				<span className={MONO_LABEL}>Live activity</span>
 				<span className="flex items-center gap-1.5 text-xs text-muted-foreground">
 					<AudioLinesIcon className="size-3.5" aria-hidden="true" />
-					Listening for “Hey Fabric”
+					{paused ? "Listening paused" : "Listening for “Hey Fabric”"}
 				</span>
 			</div>
 			{requests.slice(0, LIVE_ACTIVITY_ITEMS).map((request) => (
@@ -62,17 +83,20 @@ function LiveActivity({
 					</span>
 					<div className="min-w-0 flex-1 space-y-1">
 						<div className="flex justify-between gap-2 text-[13px] leading-[18px]">
-							<span className="font-medium">
+							<span className="flex items-center gap-2 font-medium">
 								{request.speakerName ?? "Unidentified attendee"}
+								<ParlumeSpeakerMark
+									mark={request.speakerMark}
+								/>
 							</span>
 							<span className="text-muted-foreground">
 								{formatClock(request.createdAt)}
 							</span>
 						</div>
 						<p className="text-sm">{request.requestText}</p>
-						{request.responseText && (
+						{requestSummary(request) && (
 							<p className="truncate text-[13px] leading-[18px] text-muted-foreground">
-								{request.responseText}
+								{requestSummary(request)}
 							</p>
 						)}
 					</div>
@@ -100,6 +124,7 @@ export function ParlumeLiveCard({
 	canStop,
 	isStopping,
 	onStop,
+	voiceControls,
 }: {
 	session: ParlumeSession;
 	joinedAt: Date | string;
@@ -111,6 +136,8 @@ export function ParlumeLiveCard({
 	canStop: boolean;
 	isStopping: boolean;
 	onStop: (sessionId: string) => void;
+	/** Stop speaking, and pause or resume listening, while Parlume is in. */
+	voiceControls?: ReactNode;
 }) {
 	const [confirming, setConfirming] = useState(false);
 	const keepRef = useRef<HTMLButtonElement>(null);
@@ -126,6 +153,7 @@ export function ParlumeLiveCard({
 	}, [confirming]);
 
 	const isLeaving = isStopping || session.status === "LEAVING";
+	const paused = session.pausedAt !== null;
 	const canRemove =
 		canStop &&
 		(session.status === "ACTIVE" || session.status === "STOP_FAILED");
@@ -141,7 +169,9 @@ export function ParlumeLiveCard({
 						<h3 className={CARD_TITLE}>
 							{isLeaving
 								? "Leaving the meeting…"
-								: "Live in meeting"}
+								: paused
+									? "Listening paused"
+									: "Live in meeting"}
 						</h3>
 						<p className="flex flex-wrap gap-2 text-[13px] leading-[18px] text-muted-foreground">
 							<Elapsed joinedAt={joinedAt} />
@@ -213,6 +243,7 @@ export function ParlumeLiveCard({
 					</span>
 				</fieldset>
 			)}
+			{session.status === "ACTIVE" && !isLeaving && voiceControls}
 			<dl className="grid grid-cols-[repeat(auto-fit,minmax(10rem,1fr))] border-y border-border">
 				<div className="space-y-0.5 px-6 py-3.5">
 					<dt className={MONO_LABEL}>Agent</dt>
@@ -239,7 +270,11 @@ export function ParlumeLiveCard({
 					</div>
 				)}
 			</dl>
-			<LiveActivity requests={requests} isLoading={requestsLoading} />
+			<LiveActivity
+				requests={requests}
+				isLoading={requestsLoading}
+				paused={paused}
+			/>
 		</Card>
 	);
 }

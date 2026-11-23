@@ -45,6 +45,10 @@ import {
 } from "@repo/database/prisma/queries/projects/proposal-changes";
 import { logger } from "@repo/logs";
 import {
+	mergeWithinUpdate,
+	ownEditBodies,
+} from "@repo/utils/proposal-update-edits";
+import {
 	ApplicationFailure,
 	CancelledFailure,
 	Context,
@@ -54,6 +58,7 @@ import { z } from "zod";
 import { findAiConfigurationRefusal } from "../../lib/ai-configuration-refusal";
 import { classifyBacklogAnalysisError } from "../../lib/classify-analysis-error";
 import { createStoryFromProposal } from "../../lib/create-story-from-proposal";
+import { prismaErrorCode } from "../../lib/database-error";
 import { runDecisionPrecheck } from "../../lib/decision-precheck";
 import { reanalyzeBodyByKind } from "../../lib/reanalyze-body-by-kind";
 import {
@@ -63,6 +68,7 @@ import {
 import { detectDestructiveRewrite } from "../../lib/structure-guards";
 import { triggerDuplicateDetection } from "../../lib/trigger-duplicate-detection";
 import { withHeartbeatKeepalive } from "../../lib/with-heartbeat-keepalive";
+import { MISSING_UPDATE_TARGET_ERROR } from "../../workflows/backlog-apply-outcome";
 import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
 import { describeSyncErrorForUser } from "../pm-integration/pm-sync-user-error";
 import { CHARS_PER_TOKEN, MAX_TOKEN_BUDGET } from "./analysis-budget";
@@ -336,9 +342,10 @@ export const backlogChangeItemSchema = z.object({
 	/**
 	 * Set AFTER generation by the structure-preserving update pass (never
 	 * by the analyzer LLM). True when AI could not safely produce a
-	 * targeted, structure-preserving edit and the existing body was kept
-	 * unchanged ("safe-hold"). Surfaced in the review UI as a note so the
-	 * reviewer knows the description was intentionally left as-is.
+	 * targeted, structure-preserving edit, so the existing body was kept
+	 * with the update's new detail appended unchanged ("safe-hold").
+	 * Surfaced in the review UI as a note so the reviewer knows the merge
+	 * fell back.
 	 */
 	bodyMergeFallback: z
 		.boolean()
@@ -2510,8 +2517,8 @@ function auditState(
  * review diff for a completed merge matches the saved body and stays
  * type-correct (bugs stay bugs, features stay features).
  *
- * Genuine merge fallbacks neutralize the body diff and stamp
- * `bodyMergeFallback`. Aborted and unstarted merges keep the proposed diff
+ * Genuine merge fallbacks keep the existing body with the update's new
+ * detail appended unchanged, and stamp `bodyMergeFallback`. Aborted and unstarted merges keep the proposed diff
  * and receive `bodyMergeDeferred` so reviewers know apply will merge it.
  * Title/priority/size edits are preserved in both cases.
  *
@@ -2577,23 +2584,42 @@ export async function structurePreserveUpdates(params: {
 		counters.deferredToApply++;
 	};
 
-	// Safe-hold: keep the existing body. Neutralize the body diff so apply skips
-	// description/AC writes; title/priority/size still apply.
+	// Safe-hold: keep the existing body, with the update's new detail appended
+	// unchanged (`mergeWithinUpdate` with nothing merged), so the reviewer sees
+	// it and nothing proposed is dropped. The diff is against the body as it
+	// is: apply writes it as the update's own edits. With no new detail the
+	// diff is neutral and apply skips description/AC writes; title/priority/
+	// size still apply.
 	const safeHold = (change: Change, item: Item) => {
-		const existingDescription = item.description ?? "";
-		const existingAc = item.acceptanceCriteria ?? "";
+		const current = {
+			description: item.description ?? "",
+			acceptanceCriteria: item.acceptanceCriteria ?? "",
+		};
+		const kept =
+			mergeWithinUpdate(change, current, current)?.bodies ?? current;
 		if (change.description) {
 			change.description = {
-				from: existingDescription,
-				to: existingDescription,
+				from: current.description,
+				to: kept.description,
 			};
 		}
 		if (change.acceptanceCriteria) {
-			change.acceptanceCriteria = { from: existingAc, to: existingAc };
+			change.acceptanceCriteria = {
+				from: current.acceptanceCriteria,
+				to: kept.acceptanceCriteria,
+			};
 		}
 		change.bodyMergeFallback = true;
 		counters.heldBack++;
 	};
+
+	// An update written as a whole version of the body it updates is its own
+	// edits: it is neither merged nor safe-held, and apply writes it as it is.
+	const writesOwnEdits = (change: Change, item: Item) =>
+		ownEditBodies(change, {
+			description: item.description ?? "",
+			acceptanceCriteria: item.acceptanceCriteria ?? "",
+		}) !== null;
 
 	const mergeOne = async (change: Change) => {
 		const item = change.existingId
@@ -2601,7 +2627,7 @@ export async function structurePreserveUpdates(params: {
 			: undefined;
 		// Item not found (deleted/forged/cross-project) — leave untouched; the
 		// apply path handles unresolved updates loudly.
-		if (!item) {
+		if (!item || writesOwnEdits(change, item)) {
 			return;
 		}
 		if (abortSignal?.aborted) {
@@ -2651,6 +2677,21 @@ export async function structurePreserveUpdates(params: {
 
 		const existingDescription = item.description ?? "";
 		const existingAc = item.acceptanceCriteria ?? "";
+		// The merge is a model's rewrite, held to the update as apply holds
+		// it: no line the update keeps is changed, no text it lacks is
+		// written, and new detail the merge left out is appended unchanged.
+		const current = {
+			description: existingDescription,
+			acceptanceCriteria: existingAc,
+		};
+		const withinUpdate = mergeWithinUpdate(change, current, {
+			description: result.description,
+			acceptanceCriteria: result.acceptanceCriteria ?? existingAc,
+		});
+		const heldBodies = withinUpdate?.bodies ?? current;
+		if (withinUpdate?.detailAppended) {
+			change.bodyMergeFallback = true;
+		}
 		counters.merged++;
 		// Mark as already merged so the apply activity does not re-run the merge
 		// (avoids a double LLM call on the analysis path).
@@ -2662,13 +2703,13 @@ export async function structurePreserveUpdates(params: {
 		if (proposedDescription) {
 			change.description = {
 				from: existingDescription,
-				to: result.description,
+				to: heldBodies.description,
 			};
 		}
 		if (result.acceptanceCriteria !== undefined) {
 			change.acceptanceCriteria = {
 				from: existingAc,
-				to: result.acceptanceCriteria,
+				to: heldBodies.acceptanceCriteria,
 			};
 		} else if (change.acceptanceCriteria) {
 			// Merge decided AC shouldn't change — neutralize so the analyzer's raw
@@ -2690,7 +2731,7 @@ export async function structurePreserveUpdates(params: {
 		const item = change.existingId
 			? byId.get(change.existingId)
 			: undefined;
-		if (item) {
+		if (item && !writesOwnEdits(change, item)) {
 			safeHold(change, item);
 		}
 	}
@@ -3408,6 +3449,32 @@ function throwIfApplyStopped(
 }
 
 /**
+ * How long one apply database write or workflow start is kept alive. A lock
+ * wait under a concurrent edit or PM sync can outlast the heartbeat timeout.
+ * A step still running after this is treated as hung: its last keepalive
+ * fires at two minutes, so the 60-second heartbeat timeout fails the attempt
+ * about three minutes after the step started, and the idempotent retry takes
+ * over.
+ */
+const APPLY_STEP_KEEPALIVE_MAX_MS = 2 * 60_000;
+
+function keepApplyStepAlive<T>(
+	stage: string,
+	fn: () => Promise<T>,
+): Promise<T> {
+	return withHeartbeatKeepalive({ stage }, fn, APPLY_STEP_KEEPALIVE_MAX_MS);
+}
+
+/**
+ * Heartbeat before the next of several apply steps. A step's keepalive first
+ * fires 15 seconds in, so a run of shorter steps would otherwise pass the
+ * heartbeat timeout without one.
+ */
+function heartbeatBeforeApplyStep(stage: string): void {
+	heartbeat({ stage });
+}
+
+/**
  * Apply approved backlog changes to Fabric DB.
  *
  * `user_story` is the only work-item table (the Epic/Feature folder tables
@@ -3440,6 +3507,36 @@ export async function applyBacklogChanges(
 	} finally {
 		mergeScope.dispose();
 	}
+}
+
+/**
+ * Whether an update's write failed because its ticket was deleted after its
+ * row was read: a foreign key to the ticket (P2003), the row itself gone
+ * (P2025), or the guarded write matching no row (`StoryVersionConflictError`),
+ * with no ticket left. It then fails with the same missing-target reason as a
+ * ticket already gone when the apply read it.
+ */
+async function targetDeletedDuringWrite(
+	error: unknown,
+	storyId: string | null,
+	projectId: string,
+): Promise<boolean> {
+	const code = prismaErrorCode(error);
+	const lostWrite =
+		code === "P2003" ||
+		code === "P2025" ||
+		(error instanceof Error && error.name === "StoryVersionConflictError");
+	if (!storyId || !lostWrite) {
+		return false;
+	}
+	// A read that fails says nothing: the change keeps its own error.
+	const story = await db.userStory
+		.findFirst({
+			where: { id: storyId, projectId },
+			select: { id: true },
+		})
+		.catch(() => ({ id: storyId }));
+	return story === null;
 }
 
 async function applyBacklogChangesWithMergeSignal(
@@ -3615,16 +3712,19 @@ async function applyBacklogChangesWithMergeSignal(
 			return;
 		}
 		const changeIndex = proposalIndexFor(params.originalIndex);
+		heartbeatBeforeApplyStep("record-application");
 		try {
-			await db.$transaction(async (tx) => {
-				await recordProposalApplication(tx, {
-					proposalId,
-					changeIndex,
-					action: params.action,
-					createdEntityType: params.createdEntityType,
-					createdEntityId: params.createdEntityId,
-				});
-			});
+			await keepApplyStepAlive("record-application", () =>
+				db.$transaction(async (tx) => {
+					await recordProposalApplication(tx, {
+						proposalId,
+						changeIndex,
+						action: params.action,
+						createdEntityType: params.createdEntityType,
+						createdEntityId: params.createdEntityId,
+					});
+				}),
+			);
 		} catch (error) {
 			if (isUniqueViolation(error)) {
 				// Already recorded by a previous attempt — nothing to do.
@@ -3811,11 +3911,15 @@ async function applyBacklogChangesWithMergeSignal(
 		if (dup) {
 			if (policyProposalId) {
 				try {
-					await recordProposalDuplicateResolution({
-						proposalId: policyProposalId,
-						changeIndex: proposalIndexFor(originalIndex),
-						existingEntityId: dup.id,
-					});
+					await keepApplyStepAlive(
+						"record-duplicate-resolution",
+						() =>
+							recordProposalDuplicateResolution({
+								proposalId: policyProposalId,
+								changeIndex: proposalIndexFor(originalIndex),
+								existingEntityId: dup.id,
+							}),
+					);
 				} catch {
 					logger.warn(
 						"Failed to record proposal duplicate resolution",
@@ -3992,29 +4096,32 @@ async function applyBacklogChangesWithMergeSignal(
 			// index on (projectId, sourceRef) makes a re-import reuse the row.
 			const sourceRef = change.sourceRef;
 			try {
-				story = await createStory({
-					projectId,
-					title: change.title.to,
-					description: change.description?.to,
-					acceptanceCriteria: change.acceptanceCriteria?.to,
-					kind: effectiveKindHint === "BUG" ? "BUG" : "FEATURE",
-					priority: mapPriority(change.priority?.to),
-					size: mapSize(change.size?.to),
-					labels,
-					createdById: userId,
-					source: "IMPORTED_SCOPE",
-					draftingStage: "PLACEHOLDER",
-					deliveryTrack: change.deliveryTrack ?? undefined,
-					trackSetBy: change.deliveryTrack ? "AI" : undefined,
-					sourceRef,
-					proposalApplicationKey: applicationKeyFor(originalIndex),
-					sourceDependencyRaw:
-						change.sourceDependencyRaw ?? undefined,
-					dependsOnRefs: change.dependsOnRefs ?? [],
-					dependsOnPhases: change.dependsOnPhases ?? [],
-					pmAutoSyncEnabled: enablePmAutoSync,
-					createdFromProposalId: pendingProposalId,
-				});
+				story = await keepApplyStepAlive("create-scope-line", () =>
+					createStory({
+						projectId,
+						title: change.title.to,
+						description: change.description?.to,
+						acceptanceCriteria: change.acceptanceCriteria?.to,
+						kind: effectiveKindHint === "BUG" ? "BUG" : "FEATURE",
+						priority: mapPriority(change.priority?.to),
+						size: mapSize(change.size?.to),
+						labels,
+						createdById: userId,
+						source: "IMPORTED_SCOPE",
+						draftingStage: "PLACEHOLDER",
+						deliveryTrack: change.deliveryTrack ?? undefined,
+						trackSetBy: change.deliveryTrack ? "AI" : undefined,
+						sourceRef,
+						proposalApplicationKey:
+							applicationKeyFor(originalIndex),
+						sourceDependencyRaw:
+							change.sourceDependencyRaw ?? undefined,
+						dependsOnRefs: change.dependsOnRefs ?? [],
+						dependsOnPhases: change.dependsOnPhases ?? [],
+						pmAutoSyncEnabled: enablePmAutoSync,
+						createdFromProposalId: pendingProposalId,
+					}),
+				);
 			} catch (error) {
 				if (isUniqueViolation(error, "proposalApplicationKey")) {
 					story = await findByApplicationKey(originalIndex, error);
@@ -4061,9 +4168,12 @@ async function applyBacklogChangesWithMergeSignal(
 		// deliberately creates an UNLINKED ticket (a fresh PM card is created on
 		// first sync instead).
 		if (change.existingExternalId && !opts?.supersedes) {
-			await updateStory(story.id, projectId, {
-				externalId: change.existingExternalId,
-			});
+			heartbeatBeforeApplyStep("link-pm-card");
+			await keepApplyStepAlive("link-pm-card", () =>
+				updateStory(story.id, projectId, {
+					externalId: change.existingExternalId,
+				}),
+			);
 		}
 		createdItems.push({
 			type: change.type,
@@ -4115,11 +4225,14 @@ async function applyBacklogChangesWithMergeSignal(
 			// rows; FEATURE bodies are preserved verbatim). Pairs with the
 			// queryable `supersedes:<id>` label set at create time (REQ-4).
 			const footer = `\n\n---\n> ⤺ Supersedes closed ticket ${opts.supersedes.identifier} (${opts.supersedes.id})`;
-			await updateStory(
-				story.id,
-				projectId,
-				{ description: `${story.description ?? ""}${footer}` },
-				{ lastEditedSource: "AI_BACKLOG_UPDATE" },
+			heartbeatBeforeApplyStep("supersedes-footer");
+			await keepApplyStepAlive("supersedes-footer", () =>
+				updateStory(
+					story.id,
+					projectId,
+					{ description: `${story.description ?? ""}${footer}` },
+					{ lastEditedSource: "AI_BACKLOG_UPDATE" },
+				),
 			);
 			redirectedTerminalUpdates.push({
 				changeIndex: originalIndex,
@@ -4189,6 +4302,9 @@ async function applyBacklogChangesWithMergeSignal(
 			continue;
 		}
 
+		// The ticket an update writes once its row is read, for a write that
+		// fails because the ticket was deleted meanwhile.
+		let updateTargetId: string | null = null;
 		try {
 			if (change.action === "create") {
 				await createLeafFromChange(change, originalIndex, "");
@@ -4343,10 +4459,11 @@ async function applyBacklogChangesWithMergeSignal(
 				if (!existingRow && isValidFabricId) {
 					errors.push({
 						change: change as ChangeProposal["changes"][number],
-						error: "target ticket no longer exists in this project",
+						error: MISSING_UPDATE_TARGET_ERROR,
 					});
 					continue;
 				}
+				updateTargetId = itemId;
 
 				// Terminal-state gate (REQ-1/2/3): a resolved update target that is
 				// closed, declined, or auto-hidden is an immutable, terminal record.
@@ -4394,12 +4511,17 @@ async function applyBacklogChangesWithMergeSignal(
 					if (alreadySuperseded) {
 						if (policyProposalId) {
 							try {
-								await recordProposalDuplicateResolution({
-									proposalId: policyProposalId,
-									changeIndex:
-										proposalIndexFor(originalIndex),
-									existingEntityId: alreadySuperseded.id,
-								});
+								await keepApplyStepAlive(
+									"record-duplicate-resolution",
+									() =>
+										recordProposalDuplicateResolution({
+											proposalId: policyProposalId,
+											changeIndex:
+												proposalIndexFor(originalIndex),
+											existingEntityId:
+												alreadySuperseded.id,
+										}),
+								);
 							} catch {
 								logger.warn(
 									"Failed to record proposal duplicate resolution",
@@ -4457,9 +4579,11 @@ async function applyBacklogChangesWithMergeSignal(
 					);
 
 					if (backlogItem && !backlogItem.externalId) {
-						await updateStory(itemId, projectId, {
-							externalId: change.existingExternalId,
-						});
+						await keepApplyStepAlive("link-pm-card", () =>
+							updateStory(itemId, projectId, {
+								externalId: change.existingExternalId,
+							}),
+						);
 						logger.info(
 							"[Backlog Apply] Linked existing item to PM tool",
 							{
@@ -4540,57 +4664,101 @@ async function applyBacklogChangesWithMergeSignal(
 
 				// Merge updates that bypassed analysis or were deferred there.
 				// Completed analysis merges skip this call. A genuine fallback keeps
-				// the existing body; cancellation or deadline throws before this
-				// change writes or records completion, leaving it retryable.
+				// the existing body and appends the update's new detail to it;
+				// cancellation or deadline throws before this change writes or
+				// records completion, leaving it retryable.
 				if (
 					(proposedDescription || proposedAcceptanceCriteria) &&
 					(!change.structurePreserved || staleAnalysisMerge) &&
 					existingRow
 				) {
-					heartbeat(`apply structure-preserving merge: ${itemId}`);
-					const newInfo = [
-						change.description?.to ?? "",
-						change.acceptanceCriteria?.to
-							? `Acceptance criteria update:\n${change.acceptanceCriteria.to}`
-							: "",
-						change.reasoning
-							? `Why this update: ${change.reasoning}`
-							: "",
-					]
-						.filter(Boolean)
-						.join("\n\n");
-					const merged = await withHeartbeatKeepalive(
-						{ stage: "structure-preserving-apply", itemId },
-						() =>
-							reanalyzeBodyByKind({
-								abortSignal: mergeSignal,
-								kind: existingRow.kind,
-								title: existingRow.title,
-								identifier: existingRow.identifier,
-								existingDescription:
-									existingRow.description ?? "",
-								existingAcceptanceCriteria:
-									existingRow.acceptanceCriteria,
-								newInfo,
-								userId,
-								organizationId,
-								projectId,
-							}),
-					);
-					throwIfApplyStopped(mergeSignal, cancellationSignal);
-					if (merged.fallbackUsed) {
-						// Safe-hold: keep the existing body unchanged.
-						nextDescription = undefined;
-						nextAcceptanceCriteria = undefined;
-						change.bodyMergeFallback = true;
-					} else {
+					const currentBodies = {
+						description: existingRow.description ?? "",
+						acceptanceCriteria:
+							existingRow.acceptanceCriteria ?? "",
+					};
+					// An update written as a whole version of the body it
+					// updates is its own edits: written as it is, with no merge.
+					const ownEdits = ownEditBodies(change, currentBodies);
+					if (ownEdits) {
 						nextDescription = proposedDescription
-							? merged.description
+							? ownEdits.description
 							: undefined;
-						nextAcceptanceCriteria =
-							merged.acceptanceCriteria !== undefined
-								? merged.acceptanceCriteria
+						nextAcceptanceCriteria = proposedAcceptanceCriteria
+							? ownEdits.acceptanceCriteria
+							: undefined;
+					} else {
+						heartbeat(
+							`apply structure-preserving merge: ${itemId}`,
+						);
+						const newInfo = [
+							change.description?.to ?? "",
+							change.acceptanceCriteria?.to
+								? `Acceptance criteria update:\n${change.acceptanceCriteria.to}`
+								: "",
+							change.reasoning
+								? `Why this update: ${change.reasoning}`
+								: "",
+						]
+							.filter(Boolean)
+							.join("\n\n");
+						const merged = await withHeartbeatKeepalive(
+							{ stage: "structure-preserving-apply", itemId },
+							() =>
+								reanalyzeBodyByKind({
+									abortSignal: mergeSignal,
+									kind: existingRow.kind,
+									title: existingRow.title,
+									identifier: existingRow.identifier,
+									existingDescription:
+										existingRow.description ?? "",
+									existingAcceptanceCriteria:
+										existingRow.acceptanceCriteria,
+									newInfo,
+									userId,
+									organizationId,
+									projectId,
+								}),
+						);
+						throwIfApplyStopped(mergeSignal, cancellationSignal);
+						// The merge is a model's rewrite, held to the update: no
+						// line the update keeps is changed and no text it lacks
+						// is written. New detail the merge left out is appended
+						// unchanged, which counts as a fallback; a model that
+						// fell back merged nothing, so all of it is appended to
+						// the body as it is. When the update adds nothing the
+						// ticket lacks, the body is kept.
+						const withinUpdate = mergeWithinUpdate(
+							change,
+							currentBodies,
+							merged.fallbackUsed
+								? currentBodies
+								: {
+										description: merged.description,
+										acceptanceCriteria:
+											merged.acceptanceCriteria ??
+											currentBodies.acceptanceCriteria,
+									},
+						);
+						if (merged.fallbackUsed) {
+							change.bodyMergeFallback = true;
+						}
+						if (!withinUpdate) {
+							// Safe-hold: keep the existing body unchanged.
+							nextDescription = undefined;
+							nextAcceptanceCriteria = undefined;
+							change.bodyMergeFallback = true;
+						} else {
+							nextDescription = proposedDescription
+								? withinUpdate.bodies.description
 								: undefined;
+							nextAcceptanceCriteria = proposedAcceptanceCriteria
+								? withinUpdate.bodies.acceptanceCriteria
+								: undefined;
+							if (withinUpdate.detailAppended) {
+								change.bodyMergeFallback = true;
+							}
+						}
 					}
 				}
 
@@ -4642,21 +4810,24 @@ async function applyBacklogChangesWithMergeSignal(
 				}
 
 				if (Object.keys(updateData).length > 0) {
-					await updateStory(itemId, projectId, updateData, {
-						// The proposal content came from AI, but the authenticated
-						// reviewer committed it. Keep source and human actor separate;
-						// the database still suppresses identical/no-op payloads.
-						lastEditedSource: "AI_BACKLOG_UPDATE",
-						lastEditedByName: approvedByName ?? null,
-						// When this apply moves a priority band, the entry it
-						// writes to the item's priority history must read as the
-						// AI's doing, not the approving human's. The analyzer's
-						// change schema carries no per-field rationale, so the
-						// entry records the move without one rather than
-						// inventing a justification.
-						prioritySource: "AI",
-						userId,
-					});
+					heartbeatBeforeApplyStep("update-ticket");
+					await keepApplyStepAlive("update-ticket", () =>
+						updateStory(itemId, projectId, updateData, {
+							// The proposal content came from AI, but the authenticated
+							// reviewer committed it. Keep source and human actor separate;
+							// the database still suppresses identical/no-op payloads.
+							lastEditedSource: "AI_BACKLOG_UPDATE",
+							lastEditedByName: approvedByName ?? null,
+							// When this apply moves a priority band, the entry it
+							// writes to the item's priority history must read as the
+							// AI's doing, not the approving human's. The analyzer's
+							// change schema carries no per-field rationale, so the
+							// entry records the move without one rather than
+							// inventing a justification.
+							prioritySource: "AI",
+							userId,
+						}),
+					);
 					// Audit trail (AI Backlog change history) — attributed to the
 					// AI agent. Only emitted when a real field changed. Fire-and-
 					// forget; never blocks or fails the apply.
@@ -4705,22 +4876,25 @@ async function applyBacklogChangesWithMergeSignal(
 						},
 					});
 					if (policyProposalId && notesAppliedUpdates) {
-						await noteAppliedProposalUpdate({
-							proposalId: policyProposalId,
-							changeIndex: proposalIndexFor(originalIndex),
-							storyId: itemId,
-							projectId,
-							organizationId,
-							userId,
-							approvedByName,
-							applied: appliedUpdateFields(
-								change,
-								updateData,
-								existingRow,
-							),
-							reasoning: change.reasoning,
-							proposal: policyProposal,
-						});
+						heartbeatBeforeApplyStep("note-applied-update");
+						await keepApplyStepAlive("note-applied-update", () =>
+							noteAppliedProposalUpdate({
+								proposalId: policyProposalId,
+								changeIndex: proposalIndexFor(originalIndex),
+								storyId: itemId,
+								projectId,
+								organizationId,
+								userId,
+								approvedByName,
+								applied: appliedUpdateFields(
+									change,
+									updateData,
+									existingRow,
+								),
+								reasoning: change.reasoning,
+								proposal: policyProposal,
+							}),
+						);
 					}
 				}
 				updatedItems.push({
@@ -4755,7 +4929,13 @@ async function applyBacklogChangesWithMergeSignal(
 			});
 			errors.push({
 				change: change as ChangeProposal["changes"][number],
-				error: describeSyncErrorForUser(error),
+				error: (await targetDeletedDuringWrite(
+					error,
+					updateTargetId,
+					projectId,
+				))
+					? MISSING_UPDATE_TARGET_ERROR
+					: describeSyncErrorForUser(error),
 			});
 		}
 	}
@@ -4765,10 +4945,13 @@ async function applyBacklogChangesWithMergeSignal(
 	// an application row would carry the existing item's id into the
 	// PM-sync map as though this apply had created it.
 	if (isRecommendation && policyProposalId && skippedDuplicates.length > 0) {
-		await appendAppliedChangeIndexes(
-			policyProposalId,
-			skippedDuplicates.map((d) => proposalIndexFor(d.changeIndex)),
+		await keepApplyStepAlive("append-applied-indexes", () =>
+			appendAppliedChangeIndexes(
+				policyProposalId,
+				skippedDuplicates.map((d) => proposalIndexFor(d.changeIndex)),
+			),
 		);
+		heartbeatBeforeApplyStep("enqueue-duplicate-detection");
 	}
 
 	const appliedCount = createdItems.length + updatedItems.length;
@@ -4794,12 +4977,16 @@ async function applyBacklogChangesWithMergeSignal(
 	const createdStoryIds = createdItems.map((i) => i.id);
 	let duplicateDetectionWorkflowId: string | null = null;
 	if (createdStoryIds.length > 0) {
-		const enqueued = await triggerDuplicateDetection({
-			projectId,
-			userId,
-			organizationId,
-			targetStoryIds: createdStoryIds,
-		});
+		const enqueued = await keepApplyStepAlive(
+			"enqueue-duplicate-detection",
+			() =>
+				triggerDuplicateDetection({
+					projectId,
+					userId,
+					organizationId,
+					targetStoryIds: createdStoryIds,
+				}),
+		);
 		duplicateDetectionWorkflowId = enqueued?.workflowId ?? null;
 	}
 

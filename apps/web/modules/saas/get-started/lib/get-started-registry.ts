@@ -736,7 +736,7 @@ const SETTINGS_GROUP: GsGroup = {
 			id: "settings-meeting-assistant",
 			label: "Meeting assistant",
 			description:
-				"Set up Parlume's meeting bot (your Attendee key, a self-hosted Attendee URL, how it signs in to Teams) and the Azure deployment its realtime voice runs on, with a test for each.",
+				"Set up Parlume's meeting bot (your Attendee key, a self-hosted Attendee URL, how it signs in to Teams and with which login group), the Azure deployment its realtime voice runs on, with a test for each, and the shared Microsoft account it replies with in Teams channels.",
 			icon: MicIcon,
 			cluster: "AI configuration",
 			scope: "org",
@@ -1255,14 +1255,14 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "parlume-history",
 				anchor: "parlume-history",
 				title: "Open Parlume",
-				body: "Open Parlume to invite the voice agent into a Teams meeting, watch the live session, and review past sessions, requests, suggestions and spend. Invitations are read-only by default; with actions on, Parlume makes the changes attendees ask for, with your permissions.",
+				body: "Open Parlume to invite the voice agent into a Teams meeting, follow the live transcript, ask it questions only the page answers, have it say a suggestion, and review past sessions, requests, suggestions and spend. Invitations are read-only by default; with actions on, Parlume makes the changes attendees ask for, with your permissions.",
 				conditional: true,
 			},
 			{
 				id: "meeting-digest-add",
 				anchor: "meeting-digest-add",
 				title: "Every way to add a meeting",
-				body: "Link a meeting from your calendar, upload a .txt, .vtt or .docx transcript for meetings outside Teams, configure the Teams and Slack meeting series, or connect a OneDrive folder whose transcripts are imported as they arrive. Imports show their progress here, and a meeting whose date is not known waits under Unknown date.",
+				body: "Link a meeting from your calendar, upload a .txt, .vtt, .docx or .md transcript for meetings outside Teams, configure the Teams and Slack meeting series, or connect a OneDrive folder whose transcripts are imported as they arrive. Imports show their progress here, and a meeting whose date is not known waits under Unknown date.",
 				conditional: true,
 			},
 			{

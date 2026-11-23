@@ -459,14 +459,35 @@ import {
 	publishOutcomesProcedure,
 	revokeOutcomesProcedure,
 } from "./procedures/outcomes";
+import {
+	confirmParlumeActionProcedure,
+	dismissParlumeActionProcedure,
+	getParlumeActionProcedure,
+} from "./procedures/parlume/actions";
+import { askParlumeProcedure } from "./procedures/parlume/ask";
+import { setParlumeConfidentialProcedure } from "./procedures/parlume/confidential";
+import { deleteParlumeSessionProcedure } from "./procedures/parlume/delete-session";
 import { listParlumeHistoryProcedure } from "./procedures/parlume/history";
+import {
+	continueParlumeReadingProcedure,
+	pauseParlumeListeningProcedure,
+	resumeParlumeListeningProcedure,
+	stopParlumeSpeechProcedure,
+} from "./procedures/parlume/live-controls";
+import { proposeParlumeActionItemProcedure } from "./procedures/parlume/propose-action-item";
+import { regenerateParlumeNotesProcedure } from "./procedures/parlume/regenerate-notes";
 import {
 	listParlumeAgentsProcedure,
 	listParlumeSessionsProcedure,
 	startParlumeSessionProcedure,
 	stopParlumeSessionProcedure,
 } from "./procedures/parlume/sessions";
-import { listParlumeSuggestionsProcedure } from "./procedures/parlume/suggestions";
+import {
+	dismissParlumeSuggestionProcedure,
+	listParlumeSuggestionsProcedure,
+	sayParlumeSuggestionProcedure,
+} from "./procedures/parlume/suggestions";
+import { listParlumeLiveTranscriptProcedure } from "./procedures/parlume/transcript";
 import { getParlumeUsageProcedure } from "./procedures/parlume/usage";
 import { permanentDeleteProjectProcedure } from "./procedures/permanent-delete-project";
 import {
@@ -1391,12 +1412,27 @@ export const projectsRouter = {
 	// The live media bridge is deliberately outside the request process and
 	// will authenticate its session before reading project context.
 	parlume: {
+		action: getParlumeActionProcedure,
+		ask: askParlumeProcedure,
+		confirmAction: confirmParlumeActionProcedure,
+		continueReading: continueParlumeReadingProcedure,
+		deleteSession: deleteParlumeSessionProcedure,
+		dismissAction: dismissParlumeActionProcedure,
+		dismissSuggestion: dismissParlumeSuggestionProcedure,
 		history: listParlumeHistoryProcedure,
 		listAgents: listParlumeAgentsProcedure,
 		listSessions: listParlumeSessionsProcedure,
+		pauseListening: pauseParlumeListeningProcedure,
+		proposeActionItem: proposeParlumeActionItemProcedure,
+		regenerateNotes: regenerateParlumeNotesProcedure,
+		resumeListening: resumeParlumeListeningProcedure,
+		saySuggestion: sayParlumeSuggestionProcedure,
+		setConfidential: setParlumeConfidentialProcedure,
 		start: startParlumeSessionProcedure,
 		stop: stopParlumeSessionProcedure,
+		stopSpeech: stopParlumeSpeechProcedure,
 		suggestions: listParlumeSuggestionsProcedure,
+		transcript: listParlumeLiveTranscriptProcedure,
 		usage: getParlumeUsageProcedure,
 	},
 

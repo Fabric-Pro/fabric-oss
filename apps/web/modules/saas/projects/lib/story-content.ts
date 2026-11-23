@@ -47,14 +47,22 @@
  * heading regex, and it drifted (the editor was broadened to `#{1,6}` while the
  * backend stayed at `#{1,2}`). The normalization half of the contract is now a
  * shared import instead of a copy. The loop half is still hand-held and MUST
- * stay aligned: both loops guard with `!inAcceptanceCriteria`, so the FIRST
- * matching heading wins. That guard is load-bearing on a document carrying two
+ * stay aligned: both loops test every line, drop EVERY acceptance heading
+ * outside a code fence (the shared `fencedCodeLines` finds fences), and let
+ * the first one open the acceptance part. On a document carrying two
  * acceptance headings — precisely the corrupted shape the decoration bug
- * produced — where testing every line would drop both headings and merge the
- * two bodies while the backend kept the second as literal text.
+ * produced — both sides therefore keep both bodies in `acceptanceCriteria`
+ * with no heading left inside it; the loop comment below says why no heading
+ * may survive there. The editor loop also notes where each section of the
+ * acceptance part starts, for the save's repeated-section check; that changes
+ * nothing about the split.
  */
 
-import { stripInlineDecoration } from "@repo/utils/markdown-heading";
+import {
+	fencedCodeLines,
+	findHeadingLine,
+	stripInlineDecoration,
+} from "@repo/utils/markdown-heading";
 
 interface StoryContentParts {
 	description: string;
@@ -80,13 +88,29 @@ interface StoryContentParts {
 // at `#{1,2}`) is what copies of this pattern produce.
 export const ACCEPTANCE_HEADING_RE = /^#{1,6}\s+acceptance/i;
 
+// An H1/H2 heading below the acceptance heading opens a sibling section such as
+// `## Release Planning`; H3+ headings group criteria inside the section. This
+// is the boundary `boundAcceptanceCriteria` (`@repo/utils/acceptance-criteria`)
+// uses for the criteria themselves.
+const SECTION_HEADING_RE = /^\s{0,3}#{1,2}\s/;
+
+// The "View in Fabric" back-link the server appends to the criteria column
+// (`placeFabricBackLink`), as stored (HTML) and as the editor saves it
+// (markdown). Bounded spans keep the match linear on long lines.
+const FABRIC_BACK_LINK_LINE_RE =
+	/^(?:<p><a href="[^"]{1,2000}">View in Fabric<\/a><\/p>|\[View in Fabric\]\([^)\s]{1,2000}\))$/;
+
+function isFabricBackLink(line: string): boolean {
+	return FABRIC_BACK_LINK_LINE_RE.test(line.trim());
+}
+
+function isAcceptanceHeading(line: string): boolean {
+	return ACCEPTANCE_HEADING_RE.test(stripInlineDecoration(line));
+}
+
 /** Whether the markdown contains an `Acceptance Criteria` section heading. */
 export function hasAcceptanceCriteriaHeading(markdown: string): boolean {
-	return markdown
-		.split("\n")
-		.some((line) =>
-			ACCEPTANCE_HEADING_RE.test(stripInlineDecoration(line)),
-		);
+	return findHeadingLine(markdown, ACCEPTANCE_HEADING_RE) !== null;
 }
 
 /**
@@ -98,21 +122,31 @@ export function hasAcceptanceCriteriaHeading(markdown: string): boolean {
  * worst-case — a document whose heading was renamed or decorated away, which is
  * exactly the case this module exists to handle — both passes scan the whole
  * document.
+ *
+ * `acceptanceSections` holds the same acceptance lines, cut where each
+ * acceptance heading and each later H1/H2 heading outside a code fence starts
+ * a section, so a copy of the criteria can be recognized by the section it
+ * fills.
  */
-function splitOnAcceptanceHeading(
-	markdown: string,
-): StoryContentParts & { headingFound: boolean } {
+function splitOnAcceptanceHeading(markdown: string): StoryContentParts & {
+	headingFound: boolean;
+	acceptanceSections: string[][];
+} {
 	const descriptionLines: string[] = [];
-	const acceptanceCriteriaLines: string[] = [];
-	let inAcceptanceCriteria = false;
+	const acceptanceSections: string[][] = [];
+	let section: string[] | null = null;
+	const lines = markdown.split("\n");
+	const code = fencedCodeLines(lines, isAcceptanceHeading);
 
-	for (const line of markdown.split("\n")) {
-		// EVERY acceptance heading is dropped; the first one opens the section.
-		// Mirrors `splitCleanSpec` — the two must agree line for line.
+	for (const [i, line] of lines.entries()) {
+		// EVERY acceptance heading outside a code fence is dropped; the first
+		// one opens the section. Mirrors `splitCleanSpec` — the two must agree
+		// line for line. A heading-shaped line inside a fence is code: taking
+		// it for the boundary cut the code block in two and dropped the line.
 		//
-		// The guard is on the state transition, not on the match, and that
-		// distinction is load-bearing for the documents this parser exists to
-		// repair. A document carrying TWO acceptance headings is the shape the
+		// Every line is tested, also once the section is open, and that is
+		// load-bearing for the documents this parser exists to repair. A
+		// document carrying TWO acceptance headings is the shape the
 		// decorated-heading bug produced. Skipping the match once the section is
 		// open would store the second heading inside `acceptanceCriteria`, and
 		// `parseAcceptanceCriteria` stops at the first heading it meets — so the
@@ -123,22 +157,84 @@ function splitOnAcceptanceHeading(
 		// Dropping them all also makes the repair self-healing: `formatStoryContent`
 		// re-emits exactly one heading, so a forked document collapses back to a
 		// single section on its next save.
-		if (ACCEPTANCE_HEADING_RE.test(stripInlineDecoration(line))) {
-			inAcceptanceCriteria = true;
-			continue; // Drop the section heading itself; it's re-added on render.
+		if (!code[i] && isAcceptanceHeading(line)) {
+			// Drop the section heading itself; it's re-added on render.
+			section = [];
+			acceptanceSections.push(section);
+			continue;
 		}
-		if (inAcceptanceCriteria) {
-			acceptanceCriteriaLines.push(line);
-		} else {
+		if (section === null) {
 			descriptionLines.push(line);
+		} else if (!code[i] && SECTION_HEADING_RE.test(line)) {
+			section = [line];
+			acceptanceSections.push(section);
+		} else {
+			section.push(line);
 		}
 	}
 
 	return {
 		description: descriptionLines.join("\n").trim(),
-		acceptanceCriteria: acceptanceCriteriaLines.join("\n").trim(),
-		headingFound: inAcceptanceCriteria,
+		acceptanceCriteria: acceptanceSections.flat().join("\n").trim(),
+		headingFound: acceptanceSections.length > 0,
+		acceptanceSections,
 	};
+}
+
+/**
+ * A section's text as the comparison of two copies sees it: without a "View
+ * in Fabric" back-link, which depends only on the column the server appended
+ * it to, and without the whitespace a model varies between the two copies it
+ * writes at create (`description` and `acceptanceCriteria` are separate
+ * fields of one reply, so nothing makes them byte-identical): line endings,
+ * trailing whitespace and the number of blank lines between paragraphs.
+ * Whatever can change what the markdown shows counts: indentation, a hard
+ * line break (`lineKey`) and every line of a fenced code block, blank ones
+ * included.
+ */
+function sectionKey(section: string[]): string {
+	const lines = section.filter((line) => !isFabricBackLink(line));
+	const code = fencedCodeLines(lines, () => false);
+	const keys = lines.map(lineKey);
+	const kept = keys.filter(
+		(key, i) => code[i] || key !== "" || (i > 0 && keys[i - 1] !== ""),
+	);
+	while (kept.at(-1) === "") {
+		kept.pop();
+	}
+	return kept.join("\n");
+}
+
+/**
+ * A line without its line ending and trailing whitespace, except that two
+ * trailing spaces or more, a hard line break, stay as two.
+ */
+function lineKey(line: string): string {
+	const text = line.endsWith("\r") ? line.slice(0, -1) : line;
+	const trimmed = text.trimEnd();
+	return trimmed !== "" && text.endsWith("  ") ? `${trimmed}  ` : trimmed;
+}
+
+/**
+ * The acceptance criteria with each repeated section kept once.
+ *
+ * A story can carry its criteria twice, as a section of the description and in
+ * the acceptance-criteria column, and the editor then shows both copies, each
+ * below its own acceptance heading. A section that repeats an earlier one, as
+ * `sectionKey` compares them, is dropped; a back-link it carried is kept. A
+ * section that differs in any other character is kept.
+ */
+function withoutRepeatedSections(sections: string[][]): string {
+	const seen = new Set<string>();
+	const kept = sections.map((section) => {
+		const key = sectionKey(section);
+		if (key !== "" && seen.has(key)) {
+			return section.filter(isFabricBackLink);
+		}
+		seen.add(key);
+		return section;
+	});
+	return kept.flat().join("\n").trim();
 }
 
 export function parseStoryContent(markdown: string): StoryContentParts {
@@ -180,12 +276,16 @@ export interface ResolvedStoryContent extends StoryContentParts {
  * caller can warn the user (their edit likely renamed the heading). A genuine
  * clear — the heading is still present but its body is empty — is respected and
  * returns an empty string as before.
+ *
+ * A section the document repeats below a second acceptance heading is stored
+ * once (see `withoutRepeatedSections`), so a story that carried its criteria
+ * twice keeps one copy after its first save.
  */
 export function resolveStoryContentForSave(
 	markdown: string,
 	existingAcceptanceCriteria: string | null | undefined,
 ): ResolvedStoryContent {
-	const { description, acceptanceCriteria, headingFound } =
+	const { description, acceptanceSections, headingFound } =
 		splitOnAcceptanceHeading(markdown);
 	const existing = (existingAcceptanceCriteria ?? "").trim();
 
@@ -199,9 +299,17 @@ export function resolveStoryContentForSave(
 
 	return {
 		description,
-		acceptanceCriteria,
+		acceptanceCriteria: withoutRepeatedSections(acceptanceSections),
 		acceptanceCriteriaPreserved: false,
 	};
+}
+
+/** The criteria column without an acceptance heading on its first line. */
+function withoutLeadingAcceptanceHeading(acceptanceCriteria: string): string {
+	const [first = "", ...rest] = acceptanceCriteria.trimStart().split("\n");
+	return isAcceptanceHeading(first)
+		? rest.join("\n").trim()
+		: acceptanceCriteria;
 }
 
 /**
@@ -209,14 +317,60 @@ export function resolveStoryContentForSave(
  * for the editor. The description is rendered as-is (it may contain its own
  * heading structure from a stage-enhance prompt). Acceptance criteria, if
  * present, is rendered under a `## Acceptance Criteria` heading so
- * `parseStoryContent` can recover the split on save.
+ * `parseStoryContent` can recover the split on save. A column that starts
+ * with an acceptance heading of its own, as a story drafted at create can
+ * store it, is shown under that one heading only.
  */
 export function formatStoryContent(parts: StoryContentParts): string {
-	const { description, acceptanceCriteria } = parts;
+	const { description } = parts;
+	const acceptanceCriteria = withoutLeadingAcceptanceHeading(
+		parts.acceptanceCriteria,
+	);
 	if (acceptanceCriteria) {
 		return description
 			? `${description}\n\n## Acceptance Criteria\n\n${acceptanceCriteria}`
 			: `## Acceptance Criteria\n\n${acceptanceCriteria}`;
 	}
 	return description;
+}
+
+/**
+ * The editor document for a stored story.
+ *
+ * A story can carry its acceptance criteria twice: as a section of
+ * `description` and in the acceptance-criteria column. An older revision
+ * stored that shape, and a story the AI drafts at create still gets it, with
+ * the server's "View in Fabric" back-link appended to the column copy. The
+ * description's section is often followed by sibling sections such as
+ * `## Release Planning`, which the column does not hold. When every section of
+ * the column is already a section of the description, the description shows
+ * the criteria once and is used as it is, followed by the column's back-link;
+ * its next save moves them out of the description. A column section the
+ * description lacks is shown, so no text is dropped, and the save then stores
+ * a repeated section once (`resolveStoryContentForSave`).
+ */
+export function formatStoredStoryContent(parts: StoryContentParts): string {
+	const embedded = splitOnAcceptanceHeading(parts.description);
+	if (!embedded.headingFound) {
+		return formatStoryContent(parts);
+	}
+	const shown = new Set(embedded.acceptanceSections.map(sectionKey));
+	const column = splitOnAcceptanceHeading(
+		formatStoryContent({
+			description: "",
+			acceptanceCriteria: parts.acceptanceCriteria,
+		}),
+	);
+	const columnAlreadyShown = column.acceptanceSections.every((section) => {
+		const key = sectionKey(section);
+		return key === "" || shown.has(key);
+	});
+	if (!columnAlreadyShown) {
+		return formatStoryContent(parts);
+	}
+	const backLinks = column.acceptanceSections
+		.flat()
+		.filter(isFabricBackLink)
+		.map((line) => line.trim());
+	return [parts.description, ...backLinks].join("\n\n");
 }

@@ -164,6 +164,7 @@ export {
 	getAIEmbeddingModel,
 	getAIEmbeddingModelWithMetadata,
 	getAIModel,
+	getAIModelOnProvider,
 	getAIModelWithMetadata,
 	getAvailableModels,
 	getConfiguredModelString,

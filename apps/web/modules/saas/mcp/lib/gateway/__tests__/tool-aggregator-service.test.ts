@@ -136,6 +136,23 @@ describe("tools offered to the service credential", () => {
 		}
 	});
 
+	it("lists a meeting's portal writes to its read-only live turn, which proposes them", async () => {
+		const { tools } = await getAggregatedTools(
+			session({
+				pinnedProjectId: "project-1",
+				scopes: [
+					...SERVICE_CREDENTIAL_SCOPES,
+					"features:read",
+					"projects:read",
+				],
+			}),
+		);
+
+		const offered = tools.map((tool) => tool.name);
+		expect(offered).toContain("fabric_create_feature");
+		expect(offered).toContain("fabric_list_features");
+	});
+
 	it("never discovers the person's connected servers", async () => {
 		await getAggregatedTools(session());
 

@@ -231,6 +231,10 @@ import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import { executeDirectChatActivity } from "../ai-execution";
 
+/** What the person reads for a provider failure the turn cannot classify. */
+const PROVIDER_FAILURE =
+	"The AI provider could not complete the request. Try again, or check the provider settings.";
+
 const USAGE = {
 	inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
 	outputTokens: { total: 5, text: 5, reasoning: 0 },
@@ -586,7 +590,7 @@ describe("direct chat — provider error after Anthropic message_start", () => {
 				completedFirstStep ? 2 : 1,
 			);
 			expect(result).toMatchObject({
-				partialError: "Provider stream failed",
+				partialError: PROVIDER_FAILURE,
 			});
 			expect(state.recordAggregateUsage).toHaveBeenCalledTimes(1);
 			const row = state.recordAggregateUsage.mock.calls[0][0];
@@ -712,7 +716,7 @@ describe("direct chat — COMPLEX tool refusal while CHAT succeeds", () => {
 			} else {
 				expect(result).toMatchObject({
 					success: false,
-					error: expect.stringContaining("CHAT stream failed"),
+					error: expect.stringContaining(PROVIDER_FAILURE),
 					usageLimit: { limitId: "limit-1" },
 				});
 			}
@@ -763,16 +767,19 @@ describe("CHAT error precedence after a tool usage refusal", () => {
 			expect(result.usageLimit?.limitId).toBe(
 				chatLimit ? "example-chat-limit" : "example-tool-limit",
 			);
+			// A limit keeps its own message; a provider failure reads as the
+			// shared provider-failure message, never the provider's text.
+			const shown = chatLimit ? chatError.message : PROVIDER_FAILURE;
 			if (partialText) {
 				expect(result).toMatchObject({
 					success: true,
 					responseText: "Partial CHAT answer.",
-					partialError: chatError.message,
+					partialError: shown,
 				});
 			} else {
 				expect(result).toMatchObject({
 					success: false,
-					error: expect.stringContaining(chatError.message),
+					error: expect.stringContaining(shown),
 				});
 			}
 		},
@@ -797,7 +804,7 @@ describe("CHAT error precedence after a tool usage refusal", () => {
 			const result = await runTurn();
 			expect(result).toMatchObject({
 				success: false,
-				error: chatError.message,
+				error: chatLimit ? chatError.message : PROVIDER_FAILURE,
 				usageLimit: {
 					limitId: chatLimit
 						? "example-chat-limit"
@@ -806,6 +813,68 @@ describe("CHAT error precedence after a tool usage refusal", () => {
 			});
 		},
 	);
+});
+
+// Shares this file's real streamText loop; not a usage-limit case.
+describe("direct chat — a provider failure reads as the shared message", () => {
+	const LEAKY =
+		"Incorrect API key provided: sk-proj-abc123****wxyz. See https://platform.example.com/account/api-keys.";
+	const AUTH_FAILURE =
+		"The AI provider rejected the request (authentication). Check the provider settings.";
+
+	function failingProvider(text: string | null) {
+		return new MockLanguageModelV4({
+			doStream: async () => ({
+				stream: simulateReadableStream({
+					chunks: [
+						{ type: "stream-start" as const, warnings: [] },
+						...(text
+							? [
+									{ type: "text-start" as const, id: "t" },
+									{
+										type: "text-delta" as const,
+										id: "t",
+										delta: text,
+									},
+								]
+							: []),
+						{
+							type: "error" as const,
+							error: new APICallError({
+								message: LEAKY,
+								url: "https://api.example.com/v1/chat/completions",
+								requestBodyValues: {},
+								statusCode: 401,
+								isRetryable: false,
+							}),
+						},
+					],
+				}),
+			}),
+		});
+	}
+
+	it("names the cause, never the provider's URL or key, when nothing was answered", async () => {
+		state.model = failingProvider(null);
+
+		const result = await runTurn();
+
+		expect(result.success).toBe(false);
+		expect(result.error).toContain(AUTH_FAILURE);
+		expect(result.error).not.toMatch(/sk-|example\.com|\*\*\*\*/);
+	});
+
+	it("does the same for the error kept beside a partial answer", async () => {
+		state.model = failingProvider("Partial answer.");
+
+		const result = await runTurn();
+
+		expect(result).toMatchObject({
+			success: true,
+			responseText: "Partial answer.",
+			partialError: AUTH_FAILURE,
+		});
+	});
 });
 
 // Shares this file's real streamText loop; not a usage-limit case.
@@ -915,6 +984,7 @@ it.each(["Direct stream-route activity", "Parlume in-process"])(
 							organizationId: "example-org",
 							userId: "example-user",
 						},
+						requesterUserId: "example-user",
 						turnId: "example-turn",
 						message: "What is on the roadmap?",
 						voiceInstructions: "",

@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { cn } from "@ui/lib";
 import { useTranslations } from "next-intl";
+import { recentNoteLabels } from "../lib/recent-note-labels";
 
 /**
  * The caller's recent notes on the entry's project, as small buttons that
@@ -13,6 +14,11 @@ import { useTranslations } from "next-intl";
  *
  * The read is keyed by project, so after the project changes only that
  * project's notes are offered, never the previous one's, even while loading.
+ * The server returns each note once: notes that differ only in spacing are
+ * collapsed before its limit, so they never crowd out another note.
+ *
+ * A long note's button shows a shortened label that still tells it apart
+ * from the others; its tooltip and accessible name carry the full text.
  */
 export function RecentNotes({
 	projectId,
@@ -36,13 +42,14 @@ export function RecentNotes({
 	if (notes.length === 0) {
 		return null;
 	}
+	const labels = recentNoteLabels(notes);
 
 	return (
 		<fieldset
 			aria-label={t("recentNotes")}
 			className={cn("flex min-w-0 flex-wrap gap-1.5", className)}
 		>
-			{notes.map((note) => (
+			{notes.map((note, index) => (
 				<Button
 					key={note}
 					type="button"
@@ -57,7 +64,7 @@ export function RecentNotes({
 					onClick={() => onPick(note)}
 					className="max-w-48 rounded-full font-normal"
 				>
-					<span className="min-w-0 truncate">{note}</span>
+					<span className="min-w-0 truncate">{labels[index]}</span>
 				</Button>
 			))}
 		</fieldset>

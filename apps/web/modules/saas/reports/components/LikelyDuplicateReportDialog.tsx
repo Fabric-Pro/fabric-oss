@@ -1,5 +1,6 @@
 "use client";
 
+import { useDialogFocusReturn } from "@saas/reports/hooks/use-dialog-focus-return";
 import type { LikelyDuplicateReport } from "@saas/reports/hooks/use-likely-duplicate-guard";
 import {
 	AlertDialog,
@@ -67,6 +68,8 @@ export function LikelyDuplicateReportDialog({
 	onCancel: () => void;
 	onContinue: () => void;
 }) {
+	// Opened by a check, not a trigger: return focus to what started it.
+	const focusReturn = useDialogFocusReturn();
 	return (
 		<AlertDialog
 			open={duplicates !== null}
@@ -76,7 +79,10 @@ export function LikelyDuplicateReportDialog({
 				}
 			}}
 		>
-			<AlertDialogContent className="max-h-[90vh] overflow-y-auto">
+			<AlertDialogContent
+				className="max-h-[90vh] overflow-y-auto"
+				{...focusReturn}
+			>
 				<AlertDialogHeader>
 					<AlertDialogTitle>
 						{duplicates?.length === 1

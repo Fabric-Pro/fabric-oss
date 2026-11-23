@@ -8,19 +8,33 @@ import {
 	cleanupParlumeProviderData,
 	finalizeParlumeSession,
 } from "@repo/api/modules/projects/lib/parlume-finalization";
+import { isParlumeExternalParticipant } from "@repo/api/modules/projects/lib/parlume-guests";
 import { describeParlumeProviderFailure } from "@repo/api/modules/projects/lib/parlume-join-failure";
 import { parlumeLog } from "@repo/api/modules/projects/lib/parlume-log";
+import {
+	notifyParlumeJoinFailure,
+	notifyParlumeWaitingInLobby,
+} from "@repo/api/modules/projects/lib/parlume-notices";
+import { resolveParlumeWebhookSecret } from "@repo/api/modules/projects/lib/parlume-provider-settings";
 import { db } from "@repo/database";
 import { parseChannelMeetingUrl } from "@repo/integrations/microsoft/parlume-channel";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
-	callbackSecret,
 	constantTimeEqual,
+	isAttendeeWebhookSigned,
 	MAX_PARLUME_SEGMENT_CHARS,
+	sessionTokenDigest,
 } from "../lib";
+import { forwardParticipantEvent, participantEventSchema } from "./guests";
+
+// A leave for someone seen as the bot comes in waits up to 30 seconds for the
+// bot to be in the call, and up to 15 more for its chat to settle, to post
+// why it leaves; its Attendee calls take up to 18 seconds more.
+export const maxDuration = 90;
 
 const envelopeSchema = z.object({
+	idempotency_key: z.string().min(1).max(128).optional(),
 	trigger: z.string().max(128),
 	bot_id: z.string().min(1).max(256),
 	data: z.unknown(),
@@ -51,10 +65,11 @@ const chatMessageSchema = z.object({
 });
 
 type TerminalOutcome = "completed" | "failed";
+type Envelope = z.infer<typeof envelopeSchema>;
 
 // Attendee retries a rejected webhook. Naming the trigger and the missing
-// piece is what lets an operator tell a stale bot from a wrong token; the token
-// value itself is never logged.
+// piece is what lets an operator tell a stale bot from a wrong token or a
+// bad signature; the token value itself is never logged.
 function describeRejected(raw: string): { trigger: string | null } {
 	try {
 		const body: unknown = JSON.parse(raw);
@@ -176,6 +191,10 @@ async function forwardChatMessage(
 				text: message.text,
 				senderName: message.sender_name ?? null,
 				senderId: message.sender_uuid ?? null,
+				senderExternal: isParlumeExternalParticipant({
+					id: message.sender_uuid ?? "",
+					name: message.sender_name ?? null,
+				}),
 				toBot: message.to === "only_bot",
 				timestampMs: message.timestamp_ms,
 			},
@@ -264,7 +283,7 @@ async function handleTerminalState(input: {
 		// reason and words; anything Attendee does not explain stays generic
 		// and names its sub type.
 		const failure = describeParlumeProviderFailure(input.state);
-		await db.parlumeMeetingSession.updateMany({
+		const marked = await db.parlumeMeetingSession.updateMany({
 			where: { id: session.id, status: { not: "ENDED" } },
 			data: {
 				status: "FAILED",
@@ -273,6 +292,11 @@ async function handleTerminalState(input: {
 				endedAt: new Date(),
 			},
 		});
+		// The first failure the session records tells its inviter, if the bot
+		// never got in; a redelivery finds the session FAILED already.
+		if (marked.count > 0 && session.status !== "FAILED") {
+			await notifyParlumeJoinFailure(session.id);
+		}
 		if (session.status === "PENDING" || session.status === "JOINING") {
 			try {
 				await finalizeParlumeSession(session.id, {
@@ -318,6 +342,7 @@ async function handleTerminalState(input: {
 				endedAt: new Date(),
 			},
 		});
+		await notifyParlumeJoinFailure(session.id);
 		try {
 			await cleanupParlumeProviderData(session.id);
 		} catch {
@@ -360,47 +385,25 @@ async function handleTerminalState(input: {
 	}
 }
 
-/**
- * Attendee's webhook. It cannot sign per bot, so the URL Fabric registered for
- * the bot carries the session's own secret in `token`.
- */
-export async function POST(request: NextRequest) {
-	const sessionId = request.nextUrl.searchParams.get("sessionId");
-	const token = request.nextUrl.searchParams.get("token");
-	const raw = await request.text();
-	const expected = sessionId ? callbackSecret(sessionId) : null;
-	if (!sessionId || !expected || !constantTimeEqual(token, expected)) {
-		parlumeLog("warn", "callback.rejected", {
-			sessionId,
-			...describeRejected(raw),
-			hasToken: token !== null,
-		});
-		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-	}
-	let json: unknown;
-	try {
-		json = JSON.parse(raw);
-	} catch {
-		json = null;
-	}
-	const envelope = envelopeSchema.safeParse(json);
-	if (!envelope.success) {
-		parlumeLog("warn", "callback.invalid", {
-			sessionId,
-			...describeRejected(raw),
-		});
-		return NextResponse.json(
-			{ error: "Invalid callback" },
-			{ status: 400 },
-		);
-	}
-	const { trigger, bot_id: botId, data } = envelope.data;
+async function handleDelivery(
+	sessionId: string,
+	envelope: Envelope,
+): Promise<NextResponse> {
+	const { trigger, bot_id: botId, data } = envelope;
 	if (trigger === "participant_events.speech_start_stop") {
 		const event = speechEventSchema.safeParse(data);
 		if (event.success) {
 			await forwardSpeechEvent(sessionId, botId, event.data);
 		}
 		return NextResponse.json({ accepted: true });
+	}
+	if (trigger === "participant_events.join_leave") {
+		const event = participantEventSchema.safeParse(data);
+		if (!event.success) {
+			parlumeLog("warn", "callback.invalid", { sessionId, trigger });
+			return NextResponse.json({ accepted: true });
+		}
+		return forwardParticipantEvent(sessionId, botId, event.data);
 	}
 	if (trigger === "chat_messages.update") {
 		const message = chatMessageSchema.safeParse(data);
@@ -427,6 +430,10 @@ export async function POST(request: NextRequest) {
 			: change.data.new_state === "fatal_error"
 				? "failed"
 				: null;
+	if (change.data.new_state === "waiting_room") {
+		await notifyParlumeWaitingInLobby({ sessionId, botId });
+		return NextResponse.json({ accepted: true });
+	}
 	if (!outcome) {
 		return NextResponse.json({ accepted: true });
 	}
@@ -439,4 +446,135 @@ export async function POST(request: NextRequest) {
 			eventSubType: change.data.event_sub_type ?? null,
 		},
 	});
+}
+
+function rejected(input: {
+	sessionId: string | null;
+	raw: string;
+	reason: "token" | "signature";
+	hasToken: boolean;
+}): NextResponse {
+	parlumeLog("warn", "callback.rejected", {
+		sessionId: input.sessionId,
+		...describeRejected(input.raw),
+		reason: input.reason,
+		hasToken: input.hasToken,
+	});
+	return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+}
+
+/**
+ * Attendee's webhook. A delivery is accepted only with the session's own
+ * random token in the URL, which stops working once Attendee's data for the
+ * bot is deleted. When Fabric has the webhook secret of the project the bot
+ * was created on (recorded on the session, so a key the organization saves
+ * mid-meeting does not change it), Attendee's signature is required too;
+ * without one the token alone is accepted and the delivery logged as unsigned. A delivery whose
+ * idempotency key the session already handled is acknowledged and not acted
+ * on again.
+ */
+export async function POST(request: NextRequest) {
+	const sessionId = request.nextUrl.searchParams.get("sessionId");
+	const token = request.nextUrl.searchParams.get("token");
+	const raw = await request.text();
+	if (!sessionId || !token) {
+		return rejected({
+			sessionId,
+			raw,
+			reason: "token",
+			hasToken: token !== null,
+		});
+	}
+	const session = await db.parlumeMeetingSession.findUnique({
+		where: { id: sessionId },
+		select: {
+			id: true,
+			projectId: true,
+			organizationId: true,
+			userId: true,
+			callbackTokenDigest: true,
+			attendeeSource: true,
+		},
+	});
+	if (
+		!session ||
+		!constantTimeEqual(
+			sessionTokenDigest(token),
+			session.callbackTokenDigest ?? undefined,
+		)
+	) {
+		return rejected({ sessionId, raw, reason: "token", hasToken: true });
+	}
+	const webhookSecret = await resolveParlumeWebhookSecret(session);
+	let json: unknown;
+	try {
+		json = JSON.parse(raw);
+	} catch {
+		json = null;
+	}
+	if (
+		webhookSecret &&
+		!isAttendeeWebhookSigned(
+			json,
+			request.headers.get("x-webhook-signature"),
+			webhookSecret,
+		)
+	) {
+		return rejected({
+			sessionId,
+			raw,
+			reason: "signature",
+			hasToken: true,
+		});
+	}
+	const envelope = envelopeSchema.safeParse(json);
+	if (!envelope.success) {
+		parlumeLog("warn", "callback.invalid", {
+			sessionId,
+			...describeRejected(raw),
+		});
+		return NextResponse.json(
+			{ error: "Invalid callback" },
+			{ status: 400 },
+		);
+	}
+	if (!webhookSecret) {
+		parlumeLog("info", "callback.unsigned", {
+			sessionId,
+			trigger: envelope.data.trigger,
+		});
+	}
+	const idempotencyKey = envelope.data.idempotency_key;
+	if (!idempotencyKey) {
+		return handleDelivery(sessionId, envelope.data);
+	}
+	const receipt = { sessionId: session.id, idempotencyKey };
+	const claimed = await db.parlumeWebhookReceipt.createMany({
+		data: {
+			...receipt,
+			projectId: session.projectId,
+			organizationId: session.organizationId,
+			userId: session.userId,
+			trigger: envelope.data.trigger,
+		},
+		skipDuplicates: true,
+	});
+	if (claimed.count === 0) {
+		parlumeLog("info", "callback.duplicate", {
+			sessionId,
+			trigger: envelope.data.trigger,
+		});
+		return NextResponse.json({ accepted: true, duplicate: true });
+	}
+	// A refused delivery is redelivered under the same key, and the
+	// redelivery must be acted on.
+	let response: NextResponse | null = null;
+	try {
+		response = await handleDelivery(sessionId, envelope.data);
+		return response;
+	} finally {
+		if (!response?.ok) {
+			await db.parlumeWebhookReceipt.deleteMany({ where: receipt });
+		}
+	}
 }

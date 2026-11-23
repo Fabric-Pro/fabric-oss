@@ -10,15 +10,73 @@ export type ProjectReportsTab = "instances" | "templates";
  * A viewer who has reports in this project, drafts included, opens on them;
  * anyone else opens on the templates they can start from. `null` while the
  * count is still loading, so the caller renders nothing rather than flashing
- * the wrong tab.
+ * the wrong tab. A count that never loaded opens on the templates; a
+ * refresh that failed keeps the last count.
  */
 export function pickDefaultProjectReportsTab(
 	ownReportTotal: number | undefined,
+	countFailed = false,
 ): ProjectReportsTab | null {
 	if (ownReportTotal === undefined) {
-		return null;
+		return countFailed ? "templates" : null;
 	}
 	return ownReportTotal > 0 ? "instances" : "templates";
+}
+
+/** A report whose latest run has started and not yet finished. */
+export function isReportRunning(report: {
+	latestExecutionStatus: string | null;
+}): boolean {
+	return (
+		report.latestExecutionStatus === "PENDING" ||
+		report.latestExecutionStatus === "RUNNING"
+	);
+}
+
+/** What a report's row in the list said when its Generate was pressed. */
+export type PressedRun = {
+	instanceId: string;
+	executionCount: number | null;
+	lastRunAt: string | null;
+};
+
+/**
+ * How long Generate stays busy waiting for the list to show the run it
+ * started, so a list that never does cannot hold the button for good.
+ */
+export const STARTED_RUN_WAIT_MS = 10_000;
+
+/**
+ * Whether the refetched list shows the run a Generate press started: the
+ * report is running (Generate is never offered on a running report), or it
+ * has recorded a run since the press, for a run that ended before the refetch.
+ */
+export function listShowsStartedRun(
+	report: {
+		latestExecutionStatus: string | null;
+		executionCount?: number;
+		lastRunAt: string | null;
+	},
+	pressed: PressedRun,
+): boolean {
+	return (
+		isReportRunning(report) ||
+		(report.executionCount ?? null) !== pressed.executionCount ||
+		report.lastRunAt !== pressed.lastRunAt
+	);
+}
+
+/** How often a project's report list refreshes while one of its reports runs. */
+export const RUNNING_REPORTS_POLL_MS = 2000;
+
+/**
+ * The report list's refetch interval: it polls while any listed report runs,
+ * so a card leaves "Running now" when its run ends, and stops once none does.
+ */
+export function runningReportsPollInterval(
+	reports: Array<{ latestExecutionStatus: string | null }> | undefined,
+): number | false {
+	return reports?.some(isReportRunning) ? RUNNING_REPORTS_POLL_MS : false;
 }
 
 /** A project's Reports tab, under the organization's base path. */

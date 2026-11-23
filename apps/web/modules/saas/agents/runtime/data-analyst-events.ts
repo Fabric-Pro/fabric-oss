@@ -2,11 +2,13 @@ import { type AGUIEvent, type BaseEvent, EventType } from "@ag-ui/client";
 import { EventSchemas } from "@ag-ui/core/schemas";
 import { createChartArtifact } from "@repo/agent-tools";
 import { answerModelInfoSchema } from "@repo/ai/lib/answer-model-info";
+import { providerFailureMessageFromText } from "@repo/ai/lib/provider-failure-message";
 import { z } from "zod";
 import {
 	DATA_ANALYST_EVENT,
 	dataAnalystChartArgsSchema,
 } from "../lib/data-analyst-runtime-protocol";
+import { InProcessTurnError } from "./in-process-engine";
 
 const TOOL_RESULT_PREVIEW_CHARS = 4000;
 const toolResultSchema = z.object({
@@ -29,12 +31,37 @@ const modelSnapshotSchema = z.object({
 	answerModel: answerModelInfoSchema.nullable(),
 });
 const successfulToolSchema = z.object({ success: z.literal(true) });
+/**
+ * The agent ends a failed model call as a graph state, not a thrown run: the
+ * raw error (`error`) beside a reply-shaped apology (`response`), which the
+ * agent server then streams as an ordinary answer.
+ */
+const failedSnapshotSchema = z.object({
+	error: z.string().trim().min(1),
+	response: z.string().optional(),
+});
 
 class DataAnalystAgentError extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = "DataAnalystAgentError";
 	}
+}
+
+/**
+ * A failed model call's words for the person: the shared provider-failure
+ * message, else the agent's own apology; never the provider's text.
+ */
+function failureOf(snapshot: unknown): string | null {
+	const failed = failedSnapshotSchema.safeParse(snapshot);
+	if (!failed.success) {
+		return null;
+	}
+	return (
+		providerFailureMessageFromText(failed.data.error) ??
+		(failed.data.response?.trim() ||
+			"The analysis failed. Please try again.")
+	);
 }
 
 interface ToolCall {
@@ -48,6 +75,8 @@ export class DataAnalystEventTranslator {
 	private readonly openMessages = new Set<string>();
 	private readonly toolCalls = new Map<string, ToolCall>();
 	private ended = false;
+	/** What the person reads once the agent reported a failed model call. */
+	private failure: string | null = null;
 
 	get finished(): boolean {
 		return this.ended;
@@ -70,11 +99,16 @@ export class DataAnalystEventTranslator {
 				return [];
 			case EventType.RUN_FINISHED:
 				this.ended = true;
+				if (this.failure) {
+					// The run ends in the error state; the caller closes
+					// what is still open.
+					throw new InProcessTurnError("RUN_FAILED", this.failure);
+				}
 				return this.close();
 			case EventType.RUN_ERROR:
 				throw new DataAnalystAgentError(event.message);
 			case EventType.TEXT_MESSAGE_START:
-				if (this.openMessages.has(event.messageId)) {
+				if (this.failure || this.openMessages.has(event.messageId)) {
 					return [];
 				}
 				this.openMessages.add(event.messageId);
@@ -86,7 +120,7 @@ export class DataAnalystEventTranslator {
 					},
 				];
 			case EventType.TEXT_MESSAGE_CONTENT:
-				return this.openMessages.has(event.messageId)
+				return !this.failure && this.openMessages.has(event.messageId)
 					? [
 							{
 								type: event.type,
@@ -139,6 +173,7 @@ export class DataAnalystEventTranslator {
 				return [{ type: event.type, toolCallId: event.toolCallId }];
 			}
 			case EventType.STATE_SNAPSHOT:
+				this.failure ??= failureOf(event.snapshot);
 				return [
 					...this.results(event.snapshot),
 					...this.model(event.snapshot),

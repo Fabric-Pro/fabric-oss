@@ -11,6 +11,10 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { assertContextSummarizationEnabled } from "../../lib/context-summarization-feature";
+import {
+	PARLUME_TRANSCRIPT_WITHHELD,
+	resolveParlumeTranscriptAccess,
+} from "../../lib/parlume-transcript-access";
 
 /**
  * Canonical, authorized drill-down from a summary reference to its original
@@ -71,6 +75,20 @@ export const resolveContextSummaryReferenceProcedure = tenantProtectedProcedure
 		if (!reference) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Reference not found",
+			});
+		}
+		// A summary can cite a Parlume transcript (a manual edit, or a summary
+		// written before they were left out); citing it does not open it.
+		if (
+			reference.sourceType === "MEETING_TRANSCRIPT" &&
+			(await resolveParlumeTranscriptAccess({
+				projectId: input.projectId,
+				userId: user.id,
+				contextId: reference.sourceId,
+			})) === "withheld"
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message: PARLUME_TRANSCRIPT_WITHHELD,
 			});
 		}
 

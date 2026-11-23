@@ -53,7 +53,6 @@ describe("warmParlumeRuntime", () => {
 			userId: "u1",
 			organizationId: "o1",
 			projectId: "p1",
-			readOnly: true,
 		});
 	});
 

@@ -3,10 +3,23 @@
 // session never answers on its own; the bridge decides when a response is
 // created (see parlume-realtime-engine.ts).
 
+import { PARLUME_SPOKEN_BUDGET_SECONDS } from "./parlume-chat";
 import { encodeParlumeBase64 } from "./parlume-pcm";
 import { decodeBase64, isRecord } from "./parlume-stream-auth";
 
 export const PARLUME_REALTIME_SAMPLE_RATE = 24_000;
+// Provisional: the audio tokens a second of the voice's speech costs, to be
+// measured on staging from the engine's `realtime.done` logs.
+const OUTPUT_AUDIO_TOKENS_PER_SECOND = 20;
+// The words the voice writes alongside its speech, and its tool calls.
+const OUTPUT_TEXT_ALLOWANCE_TOKENS = 300;
+/**
+ * Every response stops at the spoken budget, whatever length the voice's
+ * prompt asks for; OpenAI then ends it as `incomplete`.
+ */
+const MAX_OUTPUT_TOKENS =
+	OUTPUT_AUDIO_TOKENS_PER_SECOND * PARLUME_SPOKEN_BUDGET_SECONDS +
+	OUTPUT_TEXT_ALLOWANCE_TOKENS;
 const REALTIME_URL = "https://api.openai.com/v1/realtime";
 // 100 ms of 24 kHz 16-bit mono audio per append.
 const APPEND_BATCH_BYTES = (PARLUME_REALTIME_SAMPLE_RATE * 2) / 10;
@@ -22,7 +35,10 @@ const PARLUME_REALTIME_AUDIO = {
 		format: { type: "audio/pcm", rate: PARLUME_REALTIME_SAMPLE_RATE },
 		turn_detection: {
 			type: "semantic_vad",
-			eagerness: "auto",
+			// "auto" took the pause in "Hey Fabric, what is…" for the end of
+			// the turn, and the voice answered before the request was heard.
+			// Flux's end of turn still answers as soon as the speaker stops.
+			eagerness: "low",
 			create_response: false,
 			interrupt_response: false,
 		},
@@ -199,9 +215,13 @@ export interface ParlumeRealtimeFunctionCall {
 }
 
 export type ParlumeRealtimeEvent =
+	/** `expiresAt`: when OpenAI ends the session, in epoch milliseconds. */
+	| { type: "session_created"; expiresAt: number | null }
 	| { type: "speech_started" }
 	| { type: "speech_stopped" }
 	| { type: "response_created"; responseId: string }
+	/** What the voice says, as its audio streams. */
+	| { type: "transcript_delta"; responseId: string; delta: string }
 	| {
 			type: "audio_delta";
 			responseId: string;
@@ -212,6 +232,8 @@ export type ParlumeRealtimeEvent =
 			type: "response_done";
 			responseId: string;
 			status: string;
+			/** Why a response ended early, such as `max_output_tokens`. */
+			reason: string | null;
 			usage: ParlumeRealtimeUsage | null;
 			functionCalls: ParlumeRealtimeFunctionCall[];
 			/** What Parlume said, for the summary a new session starts from. */
@@ -320,6 +342,18 @@ export function parseParlumeRealtimeEvent(
 		return null;
 	}
 	switch (event.type) {
+		case "session.created": {
+			const expiresAt = isRecord(event.session)
+				? event.session.expires_at
+				: null;
+			return {
+				type: "session_created",
+				expiresAt:
+					typeof expiresAt === "number" && Number.isFinite(expiresAt)
+						? expiresAt * 1000
+						: null,
+			};
+		}
 		case "input_audio_buffer.speech_started":
 			return { type: "speech_started" };
 		case "input_audio_buffer.speech_stopped":
@@ -345,11 +379,25 @@ export function parseParlumeRealtimeEvent(
 					}
 				: null;
 		}
+		case "response.output_audio_transcript.delta":
+			return typeof event.response_id === "string" &&
+				typeof event.delta === "string"
+				? {
+						type: "transcript_delta",
+						responseId: event.response_id,
+						delta: event.delta,
+					}
+				: null;
 		case "response.done": {
 			const response = event.response;
 			if (!isRecord(response) || typeof response.id !== "string") {
 				return null;
 			}
+			const details: Record<string, unknown> = isRecord(
+				response.status_details,
+			)
+				? response.status_details
+				: {};
 			return {
 				type: "response_done",
 				responseId: response.id,
@@ -357,6 +405,10 @@ export function parseParlumeRealtimeEvent(
 					typeof response.status === "string"
 						? response.status
 						: "unknown",
+				reason:
+					typeof details.reason === "string"
+						? details.reason.slice(0, 100)
+						: null,
 				usage: parseUsage(response.usage),
 				...parseOutput(response.output),
 			};
@@ -381,6 +433,31 @@ export function parseParlumeRealtimeEvent(
  * The client side of one Realtime socket: what Parlume sends, as typed calls.
  * Meeting audio is resampled to the session's rate and sent in 100 ms appends.
  */
+type ParlumeRealtimeTool = "ask_fabric" | "post_to_chat" | "read_chat";
+
+/** The tool a function call names, or null for one the voice was not given. */
+export function parseParlumeRealtimeTool(
+	name: string,
+): ParlumeRealtimeTool | null {
+	return name === "ask_fabric" ||
+		name === "post_to_chat" ||
+		name === "read_chat"
+		? name
+		: null;
+}
+
+/** A function call's arguments; empty when they are not a JSON object. */
+export function parseParlumeRealtimeArguments(
+	text: string,
+): Record<string, unknown> {
+	try {
+		const value: unknown = JSON.parse(text);
+		return isRecord(value) ? value : {};
+	} catch {
+		return {};
+	}
+}
+
 export class ParlumeRealtimeClient {
 	private resampler: ParlumeResampler | null = null;
 	private pending: Uint8Array[] = [];
@@ -417,7 +494,11 @@ export class ParlumeRealtimeClient {
 	configure(): void {
 		this.send({
 			type: "session.update",
-			session: { type: "realtime", audio: PARLUME_REALTIME_AUDIO },
+			session: {
+				type: "realtime",
+				audio: PARLUME_REALTIME_AUDIO,
+				max_output_tokens: MAX_OUTPUT_TOKENS,
+			},
 		});
 	}
 
@@ -458,6 +539,13 @@ export class ParlumeRealtimeClient {
 		});
 	}
 
+	/** Drops meeting audio the session has not made a turn of yet. */
+	clearAudio(): void {
+		this.pending = [];
+		this.pendingBytes = 0;
+		this.send({ type: "input_audio_buffer.clear" });
+	}
+
 	/** Ends the current user turn now, before voice activity detection does. */
 	commitAudio(): void {
 		this.flushAudio();
@@ -486,6 +574,7 @@ export class ParlumeRealtimeClient {
 		});
 	}
 
+	/** Asks the session to answer. */
 	createResponse(kind: string): void {
 		this.send({
 			type: "response.create",

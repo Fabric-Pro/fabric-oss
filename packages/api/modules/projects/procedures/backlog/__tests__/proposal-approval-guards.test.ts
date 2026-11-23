@@ -34,6 +34,7 @@ import {
 	assertProposalItemsUnresolved,
 	assertProposalRevision,
 	assertUpdateTargetsInProject,
+	holdBackInvalidUpdateTargets,
 	lostClaimConflict,
 	PROPOSAL_ALREADY_ACTIONED_MESSAGE,
 	PROPOSAL_CHANGED_MESSAGE,
@@ -101,6 +102,8 @@ describe("lostClaimConflict", () => {
 	);
 });
 
+const SELECTED = { id: true, identifier: true, title: true, externalId: true };
+
 describe("assertUpdateTargetsInProject", () => {
 	it("passes when every Fabric target is a work item in the project", async () => {
 		mocks.findMany.mockResolvedValue([{ id: FABRIC_ID }]);
@@ -111,8 +114,11 @@ describe("assertUpdateTargetsInProject", () => {
 			]),
 		).resolves.toBeUndefined();
 		expect(mocks.findMany).toHaveBeenCalledWith({
-			where: { projectId: "example-project", id: { in: [FABRIC_ID] } },
-			select: { id: true },
+			where: {
+				projectId: "example-project",
+				OR: [{ id: { in: [FABRIC_ID] } }],
+			},
+			select: SELECTED,
 		});
 	});
 
@@ -132,6 +138,22 @@ describe("assertUpdateTargetsInProject", () => {
 		});
 	});
 
+	it("names every invalid target, not only the first", async () => {
+		mocks.findMany.mockResolvedValue([]);
+
+		await expect(
+			assertUpdateTargetsInProject("example-project", [
+				update(FABRIC_ID, "F-1"),
+				update(OTHER_FABRIC_ID, "F-2"),
+			]),
+		).rejects.toMatchObject({
+			message: [
+				"“Example change” can't update F-1: it is not a work item in this project. Pick another target or create a new ticket.",
+				"“Example change” can't update F-2: it is not a work item in this project. Pick another target or create a new ticket.",
+			].join("\n"),
+		});
+	});
+
 	it("names the selected ticket when the update has no identifier", async () => {
 		mocks.findMany.mockResolvedValue([]);
 
@@ -146,14 +168,115 @@ describe("assertUpdateTargetsInProject", () => {
 		});
 	});
 
-	it("leaves creates and non-Fabric ids to their apply-time resolution", async () => {
+	it("leaves creates and updates that name no target to the apply", async () => {
 		await assertUpdateTargetsInProject("example-project", [
 			{ action: "create", title: { to: "New" } },
-			update("ADO-1234", "ADO-1234"),
 			update(null),
 		]);
 
 		expect(mocks.findMany).not.toHaveBeenCalled();
+	});
+
+	it("leaves a reference that is not a Fabric id to the apply's fallback", async () => {
+		await expect(
+			assertUpdateTargetsInProject("example-project", [
+				{ ...update(null), existingExternalId: "ADO-1234" },
+				update("F-7", "F-7"),
+			]),
+		).resolves.toBeUndefined();
+		expect(mocks.findMany).not.toHaveBeenCalled();
+	});
+});
+
+describe("holdBackInvalidUpdateTargets", () => {
+	const create = { action: "create" as const, title: { to: "New" } };
+
+	it("resolves a reference that is not a Fabric id the way the apply does, reading only the candidate tickets", async () => {
+		mocks.findMany.mockResolvedValue([
+			{
+				id: FABRIC_ID,
+				identifier: "F-7",
+				title: "Existing ticket",
+				externalId: "ADO-1234",
+			},
+		]);
+		const byCard = { ...update(null), existingExternalId: "ADO-1234" };
+		const byIdentifier = update("F-7", "F-7");
+
+		await expect(
+			holdBackInvalidUpdateTargets("example-project", [
+				create,
+				byCard,
+				byIdentifier,
+			]),
+		).resolves.toEqual({ heldBack: new Set(), refusals: [] });
+		expect(mocks.findMany).toHaveBeenCalledWith({
+			where: {
+				projectId: "example-project",
+				OR: [
+					{ identifier: { in: ["F-7"] } },
+					{ externalId: { in: ["ADO-1234"] } },
+					{
+						title: {
+							equals: "Example change",
+							mode: "insensitive",
+						},
+					},
+				],
+			},
+			select: SELECTED,
+		});
+	});
+
+	it("holds back a reference that resolves to no ticket of the project", async () => {
+		mocks.findMany.mockResolvedValue([]);
+		const byCard = { ...update(null), existingExternalId: "ADO-1234" };
+
+		const result = await holdBackInvalidUpdateTargets("example-project", [
+			create,
+			byCard,
+		]);
+
+		expect([...result.heldBack]).toEqual([byCard]);
+		expect(result.refusals).toEqual([
+			expect.stringContaining("“Example change” can't update ADO-1234:"),
+		]);
+	});
+
+	it("holds back only the invalid updates and names each one", async () => {
+		mocks.findMany.mockResolvedValue([{ id: FABRIC_ID }]);
+		const valid = update(FABRIC_ID, "F-1");
+		const invalid = update(OTHER_FABRIC_ID, "F-2");
+
+		const result = await holdBackInvalidUpdateTargets("example-project", [
+			create,
+			valid,
+			invalid,
+		]);
+
+		expect([...result.heldBack]).toEqual([invalid]);
+		expect(result.refusals).toEqual([
+			"“Example change” can't update F-2: it is not a work item in this project. Pick another target or create a new ticket.",
+		]);
+	});
+
+	it("refuses the request when every pending item is held back", async () => {
+		mocks.findMany.mockResolvedValue([]);
+
+		await expect(
+			holdBackInvalidUpdateTargets("example-project", [
+				update(FABRIC_ID, "F-1"),
+			]),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: expect.stringContaining("can't update F-1"),
+		});
+	});
+
+	it("holds nothing back when every target is valid", async () => {
+		await expect(
+			holdBackInvalidUpdateTargets("example-project", [create]),
+		).resolves.toEqual({ heldBack: new Set(), refusals: [] });
 	});
 });
 

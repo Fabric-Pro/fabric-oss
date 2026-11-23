@@ -25,7 +25,7 @@ it("seeds incoming reasoning turns into the platform graph input", async () => {
 	const reasoningByTurn = {
 		"1": { text: "Earlier", durationMs: 1, startedAt: 1, completedAt: 2 },
 	};
-	const executor = h.args[4] as (
+	const executor = h.args[3] as (
 		input: Record<string, unknown>,
 	) => AsyncGenerator<unknown>;
 	for await (const _event of executor({
@@ -70,7 +70,7 @@ it("drops the regenerated turn from the graph seed while keeping earlier turns",
 		startedAt: 1,
 		completedAt: 2,
 	};
-	const executor = h.args[4] as (
+	const executor = h.args[3] as (
 		input: Record<string, unknown>,
 	) => AsyncGenerator<unknown>;
 	for await (const _event of executor({

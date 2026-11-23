@@ -18,6 +18,11 @@ const mocks = vi.hoisted(() => ({
 	deleteProviderData: vi.fn(),
 	getSettings: vi.fn(),
 	startTimeSuggestionsAfterMeeting: vi.fn(),
+	purgeBridge: vi.fn(),
+}));
+
+vi.mock("../parlume-bridge-purge", () => ({
+	requestParlumeBridgePurge: mocks.purgeBridge,
 }));
 
 vi.mock("../../../time-tracking/lib/automatic-suggestions", () => ({
@@ -93,6 +98,8 @@ function storedSession(overrides: Record<string, unknown> = {}) {
 		providerDataDeletedAt: null,
 		trigger: "MANUAL",
 		createdAt: new Date("2026-10-01T17:00:00Z"),
+		memberSpeakerIds: [],
+		guestSpeakerIds: [],
 		...overrides,
 	};
 }
@@ -158,8 +165,77 @@ describe("finalizeParlumeSession conversation records", () => {
 		);
 		expect(mocks.segmentFindMany).toHaveBeenCalledWith(
 			expect.objectContaining({
-				select: { text: true, speakerName: true, source: true },
+				select: {
+					text: true,
+					speakerName: true,
+					speakerId: true,
+					source: true,
+				},
 			}),
+		);
+	});
+
+	it("keeps a guest's words, marked as an unverified speaker's, and names members and unknown speakers as Teams does", async () => {
+		mocks.sessionFindUnique.mockResolvedValue(
+			storedSession({
+				memberSpeakerIds: ["8:orgid:member"],
+				guestSpeakerIds: ["8:orgid:outside"],
+			}),
+		);
+		mocks.segmentFindMany.mockResolvedValue([
+			{
+				text: "Where is the plan?",
+				speakerName: "Alex",
+				speakerId: "8:orgid:member",
+				source: "SPEECH",
+			},
+			{
+				text: "We can ship Friday.",
+				speakerName: "Pat",
+				speakerId: "8:orgid:outside",
+				source: "SPEECH",
+			},
+			{
+				text: "Hello all.",
+				speakerName: "Visitor",
+				speakerId: "8:teamsvisitor:guest-1",
+				source: "CHAT",
+			},
+			{
+				text: "Sounds good.",
+				speakerName: "Sam",
+				speakerId: null,
+				source: "SPEECH",
+			},
+		]);
+
+		await finalizeParlumeSession("session-1");
+
+		expect(savedContent()).toContain(
+			"Alex: Where is the plan?\nPat (unverified speaker): We can ship Friday.\n[chat] Visitor (unverified speaker): Hello all.\nSam: Sounds good.\n",
+		);
+	});
+
+	it("marks a pause and a resume where they happened in the transcript", async () => {
+		mocks.segmentFindMany.mockResolvedValue([
+			{ text: "First point.", speakerName: "Alex", source: "SPEECH" },
+			{
+				text: "Listening paused by Dana Member.",
+				speakerName: null,
+				source: "EVENT",
+			},
+			{
+				text: "Listening resumed by Dana Member.",
+				speakerName: null,
+				source: "EVENT",
+			},
+			{ text: "Second point.", speakerName: "Alex", source: "SPEECH" },
+		]);
+
+		await finalizeParlumeSession("session-1");
+
+		expect(savedContent()).toContain(
+			"Alex: First point.\n[Parlume] Listening paused by Dana Member.\n[Parlume] Listening resumed by Dana Member.\nAlex: Second point.\n",
 		);
 	});
 
@@ -168,8 +244,9 @@ describe("finalizeParlumeSession conversation records", () => {
 			{
 				text: "Create a feature for the release notes.",
 				speakerName: "Alex",
+				source: "SPEECH",
 			},
-			{ text: "Thank you.", speakerName: "Sam" },
+			{ text: "Thank you.", speakerName: "Sam", source: "SPEECH" },
 		]);
 		mocks.turnFindMany.mockResolvedValue([storedTurn()]);
 		mocks.actionFindMany.mockResolvedValue([
@@ -296,14 +373,17 @@ describe("finalizeParlumeSession conversation records", () => {
 			projectId: "project-1",
 			organizationId: "org-1",
 		};
-		for (const query of [
-			mocks.segmentFindMany,
-			mocks.turnFindMany,
-			mocks.actionFindMany,
-			mocks.channelPostFindMany,
-		]) {
+		// A question asked on the Parlume page, and what it proposed, stays
+		// out of the meeting's transcript, notes and recap.
+		const meetingTurn = { replyChannel: { not: "PAGE" } };
+		for (const [query, scoped] of [
+			[mocks.segmentFindMany, where],
+			[mocks.turnFindMany, { ...where, ...meetingTurn }],
+			[mocks.actionFindMany, { ...where, turn: meetingTurn }],
+			[mocks.channelPostFindMany, where],
+		] as const) {
 			expect(query).toHaveBeenCalledWith(
-				expect.objectContaining({ where, take: 10_001 }),
+				expect.objectContaining({ where: scoped, take: 10_001 }),
 			);
 		}
 		expect(mocks.turnFindMany).toHaveBeenCalledWith(
@@ -430,7 +510,7 @@ describe("finalizeParlumeSession conversation records", () => {
 
 	it("applies the Context size limit to incoming speech and appended records together", async () => {
 		mocks.segmentFindMany.mockResolvedValue([
-			{ text: "x".repeat(999_900), speakerName: null },
+			{ text: "x".repeat(999_900), speakerName: null, source: "SPEECH" },
 		]);
 		mocks.turnFindMany.mockResolvedValue([storedTurn()]);
 		await expect(finalizeParlumeSession("session-1")).rejects.toThrow(
@@ -510,8 +590,8 @@ describe("finalizeParlumeSession conversation records", () => {
 			"P7: exact Graph reply and content observed",
 		);
 		expect(savedContent()).not.toContain("Request 1");
+		// The transcript is never embedded: only its notes workflow starts.
 		expect(mocks.workflowStart.mock.calls.map(([name]) => name)).toEqual([
-			"contextEmbeddingWorkflow",
 			"parlumeNotesWorkflow",
 		]);
 		expect(mocks.workflowStart).toHaveBeenCalledWith(
@@ -794,6 +874,28 @@ describe("finalizeParlumeSession provider usage", () => {
 
 		expect(mocks.recordUsage).not.toHaveBeenCalled();
 		expect(mocks.sessionUpdateMany).not.toHaveBeenCalled();
+		expect(mocks.purgeBridge).not.toHaveBeenCalled();
+	});
+
+	it("asks the bridge to purge its storage once the session is finalized", async () => {
+		mocks.segmentFindMany.mockResolvedValue([
+			{
+				text: "We ship on Friday.",
+				speakerName: "Dev One",
+				source: "SPEECH",
+			},
+		]);
+
+		await finalizeParlumeSession("session-1");
+
+		expect(mocks.purgeBridge).toHaveBeenCalledExactlyOnceWith(
+			"session-1",
+			"finalized",
+		);
+		// The transcript was saved before the bridge was asked.
+		expect(mocks.contextCreate.mock.invocationCallOrder[0]).toBeLessThan(
+			mocks.purgeBridge.mock.invocationCallOrder[0] ?? 0,
+		);
 	});
 
 	it("refuses to claim a failed session that finalized after it was read", async () => {

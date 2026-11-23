@@ -365,7 +365,29 @@ describe("audit.taxonomy handler", () => {
 		// repository counts only) = 268.
 		// + 1 project.meeting_digest.confidentiality_changed (a linked series
 		// marked confidential or not; the new state only) = 269.
-		expect(result.actions).toHaveLength(269);
+		// + 5 project.parlume.{action_dismissed, speech_stopped,
+		// listening_paused, listening_resumed, session_deleted} (a member
+		// dismissed a proposed change, stopped or paused Parlume, let it
+		// listen again, or deleted a finished meeting's raw content; ids
+		// only) = 274.
+		// + 1 project.parlume.action_executed (Parlume, as an agent acting
+		// for the confirming member, ran a confirmed change; its status and
+		// the work item it created, never the arguments) = 275.
+		// + 1 project.parlume.request_answered (Parlume, as an agent acting
+		// for the inviter, answered a meeting request; its outcome and the
+		// tools it used, never the question or the answer) = 276.
+		// + 2 project.parlume.{confidential_marked, confidential_cleared} (a
+		// meeting marked confidential, or the mark removed, from the Parlume
+		// page; ids and scope only) = 278.
+		// + 1 project.parlume.reading_continued (a member had Parlume read
+		// the next part of a long post from the Parlume page; ids only) = 279.
+		// + 2 project.parlume.{notes_regenerated, action_item_proposed} (a
+		// finished meeting's notes written again; one of its action items
+		// proposed into the Proposal Inbox; ids only) = 281.
+		// + 2 project.parlume.{suggestion_spoken, suggestion_dismissed} (a
+		// member had Parlume say a suggestion in the meeting, or dismissed
+		// one, from the Parlume page; ids only, never the suggestion) = 283.
+		expect(result.actions).toHaveLength(283);
 		expect(result.actions).toContain(
 			"project.meeting_digest.confidentiality_changed",
 		);
@@ -473,7 +495,18 @@ describe("audit.taxonomy handler", () => {
 		expect(result.actions).toContain("project.parlume.session_started");
 		expect(result.actions).toContain("project.parlume.session_stopped");
 		expect(result.actions).toContain("project.parlume.action_confirmed");
+		expect(result.actions).toContain("project.parlume.action_executed");
+		expect(result.actions).toContain("project.parlume.request_answered");
+		expect(result.actions).toContain("project.parlume.speech_stopped");
+		expect(result.actions).toContain("project.parlume.listening_paused");
+		expect(result.actions).toContain("project.parlume.listening_resumed");
+		expect(result.actions).toContain("project.parlume.reading_continued");
+		expect(result.actions).toContain("project.parlume.session_deleted");
 		expect(result.actions).toContain("project.parlume.auto_join_changed");
+		expect(result.actions).toContain("project.parlume.notes_regenerated");
+		expect(result.actions).toContain(
+			"project.parlume.action_item_proposed",
+		);
 		expect(result.actions).toContain(
 			"project.context.repository_sync_configured",
 		);

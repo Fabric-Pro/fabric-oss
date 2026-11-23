@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
 	computeAppliedProposalIndexes,
 	isPmTicketMissingError,
+	MISSING_UPDATE_TARGET_ERROR,
+	perChangeFailureClass,
 } from "../backlog-apply-outcome";
 
 describe("isPmTicketMissingError", () => {
@@ -157,5 +159,43 @@ describe("computeAppliedProposalIndexes", () => {
 				syncToPM: false,
 			}),
 		).toEqual([10]);
+	});
+});
+
+describe("perChangeFailureClass", () => {
+	it("names a deleted update target when that is every failure", () => {
+		expect(
+			perChangeFailureClass({
+				applyErrors: [
+					MISSING_UPDATE_TARGET_ERROR,
+					MISSING_UPDATE_TARGET_ERROR,
+				],
+				failureCount: 2,
+			}),
+		).toBe("TargetMissing");
+	});
+
+	it("stays generic when another change failed too", () => {
+		expect(
+			perChangeFailureClass({
+				applyErrors: [MISSING_UPDATE_TARGET_ERROR, "Story not saved"],
+				failureCount: 2,
+			}),
+		).toBe("default");
+	});
+
+	it("stays generic when a PM sync failed besides the missing target", () => {
+		expect(
+			perChangeFailureClass({
+				applyErrors: [MISSING_UPDATE_TARGET_ERROR],
+				failureCount: 2,
+			}),
+		).toBe("default");
+	});
+
+	it("stays generic when only PM sync failed", () => {
+		expect(
+			perChangeFailureClass({ applyErrors: [], failureCount: 1 }),
+		).toBe("default");
 	});
 });

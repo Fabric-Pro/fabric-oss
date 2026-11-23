@@ -18,6 +18,8 @@ import { resolveProjectFeatureRef } from "./shared/project-feature-reads";
 
 const CHAT_UNAVAILABLE_ERROR =
 	"This meeting's chat is not available to Parlume. Say the content aloud instead.";
+const GUESTS_PRESENT_ERROR =
+	"A guest is in this meeting, so Parlume does not post in its chat. Give the content in your answer: it stays on the Parlume page.";
 const ACCESS_DENIED_ERROR = "Project not found or access denied.";
 const MAX_POSTS_PER_TURN = 3;
 const MAX_LINKS_PER_POST = 10;
@@ -422,6 +424,7 @@ export function createParlumeMeetingChatPoster(context: ParlumeActionContext) {
 		const result = await postParlumeMeetingChat({
 			sessionId: context.sessionId,
 			turnId: context.turnId,
+			voiceGeneration: context.voiceGeneration,
 			message,
 		});
 		parlumeActivityLog(result.sent ? "info" : "warn", "chat.posted", {
@@ -436,6 +439,14 @@ export function createParlumeMeetingChatPoster(context: ParlumeActionContext) {
 			links: resolved.length - dropped.length,
 			unresolved: unresolved.length,
 		});
+		if (!result.sent && result.reason === "guests_present") {
+			return {
+				sent: false,
+				delivered: false,
+				reason: "guests_present",
+				error: GUESTS_PRESENT_ERROR,
+			};
+		}
 		if (!result.sent) {
 			return result.reason === "chat_unavailable"
 				? {
@@ -471,13 +482,7 @@ export function createParlumeMeetingChatPoster(context: ParlumeActionContext) {
  * mode: neither changes anything in Fabric.
  */
 export function createParlumeMeetingChatTool(context: ParlumeActionContext) {
-	return {
-		post_to_meeting_chat: tool({
-			description:
-				"Write a message in the meeting's chat. Use it when a participant asks you to share, post, send or write something in the chat, or asks for a link. Pass links (with identifiers like F-123) to include exact full addresses; pass text for anything else they asked you to write. Never read an address aloud.",
-			inputSchema,
-			execute: createParlumeMeetingChatPoster(context),
-		}),
+	const getMeetingLinks = {
 		get_meeting_links: tool({
 			description:
 				"Look up the exact full address of Fabric items in this meeting's project: work items, documents, Context sources, project tabs such as Coding Instructions, or the repository the Coding Instructions sync from. Use it whenever your answer includes a link, and copy each address exactly.",
@@ -489,5 +494,19 @@ export function createParlumeMeetingChatTool(context: ParlumeActionContext) {
 					error: ACCESS_DENIED_ERROR,
 				},
 		}),
+	};
+	// A question asked on the Parlume page is answered there: nothing it
+	// does reaches the meeting.
+	if (context.pageOnly) {
+		return getMeetingLinks;
+	}
+	return {
+		post_to_meeting_chat: tool({
+			description:
+				"Write a message in the meeting's chat. Use it when a participant asks you to share, post, send or write something in the chat, or asks for a link. Pass links (with identifiers like F-123) to include exact full addresses; pass text for anything else they asked you to write. Never read an address aloud.",
+			inputSchema,
+			execute: createParlumeMeetingChatPoster(context),
+		}),
+		...getMeetingLinks,
 	};
 }

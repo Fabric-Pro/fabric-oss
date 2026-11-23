@@ -104,6 +104,7 @@ export const setQuestionAssigneesProcedure = tenantProtectedProcedure
 		const question = await getDecisionLogEntryById({
 			tenantFilter,
 			userStoryId: input.storyId,
+			projectId: input.projectId,
 			id: input.questionRootId,
 		});
 		if (!question) {

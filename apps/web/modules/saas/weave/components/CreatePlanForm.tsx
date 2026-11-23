@@ -67,11 +67,29 @@ export function CreatePlanForm({
 	const [showRefinement, setShowRefinement] = useState(false);
 	const [refinementInput, setRefinementInput] = useState("");
 	const scrollEndRef = useRef<HTMLDivElement>(null);
+	// The improved request a reply proposes. It replaces the request only on
+	// "Use refined request"; until then each follow-up refines it further.
+	const [refinedMessage, setRefinedMessage] = useState<string | null>(null);
+	// Whether the request a refinement in flight started from is still the
+	// request; a reply to a replaced one proposes nothing.
+	const refiningCurrentRequestRef = useRef(false);
+	// A request written by hand, a template or an example replaces the one the
+	// refinement improved, so its improved version no longer applies.
+	const replaceRequest = useCallback((next: string) => {
+		setMessage(next);
+		setRefinedMessage(null);
+		refiningCurrentRequestRef.current = false;
+	}, []);
+	const handleRefinedMessage = useCallback((updated: string) => {
+		if (refiningCurrentRequestRef.current) {
+			setRefinedMessage(updated);
+		}
+	}, []);
 	// Lives in the form, not the collapsible panel, so a reply still lands
 	// while the panel is closed.
 	const refinement = useWeaveRefinement({
 		projectId,
-		onUpdatedMessage: setMessage,
+		onUpdatedMessage: handleRefinedMessage,
 	});
 
 	// Fetch templates for this project
@@ -95,7 +113,7 @@ export function CreatePlanForm({
 				});
 				setName(result.template.name);
 				setDescription(result.template.description ?? "");
-				setMessage(result.template.message ?? "");
+				replaceRequest(result.template.message ?? "");
 				toast.success(
 					"Template applied — edit as needed before creating.",
 				);
@@ -103,7 +121,7 @@ export function CreatePlanForm({
 				toast.error("Failed to load template");
 			}
 		},
-		[organizationId],
+		[organizationId, replaceRequest],
 	);
 
 	const handleSubmit = (e: React.FormEvent) => {
@@ -136,11 +154,12 @@ export function CreatePlanForm({
 		}
 
 		setRefinementInput("");
+		refiningCurrentRequestRef.current = true;
 		await sendRefinement({
 			refinementInput: trimmed,
-			currentMessage: message,
+			currentMessage: refinedMessage ?? message,
 		});
-	}, [refinementInput, isThinking, message, sendRefinement]);
+	}, [refinementInput, isThinking, message, refinedMessage, sendRefinement]);
 
 	const handleRefinementKeyDown = (
 		e: React.KeyboardEvent<HTMLInputElement>,
@@ -152,6 +171,10 @@ export function CreatePlanForm({
 	};
 
 	const handleFinalizeRefinement = () => {
+		if (refinedMessage !== null) {
+			setMessage(refinedMessage);
+			setRefinedMessage(null);
+		}
 		setShowRefinement(false);
 	};
 
@@ -218,7 +241,7 @@ export function CreatePlanForm({
 					id="message"
 					placeholder="Describe what you want the agents to do in detail..."
 					value={message}
-					onChange={(e) => setMessage(e.target.value)}
+					onChange={(e) => replaceRequest(e.target.value)}
 					rows={5}
 					required
 					className="font-mono text-sm"
@@ -348,6 +371,21 @@ export function CreatePlanForm({
 							</Button>
 						</div>
 
+						{refinedMessage !== null && (
+							<div className="space-y-1">
+								<Label htmlFor="refined-request">
+									Refined request
+								</Label>
+								<Textarea
+									id="refined-request"
+									value={refinedMessage}
+									readOnly
+									rows={4}
+									className="font-mono text-sm"
+								/>
+							</div>
+						)}
+
 						{/* Finalize button — shown after at least one exchange */}
 						{refinement.messages.length >= 2 && (
 							<Button
@@ -375,7 +413,7 @@ export function CreatePlanForm({
 							key={prompt}
 							type="button"
 							onClick={() => {
-								setMessage(prompt);
+								replaceRequest(prompt);
 								setName(prompt.slice(0, 50));
 							}}
 							className="text-xs px-2 py-1 bg-muted rounded-md hover:bg-muted/80 transition-colors text-left"

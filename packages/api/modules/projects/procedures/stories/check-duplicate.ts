@@ -34,6 +34,8 @@ import {
 	findProposalInboxMatches,
 	type InboxMatchEntry,
 	listInboxMatchEntries,
+	type ManualEntryInboxMatches,
+	manualEntry,
 	manualEntryCorpusTexts,
 } from "../../lib/proposal-duplicate-matching";
 import type { ProposalInboxMatch } from "../../lib/proposal-duplicate-scoring";
@@ -71,11 +73,20 @@ import type { ProposalInboxMatch } from "../../lib/proposal-duplicate-scoring";
  *     rejection returns a "create" decision with `error` set, distinguishing
  *     "checked, found nothing" from "could not check" for the UI. Only an
  *     auth failure (no project access) still throws;
- *   - `proposalMatches` lists unreviewed Proposal Inbox items similar to the
- *     description (see `proposal-duplicate-scoring.ts` for the bar). Their
- *     texts ride in the corpus's embedding request, so the description is
+ *   - `proposalMatches` lists unreviewed Proposal Inbox items the roadmap
+ *     duplicate scan's candidate rule selects against the description and
+ *     its verifier then confirms (see `proposal-duplicate-scoring.ts`).
+ *     Their texts, and the Scope or acceptance-criteria sections both sides
+ *     have, ride in the corpus's embedding request, so the description is
  *     embedded once. The list is settled under the same deadline, and its
- *     own failure only leaves it empty: it never changes the ticket result.
+ *     own failure only leaves it empty: it never changes the ticket result;
+ *   - a typing prefetch (`verifyProposalMatches: false`) bills no inbox
+ *     verification: it lists only the candidates a kept verdict confirmed
+ *     and counts the rest in `unverifiedProposalMatches`, for the final
+ *     check (blur or submit) to verify. Verdicts are kept for a day, so the
+ *     final check bills only what no earlier check of the same text did;
+ *   - the request's own abort signal joins the deadline, so an abandoned
+ *     request stops its model calls.
  */
 
 const LOG_PREFIX = "[Duplicate Check]";
@@ -94,7 +105,7 @@ type CheckDuplicateAlternative = {
 	similarity: number;
 };
 
-export type CheckDuplicateResult = {
+type CheckDuplicateResult = {
 	decision: "create" | "enrich";
 	confidence: number;
 	matchedStoryId?: string;
@@ -105,10 +116,15 @@ export type CheckDuplicateResult = {
 	error?: string;
 	/** Similar unreviewed Proposal Inbox items, strongest first. */
 	proposalMatches: ProposalInboxMatch[];
+	/** Inbox candidates this check left for a verifying check to decide. */
+	unverifiedProposalMatches: number;
 };
 
 /** The ticket half of the result, before the inbox matches are attached. */
-type StoryCheckResult = Omit<CheckDuplicateResult, "proposalMatches">;
+type StoryCheckResult = Omit<
+	CheckDuplicateResult,
+	"proposalMatches" | "unverifiedProposalMatches"
+>;
 
 /**
  * The detection text's title segment, derived from the description's own
@@ -179,9 +195,12 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 			// never this caller-supplied value.
 			organizationId: z.string().nullable().optional(),
 			description: z.string().trim().min(1).max(INPUT_BOUNDS.text),
+			// False for a prefetch while the user types: kept inbox verdicts
+			// only, no verifier call. Omitted, the check verifies.
+			verifyProposalMatches: z.boolean().optional(),
 		}),
 	)
-	.handler(async ({ input, context }): Promise<CheckDuplicateResult> => {
+	.handler(async ({ input, context, signal }) => {
 		const user = context.user;
 		const projectTenant = await getProjectTenantId(input.projectId);
 		const canAccess =
@@ -198,6 +217,7 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 		const description = input.description;
 		const titleSegment = deriveTitleSegment(description);
 		const itemText = buildDetectionText(titleSegment, description);
+		const entry = manualEntry(itemText, description);
 
 		const unavailable = (error: string): StoryCheckResult => ({
 			decision: "create",
@@ -209,6 +229,11 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 		// ONE deadline for the whole pipeline below, not just the language
 		// judge — see the module doc.
 		const deadline = startRequestDeadline();
+		// Every abortable step also stops when the caller abandons the
+		// request (a newer prefetch, or the dialog closing).
+		const pipelineSignal = signal
+			? AbortSignal.any([deadline.signal, signal])
+			: deadline.signal;
 		const startedAt = Date.now();
 		const stageTimings: StageTimings = {};
 		let timedOut = false;
@@ -221,19 +246,23 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 		// match only empties the inbox list; it never changes the ticket
 		// result. `inboxMatches` is replaced once the corpus has embedded
 		// the inbox texts.
-		const noInboxMatches: ProposalInboxMatch[] = [];
+		const noInboxMatches: ManualEntryInboxMatches = {
+			matches: [],
+			unverified: 0,
+		};
 		const warnInboxFailed = (error: unknown) => {
 			logger.warn(`${LOG_PREFIX} could not check the Proposal Inbox`, {
 				projectId,
 				error: error instanceof Error ? error.message : String(error),
 			});
 		};
-		const inboxEntries = listInboxMatchEntries(projectId).catch(
-			(error: unknown): InboxMatchEntry[] => {
-				warnInboxFailed(error);
-				return [];
-			},
-		);
+		const inboxEntries = listInboxMatchEntries(
+			projectId,
+			pipelineSignal,
+		).catch((error: unknown): InboxMatchEntry[] => {
+			warnInboxFailed(error);
+			return [];
+		});
 		let inboxMatches = Promise.resolve(noInboxMatches);
 
 		const runCheck = async (): Promise<StoryCheckResult> => {
@@ -277,10 +306,10 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 				projectId,
 				userId: user.id,
 				organizationId,
-				itemTexts: manualEntryCorpusTexts(itemText, entries),
+				itemTexts: manualEntryCorpusTexts(entry, entries),
 				logPrefix: LOG_PREFIX,
 				maxStaleEmbeds: MAX_INLINE_EMBEDS,
-				abortSignal: deadline.signal,
+				abortSignal: pipelineSignal,
 			}).finally(() => {
 				stageTimings.corpusMs = Date.now() - corpusModelsStart;
 			});
@@ -317,10 +346,11 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 				projectId,
 				userId: user.id,
 				organizationId,
-				itemText,
+				entry,
 				entries,
 				corpus,
-				abortSignal: deadline.signal,
+				verify: input.verifyProposalMatches ?? true,
+				abortSignal: pipelineSignal,
 			}).catch((error: unknown) => {
 				warnInboxFailed(error);
 				return noInboxMatches;
@@ -369,7 +399,7 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 				organizationId,
 				projectId,
 				logPrefix: LOG_PREFIX,
-				abortSignal: deadline.signal,
+				abortSignal: pipelineSignal,
 			});
 			stageTimings.judgeMs = Date.now() - judgeStart;
 
@@ -428,7 +458,7 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 		};
 
 		const result = await Promise.race([runCheck(), timeoutResult]);
-		const proposalMatches = await Promise.race([
+		const inbox = await Promise.race([
 			inboxMatches,
 			deadline.expired.then(() => noInboxMatches),
 		]);
@@ -441,5 +471,10 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 				elapsedMs: Date.now() - startedAt,
 			});
 		}
-		return { ...result, proposalMatches };
+		const response: CheckDuplicateResult = {
+			...result,
+			proposalMatches: inbox.matches,
+			unverifiedProposalMatches: inbox.unverified,
+		};
+		return response;
 	});

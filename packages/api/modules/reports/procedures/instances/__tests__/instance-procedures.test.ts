@@ -545,6 +545,8 @@ describe("createInstanceProcedure — project reports", () => {
 			"example-project",
 			ctx.user.id,
 			"REPORT_READ",
+			undefined,
+			{ admitUnreachableOrganizationMember: true },
 		);
 		expect(mockCreateTemplateInstance).toHaveBeenCalledWith(
 			expect.objectContaining({ projectId: "example-project" }),

@@ -12,11 +12,19 @@ import { createConsola, type LogObject } from "consola";
 const isServerSide =
 	typeof (globalThis as { window?: unknown }).window === "undefined";
 
-/** A warn/error/fatal log line, redacted and ready to hand to an external
- *  sink (an APM/log platform). `@repo/logs` never talks to one directly —
- *  see `addLogSink` below. */
-export type LogSinkLevel = "warn" | "error" | "fatal";
+/** A forwarded log line, redacted and ready to hand to an external sink (an
+ *  APM/log platform). `@repo/logs` never talks to one directly — see
+ *  `addLogSink` below. */
+export type LogSinkLevel = "info" | "warn" | "error" | "fatal";
 
+/**
+ * Every warn, error and fatal line is forwarded. An info line is forwarded
+ * only when its properties opt in with `forward: true`, so the few info
+ * events an alert or a dashboard reads reach the sink while routine info
+ * lines stay on stdout: `logger.info("msg", { event, forward: true })`.
+ * Every other consola type (`debug`, `trace`, `log`, `success`, …) is never
+ * forwarded.
+ */
 export interface LogSinkRecord {
 	level: LogSinkLevel;
 	message: string;
@@ -28,11 +36,18 @@ export interface LogSinkRecord {
 
 export type LogSink = (record: LogSinkRecord) => void;
 
-const SINK_LEVELS: ReadonlySet<string> = new Set<LogSinkLevel>([
-	"warn",
-	"error",
-	"fatal",
-]);
+/** The sink level of a consola entry type, or null for one never forwarded. */
+function sinkLevel(type: LogObject["type"]): LogSinkLevel | null {
+	switch (type) {
+		case "info":
+		case "warn":
+		case "error":
+		case "fatal":
+			return type;
+		default:
+			return null;
+	}
+}
 
 /**
  * Pull `{ message, properties, error }` out of a raw consola call. The
@@ -101,13 +116,15 @@ function getSinkRegistry(): SinkRegistry {
 
 /**
  * One reporter, registered once at logger-creation time, that fans a
- * warn/error/fatal entry out to every sink currently in the registry. New
+ * warn/error/fatal entry, or an opted-in info entry (see `LogSinkRecord`),
+ * out to every sink currently in the registry. New
  * sinks never need their own reporter — they just join the registry this
  * reporter already reads from, which is what makes `addLogSink` idempotent
  * per id rather than accumulating one reporter per call.
  */
 function forwardToSinks(entry: LogObject): void {
-	if (!SINK_LEVELS.has(entry.type)) {
+	const level = sinkLevel(entry.type);
+	if (!level) {
 		return;
 	}
 	const registry = getSinkRegistry();
@@ -116,6 +133,9 @@ function forwardToSinks(entry: LogObject): void {
 	}
 	try {
 		const raw = extractSinkFields(entry.args);
+		if (level === "info" && raw.properties.forward !== true) {
+			return;
+		}
 		const redacted = redactLogEntry({
 			message: raw.message,
 			properties: raw.properties,
@@ -125,7 +145,7 @@ function forwardToSinks(entry: LogObject): void {
 			return;
 		}
 		const record: LogSinkRecord = {
-			level: entry.type as LogSinkLevel,
+			level,
 			message: redacted.message,
 			properties: redacted.properties ?? {},
 			error: raw.error ? redactError(raw.error) : undefined,
@@ -331,7 +351,8 @@ function getLogger() {
 export const logger = getLogger();
 
 /**
- * Attach a generic sink that receives every warn/error/fatal log line, in
+ * Attach a generic sink that receives every warn/error/fatal log line, and
+ * each info line that opts in with `forward: true` (see `LogSinkRecord`), in
  * ADDITION to (never instead of) the normal console output — this never
  * removes or replaces a reporter, so stdout stays byte-identical.
  *

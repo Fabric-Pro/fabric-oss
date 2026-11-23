@@ -1682,7 +1682,8 @@ export async function resolveProjectAccess(
 
 /**
  * Whether `userId` holds `permission` on `projectId`, by the same ladder
- * `requireProjectPermission` walks.
+ * `requireProjectPermission` walks, including its refusal of a caller who
+ * cannot open the project (`isVisible`).
  *
  * ONE implementation, deliberately. This file used to carry three copies of
  * that ladder — `resolveProjectAccess`, `canEditProject` and
@@ -1713,7 +1714,9 @@ async function projectPermissionHolds(
 	client: Prisma.TransactionClient = db,
 ): Promise<boolean> {
 	const access = await resolveProjectAccess(projectId, userId, client);
-	if (!access) {
+	// As at the gate, an organization role grants nothing on a project the
+	// caller cannot open: only its creator holds the org-role permissions.
+	if (!access?.isVisible) {
 		return false;
 	}
 	return (

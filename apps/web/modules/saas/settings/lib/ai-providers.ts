@@ -67,6 +67,7 @@ export interface ProviderMetadata {
 	 * principal (client ID + client secret) as an alternative to a static API
 	 * key. Gates the auth-mode choice in the provider settings forms.
 	 */
+	supportsFederation?: boolean;
 	supportsServicePrincipal?: boolean;
 	clientIdPlaceholder?: string;
 	clientSecretPlaceholder?: string;
@@ -189,6 +190,7 @@ const AI_PROVIDER_METADATA: Record<AIProvider, ProviderMetadata> = {
 	},
 	ANTHROPIC_DIRECT: {
 		id: "ANTHROPIC_DIRECT",
+		supportsFederation: true,
 		name: "Anthropic",
 		displayName: "Anthropic",
 		category: "direct",

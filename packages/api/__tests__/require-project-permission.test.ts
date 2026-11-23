@@ -11,6 +11,9 @@
  *     logs.
  *  3. Pending (`acceptedAt: null`) or expired rows are treated as absent
  *     and fall through to the org-role path — they must not restrict.
+ *  4. The org-role path admits only a caller who can open the project — its
+ *     creator. Any other organization member, admins included, is answered
+ *     NOT_FOUND: a caller who cannot read a project must not change it.
  */
 
 import { formatWithOptions } from "node:util";
@@ -147,11 +150,11 @@ describe("requireProjectPermission — project role overrides org role", () => {
 		expect(mocks.memberFindFirst).not.toHaveBeenCalled();
 	});
 
-	it("org admin with NO ProjectMember row falls back to Path C (org role) and is granted", async () => {
+	it("org admin who created the project, with NO ProjectMember row, is granted through the org role (the bootstrap)", async () => {
 		mocks.projectFindUnique.mockResolvedValue({
 			id: PROJECT_ID,
 			organizationId: ORG_ID,
-			userId: OWNER_ID,
+			userId: ORG_ADMIN_ID,
 		});
 		mocks.projectMemberFindUnique.mockResolvedValue(null);
 		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
@@ -167,6 +170,30 @@ describe("requireProjectPermission — project role overrides org role", () => {
 		expect(next).toHaveBeenCalled();
 		// Org-role grants via Path C do NOT need grantProjectAccess — org
 		// members are already covered by tenant-db's org filter.
+		expect(grantSpy).not.toHaveBeenCalled();
+	});
+
+	it("org admin with NO ProjectMember row on a project they did not create is answered NOT_FOUND", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+
+		const requireProjectPermission = await loadMiddleware();
+		const mw = requireProjectPermission(Permissions.PROJECT_UPDATE);
+
+		// The project list and page do not admit this caller, so neither
+		// does a write: NOT_FOUND, as for a project they have no tie to.
+		await expect(
+			invokeMw(
+				mw,
+				makeCtx(ORG_ADMIN_ID, { activeOrganizationRole: "admin" }),
+				{ projectId: PROJECT_ID },
+			),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
 		expect(grantSpy).not.toHaveBeenCalled();
 	});
 
@@ -303,11 +330,13 @@ describe("requireProjectPermission — project role overrides org role", () => {
 		expect(grantSpy).not.toHaveBeenCalled();
 	});
 
+	// The two fall-through cases below use the project's creator: only the
+	// creator can open a project through the org-role path.
 	it("expired ProjectMember is treated as absent — falls back to Path C", async () => {
 		mocks.projectFindUnique.mockResolvedValue({
 			id: PROJECT_ID,
 			organizationId: ORG_ID,
-			userId: OWNER_ID,
+			userId: ORG_ADMIN_ID,
 		});
 		mocks.projectMemberFindUnique.mockResolvedValue({
 			role: "VIEWER",
@@ -331,7 +360,7 @@ describe("requireProjectPermission — project role overrides org role", () => {
 		mocks.projectFindUnique.mockResolvedValue({
 			id: PROJECT_ID,
 			organizationId: ORG_ID,
-			userId: OWNER_ID,
+			userId: ORG_ADMIN_ID,
 		});
 		mocks.projectMemberFindUnique.mockResolvedValue({
 			role: "VIEWER",
@@ -429,12 +458,12 @@ describe("requireProjectPermission — invisible and nonexistent projects are in
 		expect(pending).toEqual(missing);
 	});
 
-	it("an org member whose role lacks the permission still hears FORBIDDEN — they already know the project exists", async () => {
+	it("an org member who can open the project and whose role lacks the permission still hears FORBIDDEN — they already know the project exists", async () => {
 		const denied = await rejectionFor(() => {
 			mocks.projectFindUnique.mockResolvedValue({
 				id: PROJECT_ID,
 				organizationId: ORG_ID,
-				userId: OWNER_ID,
+				userId: GUEST_ID,
 			});
 			mocks.projectMemberFindUnique.mockResolvedValue(null);
 			mocks.memberFindFirst.mockResolvedValue({ role: "member" });
@@ -442,6 +471,91 @@ describe("requireProjectPermission — invisible and nonexistent projects are in
 
 		expect(denied.code).toBe("FORBIDDEN");
 		expect(denied.message).toContain("Missing required permission");
+	});
+
+	for (const role of ["member", "admin", "owner"]) {
+		it(`an org ${role} who cannot open the project gets the nonexistent-project answer, even for a permission the role grants`, async () => {
+			const missing = await rejectionFor(
+				nonexistentProject,
+				Permissions.STORY_UPDATE,
+			);
+			const unreachable = await rejectionFor(() => {
+				mocks.projectFindUnique.mockResolvedValue({
+					id: PROJECT_ID,
+					organizationId: ORG_ID,
+					userId: OWNER_ID,
+				});
+				mocks.projectMemberFindUnique.mockResolvedValue(null);
+				mocks.memberFindFirst.mockResolvedValue({ role });
+			}, Permissions.STORY_UPDATE);
+
+			expect(unreachable).toEqual(missing);
+			expect(grantSpy).not.toHaveBeenCalled();
+		});
+	}
+});
+
+/**
+ * `assertProjectPermission` is the same decision, called from a handler. The
+ * reports module opts out of the reach refusal because it applies its own,
+ * wider rule right after: an organization admin inherits Project Editor on
+ * every project's reports.
+ */
+describe("assertProjectPermission — the reach refusal and its opt-out", () => {
+	async function loadAssert() {
+		const mod = await import("../orpc/middleware/require-permission");
+		return mod.assertProjectPermission;
+	}
+
+	beforeEach(() => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+	});
+
+	it("refuses an org admin who cannot open the project by default", async () => {
+		const assertProjectPermission = await loadAssert();
+
+		await expect(
+			assertProjectPermission(
+				PROJECT_ID,
+				ORG_ADMIN_ID,
+				Permissions.REPORT_READ,
+			),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+	});
+
+	it("admits them, in the project's organization, when the caller opts in", async () => {
+		const assertProjectPermission = await loadAssert();
+
+		await expect(
+			assertProjectPermission(
+				PROJECT_ID,
+				ORG_ADMIN_ID,
+				Permissions.REPORT_READ,
+				undefined,
+				{ admitUnreachableOrganizationMember: true },
+			),
+		).resolves.toEqual({ projectId: PROJECT_ID, organizationId: ORG_ID });
+	});
+
+	it("the opt-in does not admit a caller with no tie to the project", async () => {
+		mocks.memberFindFirst.mockResolvedValue(null);
+		const assertProjectPermission = await loadAssert();
+
+		await expect(
+			assertProjectPermission(
+				PROJECT_ID,
+				ORG_ADMIN_ID,
+				Permissions.REPORT_READ,
+				undefined,
+				{ admitUnreachableOrganizationMember: true },
+			),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
 	});
 });
 
@@ -475,6 +589,27 @@ describe("requireProjectPermission — RBAC_DRY_RUN security property", () => {
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
 		expect(warnSpy).not.toHaveBeenCalled();
 		expect(grantSpy).not.toHaveBeenCalled();
+
+		warnSpy.mockRestore();
+	});
+
+	it("an org member who cannot open the project is still answered NOT_FOUND — reach is not downgraded either", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: OWNER_ID,
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "member" });
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const requireProjectPermission = await loadMiddleware();
+		const mw = requireProjectPermission(Permissions.STORY_UPDATE);
+
+		await expect(
+			invokeMw(mw, makeCtx(GUEST_ID), { projectId: PROJECT_ID }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(warnSpy).not.toHaveBeenCalled();
 
 		warnSpy.mockRestore();
 	});

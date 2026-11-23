@@ -31,6 +31,8 @@ export async function isRoadmapRecommendationProviderAvailable(args: {
 		const config = await db.cloudProviderConfig.findFirst({
 			where: organizationDefaultProviderWhere(args.organizationId),
 			select: {
+				organizationId: true,
+				provider: true,
 				encryptedApiKey: true,
 				clientId: true,
 				encryptedClientSecret: true,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as bridgeHarness from "./parlume-meeting-harness.mts";
 import { loadParlumeModule } from "./parlume-test-runtime.mts";
 
 class FakeSocket {
@@ -29,8 +30,9 @@ const STREAM_URL =
  * One meeting whose organization has no working OpenAI key, and whose
  * provider can reconnect: every verified stream gets the next generation,
  * as Fabric's verify-stream gives it. `fabric` sets what Fabric answers.
+ * `data` is the storage a bridge left behind when it restarted.
  */
-function meeting() {
+function meeting(options: { data?: Map<string, unknown> } = {}) {
 	const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
 	const alarms: number[] = [];
 	const hardStopAt = Date.now() + 3_600_000;
@@ -74,7 +76,7 @@ function meeting() {
 		}
 		return Response.json({ accepted: true });
 	};
-	const data = new Map<string, unknown>();
+	const data = options.data ?? new Map<string, unknown>();
 	const storage = {
 		get: async (key: string) => data.get(key),
 		put: async (key: string | Record<string, unknown>, value?: unknown) => {
@@ -106,7 +108,7 @@ function meeting() {
 	);
 	const paths = (name: string) =>
 		requests.filter((request) => request.path.endsWith(`/${name}`));
-	return { bridge, requests, paths, alarms, hardStopAt, fabric };
+	return { bridge, requests, paths, alarms, hardStopAt, fabric, data };
 }
 
 const flush = async () => {
@@ -250,18 +252,23 @@ test("a close the bridge asks for reports the stream closed even when the socket
 	assert.equal(live.paths("interrupt").length, 1);
 });
 
-test("capture stopped on Fabric's side closes the stream and reports it once, then waits for the hard stop", async () => {
+// The access check that lets Fabric finalize a session whose stream close
+// never reached it waited for the hard stop, four hours away: the session
+// stayed LEAVING and the Parlume page took no new invitation.
+test("capture stopped on Fabric's side closes the stream and reports it once, then checks access every minute", async () => {
 	const live = meeting();
 	await live.bridge.onStart();
 	const connection = await stream(live.bridge);
 	live.fabric.captureStopped = true;
 
+	const before = Date.now();
 	await live.bridge.onAlarm();
 	assert.deepEqual(
 		live.paths("stream-closed").map((request) => request.body),
 		[{ sessionId: "session-1", botId: "bot_abc123", streamGeneration: 1 }],
 	);
-	assert.equal(live.alarms.at(-1), live.hardStopAt);
+	const next = live.alarms.at(-1) ?? Number.POSITIVE_INFINITY;
+	assert.ok(next >= before + 60_000 && next <= Date.now() + 60_000);
 
 	await live.bridge.onClose(connection, 1006, "gone");
 	await live.bridge.onAlarm();
@@ -285,7 +292,195 @@ test("a stream-closed report Fabric could not take is retried before the hard st
 
 	await live.bridge.onAlarm();
 	assert.equal(live.paths("stream-closed").length, 3);
-	assert.equal(live.alarms.at(-1), live.hardStopAt);
+	assert.ok(
+		(live.alarms.at(-1) ?? Number.POSITIVE_INFINITY) <= Date.now() + 60_000,
+	);
 	await live.bridge.onAlarm();
 	assert.equal(live.paths("stream-closed").length, 3);
+});
+
+test("a meeting that fell back to classic stays classic after the bridge restarts", async () => {
+	const live = meeting();
+	await live.bridge.onStart();
+	await stream(live.bridge);
+	assert.equal(live.paths("realtime-session").length, 1);
+
+	const restarted = meeting({ data: live.data });
+	await restarted.bridge.onStart();
+	await stream(restarted.bridge);
+
+	assert.equal(restarted.paths("verify-stream").length, 1);
+	assert.equal(restarted.paths("realtime-session").length, 0);
+});
+
+type Logged = { message: string; meta: Record<string, unknown> };
+
+const frames = (sent: string[]) =>
+	sent.filter((message) => message.includes('"realtime_audio.bot_output"'))
+		.length;
+
+const auraTexts = (calls: Array<{ inputs: unknown }>) =>
+	calls.map((call) => (call.inputs as { text: string }).text);
+
+const heardOf = (data: Map<string, unknown>) =>
+	(data.get("spokenRecord") as { heard?: number } | undefined)?.heard ?? 0;
+
+/** The storage as the Durable Object reads it after a restart. */
+function restartedStorage(data: Map<string, unknown>) {
+	const copy = new Map<string, unknown>();
+	for (const [key, value] of data) {
+		copy.set(key, structuredClone(value));
+	}
+	return copy;
+}
+
+function resumedLog(logs: Logged[]) {
+	const resumed = "[Parlume] speech.resumed";
+	return logs.find((entry) => entry.message === resumed)?.meta;
+}
+
+async function waitFor(condition: () => boolean) {
+	for (let waited = 0; waited < 3_000 && !condition(); waited += 20) {
+		await bridgeHarness.sleep(20);
+	}
+	assert.ok(condition(), "timed out");
+}
+
+const REPLY = [
+	"The roadmap has two open features.",
+	"Both of them ship on Friday.",
+	"Nothing is blocked.",
+];
+
+// A provider reconnect mid-reply cut the reply off: its rest went to the
+// socket the provider had given up on.
+test("a bot socket replaced mid-reply carries the rest of it, little of the speech lost over the swap", async () => {
+	const live = await bridgeHarness.connectedMeeting({
+		aura: bridgeHarness.slowAura,
+	});
+	const keepAlive = setInterval(() => {}, 1_000);
+	const playing = live.bridge.onRequest(bridgeHarness.say(REPLY));
+	await waitFor(() => frames(live.sent) > 0);
+
+	const replacementSent: string[] = [];
+	const replacement = {
+		send: (message: string) => replacementSent.push(message),
+		close: () => {},
+	};
+	await live.bridge.onConnect(replacement, {
+		request: { url: bridgeHarness.STREAM_URL },
+	});
+	await live.bridge.onMessage(replacement, bridgeHarness.audio(1_000_090));
+	const oldFrames = frames(live.sent);
+	const result = bridgeHarness.plain(await (await playing).json());
+	clearInterval(keepAlive);
+
+	assert.equal(result.played, true);
+	assert.equal(frames(live.sent), oldFrames, "the old socket gets no more");
+	assert.ok(frames(replacementSent) > 0);
+	const resumed = resumedLog(live.logs);
+	assert.equal(resumed?.cause, "socket_swap");
+	assert.ok(Number(resumed?.lostMs) <= 300);
+	await live.bridge.onClose(replacement, 1000, "done");
+});
+
+// A deploy restarts the bridge's Durable Object mid-reply. The worker asks
+// how much was heard and sends the rest again once the bot is back.
+test("after the bridge restarts mid-reply, it says how much of the reply was heard, and plays the rest once the bot is back", async () => {
+	const live = await bridgeHarness.answeringMeeting();
+	const keepAlive = setInterval(() => {}, 1_000);
+	void live.bridge.onRequest(
+		bridgeHarness.say(
+			REPLY,
+			{
+				"x-parlume-reply": "reply-1",
+				"x-parlume-reply-part": "0",
+				"x-parlume-reply-last": "1",
+			},
+			"1",
+		),
+	);
+	await waitFor(() => heardOf(live.data) >= 1);
+	const stored = restartedStorage(live.data);
+	const heard = heardOf(stored);
+	await live.bridge.onClose(live.bot, 1006, "restarted");
+
+	const restarted = bridgeHarness.meeting({
+		aura: bridgeHarness.slowAura,
+		data: stored,
+	});
+	await restarted.bridge.onStart();
+	const state = async () => {
+		const response = await restarted.bridge.onRequest(
+			bridgeHarness.control("verify-generation", {
+				voiceGeneration: 1,
+				replyId: "reply-1",
+			}),
+		);
+		return bridgeHarness.plain(await response.json());
+	};
+	const lost = await state();
+	assert.equal(lost.current, true);
+	assert.equal(lost.live, false, "no bot socket yet");
+	assert.equal(lost.heard, heard);
+
+	await restarted.bridge.onConnect(restarted.bot, {
+		request: { url: bridgeHarness.STREAM_URL },
+	});
+	await restarted.bridge.onMessage(
+		restarted.bot,
+		bridgeHarness.audio(1_000_010),
+	);
+	const back = await state();
+	assert.equal(back.live, true);
+	assert.equal(back.heard, heard);
+
+	const response = await restarted.bridge.onRequest(
+		bridgeHarness.say(REPLY.slice(heard), {}, "1"),
+	);
+	const resent = bridgeHarness.plain(await response.json());
+	clearInterval(keepAlive);
+	assert.equal(resent.played, true);
+	assert.deepEqual(
+		auraTexts(restarted.auraCalls),
+		REPLY.slice(heard),
+		"the rest starts at the first sentence not heard",
+	);
+	await restarted.bridge.onClose(restarted.bot, 1000, "done");
+});
+
+test("after the bridge restarts mid-read, the post is read on from the first sentence not heard", async () => {
+	const live = await bridgeHarness.connectedMeeting({
+		aura: bridgeHarness.slowAura,
+	});
+	const keepAlive = setInterval(() => {}, 1_000);
+	await live.bridge.onRequest(
+		bridgeHarness.control("chat", { message: REPLY.join(" ") }),
+	);
+	await live.bridge.onRequest(
+		bridgeHarness.control("chat-message", {
+			id: "msg_1",
+			text: "go P1",
+			senderName: "Ana Example",
+			senderId: "participant-2",
+			toBot: false,
+			timestampMs: 1_000_100,
+		}),
+	);
+	await waitFor(() => heardOf(live.data) >= 1);
+	const stored = restartedStorage(live.data);
+	const heard = heardOf(stored);
+	const read = auraTexts(live.auraCalls);
+	await live.bridge.onClose(live.bot, 1006, "restarted");
+
+	const restarted = await bridgeHarness.connectedMeeting({
+		aura: bridgeHarness.slowAura,
+		data: stored,
+	});
+	await waitFor(() => restarted.auraCalls.length > 0);
+	clearInterval(keepAlive);
+
+	assert.equal(auraTexts(restarted.auraCalls)[0], read[heard]);
+	assert.equal(resumedLog(restarted.logs)?.cause, "restart");
+	await restarted.bridge.onClose(restarted.bot, 1000, "done");
 });

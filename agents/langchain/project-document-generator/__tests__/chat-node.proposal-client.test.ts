@@ -2864,6 +2864,27 @@ describe("a failed run on an artifact Proposal", () => {
 		expect(capturedLogText()).toContain("Provider rejected");
 	});
 
+	it("answers a provider authentication failure with the shared message, without its key fragment or URLs", async () => {
+		mockInvoke.mockRejectedValueOnce(
+			Object.assign(
+				new Error(
+					"401 Incorrect API key provided: sk-exam*****0000. You can find your API key at https://platform.example.com/api-keys. Troubleshooting URL: https://docs.example.com/errors/MODEL_AUTHENTICATION/",
+				),
+				{ status: 401 },
+			),
+		);
+		const command = asCommand(
+			await chatNode(createState(), {
+				configurable: { proposal_mode: "none" },
+			}),
+		);
+
+		const shared =
+			"The AI provider rejected the request (authentication). Check the provider settings.";
+		expect(lastText(command)).toBe(shared);
+		expect(command.update.error).toBe(shared);
+	});
+
 	it("sends a guest the tool-call trace without its error text", () => {
 		const trace = {
 			1: [

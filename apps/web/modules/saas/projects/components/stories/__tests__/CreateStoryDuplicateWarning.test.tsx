@@ -284,6 +284,8 @@ describe("CreateStoryDuplicateWarning", () => {
 			targetClosed: false,
 			currentDescription: "Exports need a queue.",
 			currentAcceptanceCriteria: "",
+			currentPriority: "P2_MEDIUM",
+			currentSize: null,
 			mergedDescription:
 				"Exports need a queue.\n\nAlso rate limit the endpoint.",
 			mergedAcceptanceCriteria: "",
@@ -338,6 +340,8 @@ describe("CreateStoryDuplicateWarning", () => {
 			targetClosed: false,
 			currentDescription: "Exports need a queue.",
 			currentAcceptanceCriteria: "",
+			currentPriority: "P2_MEDIUM",
+			currentSize: null,
 			mergedDescription: "Exports need a queue.",
 			mergedAcceptanceCriteria: "",
 			fallbackUsed: true,
@@ -364,6 +368,8 @@ describe("CreateStoryDuplicateWarning", () => {
 			targetClosed: false,
 			currentDescription: "Exports need a queue.",
 			currentAcceptanceCriteria: "",
+			currentPriority: "P2_MEDIUM",
+			currentSize: null,
 			mergedDescription: "Exports need a queue.",
 			mergedAcceptanceCriteria: "",
 			fallbackUsed: true,
@@ -419,6 +425,8 @@ describe("CreateStoryDuplicateWarning", () => {
 				targetClosed: false,
 				currentDescription: "current",
 				currentAcceptanceCriteria: "",
+				currentPriority: "P2_MEDIUM",
+				currentSize: null,
 				mergedDescription: "merged",
 				mergedAcceptanceCriteria: "",
 				fallbackUsed: false,
@@ -559,5 +567,16 @@ describe("CreateStoryDuplicateWarning — Proposal Inbox matches", () => {
 				name: "Move the proposal item Queue exports to Rejected",
 			}),
 		).not.toBeInTheDocument();
+		// The only match is gone: no heading says something is still waiting,
+		// and the person can still create the item or go back.
+		expect(
+			screen.queryByText("This may already be waiting for review"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText("Similar items waiting in the Proposal Inbox"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Create new anyway" }),
+		).toBeEnabled();
 	});
 });

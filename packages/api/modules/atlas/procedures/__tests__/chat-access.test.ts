@@ -9,7 +9,8 @@
  *     hears NOT_FOUND before any role is judged;
  *   - a request that names another organization than the project's is
  *     refused BAD_REQUEST;
- *   - AI_CHAT is judged in the organization the request runs in;
+ *   - AI_CHAT is judged on the role in the organization the session names,
+ *     and the engine also judges it in the organization the request runs in;
  *   - Atlas must be on, then codebase Q&A must be available;
  *   - no refusal starts the chat, and none before the capability check reads
  *     the capability's evidence.
@@ -55,6 +56,8 @@ vi.mock("../../../../orpc/procedures", async () => {
 		requirePermission: guards.requirePermission,
 		requireProjectPermission: guards.requireProjectPermission,
 		assertProjectPermission: guards.assertProjectPermission,
+		assertSessionOrganizationPermission:
+			guards.assertSessionOrganizationPermission,
 		authorizeInputOrganization: guards.authorizeInputOrganization,
 		resolveOrganizationId: (
 			organizationId: string | null | undefined,
@@ -167,7 +170,14 @@ const DOORS = [
 		door: "authorizeAtlasChat (runtime engine)",
 		startsChat: false,
 		ask: () =>
-			authorizeAtlasChat({ userId: USER, organizationId: ORG }, PROJECT),
+			authorizeAtlasChat(
+				{
+					userId: USER,
+					organizationId: ORG,
+					activeOrganizationId: ORG,
+				},
+				PROJECT,
+			),
 	},
 ] as const;
 
@@ -297,6 +307,88 @@ describe.each(DOORS)("Atlas chat access — $door", ({ startsChat, ask }) => {
 	});
 });
 
+describe("Atlas chat access — a session naming another organization", () => {
+	// A member of the project's organization whose session names another
+	// organization, where their role is viewer and lacks AI_CHAT.
+	beforeEach(() => {
+		m.membership.mockImplementation(async (organizationId: string) => ({
+			role: organizationId === OTHER_ORG ? "viewer" : "member",
+			organization: { deletedAt: null },
+		}));
+	});
+
+	const refusal = {
+		code: "FORBIDDEN",
+		message: expect.stringContaining("ai:chat"),
+	};
+
+	it("the procedure refuses on the session organization's role", async () => {
+		await expect(
+			call(
+				atlasChatProcedure,
+				{
+					projectId: PROJECT,
+					organizationId: ORG,
+					mode: "TECHNICAL",
+					messages: [
+						{ role: "user", content: "How does auth work?" },
+					],
+				},
+				{
+					context: {
+						...procedureContext(),
+						session: { activeOrganizationId: OTHER_ORG },
+						activeOrganizationRole: "viewer",
+						tenantContext: {
+							type: "organization",
+							userId: USER,
+							organizationId: OTHER_ORG,
+						},
+					},
+				},
+			),
+		).rejects.toMatchObject(refusal);
+		expect(m.chat).not.toHaveBeenCalled();
+	});
+
+	it("the engine refuses the same way", async () => {
+		await expect(
+			authorizeAtlasChat(
+				{
+					userId: USER,
+					organizationId: ORG,
+					activeOrganizationId: OTHER_ORG,
+				},
+				PROJECT,
+			),
+		).rejects.toMatchObject(refusal);
+		expect(m.evidence).not.toHaveBeenCalled();
+	});
+
+	it("the engine refuses a session organization the caller has left", async () => {
+		m.membership.mockImplementation(async (organizationId: string) =>
+			organizationId === OTHER_ORG
+				? null
+				: { role: "member", organization: { deletedAt: null } },
+		);
+
+		await expect(
+			authorizeAtlasChat(
+				{
+					userId: USER,
+					organizationId: ORG,
+					activeOrganizationId: OTHER_ORG,
+				},
+				PROJECT,
+			),
+		).rejects.toMatchObject({
+			code: "FORBIDDEN",
+			message: "This operation requires an organization context",
+		});
+		expect(m.evidence).not.toHaveBeenCalled();
+	});
+});
+
 describe("Atlas chat access — one door only", () => {
 	it("the engine refuses a project guest (no membership in the organization on screen)", async () => {
 		m.access.mockResolvedValue({
@@ -307,7 +399,14 @@ describe("Atlas chat access — one door only", () => {
 		m.isMember = false;
 
 		await expect(
-			authorizeAtlasChat({ userId: USER, organizationId: ORG }, PROJECT),
+			authorizeAtlasChat(
+				{
+					userId: USER,
+					organizationId: ORG,
+					activeOrganizationId: null,
+				},
+				PROJECT,
+			),
 		).rejects.toMatchObject({
 			code: "FORBIDDEN",
 			message: "You are not a member of this organization",

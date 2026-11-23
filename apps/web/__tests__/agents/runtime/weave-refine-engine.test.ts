@@ -598,6 +598,77 @@ describe("the weave-refine engine", () => {
 		log.mockRestore();
 	});
 
+	it("tells a model's refusal apart from a provider failure", async () => {
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		m.reply.error = Object.assign(
+			new Error(
+				"The response was filtered due to the prompt triggering content management policy.",
+			),
+			{
+				url: "https://api.example.com/v1",
+				requestBodyValues: {},
+				statusCode: 400,
+			},
+		);
+		const declined = await run();
+
+		m.reply.error = Object.assign(
+			new Error("Incorrect API key provided: sk-test-****wxyz"),
+			{
+				url: "https://api.example.com/v1",
+				requestBodyValues: {},
+				statusCode: 401,
+			},
+		);
+		const failed = await run();
+
+		expect(declined.at(-1)).toMatchObject({
+			type: EventType.RUN_ERROR,
+			code: "RUN_DECLINED",
+			message:
+				"The AI declined to refine this request, so it is unchanged. Rephrase it and try again.",
+		});
+		expect(failed.at(-1)).toMatchObject({
+			type: EventType.RUN_ERROR,
+			code: "RUN_FAILED",
+			message:
+				"The AI provider rejected the request (authentication). Check the provider settings.",
+		});
+		expect(JSON.stringify(failed)).not.toContain("sk-test");
+		log.mockRestore();
+	});
+
+	it("reads a reply that says it declines as a refusal, with no result or success row", async () => {
+		m.reply.chunks = [
+			"FEEDBACK: I can't help with that.\nUPDATED_MESSAGE: Add login\n",
+			"READY: false\nDECLINED: true",
+		];
+
+		const events = await run();
+
+		expect(events.at(-1)).toMatchObject({
+			type: EventType.RUN_ERROR,
+			code: "RUN_DECLINED",
+		});
+		expect(resultOf(events)).toBeUndefined();
+		expect(m.recordProcedureActivity).not.toHaveBeenCalled();
+	});
+
+	it("reads a content-filter finish as a refusal", async () => {
+		m.streamText.mockImplementation(() => ({
+			textStream: (async function* () {})(),
+			finishReason: Promise.resolve("content-filter"),
+		}));
+
+		const events = await run();
+
+		expect(events.at(-1)).toMatchObject({
+			type: EventType.RUN_ERROR,
+			code: "RUN_DECLINED",
+		});
+		expect(resultOf(events)).toBeUndefined();
+	});
+
 	it("ends a ChatGPT plan that needs reconnecting with the plan's refusal", async () => {
 		const refusal = new ChatGptPlanAuthError(
 			"refresh token reused",

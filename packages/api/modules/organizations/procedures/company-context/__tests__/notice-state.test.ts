@@ -53,6 +53,7 @@ import {
 	ORG,
 	OTHER_PROJECT,
 	PROJECT,
+	projectMembers,
 	resetDefaults,
 } from "./support/harness";
 
@@ -64,6 +65,10 @@ const HIDDEN = { state: "hidden" };
 
 beforeEach(() => {
 	resetDefaults();
+	// The organization members who can open their organization's project.
+	projectMembers.set(`${PROJECT}:u_member`, "VIEWER");
+	projectMembers.set(`${PROJECT}:u_admin`, "VIEWER");
+	projectMembers.set(`${OTHER_PROJECT}:u_b_admin`, "VIEWER");
 });
 
 describe("the answers a member can get", () => {
@@ -180,6 +185,14 @@ describe("hidden is one answer for every case that must not be told apart", () =
 		expect(await noticeState("u_platform")).toEqual(HIDDEN);
 		expect(await noticeState("u_b_admin")).toEqual(HIDDEN);
 		expect(await noticeState("u_member", "proj_missing")).toEqual(HIDDEN);
+		expect(mocks.isFeatureEnabled).not.toHaveBeenCalled();
+		expect(mocks.getCompanyContextReadiness).not.toHaveBeenCalled();
+	});
+
+	it("answers an organization member who cannot open the project the same way", async () => {
+		projectMembers.delete(`${PROJECT}:u_admin`);
+
+		expect(await noticeState("u_admin")).toEqual(HIDDEN);
 		expect(mocks.isFeatureEnabled).not.toHaveBeenCalled();
 		expect(mocks.getCompanyContextReadiness).not.toHaveBeenCalled();
 	});

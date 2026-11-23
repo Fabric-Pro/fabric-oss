@@ -8,6 +8,7 @@
  * new one was supplied, and a base URL is reduced to host and path.
  */
 
+import { hasServicePrincipalCredentials } from "@repo/database/prisma/queries/provider-credential-presence";
 import { recordAuditFromRequest } from "../../../lib/audit";
 
 type AuditContext = Parameters<typeof recordAuditFromRequest>[0];
@@ -18,6 +19,7 @@ export type ProviderAuditScope =
 
 /** The non-secret shape of a provider config row, as recorded before/after. */
 export interface ProviderAuditSnapshot {
+	authMode: "apiKey" | "servicePrincipal" | "federated" | null;
 	baseUrl: string | null;
 	deploymentName: string | null;
 	hasClientId: boolean;
@@ -30,6 +32,8 @@ export interface ProviderAuditSnapshot {
 
 interface ProviderRowLike {
 	config?: unknown;
+	encryptedApiKey?: string | null;
+	encryptedClientSecret?: string | null;
 	clientId?: string | null;
 	isDefault?: boolean;
 	enabled?: boolean;
@@ -38,6 +42,7 @@ interface ProviderRowLike {
 }
 
 const EMPTY_SNAPSHOT: ProviderAuditSnapshot = {
+	authMode: null,
 	baseUrl: null,
 	deploymentName: null,
 	hasClientId: false,
@@ -78,7 +83,16 @@ export function snapshotProviderRow(
 				(item): item is string => typeof item === "string",
 			)
 		: null;
+	let authMode: ProviderAuditSnapshot["authMode"] = null;
+	if (config.authMode === "federated") {
+		authMode = "federated";
+	} else if (row.encryptedApiKey || readString(config, "apiKey")) {
+		authMode = "apiKey";
+	} else if (hasServicePrincipalCredentials(row)) {
+		authMode = "servicePrincipal";
+	}
 	return {
+		authMode,
 		baseUrl: describeBaseUrl(config.baseUrl),
 		deploymentName: readString(config, "deploymentName"),
 		hasClientId: Boolean(row.clientId),
@@ -132,7 +146,9 @@ export function recordProviderConfigured(
 		resource: { type: "ai_provider", id: ref.id, name: ref.provider },
 		metadata: {
 			provider: ref.provider,
-			keyChanged: change.keyChanged,
+			keyChanged:
+				change.keyChanged ||
+				(change.before?.authMode ?? null) !== change.after.authMode,
 			changedFields: changedFields(
 				change.before ?? EMPTY_SNAPSHOT,
 				change.after,

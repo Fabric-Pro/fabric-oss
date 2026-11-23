@@ -1,6 +1,5 @@
-import { resolveAzureOpenAiResource, resolveOpenAiApiKey } from "@repo/ai";
+import { resolveAzureOpenAiResource } from "@repo/ai";
 import { db, getBoundPromptForAgent, hasProjectAccess } from "@repo/database";
-import { PARLUME_REALTIME_MODEL } from "@repo/temporal/parlume-realtime-usage";
 import {
 	PARLUME_REALTIME_VOICE_FALLBACK_BODY,
 	PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY,
@@ -10,7 +9,6 @@ import { z } from "zod";
 import { parlumeLog } from "./parlume-log";
 import { resolveParlumeRealtimeDeployment } from "./parlume-provider-settings";
 
-const OPENAI_REALTIME_URL = "https://api.openai.com/v1/realtime";
 /** How long the bridge has to open the session with the secret. */
 const CLIENT_SECRET_TTL_SECONDS = 600;
 const REALTIME_VOICE = "marin";
@@ -26,7 +24,9 @@ const REALTIME_AUDIO = {
 		format: { type: "audio/pcm", rate: 24_000 },
 		turn_detection: {
 			type: "semantic_vad",
-			eagerness: "auto",
+			// "auto" took the pause in "Hey Fabric, what is…" for the end of
+			// the turn, and the voice answered before the request was heard.
+			eagerness: "low",
 			create_response: false,
 			interrupt_response: false,
 		},
@@ -48,7 +48,7 @@ const REALTIME_TOOLS = [
 		type: "function",
 		name: "ask_fabric",
 		description:
-			"Hands a request to Fabric: questions about the project, its work items, documents, roadmap and decisions, and any change in Fabric. Returns at once with a job number; the result follows later.",
+			"Hands a request to Fabric: questions about the project, its work items, documents, roadmap and decisions, any change in Fabric, and any link to a project page, work item, document or repository, which Fabric looks up in this meeting's project. Returns at once with a job number; the result follows later. Fabric posts a long result, and any result with a link, in the meeting chat itself, and the result says whether it is there; anything else is not in the chat.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -65,7 +65,7 @@ const REALTIME_TOOLS = [
 		type: "function",
 		name: "post_to_chat",
 		description:
-			"Posts a message to the meeting chat, for links, lists and anything people will want to copy.",
+			"Posts a message to the meeting chat, for lists and anything people will want to copy. It refuses a web address that did not come from a Fabric result or the meeting chat: ask Fabric for links with ask_fabric.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -126,60 +126,41 @@ async function mintRefusal(response: Response, key: string) {
 
 /** Where a realtime session is minted and opened, and with which key. */
 interface RealtimeHost {
-	provider: "OPENAI_DIRECT" | "AZURE_AI_FOUNDRY";
+	provider: "AZURE_AI_FOUNDRY";
 	/** The realtime API: `/client_secrets` mints, the bridge opens the socket here. */
 	realtimeUrl: string;
-	/**
-	 * What the session names as its model: Azure's deployment name, or
-	 * OpenAI's model id. Pricing and usage always use the model id.
-	 */
+	/** Azure's deployment name. Pricing and usage use the model id. */
 	model: string;
 	key: string;
 	headers: Record<string, string>;
 }
 
 /**
- * The organization's hosts for the realtime model, in the order they are
- * tried: its Azure AI Foundry resource, which serves the model from the
- * organization's realtime deployment (named after {@link PARLUME_REALTIME_MODEL}
- * unless the organization set another name), then its OpenAI key. Azure goes
- * first because it refuses the mint when that deployment is missing, so a
- * resource without one falls through. OpenAI mints on a key with no credit
- * left and only closes the session once it is opened.
+ * The organization's host for the realtime model: its Azure AI Foundry
+ * resource, serving the deployment the organization named on the Voice card.
+ * None without that name: the classic voice is the default, and meeting
+ * audio goes to a realtime model only when the organization chose one. A
+ * general OpenAI key is never used for meeting audio.
  */
 async function realtimeHosts(tenant: {
 	userId: string;
 	organizationId: string | null;
 }): Promise<RealtimeHost[]> {
-	const [azure, openAiKey, { deployment }] = await Promise.all([
-		resolveAzureOpenAiResource(tenant),
-		resolveOpenAiApiKey(tenant),
-		resolveParlumeRealtimeDeployment(tenant.organizationId),
-	]);
-	return [
-		...(azure
-			? [
-					{
-						provider: "AZURE_AI_FOUNDRY" as const,
-						realtimeUrl: `${azure.origin}/openai/v1/realtime`,
-						model: deployment,
-						key: azure.apiKey,
-						headers: { "api-key": azure.apiKey },
-					},
-				]
-			: []),
-		...(openAiKey
-			? [
-					{
-						provider: "OPENAI_DIRECT" as const,
-						realtimeUrl: OPENAI_REALTIME_URL,
-						model: PARLUME_REALTIME_MODEL,
-						key: openAiKey,
-						headers: { Authorization: `Bearer ${openAiKey}` },
-					},
-				]
-			: []),
-	];
+	const deployment = await resolveParlumeRealtimeDeployment(
+		tenant.organizationId,
+	);
+	const azure = deployment ? await resolveAzureOpenAiResource(tenant) : null;
+	return deployment && azure
+		? [
+				{
+					provider: "AZURE_AI_FOUNDRY",
+					realtimeUrl: `${azure.origin}/openai/v1/realtime`,
+					model: deployment,
+					key: azure.apiKey,
+					headers: { "api-key": azure.apiKey },
+				},
+			]
+		: [];
 }
 
 function clientSecretRequest(
@@ -203,7 +184,10 @@ export type ParlumeRealtimeSession =
 			model: string;
 			realtimeUrl: string;
 	  }
-	| { engine: "classic"; reason: "no_session" | "no_key" | "mint_failed" };
+	| {
+			engine: "classic";
+			reason: "no_session" | "guests" | "not_configured" | "mint_failed";
+	  };
 
 /** The project, the meeting's mode and who has spoken, as fenced meeting data. */
 function parlumeRealtimeMeetingData(input: {
@@ -216,7 +200,9 @@ function parlumeRealtimeMeetingData(input: {
 		{ source: "session" },
 		[
 			`Project: ${input.projectName}`,
-			`Changes in Fabric: ${input.toolsReadOnly ? "not allowed; this meeting is read-only" : "allowed, through ask_fabric"}`,
+			// "Read-only" alone was taken to forbid chat posts too: the voice
+			// refused post_to_chat and read lists aloud instead.
+			`Changes in Fabric: ${input.toolsReadOnly ? "not allowed; this meeting is read-only for Fabric's data. Posting to the meeting chat with post_to_chat and asking Fabric questions are still allowed" : "allowed, through ask_fabric"}`,
 			`Participants heard so far: ${input.participants.length ? input.participants.join(", ") : "none yet"}`,
 		].join("\n"),
 	);
@@ -224,12 +210,13 @@ function parlumeRealtimeMeetingData(input: {
 
 /**
  * Mints the client secret Parlume's bridge opens a realtime voice session
- * with, on the organization's own OpenAI key or Azure AI Foundry resource,
- * whichever accepts first. The key never leaves this module: the bridge only
+ * with, on the organization's Azure AI Foundry resource and the realtime
+ * deployment it named. The key never leaves this module: the bridge only
  * ever holds the short-lived secret and the host it opens. Answers `classic`
- * whenever there is no live meeting, no key, or every host refuses, so the
- * meeting keeps the classic voice. Records nothing billable: the session
- * reports its usage per response.
+ * whenever there is no live meeting, an external guest was invited or seen,
+ * no deployment is named, or the host refuses, so the meeting keeps the
+ * classic voice. Records nothing billable: the session reports its usage per
+ * response.
  */
 export async function createParlumeRealtimeSession(input: {
 	sessionId: string;
@@ -248,6 +235,8 @@ export async function createParlumeRealtimeSession(input: {
 			organizationId: true,
 			userId: true,
 			toolsReadOnly: true,
+			externalInvitees: true,
+			guestJoinedAt: true,
 			project: { select: { name: true } },
 		},
 	});
@@ -261,12 +250,15 @@ export async function createParlumeRealtimeSession(input: {
 	) {
 		return { engine: "classic", reason: "no_session" };
 	}
+	if (session.externalInvitees || session.guestJoinedAt) {
+		return { engine: "classic", reason: "guests" };
+	}
 	const hosts = await realtimeHosts({
 		userId: session.userId,
 		organizationId: session.organizationId,
 	});
 	if (!hosts.length) {
-		return { engine: "classic", reason: "no_key" };
+		return { engine: "classic", reason: "not_configured" };
 	}
 	const [boundPrompt, speakers] = await Promise.all([
 		getBoundPromptForAgent({

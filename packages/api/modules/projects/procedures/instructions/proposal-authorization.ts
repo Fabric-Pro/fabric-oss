@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/client";
 import { hasPermission, Permissions } from "@repo/permissions";
 import { resolveEffectiveProjectPermissions } from "../../../../lib/effective-project-permissions";
+import { PROJECT_NOT_FOUND_MESSAGE } from "../../../../orpc/middleware/project-visibility";
 
 /**
  * Every value `proposalStatus` can hold. `MERGED` and `CLOSED` belong to a
@@ -14,6 +15,27 @@ type SnapshotMutationSubject = {
 	proposalStatus: ProposalStatus | null;
 };
 
+/**
+ * The caller's live access, refusing one who cannot open the project with the
+ * answer an unknown project gets: as at the permission gate, an organization
+ * role alone grants nothing there.
+ */
+async function resolveReachableAccess(input: {
+	projectId: string;
+	userId: string;
+}) {
+	const access = await resolveEffectiveProjectPermissions(
+		input.projectId,
+		input.userId,
+	);
+	if (access?.isVisible === false) {
+		throw new ORPCError("NOT_FOUND", {
+			message: PROJECT_NOT_FOUND_MESSAGE,
+		});
+	}
+	return access;
+}
+
 export async function canReviewInstructionProposals(input: {
 	projectId: string;
 	userId: string;
@@ -24,6 +46,7 @@ export async function canReviewInstructionProposals(input: {
 	);
 	return Boolean(
 		access &&
+			access.isVisible !== false &&
 			(access.source === "owner" ||
 				hasPermission(
 					access.permissions,
@@ -73,10 +96,7 @@ export async function assertInstructionSnapshotMutationAccess(input: {
 	userId: string;
 	snapshot: SnapshotMutationSubject;
 }): Promise<void> {
-	const access = await resolveEffectiveProjectPermissions(
-		input.projectId,
-		input.userId,
-	);
+	const access = await resolveReachableAccess(input);
 	const owner = access?.source === "owner";
 	const permission =
 		input.snapshot.proposalStatus === "PENDING"
@@ -102,10 +122,7 @@ export async function assertInstructionDeriveAccess(input: {
 	userId: string;
 	proposal: boolean;
 }): Promise<void> {
-	const access = await resolveEffectiveProjectPermissions(
-		input.projectId,
-		input.userId,
-	);
+	const access = await resolveReachableAccess(input);
 	const permission = input.proposal
 		? Permissions.INSTRUCTION_READ
 		: Permissions.INSTRUCTION_CREATE;
@@ -135,10 +152,7 @@ export async function assertRepositoryProposalAccess(input: {
 	userId: string;
 	allowReaders: boolean;
 }): Promise<void> {
-	const access = await resolveEffectiveProjectPermissions(
-		input.projectId,
-		input.userId,
-	);
+	const access = await resolveReachableAccess(input);
 	const allowed =
 		access !== null &&
 		(access.source === "owner" ||

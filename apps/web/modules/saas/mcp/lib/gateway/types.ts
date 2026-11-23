@@ -5,6 +5,7 @@
  * platform tools and user-connected MCP servers.
  */
 
+import type { ActingSurface } from "@repo/temporal/fabric-mcp-service-headers";
 import type { ConfirmationMeta } from "@repo/temporal/fabric-tool-definition";
 
 /**
@@ -33,7 +34,8 @@ export type GatewayCredential =
 	 * Fabric's own agent runtime (the Temporal worker), acting for the user and
 	 * organization it names. Proven by the shared agent service secret; the
 	 * named user must belong to the named organization, whose tenant is then
-	 * fixed for the session. Holds `SERVICE_CREDENTIAL_SCOPES`, not a wildcard.
+	 * fixed for the session. Holds the scopes `serviceSessionScopes` gives its
+	 * grant, never a wildcard.
 	 */
 	| "service";
 
@@ -45,8 +47,11 @@ export type GatewayCredential =
 export interface GatewayActingContext {
 	projectId?: string;
 	workspaceId?: string;
-	/** The kind of page the chat was opened from; a new page defaults to it. */
-	surface?: "artifact" | "workspace";
+	/**
+	 * The kind of page the chat was opened from, which a new page defaults to,
+	 * or `parlume` for a meeting turn, whose audit rows name Parlume.
+	 */
+	surface?: ActingSurface;
 	conversationId?: string;
 	sourceRunType?: string;
 	sourceRunId?: string;

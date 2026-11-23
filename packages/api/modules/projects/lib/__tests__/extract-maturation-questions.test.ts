@@ -370,6 +370,8 @@ describe("extractMaturationQuestions — mint/dedupe over the parsed set", () =>
 		expect(out).toMatchObject({ minted: 0, skipped: 1, reactivated: 1 });
 		expect(mocks.setQuestionStatus).toHaveBeenCalledWith({
 			tenantFilter,
+			userStoryId: "story-1",
+			projectId: "project-1",
 			rootId: "dec-prev",
 			status: "OPEN",
 		});
