@@ -9,6 +9,10 @@ import {
 	resolveOrganizationIdForCaller,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	PARLUME_TRANSCRIPT_WITHHELD,
+	resolveParlumeTranscriptAccess,
+} from "../../lib/parlume-transcript-access";
 
 /** Deterministic workflow id: one intake per context at a time. */
 export function scopeIntakeWorkflowId(contextId: string): string {
@@ -23,7 +27,8 @@ export function scopeIntakeWorkflowId(contextId: string): string {
  * AUTHORIZATION: `requireProjectPermission(PROJECT_UPDATE)`. The context must
  * belong to the project AND the caller's tenant (XOR filter via
  * `getContextById(contextId, projectId, tenant)`); anything else is
- * NOT_FOUND so ids from other tenants are indistinguishable from missing.
+ * NOT_FOUND so ids from other tenants are indistinguishable from missing. A
+ * Parlume transcript the caller may not read is FORBIDDEN.
  *
  * Idempotent: `WorkflowExecutionAlreadyStartedError` is treated as success.
  */
@@ -70,6 +75,19 @@ export const startScopeIntakeProcedure = tenantProtectedProcedure
 		if (!projectContext || projectContext.projectId !== input.projectId) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Context not found in this project",
+			});
+		}
+		// A Parlume transcript this caller may not read is not handed to the
+		// agent either.
+		if (
+			(await resolveParlumeTranscriptAccess({
+				projectId: input.projectId,
+				userId: user.id,
+				contextId: projectContext.id,
+			})) === "withheld"
+		) {
+			throw new ORPCError("FORBIDDEN", {
+				message: PARLUME_TRANSCRIPT_WITHHELD,
 			});
 		}
 

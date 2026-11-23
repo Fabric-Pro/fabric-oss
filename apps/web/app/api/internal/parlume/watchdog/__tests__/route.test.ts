@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
 	finalize: vi.fn(),
 	leave: vi.fn(),
 	attendee: vi.fn(),
+	announce: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
 	db: {
@@ -26,6 +27,9 @@ vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
 }));
 vi.mock("@repo/api/modules/projects/lib/parlume-provider-settings", () => ({
 	resolveParlumeAttendeeSettings: mocks.attendee,
+}));
+vi.mock("@repo/api/modules/projects/lib/parlume-leave", () => ({
+	announceParlumeLeaving: mocks.announce,
 }));
 
 function request() {
@@ -97,6 +101,38 @@ describe("Parlume watchdog terminal recovery", () => {
 				},
 			}),
 		);
+	});
+	it("tells an active meeting's chat that its offers end before the bot leaves at the cap", async () => {
+		const order: string[] = [];
+		mocks.announce.mockImplementation(async () => {
+			order.push("notice");
+		});
+		mocks.updateMany.mockImplementation(async () => {
+			order.push("update");
+			return { count: 1 };
+		});
+		mocks.leave.mockImplementation(async () => {
+			order.push("leave");
+			return { kind: "LEAVE_REQUESTED" };
+		});
+		expect((await POST(request())).status).toBe(200);
+		expect(mocks.announce).toHaveBeenCalledWith("example-session");
+		// The end reason, the notice while still ACTIVE, the LEAVING claim.
+		expect(order).toEqual(["update", "notice", "update", "leave"]);
+	});
+	it("posts no notice for a session already leaving", async () => {
+		mocks.findFirst.mockResolvedValue({
+			id: "example-session",
+			organizationId: "example-org",
+			providerBotId: "example-bot",
+			status: "LEAVING",
+			terminalCallbackAt: null,
+			streamClosedAt: new Date(),
+			streamGeneration: 2,
+		});
+		mocks.leave.mockResolvedValue({ kind: "LEAVE_REQUESTED" });
+		expect((await POST(request())).status).toBe(200);
+		expect(mocks.announce).not.toHaveBeenCalled();
 	});
 	it("ignores a stale deadline after another finalizer completed", async () => {
 		mocks.updateMany.mockResolvedValue({ count: 0 });

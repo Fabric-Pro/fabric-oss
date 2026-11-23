@@ -1,0 +1,138 @@
+{
+	"id": "design-review-tentative",
+	"title": "Design review with proposals that are not decisions",
+	"covers": [
+		"proposals and preferences that the meeting did not decide",
+		"a choice deferred to next week",
+		"thinking aloud that is not an action item",
+		"one real decision"
+	],
+	"segments": [
+		{
+			"id": 1,
+			"speaker": "Quinn Example",
+			"text": "Design review for the new reporting service.",
+			"startMs": 0,
+			"endMs": 6000
+		},
+		{
+			"id": 2,
+			"speaker": "Taylor Example",
+			"text": "I propose we use Postgres 17 for the reporting store.",
+			"startMs": 8000,
+			"endMs": 15000
+		},
+		{
+			"id": 3,
+			"speaker": "Jamie Example",
+			"text": "I'd rather we benchmark it against the column store first.",
+			"startMs": 17000,
+			"endMs": 24000
+		},
+		{
+			"id": 4,
+			"speaker": "Quinn Example",
+			"text": "Let's not decide today. Benchmark both and decide next week.",
+			"startMs": 26000,
+			"endMs": 33000
+		},
+		{
+			"id": 5,
+			"speaker": "Taylor Example",
+			"text": "I'll run the benchmark on both by next Monday.",
+			"startMs": 35000,
+			"endMs": 41000
+		},
+		{
+			"id": 6,
+			"speaker": "Jamie Example",
+			"text": "Maybe we could also use a queue for ingestion, just thinking aloud.",
+			"startMs": 43000,
+			"endMs": 50000
+		},
+		{
+			"id": 7,
+			"speaker": "Quinn Example",
+			"text": "Interesting, write it up if you want, no commitment.",
+			"startMs": 52000,
+			"endMs": 58000
+		},
+		{
+			"id": 8,
+			"speaker": "Taylor Example",
+			"text": "One thing we do agree on: the reporting service gets its own database.",
+			"startMs": 60000,
+			"endMs": 67000
+		},
+		{
+			"id": 9,
+			"speaker": "Quinn Example",
+			"text": "Yes, that's decided, a separate database for reporting.",
+			"startMs": 69000,
+			"endMs": 75000
+		},
+		{
+			"id": 10,
+			"speaker": "Jamie Example",
+			"text": "What retention do the reports need? Nobody gave us a number.",
+			"startMs": 77000,
+			"endMs": 84000
+		}
+	],
+	"truth": {
+		"decisions": [
+			{
+				"text": "The reporting service gets its own, separate database.",
+				"keywords": ["separate|own|dedicated", "database"],
+				"segments": [8, 9]
+			},
+			{
+				"text": "The reporting store choice is deferred to next week, after a benchmark.",
+				"keywords": ["next week|defer|postpone|later|benchmark"],
+				"segments": [4]
+			}
+		],
+		"actionItems": [
+			{
+				"text": "Benchmark Postgres 17 and the column store.",
+				"keywords": ["benchmark"],
+				"segments": [5],
+				"owner": "Taylor Example",
+				"due": "next Monday"
+			}
+		]
+	},
+	"suggestions": {
+		"passesAfter": [4, 10],
+		"workItems": [
+			{
+				"identifier": "RPT-2",
+				"title": "Reporting store benchmark",
+				"status": "To do",
+				"priority": "MEDIUM",
+				"owner": null
+			},
+			{
+				"identifier": "RPT-6",
+				"title": "Report retention requirements",
+				"status": "To do",
+				"priority": "HIGH",
+				"owner": null
+			}
+		],
+		"agenda": "1. Reporting store choice\n2. Ingestion\n3. Retention",
+		"previousQuestions": [],
+		"expected": [
+			{
+				"kind": "answer",
+				"text": "RPT-2 Reporting store benchmark is in the backlog without an owner.",
+				"keywords": ["rpt-2|benchmark", "owner|unassigned|assign"]
+			},
+			{
+				"kind": "answer",
+				"text": "RPT-6 Report retention requirements is open and unassigned; retention is the agenda's third item.",
+				"keywords": ["rpt-6|retention", "owner|unassigned|assign|open"]
+			}
+		]
+	}
+}

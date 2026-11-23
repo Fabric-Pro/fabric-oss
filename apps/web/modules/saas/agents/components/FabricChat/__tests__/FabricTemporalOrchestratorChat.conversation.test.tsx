@@ -1588,7 +1588,7 @@ describe("FabricTemporalOrchestratorChat — turn in flight until it is saved", 
 describe("FabricTemporalOrchestratorChat — a conversation another surface is writing", () => {
 	it.each([
 		["CANCELLED", "cancelled", "Stopped"],
-		["FAILED", "error", "Execution failed"],
+		["FAILED", "error", "The request did not go through"],
 	] as const)(
 		"keeps a reconciled %s partial answer in the transcript and followup history",
 		async (terminalStatus, status, caption) => {
@@ -1760,7 +1760,7 @@ describe("FabricTemporalOrchestratorChat — a conversation another surface is w
 			}
 			if (status === "FAILED") {
 				expect(
-					screen.getByText("Execution failed"),
+					screen.getByText("The request did not go through"),
 				).toBeInTheDocument();
 			}
 			if (status !== "COMPLETED") {
@@ -2008,7 +2008,9 @@ describe("FabricTemporalOrchestratorChat — a conversation another surface is w
 				activeConversation={{ id: "conv_failed", ...projected }}
 			/>,
 		);
-		expect(await screen.findByText("Execution failed")).toBeInTheDocument();
+		expect(
+			await screen.findByText("The request did not go through"),
+		).toBeInTheDocument();
 		expect(
 			screen.getByText("reconciled: workflow timed_out"),
 		).toBeInTheDocument();
@@ -2315,7 +2317,7 @@ describe("FabricTemporalOrchestratorChat — a conversation another surface is w
 
 	it.each([
 		["CANCELLED", "Stopped"],
-		["FAILED", "Execution failed"],
+		["FAILED", "The request did not go through"],
 		["LIMITED", "Answer may be incomplete"],
 	])(
 		"shows a detached %s outcome when no response was produced",
@@ -2355,7 +2357,7 @@ describe("FabricTemporalOrchestratorChat — a conversation another surface is w
 	it.each([
 		["COMPLETED", null],
 		["CANCELLED", "Stopped"],
-		["FAILED", "Execution failed"],
+		["FAILED", "The request did not go through"],
 		["LIMITED", "Answer may be incomplete"],
 	])(
 		"shows a detached %s result without a saved question",
@@ -2835,7 +2837,7 @@ describe("Advisor served-model screen wiring", () => {
 		);
 		expect(
 			await screen.findByRole("button", {
-				name: "Answered by example-served",
+				name: "Answered by Example Served",
 			}),
 		).toBeInTheDocument();
 		await waitFor(() =>
@@ -2873,7 +2875,7 @@ describe("Advisor served-model screen wiring", () => {
 		);
 		expect(
 			await screen.findByRole("button", {
-				name: "Answered by example-served",
+				name: "Answered by Example Served",
 			}),
 		).toBeInTheDocument();
 	});
@@ -2912,7 +2914,7 @@ describe("Advisor served-model screen wiring", () => {
 		);
 		expect(
 			await screen.findByRole("button", {
-				name: "Answered by example-served",
+				name: "Answered by Example Served",
 			}),
 		).toBeInTheDocument();
 	});

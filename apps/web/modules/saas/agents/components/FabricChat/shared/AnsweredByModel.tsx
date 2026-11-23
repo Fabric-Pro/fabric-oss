@@ -5,6 +5,7 @@ import { useOrganizationId } from "@saas/organizations/hooks/use-organization-co
 import {
 	formatUsageModel,
 	formatUsageProvider,
+	readableModelName,
 } from "@saas/payments/lib/ai-usage-labels";
 import { getModelDisplayNameFromCatalog } from "@shared/hooks/use-available-models";
 import { useQuery } from "@tanstack/react-query";
@@ -41,13 +42,17 @@ function AnsweredByModelLabel({ model }: { model: StreamModelInfo }) {
 			catalogName = byId;
 		}
 	}
+	// The catalog has no entry for the model, or has not loaded yet: name it
+	// from what the turn stored, readably, never as its raw id.
 	const name =
 		catalogName !== identifier
 			? catalogName
-			: formatUsageModel({
-					modelCanonicalName: model.canonicalName ?? null,
-					providerModelId: model.id,
-				});
+			: readableModelName(
+					formatUsageModel({
+						modelCanonicalName: model.canonicalName ?? null,
+						providerModelId: model.id,
+					}),
+				);
 	const provider =
 		model.viaPlan || model.provider
 			? formatUsageProvider({

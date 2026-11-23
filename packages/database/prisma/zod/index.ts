@@ -744,7 +744,7 @@ export type AtlasEdgeOverrideHistoryScalarFieldEnum = z.infer<typeof AtlasEdgeOv
 
 // File: ProjectLinkedMeetingScalarFieldEnum.schema.ts
 
-export const ProjectLinkedMeetingScalarFieldEnumSchema = z.enum(['id', 'projectId', 'joinUrl', 'source', 'subject', 'organizer', 'includedInDigest', 'linkedAt', 'deactivatedAt', 'deactivatedById', 'consecutiveFailures', 'lastErrorMessage', 'lastErrorAt', 'userId', 'organizationId', 'parlumeAutoJoin', 'parlumeAutoJoinUserId', 'parlumeAutoJoinToolsReadOnly', 'parlumeAutoJoinSuggestions', 'parlumeAutoJoinSuggestionAudience', 'parlumeAutoJoinError', 'parlumeAutoJoinErrorAt', 'confidential'])
+export const ProjectLinkedMeetingScalarFieldEnumSchema = z.enum(['id', 'projectId', 'joinUrl', 'source', 'subject', 'organizer', 'includedInDigest', 'linkedAt', 'deactivatedAt', 'deactivatedById', 'consecutiveFailures', 'lastErrorMessage', 'lastErrorAt', 'userId', 'organizationId', 'parlumeAutoJoin', 'parlumeAutoJoinUserId', 'parlumeAutoJoinEnabledAt', 'parlumeAutoJoinToolsReadOnly', 'parlumeAutoJoinSuggestions', 'parlumeAutoJoinSuggestionAudience', 'parlumeAutoJoinError', 'parlumeAutoJoinErrorAt', 'confidential'])
 
 export type ProjectLinkedMeetingScalarFieldEnum = z.infer<typeof ProjectLinkedMeetingScalarFieldEnumSchema>;
 
@@ -810,13 +810,13 @@ export type TimeTrackingPreferenceScalarFieldEnum = z.infer<typeof TimeTrackingP
 
 // File: OrganizationParlumeSettingsScalarFieldEnum.schema.ts
 
-export const OrganizationParlumeSettingsScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'encryptedAttendeeApiKey', 'attendeeBaseUrl', 'teamsLoginMode', 'realtimeDeployment', 'updatedById', 'createdAt', 'updatedAt'])
+export const OrganizationParlumeSettingsScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'encryptedAttendeeApiKey', 'encryptedAttendeeWebhookSecret', 'attendeeBaseUrl', 'teamsLoginMode', 'teamsLoginGroup', 'realtimeDeployment', 'guestPolicy', 'channelIntegrationId', 'updatedById', 'createdAt', 'updatedAt'])
 
 export type OrganizationParlumeSettingsScalarFieldEnum = z.infer<typeof OrganizationParlumeSettingsScalarFieldEnumSchema>;
 
 // File: ParlumeMeetingSessionScalarFieldEnum.schema.ts
 
-export const ParlumeMeetingSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'agentKind', 'agentLabel', 'agentInstanceSId', 'agentInstanceVersionId', 'agentInstanceVersion', 'providerBotId', 'streamTokenDigest', 'status', 'wakePhrase', 'toolsReadOnly', 'suggestionsEnabled', 'suggestionAudience', 'endReason', 'lastError', 'joinedAt', 'hardStopAt', 'leaveRequestedAt', 'captureStoppedAt', 'terminalCallbackAt', 'streamClosedAt', 'streamGeneration', 'voiceGeneration', 'finalizationStartedAt', 'finalizedAt', 'transcriptContextId', 'providerDataDeletedAt', 'activeTurnId', 'endedAt', 'trigger', 'linkedMeetingId', 'occurrenceStart', 'meetingUrl', 'channelChatStatus', 'channelChatError', 'channelIntegrationId', 'channelTeamId', 'channelId', 'channelRootMessageId', 'channelTenantId', 'channelSubscriptionId', 'channelSubscriptionExpiresAt', 'createdAt', 'updatedAt'])
+export const ParlumeMeetingSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'agentKind', 'agentLabel', 'agentInstanceSId', 'agentInstanceVersionId', 'agentInstanceVersion', 'providerBotId', 'streamTokenDigest', 'callbackTokenDigest', 'attendeeSource', 'status', 'wakePhrase', 'toolsReadOnly', 'suggestionsEnabled', 'suggestionAudience', 'endReason', 'lastError', 'joinedAt', 'hardStopAt', 'leaveRequestedAt', 'captureStoppedAt', 'terminalCallbackAt', 'streamClosedAt', 'streamGeneration', 'voiceGeneration', 'finalizationStartedAt', 'finalizedAt', 'transcriptContextId', 'providerDataDeletedAt', 'activeTurnId', 'endedAt', 'trigger', 'linkedMeetingId', 'occurrenceStart', 'joinNoticeAt', 'joinNoticeTag', 'lastChatTag', 'externalInvitees', 'inviteeEmails', 'attendeeUserIds', 'memberSpeakerIds', 'guestSpeakerIds', 'confidential', 'confidentialSince', 'confidentialBy', 'guestJoinedAt', 'pausedAt', 'pausedBy', 'speechHealth', 'transcriptDeletedAt', 'notesNotifiedAt', 'meetingUrl', 'meetingKey', 'channelChatStatus', 'channelChatError', 'channelIntegrationId', 'channelTeamId', 'channelId', 'channelRootMessageId', 'channelTenantId', 'channelSubscriptionId', 'channelSubscriptionExpiresAt', 'createdAt', 'updatedAt'])
 
 export type ParlumeMeetingSessionScalarFieldEnum = z.infer<typeof ParlumeMeetingSessionScalarFieldEnumSchema>;
 
@@ -826,27 +826,33 @@ export const ParlumeChannelPostScalarFieldEnumSchema = z.enum(['id', 'sessionId'
 
 export type ParlumeChannelPostScalarFieldEnum = z.infer<typeof ParlumeChannelPostScalarFieldEnumSchema>;
 
+// File: ParlumeWebhookReceiptScalarFieldEnum.schema.ts
+
+export const ParlumeWebhookReceiptScalarFieldEnumSchema = z.enum(['sessionId', 'idempotencyKey', 'projectId', 'organizationId', 'userId', 'trigger', 'createdAt'])
+
+export type ParlumeWebhookReceiptScalarFieldEnum = z.infer<typeof ParlumeWebhookReceiptScalarFieldEnumSchema>;
+
 // File: ParlumeSuggestionScalarFieldEnum.schema.ts
 
-export const ParlumeSuggestionScalarFieldEnumSchema = z.enum(['id', 'sessionId', 'projectId', 'organizationId', 'userId', 'kind', 'audience', 'text', 'speaker', 'quote', 'topic', 'chatTag', 'createdAt'])
+export const ParlumeSuggestionScalarFieldEnumSchema = z.enum(['id', 'sessionId', 'projectId', 'organizationId', 'userId', 'kind', 'audience', 'text', 'speaker', 'quote', 'topic', 'chatTag', 'chatDelivery', 'dismissedAt', 'dismissedById', 'createdAt'])
 
 export type ParlumeSuggestionScalarFieldEnum = z.infer<typeof ParlumeSuggestionScalarFieldEnumSchema>;
 
 // File: ParlumeMeetingTurnScalarFieldEnum.schema.ts
 
-export const ParlumeMeetingTurnScalarFieldEnumSchema = z.enum(['id', 'sessionId', 'projectId', 'organizationId', 'userId', 'dedupeKey', 'speakerName', 'speakerId', 'requestText', 'responseText', 'status', 'error', 'startedAt', 'completedAt', 'createdAt', 'updatedAt', 'voiceGeneration', 'replyChannel', 'agentRevision', 'firstTextAt', 'firstAudioAt', 'spokenAt', 'interruptedAt'])
+export const ParlumeMeetingTurnScalarFieldEnumSchema = z.enum(['id', 'sessionId', 'projectId', 'organizationId', 'userId', 'dedupeKey', 'speakerName', 'speakerId', 'requesterUserId', 'requestText', 'responseText', 'status', 'error', 'startedAt', 'completedAt', 'createdAt', 'updatedAt', 'voiceGeneration', 'replyChannel', 'agentRevision', 'firstTextAt', 'firstAudioAt', 'spokenAt', 'interruptedAt', 'stopCause', 'stoppedBy', 'chatTags', 'chatUnshownTags'])
 
 export type ParlumeMeetingTurnScalarFieldEnum = z.infer<typeof ParlumeMeetingTurnScalarFieldEnumSchema>;
 
 // File: ParlumeActionScalarFieldEnum.schema.ts
 
-export const ParlumeActionScalarFieldEnumSchema = z.enum(['id', 'turnId', 'sessionId', 'projectId', 'organizationId', 'userId', 'speakerId', 'speakerName', 'invocationKey', 'toolName', 'toolConfigId', 'toolOriginalName', 'toolFingerprint', 'agentRevision', 'arguments', 'summary', 'status', 'presentedAt', 'expiresAt', 'confirmationTurnId', 'confirmedAt', 'completedAt', 'outcome', 'createdAt', 'updatedAt'])
+export const ParlumeActionScalarFieldEnumSchema = z.enum(['id', 'turnId', 'sessionId', 'projectId', 'organizationId', 'userId', 'speakerId', 'speakerName', 'invocationKey', 'toolName', 'toolConfigId', 'toolOriginalName', 'toolFingerprint', 'agentRevision', 'arguments', 'summary', 'status', 'presentedAt', 'expiresAt', 'confirmationTurnId', 'confirmedAt', 'decidedByUserId', 'startedAt', 'chatTag', 'chatDelivery', 'completedAt', 'outcome', 'createdAt', 'updatedAt'])
 
 export type ParlumeActionScalarFieldEnum = z.infer<typeof ParlumeActionScalarFieldEnumSchema>;
 
 // File: ParlumeMeetingSegmentScalarFieldEnum.schema.ts
 
-export const ParlumeMeetingSegmentScalarFieldEnumSchema = z.enum(['id', 'sessionId', 'projectId', 'organizationId', 'userId', 'dedupeKey', 'source', 'speakerName', 'speakerId', 'text', 'utteranceStartMs', 'utteranceEndMs', 'createdAt'])
+export const ParlumeMeetingSegmentScalarFieldEnumSchema = z.enum(['id', 'sessionId', 'projectId', 'organizationId', 'userId', 'dedupeKey', 'source', 'speakerName', 'speakerId', 'text', 'utteranceStartMs', 'utteranceEndMs', 'confidential', 'createdAt'])
 
 export type ParlumeMeetingSegmentScalarFieldEnum = z.infer<typeof ParlumeMeetingSegmentScalarFieldEnumSchema>;
 
@@ -951,6 +957,12 @@ export type PendingBacklogProposalApplicationScalarFieldEnum = z.infer<typeof Pe
 export const PendingBacklogProposalDuplicateResolutionScalarFieldEnumSchema = z.enum(['id', 'proposalId', 'changeIndex', 'existingEntityType', 'existingEntityId', 'createdAt'])
 
 export type PendingBacklogProposalDuplicateResolutionScalarFieldEnum = z.infer<typeof PendingBacklogProposalDuplicateResolutionScalarFieldEnumSchema>;
+
+// File: ProposalItemDuplicateVerdictScalarFieldEnum.schema.ts
+
+export const ProposalItemDuplicateVerdictScalarFieldEnumSchema = z.enum(['id', 'proposalId', 'changeIndex', 'counterpartKey', 'contentHash', 'counterpartHash', 'flagged', 'linkType', 'similarity', 'confidence', 'reasoning', 'failedAttempts', 'lastFailedAt', 'createdAt', 'updatedAt'])
+
+export type ProposalItemDuplicateVerdictScalarFieldEnum = z.infer<typeof ProposalItemDuplicateVerdictScalarFieldEnumSchema>;
 
 // File: PendingBacklogProposalReviewScalarFieldEnum.schema.ts
 
@@ -3184,11 +3196,23 @@ export const ParlumeTeamsLoginModeSchema = z.enum(['ALWAYS', 'ONLY_IF_REQUIRED']
 
 export type ParlumeTeamsLoginMode = z.infer<typeof ParlumeTeamsLoginModeSchema>;
 
+// File: ParlumeGuestPolicy.schema.ts
+
+export const ParlumeGuestPolicySchema = z.enum(['NOTES_ONLY', 'INTERNAL_ONLY'])
+
+export type ParlumeGuestPolicy = z.infer<typeof ParlumeGuestPolicySchema>;
+
 // File: ParlumeMeetingAgentKind.schema.ts
 
 export const ParlumeMeetingAgentKindSchema = z.enum(['FABRIC_AGENT', 'TEMPLATE_INSTANCE'])
 
 export type ParlumeMeetingAgentKind = z.infer<typeof ParlumeMeetingAgentKindSchema>;
+
+// File: ParlumeAttendeeSource.schema.ts
+
+export const ParlumeAttendeeSourceSchema = z.enum(['ENVIRONMENT', 'ORGANIZATION'])
+
+export type ParlumeAttendeeSource = z.infer<typeof ParlumeAttendeeSourceSchema>;
 
 // File: ParlumeMeetingSessionStatus.schema.ts
 
@@ -3198,7 +3222,7 @@ export type ParlumeMeetingSessionStatus = z.infer<typeof ParlumeMeetingSessionSt
 
 // File: ParlumeMeetingEndReason.schema.ts
 
-export const ParlumeMeetingEndReasonSchema = z.enum(['STOPPED', 'REMOVED', 'IDLE', 'ACCESS_REVOKED', 'STREAM_ERROR', 'MAX_DURATION', 'PROVIDER_FAILED', 'START_FAILED', 'NOT_ADMITTED'])
+export const ParlumeMeetingEndReasonSchema = z.enum(['STOPPED', 'REMOVED', 'IDLE', 'ACCESS_REVOKED', 'STREAM_ERROR', 'MAX_DURATION', 'PROVIDER_FAILED', 'START_FAILED', 'NOT_ADMITTED', 'EXTERNAL_GUEST', 'ATTENDEE_NOT_AUTHORIZED'])
 
 export type ParlumeMeetingEndReason = z.infer<typeof ParlumeMeetingEndReasonSchema>;
 
@@ -3214,17 +3238,29 @@ export const ParlumeSuggestionKindSchema = z.enum(['ANSWER', 'MISSED_QUESTION', 
 
 export type ParlumeSuggestionKind = z.infer<typeof ParlumeSuggestionKindSchema>;
 
+// File: ParlumeChatDelivery.schema.ts
+
+export const ParlumeChatDeliverySchema = z.enum(['SHOWN', 'NOT_SHOWN'])
+
+export type ParlumeChatDelivery = z.infer<typeof ParlumeChatDeliverySchema>;
+
 // File: ParlumeMeetingTurnStatus.schema.ts
 
-export const ParlumeMeetingTurnStatusSchema = z.enum(['PENDING', 'RUNNING', 'COMPLETED', 'FAILED'])
+export const ParlumeMeetingTurnStatusSchema = z.enum(['PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'STOPPED'])
 
 export type ParlumeMeetingTurnStatus = z.infer<typeof ParlumeMeetingTurnStatusSchema>;
 
 // File: ParlumeMeetingReplyChannel.schema.ts
 
-export const ParlumeMeetingReplyChannelSchema = z.enum(['VOICE', 'CHAT'])
+export const ParlumeMeetingReplyChannelSchema = z.enum(['VOICE', 'CHAT', 'PAGE'])
 
 export type ParlumeMeetingReplyChannel = z.infer<typeof ParlumeMeetingReplyChannelSchema>;
+
+// File: ParlumeStopCause.schema.ts
+
+export const ParlumeStopCauseSchema = z.enum(['CHAT', 'PAGE', 'PAUSE', 'VOICE'])
+
+export type ParlumeStopCause = z.infer<typeof ParlumeStopCauseSchema>;
 
 // File: ParlumeActionStatus.schema.ts
 
@@ -3234,7 +3270,7 @@ export type ParlumeActionStatus = z.infer<typeof ParlumeActionStatusSchema>;
 
 // File: ParlumeMeetingSegmentSource.schema.ts
 
-export const ParlumeMeetingSegmentSourceSchema = z.enum(['SPEECH', 'CHAT'])
+export const ParlumeMeetingSegmentSourceSchema = z.enum(['SPEECH', 'CHAT', 'EVENT'])
 
 export type ParlumeMeetingSegmentSource = z.infer<typeof ParlumeMeetingSegmentSourceSchema>;
 
@@ -3279,6 +3315,12 @@ export type PendingBacklogProposalSource = z.infer<typeof PendingBacklogProposal
 export const PendingBacklogProposalStatusSchema = z.enum(['PENDING', 'APPROVED', 'APPLYING', 'APPLIED', 'REJECTED', 'FAILED', 'SUPERSEDED', 'BACKLOG'])
 
 export type PendingBacklogProposalStatus = z.infer<typeof PendingBacklogProposalStatusSchema>;
+
+// File: DuplicateLinkType.schema.ts
+
+export const DuplicateLinkTypeSchema = z.enum(['DUPLICATE', 'OVERLAP'])
+
+export type DuplicateLinkType = z.infer<typeof DuplicateLinkTypeSchema>;
 
 // File: RecurringErrorSource.schema.ts
 
@@ -3471,12 +3513,6 @@ export type StoryAttachmentSource = z.infer<typeof StoryAttachmentSourceSchema>;
 export const DuplicateLinkStatusSchema = z.enum(['PENDING', 'DISMISSED', 'RESOLVED', 'NOT_DUPLICATE'])
 
 export type DuplicateLinkStatus = z.infer<typeof DuplicateLinkStatusSchema>;
-
-// File: DuplicateLinkType.schema.ts
-
-export const DuplicateLinkTypeSchema = z.enum(['DUPLICATE', 'OVERLAP'])
-
-export type DuplicateLinkType = z.infer<typeof DuplicateLinkTypeSchema>;
 
 // File: ProjectCommentAuthorType.schema.ts
 
@@ -4482,7 +4518,7 @@ export type ChatArtifactType = z.infer<typeof ChatArtifactTypeSchema>;
 
 // File: NotificationType.schema.ts
 
-export const NotificationTypeSchema = z.enum(['STORY_MENTION', 'STORY_COMMENT_REPLY', 'STORY_ASSIGNED', 'TASK_MENTION', 'TASK_COMMENT_REPLY', 'COMMENT_MENTION', 'DOCUMENT_MENTION', 'AGENT_REPLY_READY', 'STORY_STATUS_CHANGED', 'PM_SYNC_CONFLICT', 'AI_USAGE_LIMIT_WARNING', 'AI_USAGE_LIMIT_REACHED', 'INTEGRATION_INCIDENT', 'SYSTEM_INCIDENT', 'CONTEXT_INDEXING_STARTED', 'CONTEXT_INDEXING_COMPLETED', 'REPO_INTEGRATION_TOKEN_EXPIRED', 'SECURITY_SCAN_COMPLETED', 'PROJECT_SERVICE_ALERT_DIGEST', 'REPORT_COMPLETED', 'REPORT_FAILED', 'SECURITY_TICKETS_GENERATED', 'DOCUMENT_UPDATED', 'FEATURE_UPDATED', 'STORY_SHARED', 'NEWSLETTER_APPROVAL_PENDING', 'TEST_CASES_DRAFTED', 'STATUS_ANNOUNCEMENT', 'PUBLISHING_TOPICS_READY', 'PROMPT_DEFAULT_UPDATED', 'PROMPT_NOMINATION_PENDING', 'PM_ATTACHMENT_SYNC_FAILED', 'DECISION_OWNER_ASSIGNED', 'DECISION_OWNER_UPDATED', 'QUESTION_ASSIGNED', 'QUESTION_MENTIONED', 'QUESTION_ANSWERED', 'PUBLISHING_TOPIC_ASSIGNED', 'PUBLISHING_QUESTION_ASSIGNED', 'DOCUMENT_GENERATION_COMPLETED', 'DOCUMENT_GENERATION_FAILED', 'CLI_CONNECTION_REQUESTED', 'TODO_ASSIGNED', 'TODO_MEETING_ITEMS_ASSIGNED', 'CHATGPT_PLAN_ACCOUNT_NEEDS_RECONNECT', 'WORKFLOW_RUN_COMPLETED', 'WORKFLOW_RUN_FAILED', 'CHATGPT_PLAN_WORK_PAUSED', 'CHATGPT_PLAN_WORK_STOPPED', 'CODING_INSTRUCTIONS_PUBLISHED', 'DECISION_CANDIDATES_READY'])
+export const NotificationTypeSchema = z.enum(['STORY_MENTION', 'STORY_COMMENT_REPLY', 'STORY_ASSIGNED', 'TASK_MENTION', 'TASK_COMMENT_REPLY', 'COMMENT_MENTION', 'DOCUMENT_MENTION', 'AGENT_REPLY_READY', 'STORY_STATUS_CHANGED', 'PM_SYNC_CONFLICT', 'AI_USAGE_LIMIT_WARNING', 'AI_USAGE_LIMIT_REACHED', 'INTEGRATION_INCIDENT', 'SYSTEM_INCIDENT', 'CONTEXT_INDEXING_STARTED', 'CONTEXT_INDEXING_COMPLETED', 'REPO_INTEGRATION_TOKEN_EXPIRED', 'SECURITY_SCAN_COMPLETED', 'PROJECT_SERVICE_ALERT_DIGEST', 'REPORT_COMPLETED', 'REPORT_FAILED', 'SECURITY_TICKETS_GENERATED', 'DOCUMENT_UPDATED', 'FEATURE_UPDATED', 'STORY_SHARED', 'NEWSLETTER_APPROVAL_PENDING', 'TEST_CASES_DRAFTED', 'STATUS_ANNOUNCEMENT', 'PUBLISHING_TOPICS_READY', 'PROMPT_DEFAULT_UPDATED', 'PROMPT_NOMINATION_PENDING', 'PM_ATTACHMENT_SYNC_FAILED', 'DECISION_OWNER_ASSIGNED', 'DECISION_OWNER_UPDATED', 'QUESTION_ASSIGNED', 'QUESTION_MENTIONED', 'QUESTION_ANSWERED', 'PUBLISHING_TOPIC_ASSIGNED', 'PUBLISHING_QUESTION_ASSIGNED', 'DOCUMENT_GENERATION_COMPLETED', 'DOCUMENT_GENERATION_FAILED', 'CLI_CONNECTION_REQUESTED', 'TODO_ASSIGNED', 'TODO_MEETING_ITEMS_ASSIGNED', 'CHATGPT_PLAN_ACCOUNT_NEEDS_RECONNECT', 'WORKFLOW_RUN_COMPLETED', 'WORKFLOW_RUN_FAILED', 'CHATGPT_PLAN_WORK_PAUSED', 'CHATGPT_PLAN_WORK_STOPPED', 'CODING_INSTRUCTIONS_PUBLISHED', 'DECISION_CANDIDATES_READY', 'PARLUME_JOIN_FAILED', 'PARLUME_WAITING_IN_LOBBY', 'PARLUME_NOTES_READY'])
 
 export type NotificationType = z.infer<typeof NotificationTypeSchema>;
 
@@ -7532,6 +7568,7 @@ export const ProjectLinkedMeetingSchema = z.object({
   organizationId: z.string().nullish(),
   parlumeAutoJoin: z.boolean(),
   parlumeAutoJoinUserId: z.string().nullish(),
+  parlumeAutoJoinEnabledAt: z.date().nullish(),
   parlumeAutoJoinToolsReadOnly: z.boolean().default(true),
   parlumeAutoJoinSuggestions: z.boolean().default(true),
   parlumeAutoJoinSuggestionAudience: ParlumeSuggestionAudienceSchema.default("TEAM"),
@@ -7755,9 +7792,13 @@ export const OrganizationParlumeSettingsSchema = z.object({
   id: z.string(),
   organizationId: z.string(),
   encryptedAttendeeApiKey: z.string().nullish(),
+  encryptedAttendeeWebhookSecret: z.string().nullish(),
   attendeeBaseUrl: z.string().nullish(),
   teamsLoginMode: ParlumeTeamsLoginModeSchema.nullish(),
+  teamsLoginGroup: z.string().nullish(),
   realtimeDeployment: z.string().nullish(),
+  guestPolicy: ParlumeGuestPolicySchema.default("NOTES_ONLY"),
+  channelIntegrationId: z.string().nullish(),
   updatedById: z.string().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
@@ -7780,6 +7821,8 @@ export const ParlumeMeetingSessionSchema = z.object({
   agentInstanceVersion: z.number().int().nullish(),
   providerBotId: z.string().nullish(),
   streamTokenDigest: z.string(),
+  callbackTokenDigest: z.string().nullish(),
+  attendeeSource: ParlumeAttendeeSourceSchema.nullish(),
   status: ParlumeMeetingSessionStatusSchema.default("PENDING"),
   wakePhrase: z.string().default("Hey Fabric"),
   toolsReadOnly: z.boolean().default(true),
@@ -7804,7 +7847,25 @@ export const ParlumeMeetingSessionSchema = z.object({
   trigger: ParlumeSessionTriggerSchema.default("MANUAL"),
   linkedMeetingId: z.string().nullish(),
   occurrenceStart: z.date().nullish(),
+  joinNoticeAt: z.date().nullish(),
+  joinNoticeTag: z.string().nullish(),
+  lastChatTag: z.number().int().nullish(),
+  externalInvitees: z.boolean(),
+  inviteeEmails: z.array(z.string()),
+  attendeeUserIds: z.array(z.string()),
+  memberSpeakerIds: z.array(z.string()),
+  guestSpeakerIds: z.array(z.string()),
+  confidential: z.boolean(),
+  confidentialSince: z.date().nullish(),
+  confidentialBy: z.string().nullish(),
+  guestJoinedAt: z.date().nullish(),
+  pausedAt: z.date().nullish(),
+  pausedBy: z.string().nullish(),
+  speechHealth: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  transcriptDeletedAt: z.date().nullish(),
+  notesNotifiedAt: z.date().nullish(),
   meetingUrl: z.string().nullish(),
+  meetingKey: z.string().nullish(),
   channelChatStatus: z.string().default("ATTENDEE"),
   channelChatError: z.string().nullish(),
   channelIntegrationId: z.string().nullish(),
@@ -7840,6 +7901,21 @@ export const ParlumeChannelPostSchema = z.object({
 export type ParlumeChannelPostType = z.infer<typeof ParlumeChannelPostSchema>;
 
 
+// File: ParlumeWebhookReceipt.schema.ts
+
+export const ParlumeWebhookReceiptSchema = z.object({
+  sessionId: z.string(),
+  idempotencyKey: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  trigger: z.string(),
+  createdAt: z.date(),
+});
+
+export type ParlumeWebhookReceiptType = z.infer<typeof ParlumeWebhookReceiptSchema>;
+
+
 // File: ParlumeSuggestion.schema.ts
 
 export const ParlumeSuggestionSchema = z.object({
@@ -7855,6 +7931,9 @@ export const ParlumeSuggestionSchema = z.object({
   quote: z.string().nullish(),
   topic: z.string().nullish(),
   chatTag: z.string().nullish(),
+  chatDelivery: ParlumeChatDeliverySchema.nullish(),
+  dismissedAt: z.date().nullish(),
+  dismissedById: z.string().nullish(),
   createdAt: z.date(),
 });
 
@@ -7872,6 +7951,7 @@ export const ParlumeMeetingTurnSchema = z.object({
   dedupeKey: z.string(),
   speakerName: z.string().nullish(),
   speakerId: z.string().nullish(),
+  requesterUserId: z.string().nullish(),
   requestText: z.string(),
   responseText: z.string().nullish(),
   status: ParlumeMeetingTurnStatusSchema.default("PENDING"),
@@ -7887,6 +7967,10 @@ export const ParlumeMeetingTurnSchema = z.object({
   firstAudioAt: z.date().nullish(),
   spokenAt: z.date().nullish(),
   interruptedAt: z.date().nullish(),
+  stopCause: ParlumeStopCauseSchema.nullish(),
+  stoppedBy: z.string().nullish(),
+  chatTags: z.array(z.string()),
+  chatUnshownTags: z.array(z.string()),
 });
 
 export type ParlumeMeetingTurnType = z.infer<typeof ParlumeMeetingTurnSchema>;
@@ -7916,6 +8000,10 @@ export const ParlumeActionSchema = z.object({
   expiresAt: z.date(),
   confirmationTurnId: z.string().nullish(),
   confirmedAt: z.date().nullish(),
+  decidedByUserId: z.string().nullish(),
+  startedAt: z.date().nullish(),
+  chatTag: z.string().nullish(),
+  chatDelivery: ParlumeChatDeliverySchema.nullish(),
   completedAt: z.date().nullish(),
   outcome: z.string().nullish(),
   createdAt: z.date(),
@@ -7940,6 +8028,7 @@ export const ParlumeMeetingSegmentSchema = z.object({
   text: z.string(),
   utteranceStartMs: z.number().int().nullish(),
   utteranceEndMs: z.number().int().nullish(),
+  confidential: z.boolean(),
   createdAt: z.date(),
 });
 
@@ -8333,6 +8422,29 @@ export const PendingBacklogProposalDuplicateResolutionSchema = z.object({
 });
 
 export type PendingBacklogProposalDuplicateResolutionType = z.infer<typeof PendingBacklogProposalDuplicateResolutionSchema>;
+
+
+// File: ProposalItemDuplicateVerdict.schema.ts
+
+export const ProposalItemDuplicateVerdictSchema = z.object({
+  id: z.string(),
+  proposalId: z.string(),
+  changeIndex: z.number().int(),
+  counterpartKey: z.string(),
+  contentHash: z.string(),
+  counterpartHash: z.string(),
+  flagged: z.boolean().nullish(),
+  linkType: DuplicateLinkTypeSchema.default("DUPLICATE"),
+  similarity: z.number(),
+  confidence: z.number().nullish(),
+  reasoning: z.string().nullish(),
+  failedAttempts: z.number().int(),
+  lastFailedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProposalItemDuplicateVerdictType = z.infer<typeof ProposalItemDuplicateVerdictSchema>;
 
 
 // File: PendingBacklogProposalReview.schema.ts

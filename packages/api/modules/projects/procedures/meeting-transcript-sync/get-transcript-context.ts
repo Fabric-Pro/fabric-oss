@@ -8,10 +8,16 @@
  * Used by DocumentEditor to include meeting context alongside Teams/Slack messages.
  *
  * AUTHORIZATION: Uses hasProjectAccess() - any project member can view transcript context.
+ * A confidential series' transcripts and every Parlume transcript are left
+ * out, as they are from search and summaries.
  */
 
 import { ORPCError } from "@orpc/server";
-import { db, hasProjectAccess } from "@repo/database";
+import {
+	db,
+	findConfidentialTranscriptContextIds,
+	hasProjectAccess,
+} from "@repo/database";
 import type { ProjectContextType } from "@repo/database/prisma/client";
 import { z } from "zod";
 import {
@@ -66,12 +72,17 @@ export const getTranscriptContextProcedure = tenantProtectedProcedure
 			});
 		}
 
+		const excluded = await findConfidentialTranscriptContextIds({
+			projectId: input.projectId,
+		});
+
 		// Fetch MEETING_TRANSCRIPT ProjectContext records directly
 		// These have metadata with meetingSubject, meetingDate, speakerNames, etc.
 		const contexts = await db.projectContext.findMany({
 			where: {
 				projectId: input.projectId,
 				type: "MEETING_TRANSCRIPT" as ProjectContextType,
+				...(excluded.size > 0 ? { id: { notIn: [...excluded] } } : {}),
 			},
 			orderBy: { createdAt: "desc" },
 			take: input.limit,

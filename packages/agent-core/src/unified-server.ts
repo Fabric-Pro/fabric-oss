@@ -38,6 +38,7 @@ import {
 } from "./services/token-exchange";
 import { tokenExchangeFailure } from "./services/token-exchange-failure";
 import { sanitizeMcpErrorMessage } from "./utils/sanitize-error";
+import { createSseController } from "./utils/sse-controller";
 
 // Note: @repo/observability is imported dynamically in start() to avoid
 // bundling OpenTelemetry packages in environments that don't support them (e.g., Turbopack)
@@ -458,6 +459,10 @@ function serverResolvedAgentConfig<T extends Record<string, unknown>>(
 				? headers.get("X-AI-Is-Reasoning")
 				: undefined));
 
+	const transportToken =
+		options.includeTransportSecrets !== false
+			? extractAIToken(headers) || undefined
+			: undefined;
 	const baseUrl =
 		credentials?.baseUrl || headers.get("X-AI-Base-URL") || undefined;
 	return {
@@ -489,6 +494,12 @@ function serverResolvedAgentConfig<T extends Record<string, unknown>>(
 			credentials?.deploymentName ||
 			headers.get("X-AI-Deployment-Name") ||
 			undefined,
+		ai_credential_kind: credentials?.credentialKind,
+		...(credentials?.credentialKind === "bearer" && {
+			ai_api_key: undefined,
+			ai_provider: credentials.provider,
+			ai_model: credentials.model,
+		}),
 		ai_billing_mode: credentials?.billingMode,
 		ai_billing_customer_id: credentials?.billingCustomerId,
 		ai_plan_source: credentials?.planSource,
@@ -510,10 +521,14 @@ function serverResolvedAgentConfig<T extends Record<string, unknown>>(
 			}),
 		}),
 		...(options.includeTransportSecrets !== false && {
-			ai_token: extractAIToken(headers) || undefined,
+			ai_token: transportToken,
 		}),
-		// Usage logging falls back to the sanitized flat fields; body records are untrusted.
-		fabric_usage: undefined,
+		// Keep the trusted token available for model re-exchange in runtime config.
+		// Platform executor input and request-body usage records stay outside this scope.
+		fabric_usage:
+			credentials?.credentialKind === "bearer" && transportToken
+				? { ai_token: transportToken }
+				: undefined,
 	};
 }
 
@@ -528,21 +543,6 @@ export type LangGraphExecutor = (
 	config?: AgentRuntimeConfig,
 ) => Promise<{
 	messages?: Array<{ role: string; content: string }>;
-	[key: string]: unknown;
-}>;
-
-/**
- * LangGraph streaming executor function type (for A2A protocol)
- */
-export type LangGraphStreamExecutor = (
-	input: {
-		messages: Array<{ role: string; content: string }>;
-		[key: string]: unknown;
-	},
-	config?: AgentRuntimeConfig,
-) => AsyncGenerator<{
-	type: string;
-	content?: string;
 	[key: string]: unknown;
 }>;
 
@@ -728,7 +728,6 @@ const NAMED_RUN_FAILURE_MESSAGE = "The agent run failed.";
  * @param config Server configuration
  * @param invokeAgent Function to invoke the LangGraph agent
  * @param transformOutput Function to transform agent output for A2A response
- * @param streamAgent Optional function to stream from the LangGraph agent (A2A protocol)
  * @param platformStreamAgent Optional function to stream with LangGraph Platform API format (CopilotKit)
  * @returns Hono app instance
  */
@@ -736,7 +735,6 @@ export function createUnifiedServer(
 	config: UnifiedServerConfig,
 	invokeAgent: LangGraphExecutor,
 	transformOutput: (output: Record<string, unknown>) => TransformResult,
-	streamAgent?: LangGraphStreamExecutor,
 	platformStreamAgent?: LangGraphPlatformStreamExecutor,
 ): { app: Hono; start: () => void } {
 	const app = new Hono();
@@ -848,39 +846,13 @@ export function createUnifiedServer(
 		},
 
 		async *executeStream(message, contextId, metadata, signal) {
-			if (!streamAgent) {
-				// Fall back to non-streaming
-				const result = await this.execute(
-					message,
-					contextId,
-					metadata,
-					signal,
-				);
-				yield { type: "text", text: result.response };
-				return;
-			}
-
-			const textPart = message.parts.find((p) => p.type === "text");
-			const userMessage =
-				textPart && "text" in textPart ? textPart.text : "";
-			const messages = [{ role: "user" as const, content: userMessage }];
-
-			// A supplied streamAgent bypasses transformOutput and does not see transform errors.
-			const stream = streamAgent(
-				{
-					messages,
-					contextId,
-					...metadata,
-					thread_id: metadata?.thread_id ?? contextId,
-				},
-				{ signal },
+			const result = await this.execute(
+				message,
+				contextId,
+				metadata,
+				signal,
 			);
-
-			for await (const chunk of stream) {
-				if (chunk.type === "text" && chunk.content) {
-					yield { type: "text", text: chunk.content };
-				}
-			}
+			yield { type: "text", text: result.response };
 		},
 	};
 
@@ -1650,7 +1622,12 @@ export function createUnifiedServer(
 
 			// Shared state for the ReadableStream — hoisted so the cancel()
 			// handler can reach them when the client disconnects.
-			let keepaliveInterval: ReturnType<typeof setInterval> | undefined;
+			const sse = createSseController({
+				onClosedDuringEnqueue: () =>
+					console.log(
+						`[UnifiedServer:${config.name}] Controller closed during enqueue`,
+					),
+			});
 			let activeGenerator:
 				| AsyncGenerator<LangGraphStreamEvent, void, unknown>
 				| undefined;
@@ -1672,54 +1649,22 @@ export function createUnifiedServer(
 							),
 					});
 
-					// Track if controller is still open to avoid ERR_INVALID_STATE errors
-					let isControllerOpen = true;
-
-					// Helper to safely enqueue data
-					const safeEnqueue = (data: Uint8Array) => {
-						if (!isControllerOpen) {
-							return false;
-						}
-						try {
-							controller.enqueue(data);
-							return true;
-						} catch (error) {
-							if (
-								(error as NodeJS.ErrnoException).code ===
-								"ERR_INVALID_STATE"
-							) {
-								console.log(
-									`[UnifiedServer:${config.name}] Controller closed during enqueue`,
-								);
-								isControllerOpen = false;
-								return false;
-							}
-							throw error;
-						}
-					};
-
-					// Helper to safely close the controller
-					const safeClose = () => {
-						if (isControllerOpen) {
-							isControllerOpen = false;
-							try {
-								controller.close();
-							} catch (_error) {
-								// Already closed, ignore
-							}
-						}
-					};
+					// Tracks whether the controller is still open to avoid
+					// ERR_INVALID_STATE errors.
+					sse.attach(controller);
 
 					// Start SSE keepalive heartbeat to prevent Azure Container Apps
 					// ingress from closing the connection during long LLM calls.
 					// SSE comments (lines starting with ':') are ignored by clients.
-					keepaliveInterval = setInterval(() => {
-						safeEnqueue(encoder.encode(":keepalive\n\n"));
-					}, 30_000); // every 30s, well under the 240s idle timeout
+					// Every 30s, well under the 240s idle timeout.
+					sse.startKeepalive({
+						intervalMs: 30_000,
+						stopOnClosed: false,
+					});
 
 					try {
 						// Send metadata event
-						safeEnqueue(
+						sse.enqueue(
 							encoder.encode(
 								`event: metadata\ndata: ${JSON.stringify({ run_id: runId })}\n\n`,
 							),
@@ -1821,7 +1766,7 @@ export function createUnifiedServer(
 								chunksToEmit.push(
 									...updatesGate.offer(
 										sseChunk,
-										controller.desiredSize,
+										sse.desiredSize,
 									),
 								);
 							} else {
@@ -1833,7 +1778,7 @@ export function createUnifiedServer(
 							}
 
 							for (const chunk of chunksToEmit) {
-								if (!safeEnqueue(encoder.encode(chunk))) {
+								if (!sse.enqueue(encoder.encode(chunk))) {
 									stoppedByClosedController = true;
 									break;
 								}
@@ -1854,7 +1799,7 @@ export function createUnifiedServer(
 						if (!stoppedByClosedController) {
 							const pendingChunk = updatesGate.flush();
 							if (pendingChunk !== null) {
-								safeEnqueue(encoder.encode(pendingChunk));
+								sse.enqueue(encoder.encode(pendingChunk));
 							}
 						}
 
@@ -1864,7 +1809,7 @@ export function createUnifiedServer(
 						const finalUpdateData = {
 							end: finalState,
 						};
-						safeEnqueue(
+						sse.enqueue(
 							encoder.encode(
 								`event: updates\ndata: ${JSON.stringify(finalUpdateData)}\n\n`,
 							),
@@ -1883,7 +1828,7 @@ export function createUnifiedServer(
 						);
 
 						// Send final values event with complete state (already sanitized)
-						safeEnqueue(
+						sse.enqueue(
 							encoder.encode(
 								`event: values\ndata: ${JSON.stringify(finalState)}\n\n`,
 							),
@@ -1915,10 +1860,10 @@ export function createUnifiedServer(
 						}
 
 						// Send end event
-						safeEnqueue(
+						sse.enqueue(
 							encoder.encode("event: end\ndata: null\n\n"),
 						);
-						safeClose();
+						sse.close();
 					} catch (error) {
 						// Only log if it's not an expected controller closed error
 						if (
@@ -1943,15 +1888,14 @@ export function createUnifiedServer(
 							error instanceof Error
 								? error.message
 								: "Unknown error";
-						safeEnqueue(
+						sse.enqueue(
 							encoder.encode(
 								`event: error\ndata: ${JSON.stringify({ message: errorMessage, error: errorMessage, code: "AGENT_RUN_ERROR" })}\n\n`,
 							),
 						);
-						safeClose();
+						sse.close();
 					} finally {
-						clearInterval(keepaliveInterval);
-						keepaliveInterval = undefined;
+						sse.stopKeepalive();
 						activeGenerator = undefined;
 					}
 				},
@@ -1959,10 +1903,7 @@ export function createUnifiedServer(
 					// Called when the client disconnects — clears the heartbeat
 					// immediately rather than waiting for start() to unwind, and
 					// signals the generator to exit at its next yield point.
-					if (keepaliveInterval !== undefined) {
-						clearInterval(keepaliveInterval);
-						keepaliveInterval = undefined;
-					}
+					sse.stopKeepalive();
 					if (activeGenerator) {
 						activeGenerator.return(undefined as never);
 						activeGenerator = undefined;
@@ -2025,55 +1966,27 @@ export function createUnifiedServer(
 		const stream = new ReadableStream({
 			async start(controller) {
 				const encoder = new TextEncoder();
-				let isControllerOpen = true;
-
-				const safeEnqueue = (data: Uint8Array) => {
-					if (!isControllerOpen) {
-						return;
-					}
-					try {
-						controller.enqueue(data);
-					} catch (error) {
-						if (
-							(error as NodeJS.ErrnoException).code ===
-							"ERR_INVALID_STATE"
-						) {
-							isControllerOpen = false;
-						} else {
-							throw error;
-						}
-					}
-				};
-
-				const safeClose = () => {
-					if (isControllerOpen) {
-						isControllerOpen = false;
-						try {
-							controller.close();
-						} catch {
-							/* ignore */
-						}
-					}
-				};
+				const sse = createSseController();
+				sse.attach(controller);
 
 				try {
 					// Send metadata event
-					safeEnqueue(
+					sse.enqueue(
 						encoder.encode(
 							`event: metadata\ndata: ${JSON.stringify({ run_id: runId })}\n\n`,
 						),
 					);
 
 					// Send values event with the sanitized result
-					safeEnqueue(
+					sse.enqueue(
 						encoder.encode(
 							`event: values\ndata: ${JSON.stringify(result)}\n\n`,
 						),
 					);
 
 					// Send end event
-					safeEnqueue(encoder.encode("event: end\ndata: null\n\n"));
-					safeClose();
+					sse.enqueue(encoder.encode("event: end\ndata: null\n\n"));
+					sse.close();
 				} catch (error) {
 					if (
 						(error as NodeJS.ErrnoException).code !==
@@ -2084,12 +1997,12 @@ export function createUnifiedServer(
 							error,
 						);
 					}
-					safeEnqueue(
+					sse.enqueue(
 						encoder.encode(
 							`event: error\ndata: ${JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" })}\n\n`,
 						),
 					);
-					safeClose();
+					sse.close();
 				}
 			},
 		});
@@ -2456,98 +2369,10 @@ export function createUnifiedServer(
 				`[UnifiedServer:${config.name}] AG-UI /stream with ${messages.length} messages`,
 			);
 
-			if (!streamAgent) {
-				// Fall back to non-streaming
-				const result = await invokeAgent(
-					resolveInvocationInput(c, {
-						messages,
-						...body,
-					}),
-				);
-				return c.json(result);
-			}
-
-			// Create SSE stream
-			const stream = new ReadableStream({
-				async start(controller) {
-					const encoder = new TextEncoder();
-					let isControllerOpen = true;
-
-					const safeEnqueue = (data: Uint8Array) => {
-						if (!isControllerOpen) {
-							return false;
-						}
-						try {
-							controller.enqueue(data);
-							return true;
-						} catch (error) {
-							if (
-								(error as NodeJS.ErrnoException).code ===
-								"ERR_INVALID_STATE"
-							) {
-								isControllerOpen = false;
-								return false;
-							}
-							throw error;
-						}
-					};
-
-					const safeClose = () => {
-						if (isControllerOpen) {
-							isControllerOpen = false;
-							try {
-								controller.close();
-							} catch {
-								/* ignore */
-							}
-						}
-					};
-
-					try {
-						const generator = streamAgent(
-							resolveInvocationInput(c, {
-								messages,
-								...body,
-							}),
-						);
-
-						for await (const chunk of generator) {
-							const data = JSON.stringify(chunk);
-							if (
-								!safeEnqueue(
-									encoder.encode(`data: ${data}\n\n`),
-								)
-							) {
-								break;
-							}
-						}
-
-						safeEnqueue(encoder.encode("data: [DONE]\n\n"));
-						safeClose();
-					} catch (error) {
-						if (
-							(error as NodeJS.ErrnoException).code !==
-							"ERR_INVALID_STATE"
-						) {
-							console.error(
-								`[UnifiedServer:${config.name}] Stream error:`,
-								error,
-							);
-							controller.error(error);
-						} else {
-							safeClose();
-						}
-					}
-				},
-			});
-
-			return new Response(stream, {
-				headers: {
-					"Content-Type": "text/event-stream",
-					"Cache-Control": "no-cache",
-					Connection: "keep-alive",
-				},
-			});
+			const result = await invokeAgent(
+				resolveInvocationInput(c, { messages, ...body }),
+			);
+			return c.json(result);
 		} catch (error) {
 			console.error(
 				`[UnifiedServer:${config.name}] Error in /stream:`,
@@ -3094,36 +2919,22 @@ export function createUnifiedServer(
 
 			// Shared state for the AG-UI ReadableStream — hoisted so the
 			// cancel() handler can clear the keepalive when the client disconnects.
-			let keepaliveInterval: ReturnType<typeof setInterval> | undefined;
+			const sse = createSseController({
+				onCloseThrew: () =>
+					console.log(
+						`[UnifiedServer:${config.name}] Controller already closed`,
+					),
+			});
 
 			// Create SSE stream with AG-UI format events
 			const stream = new ReadableStream({
 				async start(controller) {
 					const encoder = new TextEncoder();
 
-					// Track if controller is still open to avoid ERR_INVALID_STATE errors
-					// This happens when client disconnects before stream completes
-					let isControllerOpen = true;
-
-					// Helper to safely enqueue raw bytes (used by keepalive)
-					const safeEnqueue = (data: Uint8Array) => {
-						if (!isControllerOpen) {
-							return false;
-						}
-						try {
-							controller.enqueue(data);
-							return true;
-						} catch (error) {
-							if (
-								(error as NodeJS.ErrnoException).code ===
-								"ERR_INVALID_STATE"
-							) {
-								isControllerOpen = false;
-								return false;
-							}
-							throw error;
-						}
-					};
+					// Tracks whether the controller is still open to avoid
+					// ERR_INVALID_STATE errors, which happen when the client
+					// disconnects before the stream completes.
+					sse.attach(controller);
 
 					// Helper to send AG-UI events safely
 					const sendEvent = (
@@ -3137,7 +2948,7 @@ export function createUnifiedServer(
 						}
 						if (
 							firstVisibleOutputMs === null &&
-							isControllerOpen &&
+							sse.isOpen &&
 							!seedSnapshot
 						) {
 							const stateDelta = Array.isArray(event.delta)
@@ -3186,59 +2997,33 @@ export function createUnifiedServer(
 							}
 						}
 
-						if (!isControllerOpen) {
+						if (!sse.isOpen) {
 							console.log(
 								`[UnifiedServer:${config.name}] Skipping event (controller closed):`,
 								event.type,
 							);
 							return;
 						}
-						try {
-							const data = JSON.stringify(event);
-							controller.enqueue(
-								encoder.encode(`data: ${data}\n\n`),
+						// A serialization error propagates to the caller.
+						const data = JSON.stringify(event);
+						if (!sse.enqueue(encoder.encode(`data: ${data}\n\n`))) {
+							// The controller was open at the check above, so this
+							// enqueue is the call that found it closed.
+							console.log(
+								`[UnifiedServer:${config.name}] Controller closed during sendEvent, stopping stream`,
 							);
-						} catch (error) {
-							// Controller was closed (client disconnected)
-							if (
-								(error as NodeJS.ErrnoException).code ===
-								"ERR_INVALID_STATE"
-							) {
-								console.log(
-									`[UnifiedServer:${config.name}] Controller closed during sendEvent, stopping stream`,
-								);
-								isControllerOpen = false;
-							} else {
-								throw error;
-							}
-						}
-					};
-
-					// Helper to safely close the controller
-					const safeClose = () => {
-						if (isControllerOpen) {
-							isControllerOpen = false;
-							try {
-								controller.close();
-							} catch (_error) {
-								// Already closed, ignore
-								console.log(
-									`[UnifiedServer:${config.name}] Controller already closed`,
-								);
-							}
 						}
 					};
 
 					// Start SSE keepalive heartbeat to prevent proxy idle timeouts
 					// during long LLM generations. SSE comments (lines starting
-					// with ':') are ignored by AG-UI / CopilotKit clients.
-					keepaliveInterval = setInterval(() => {
-						if (!safeEnqueue(encoder.encode(":keepalive\n\n"))) {
-							// Client disconnected — stop firing into the void
-							clearInterval(keepaliveInterval);
-							keepaliveInterval = undefined;
-						}
-					}, 15_000); // every 15s — aggressive to survive multi-layer proxies
+					// with ':') are ignored by AG-UI / CopilotKit clients. Every
+					// 15s — aggressive to survive multi-layer proxies; stops itself
+					// once the client is gone.
+					sse.startKeepalive({
+						intervalMs: 15_000,
+						stopOnClosed: true,
+					});
 
 					let closeReplyTranscript = () => {};
 					let finishReplyOnError = () => {};
@@ -3775,7 +3560,7 @@ export function createUnifiedServer(
 										if (event.droppable === true) {
 											for (const writes of deltaGate.offer(
 												finalState,
-												controller.desiredSize,
+												sse.desiredSize,
 											)) {
 												sendStateDelta(writes);
 											}
@@ -4375,43 +4160,6 @@ export function createUnifiedServer(
 									},
 								);
 							}
-						} else if (streamAgent) {
-							// Use basic streaming
-							const generator = streamAgent(
-								serverResolvedAgentConfig(
-									c.req.raw.headers,
-									exchangedCredentials,
-									{
-										// Inherit the selected model; the resolver below binds its hints.
-										ai_model:
-											runtimeConfig.configurable
-												?.ai_model,
-										messages,
-										...body,
-									},
-									[runtimeConfig.configurable, body],
-								),
-								runtimeConfig,
-							);
-
-							for await (const chunk of generator) {
-								if (!hasStartedMessage) {
-									sendEvent({
-										type: "TEXT_MESSAGE_START",
-										messageId,
-										role: "assistant",
-									});
-									hasStartedMessage = true;
-								}
-
-								if (chunk.content) {
-									sendEvent({
-										type: "TEXT_MESSAGE_CONTENT",
-										messageId,
-										delta: chunk.content,
-									});
-								}
-							}
 						} else {
 							// Non-streaming fallback
 							const result = await invokeAgent(
@@ -4469,7 +4217,7 @@ export function createUnifiedServer(
 							runId,
 						});
 
-						safeClose();
+						sse.close();
 					} catch (error) {
 						if (
 							c.req.raw.signal.aborted ||
@@ -4509,20 +4257,16 @@ export function createUnifiedServer(
 									? error.message
 									: "Unknown error",
 						});
-						safeClose();
+						sse.close();
 					} finally {
 						finishTiming(timingOutcome);
-						clearInterval(keepaliveInterval);
-						keepaliveInterval = undefined;
+						sse.stopKeepalive();
 					}
 				},
 				cancel() {
 					finishTiming("client_abort");
 					// Called when the client disconnects — clears the heartbeat
-					if (keepaliveInterval !== undefined) {
-						clearInterval(keepaliveInterval);
-						keepaliveInterval = undefined;
-					}
+					sse.stopKeepalive();
 				},
 			});
 

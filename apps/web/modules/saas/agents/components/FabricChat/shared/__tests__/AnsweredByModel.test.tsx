@@ -83,11 +83,44 @@ describe("AnsweredByModel", () => {
 			viaPlan: true,
 		});
 		fireEvent.focus(
-			screen.getByRole("button", { name: "Answered by example-unknown" }),
+			screen.getByRole("button", { name: "Answered by Example Unknown" }),
 		);
 		expect(await screen.findByRole("tooltip")).toHaveTextContent(
-			"example-unknown · ChatGPT plan",
+			"Example Unknown · ChatGPT plan",
 		);
+	});
+	it.each([
+		["the catalog has no entry for it", false],
+		["the catalog has not loaded yet", true],
+	])(
+		"names a saved turn's model readably, never by its raw id, when %s",
+		(_case, loading) => {
+			if (loading) {
+				fetchModels.mockReturnValue(new Promise(() => {}));
+			}
+			show(
+				{
+					id: "gpt-6.1-terra",
+					canonicalName: "gpt-6.1-terra",
+					provider: "OPENAI_CHATGPT_PLAN",
+					viaPlan: true,
+				},
+				loading,
+			);
+			expect(
+				screen.getByRole("button", {
+					name: "Answered by GPT-6.1 Terra",
+				}),
+			).toBeInTheDocument();
+		},
+	);
+	it("reads a version split across words as one", () => {
+		show({ id: "vendor/example-model-5-5", viaPlan: false });
+		expect(
+			screen.getByRole("button", {
+				name: "Answered by Example Model 5.5",
+			}),
+		).toBeInTheDocument();
 	});
 	it("fetches the display name with an empty cache and shares fresh data across labels", async () => {
 		fetchModels.mockClear();
@@ -129,7 +162,7 @@ describe("AnsweredByModel", () => {
 		});
 		expect(
 			screen.getByRole("button", {
-				name: "Answered by example-canonical",
+				name: "Answered by Example Canonical",
 			}),
 		).toBeInTheDocument();
 	});

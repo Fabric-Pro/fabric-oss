@@ -713,7 +713,7 @@ describe("FabricDirectChat — reopening a saved conversation", () => {
 			view.getByTestId("chatgpt-plan-api-billing-notice"),
 		).toBeInTheDocument();
 		expect(
-			view.getByRole("button", { name: "Answered by example-served" }),
+			view.getByRole("button", { name: "Answered by Example Served" }),
 		).toBeInTheDocument();
 	});
 });

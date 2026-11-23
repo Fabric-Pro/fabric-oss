@@ -31,7 +31,7 @@ const story = {
 	],
 } as unknown as UserStory;
 
-function renderStartWorkButton() {
+function renderStartWorkButton(canEdit?: boolean) {
 	const client = new QueryClient({
 		defaultOptions: {
 			queries: { retry: false },
@@ -45,6 +45,7 @@ function renderStartWorkButton() {
 				projectId="project_1"
 				storyId="story_1"
 				story={story}
+				canEdit={canEdit}
 				repositoryOwner="acme"
 				repositoryName="fabric"
 			/>
@@ -53,6 +54,22 @@ function renderStartWorkButton() {
 }
 
 describe("StartWorkButton", () => {
+	it("is disabled for a member who cannot change the work item", () => {
+		renderStartWorkButton(false);
+
+		expect(
+			screen.getByRole("button", { name: /Start work/i }),
+		).toBeDisabled();
+	});
+
+	it("is enabled for a member who can change the work item", () => {
+		renderStartWorkButton(true);
+
+		expect(
+			screen.getByRole("button", { name: /Start work/i }),
+		).toBeEnabled();
+	});
+
 	it("shows Fabric Agents Remote Server and Fabric Agents Desktop options with clear descriptions", async () => {
 		const user = userEvent.setup();
 		renderStartWorkButton();

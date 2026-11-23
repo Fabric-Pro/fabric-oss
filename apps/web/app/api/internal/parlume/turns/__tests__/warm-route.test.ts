@@ -16,6 +16,19 @@ vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
 	deleteParlumeMeetingBotData: vi.fn(),
 	getParlumeBridgeSettings: vi.fn(),
 }));
+vi.mock("@repo/api/modules/projects/lib/parlume-attendee-standing", () => ({
+	findParlumeAttendeeWithoutRead: vi.fn(),
+	parlumeDepartureNotice: vi.fn(),
+}));
+vi.mock("@repo/api/modules/projects/lib/parlume-leave", () => ({
+	requestParlumeLeave: vi.fn(),
+}));
+vi.mock("@repo/api/modules/projects/lib/parlume-confidential", () => ({
+	confidentialRangeSelect: {},
+	parlumeTurnAudience: vi.fn(),
+	setParlumeConfidentialRange: vi.fn(),
+	postParlumeConfidentialNotice: vi.fn(),
+}));
 
 import { GET } from "../route";
 

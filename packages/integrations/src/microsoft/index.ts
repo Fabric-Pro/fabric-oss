@@ -72,6 +72,7 @@ export {
 	isShortTeamsMeetingUrl,
 	parseChannelMeetingUrl,
 	teamsMeetingIdentity,
+	teamsMeetingJoinUrl,
 } from "./parlume-channel";
 // Re-exported so the transcript-sync activity can tell a channel meeting from an
 // ordinary one before deciding whether the recording fallback is worth trying.
@@ -720,6 +721,9 @@ export async function executeMicrosoftTeamsTool(
 	userId: string,
 	organizationId?: string,
 	integrationId?: string,
+	// Set only by code, never from a tool call's arguments: agents pass their
+	// arguments through, and invitee addresses must not reach them.
+	options: { inviteeEmailDomain?: string } = {},
 ): Promise<unknown> {
 	// Recheck access when a workflow pins a shared connection; refresh updates that row only.
 	const integration = integrationId
@@ -2373,11 +2377,46 @@ export async function executeMicrosoftTeamsTool(
 				onlineMeeting?: { joinUrl?: string };
 				webLink?: string;
 				isCancelled?: boolean;
+				attendees?: Array<{
+					type?: string;
+					emailAddress?: { address?: string };
+				}>;
 			};
+			// The people invited, as lower-cased addresses with their domains.
+			// Rooms and equipment are not people.
+			const invitees = (event: CalendarEvent) =>
+				[
+					event.organizer?.emailAddress?.address,
+					...(event.attendees ?? [])
+						.filter((attendee) => attendee.type !== "resource")
+						.map((attendee) => attendee.emailAddress?.address),
+				].flatMap((address) => {
+					const email = address?.trim().toLowerCase();
+					const domain = email?.split("@")[1]?.trim();
+					return email && domain ? [{ email, domain }] : [];
+				});
+			// Only the domains of the people invited, never their addresses:
+			// Parlume's auto-join tells an internal meeting from one with
+			// guests by them.
+			const attendeeDomains = (event: CalendarEvent): string[] => [
+				...new Set(invitees(event).map(({ domain }) => domain)),
+			];
+			// Parlume's auto-join also asks for the addresses of the invitees
+			// from its own organization's domain, who may read the meeting's
+			// transcript. No other invitee's address is returned.
+			const inviteeEmailDomain =
+				options.inviteeEmailDomain?.trim().toLowerCase() ?? "";
+			const internalInviteeEmails = (event: CalendarEvent): string[] => [
+				...new Set(
+					invitees(event).flatMap(({ email, domain }) =>
+						domain === inviteeEmailDomain ? [email] : [],
+					),
+				),
+			];
 			const allOnlineMeetings: CalendarEvent[] = [];
 			const pageSize = 50;
 			let nextUrl: string | null =
-				`${graphBaseUrl}/me/calendarView?startDateTime=${encodeURIComponent(startDate)}&endDateTime=${encodeURIComponent(endDate)}&$select=id,subject,start,end,organizer,isOnlineMeeting,onlineMeeting,webLink,isCancelled&$top=${pageSize}&$orderby=start/dateTime desc`;
+				`${graphBaseUrl}/me/calendarView?startDateTime=${encodeURIComponent(startDate)}&endDateTime=${encodeURIComponent(endDate)}&$select=id,subject,start,end,organizer,attendees,isOnlineMeeting,onlineMeeting,webLink,isCancelled&$top=${pageSize}&$orderby=start/dateTime desc`;
 
 			// Paginate through all Graph API pages (safety cap at 20 pages = 1000 raw events)
 			for (let page = 0; page < 20 && nextUrl; page++) {
@@ -2414,6 +2453,10 @@ export async function executeMicrosoftTeamsTool(
 					joinUrl: event.onlineMeeting?.joinUrl || null,
 					webLink: event.webLink || "",
 					isCancelled: event.isCancelled === true,
+					attendeeDomains: attendeeDomains(event),
+					...(inviteeEmailDomain
+						? { inviteeEmails: internalInviteeEmails(event) }
+						: {}),
 				})),
 				count: allOnlineMeetings.length,
 				dateRange: { startDate, endDate },

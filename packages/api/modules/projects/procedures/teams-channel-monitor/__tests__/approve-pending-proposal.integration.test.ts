@@ -30,6 +30,8 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+type TargetQuery = { where?: { OR?: { id?: { in: string[] } }[] } };
+
 // ---------------------------------------------------------------------------
 // Hoisted mocks — boundary substitutions
 // ---------------------------------------------------------------------------
@@ -105,12 +107,13 @@ vi.mock("@repo/database", async () => ({
 		// procedure handler) lets every CREATE proceed exactly like before
 		// this PR. Suite-level default; individual tests can override
 		// through `mocks` if/when dedup-specific scenarios are added.
-		// An update-target lookup (`where.id.in`) finds every id, so updates
-		// name work items in this project.
+		// An update-target lookup finds every id it names, so updates name
+		// work items in this project.
 		userStory: {
-			findMany: vi.fn(
-				async (args?: { where?: { id?: { in?: string[] } } }) =>
-					(args?.where?.id?.in ?? []).map((id) => ({ id })),
+			findMany: vi.fn(async (args?: TargetQuery) =>
+				(args?.where?.OR ?? [])
+					.flatMap((clause) => clause.id?.in ?? [])
+					.map((id) => ({ id })),
 			),
 		},
 	},

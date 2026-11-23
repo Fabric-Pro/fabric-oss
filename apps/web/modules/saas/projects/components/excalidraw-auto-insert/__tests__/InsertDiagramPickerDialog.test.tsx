@@ -37,14 +37,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Hoisted refs the mocks below mutate per-test
 // ---------------------------------------------------------------------------
 
-const { listDocumentsMock, listStoriesMock } = vi.hoisted(() => ({
-	listDocumentsMock: vi.fn(),
-	listStoriesMock: vi.fn(),
-}));
+const { listDocumentsMock, listStoriesMock, getProjectMock } = vi.hoisted(
+	() => ({
+		listDocumentsMock: vi.fn(),
+		listStoriesMock: vi.fn(),
+		getProjectMock: vi.fn(),
+	}),
+);
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
+			get: {
+				queryOptions: ({ input }: { input: unknown }) => ({
+					queryKey: ["projects.get", input],
+					queryFn: () => getProjectMock(input),
+				}),
+			},
 			documents: {
 				list: {
 					queryOptions: ({ input }: { input: unknown }) => ({
@@ -78,12 +87,22 @@ vi.mock("next-intl", () => ({
 					return "Insert diagram into…";
 				case "pickerDescription":
 					return `Pick a document or feature in ${values?.projectName ?? ""}.`;
+				case "pickerDescriptionThisProject":
+					return "Pick a document or feature in this project.";
 				case "pickerTabDocuments":
 					return "Documents";
 				case "pickerTabFeatures":
 					return "Features";
-				case "pickerEmpty":
-					return "No documents or features yet.";
+				case "pickerSearchDocuments":
+					return "Search documents";
+				case "pickerSearchFeatures":
+					return "Search features";
+				case "pickerEmptyDocuments":
+					return "No documents yet.";
+				case "pickerEmptyFeatures":
+					return "No features yet.";
+				case "pickerNoMatches":
+					return "No matches.";
 				default:
 					return key;
 			}
@@ -132,6 +151,7 @@ beforeEach(() => {
 	trackEvent.mockReset();
 	listDocumentsMock.mockReset();
 	listStoriesMock.mockReset();
+	getProjectMock.mockReset();
 });
 
 // ---------------------------------------------------------------------------
@@ -139,7 +159,185 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("<InsertDiagramPickerDialog /> -- empty state + telemetry", () => {
-	it("opens with empty state when both lists are empty", async () => {
+	it("opens with each tab's own empty state when both lists are empty", async () => {
+		listDocumentsMock.mockResolvedValue({
+			documents: [],
+			total: 0,
+			hasMore: false,
+		});
+		listStoriesMock.mockResolvedValue({ statuses: [], stories: [] });
+
+		const user = userEvent.setup();
+		renderWithQuery(
+			<InsertDiagramPickerDialog
+				{...baseProps}
+				open
+				onOpenChange={vi.fn()}
+				onPick={vi.fn()}
+			/>,
+		);
+
+		expect(
+			await screen.findByText("No documents yet."),
+		).toBeInTheDocument();
+
+		await user.click(screen.getByRole("tab", { name: /Features/i }));
+		expect(await screen.findByText("No features yet.")).toBeInTheDocument();
+	});
+
+	it("says the Documents tab is empty without claiming there are no features", async () => {
+		listDocumentsMock.mockResolvedValue({
+			documents: [],
+			total: 0,
+			hasMore: false,
+		});
+		listStoriesMock.mockResolvedValue({
+			statuses: [],
+			stories: [
+				{
+					id: "story_1",
+					identifier: "F-001",
+					title: "Login flow",
+					createdAt: new Date("2026-05-23T10:00:00Z"),
+					lastEditedAt: null,
+					status: { name: "In Progress", isArchived: false },
+				},
+			],
+		});
+
+		const user = userEvent.setup();
+		renderWithQuery(
+			<InsertDiagramPickerDialog
+				{...baseProps}
+				open
+				onOpenChange={vi.fn()}
+				onPick={vi.fn()}
+			/>,
+		);
+
+		expect(
+			await screen.findByText("No documents yet."),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/features yet/i)).not.toBeInTheDocument();
+
+		await user.click(screen.getByRole("tab", { name: /Features/i }));
+		expect(
+			await screen.findByRole("option", { name: /F-001 Login flow/i }),
+		).toBeInTheDocument();
+	});
+
+	it("says no matches when the search filters every row out", async () => {
+		listDocumentsMock.mockResolvedValue({
+			documents: [
+				{
+					id: "doc_1",
+					title: "Architecture",
+					updatedAt: "2026-05-23T10:00:00Z",
+				},
+			],
+			total: 1,
+			hasMore: false,
+		});
+		listStoriesMock.mockResolvedValue({ statuses: [], stories: [] });
+
+		const user = userEvent.setup();
+		renderWithQuery(
+			<InsertDiagramPickerDialog
+				{...baseProps}
+				open
+				onOpenChange={vi.fn()}
+				onPick={vi.fn()}
+			/>,
+		);
+
+		await screen.findByRole("option", { name: /Architecture/i });
+		await user.type(screen.getByRole("textbox"), "zzz");
+
+		expect(await screen.findByText("No matches.")).toBeInTheDocument();
+		expect(screen.queryByText("No documents yet.")).not.toBeInTheDocument();
+	});
+});
+
+describe("<InsertDiagramPickerDialog /> -- labels", () => {
+	it("search placeholder names the active tab", async () => {
+		listDocumentsMock.mockResolvedValue({
+			documents: [],
+			total: 0,
+			hasMore: false,
+		});
+		listStoriesMock.mockResolvedValue({ statuses: [], stories: [] });
+
+		const user = userEvent.setup();
+		renderWithQuery(
+			<InsertDiagramPickerDialog
+				{...baseProps}
+				open
+				onOpenChange={vi.fn()}
+				onPick={vi.fn()}
+			/>,
+		);
+
+		const search = screen.getByRole("textbox");
+		expect(search).toHaveAttribute("placeholder", "Search documents");
+
+		await user.click(screen.getByRole("tab", { name: /Features/i }));
+		expect(search).toHaveAttribute("placeholder", "Search features");
+	});
+
+	it("looks up the project name instead of showing the project id", async () => {
+		listDocumentsMock.mockResolvedValue({
+			documents: [],
+			total: 0,
+			hasMore: false,
+		});
+		listStoriesMock.mockResolvedValue({ statuses: [], stories: [] });
+		getProjectMock.mockResolvedValue({ project: { name: "Atlas" } });
+
+		renderWithQuery(
+			<InsertDiagramPickerDialog
+				{...baseProps}
+				projectName={undefined}
+				open
+				onOpenChange={vi.fn()}
+				onPick={vi.fn()}
+			/>,
+		);
+
+		expect(
+			await screen.findByText("Pick a document or feature in Atlas."),
+		).toBeInTheDocument();
+		expect(getProjectMock).toHaveBeenCalledWith({
+			id: "proj_1",
+			organizationId: "org_1",
+		});
+		expect(screen.queryByText(/proj_1/)).not.toBeInTheDocument();
+	});
+
+	it("falls back to 'this project' while the name is unknown", async () => {
+		listDocumentsMock.mockResolvedValue({
+			documents: [],
+			total: 0,
+			hasMore: false,
+		});
+		listStoriesMock.mockResolvedValue({ statuses: [], stories: [] });
+		getProjectMock.mockReturnValue(new Promise(() => {}));
+
+		renderWithQuery(
+			<InsertDiagramPickerDialog
+				{...baseProps}
+				projectName={undefined}
+				open
+				onOpenChange={vi.fn()}
+				onPick={vi.fn()}
+			/>,
+		);
+
+		expect(
+			screen.getByText("Pick a document or feature in this project."),
+		).toBeInTheDocument();
+	});
+
+	it("does not fetch the project when the caller passes its name", async () => {
 		listDocumentsMock.mockResolvedValue({
 			documents: [],
 			total: 0,
@@ -156,11 +354,11 @@ describe("<InsertDiagramPickerDialog /> -- empty state + telemetry", () => {
 			/>,
 		);
 
-		await waitFor(() => {
-			expect(
-				screen.getByText(/No documents or features yet/i),
-			).toBeInTheDocument();
-		});
+		expect(
+			screen.getByText("Pick a document or feature in Atlas."),
+		).toBeInTheDocument();
+		await screen.findByText("No documents yet.");
+		expect(getProjectMock).not.toHaveBeenCalled();
 	});
 
 	it("fires `diagram_auto_insert_picker_opened` exactly once on open", async () => {

@@ -17,21 +17,26 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentModelPicker } from "../AgentModelPicker";
 import type { SelectedAgent } from "../agent-selection";
 import {
+	chatPlanModel,
 	isModelSelectionId,
+	planModelPick,
+	selectionForConversation,
 	selectionToPersist,
 	shouldPersistAgentSelection,
 } from "../agent-selection";
 
 const api = vi.hoisted(() => ({
 	models: vi.fn(),
+	agents: vi.fn(),
+	instances: vi.fn(),
 	role: "admin" as string,
 	isAdmin: true,
 }));
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
-		agents: { registry: { list: vi.fn() } },
+		agents: { registry: { list: api.agents } },
 		aiConfig: { models: { listAvailable: api.models } },
-		agentTemplates: { instances: { list: vi.fn(), get: vi.fn() } },
+		agentTemplates: { instances: { list: api.instances, get: vi.fn() } },
 	},
 }));
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
@@ -70,6 +75,7 @@ const PLAN_MODELS = [
 function openModelPicker(
 	selectedAgents: SelectedAgent[] = [],
 	onToggleAgent = vi.fn(),
+	catalog: "all" | "models" = "models",
 ) {
 	render(
 		<QueryClientProvider
@@ -80,14 +86,18 @@ function openModelPicker(
 			}
 		>
 			<AgentModelPicker
-				catalog="models"
+				catalog={catalog}
 				onToggleAgent={onToggleAgent}
 				organizationId="example-org"
 				selectedAgents={selectedAgents}
 			/>
 		</QueryClientProvider>,
 	);
-	fireEvent.click(screen.getByRole("button", { name: "Model" }));
+	fireEvent.click(
+		screen.getByRole("button", {
+			name: catalog === "models" ? "Model" : "Agents",
+		}),
+	);
 	return onToggleAgent;
 }
 
@@ -434,6 +444,88 @@ describe("a plan pick in a multi-agent selection (Nexus)", () => {
 	});
 });
 
+// The note says how long a pick lasts, and must match what is saved.
+describe("the picker's scope note", () => {
+	it("says a plan pick applies to this chat only, and it is never saved", async () => {
+		api.models.mockResolvedValue({
+			models: [],
+			chatgptPlan: {
+				model: "gpt-6.1-sol",
+				source: "own",
+				models: PLAN_MODELS,
+			},
+		});
+		const onToggleAgent = openModelPicker();
+		fireEvent.click(
+			await screen.findByRole("button", { name: /GPT-6 Astra/ }),
+		);
+		expect(
+			screen.getByText(/A model picked here applies to this chat only/),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/Kept for your next chats/)).toBeNull();
+		const picked = onToggleAgent.mock.calls[0]?.[0] as SelectedAgent;
+		expect(shouldPersistAgentSelection(null, picked)).toBe(false);
+	});
+
+	it("says an agent picked beside a plan's models is kept for the next chats, and it is saved", async () => {
+		api.agents.mockResolvedValue({
+			agents: [
+				{
+					agentId: "example_agent",
+					name: "Example agent",
+					displayName: "Example agent",
+				},
+			],
+		});
+		api.instances.mockResolvedValue({ instances: [] });
+		api.models.mockResolvedValue({
+			models: [],
+			chatgptPlan: {
+				model: "gpt-6.1-sol",
+				source: "own",
+				models: PLAN_MODELS,
+			},
+		});
+		const onToggleAgent = openModelPicker([], vi.fn(), "all");
+		fireEvent.click(
+			await screen.findByRole("button", { name: /Example agent/ }),
+		);
+		expect(
+			screen.getByText(
+				/A model picked here applies to this chat only; an agent is kept for your next chats\./,
+			),
+		).toBeInTheDocument();
+		const picked = onToggleAgent.mock.calls[0]?.[0] as SelectedAgent;
+		expect(picked).toMatchObject({ agentId: "example_agent" });
+		expect(shouldPersistAgentSelection(null, picked)).toBe(true);
+	});
+
+	it("says a provider model pick is kept for the next chats, and it is saved", async () => {
+		api.models.mockResolvedValue({
+			models: [
+				{
+					canonicalName: "claude-sonnet-5",
+					displayName: "Claude Sonnet 5",
+					vendor: "Anthropic",
+				},
+			],
+			chatgptPlan: null,
+		});
+		const onToggleAgent = openModelPicker();
+		fireEvent.click(
+			await screen.findByRole("button", { name: "Claude Sonnet 5" }),
+		);
+		expect(
+			screen.getByText(/Kept for your next chats\. Everywhere else uses/),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/this chat only/)).toBeNull();
+		const picked = onToggleAgent.mock.calls[0]?.[0] as SelectedAgent;
+		expect(picked).toMatchObject({ agentId: "model:claude-sonnet-5" });
+		expect(picked.chatOnly).toBeUndefined();
+		expect(shouldPersistAgentSelection(null, picked)).toBe(true);
+	});
+});
+
 it("shows an unavailable saved pick without changing it or linking plan settings", async () => {
 	api.models.mockResolvedValue({ models: [], chatgptPlan: null });
 	const toggle = openModelPicker([
@@ -445,4 +537,52 @@ it("shows an unavailable saved pick without changing it or linking plan settings
 	);
 	expect(within(row).queryByRole("link")).toBeNull();
 	expect(toggle).not.toHaveBeenCalled();
+});
+
+describe("a plan model kept in its conversation", () => {
+	const kept = { canonicalName: "gpt-6-luna", name: "GPT-6 Luna" };
+	const saved: SelectedAgent = {
+		agentId: "model:claude-sonnet-5",
+		name: "Claude Sonnet 5",
+	};
+
+	it("round-trips between the pick and what the conversation keeps", () => {
+		const pick = planModelPick(kept);
+
+		expect(pick).toMatchObject({
+			agentId: "plan-model:gpt-6-luna",
+			modelOverride: "chatgpt-plan:gpt-6-luna",
+			chatOnly: true,
+		});
+		expect(chatPlanModel(pick)).toEqual(kept);
+		expect(chatPlanModel(saved)).toBeNull();
+		expect(chatPlanModel(null)).toBeNull();
+	});
+
+	it("is picked again when its conversation opens", () => {
+		expect(
+			selectionForConversation({ kept, current: saved, saved }),
+		).toEqual(planModelPick(kept));
+	});
+
+	it("gives way to the saved selection in a conversation that keeps none", () => {
+		expect(
+			selectionForConversation({
+				kept: null,
+				current: planModelPick(kept),
+				saved,
+			}),
+		).toBe(saved);
+	});
+
+	it("leaves any other selection as it is", () => {
+		const current: SelectedAgent = {
+			agentId: "template-instance:example-agent",
+			name: "Example Agent",
+		};
+
+		expect(selectionForConversation({ kept: null, current, saved })).toBe(
+			current,
+		);
+	});
 });

@@ -46,11 +46,17 @@ describe("transcriptFileProblem", () => {
 		expect(transcriptFileProblem(file)).toBeNull();
 	});
 
+	it("passes a Markdown file, whatever the case of its extension", () => {
+		expect(
+			transcriptFileProblem(new File(["# Standup"], "Standup.MD")),
+		).toBeNull();
+	});
+
 	it("names the file and the formats when the type is wrong", () => {
 		const problem = transcriptFileProblem(new File(["x"], "Planning.pdf"));
 
 		expect(problem).toContain("Planning.pdf");
-		expect(problem).toContain(".txt, .vtt, .docx");
+		expect(problem).toContain(".txt, .vtt, .docx, .md");
 	});
 
 	it("names the file and the limit when it is too large", () => {
@@ -67,7 +73,7 @@ describe("uploadTranscriptFile", () => {
 	it("asks with the file's hash, sends it, then starts reading it", async () => {
 		const result = await uploadTranscriptFile({ ...SCOPE, file });
 
-		expect(result).toEqual({ status: "started" });
+		expect(result).toEqual({ status: "started", contextId: "context-1" });
 		const request = mocks.createUploadUrl.mock.calls[0]?.[0];
 		expect(request).toMatchObject({
 			projectId: "project-1",
@@ -119,7 +125,10 @@ describe("uploadTranscriptFile", () => {
 	});
 
 	it("passes on the choice to process a duplicate again", async () => {
-		mocks.createUploadUrl.mockResolvedValue({ status: "reprocessing" });
+		mocks.createUploadUrl.mockResolvedValue({
+			status: "reprocessing",
+			contextId: "context-1",
+		});
 
 		const result = await uploadTranscriptFile({
 			...SCOPE,
@@ -127,9 +136,36 @@ describe("uploadTranscriptFile", () => {
 			reprocess: true,
 		});
 
-		expect(result).toEqual({ status: "reprocessing" });
+		expect(result).toEqual({
+			status: "reprocessing",
+			contextId: "context-1",
+		});
 		expect(mocks.createUploadUrl.mock.calls[0]?.[0].reprocess).toBe(true);
 		expect(mocks.fetch).not.toHaveBeenCalled();
+	});
+
+	it("reports the stored context even when ingestion cannot start", async () => {
+		const onStored = vi.fn();
+		const error = new Error("Failed to start processing this transcript");
+		mocks.startUploadIngest.mockRejectedValue(error);
+
+		await expect(
+			uploadTranscriptFile({ ...SCOPE, file, onStored }),
+		).rejects.toBe(error);
+
+		expect(onStored).toHaveBeenCalledExactlyOnceWith("context-1");
+		expect(mocks.deleteContext).not.toHaveBeenCalled();
+	});
+
+	it("does not report a stored context for a failed PUT", async () => {
+		const onStored = vi.fn();
+		mocks.fetch.mockResolvedValue({ ok: false });
+
+		await expect(
+			uploadTranscriptFile({ ...SCOPE, file, onStored }),
+		).rejects.toThrow("Planning.vtt");
+
+		expect(onStored).not.toHaveBeenCalled();
 	});
 
 	it("removes the row when the file never reached storage", async () => {

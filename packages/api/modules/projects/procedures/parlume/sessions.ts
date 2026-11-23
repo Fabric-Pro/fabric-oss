@@ -1,5 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import { db, isFeatureEnabled } from "@repo/database";
+import { readParlumeNoteItems } from "@repo/utils/parlume-notes";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
@@ -9,9 +10,10 @@ import {
 } from "../../../../orpc/procedures";
 import { leaveParlumeMeetingBot } from "../../lib/parlume-attendee";
 import { finalizeParlumeSession } from "../../lib/parlume-finalization";
+import { announceParlumeLeaving } from "../../lib/parlume-leave";
 import { parlumeLog } from "../../lib/parlume-log";
+import { mayProposeParlumeActionItems } from "../../lib/parlume-note-proposals";
 import { resolveParlumeAttendeeSettings } from "../../lib/parlume-provider-settings";
-import { PARLUME_SUGGESTION_AUDIENCES } from "../../lib/parlume-suggestion-audience";
 import {
 	getParlumeReadiness,
 	isParlumeReady,
@@ -24,7 +26,13 @@ import {
 	startParlumeMeetingSession,
 	TEMPLATE_INSTANCE_KIND,
 } from "../../lib/parlume-start";
+import { PARLUME_SUGGESTION_AUDIENCES } from "../../lib/parlume-suggestion-audience";
 import { sweepOverdueParlumeSessions } from "../../lib/parlume-sweep";
+import {
+	isParlumeInvitee,
+	managesParlumeTranscripts,
+	parlumeReaderEmail,
+} from "../../lib/parlume-transcript-access";
 
 const projectInput = z.object({ projectId: z.string() });
 const SESSIONS_PAGE_SIZE = 5;
@@ -182,14 +190,14 @@ export const listParlumeSessionsProcedure = tenantProtectedProcedure
 				.optional(),
 		}),
 	)
-	.handler(async ({ input }) => {
+	.handler(async ({ input, context }) => {
 		await requireParlumeProject(input.projectId);
 		// The sweep is project-wide, not page-relative, so the first page's
 		// request covers it.
 		if (!input.before) {
 			await sweepOverdueParlumeSessions(input.projectId);
 		}
-		const [rows, total] = await Promise.all([
+		const [rows, total, manages, email, mayPropose] = await Promise.all([
 			db.parlumeMeetingSession.findMany({
 				where: {
 					projectId: input.projectId,
@@ -211,6 +219,11 @@ export const listParlumeSessionsProcedure = tenantProtectedProcedure
 				},
 				select: {
 					...sessionSelect,
+					userId: true,
+					inviteeEmails: true,
+					attendeeUserIds: true,
+					externalInvitees: true,
+					guestJoinedAt: true,
 					_count: { select: { turns: true, suggestions: true } },
 				},
 				orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -223,6 +236,15 @@ export const listParlumeSessionsProcedure = tenantProtectedProcedure
 				: db.parlumeMeetingSession.count({
 						where: { projectId: input.projectId },
 					}),
+			managesParlumeTranscripts({
+				projectId: input.projectId,
+				userId: context.user.id,
+			}),
+			parlumeReaderEmail(context.user.id),
+			mayProposeParlumeActionItems({
+				projectId: input.projectId,
+				userId: context.user.id,
+			}),
 		]);
 		const sessions = rows.slice(0, SESSIONS_PAGE_SIZE);
 		const last = sessions.at(-1);
@@ -254,20 +276,91 @@ export const listParlumeSessionsProcedure = tenantProtectedProcedure
 					details && typeof details.parlumeNotesStatus === "string"
 						? details.parlumeNotesStatus
 						: null;
-				return [context.id, { notes, status }] as const;
+				const items = readParlumeNoteItems(details);
+				const requestedAt =
+					details &&
+					typeof details.parlumeNotesRequestedAt === "string"
+						? details.parlumeNotesRequestedAt
+						: null;
+				return [
+					context.id,
+					{ notes, status, items, requestedAt },
+				] as const;
 			}),
 		);
 		return {
-			sessions: sessions.map(({ _count, ...session }) => {
+			sessions: sessions.map((row) => {
+				const {
+					_count,
+					userId,
+					inviteeEmails,
+					attendeeUserIds,
+					externalInvitees,
+					guestJoinedAt,
+					...session
+				} = row;
 				const notes = session.transcriptContextId
 					? notesByContextId.get(session.transcriptContextId)
 					: null;
+				const attended = attendeeUserIds.includes(context.user.id);
+				// A confidential meeting's notes, requests, suggestions and
+				// transcript are for its verified attendees and the project's
+				// managers. Everyone else sees that it took place.
+				const contentReadable =
+					!session.confidential || manages || attended;
+				// May delete the session's content.
+				const canDeleteSession =
+					(manages || userId === context.user.id) && contentReadable;
+				// May open the transcript: so may the meeting's invitees,
+				// who may not delete it for everyone.
+				const canReadTranscript =
+					contentReadable &&
+					(canDeleteSession ||
+						isParlumeInvitee(email, inviteeEmails));
 				return {
 					...session,
-					requestCount: _count.turns,
-					suggestionCount: _count.suggestions,
-					notes: notes?.notes ?? null,
-					notesStatus: notes?.status ?? null,
+					requestCount: contentReadable ? _count.turns : 0,
+					suggestionCount: contentReadable ? _count.suggestions : 0,
+					notes: contentReadable ? (notes?.notes ?? null) : null,
+					// Each note with the transcript line it rests on; empty
+					// for notes written before they were anchored.
+					notesItems: contentReadable ? (notes?.items ?? []) : [],
+					notesStatus: contentReadable
+						? (notes?.status ?? null)
+						: null,
+					// When a member last asked for the notes again, if ever.
+					notesRequestedAt: contentReadable
+						? (notes?.requestedAt ?? null)
+						: null,
+					// Who may delete the session may have its notes written
+					// again, once they are done or failed and the transcript
+					// is still there.
+					canRegenerateNotes:
+						canDeleteSession &&
+						session.transcriptContextId !== null &&
+						!session.transcriptDeletedAt &&
+						(notes?.status === "COMPLETED" ||
+							notes?.status === "FAILED"),
+					// A reader of the transcript who may create work items may
+					// propose an action item, which links to its line. Never
+					// a confidential meeting's: every project reader sees the
+					// Proposal Inbox.
+					canProposeActionItems:
+						mayPropose &&
+						canReadTranscript &&
+						!session.confidential &&
+						session.transcriptContextId !== null &&
+						!session.transcriptDeletedAt,
+					contentWithheld: !contentReadable,
+					canReadTranscript,
+					canDeleteSession,
+					// Marking only keeps more to fewer people, so anyone who was
+					// in the meeting may; removing the mark widens who reads it.
+					canMarkConfidential: canDeleteSession || attended,
+					canClearConfidential: canDeleteSession,
+					// A guest is or was expected in the meeting: nothing from
+					// the page is said aloud there.
+					guestsPresent: externalInvitees || guestJoinedAt !== null,
 				};
 			}),
 			total,
@@ -339,6 +432,9 @@ export const stopParlumeSessionProcedure = tenantProtectedProcedure
 					select: sessionSelect,
 				}),
 			};
+		}
+		if (session.status === "ACTIVE") {
+			await announceParlumeLeaving(session.id);
 		}
 
 		const leaveClaimed = await db.parlumeMeetingSession.updateMany({

@@ -3,7 +3,7 @@ import {
 	db,
 	getProjectAccessContext,
 	type Prisma,
-	resolveWorkflowIntegrationForProvider,
+	resolveWorkflowIntegrationPreferring,
 } from "@repo/database";
 import {
 	assertChannelMessage,
@@ -19,6 +19,7 @@ import {
 	getParlumeBridgeSettings,
 	sendParlumeChatMessage,
 } from "./parlume-attendee";
+import { parlumeChatHtml, parlumePlainChatHtml } from "./parlume-chat-html";
 
 const SUBSCRIPTION_TTL_MS = 45 * 60_000;
 const SUBSCRIPTION_RENEW_MARGIN_MS = 10 * 60_000;
@@ -192,8 +193,16 @@ export async function reconcileParlumeChannelChat(
 	}
 	try {
 		if (!session.channelIntegrationId) {
-			const integration = await resolveWorkflowIntegrationForProvider(
+			// The organization's chosen Parlume account replies in the
+			// channel, so its posts do not appear as the inviter; without
+			// one, the inviter's own connection does.
+			const settings = await db.organizationParlumeSettings.findUnique({
+				where: { organizationId: session.organizationId },
+				select: { channelIntegrationId: true },
+			});
+			const integration = await resolveWorkflowIntegrationPreferring(
 				"MICROSOFT_GRAPH",
+				settings?.channelIntegrationId ?? null,
 				session.userId,
 				session.organizationId,
 			);
@@ -383,30 +392,78 @@ export async function reconcileParlumeChannelChat(
 	}
 }
 
+/** What a reader sees of HTML: its text, a line per break or paragraph. */
+function htmlVisibleText(html: string): string {
+	return html
+		.replace(/<br\s*\/?\s*>|<\/p>|<\/div>/gi, "\n")
+		.replace(/<[^>]*>/g, "")
+		.replace(/&#(\d+);/g, (_, code: string) => {
+			const point = Number(code);
+			return point >= 0 && point <= 0x10ffff
+				? String.fromCodePoint(point)
+				: "";
+		})
+		.replace(/&lt;/gi, "<")
+		.replace(/&gt;/gi, ">")
+		.replace(/&quot;/gi, '"')
+		.replace(/&#39;|&apos;/gi, "'")
+		.replace(/&nbsp;/gi, " ")
+		.replace(/&amp;/gi, "&");
+}
+
 function plainText(message: ChannelMessage): string {
 	const content =
 		message.body.contentType === "html"
-			? message.body.content
-					.replace(/<br\s*\/?\s*>|<\/p>|<\/div>/gi, "\n")
-					.replace(/<[^>]*>/g, "")
-					.replace(/&#(\d+);/g, (_, code: string) => {
-						const point = Number(code);
-						return point >= 0 && point <= 0x10ffff
-							? String.fromCodePoint(point)
-							: "";
-					})
-					.replace(/&lt;/gi, "<")
-					.replace(/&gt;/gi, ">")
-					.replace(/&quot;/gi, '"')
-					.replace(/&#39;|&apos;/gi, "'")
-					.replace(/&nbsp;/gi, " ")
-					.replace(/&amp;/gi, "&")
+			? htmlVisibleText(message.body.content)
 			: message.body.content;
 	return content.trim().slice(0, 20_000);
 }
 
+/** A post's text without the attribution Fabric adds after its tag. */
+function withoutAttribution(text: string): string {
+	return text.replace(/^(\[P\d{1,6}\]) Fabric Parlume: /, "$1 ");
+}
+
+/**
+ * The digest of what a reader sees: each line with its spaces collapsed,
+ * blank lines dropped, so markup Graph adds or rewrites around the same text
+ * does not change it.
+ */
 function postDigest(text: string): string {
-	return createHash("sha256").update(text).digest("hex");
+	const visible = text
+		.split(/\r?\n/)
+		.map((line) => line.replace(/\s+/g, " ").trim())
+		.filter(Boolean)
+		.join("\n");
+	return createHash("sha256").update(visible).digest("hex");
+}
+
+/**
+ * A post as the channel shows it: the tag first, Fabric Parlume's attribution
+ * after it, and the same HTML other meeting chats get, one paragraph for a
+ * `plain` post. The digest covers its visible text, as the read-back check
+ * compares visible text.
+ */
+export function parlumeChannelPostBody(
+	text: string,
+	plain = false,
+): {
+	html: string;
+	requestDigest: string;
+} {
+	const attributed = text.replace(
+		/^(\[P\d{1,6}\])\s*/,
+		"$1 Fabric Parlume: ",
+	);
+	const html = plain
+		? parlumePlainChatHtml(attributed)
+		: parlumeChatHtml(attributed);
+	return {
+		html,
+		requestDigest: postDigest(
+			withoutAttribution(htmlVisibleText(html).trim()),
+		),
+	};
 }
 
 async function recordChannelDelivery(
@@ -451,8 +508,7 @@ async function confirmTaggedPost(
 	if (
 		!post ||
 		!text.includes("] Fabric Parlume: ") ||
-		post.requestDigest !==
-			postDigest(text.replace(/^(\[P\d{1,6}\]) Fabric Parlume: /, "$1 "))
+		post.requestDigest !== postDigest(withoutAttribution(text))
 	) {
 		return false;
 	}
@@ -621,10 +677,29 @@ export async function deliverParlumeChannelNotification(
 	await relay(session, message);
 }
 
-/** Returns only after an exact created reply has been read back and relayed. */
+/**
+ * Graph was asked to create the reply, by this request or an earlier one
+ * with the same tag, and it was not read back and relayed: it may be in the
+ * thread.
+ */
+export class ParlumeChannelPostOutcomeUnknownError extends Error {
+	constructor(cause: unknown) {
+		super(cause instanceof Error ? cause.message : String(cause), {
+			cause,
+		});
+		this.name = "ParlumeChannelPostOutcomeUnknownError";
+	}
+}
+
+/**
+ * Returns only after an exact created reply has been read back and relayed.
+ * A failure once the reply may have been created is a
+ * `ParlumeChannelPostOutcomeUnknownError`.
+ */
 export async function sendParlumeChannelPost(
 	sessionId: string,
 	text: string,
+	plain = false,
 ): Promise<void> {
 	const session = await getActiveChannelSession(sessionId);
 	if (
@@ -639,7 +714,7 @@ export async function sendParlumeChannelPost(
 	if (!tag) {
 		throw new Error("A channel post requires a Parlume delivery tag.");
 	}
-	const requestDigest = postDigest(text);
+	const { html, requestDigest } = parlumeChannelPostBody(text, plain);
 	const scope = {
 		sessionId: session.id,
 		projectId: session.projectId,
@@ -666,62 +741,59 @@ export async function sendParlumeChannelPost(
 			"Parlume post tag already belongs to a different message.",
 		);
 	}
-	if (claim.count > 0) {
-		if (!(await getActiveChannelSession(session.id))) {
-			await db.parlumeChannelPost.deleteMany({
-				where: { id: post.id, providerMessageId: null },
-			});
-			throw new Error("Channel chat session is no longer active.");
-		}
-		const result = z
-			.object({ messageId: z.string().min(1).max(120) })
-			.parse(
-				await graph(session, {
-					kind: "send",
-					sessionId: session.id,
-					destination,
-					text: text.replace(
-						/^(\[P\d{1,6}\])\s*/,
-						"$1 Fabric Parlume: ",
-					),
-				}),
-			);
-		post = await db.parlumeChannelPost.update({
-			where: { id: post.id },
-			data: { providerMessageId: result.messageId },
+	const sending = claim.count > 0;
+	if (sending && !(await getActiveChannelSession(session.id))) {
+		await db.parlumeChannelPost.deleteMany({
+			where: { id: post.id, providerMessageId: null },
 		});
+		throw new Error("Channel chat session is no longer active.");
 	}
-	if (!post.providerMessageId) {
-		throw new Error(
-			"Channel post outcome is unknown. Check the meeting thread before retrying with a new post.",
+	try {
+		if (sending) {
+			const result = z
+				.object({ messageId: z.string().min(1).max(120) })
+				.parse(
+					await graph(session, {
+						kind: "send",
+						sessionId: session.id,
+						destination,
+						html,
+					}),
+				);
+			post = await db.parlumeChannelPost.update({
+				where: { id: post.id },
+				data: { providerMessageId: result.messageId },
+			});
+		}
+		if (!post.providerMessageId) {
+			throw new Error(
+				"Channel post outcome is unknown. Check the meeting thread before retrying with a new post.",
+			);
+		}
+		const message = channelMessageSchema.parse(
+			await graph(session, {
+				kind: "read",
+				destination,
+				replyId: post.providerMessageId,
+			}),
 		);
-	}
-	const message = channelMessageSchema.parse(
-		await graph(session, {
-			kind: "read",
-			destination,
-			replyId: post.providerMessageId,
-		}),
-	);
-	assertChannelMessage(message, destination, post.providerMessageId);
-	if (
-		post.requestDigest !==
-		postDigest(
-			plainText(message).replace(
-				/^(\[P\d{1,6}\]) Fabric Parlume: /,
-				"$1 ",
-			),
-		)
-	) {
-		throw new Error(
-			"The created channel reply does not match the Parlume post.",
+		assertChannelMessage(message, destination, post.providerMessageId);
+		if (
+			post.requestDigest !==
+			postDigest(withoutAttribution(plainText(message)))
+		) {
+			throw new Error(
+				"The created channel reply does not match the Parlume post.",
+			);
+		}
+		await recordChannelDelivery(
+			session,
+			post.id,
+			post.requestDigest,
+			message.id,
 		);
+		await relay(session, message);
+	} catch (error) {
+		throw new ParlumeChannelPostOutcomeUnknownError(error);
 	}
-	await recordChannelDelivery(
-		session,
-		post.id,
-		post.requestDigest,
-		message.id,
-	);
-	await relay(session, message);
 }

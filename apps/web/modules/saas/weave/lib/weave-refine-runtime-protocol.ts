@@ -1,5 +1,6 @@
 import { answerModelInfoSchema } from "@repo/ai/lib/answer-model-info";
 import { runtimeCustomEventName } from "@saas/agents/lib/runtime-custom-events";
+import { DECLINED_RUN_ERROR_CODE } from "@saas/shared/components/copilot/ag-ui-run-error";
 import { z } from "zod";
 
 /**
@@ -29,6 +30,13 @@ export type WeaveRefineProps = z.infer<typeof weaveRefinePropsSchema>;
 export const WEAVE_REFINE_EVENT = {
 	result: runtimeCustomEventName(WEAVE_REFINE_AGENT_ID, "result"),
 } as const;
+
+/**
+ * The RUN_ERROR code of a refinement the model declined (a content filter
+ * or safety refusal), told apart from a failure: the request is unchanged
+ * because the model would not refine it, not because something broke.
+ */
+export const WEAVE_REFINE_DECLINED = DECLINED_RUN_ERROR_CODE;
 
 /** The value of `WEAVE_REFINE_EVENT.result`. */
 export const weaveRefineResultEventSchema = z.object({

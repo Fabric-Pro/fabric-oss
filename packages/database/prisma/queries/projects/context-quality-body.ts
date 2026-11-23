@@ -37,6 +37,8 @@ function validScope(scope: SourceScope): boolean {
 /**
  * A tenant/project-scoped metadata read that never transfers the source body or
  * arbitrary JSON to Node. Authorization remains the facade caller's obligation.
+ * A Parlume meeting transcript is not a source here: only the people in the
+ * meeting read what it said, on its own page.
  */
 export async function getContextQualitySourceMetadata(
 	scope: SourceScope,
@@ -63,6 +65,8 @@ export async function getContextQualitySourceMetadata(
 		 WHERE id = ${scope.sourceId}
 		   AND "projectId" = ${scope.projectId}
 		   AND "organizationId" = ${scope.organizationId}
+		   AND NOT EXISTS (SELECT 1 FROM parlume_meeting_session s
+		                    WHERE s."transcriptContextId" = project_context.id)
 	`;
 	return row ?? null;
 }

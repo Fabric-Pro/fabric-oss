@@ -200,6 +200,12 @@ export const AI_JOB_TYPES = [
 	 * activity, so it is not bulk work for anyone else.
 	 */
 	"time-suggestions",
+	/**
+	 * Automatic duplicate detection over just-created work items (Fizzy #3538).
+	 * Background work no one waits on: the start helper defaults to this key so
+	 * the check can run on the organization's shared ChatGPT plans.
+	 */
+	"duplicate-detection",
 ] as const;
 
 export type AiJobKey = (typeof AI_JOB_TYPES)[number];

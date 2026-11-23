@@ -55,7 +55,6 @@ async function startWarmupWorkflow(
 					userId: session.userId,
 					organizationId: session.organizationId,
 					projectId: session.projectId,
-					readOnly: session.toolsReadOnly,
 				}),
 			},
 		],

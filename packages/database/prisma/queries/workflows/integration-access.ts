@@ -95,6 +95,60 @@ export async function resolveWorkflowIntegrationForProvider(
 }
 
 /**
+ * The organization's active shared connections of `provider`, the ones an
+ * organization may designate for a purpose, each with the member who
+ * connected it.
+ */
+export function listOrganizationSharedIntegrations(
+	provider: NonNullable<Prisma.WorkflowIntegrationWhereInput["provider"]>,
+	organizationId: string,
+) {
+	return db.workflowIntegration.findMany({
+		where: {
+			organizationId,
+			provider,
+			usageScope: "ORGANIZATION_SHARED",
+			isActive: true,
+			NOT: { name: { in: OAUTH_APP_ROW_NAMES } },
+		},
+		orderBy: [{ name: "asc" }, { id: "asc" }],
+		select: { id: true, name: true, userId: true },
+	});
+}
+
+/**
+ * A connection an organization designated for one purpose, used before the
+ * actor's own: only while it is still an active, organization-shared
+ * connection of `provider` in the actor's organization. Otherwise the actor's
+ * usual connection, as `resolveWorkflowIntegrationForProvider` picks it.
+ */
+export async function resolveWorkflowIntegrationPreferring(
+	provider: NonNullable<Prisma.WorkflowIntegrationWhereInput["provider"]>,
+	preferredId: string | null,
+	userId: string,
+	organizationId: string,
+) {
+	if (!(await canUseWorkflowIntegrations(userId, organizationId))) {
+		return null;
+	}
+	const preferred = preferredId
+		? await db.workflowIntegration.findFirst({
+				where: {
+					...workflowIntegrationAccessWhere(userId, organizationId),
+					id: preferredId,
+					provider,
+					usageScope: "ORGANIZATION_SHARED",
+					isActive: true,
+				},
+			})
+		: null;
+	return (
+		preferred ??
+		resolveWorkflowIntegrationForProvider(provider, userId, organizationId)
+	);
+}
+
+/**
  * The actor's own connection, never a shared one. For reading what belongs to
  * the person, such as their own OneDrive (#3507): a shared connection would
  * show someone else's files as theirs.

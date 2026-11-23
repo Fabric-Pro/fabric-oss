@@ -160,6 +160,10 @@ vi.mock("../../shared/read-only-gate", () => ({
 
 import { executeDirectChatActivity } from "../ai-execution";
 
+/** What the person reads for a provider failure the turn cannot classify. */
+const PROVIDER_FAILURE =
+	"The AI provider could not complete the request. Try again, or check the provider settings.";
+
 const USAGE = {
 	inputTokens: 900,
 	outputTokens: 40,
@@ -399,7 +403,7 @@ describe("direct chat: stream-error usage", () => {
 			});
 
 			await expect(runTurn()).resolves.toMatchObject({
-				partialError: "Provider stream failed",
+				partialError: PROVIDER_FAILURE,
 			});
 			expect(state.recordAggregateUsage).toHaveBeenCalledTimes(1);
 			const row = state.recordAggregateUsage.mock.calls[0][0];
@@ -437,7 +441,7 @@ describe("direct chat: stream-error usage", () => {
 			steps: Promise.resolve([]),
 		});
 		await expect(runTurn()).resolves.toMatchObject({
-			partialError: "Provider stream failed",
+			partialError: PROVIDER_FAILURE,
 		});
 		expect(state.recordAggregateUsage).toHaveBeenCalledTimes(1);
 		expect(state.recordAggregateUsage.mock.calls[0][0]).toMatchObject({

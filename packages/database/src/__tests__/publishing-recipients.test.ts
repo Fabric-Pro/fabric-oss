@@ -21,14 +21,20 @@ describe("selectPublishingRecipientIds", () => {
 		expect(ids.sort()).toEqual(["editor", "owner"]);
 	});
 
-	it("notifies an org member with no ProjectMember row at all", () => {
+	it("notifies the project's creator through the org role, but no other org member without a project row", () => {
+		// The project page admits an organization member with no ProjectMember row only when they
+		// created the project, so only the creator can act on its topics through the org role.
 		const ids = selectPublishingRecipientIds({
 			project: { organizationId: "org", userId: "creator" },
 			members: [],
-			orgMembers: [{ userId: "orgmember", role: "member" }],
+			orgMembers: [
+				{ userId: "creator", role: "member" },
+				{ userId: "orgmember", role: "member" },
+				{ userId: "orgadmin", role: "admin" },
+			],
 			now: NOW,
 		});
-		expect(ids).toEqual(["orgmember"]);
+		expect(ids).toEqual(["creator"]);
 	});
 
 	it("does NOT notify an org admin whose active project role is VIEWER", () => {
@@ -43,31 +49,48 @@ describe("selectPublishingRecipientIds", () => {
 		expect(ids).toEqual([]);
 	});
 
-	it("falls through to the org role when the project row is unaccepted or expired", () => {
+	it("falls through to the org role when the creator's project row is unaccepted or expired", () => {
 		// The negative side of "active". An unaccepted or expired row is not authoritative, so the
-		// user still reaches the org-role path — dropping them would silence an org admin whose
-		// project invitation merely lapsed.
+		// creator still reaches the org-role path — dropping them would silence the creator whose
+		// own project row merely lapsed.
 		const unaccepted = selectPublishingRecipientIds({
 			project: { organizationId: "org", userId: "creator" },
 			members: [
 				{
-					userId: "u",
+					userId: "creator",
 					role: "VIEWER",
 					acceptedAt: null,
 					expiresAt: null,
 				},
 			],
-			orgMembers: [{ userId: "u", role: "admin" }],
+			orgMembers: [{ userId: "creator", role: "admin" }],
 			now: NOW,
 		});
-		expect(unaccepted).toEqual(["u"]);
+		expect(unaccepted).toEqual(["creator"]);
 
 		const expired = selectPublishingRecipientIds({
 			project: { organizationId: "org", userId: "creator" },
 			members: [
 				{
-					userId: "u",
+					userId: "creator",
 					role: "VIEWER",
+					acceptedAt: new Date("2026-01-01T00:00:00.000Z"),
+					expiresAt: new Date("2026-02-01T00:00:00.000Z"),
+				},
+			],
+			orgMembers: [{ userId: "creator", role: "admin" }],
+			now: NOW,
+		});
+		expect(expired).toEqual(["creator"]);
+	});
+
+	it("does NOT fall through for an org admin who is not the creator once their project row lapses", () => {
+		const ids = selectPublishingRecipientIds({
+			project: { organizationId: "org", userId: "creator" },
+			members: [
+				{
+					userId: "u",
+					role: "EDITOR",
 					acceptedAt: new Date("2026-01-01T00:00:00.000Z"),
 					expiresAt: new Date("2026-02-01T00:00:00.000Z"),
 				},
@@ -75,7 +98,7 @@ describe("selectPublishingRecipientIds", () => {
 			orgMembers: [{ userId: "u", role: "admin" }],
 			now: NOW,
 		});
-		expect(expired).toEqual(["u"]);
+		expect(ids).toEqual([]);
 	});
 
 	it("applies PUBLISHING_TOPIC_CREATE per role, which is the only thing distinguishing it from READ", () => {
@@ -98,9 +121,9 @@ describe("selectPublishingRecipientIds", () => {
 			selectPublishingRecipientIds({
 				project,
 				members: [],
-				orgMembers: [{ userId: "u", role }],
+				orgMembers: [{ userId: "creator", role }],
 				now: NOW,
-			}).includes("u");
+			}).includes("creator");
 
 		expect(orgRoleIsNotified("viewer")).toBe(false);
 		expect(orgRoleIsNotified("member")).toBe(true);
@@ -139,7 +162,7 @@ describe("selectPublishingRecipientIds", () => {
 			selectPublishingRecipientIds({
 				project,
 				members: [],
-				orgMembers: [{ userId: "u", role: "billing" }],
+				orgMembers: [{ userId: "creator", role: "billing" }],
 				now: NOW,
 			}),
 		).toEqual([]);
@@ -148,7 +171,7 @@ describe("selectPublishingRecipientIds", () => {
 			selectPublishingRecipientIds({
 				project,
 				members: [],
-				orgMembers: [{ userId: "u", role: "MEMBER" }],
+				orgMembers: [{ userId: "creator", role: "MEMBER" }],
 				now: NOW,
 			}),
 		).toEqual([]);

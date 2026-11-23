@@ -120,6 +120,8 @@ export interface UseWorkflowTemplateStreamOptions {
 	maxIterations?: number;
 	successCriteria?: string;
 	reasoningEffort?: "none" | "light" | "medium" | "high";
+	/** The project selected for the run: its usage limits apply and count it. */
+	projectId?: string | null;
 }
 
 export function useWorkflowTemplateStream(
@@ -133,6 +135,7 @@ export function useWorkflowTemplateStream(
 		maxIterations,
 		successCriteria,
 		reasoningEffort,
+		projectId,
 	} = options;
 
 	// State
@@ -208,6 +211,7 @@ export function useWorkflowTemplateStream(
 							maxIterations,
 							successCriteria,
 							reasoningEffort,
+							projectId,
 						}),
 						signal: abortControllerRef.current.signal,
 					},
@@ -311,6 +315,7 @@ export function useWorkflowTemplateStream(
 			maxIterations,
 			successCriteria,
 			reasoningEffort,
+			projectId,
 		],
 	);
 

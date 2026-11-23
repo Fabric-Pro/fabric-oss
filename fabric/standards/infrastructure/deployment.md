@@ -76,18 +76,11 @@ export const env = envSchema.parse(process.env);
 **✅ DO**: Use .NET Aspire for local service orchestration
 
 ```bash
-# Start all services with Aspire
-./aspire.sh start
-
-# Restart after code changes
-./aspire.sh restart
-
-# View logs
-./aspire.sh logs
-
-# Stop all services
-./aspire.sh stop
+# Start all services from the repository root
+cd aspire/Fabric.AppHost && aspire run
 ```
+
+See the [Aspire CLI usage guide](../../../docs/ASPIRE_USAGE.md) for prerequisites and service management commands.
 
 ```csharp
 // aspire/Fabric.AppHost/Program.cs

@@ -460,6 +460,7 @@ async function applyRLS() {
 			{ name: "project_meeting_agenda", policy: "user_owned" }, // Generated pre-meeting agendas (#1901)
 			{ name: "parlume_meeting_session", policy: "user_owned" }, // Project-scoped Teams bot lifecycle
 			{ name: "parlume_channel_post", policy: "user_owned" },
+			{ name: "parlume_webhook_receipt", policy: "user_owned" }, // Attendee deliveries a session handled, until its webhook token is revoked
 			{ name: "parlume_suggestion", policy: "user_owned" }, // Parlume's unprompted suggestions and recaps, listed to project readers
 			{ name: "parlume_meeting_segment", policy: "user_owned" }, // Final live transcript segments
 			{ name: "parlume_meeting_turn", policy: "user_owned" }, // Project-scoped spoken agent responses
@@ -787,6 +788,10 @@ async function applyRLS() {
 				name: "pending_backlog_proposal_review_entry",
 				policy: "proposal_parent",
 			},
+			{
+				name: "proposal_item_duplicate_verdict",
+				policy: "proposal_parent",
+			}, // Inbox items' duplicate verifier verdicts
 			{ name: "document_lock", policy: "user_owned" }, // Document locks
 			{ name: "browser_task", policy: "per_user_within_org" },
 			{ name: "template_instance", policy: "user_owned" },

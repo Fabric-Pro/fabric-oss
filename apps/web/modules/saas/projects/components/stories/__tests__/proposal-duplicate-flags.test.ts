@@ -6,6 +6,7 @@ import {
 } from "../ProposalRoutingControl";
 import {
 	duplicateFlagsByIndex,
+	duplicateReviewOf,
 	duplicateRoutingAnnotation,
 	enrichOverrideFor,
 	type ProposalDuplicateStoryMatch,
@@ -35,6 +36,25 @@ describe("proposal duplicate flags", () => {
 
 		expect([...flags.keys()]).toEqual([2]);
 		expect(flags.get(2)).toEqual([MATCH]);
+	});
+
+	it("keeps the open proposal's flags and items still being checked", () => {
+		const review = duplicateReviewOf(
+			{
+				flags: [
+					{ proposalId: "open", changeIndex: 0, matches: [MATCH] },
+					{ proposalId: "other", changeIndex: 0, matches: [MATCH] },
+				],
+				checking: [
+					{ proposalId: "open", changeIndex: 3 },
+					{ proposalId: "other", changeIndex: 1 },
+				],
+			},
+			"open",
+		);
+
+		expect([...review.flags.keys()]).toEqual([0]);
+		expect([...review.checking]).toEqual([3]);
 	});
 
 	it("rounds and clamps the similarity for display", () => {

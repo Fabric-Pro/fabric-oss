@@ -116,6 +116,40 @@ const FIXTURE_ROW_WITH_ERROR = {
 	},
 };
 
+describe("AuditLogMetadataDrawer - actor", () => {
+	it("names an agent row by the agent, not as the system", () => {
+		renderWithClient({
+			...FIXTURE_ROW_NO_ERROR,
+			actorType: "agent",
+			actorEmailSnapshot: null,
+			actorNameSnapshot: "Fabric Parlume",
+			action: "project.parlume.action_executed",
+		});
+		expect(screen.getByText("Fabric Parlume")).toBeInTheDocument();
+		expect(
+			screen.queryByText("settings.auditLog.badges.system"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText("settings.auditLog.badges.actingFor"),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows whom an agent acted for under the agent's name", () => {
+		renderWithClient({
+			...FIXTURE_ROW_NO_ERROR,
+			actorType: "agent",
+			actorEmailSnapshot: "dana@example.com",
+			actorNameSnapshot: "Fabric Parlume",
+			action: "project.parlume.request_answered",
+		});
+		expect(screen.getByText("Fabric Parlume")).toBeInTheDocument();
+		// The global next-intl mock returns the key without its values.
+		expect(
+			screen.getByText("settings.auditLog.badges.actingFor"),
+		).toBeInTheDocument();
+	});
+});
+
 describe("AuditLogMetadataDrawer - correlation id", () => {
 	it("renders the correlationId block with the value", () => {
 		renderWithClient(FIXTURE_ROW_NO_ERROR);

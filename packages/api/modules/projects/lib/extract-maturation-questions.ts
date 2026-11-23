@@ -239,6 +239,8 @@ export async function extractMaturationQuestions({
 			if (existing.status === "POSSIBLY_RESOLVED") {
 				const flipped = await setQuestionStatus({
 					tenantFilter,
+					userStoryId: feature.id,
+					projectId: feature.projectId,
 					rootId: existing.id,
 					status: "OPEN",
 				});

@@ -19,7 +19,7 @@
  *   - "Story" is NOT offered as an option (DSU 2026-05-23 retirement)
  */
 
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { orpcClient } from "../../../../../shared/lib/orpc-client";
@@ -27,6 +27,7 @@ import {
 	BacklogChangeProposal,
 	type ChangeItem,
 } from "../BacklogChangeProposal";
+import { renderWithQueryClient } from "./render-with-query-client";
 
 vi.mock("../../../../../shared/lib/orpc-client", () => ({
 	orpcClient: {
@@ -75,7 +76,7 @@ function renderProposal(props: {
 	projectId?: string;
 }) {
 	const onApprove = props.onApprove ?? vi.fn();
-	render(
+	renderWithQueryClient(
 		<BacklogChangeProposal
 			summary="Test summary"
 			contextSummary="Test context"

@@ -1,5 +1,6 @@
 import { leaveParlumeMeetingBot } from "@repo/api/modules/projects/lib/parlume-attendee";
 import { finalizeParlumeSession } from "@repo/api/modules/projects/lib/parlume-finalization";
+import { announceParlumeLeaving } from "@repo/api/modules/projects/lib/parlume-leave";
 import { resolveParlumeAttendeeSettings } from "@repo/api/modules/projects/lib/parlume-provider-settings";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
@@ -75,6 +76,9 @@ export async function POST(request: NextRequest) {
 		where: { id: session.id, endReason: null },
 		data: { endReason: "MAX_DURATION" },
 	});
+	if (session.status === "ACTIVE") {
+		await announceParlumeLeaving(session.id);
+	}
 	const leaveClaimed = await db.parlumeMeetingSession.updateMany({
 		where: {
 			id: session.id,

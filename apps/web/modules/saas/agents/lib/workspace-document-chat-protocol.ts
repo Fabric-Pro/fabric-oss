@@ -13,7 +13,11 @@ import { z } from "zod";
  *   text message.
  * - A generated answer's served identity arrives as CUSTOM
  *   `fabric.library-chat.model` after its text ends.
- * - Nothing is saved: the thread lives as long as the dialog.
+ * - For an organization's workspace the exchange is saved to the person's
+ *   document conversation, as the route saves it, and the run's question is
+ *   answered with that saved history, not the messages it sent; CUSTOM
+ *   `fabric.library-chat.history` says whether the save worked. A personal
+ *   workspace saves nothing: the thread lives as long as the dialog.
  */
 
 export const LIBRARY_CHAT_AGENT_ID = "library-chat";
@@ -38,7 +42,11 @@ export type WorkspaceDocumentSource = z.infer<
 export const LIBRARY_CHAT_EVENT = {
 	sources: runtimeCustomEventName(LIBRARY_CHAT_AGENT_ID, "sources"),
 	model: runtimeCustomEventName(LIBRARY_CHAT_AGENT_ID, "model"),
+	history: runtimeCustomEventName(LIBRARY_CHAT_AGENT_ID, "history"),
 } as const;
+
+/** The value of `LIBRARY_CHAT_EVENT.history`. */
+export const libraryHistoryEventSchema = z.object({ persisted: z.boolean() });
 
 /** The value of `LIBRARY_CHAT_EVENT.sources`. */
 export const librarySourcesEventSchema = z.object({

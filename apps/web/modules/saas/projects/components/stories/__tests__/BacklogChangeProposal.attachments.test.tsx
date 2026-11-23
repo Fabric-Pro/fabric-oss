@@ -15,7 +15,7 @@ import type {
 	AttachmentWarning,
 	PendingAttachmentRef,
 } from "@repo/integrations";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -23,6 +23,7 @@ import {
 	type ChangeItem,
 	formatWarningReasons,
 } from "../BacklogChangeProposal";
+import { renderWithQueryClient } from "./render-with-query-client";
 
 // `orpcClient` is referenced by the parent for the optional PM-sync
 // conflict check; tests never exercise that path, but the import must
@@ -89,7 +90,7 @@ function buildWarning(
 function renderProposal(
 	props: Partial<React.ComponentProps<typeof BacklogChangeProposal>> = {},
 ) {
-	return render(
+	return renderWithQueryClient(
 		<BacklogChangeProposal
 			summary="Test proposal"
 			contextSummary="Captured from a Slack thread"

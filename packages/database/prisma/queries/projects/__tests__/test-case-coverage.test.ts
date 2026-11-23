@@ -8,9 +8,9 @@
  *     exclusion, and the identifier-prefix-normalizing search);
  *   - the per-story tally: zero-fill, result bucketing, distinct AC refs,
  *     coverageState;
- *   - the ordering: the default stable page, and the uncovered-first rank the
- *     picker asks for — including that it holds across pagination rather than
- *     reordering the page in hand;
+ *   - the ordering: the default stable page, the uncovered-first rank, and the
+ *     recent-first rank the picker asks for — including that each holds across
+ *     pagination rather than reordering the page in hand;
  *   - that it stays BATCHED — a fixed query count no matter how many features
  *     are on the page (the whole point of the helper).
  *
@@ -538,6 +538,83 @@ describe("listFeatureCoverage — uncovered-first rank", () => {
 		// not whichever bucket answered this page.
 		const totalWhere = dbMock.userStory.count.mock.calls.at(-1)?.[0].where;
 		expect(totalWhere).not.toHaveProperty("testCaseLinks");
+	});
+});
+
+describe("listFeatureCoverage — recent-first rank", () => {
+	type Activity = { id: string; createdAt: Date; lastEditedAt: Date | null };
+
+	// Newest activity first: n1 was never edited but was created after e1's
+	// last edit, so it leads. e1 is the only covered row.
+	const activity: Activity[] = [
+		{
+			id: "e1",
+			createdAt: new Date("2024-01-01"),
+			lastEditedAt: new Date("2024-03-01"),
+		},
+		{
+			id: "e2",
+			createdAt: new Date("2024-01-02"),
+			lastEditedAt: new Date("2024-02-01"),
+		},
+		{ id: "n1", createdAt: new Date("2024-04-01"), lastEditedAt: null },
+	];
+
+	/**
+	 * Answers by predicate: the ranking's two partition reads (edited, never
+	 * edited) and the read of the ranked page's rows, which comes back in no
+	 * particular order.
+	 */
+	function mockRecentReads() {
+		dbMock.userStory.findMany.mockImplementation((args) => {
+			if (args.where.id) {
+				return Promise.resolve(
+					[...args.where.id.in].reverse().map((id) => story(id)),
+				);
+			}
+			const edited = args.where.lastEditedAt !== null;
+			return Promise.resolve(
+				activity
+					.filter((row) => (row.lastEditedAt !== null) === edited)
+					.slice(0, args.take),
+			);
+		});
+		dbMock.userStory.count.mockResolvedValue(activity.length);
+		dbMock.testCaseWorkItemLink.findMany.mockResolvedValue([
+			link("e1", "PASSED"),
+		]);
+	}
+
+	it("ranks by last edit, or creation for an unedited item, whatever the coverage", async () => {
+		mockRecentReads();
+
+		const { items } = await listFeatureCoverage({
+			projectId: "p1",
+			order: "RECENT_FIRST",
+		});
+
+		expect(items.map((i) => i.storyId)).toEqual(["n1", "e1", "e2"]);
+		expect(items.map((i) => i.coverageState)).toEqual([
+			"UNCOVERED",
+			"COVERED",
+			"UNCOVERED",
+		]);
+	});
+
+	it("pages by the same rank", async () => {
+		mockRecentReads();
+
+		const { items, total } = await listFeatureCoverage({
+			projectId: "p1",
+			order: "RECENT_FIRST",
+			limit: 1,
+			offset: 1,
+		});
+
+		expect(items.map((i) => i.storyId)).toEqual(["e1"]);
+		expect(total).toBe(3);
+		// The ranking reads deep enough to cover the offset.
+		expect(pageCall(0).take).toBe(2);
 	});
 });
 

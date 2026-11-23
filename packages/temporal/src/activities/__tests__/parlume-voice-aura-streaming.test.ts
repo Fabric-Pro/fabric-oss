@@ -40,7 +40,10 @@ vi.mock("@repo/logs", () => ({
 }));
 vi.mock("@temporalio/activity", () => ({
 	Context: {
-		current: () => ({ cancellationSignal: new AbortController().signal }),
+		current: () => ({
+			cancellationSignal: new AbortController().signal,
+			heartbeat: vi.fn(),
+		}),
 	},
 }));
 vi.mock("../parlume-agent", () => ({
@@ -56,6 +59,9 @@ vi.mock("../parlume-actions", () => ({
 }));
 vi.mock("../project-metadata", () => ({
 	retrieveProjectContextsActivity: async () => null,
+}));
+vi.mock("../parlume-turn-audit", () => ({
+	recordParlumeTurnAnswered: vi.fn(),
 }));
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -86,7 +92,6 @@ function stubBufferingEdge() {
 			if (action === "verify-generation") {
 				return Response.json({
 					current: true,
-					muted: false,
 					chatAvailable: true,
 				});
 			}
@@ -178,6 +183,7 @@ describe("Parlume speech through an edge that holds request bodies", () => {
 			voiceGeneration: 3,
 			speakerId: "speaker",
 			speakerName: "Alex",
+			requesterUserId: "user",
 			requestText: "What is open on the roadmap?",
 			replyChannel: "VOICE",
 			session: {

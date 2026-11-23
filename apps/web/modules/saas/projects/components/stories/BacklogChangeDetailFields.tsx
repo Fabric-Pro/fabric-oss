@@ -10,7 +10,7 @@ import { FieldAcceptToggle } from "./FieldAcceptToggle";
  * be valid HTML5 but is fragile across older a11y tooling. Lowercase +
  * hyphenate to be safe.
  */
-export function slugifyLabel(label: string): string {
+function slugifyLabel(label: string): string {
 	return label
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, "-")

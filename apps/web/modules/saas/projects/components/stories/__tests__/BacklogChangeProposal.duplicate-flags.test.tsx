@@ -23,12 +23,34 @@ import type { LockedReason } from "../proposal-item-state";
 
 const h = vi.hoisted(() => ({
 	rejectItem: vi.fn().mockResolvedValue({ success: true }),
+	mergeIntoItem: vi
+		.fn()
+		.mockResolvedValue({ id: "prop-open", changeIndex: 1 }),
+	// The matched ticket, and the item merged into it.
+	previewEnrichment: vi.fn(async () => ({
+		targetId: "story-1",
+		targetIdentifier: "F-12",
+		targetTitle: "Export throttling",
+		targetClosed: false,
+		currentDescription: "Throttle large exports.",
+		currentAcceptanceCriteria: "",
+		currentPriority: "P2_MEDIUM",
+		currentSize: null,
+		mergedDescription: "Throttle large exports.\n\nAlpha, described.",
+		mergedAcceptanceCriteria: "",
+		fallbackUsed: false,
+	})),
 }));
 
 vi.mock("../../../../../shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: {
-			backlog: { proposals: { rejectItem: h.rejectItem } },
+			backlog: {
+				proposals: {
+					rejectItem: h.rejectItem,
+					mergeIntoItem: h.mergeIntoItem,
+				},
+			},
 			stories: {
 				checkPmSyncConflicts: vi
 					.fn()
@@ -55,7 +77,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				previewEnrichment: {
 					queryOptions: (opts: Record<string, unknown>) => ({
 						queryKey: ["stories.previewEnrichment", opts],
-						queryFn: async () => null,
+						queryFn: () => h.previewEnrichment(),
 					}),
 				},
 			},
@@ -114,6 +136,7 @@ const STORY_MATCH: ProposalDuplicateMatch = {
 function renderWithFlags(
 	flags: Map<number, ProposalDuplicateMatch[]>,
 	lockedReasons: ReadonlyMap<number, LockedReason> = new Map(),
+	duplicateLoading = false,
 ) {
 	const onApproveItem = vi.fn();
 	const onOpenProposal = vi.fn();
@@ -139,6 +162,7 @@ function renderWithFlags(
 					onApproveItem,
 					onRejectItem: vi.fn(),
 					duplicateFlags: flags,
+					duplicateLoading,
 					onOpenProposal,
 				}}
 			/>
@@ -176,6 +200,19 @@ describe("BacklogChangeProposal — possible duplicates", () => {
 		).toBeNull();
 	});
 
+	it("says every open item is still being checked until the first answer arrives", () => {
+		renderWithFlags(
+			new Map(),
+			new Map<number, LockedReason>([[2, "applied"]]),
+			true,
+		);
+
+		// Alpha and Bravo are open; Charlie is resolved and shows no note.
+		expect(
+			screen.getAllByText("Still checking for possible duplicates…"),
+		).toHaveLength(2);
+	});
+
 	it("shows no note on a resolved item", () => {
 		renderWithFlags(
 			new Map([[0, [STORY_MATCH]]]),
@@ -204,7 +241,9 @@ describe("BacklogChangeProposal — possible duplicates", () => {
 		expect(
 			within(noteFor("Alpha")).getByText("Enrich target"),
 		).toBeInTheDocument();
-		await user.click(screen.getByRole("button", { name: "Approve Alpha" }));
+		const approve = screen.getByRole("button", { name: "Approve Alpha" });
+		await waitFor(() => expect(approve).toBeEnabled());
+		await user.click(approve);
 
 		expect(onApproveItem).toHaveBeenCalledOnce();
 		const [change, , , index] = onApproveItem.mock.calls[0] as [
@@ -217,7 +256,37 @@ describe("BacklogChangeProposal — possible duplicates", () => {
 		expect(change.action).toBe("update");
 		expect(change.existingId).toBe("story-1");
 		expect(change.existingIdentifier).toBe("F-12");
-		expect(change.description?.to).toBe("Alpha, described.");
+		// The merge the reviewer was shown is what is applied.
+		expect(change.title).toEqual({
+			from: "Export throttling",
+			to: "Export throttling",
+		});
+		expect(change.description).toEqual({
+			from: "Throttle large exports.",
+			to: "Throttle large exports.\n\nAlpha, described.",
+		});
+		expect(change.structurePreserved).toBe(true);
+	});
+
+	it("holds back approval until the merge into the matched ticket is read", async () => {
+		const user = userEvent.setup();
+		h.previewEnrichment.mockImplementationOnce(() => new Promise(() => {}));
+		renderWithFlags(new Map([[0, [STORY_MATCH]]]));
+
+		await user.click(
+			within(noteFor("Alpha")).getByRole("button", {
+				name: "Enrich F-12 with Alpha instead of creating a new ticket",
+			}),
+		);
+
+		expect(
+			screen.getByText("Working out what this item changes on F-12…"),
+		).toBeInTheDocument();
+		const approve = screen.getByRole("button", { name: "Approve Alpha" });
+		expect(approve).toBeDisabled();
+		expect(approve).toHaveAccessibleDescription(
+			"Wait for the summary of what this item changes on its target ticket.",
+		);
 	});
 
 	it("tells a sibling in the same proposal apart, and opens another proposal on request", async () => {
@@ -244,14 +313,17 @@ describe("BacklogChangeProposal — possible duplicates", () => {
 		expect(
 			within(note).getByText("Item 3 of this proposal"),
 		).toBeInTheDocument();
-		// Both actions belong to the other proposal's item; the sibling
-		// has none.
+		// The sibling can be merged or moved to Rejected, but there is no
+		// other proposal to open for it.
 		expect(
 			within(note)
 				.getAllByRole("button")
 				.map((button) => button.getAttribute("aria-label")),
 		).toEqual([
+			"Merge the matched item Charlie into Bravo",
+			"Move the matched item Charlie to Rejected",
 			"Open the proposal with Bravo again",
+			"Merge the matched item Bravo again into Bravo",
 			"Move the matched item Bravo again to Rejected",
 		]);
 
@@ -293,11 +365,75 @@ describe("BacklogChangeProposal — possible duplicates", () => {
 		);
 	});
 
-	it("shows a judge-confirmed match below 70% like any other", () => {
-		renderWithFlags(new Map([[0, [{ ...STORY_MATCH, similarity: 0.55 }]]]));
+	it("merges another proposal's matched item into this item and drops it from the note", async () => {
+		const user = userEvent.setup();
+		renderWithFlags(new Map([[1, [OTHER_PROPOSAL_ITEM]]]));
+
+		await user.click(
+			within(noteFor("Bravo")).getByRole("button", {
+				name: "Merge the matched item Bravo again into Bravo",
+			}),
+		);
+
+		// The server reads the matched item's text; the client names it only.
+		expect(h.mergeIntoItem).toHaveBeenCalledWith({
+			projectId: "project_1",
+			organizationId: null,
+			proposalId: "prop-open",
+			changeIndex: 1,
+			source: { proposalId: "prop-other", changeIndex: 0 },
+		});
+		await waitFor(() =>
+			expect(
+				screen.queryByRole("region", {
+					name: "Possible duplicate of Bravo",
+				}),
+			).toBeNull(),
+		);
+		expect(toast.success).toHaveBeenCalledWith(
+			"Merged “Bravo again” into “Bravo”",
+			expect.anything(),
+		);
+	});
+
+	it("offers no merge on a proposal that is not in review", () => {
+		const queryClient = new QueryClient();
+		render(
+			<QueryClientProvider client={queryClient}>
+				<BacklogChangeProposal
+					panel="feature-proposals"
+					summary="Captured from a channel"
+					contextSummary="Weekly planning"
+					changes={CHANGES}
+					hasPMTool={false}
+					projectId="project_1"
+					proposalId="prop-open"
+					proposalStatus="FAILED"
+					onApprove={vi.fn()}
+					onReject={vi.fn()}
+					itemReview={{
+						lockedReasons: new Map(),
+						onApproveItem: vi.fn(),
+						onRejectItem: vi.fn(),
+						duplicateFlags: new Map([[1, [OTHER_PROPOSAL_ITEM]]]),
+						onOpenProposal: vi.fn(),
+					}}
+				/>
+			</QueryClientProvider>,
+		);
+
+		expect(
+			within(noteFor("Bravo")).queryByRole("button", {
+				name: /^Merge the matched item/,
+			}),
+		).toBeNull();
+	});
+
+	it("shows a match the roadmap rule relaxed for a close capture time like any other", () => {
+		renderWithFlags(new Map([[0, [{ ...STORY_MATCH, similarity: 0.68 }]]]));
 
 		const note = noteFor("Alpha");
-		expect(within(note).getByText("55% similar")).toBeInTheDocument();
+		expect(within(note).getByText("68% similar")).toBeInTheDocument();
 		expect(
 			within(note).getByRole("button", {
 				name: "Enrich F-12 with Alpha instead of creating a new ticket",
@@ -305,12 +441,10 @@ describe("BacklogChangeProposal — possible duplicates", () => {
 		).toBeEnabled();
 	});
 
-	it("says the item is merged at apply once it is re-routed to the matched ticket", async () => {
+	it("summarises what the item changes on the matched ticket once it is re-routed there", async () => {
 		const user = userEvent.setup();
 		renderWithFlags(new Map([[0, [STORY_MATCH]]]));
-		expect(
-			screen.queryByText(/merged into the ticket when applied/),
-		).toBeNull();
+		expect(screen.queryByTestId("proposal-update-summary")).toBeNull();
 
 		await user.click(
 			within(noteFor("Alpha")).getByRole("button", {
@@ -318,10 +452,11 @@ describe("BacklogChangeProposal — possible duplicates", () => {
 			}),
 		);
 
+		const summary = await screen.findByTestId("proposal-update-summary");
 		expect(
-			screen.getByText(
-				"The proposal is merged into the ticket when applied; the changes are listed after apply.",
-			),
+			within(summary).getByText("Proposed changes"),
 		).toBeInTheDocument();
+		expect(within(summary).getByText("Description")).toBeInTheDocument();
+		expect(within(summary).queryByText("Title")).toBeNull();
 	});
 });

@@ -29,6 +29,8 @@ interface UseUpdateWithContextOptions {
 	storyId: string;
 	organizationId: string | null;
 	editor: ReturnType<typeof useEditor> | null;
+	/** Whether the member may edit the story; the editor ends read-only when not. */
+	canEdit: boolean;
 	parseContent: (markdown: string) => {
 		description: string;
 		acceptanceCriteria: string;
@@ -52,6 +54,7 @@ export function useUpdateWithContext({
 	storyId,
 	organizationId,
 	editor,
+	canEdit,
 	parseContent,
 	getEditorMarkdownForSave,
 	fromMarkdown,
@@ -64,7 +67,7 @@ export function useUpdateWithContext({
 	const elapsedSeconds = useElapsedTimer(phase === "loading");
 
 	const start = useCallback(async () => {
-		if (!editor) {
+		if (!editor || !canEdit) {
 			return;
 		}
 
@@ -110,7 +113,7 @@ export function useUpdateWithContext({
 
 			if (!result.hasRelevantContext) {
 				// No changes — restore and inform user
-				editor.setEditable(true);
+				editor.setEditable(canEdit);
 				setPhase("idle");
 				toast.info(result.summary || "No relevant context found.");
 				return;
@@ -145,7 +148,7 @@ export function useUpdateWithContext({
 			}
 			setPhase("diff");
 		} catch (err) {
-			editor.setEditable(true);
+			editor.setEditable(canEdit);
 			setPhase("idle");
 			const msg =
 				err instanceof Error
@@ -155,6 +158,7 @@ export function useUpdateWithContext({
 		}
 	}, [
 		editor,
+		canEdit,
 		projectId,
 		storyId,
 		organizationId,
@@ -211,7 +215,7 @@ export function useUpdateWithContext({
 			// Reset state and restore editor
 			setPhase("idle");
 			setPreview(null);
-			editor.setEditable(true);
+			editor.setEditable(canEdit);
 			toast.success("Feature updated with latest context");
 			onSaved();
 
@@ -238,6 +242,7 @@ export function useUpdateWithContext({
 		}
 	}, [
 		editor,
+		canEdit,
 		preview,
 		projectId,
 		storyId,
@@ -256,7 +261,7 @@ export function useUpdateWithContext({
 		// Reset state first so the UI unblocks even if setContent throws
 		setPhase("idle");
 		setPreview(null);
-		editor.setEditable(true);
+		editor.setEditable(canEdit);
 
 		// Restore original content. `baselineRef.current` is stored,
 		// hand-authored user content (from `getEditorMarkdownForSave`) — opt
@@ -270,7 +275,7 @@ export function useUpdateWithContext({
 			// Table structure error — editor is already editable and
 			// phase is idle, so the user can continue editing manually
 		}
-	}, [editor, fromMarkdown]);
+	}, [editor, canEdit, fromMarkdown]);
 
 	// Time-based stage heuristic — the server doesn't emit progress, so we
 	// approximate from elapsed time. RAG fetch + live-integration fetch

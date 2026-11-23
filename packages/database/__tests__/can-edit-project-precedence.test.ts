@@ -64,6 +64,14 @@ function orgProject() {
 	});
 }
 
+/** An organization project the caller created: the org role is theirs. */
+function orgProjectCreatedByCaller() {
+	mocks.projectFindUnique.mockResolvedValue({
+		userId: USER_ID,
+		organizationId: ORG_ID,
+	});
+}
+
 beforeEach(() => {
 	mocks.projectFindUnique.mockReset();
 	mocks.memberFindFirst.mockReset();
@@ -131,12 +139,20 @@ describe("canEditProject precedence", () => {
 		expect(mocks.memberFindFirst).not.toHaveBeenCalled();
 	});
 
-	it("Path B: org admin with no ProjectMember row is still granted", async () => {
-		orgProject();
+	it("Path B: the project's creator, an org admin with no ProjectMember row, is granted", async () => {
+		orgProjectCreatedByCaller();
 		mocks.projectMemberFindUnique.mockResolvedValue(null);
 		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
 
 		expect(await canEditProject(PROJECT_ID, USER_ID)).toBe(true);
+	});
+
+	it("Path B: an org admin who did not create the project and has no row is denied, as at the gate", async () => {
+		orgProject();
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+
+		expect(await canEditProject(PROJECT_ID, USER_ID)).toBe(false);
 	});
 
 	it("Path C grants: project EDITOR without org membership (external guest)", async () => {
@@ -152,8 +168,8 @@ describe("canEditProject precedence", () => {
 		expect(mocks.memberFindFirst).not.toHaveBeenCalled();
 	});
 
-	it("expired ProjectMember row is treated as absent → org-role fallback grants", async () => {
-		orgProject();
+	it("expired ProjectMember row is treated as absent → the creator's org-role fallback grants", async () => {
+		orgProjectCreatedByCaller();
 		mocks.projectMemberFindUnique.mockResolvedValue({
 			role: "VIEWER",
 			acceptedAt: new Date(),
@@ -172,7 +188,7 @@ describe("canEditProject precedence", () => {
 		try {
 			const now = new Date("2026-08-16T12:00:00.000Z");
 			vi.setSystemTime(now);
-			orgProject();
+			orgProjectCreatedByCaller();
 			mocks.projectMemberFindUnique.mockResolvedValue({
 				role: "EDITOR",
 				acceptedAt: new Date("2026-08-01T00:00:00.000Z"),
@@ -189,8 +205,8 @@ describe("canEditProject precedence", () => {
 		}
 	});
 
-	it("pending (unaccepted) ProjectMember row is treated as absent → org-role fallback", async () => {
-		orgProject();
+	it("pending (unaccepted) ProjectMember row is treated as absent → the creator's org-role fallback", async () => {
+		orgProjectCreatedByCaller();
 		mocks.projectMemberFindUnique.mockResolvedValue({
 			role: "EDITOR",
 			acceptedAt: null,
@@ -280,16 +296,24 @@ describe("canCreateProjectStory walks the SAME ladder", () => {
 		expect(mocks.memberFindFirst).not.toHaveBeenCalled();
 	});
 
-	it("falls back to the org role when no active project row exists", async () => {
-		orgProject();
+	it("falls back to the creator's org role when no active project row exists", async () => {
+		orgProjectCreatedByCaller();
 		mocks.projectMemberFindUnique.mockResolvedValue(null);
 		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
 
 		expect(await canCreateProjectStory(PROJECT_ID, USER_ID)).toBe(true);
 	});
 
-	it("treats an expired project row as no row, not as a denial", async () => {
+	it("denies an org admin who cannot open the project, with no project row", async () => {
 		orgProject();
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+
+		expect(await canCreateProjectStory(PROJECT_ID, USER_ID)).toBe(false);
+	});
+
+	it("treats an expired project row as no row, not as a denial", async () => {
+		orgProjectCreatedByCaller();
 		mocks.projectMemberFindUnique.mockResolvedValue({
 			role: "VIEWER",
 			acceptedAt: new Date("2020-01-01"),
@@ -341,8 +365,8 @@ describe("canCreateProjectInstructions", () => {
 		);
 	});
 
-	it("grants a plain org member with no project row (org role member holds instruction:create)", async () => {
-		orgProject();
+	it("grants the project's creator as a plain org member with no project row (org role member holds instruction:create)", async () => {
+		orgProjectCreatedByCaller();
 		mocks.projectMemberFindUnique.mockResolvedValue(null);
 		mocks.memberFindFirst.mockResolvedValue({ role: "member" });
 		expect(await canCreateProjectInstructions(PROJECT_ID, USER_ID)).toBe(

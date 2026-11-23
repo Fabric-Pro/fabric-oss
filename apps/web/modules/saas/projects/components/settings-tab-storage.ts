@@ -23,7 +23,6 @@ export const KNOWN_SETTINGS_TABS: readonly SettingsTab[] = [
 
 /** Which flag-gated sub-tabs the current viewer may actually land on. */
 export type SettingsTabGates = {
-	pmFieldMappingEnabled: boolean;
 	/** `NEXT_PUBLIC_FABRIC_FEATURE_TEST_CASES` — gates Environments and Testing. */
 	qaEnabled: boolean;
 	/** `PUBLISHING_SUITE` — gates Publishing Suite. Resolved per organization
@@ -55,13 +54,10 @@ export function resolveStoredSettingsTab(
 		return null;
 	}
 	if ((KNOWN_SETTINGS_TABS as readonly string[]).includes(stored)) {
-		// Never land on the flag-gated PM tab when the flag is off.
-		if (stored === "project-management" && !gates.pmFieldMappingEnabled) {
-			return "development";
-		}
-		// Same for the QA pair. Both render a full configuration surface for a
-		// page the flag hides and an API that refuses the caller server-side, so
-		// a stale sessionStorage value must not reopen them.
+		// Never land on the QA pair when the flag is off. Both render a full
+		// configuration surface for a page the flag hides and an API that
+		// refuses the caller server-side, so a stale sessionStorage value must
+		// not reopen them.
 		if (
 			(stored === "environments" || stored === "testing") &&
 			!gates.qaEnabled

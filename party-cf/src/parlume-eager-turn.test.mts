@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { connectedMeeting, flush, sleep } from "./parlume-meeting-harness.mts";
+import {
+	connectedMeeting,
+	flush,
+	plain,
+	say,
+	sleep,
+	slowAura,
+} from "./parlume-meeting-harness.mts";
 
 const request = "Hey Fabric, what is the plan?";
 
@@ -69,6 +76,32 @@ test("a guess Flux takes back stops the early request, and the final one is aske
 	);
 });
 
+// Only a stop ends an answer Parlume has begun to speak.
+test("once the early answer is heard, a guess Flux takes back no longer stops it, and its final is not asked again", async () => {
+	const harness = await connectedMeeting({ aura: slowAura });
+	const keepAlive = setInterval(() => {}, 1_000);
+	await heard(harness, "EagerEndOfTurn", request);
+	const generation = String(turns(harness)[0]?.body.voiceGeneration);
+	const playing = harness.bridge.onRequest(
+		say(["The plan is ready."], {}, generation),
+	);
+	await sleep(150);
+
+	await heard(harness, "TurnResumed", "");
+	await heard(
+		harness,
+		"EndOfTurn",
+		"Hey Fabric, what is the plan for the release?",
+	);
+	const result = plain(await (await playing).json());
+	clearInterval(keepAlive);
+
+	assert.equal(result.played, true);
+	assert.equal(interrupts(harness).length, 0);
+	assert.equal(turns(harness).length, 1);
+	await harness.bridge.onClose(harness.bot, 1000, "done");
+});
+
 test("a final transcript that differs from the early one replaces its request", async () => {
 	const harness = await connectedMeeting();
 	await heard(harness, "EagerEndOfTurn", request);
@@ -92,6 +125,44 @@ test("chat post commands and dictation wait for the final transcript", async () 
 	await heard(harness, "EagerEndOfTurn", "Hey Fabric, go P1");
 	await heard(harness, "EagerEndOfTurn", "Hey Fabric, write in the chat");
 	assert.equal(turns(harness).length, 0);
+});
+
+// "go P99" for a post the meeting does not have once cancelled the turn being
+// answered and asked Fabric "go P99" as a request.
+test("a spoken post command for a post the meeting does not have is answered aloud and leaves the turn being answered alone", async () => {
+	const harness = await connectedMeeting();
+	await heard(harness, "EndOfTurn", request);
+	assert.equal(turns(harness).length, 1);
+
+	await heard(harness, "EndOfTurn", "Hey Fabric, go P99");
+	const spoken = () =>
+		harness.auraCalls
+			.map((call) => (call.inputs as { text: string }).text)
+			.join(" ");
+	await sleep(100);
+	assert.equal(spoken(), "", "the line waits for the answer being prepared");
+
+	// The answer plays in real time on the outlet, whose timers do not keep
+	// the test process alive.
+	const keepAlive = setInterval(() => {}, 1_000);
+	const answer = await harness.bridge
+		.onRequest(say(["The plan is ready."], {}, "1"))
+		.finally(() => clearInterval(keepAlive));
+	assert.equal(plain(await answer.json()).played, true);
+	for (let wait = 0; wait < 100 && !spoken().includes("P99"); wait++) {
+		await sleep(10);
+	}
+
+	assert.equal(turns(harness).length, 1, "nothing is asked of Fabric");
+	assert.deepEqual(
+		interrupts(harness),
+		[],
+		"the turn being answered is not cancelled",
+	);
+	assert.match(
+		spoken(),
+		/^The plan is ready\. P99: There is no P99 in this meeting's chat\. Check the tag on the post you mean\./,
+	);
 });
 
 test("a request is handed to Fabric without waiting for the transcript segments still being posted", async () => {

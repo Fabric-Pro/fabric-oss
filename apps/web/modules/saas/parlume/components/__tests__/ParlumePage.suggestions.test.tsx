@@ -159,6 +159,35 @@ describe("ParlumePage suggestions", () => {
 		).toBeInTheDocument();
 	});
 
+	// The tag is kept when the post is sent; only the chat's echo shows it.
+	it("says Posted as for a suggestion the chat showed, and Not shown in the chat for one it never did", async () => {
+		mocks.listSessions.mockResolvedValue(
+			page([liveSession({ suggestionsEnabled: true })]),
+		);
+		mocks.suggestions.mockResolvedValue({
+			items: [
+				suggestion({
+					id: "shown",
+					chatTag: "P2",
+					chatDelivery: "SHOWN",
+				}),
+				suggestion({
+					id: "unshown",
+					chatTag: "P3",
+					chatDelivery: "NOT_SHOWN",
+				}),
+			],
+		});
+		showPage();
+
+		const list = within(await suggestionsSection());
+		const items = await list.findAllByRole("listitem");
+		expect(within(items[0]).getByText(/Posted as P2/)).toBeInTheDocument();
+		expect(
+			within(items[1]).getByText(/Not shown in the chat \(P3\)/),
+		).toBeInTheDocument();
+	});
+
 	it("shows no suggestions list for a live session with suggestions off", async () => {
 		mocks.listSessions.mockResolvedValue(
 			page([liveSession({ suggestionsEnabled: false })]),

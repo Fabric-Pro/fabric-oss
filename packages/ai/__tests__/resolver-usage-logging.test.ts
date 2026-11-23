@@ -447,6 +447,8 @@ describe("gateway flex resolution", () => {
 		// "Trigger now" starts this job without an interactive marker, so it stays off.
 		["teams-channel-monitor", undefined, false, undefined, undefined],
 		["recurring-error-scan", undefined, false, undefined, "flex"],
+		// A background start that used to carry no job type, and so never flexed (Fizzy #3538).
+		["duplicate-detection", undefined, false, undefined, undefined],
 		["publishing-suggestion", true, false, undefined, undefined],
 		["publishing-suggestion", false, true, undefined, undefined],
 		["other-job", undefined, false, undefined, undefined],

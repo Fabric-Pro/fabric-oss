@@ -17,7 +17,11 @@ import type {
 	DocumentAssistantVisibility,
 	DocumentRefKind,
 } from "../generated/client";
-import { createAgentConversation } from "./agent-conversations";
+import {
+	createAgentConversation,
+	lockConversationRow,
+} from "./agent-conversations";
+import { deleteFinishedTurnsOfConversations } from "./conversation-turns";
 
 /**
  * One of:
@@ -528,11 +532,23 @@ export interface ArchiveDocumentAssistantConversationInput {
 	id: string;
 }
 
+/**
+ * Archives the thread and its conversation. The conversation row is locked
+ * before the join row is written: `appendTurnForDocument` locks the
+ * conversation first and then updates the join, so taking the two rows in
+ * the opposite order here could deadlock with a turn being saved.
+ */
 export async function archiveDocumentAssistantConversation({
 	id,
 }: ArchiveDocumentAssistantConversationInput) {
 	const now = new Date();
 	return db.$transaction(async (tx) => {
+		const { conversationId } =
+			await tx.documentAssistantConversation.findUniqueOrThrow({
+				where: { id },
+				select: { conversationId: true },
+			});
+		await lockConversationRow(tx, conversationId);
 		const join = await tx.documentAssistantConversation.update({
 			where: { id },
 			data: { archivedAt: now },
@@ -557,7 +573,10 @@ export interface DeleteDocumentAssistantConversationByConversationIdInput {
 export async function deleteDocumentAssistantConversationByConversationId({
 	conversationId,
 }: DeleteDocumentAssistantConversationByConversationIdInput) {
-	await db.agentConversation.delete({ where: { id: conversationId } });
+	await db.$transaction(async (tx) => {
+		await deleteFinishedTurnsOfConversations(tx, [conversationId]);
+		await tx.agentConversation.delete({ where: { id: conversationId } });
+	});
 }
 
 export interface CountDocumentAssistantConversationsInLast24hInput {

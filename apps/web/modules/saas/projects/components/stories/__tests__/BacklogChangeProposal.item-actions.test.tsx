@@ -213,7 +213,7 @@ describe("BacklogChangeProposal — per-item actions", () => {
 		await user.click(
 			screen.getByRole("button", { name: "Move Charlie to Rejected" }),
 		);
-		expect(onRejectItem).toHaveBeenCalledWith(2, "Charlie", false);
+		expect(onRejectItem).toHaveBeenCalledWith(2, "Charlie");
 	});
 
 	it("blocks Approve only on the item whose routing is unfinished", async () => {
@@ -299,6 +299,60 @@ describe("BacklogChangeProposal — resolved items", () => {
 		).toBeNull();
 	});
 
+	it("shows an item restored from Rejected with a link to the ticket it created", () => {
+		renderInboxProposal(
+			{},
+			{
+				lockedReasons: locked(2, "restored"),
+				lockedTargets: new Map([[2, "story-charlie"]]),
+			},
+		);
+		expect(screen.getByText("Restored from Rejected")).toBeInTheDocument();
+		expect(screen.queryByText("Moved to Rejected")).toBeNull();
+		expect(
+			screen.getByRole("checkbox", {
+				name: "Charlie (restored from Rejected)",
+			}),
+		).toBeDisabled();
+		expect(
+			screen.getByRole("link", {
+				name: "Open the ticket for Charlie in a new tab",
+			}),
+		).toHaveAttribute(
+			"href",
+			"/app/example-org/projects/project_1/stories/story-charlie",
+		);
+	});
+
+	it("shows a restored update whose restore wrote no ticket as restored, not as proposed and applied", () => {
+		renderInboxProposal(
+			{
+				changes: [
+					feature("Alpha"),
+					feature("Bravo"),
+					feature("Charlie", {
+						action: "update",
+						existingId: "story-charlie",
+						existingIdentifier: "12",
+						description: {
+							from: "Charlie, as it was.",
+							to: "Charlie, described.",
+						},
+					}),
+				],
+			},
+			{ lockedReasons: locked(2, "restored") },
+		);
+		expect(screen.getByText("Restored from Rejected")).toBeInTheDocument();
+		expect(
+			screen.queryByRole("link", { name: /Open the ticket for Charlie/ }),
+		).toBeNull();
+		expect(screen.queryByText("As proposed")).toBeNull();
+		expect(
+			screen.queryByText(/recorded in the ticket's Decision Log/),
+		).toBeNull();
+	});
+
 	it("drops an item resolved while open from the selection, keeping its siblings' choices", async () => {
 		const user = userEvent.setup();
 		const { rerenderWith } = renderInboxProposal();
@@ -321,6 +375,39 @@ describe("BacklogChangeProposal — resolved items", () => {
 		expect(
 			screen.getByRole("checkbox", { name: "Toggle Charlie" }),
 		).not.toBeChecked();
+	});
+
+	it("moves focus to the next open item's Approve after a keyboard approve", async () => {
+		const user = userEvent.setup();
+		const { onApproveItem, rerenderWith } = renderInboxProposal();
+		screen.getByRole("button", { name: "Approve Alpha" }).focus();
+		await user.keyboard("{Enter}");
+		expect(onApproveItem).toHaveBeenCalledOnce();
+
+		rerenderWith({ lockedReasons: locked(0, "applied") });
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "Approve Bravo" }),
+			).toHaveFocus(),
+		);
+	});
+
+	it("moves focus to the nearest earlier open item when the last one is moved to Rejected", async () => {
+		const user = userEvent.setup();
+		const { rerenderWith } = renderInboxProposal();
+		screen
+			.getByRole("button", { name: "Move Charlie to Rejected" })
+			.focus();
+		await user.keyboard("{Enter}");
+
+		rerenderWith({ lockedReasons: locked(2, "rejected") });
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "Approve Bravo" }),
+			).toHaveFocus(),
+		);
 	});
 });
 
@@ -367,7 +454,7 @@ describe("BacklogChangeProposal — the detail dialog commits one item", () => {
 			}),
 		);
 
-		expect(onRejectItem).toHaveBeenCalledWith(0, "Alpha", false);
+		expect(onRejectItem).toHaveBeenCalledWith(0, "Alpha");
 	});
 
 	it("shows a resolved item's outcome and offers no decision", async () => {
@@ -422,7 +509,10 @@ describe("BacklogChangeProposal — reviewing an update", () => {
 
 	it("summarizes the update on its row and applies it all at once", async () => {
 		const user = userEvent.setup();
-		const { onApproveItem } = renderInboxProposal({ changes: [UPDATE] });
+		const { onApproveItem } = renderInboxProposal(
+			{ changes: [UPDATE] },
+			{ onReviewOnTicket: vi.fn() },
+		);
 
 		const summary = screen.getByTestId("proposal-update-summary");
 		expect(
@@ -447,62 +537,181 @@ describe("BacklogChangeProposal — reviewing an update", () => {
 		expect(index).toBe(0);
 	});
 
-	it("applies only the accepted changes after a line-by-line review", async () => {
+	it("reads Apply accepted changes on the row once a proposed field is rejected", async () => {
 		const user = userEvent.setup();
-		const { onApproveItem } = renderInboxProposal({ changes: [UPDATE] });
-
-		await user.click(
-			screen.getByRole("button", { name: "Review Delta line by line" }),
+		renderInboxProposal(
+			{ changes: [UPDATE] },
+			{ onReviewOnTicket: vi.fn() },
 		);
+
+		const [detail] = screen.getAllByRole("button", {
+			name: /Open full detail to review/,
+		});
+		if (!detail) {
+			throw new Error("no detail button for Delta");
+		}
+		await user.click(detail);
 		const dialog = await screen.findByTestId(
 			"backlog-change-detail-dialog",
 		);
 		await user.click(
 			within(dialog).getByRole("button", {
-				name: "Reject Description change 1 of 1",
-			}),
-		);
-		await user.click(
-			within(dialog).getByRole("button", {
-				name: "Apply approved changes to Delta",
+				name: /Reject Description change/,
 			}),
 		);
 
-		const [change] = onApproveItem.mock.calls[0] as [ChangeItem];
-		expect(change.title).toEqual({ from: "Delta draft", to: "Delta" });
-		expect(change.description).toBeUndefined();
+		expect(
+			within(dialog).getByRole("button", {
+				name: "Apply accepted changes to Delta",
+			}),
+		).toBeInTheDocument();
+		await user.keyboard("{Escape}");
+		expect(
+			await screen.findByRole("button", {
+				name: "Apply accepted changes to Delta",
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", {
+				name: "Apply all changes to Delta",
+			}),
+		).toBeNull();
 	});
 
-	it("rejects the item with a note once every change is rejected", async () => {
+	it("hands the update, as the reviewer left it, to its ticket for a line-by-line review", async () => {
 		const user = userEvent.setup();
-		const { onApproveItem, onRejectItem } = renderInboxProposal({
-			changes: [UPDATE],
-		});
+		const onReviewOnTicket = vi.fn();
+		const { onApproveItem } = renderInboxProposal(
+			{ changes: [UPDATE] },
+			{ onReviewOnTicket },
+		);
 
 		await user.click(
 			screen.getByRole("button", { name: "Review Delta line by line" }),
 		);
+
+		expect(onReviewOnTicket).toHaveBeenCalledOnce();
+		const [change, syncToPM, overrides, index] = onReviewOnTicket.mock
+			.calls[0] as [ChangeItem, boolean, unknown, number];
+		expect(change.existingId).toBe("story-delta");
+		expect(change.description).toEqual({
+			from: "Line one",
+			to: "Line one\nLine two",
+		});
+		expect(syncToPM).toBe(false);
+		expect(overrides).toBeUndefined();
+		expect(index).toBe(0);
+		expect(onApproveItem).not.toHaveBeenCalled();
+	});
+
+	it("offers the same line-by-line review from the detail dialog", async () => {
+		const user = userEvent.setup();
+		const onReviewOnTicket = vi.fn();
+		renderInboxProposal({ changes: [UPDATE] }, { onReviewOnTicket });
+
+		const [detail] = screen.getAllByRole("button", {
+			name: /Open full detail to review/,
+		});
+		if (!detail) {
+			throw new Error("no detail button for Delta");
+		}
+		await user.click(detail);
 		const dialog = await screen.findByTestId(
 			"backlog-change-detail-dialog",
 		);
 		await user.click(
-			within(dialog).getByRole("button", {
-				name: "Reject Title change",
-			}),
-		);
-		await user.click(
-			within(dialog).getByRole("button", {
-				name: "Reject Description change 1 of 1",
-			}),
-		);
-		await user.click(
-			within(dialog).getByRole("button", {
-				name: "Reject all changes to Delta",
-			}),
+			within(dialog).getByRole("button", { name: "Review line by line" }),
 		);
 
-		expect(onRejectItem).toHaveBeenCalledWith(0, "Delta", true);
-		expect(onApproveItem).not.toHaveBeenCalled();
+		expect(onReviewOnTicket).toHaveBeenCalledOnce();
+		expect(onReviewOnTicket.mock.calls[0]?.[3]).toBe(0);
+	});
+
+	it("offers no line-by-line review where the inbox cannot open a ticket", () => {
+		renderInboxProposal({ changes: [UPDATE] });
+
+		expect(
+			screen.queryByRole("button", { name: "Review Delta line by line" }),
+		).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "Approve Delta" }),
+		).toBeEnabled();
+	});
+
+	it("disables both reviews, with the reason, for an update the server would hold back", () => {
+		renderInboxProposal(
+			{ changes: [UPDATE] },
+			{
+				onReviewOnTicket: vi.fn(),
+				heldBackUpdateIndexes: new Set([0]),
+			},
+		);
+
+		expect(
+			screen.getByRole("button", { name: "Apply all changes to Delta" }),
+		).toBeDisabled();
+		expect(
+			screen.getByRole("button", { name: "Review Delta line by line" }),
+		).toBeDisabled();
+		expect(
+			screen.getByText(
+				"Ticket F-4 is not a work item in this project, so this update can't be applied. Move it to Rejected instead.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Move Delta to Rejected" }),
+		).toBeEnabled();
+		expect(screen.getByText("ticketNotFound")).toBeInTheDocument();
+	});
+
+	it("keeps both reviews for a target the board hides, such as an initiative, when the server would apply it", () => {
+		// Initiatives are off, so the board does not list the target, but
+		// it is a work item of this project and the approval applies it.
+		renderInboxProposal(
+			{
+				changes: [UPDATE],
+				boardStoryIds: {
+					status: "ready",
+					ids: new Set(["story-other"]),
+				},
+			},
+			{
+				onReviewOnTicket: vi.fn(),
+				heldBackUpdateIndexes: new Set<number>(),
+			},
+		);
+
+		expect(
+			screen.getByRole("button", { name: "Apply all changes to Delta" }),
+		).toBeEnabled();
+		expect(
+			screen.getByRole("button", { name: "Review Delta line by line" }),
+		).toBeEnabled();
+		expect(
+			screen.queryByText(/is not a work item in this project/),
+		).toBeNull();
+		// The ticket exists: the item names it, and never reads as missing.
+		expect(screen.getByText(/Updates F-4/)).toBeInTheDocument();
+		expect(screen.queryByText("ticketNotFound")).toBeNull();
+	});
+
+	it("counts an update the server would hold back out of Apply Selected's approved changes", async () => {
+		const user = userEvent.setup();
+		const { onApprove } = renderInboxProposal(
+			{ changes: [UPDATE, feature("Echo")] },
+			{ heldBackUpdateIndexes: new Set([0]) },
+		);
+
+		await user.click(
+			screen.getByRole("button", { name: /Apply Selected/ }),
+		);
+
+		expect(onApprove).toHaveBeenCalledOnce();
+		expect(
+			await screen.findByText(
+				/Approved 1 of 2 proposed changes\. 1 held back: its target ticket is not in this project\./,
+			),
+		).toBeInTheDocument();
 	});
 
 	it("titles an applied update 'As proposed' and links the ticket's Decision Log", () => {
@@ -536,11 +745,14 @@ describe("BacklogChangeProposal — reviewing an update", () => {
 		).toBeNull();
 	});
 
-	it("warns that the ticket changed and turns line-by-line review off, keeping Apply all changes", async () => {
+	it("warns that the ticket changed and still offers both reviews, merged into the current ticket", async () => {
 		const user = userEvent.setup();
 		const { onApproveItem } = renderInboxProposal(
 			{ changes: [UPDATE] },
-			{ targetChangedIndexes: new Set([0]) },
+			{
+				targetChangedIndexes: new Set([0]),
+				onReviewOnTicket: vi.fn(),
+			},
 		);
 
 		expect(
@@ -548,13 +760,11 @@ describe("BacklogChangeProposal — reviewing an update", () => {
 				"This ticket changed after the proposal was made. The change will be merged into the current ticket.",
 			),
 		).toBeInTheDocument();
-		const lineReview = screen.getByRole("button", {
-			name: "Review Delta line by line",
-		});
-		expect(lineReview).toBeDisabled();
-		expect(lineReview).toHaveAccessibleDescription(
-			/Line-by-line review is off/,
-		);
+		// The ticket page merges the update into the ticket as it is now
+		// before it shows the lines.
+		expect(
+			screen.getByRole("button", { name: "Review Delta line by line" }),
+		).toBeEnabled();
 
 		const [detail] = screen.getAllByRole("button", {
 			name: /Open full detail to review/,
@@ -571,10 +781,12 @@ describe("BacklogChangeProposal — reviewing an update", () => {
 		).toBeInTheDocument();
 		expect(
 			within(dialog).getByRole("button", { name: "Review line by line" }),
-		).toBeDisabled();
+		).toBeEnabled();
 
 		await user.click(
-			within(dialog).getByRole("button", { name: "Approve Delta" }),
+			within(dialog).getByRole("button", {
+				name: "Apply all changes to Delta",
+			}),
 		);
 		expect(onApproveItem).toHaveBeenCalledOnce();
 	});

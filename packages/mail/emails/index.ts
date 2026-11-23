@@ -11,6 +11,9 @@ import { NewUser } from "../emails/NewUser";
 import { OrganizationDeletionConfirm } from "../emails/OrganizationDeletionConfirm";
 import { OrganizationDeletionReminder } from "../emails/OrganizationDeletionReminder";
 import { OrganizationInvitation } from "../emails/OrganizationInvitation";
+import { ParlumeJoinFailed } from "../emails/ParlumeJoinFailed";
+import { ParlumeNotesReady } from "../emails/ParlumeNotesReady";
+import { ParlumeWaitingInLobby } from "../emails/ParlumeWaitingInLobby";
 import { ProjectInvitation } from "../emails/ProjectInvitation";
 import { PublishingTopicsReady } from "../emails/PublishingTopicsReady";
 import { ReleaseNotesNewsletter } from "../emails/ReleaseNotesNewsletter";
@@ -33,6 +36,9 @@ export const mailTemplates = {
 	organizationDeletionReminder: OrganizationDeletionReminder,
 	organizationInvitation: OrganizationInvitation,
 	emailVerification: EmailVerification,
+	parlumeNotesReady: ParlumeNotesReady,
+	parlumeJoinFailed: ParlumeJoinFailed,
+	parlumeWaitingInLobby: ParlumeWaitingInLobby,
 	projectInvitation: ProjectInvitation,
 	publishingTopicsReady: PublishingTopicsReady,
 	releaseNotesNewsletter: ReleaseNotesNewsletter,

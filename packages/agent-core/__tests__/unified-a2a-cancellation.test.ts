@@ -63,7 +63,7 @@ it.each(["/a2a/send", "/a2a/send/stream"])(
 	},
 );
 
-it("passes the request signal to a supplied A2A stream executor", async () => {
+it("passes the request signal to the A2A stream invocation", async () => {
 	let started!: (config: AgentRuntimeConfig | undefined) => void;
 	const received = new Promise<AgentRuntimeConfig | undefined>((resolve) => {
 		started = resolve;
@@ -76,12 +76,11 @@ it("passes the request signal to a supplied A2A stream executor", async () => {
 			port: 3000,
 			skills: [],
 		},
-		async () => ({ response: "unused" }),
-		() => ({ response: "unused" }),
-		async function* (_input, config) {
+		async (_input, config) => {
 			started(config);
-			yield { type: "text", content: "hello" };
+			return { response: "hello" };
 		},
+		(result) => ({ response: String(result.response) }),
 	);
 	const controller = new AbortController();
 	const response = await app.request("/a2a/send/stream", {

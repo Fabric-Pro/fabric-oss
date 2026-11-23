@@ -54,6 +54,8 @@ type PageActions = {
 	onRefresh: () => void;
 	onHistory: () => void;
 	onRejected: () => void;
+	/** How many proposals the Rejected list holds. */
+	rejectedCount?: number;
 };
 
 export function RoadmapActionsMenu({
@@ -111,6 +113,7 @@ export function RoadmapActionsMenu({
 					icon: ArchiveIcon,
 					onSelect: actions.onRejected,
 					disabledReason: null,
+					count: actions.rejectedCount,
 				},
 			]
 		: [];
@@ -261,12 +264,20 @@ function ActionItemContent({ item }: { item: RoadmapActionItem }) {
 		disabledReason,
 		disabledDetail,
 		warning,
+		count,
 	} = item;
 	return (
 		<>
 			<Icon aria-hidden className="mt-0.5 mr-2 size-4 shrink-0" />
 			<span className="min-w-0 flex-1 flex flex-col gap-0.5">
-				<span>{label}</span>
+				<span className="flex items-center gap-2">
+					<span>{label}</span>
+					{count !== undefined && count > 0 && (
+						<span className="rounded-full bg-muted px-1.5 font-medium text-muted-foreground text-xs tabular-nums">
+							{count}
+						</span>
+					)}
+				</span>
 				{description && (
 					<span className="text-muted-foreground text-xs">
 						{description}

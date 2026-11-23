@@ -823,6 +823,9 @@ export function useRenameDocumentAssistantConversation() {
 	});
 }
 
+/** `recordDiffOutcome`'s answer when the proposal's turn is not saved yet. */
+const PROPOSAL_NOT_SAVED_MESSAGE = "Tool call not found";
+
 interface RecordDiffOutcomeInput {
 	conversationId: string;
 	projectId: string;
@@ -842,11 +845,19 @@ interface RecordDiffOutcomeInput {
  * on every accept/reject, which is wasteful.)
  *
  * Group G consumes this from `DiffReviewBar`.
+ *
+ * The proposal's turn is saved by the chat's persistence hook once its run
+ * ends, as a separate request, and the review's Accept or Reject can be
+ * clicked before that save lands. The server then answers "Tool call not
+ * found", so that answer alone is retried, with the default backoff (1, 2
+ * and 4 seconds), before the outcome is reported as not recorded.
  */
 export function useRecordDocumentAssistantDiffOutcome() {
 	const featureEnabled = useDocumentAssistantHistoryEnabled();
 
 	return useMutation({
+		retry: (failureCount, error) =>
+			failureCount < 3 && error.message === PROPOSAL_NOT_SAVED_MESSAGE,
 		mutationFn: async (input: RecordDiffOutcomeInput) => {
 			if (!featureEnabled) {
 				throw new Error(HISTORY_DISABLED_ERROR_MESSAGE);

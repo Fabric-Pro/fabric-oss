@@ -11,22 +11,20 @@ import {
  * The persisted sub-tab value can be the stale pre-rename string `"execution"`
  * (or any unknown value). The read path must gracefully default such values to
  * `"development"` rather than throwing or leaving an invalid tab selected. The
- * flag-gated tabs — `project-management`, and the QA pair `environments` /
- * `testing` — must never be resolved while their flag is off.
+ * flag-gated tabs — the QA pair `environments` / `testing`, `publishing`, and
+ * `time-tracking` — must never be resolved while their gate is off.
  * `resolveStoredSettingsTab` was extracted to its own module so it can be
  * unit-tested without evaluating the `"use client"` `ProjectSettings` graph.
  */
 
 /** All gates open — the shape most assertions do not care about. */
 const OPEN: SettingsTabGates = {
-	pmFieldMappingEnabled: true,
 	qaEnabled: true,
 	publishingEnabled: true,
 	timeTrackingEnabled: true,
 };
 /** All gates shut. */
 const SHUT: SettingsTabGates = {
-	pmFieldMappingEnabled: false,
 	qaEnabled: false,
 	publishingEnabled: false,
 	timeTrackingEnabled: false,
@@ -67,17 +65,12 @@ describe("resolveStoredSettingsTab", () => {
 		expect(resolveStoredSettingsTab("danger", OPEN)).toBe("danger");
 	});
 
-	it('resolves the flag-gated "project-management" tab only when the flag is on', () => {
-		// Flag on → the persisted PM tab is honored.
-		expect(
-			resolveStoredSettingsTab("project-management", {
-				...SHUT,
-				pmFieldMappingEnabled: true,
-			}),
-		).toBe("project-management");
-		// Flag off → never land on the gated PM tab; fall back to Development.
+	it('"project-management" always resolves to itself', () => {
 		expect(resolveStoredSettingsTab("project-management", SHUT)).toBe(
-			"development",
+			"project-management",
+		);
+		expect(resolveStoredSettingsTab("project-management", OPEN)).toBe(
+			"project-management",
 		);
 	});
 
@@ -108,10 +101,9 @@ describe("resolveStoredSettingsTab", () => {
 		expect(resolveStoredSettingsTab("environments", SHUT)).toBe(
 			"development",
 		);
-		// The gates are independent — PM on does not open the QA pair.
+		// The gates are independent — Publishing on does not open the QA pair.
 		expect(
 			resolveStoredSettingsTab("testing", {
-				pmFieldMappingEnabled: true,
 				qaEnabled: false,
 				publishingEnabled: true,
 				timeTrackingEnabled: true,
@@ -142,7 +134,6 @@ describe("resolveStoredSettingsTab", () => {
 		// The gates are independent — QA on does not open Publishing Suite.
 		expect(
 			resolveStoredSettingsTab("publishing", {
-				pmFieldMappingEnabled: false,
 				qaEnabled: true,
 				publishingEnabled: false,
 				timeTrackingEnabled: true,

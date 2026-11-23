@@ -37,6 +37,19 @@ export function agentUsageConfigFromInput(input: Record<string, unknown>): {
 	return { fabric_usage: result };
 }
 
+/** Read the Fabric token from the usage scope, without granting flat tool auth. */
+export function readUsageScopedAiToken(
+	configurable: Record<string, unknown>,
+): string | undefined {
+	const usage = configurable.fabric_usage;
+	if (!usage || typeof usage !== "object" || !("ai_token" in usage)) {
+		return undefined;
+	}
+	return typeof usage.ai_token === "string" && usage.ai_token
+		? usage.ai_token
+		: undefined;
+}
+
 export interface AgentUsageLoggerConfig {
 	configurable?: Record<string, unknown>;
 }

@@ -15,6 +15,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		listProposalApplications: vi.fn(),
 		listProposalDuplicateResolutions: vi.fn(),
 		readRejectedChangeIndexes: vi.fn(),
+		listRestoredProposalItems: vi.fn(),
 		getLinkedTeamsChatGraphId: vi.fn(),
 	};
 	return { handlers, mocks };
@@ -36,6 +37,7 @@ vi.mock("@repo/database", async () => {
 			mocks.listProposalDuplicateResolutions,
 		proposalRevision: changes.proposalRevision,
 		readRejectedChangeIndexes: mocks.readRejectedChangeIndexes,
+		listRestoredProposalItems: mocks.listRestoredProposalItems,
 		readStoredProposalChanges: changes.readStoredProposalChanges,
 		targetChangedSinceProposal: changes.targetChangedSinceProposal,
 		getLinkedTeamsChatGraphId: mocks.getLinkedTeamsChatGraphId,
@@ -87,6 +89,8 @@ beforeEach(() => {
 	mocks.listProposalDuplicateResolutions.mockResolvedValue([]);
 	mocks.readRejectedChangeIndexes.mockReset();
 	mocks.readRejectedChangeIndexes.mockReturnValue([]);
+	mocks.listRestoredProposalItems.mockReset();
+	mocks.listRestoredProposalItems.mockResolvedValue([]);
 	mocks.getLinkedTeamsChatGraphId.mockReset();
 });
 
@@ -131,6 +135,9 @@ describe("getPendingProposalProcedure", () => {
 			remainingCount: 1,
 			proposalRevision: proposalRevision(proposal),
 			targetChangedSinceProposalIndexes: [],
+			heldBackUpdateIndexes: [],
+			updateTargetBodies: [],
+			restoredItems: [],
 			teamsChatSourceLink: null,
 		});
 	});

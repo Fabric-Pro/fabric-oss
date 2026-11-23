@@ -13,6 +13,11 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	withheldConfidentialParlumeSessions,
+	withoutParlumeNotes,
+} from "../../lib/parlume-confidential";
+import { withheldParlumeTranscriptIds } from "../../lib/parlume-transcript-access";
 
 export const listContextsProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.CONTEXT_READ))
@@ -63,14 +68,27 @@ export const listContextsProcedure = tenantProtectedProcedure
 		// limit (50) would silently drop older GitHub/Notion/codebase rows when a
 		// project accumulates many recent meeting transcripts.
 		let result: Awaited<ReturnType<typeof listContexts>>;
+		let withheld: Set<string>;
+		let confidential: Set<string>;
 		try {
-			result = await listContexts({
-				projectId: input.projectId,
-				type: input.type,
-				excludeLinkedDocuments: true,
-				limit: "none",
-				sourcePathPrefix: input.sourcePathPrefix,
-			});
+			[result, withheld, { contextIds: confidential }] =
+				await Promise.all([
+					listContexts({
+						projectId: input.projectId,
+						type: input.type,
+						excludeLinkedDocuments: true,
+						limit: "none",
+						sourcePathPrefix: input.sourcePathPrefix,
+					}),
+					withheldParlumeTranscriptIds({
+						projectId: input.projectId,
+						userId: user.id,
+					}),
+					withheldConfidentialParlumeSessions({
+						projectId: input.projectId,
+						userId: user.id,
+					}),
+				]);
 		} catch (error) {
 			if (error instanceof ContextSourcePathError) {
 				throw new ORPCError("BAD_REQUEST", { message: error.message });
@@ -78,18 +96,40 @@ export const listContextsProcedure = tenantProtectedProcedure
 			throw error;
 		}
 
+		// A Parlume transcript this caller may not read keeps its row (the
+		// meeting, and its notes in `metadata`, are for every reader) but not
+		// its text. Its hash goes too: hashing a guess would confirm a short
+		// transcript, and a duplicate mark would name a source it repeats.
+		// A confidential meeting's notes go too: they are made from what it said.
+		const contexts = result.contexts.map((context) =>
+			withheld.has(context.id)
+				? {
+						...context,
+						contentPreview: null,
+						contentHash: null,
+						...(confidential.has(context.id)
+							? {
+									metadata: withoutParlumeNotes(
+										context.metadata,
+									),
+								}
+							: {}),
+					}
+				: context,
+		);
+
 		// Duplicate detection (Fizzy #2619) is derived from `contentHash` over
 		// exactly the rows returned here, so a canonical row is always one the
 		// caller can see — a linked-document row this list hides can never be
 		// the original a visible row is marked as a copy of.
 		// With a `sourcePathPrefix` filter an original outside the filter is
 		// not visible, so a copy inside it is not flagged.
-		const duplicateOf = annotateDuplicateContexts(result.contexts);
+		const duplicateOf = annotateDuplicateContexts(contexts);
 
 		// Return flattened response (not double-nested)
 		return {
 			...result,
-			contexts: result.contexts.map((context) => ({
+			contexts: contexts.map((context) => ({
 				...context,
 				duplicateOfContextId: duplicateOf.get(context.id) ?? null,
 			})),

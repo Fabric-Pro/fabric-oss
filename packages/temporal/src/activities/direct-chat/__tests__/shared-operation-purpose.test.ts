@@ -64,7 +64,7 @@ vi.mock("@repo/ai", async () => ({
 	}),
 	logEmbeddingUsageAsync: vi.fn(),
 	tool: (definition: unknown) => definition,
-	getRAGProviderConfig: async () => ({
+	getEmbeddingRAGProviderConfig: async () => ({
 		provider: "VERCEL_GATEWAY",
 		apiKey: "example-key",
 	}),

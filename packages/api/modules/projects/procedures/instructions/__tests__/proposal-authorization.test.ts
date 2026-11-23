@@ -9,10 +9,14 @@ vi.mock("../../../../../lib/effective-project-permissions", () => ({
 	resolveEffectiveProjectPermissions: (...args: unknown[]) =>
 		m.resolveEffectiveProjectPermissions(...args),
 }));
+// The project-visibility module supplies the shared not-found message and
+// imports `hasProjectAccess`, which nothing here calls.
+vi.mock("@repo/database", () => ({ hasProjectAccess: vi.fn() }));
 
 import {
 	assertInstructionDeriveAccess,
 	assertInstructionSnapshotMutationAccess,
+	assertRepositoryProposalAccess,
 	canReviewInstructionProposals,
 	isInstructionSnapshotContentReadable,
 } from "../proposal-authorization";
@@ -162,5 +166,66 @@ describe("instruction proposal authorization", () => {
 				userId: "editor_1",
 			}),
 		).resolves.toBe(true);
+	});
+
+	describe("a caller whose organization role grants everything but who cannot open the project", () => {
+		const scope = { projectId: "project_1", userId: "org_admin_1" };
+
+		beforeEach(() => {
+			m.resolveEffectiveProjectPermissions.mockResolvedValue({
+				source: "org",
+				organizationId: "org_1",
+				isVisible: false,
+				permissions: [
+					Permissions.INSTRUCTION_READ,
+					Permissions.INSTRUCTION_CREATE,
+					Permissions.INSTRUCTION_UPDATE,
+				],
+			});
+		});
+
+		it("is no reviewer", async () => {
+			await expect(canReviewInstructionProposals(scope)).resolves.toBe(
+				false,
+			);
+		});
+
+		it("hears NOT_FOUND from every assertion, as for an unknown project", async () => {
+			await expect(
+				assertInstructionDeriveAccess({ ...scope, proposal: false }),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
+			await expect(
+				assertInstructionSnapshotMutationAccess({
+					...scope,
+					snapshot: { userId: scope.userId, proposalStatus: null },
+				}),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
+			await expect(
+				assertRepositoryProposalAccess({
+					...scope,
+					allowReaders: true,
+				}),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
+		});
+
+		it("keeps the project's creator, whose org path is visible", async () => {
+			m.resolveEffectiveProjectPermissions.mockResolvedValue({
+				source: "org",
+				organizationId: "org_1",
+				isVisible: true,
+				permissions: [
+					Permissions.INSTRUCTION_READ,
+					Permissions.INSTRUCTION_CREATE,
+					Permissions.INSTRUCTION_UPDATE,
+				],
+			});
+
+			await expect(canReviewInstructionProposals(scope)).resolves.toBe(
+				true,
+			);
+			await expect(
+				assertInstructionDeriveAccess({ ...scope, proposal: false }),
+			).resolves.toBeUndefined();
+		});
 	});
 });

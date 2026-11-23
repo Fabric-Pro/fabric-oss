@@ -732,12 +732,37 @@ describe("FabricTemporalRunner — the question is saved when the turn is admitt
 		]);
 	});
 
-	it("leaves no question behind for a turn refused at admission", async () => {
+	it("keeps the names of the files a question was sent with, through the answer's save", async () => {
+		w.state.onStart = () => ({ status: "RUNNING" });
+		await run(RUN_1, "What is in these?", {
+			window: 0,
+			extra: {
+				forwardedProps: { attachmentNames: ["a.png", 7, "b.png"] },
+			},
+		});
+		expect(savedMessages()[0]).toMatchObject({
+			metadata: { attachmentNames: ["a.png", "b.png"] },
+		});
+
+		completeWorkflow(w.state.starts[0]?.executionId ?? "", ANSWERED);
+		await connect();
+
+		const [question, answer] = savedMessages();
+		expect(question).toMatchObject({
+			id: `${RUN_1}:user`,
+			content: "What is in these?",
+			metadata: { attachmentNames: ["a.png", "b.png"] },
+		});
+		expect(answer?.metadata).not.toHaveProperty("attachmentNames");
+	});
+
+	it("saves a turn a limit refused at admission with its refusal, so reopening shows it", async () => {
 		w.state.refusal = () =>
 			Response.json(
 				{
-					error: "Monthly AI limit reached",
+					error: "AI usage limit exceeded: limit-example (TOKENS, DAILY) — used 1 of 1",
 					code: "AI_USAGE_LIMIT_EXCEEDED",
+					data: { limitId: "limit-example", window: "DAILY" },
 				},
 				{ status: 429 },
 			);
@@ -750,10 +775,31 @@ describe("FabricTemporalRunner — the question is saved when the turn is admitt
 		const busy = await run("run-example-0003", "While it runs");
 		expect(errorCode(busy)).toBe("TURN_IN_PROGRESS");
 
+		const paused =
+			"AI calls are paused — the usage limit for today is reached. Manage limits to raise it, or try again after it resets.";
 		expect(savedMessages().map((message) => message.id)).toEqual([
+			`${RUN_1}:user`,
+			`${RUN_1}:assistant`,
 			`${RUN_2}:user`,
 		]);
+		expect(savedMessages()[1]).toMatchObject({
+			content: `Error: ${paused}`,
+			streamStatus: "error",
+			metadata: { errorMessage: paused },
+		});
+		expect(JSON.stringify(savedMessages())).not.toContain("limit-example");
 		expect(w.state.starts).toHaveLength(1);
+	});
+
+	it("leaves no question behind for a turn refused at admission for another reason", async () => {
+		w.state.refusal = () =>
+			Response.json(
+				{ error: "Not allowed", code: "FORBIDDEN" },
+				{ status: 403 },
+			);
+		const refused = await run(RUN_1, "Not mine");
+		expect(errorCode(refused)).toBe("FORBIDDEN");
+		expect(savedMessages()).toEqual([]);
 	});
 
 	it("saves a turn whose workflow failed to start with its failure, as the Direct chat saves a failed request", async () => {
@@ -829,6 +875,26 @@ describe("FabricTemporalRunner — what a turn saves", () => {
 			metadata: { errorMessage: expect.any(String) },
 			toolCalls: [{ id: "tool-1", status: "success" }],
 		});
+	});
+
+	it("saves a turn a usage limit refused inside its workflow as the paused state, without the limit's id", async () => {
+		w.state.onStart = () => ({
+			status: "COMPLETED",
+			result: {
+				success: false,
+				error: "AI usage limit exceeded: limit-example (TOKENS, DAILY) — used 10 of 1",
+			},
+		});
+		await run(RUN_1, "Question");
+
+		const paused =
+			"AI calls are paused — the usage limit for today is reached. Manage limits to raise it, or try again after it resets.";
+		expect(savedMessages()[1]).toMatchObject({
+			content: `Error: ${paused}`,
+			streamStatus: "error",
+			metadata: { errorMessage: paused },
+		});
+		expect(JSON.stringify(savedMessages())).not.toContain("limit-example");
 	});
 
 	it("carries each saved answer's tool status, reasoning time and stop time in a connect's snapshot", async () => {

@@ -10,6 +10,10 @@ import {
 	isAiUsageLimitExceededPayload,
 } from "@saas/payments/lib/ai-usage-limit-toast";
 import type { Dispatch, SetStateAction } from "react";
+import {
+	aiUsageLimitPausedMessage,
+	aiUsageLimitPausedText,
+} from "../../../../app/api/agents/fabric-ai/stream/ai-usage-limit-paused-message";
 import { parseTurnTruncation } from "./chat-turn-truncation";
 import { parseChatGptPlanApiBilling } from "./chatgpt-plan-api-billing";
 import { readPersistedModel } from "./direct-chat-history";
@@ -716,9 +720,9 @@ export function applyOrchestratorStreamEvent(
 			// AI usage-limit short-circuit. When the chokepoint blocks mid-stream
 			// the route emits a structured SSE error event with
 			// `code: "AI_USAGE_LIMIT_EXCEEDED"`. Render the
-			// shared destructive toast and clear the streaming
-			// placeholder so the user is not left with a
-			// generic "Error:" stub.
+			// shared destructive toast, and end an answer with no
+			// output with the paused state, as the saved turn reads
+			// after a reload (never the limit's internal id).
 			if (data.code === "AI_USAGE_LIMIT_EXCEEDED") {
 				const payload = isAiUsageLimitExceededPayload(data?.data)
 					? data.data
@@ -728,6 +732,9 @@ export function applyOrchestratorStreamEvent(
 				if (payload) {
 					showAiUsageLimitToastRef.current(payload);
 				}
+				const paused = payload
+					? aiUsageLimitPausedMessage(payload.window)
+					: aiUsageLimitPausedText(data.message ?? "");
 				setCurrentPhase("idle");
 				setProgressMessage("");
 				setCurrentStep(null);
@@ -740,13 +747,24 @@ export function applyOrchestratorStreamEvent(
 						if (message.id !== assistantMessageId) {
 							return [message];
 						}
-						// Keep earlier work; only the empty streaming placeholder is removed.
+						// Keep earlier work; an empty placeholder says the
+						// chat is paused, or goes when the text names no limit.
 						if (
 							!message.content.trim() &&
 							!message.toolCalls?.length &&
 							!hadTurnOutput
 						) {
-							return [];
+							return paused
+								? [
+										{
+											...message,
+											content: `Error: ${paused}`,
+											isStreaming: false,
+											isError: true,
+											streamStatus: "error" as const,
+										},
+									]
+								: [];
 						}
 						return [
 							{
@@ -762,9 +780,15 @@ export function applyOrchestratorStreamEvent(
 					}),
 				);
 				setIsLoading(false);
+				// A turn refused before any output ends failed with the
+				// paused message: the live failure notice reads it there.
+				const endsPaused = paused !== null && !hadTurnOutput;
 				setState((prev) => ({
 					...prev,
-					status: "idle",
+					status: endsPaused ? "failed" : "idle",
+					result: endsPaused
+						? { ...prev.result, error: paused }
+						: prev.result,
 					budgetStop:
 						parseTurnBudgetStop(data.budgetStop) ?? prev.budgetStop,
 				}));

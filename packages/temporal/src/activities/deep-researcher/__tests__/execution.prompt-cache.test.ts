@@ -89,6 +89,7 @@ const runners = {
 			parentQuery: "Q",
 			userId: "user-1",
 			organizationId: "org-1",
+			projectId: "project-1",
 			iteration: 1,
 		}),
 	executeDirectResearch: () =>
@@ -96,6 +97,7 @@ const runners = {
 			query: "Q",
 			userId: "user-1",
 			organizationId: "org-1",
+			projectId: "project-1",
 		} as never),
 };
 
@@ -147,6 +149,12 @@ describe.each(Object.entries(runners))("%s prompt cache", (_name, run) => {
 		expect(
 			mocks.getAIModelWithMetadata.mock.calls[0][1].callPurpose,
 		).toBeUndefined();
+		// The project's usage limits apply to the call and count its usage.
+		expect(mocks.getAIModelWithMetadata.mock.calls[0][1]).toMatchObject({
+			userId: "user-1",
+			organizationId: "org-1",
+			projectId: "project-1",
+		});
 	});
 
 	it("keeps the hard-coded task type when selecting the model", async () => {
@@ -155,6 +163,9 @@ describe.each(Object.entries(runners))("%s prompt cache", (_name, run) => {
 			"user-1",
 			"org-1",
 			false,
+			undefined,
+			undefined,
+			{ projectId: "project-1" },
 		);
 	});
 

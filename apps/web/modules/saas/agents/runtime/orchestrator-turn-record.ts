@@ -297,8 +297,9 @@ function storedPlan(
 /**
  * Save a turn that ended while a response watched it: its question, the
  * clarifications it saved as they were answered, its answer, and the
- * execution record the chat renders from. A usage-limit refusal saves
- * nothing, as the chat saves nothing for it.
+ * execution record the chat renders from. A usage-limit refusal from the
+ * run (its toast) saves nothing here; a refusal at the start is saved by
+ * `saveRefusedOrchestratorTurn`, without the limit's code.
  */
 export async function saveOrchestratorTurn(
 	context: OrchestratorTurnContext,
@@ -335,6 +336,30 @@ export async function saveOrchestratorTurn(
 		messages: [question(turn), ...clarificationMessages, outcome.answer],
 		execution: outcome.execution,
 	});
+}
+
+/**
+ * Save a turn refused before its workflow started (a usage limit, a request
+ * budget): its question and the refusal as a failed answer, so reopening
+ * the chat shows what happened instead of an empty conversation. A failed
+ * save is logged; the refusal is still sent.
+ */
+export async function saveRefusedOrchestratorTurn(
+	turn: ConversationTurn,
+	message: string,
+): Promise<void> {
+	try {
+		await saveOrchestratorTurn(
+			{ turn, imageUrls: undefined, billing: null },
+			{ type: "error", error: message },
+			{ routing: null, plan: null, answerText: "", steps: new Map() },
+		);
+	} catch (error) {
+		console.error(
+			"[Agent Runtime] Failed to save a refused Orchestrator turn",
+			{ executionId: turn.executionId, error },
+		);
+	}
 }
 
 /**

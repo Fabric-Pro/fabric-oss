@@ -3,7 +3,6 @@
 import {
 	addDays,
 	formatDurationMinutes,
-	parseDurationInput,
 	TIME_ACTIVITIES,
 } from "@repo/utils/time-tracking";
 import { TIME_ZONES } from "@saas/shared/lib/time-zones";
@@ -443,16 +442,7 @@ export function TimeEntryForm({
 				<EntryWarningQuestion
 					warning={saver.question}
 					knownEntries={knownEntries}
-					proposed={{
-						workDate: draft.workDate,
-						durationMinutes: timed
-							? timedMinutes
-							: parseDurationInput(draft.durationText),
-						activity: draft.activity,
-						target: draft.story
-							? `${draft.story.identifier} ${draft.story.title}`
-							: projectName,
-					}}
+					workDate={draft.workDate}
 					isSaving={saver.isSaving}
 					onConfirm={saver.confirm}
 					onDismiss={skip}

@@ -12,7 +12,7 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@ui/components/skeleton";
 import { useTranslations } from "next-intl";
-import type { ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 import { aiConfigStatusQueryKey } from "./AiGatewayWarningBanner";
 
 /** Mount a Portal AI runtime only after setup is known. Surrounding project
@@ -39,10 +39,18 @@ export function PortalAiGate({
 			orpcClient.aiConfig.resolution.getStatus({ organizationId }),
 		enabled: !guest && scopeResolved,
 	});
+	// Once the runtime is mounted, an answer being read again keeps it
+	// mounted. After a reconnect the organization and plan status re-resolve
+	// for a moment; unmounting then tore down the editor beneath the runtime,
+	// with the person's unsaved text and any decision in flight.
+	const runtimeMountedRef = useRef(false);
 	if (guest) {
 		return children;
 	}
 	if (!scopeResolved || !planKnown || status.isPending) {
+		if (runtimeMountedRef.current) {
+			return children;
+		}
 		return (
 			<output aria-label={t("loading")} aria-busy="true">
 				<Skeleton className="h-24 w-full" />
@@ -50,8 +58,10 @@ export function PortalAiGate({
 		);
 	}
 	if (status.data?.canResolveProvider === false && !ownPlan && !sharedPlan) {
+		runtimeMountedRef.current = false;
 		return fallback;
 	}
 	// A failed configuration read is unknown, rather than proof of missing setup.
+	runtimeMountedRef.current = true;
 	return children;
 }

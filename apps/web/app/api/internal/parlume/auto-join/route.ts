@@ -7,6 +7,11 @@ import { isParlumeServiceRequestAuthorized } from "../lib";
 const bodySchema = z.object({
 	linkedMeetingId: z.string().min(1).max(128),
 	occurrenceStart: z.iso.datetime({ offset: true }),
+	// Absent from a join scheduled before invitees were read.
+	inviteeDomains: z.array(z.string().min(1).max(253)).max(500).default([]),
+	// The internal invitees' addresses; absent from a join scheduled before
+	// they were read.
+	inviteeEmails: z.array(z.string().min(1).max(320)).max(200).default([]),
 });
 
 /**
@@ -32,6 +37,8 @@ export async function POST(request: NextRequest) {
 		const result = await runParlumeAutoJoin({
 			linkedMeetingId: parsed.data.linkedMeetingId,
 			occurrenceStart,
+			inviteeDomains: parsed.data.inviteeDomains,
+			inviteeEmails: parsed.data.inviteeEmails,
 		});
 		return NextResponse.json(result);
 	} catch (error) {

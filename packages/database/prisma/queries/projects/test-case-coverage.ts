@@ -25,6 +25,7 @@ import {
 	type TestResult,
 } from "../../client";
 import { normalizeStoryIdentifierQuery } from "./normalize-story-identifier-query";
+import { rankStoryIdsBySemanticActivity } from "./story-activity-ranking";
 
 // ---------------------------------------------------------------------------
 // Row shape
@@ -101,10 +102,15 @@ export interface FeatureCoverageRow {
  * How the page is ranked.
  *
  * `STABLE` is the default because a reader paging a list needs the total order
- * to hold still underneath it. `UNCOVERED_FIRST` is what a picker wants: it is
- * offering somewhere to aim, so the untested work comes first.
+ * to hold still underneath it. `UNCOVERED_FIRST` offers somewhere to aim, so
+ * the untested work comes first. `RECENT_FIRST` is the order of every
+ * work-item picker: most recently edited first (`lastEditedAt`, or
+ * `createdAt` for an item nobody has edited), coverage aside.
  */
-export type FeatureCoverageOrder = "STABLE" | "UNCOVERED_FIRST";
+export type FeatureCoverageOrder =
+	| "STABLE"
+	| "UNCOVERED_FIRST"
+	| "RECENT_FIRST";
 
 export interface ListFeatureCoverageOptions {
 	projectId: string;
@@ -304,6 +310,25 @@ async function selectStoryPage(
 	limit: number,
 	offset: number,
 ): Promise<CoverageStoryRow[]> {
+	if (options.order === "RECENT_FIRST") {
+		// The pickers' shared ranking returns ids only, so the page's rows are
+		// read by id and put back in rank order.
+		const ids = (
+			await rankStoryIdsBySemanticActivity(
+				buildStoryWhere(options),
+				offset + limit,
+			)
+		).slice(offset);
+		const rows = await db.userStory.findMany({
+			where: { id: { in: ids } },
+			select: featureCoverageStorySelect,
+		});
+		const rowsById = new Map(rows.map((row) => [row.id, row]));
+		return ids.flatMap((id) => {
+			const row = rowsById.get(id);
+			return row ? [row] : [];
+		});
+	}
 	if (options.order !== "UNCOVERED_FIRST") {
 		return db.userStory.findMany({
 			where: buildStoryWhere(options),
@@ -361,7 +386,8 @@ async function selectStoryPage(
  * A FIXED number of queries, regardless of page size — never one per feature:
  *
  *   1. the page of stories (see `selectStoryPage`: one read under the default
- *      order, one per coverage bucket under `UNCOVERED_FIRST`),
+ *      order, one per coverage bucket under `UNCOVERED_FIRST`, and under
+ *      `RECENT_FIRST` the ranking's two reads plus one for the ranked rows),
  *   2. `count` for the same predicate (drives pagination),
  *   3. ONE `findMany` over the link table for every story id on the page.
  *

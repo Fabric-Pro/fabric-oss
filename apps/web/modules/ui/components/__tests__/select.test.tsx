@@ -1,6 +1,14 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { beforeAll, describe, expect, it } from "vitest";
+import {
+	AlertDialog,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogTitle,
+} from "../alert-dialog";
 import {
 	Select,
 	SelectContent,
@@ -138,5 +146,73 @@ describe("SelectTrigger full-value-on-hover title", () => {
 		await user.hover(trigger);
 
 		expect(trigger.title).toBe("");
+	});
+});
+
+/** A select whose choice asks for confirmation, as "Capture from" does. */
+function SelectThatConfirms() {
+	const [pending, setPending] = useState<string | null>(null);
+	return (
+		<>
+			<Select value="none" onValueChange={setPending}>
+				<SelectTrigger aria-label="Source">
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					<SelectItem value="none">None</SelectItem>
+					<SelectItem value="staging">Staging</SelectItem>
+				</SelectContent>
+			</Select>
+			<AlertDialog
+				open={pending !== null}
+				onOpenChange={(open) => {
+					if (!open) {
+						setPending(null);
+					}
+				}}
+			>
+				<AlertDialogContent>
+					<AlertDialogTitle>Use {pending}?</AlertDialogTitle>
+					<AlertDialogDescription>
+						Confirm the choice.
+					</AlertDialogDescription>
+					<AlertDialogCancel>Cancel</AlertDialogCancel>
+				</AlertDialogContent>
+			</AlertDialog>
+		</>
+	);
+}
+
+describe("SelectItem chosen with the keyboard", () => {
+	// Enter chose the option on keydown, and its key press then pressed the
+	// Cancel button the choice had just focused, closing the confirmation.
+	it("chooses with Enter and leaves the confirmation open", async () => {
+		const user = userEvent.setup();
+		render(<SelectThatConfirms />);
+
+		await user.click(getTriggerButton());
+		const option = await screen.findByRole("option", { name: "Staging" });
+		act(() => option.focus());
+		await user.keyboard("{Enter}");
+
+		const dialog = screen.getByRole("alertdialog");
+		expect(dialog).toHaveTextContent("Use staging?");
+		expect(
+			within(dialog).getByRole("button", { name: "Cancel" }),
+		).toBeInTheDocument();
+	});
+
+	it("chooses with Space and leaves the confirmation open", async () => {
+		const user = userEvent.setup();
+		render(<SelectThatConfirms />);
+
+		await user.click(getTriggerButton());
+		const option = await screen.findByRole("option", { name: "Staging" });
+		act(() => option.focus());
+		await user.keyboard(" ");
+
+		expect(screen.getByRole("alertdialog")).toHaveTextContent(
+			"Use staging?",
+		);
 	});
 });

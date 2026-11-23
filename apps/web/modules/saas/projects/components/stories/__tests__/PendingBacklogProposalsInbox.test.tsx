@@ -801,6 +801,39 @@ describe("PendingBacklogProposalsInbox — chat-thread attachment plumbing", () 
 		).toBeInTheDocument();
 	});
 
+	it("says which item a Rejected proposal was merged into as a duplicate", async () => {
+		pendingProposalsList.mockImplementation(
+			(input: { status?: string[] }) =>
+				input.status?.includes("BACKLOG")
+					? [
+							makeListRow({
+								id: "merged-row",
+								status: "BACKLOG",
+								summary: "Export queue",
+								sourceMetadata: {
+									rejectionNote: {
+										kind: "merged_duplicate",
+										intoProposalId: "example-target",
+										intoChangeIndex: 0,
+										intoItemTitle: "Queue exports",
+										mergedAt: "2026-01-05T10:00:00.000Z",
+									},
+								},
+							}),
+							makeListRow({ status: "BACKLOG" }),
+						]
+					: [],
+		);
+
+		renderInbox({ defaultFilter: "backlog" });
+
+		expect(
+			await screen.findByText("Merged into “Queue exports”"),
+		).toBeInTheDocument();
+		// A proposal rejected any other way carries no such note.
+		expect(screen.getAllByText(/^Merged into/)).toHaveLength(1);
+	});
+
 	it("shows a Rejected empty state without exposing the BACKLOG label", async () => {
 		pendingProposalsList.mockResolvedValue([]);
 

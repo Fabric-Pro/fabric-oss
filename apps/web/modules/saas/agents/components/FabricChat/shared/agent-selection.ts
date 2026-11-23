@@ -1,3 +1,4 @@
+import { CHATGPT_PLAN_MODEL_OVERRIDE_PREFIX } from "@repo/agent-types/chatgpt-plan-fetch";
 import { BUILT_IN_TO_FABRIC_TOOLS } from "../../../lib/builtin-tool-map";
 
 /**
@@ -44,6 +45,57 @@ export interface SelectedAgent {
 
 /** A chat's ChatGPT plan pick, never a saved provider model's id. */
 export const PLAN_MODEL_AGENT_PREFIX = "plan-model:";
+
+/** A ChatGPT plan model picked for one chat, as its conversation keeps it. */
+export interface ChatPlanModel {
+	canonicalName: string;
+	name: string;
+}
+
+/** The selection a plan model picked for this chat makes. */
+export function planModelPick(model: ChatPlanModel): SelectedAgent {
+	return {
+		agentId: `${PLAN_MODEL_AGENT_PREFIX}${model.canonicalName}`,
+		name: model.name,
+		modelOverride: `${CHATGPT_PLAN_MODEL_OVERRIDE_PREFIX}${model.canonicalName}`,
+		vendor: "OpenAI",
+		chatOnly: true,
+	};
+}
+
+/** The plan model a selection keeps in its chat, or null for any other. */
+export function chatPlanModel(
+	agent: SelectedAgent | null,
+): ChatPlanModel | null {
+	return agent?.chatOnly && agent.agentId.startsWith(PLAN_MODEL_AGENT_PREFIX)
+		? {
+				canonicalName: agent.agentId.slice(
+					PLAN_MODEL_AGENT_PREFIX.length,
+				),
+				name: agent.name,
+			}
+		: null;
+}
+
+/**
+ * The selection once a conversation opens: the plan model it keeps; else the
+ * member's saved selection in place of a plan model another chat kept; else
+ * the selection as it is.
+ */
+export function selectionForConversation({
+	kept,
+	current,
+	saved,
+}: {
+	kept: ChatPlanModel | null;
+	current: SelectedAgent | null;
+	saved: SelectedAgent | null;
+}): SelectedAgent | null {
+	if (kept) {
+		return planModelPick(kept);
+	}
+	return current?.chatOnly ? saved : current;
+}
 
 /** A model picked as the chat's agent: a provider model or a plan pick. */
 export function isModelSelectionId(agentId: string): boolean {

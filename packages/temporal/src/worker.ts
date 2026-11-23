@@ -35,6 +35,7 @@ import { validateAuditRetentionDays } from "./lib/audit-log-env";
 import { CorrelationActivityInboundInterceptor } from "./lib/correlation-interceptor";
 import { validatePmSyncLogRetentionDays } from "./lib/pm-sync-log-env";
 import { ProjectContextActivityInboundInterceptor } from "./lib/project-context-interceptor";
+import { disconnectRedisPublisher } from "./lib/redis-publisher";
 import { TurnDispatchActivityInboundInterceptor } from "./lib/turn-dispatch-interceptor";
 import { startWorkerMemoryLog } from "./lib/worker-memory-log";
 import { selectTaskQueues } from "./lib/worker-task-queue-selection";
@@ -561,6 +562,7 @@ let shuttingDown = false;
  * first or the drain is cut off mid-write with no chance to report back.
  */
 const SHUTDOWN_DRAIN_TIMEOUT_MS = 25_000;
+const SHUTDOWN_REDIS_TIMEOUT_MS = 3_000;
 
 /**
  * Bundle workflows once at boot; every task queue below is created from
@@ -826,6 +828,26 @@ function setupShutdownHandlers() {
 					`[Worker] Drain did not finish within ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms; exiting with work still in flight.`,
 				);
 			}
+		}
+
+		// Bound the whole Redis cleanup, including a pending handshake.
+		let redisTimer: NodeJS.Timeout | undefined;
+		try {
+			await Promise.race([
+				disconnectRedisPublisher(),
+				new Promise<void>((resolve) => {
+					redisTimer = setTimeout(() => {
+						console.warn(
+							`[Worker] Redis cleanup did not finish within ${SHUTDOWN_REDIS_TIMEOUT_MS}ms.`,
+						);
+						resolve();
+					}, SHUTDOWN_REDIS_TIMEOUT_MS);
+				}),
+			]);
+		} catch (error) {
+			console.warn("[Worker] Redis cleanup failed:", error);
+		} finally {
+			clearTimeout(redisTimer);
 		}
 
 		// Close metrics HTTP server so the loopback port releases.

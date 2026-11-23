@@ -27,6 +27,7 @@ import {
 	DEFAULT_AI_CHAT_MIME_ALLOWLIST,
 } from "@repo/utils/ai-chat-attachment";
 import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
+import { withoutUnbackedClaimNotice } from "@repo/utils/unbacked-claim-notice";
 import { useFabricAgentLauncher } from "@saas/agents/components/FabricAgentLauncher";
 import { AgentVersionIdentity } from "@saas/agents/components/FabricChat/shared/AgentVersionIdentity";
 import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
@@ -122,6 +123,7 @@ import {
 } from "../../../../../components/ai-elements/conversation";
 import { DeferredResponse as Response } from "../../../../../components/ai-elements/deferred-response";
 import { McpAppFrame } from "../../../../../components/ai-elements/McpAppFrame";
+import { extractCheckpointId } from "../../../../../components/ai-elements/mcp-scene-utils";
 import {
 	Message,
 	MessageContent,
@@ -137,6 +139,7 @@ import { useSkillSuggestions } from "../../hooks/useSkillSuggestions";
 import { useStableHandlers } from "../../hooks/useStableHandlers";
 import { useToolSuggestions } from "../../hooks/useToolSuggestions";
 import { useWorkflowConfirmation } from "../../hooks/useWorkflowConfirmation";
+import { attachmentNamesMetadata } from "../../lib/attachment-names";
 import { shapePastedImageForAi } from "../../lib/chat-image-upload";
 import {
 	buildComprehensiveFileContext,
@@ -150,6 +153,7 @@ import {
 import { deriveTrajectorySteps } from "../../lib/derive-trajectory";
 import { loadedDirectMessages } from "../../lib/direct-chat-history";
 import {
+	getConversationPlanModel,
 	getSelectedConversationToolIds,
 	mergeDirectConversationMetadata,
 } from "../../lib/direct-chat-tools";
@@ -175,7 +179,9 @@ import { AnsweredByModel } from "./shared/AnsweredByModel";
 import { ApiBillingNotice } from "./shared/ApiBillingNotice";
 import { hasActiveContext } from "./shared/active-context";
 import {
+	chatPlanModel,
 	getSelectedAgentInstanceId,
+	selectionForConversation,
 	shouldPersistAgentSelection,
 } from "./shared/agent-selection";
 import { shouldShowAssistantActionCards } from "./shared/assistant-action-cards";
@@ -706,6 +712,11 @@ export const FabricDirectChat = forwardRef<
 		selectedAgent ? [selectedAgent] : [],
 	);
 	const inactiveProviderNote = getInactiveNote(selectedAgent);
+	// Saved in the conversation's settings, so a reload keeps it in this chat.
+	const keptPlanModel = useMemo(
+		() => chatPlanModel(selectedAgent),
+		[selectedAgent],
+	);
 	const [removedAgentProjectId, setRemovedAgentProjectId] = useState<
 		string | null
 	>(null);
@@ -965,6 +976,8 @@ export const FabricDirectChat = forwardRef<
 	// still lives in CopilotPage, so a stored multi-agent selection collapses
 	// to its first entry rather than being dropped.
 	const agentSelectionHydratedRef = useRef(false);
+	/** The member's saved selection: what a chat without a plan model shows. */
+	const savedSelectionRef = useRef<SelectedAgent | null>(null);
 	useEffect(() => {
 		if (
 			agentSelectionHydratedRef.current ||
@@ -983,9 +996,15 @@ export const FabricDirectChat = forwardRef<
 		// organization without the provider, and no chip appears rather than
 		// one that would fail on first use.
 		const [first] = data.selectedAgents;
-		const initial = first ?? data.defaultAgent;
+		const initial = (first ??
+			data.defaultAgent ??
+			null) as SelectedAgent | null;
+		savedSelectionRef.current = initial;
+		// A plan model the open conversation keeps stays its selection.
 		if (initial) {
-			setSelectedAgent(initial as SelectedAgent);
+			setSelectedAgent((current) =>
+				current?.chatOnly ? current : initial,
+			);
 		}
 		// The FR13 "no longer available" notice is the surface's, not this
 		// engine's — see `useSavedAgentUnavailableNotice`.
@@ -997,6 +1016,7 @@ export const FabricDirectChat = forwardRef<
 			setSelectedAgent((current) => {
 				const next = current?.agentId === agent.agentId ? null : agent;
 				if (shouldPersistAgentSelection(current, next)) {
+					savedSelectionRef.current = next;
 					persistAgentSelection.mutate(next ? [next] : []);
 				}
 				return next;
@@ -1049,6 +1069,15 @@ export const FabricDirectChat = forwardRef<
 					? selectedInstanceConfig.boundProjectId
 					: selectedAgent.boundProjectId
 			: providedAttachedProjectId);
+	// The full-page chat has no launcher project, so the insert picker falls
+	// back to the project attached to the conversation.
+	const insertChatScope = useMemo(
+		() => ({
+			...composedChatScope,
+			projectId: composedChatScope.projectId ?? attachedProjectId ?? null,
+		}),
+		[composedChatScope, attachedProjectId],
+	);
 	const requestProjectId =
 		selectedInstanceId && selectedAgent
 			? (providedAttachedProjectId ??
@@ -1413,7 +1442,9 @@ export const FabricDirectChat = forwardRef<
 		for (let i = messages.length - 1; i >= 0; i--) {
 			const m = messages[i];
 			if (m.role === "assistant" && m.content) {
-				lastAssistantContent = m.content;
+				// The notice under a reply is said to the user about it; it is
+				// not part of what the assistant wrote for the document.
+				lastAssistantContent = withoutUnbackedClaimNotice(m.content);
 				break;
 			}
 		}
@@ -1522,6 +1553,20 @@ export const FabricDirectChat = forwardRef<
 				);
 				setLoadedMessages(loaded);
 				setConversationId(activeConversation.id);
+				// A plan model picked here is kept in this conversation
+				// only: restore it, and drop one another conversation kept.
+				if (showAgentPicker && !instanceId) {
+					const kept = getConversationPlanModel(
+						activeConversation.metadata,
+					);
+					setSelectedAgent((current) =>
+						selectionForConversation({
+							kept,
+							current,
+							saved: savedSelectionRef.current,
+						}),
+					);
+				}
 				resetStream(); // Clear any streaming state
 				// Seed the context meter from the last answered turn, so a
 				// reopened conversation does not start at 0%.
@@ -1541,6 +1586,8 @@ export const FabricDirectChat = forwardRef<
 		stopStream,
 		resetStream,
 		enabledMcpConfigIds,
+		showAgentPicker,
+		instanceId,
 	]);
 
 	// Reset when user explicitly starts a new chat (clicks New Chat button)
@@ -1563,6 +1610,13 @@ export const FabricDirectChat = forwardRef<
 			setRemovedAgentProjectId(null);
 			setCurrentDocumentChatId(null);
 			setSelectedConversationMcpIds(null);
+			setSelectedAgent((current) =>
+				selectionForConversation({
+					kept: null,
+					current,
+					saved: savedSelectionRef.current,
+				}),
+			);
 			resetStream();
 		}
 	}, [
@@ -1630,6 +1684,9 @@ export const FabricDirectChat = forwardRef<
 									role: "user" as const,
 									content: userMsg.content,
 									timestamp: userMsg.timestamp.toISOString(),
+									...attachmentNamesMetadata(
+										userMsg.attachmentNames,
+									),
 								},
 							],
 							metadata: mergeDirectConversationMetadata({
@@ -1637,6 +1694,7 @@ export const FabricDirectChat = forwardRef<
 								instanceId: activeInstanceId ?? null,
 								selectedMcpConfigIds:
 									selectedConversationMcpIds ?? undefined,
+								planModel: keptPlanModel,
 							}),
 						},
 					);
@@ -1682,6 +1740,7 @@ export const FabricDirectChat = forwardRef<
 			currentDocumentChatId,
 			activeInstanceId,
 			selectedConversationMcpIds,
+			keptPlanModel,
 			attachedProjectId,
 			onConversationCreated,
 			queryClient,
@@ -1744,6 +1803,7 @@ export const FabricDirectChat = forwardRef<
 					role: "user" as const,
 					content: userMsg.content,
 					timestamp: userMsg.timestamp.toISOString(),
+					...attachmentNamesMetadata(userMsg.attachmentNames),
 				};
 				const assistantPayload = {
 					id: assistantMsg.id,
@@ -2095,10 +2155,15 @@ export const FabricDirectChat = forwardRef<
 				? storedTools === selected
 				: storedTools.length === selected.length &&
 					selected.every((id) => new Set(storedTools).has(id));
+		const storedPlanModel = getConversationPlanModel(stored);
+		const samePlanModel =
+			storedPlanModel?.canonicalName === keptPlanModel?.canonicalName &&
+			storedPlanModel?.name === keptPlanModel?.name;
 		// Compare with the last queued settings, including completed writes (Fizzy #3472).
 		if (
 			stored !== null &&
 			sameTools &&
+			samePlanModel &&
 			(stored?.instanceId ?? null) === (activeInstanceId ?? null) &&
 			(!currentDocumentChatId ||
 				stored?.documentChatId === currentDocumentChatId)
@@ -2115,6 +2180,11 @@ export const FabricDirectChat = forwardRef<
 					: {}),
 				instanceId: activeInstanceId ?? null,
 				selectedMcpConfigIds: selectedConversationMcpIds ?? null,
+				// Null removes a stored plan model; with neither, there is
+				// nothing to change.
+				...(keptPlanModel || storedPlanModel
+					? { planModel: keptPlanModel }
+					: {}),
 			},
 		};
 		lastSentConversationSettings.current.set(
@@ -2156,6 +2226,7 @@ export const FabricDirectChat = forwardRef<
 		currentDocumentChatId,
 		activeInstanceId,
 		selectedConversationMcpIds,
+		keptPlanModel,
 	]);
 
 	// File attachment handlers
@@ -3165,6 +3236,7 @@ export const FabricDirectChat = forwardRef<
 		attachedStoryId,
 		attachedTaskId,
 		composedChatScope,
+		insertChatScope,
 		excalidrawResolverOptions,
 		excalidrawResolverTarget,
 	];
@@ -4075,36 +4147,16 @@ export const FabricDirectChat = forwardRef<
 																				unknown
 																			>)
 																		: null;
-																const excalidrawResult =
-																	isExcalidrawCreateView &&
-																	tc.result &&
-																	typeof tc.result ===
-																		"object"
-																		? (tc.result as Record<
-																				string,
-																				unknown
-																			>)
-																		: null;
+																// The Excalidraw server returns the id under
+																// `structuredContent`; the shared reader
+																// checks every place a result can carry it.
 																const excalidrawCheckpointId =
-																	excalidrawResult &&
-																	typeof excalidrawResult.checkpointId ===
-																		"string"
-																		? excalidrawResult.checkpointId
-																		: excalidrawResult &&
-																				typeof (
-																					excalidrawResult as {
-																						checkpoint_id?: unknown;
-																					}
-																				)
-																					.checkpoint_id ===
-																					"string"
-																			? (
-																					excalidrawResult as {
-																						checkpoint_id: string;
-																					}
-																				)
-																					.checkpoint_id
-																			: "";
+																	isExcalidrawCreateView
+																		? (extractCheckpointId(
+																				tc.result,
+																			) ??
+																			"")
+																		: "";
 																const derivedTitle =
 																	deriveDiagramTitle(
 																		{
@@ -4195,7 +4247,7 @@ export const FabricDirectChat = forwardRef<
 																					activeOrgSlug
 																				}
 																				chatScope={
-																					composedChatScope
+																					insertChatScope
 																				}
 																				resolverOptions={
 																					excalidrawResolverOptions

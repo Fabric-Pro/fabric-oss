@@ -26,6 +26,7 @@ import {
 	canEditProject,
 	db,
 	getCodingRun,
+	hasProjectAccess,
 	isProjectReadOnly,
 } from "@repo/database";
 import { isFabricAgentsBridgeEnabled } from "@repo/temporal/coding-execution-rollout";
@@ -63,7 +64,9 @@ export const sendFollowUpProcedure = tenantProtectedProcedure
 		);
 
 		const run = await getCodingRun(input.id, user.id, organizationId);
-		if (!run) {
+		// The read side's rule (`publicCodingRuns`): a run on a project the
+		// caller cannot open is not found, whatever their organization role.
+		if (!run || !(await hasProjectAccess(run.projectId, user.id))) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Coding run not found",
 			});

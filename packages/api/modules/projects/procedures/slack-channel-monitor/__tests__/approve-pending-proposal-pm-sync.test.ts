@@ -42,6 +42,9 @@ const { handlers, mocks, schemas } = vi.hoisted(() => {
 	return { handlers, mocks, schemas };
 });
 
+/** The update-target check's ticket query: Fabric ids sit in `OR`. */
+type TargetQuery = { where: { OR?: { id?: { in: string[] } }[] } };
+
 vi.mock("@repo/database", () => ({
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	markPendingProposalApproved: mocks.markPendingProposalApproved,
@@ -61,7 +64,19 @@ vi.mock("@repo/database", () => ({
 	db: {
 		project: { findUnique: mocks.projectFindUnique },
 		feature: { findFirst: mocks.featureFindFirst },
-		userStory: { findMany: vi.fn().mockResolvedValue([]) },
+		// Every update target is a ticket of the project.
+		userStory: {
+			findMany: vi.fn(async ({ where }: TargetQuery) =>
+				(where.OR ?? [])
+					.flatMap((clause) => clause.id?.in ?? [])
+					.map((id) => ({
+						id,
+						identifier: "EX-1",
+						title: "Example ticket",
+						externalId: null,
+					})),
+			),
+		},
 	},
 	normalizeBacklogTitle: (title: string) =>
 		title
@@ -172,6 +187,7 @@ import "../approve-pending-proposal";
 
 const PROJECT_ID = "proj-slack-pm-1";
 const PROPOSAL_ID = "proposal-slack-pm-1";
+const TARGET_STORY_ID = "c0000000000000000000000001";
 const APPROVER_ID = "approver-slack-pm-1";
 const PROPOSAL_OWNER_ID = "monitor-owner-slack-pm-1";
 const ORG_ID = "org-slack-pm-1";
@@ -586,7 +602,7 @@ describe("approval workflow start failure messages", () => {
 			const change = {
 				...CHANGE_BUG,
 				action: "update" as const,
-				existingId: "story-1",
+				existingId: TARGET_STORY_ID,
 			};
 			mocks.getPendingBacklogProposal.mockResolvedValueOnce(
 				makeProposalRow({
@@ -636,7 +652,7 @@ describe("approve dispatch clock", () => {
 		const update = {
 			...CHANGE_BUG,
 			action: "update" as const,
-			existingId: "example-story",
+			existingId: TARGET_STORY_ID,
 		};
 		mocks.getPendingBacklogProposal.mockResolvedValueOnce(
 			makeProposalRow({
@@ -685,6 +701,44 @@ describe("approve dispatch clock", () => {
 	});
 });
 
+describe("update targets that are not tickets of the project", () => {
+	it("applies the other items and holds back the invalid update for review", async () => {
+		const { db } = await import("@repo/database");
+		vi.mocked(db.userStory.findMany).mockResolvedValueOnce([]);
+		mocks.getPendingBacklogProposal.mockResolvedValue(
+			makeProposalRow({ changes: [CHANGE_BUG, CHANGE_BUG] }),
+		);
+		const invalidUpdate = {
+			...CHANGE_BUG,
+			action: "update" as const,
+			existingId: "c0000000000000000000000002",
+			existingIdentifier: "EX-404",
+			title: { to: "Rerouted item" },
+		};
+
+		const result = (await handlers.approve?.({
+			input: {
+				projectId: PROJECT_ID,
+				proposalId: PROPOSAL_ID,
+				organizationId: ORG_ID,
+				approvedChanges: [CHANGE_BUG, invalidUpdate],
+				approvedChangeIndexes: [0, 1],
+				syncToPM: false,
+			},
+			context: APPROVAL_CTX,
+		})) as { heldBack: string[] };
+
+		expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(1);
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+		expect(
+			mocks.markPendingProposalApproved.mock.calls[0]?.[0].entries,
+		).toMatchObject([{ selected: true }, { selected: false }]);
+		expect(result.heldBack).toEqual([
+			"“Rerouted item” can't update EX-404: it is not a work item in this project. Pick another target or create a new ticket.",
+		]);
+	});
+});
+
 describe("stable review identity", () => {
 	it("uses the supplied index for an edited create to update override", async () => {
 		mocks.getPendingBacklogProposal.mockResolvedValue(
@@ -693,7 +747,7 @@ describe("stable review identity", () => {
 		const edited = {
 			...CHANGE_BUG,
 			action: "update",
-			existingId: "example-story",
+			existingId: TARGET_STORY_ID,
 			title: { to: "Edited title" },
 		};
 		await handlers.approve?.({

@@ -614,6 +614,8 @@ describe("which workflows may wait for a plan", () => {
 			"batch-document-generation.ts",
 			"context-summarization-workflow.ts",
 			"daily-brief-generation-workflow.ts",
+			// Automatic duplicate checks verify on the shared plans (Fizzy #3538).
+			"detect-duplicates.ts",
 			"document-generation-child.ts",
 			"document-refresh.ts",
 			"existing-project-setup.ts",
@@ -629,6 +631,8 @@ describe("which workflows may wait for a plan", () => {
 			// rather than skip the threads a spent plan refused.
 			"slack-channel-backfill.ts",
 			"template-instance-execution.ts",
+			// The Proposal Inbox's duplicate verifier, like the roadmap's.
+			"verify-inbox-duplicates.ts",
 			"workflow-builder-execution.ts",
 		]);
 	});

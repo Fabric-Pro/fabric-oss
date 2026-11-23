@@ -16,6 +16,9 @@
  *   - Stamps the correct tool-call by (messageId, toolCallId) and
  *     preserves every other tool call intact.
  *   - Does NOT emit an audit event (per spec §5.8).
+ *   - Takes the conversation row lock before it reads the messages, and
+ *     reads and writes them inside that transaction, so a message another
+ *     writer committed first is kept.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -61,6 +64,12 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	repoDatabaseMock.getDocumentRefProjectId.mockResolvedValue("proj-1");
 	repoDatabaseMock.hasProjectAccess.mockResolvedValue(true);
+	repoDatabaseMock.lockConversationRow.mockResolvedValue(true);
+	dbMock.$transaction.mockImplementation(
+		async (fn: (tx: unknown) => Promise<unknown>) => fn(dbMock),
+	);
+	// The messages as the locked row holds them.
+	dbMock.agentConversation.findUnique.mockResolvedValue({ messages });
 });
 
 describe("recordDiffOutcome — happy path", () => {
@@ -136,6 +145,103 @@ describe("recordDiffOutcome — happy path", () => {
 			id: "tc-c",
 			rejectedAt: "2026-05-19T10:30:00.000Z",
 		});
+	});
+});
+
+describe("recordDiffOutcome — the conversation row lock", () => {
+	const input = {
+		conversationId: "conv-1",
+		projectId: "proj-1",
+		organizationId: "org-1",
+		messageId: "msg-1",
+		toolCallId: "tc-a",
+		outcome: "rejected" as const,
+		at: "2026-05-19T10:00:00.000Z",
+	};
+
+	beforeEach(() => {
+		dbMock.documentAssistantConversation.findUnique.mockResolvedValue({
+			id: "join-1",
+			userId: "user-1",
+			organizationId: "org-1",
+			projectId: "proj-1",
+			documentRefKind: "PROJECT_DOCUMENT",
+			documentRefId: "doc-1",
+			conversation: { id: "conv-1" },
+		});
+	});
+
+	it("locks the row, then reads and writes the messages inside the transaction", async () => {
+		await handlers.recordDiffOutcome({
+			context: makeContext() as unknown as BuiltContext,
+			input,
+		});
+
+		expect(dbMock.$transaction).toHaveBeenCalledTimes(1);
+		expect(repoDatabaseMock.lockConversationRow).toHaveBeenCalledWith(
+			dbMock,
+			"conv-1",
+		);
+		expect(dbMock.agentConversation.findUnique).toHaveBeenCalledWith({
+			where: { id: "conv-1" },
+			select: { messages: true },
+		});
+		const lockOrder =
+			repoDatabaseMock.lockConversationRow.mock.invocationCallOrder[0]!;
+		const readOrder =
+			dbMock.agentConversation.findUnique.mock.invocationCallOrder[0]!;
+		const writeOrder =
+			dbMock.agentConversation.update.mock.invocationCallOrder[0]!;
+		expect(lockOrder).toBeLessThan(readOrder);
+		expect(readOrder).toBeLessThan(writeOrder);
+	});
+
+	it("keeps a message another writer added before the lock was granted", async () => {
+		// The "Changes rejected." operation result committed while this
+		// request waited on the lock.
+		const operationResult = {
+			id: "sys-1",
+			role: "system",
+			content: "Changes rejected.",
+			metadata: { operationKey: "op-1" },
+		};
+		dbMock.agentConversation.findUnique.mockResolvedValue({
+			messages: [...messages, operationResult],
+		});
+
+		await handlers.recordDiffOutcome({
+			context: makeContext() as unknown as BuiltContext,
+			input,
+		});
+
+		const updateCall = dbMock.agentConversation.update.mock.calls[0]?.[0];
+		const persisted = updateCall.data.messages as Array<
+			Record<string, unknown> & {
+				toolCalls?: Array<Record<string, unknown>>;
+			}
+		>;
+		expect(persisted).toHaveLength(3);
+		expect(persisted[2]).toEqual(operationResult);
+		expect(persisted[0]!.toolCalls?.[0]).toMatchObject({
+			id: "tc-a",
+			rejectedAt: "2026-05-19T10:00:00.000Z",
+		});
+	});
+
+	it("returns NOT_FOUND and writes nothing when the row is gone", async () => {
+		repoDatabaseMock.lockConversationRow.mockResolvedValue(false);
+
+		await expect(
+			handlers.recordDiffOutcome({
+				context: makeContext() as unknown as BuiltContext,
+				input,
+			}),
+		).rejects.toMatchObject({
+			code: "NOT_FOUND",
+			message: "Conversation not found",
+		});
+		expect(dbMock.agentConversation.findUnique).not.toHaveBeenCalled();
+		expect(dbMock.agentConversation.update).not.toHaveBeenCalled();
 	});
 });
 

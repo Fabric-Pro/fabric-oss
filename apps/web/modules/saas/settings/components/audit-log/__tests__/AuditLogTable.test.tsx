@@ -259,6 +259,63 @@ describe("AuditLogTable - new columns", () => {
 		);
 	});
 
+	it("names an agent row by the agent, not as the system", async () => {
+		listMock.mockResolvedValue({
+			items: [
+				row({
+					actorType: "agent",
+					actorEmailSnapshot: null,
+					actorNameSnapshot: "Fabric Parlume",
+					action: "project.parlume.action_executed",
+				}),
+			],
+			nextCursor: null,
+			totalCount: 1,
+		});
+		renderTable();
+		await waitFor(() =>
+			expect(screen.getByText("Fabric Parlume")).toBeInTheDocument(),
+		);
+		expect(
+			screen.getByText("settings.auditLog.badges.agent"),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText("settings.auditLog.badges.system"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByTestId("audit-actor-acting-for"),
+		).not.toBeInTheDocument();
+	});
+
+	it("shows whom an agent acted for under the agent's name", async () => {
+		listMock.mockResolvedValue({
+			items: [
+				row({
+					actorType: "agent",
+					actorEmailSnapshot: "dana@example.com",
+					actorNameSnapshot: "Fabric Parlume",
+					action: "project.parlume.request_answered",
+				}),
+			],
+			nextCursor: null,
+			totalCount: 1,
+		});
+		renderTable();
+		await waitFor(() =>
+			expect(screen.getByText("Fabric Parlume")).toBeInTheDocument(),
+		);
+		// The global next-intl mock returns the key without its values; the
+		// full email is the line's title.
+		const actingFor = screen.getByTestId("audit-actor-acting-for");
+		expect(actingFor).toHaveTextContent(
+			"settings.auditLog.badges.actingFor",
+		);
+		expect(actingFor).toHaveAttribute("title", "dana@example.com");
+		expect(screen.getByTestId("audit-actor-copy")).toHaveTextContent(
+			"Fabric Parlume",
+		);
+	});
+
 	it("renders the action's static catalog label when next-intl is mocked", async () => {
 		listMock.mockResolvedValue({
 			items: [row()],

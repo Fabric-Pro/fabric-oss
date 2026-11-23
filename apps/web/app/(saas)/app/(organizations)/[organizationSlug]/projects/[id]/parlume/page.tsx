@@ -9,7 +9,9 @@
  *
  * `canEdit` is `project.canManageMembers`, the same `PROJECT_MEMBERS_MANAGE`
  * capability the start and stop procedures enforce, so the controls appear
- * exactly for the people the server will accept. Presentation only.
+ * exactly for the people the server will accept. `canAct` is
+ * `project.canUpdateProject` (PROJECT_UPDATE), what the page-question and
+ * suggestion-button procedures require. Presentation only.
  */
 
 import { isFeatureEnabled } from "@repo/database";
@@ -69,6 +71,7 @@ export default async function OrganizationParlumePage({ params }: Props) {
 				projectBasePath={`${basePath}/projects/${id}`}
 				settingsBasePath={`${basePath}/settings`}
 				canEdit={projectResult.project.canManageMembers === true}
+				canAct={projectResult.project.canUpdateProject === true}
 			/>
 		</div>
 	);

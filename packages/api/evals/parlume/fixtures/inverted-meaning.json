@@ -1,0 +1,149 @@
+{
+	"id": "inverted-meaning",
+	"title": "Release scope review for the mobile app",
+	"covers": [
+		"inverted-meaning statements: a negation around words a quote can lift",
+		"a date that moves",
+		"keeping something by saying it is not removed"
+	],
+	"segments": [
+		{
+			"id": 1,
+			"speaker": "Morgan Example",
+			"text": "Let's go through the release scope for the mobile app.",
+			"startMs": 0,
+			"endMs": 8000
+		},
+		{
+			"id": 2,
+			"speaker": "Jordan Example",
+			"text": "I'm not saying we should drop the audit log. We keep it in this release.",
+			"startMs": 10000,
+			"endMs": 18000
+		},
+		{
+			"id": 3,
+			"speaker": "Morgan Example",
+			"text": "Good. And the mobile app will not ship in March, the store review takes too long.",
+			"startMs": 20000,
+			"endMs": 28000
+		},
+		{
+			"id": 4,
+			"speaker": "Jordan Example",
+			"text": "Right, we move the mobile launch to April.",
+			"startMs": 30000,
+			"endMs": 38000
+		},
+		{
+			"id": 5,
+			"speaker": "Casey Example",
+			"text": "I thought we'd cut offline mode?",
+			"startMs": 40000,
+			"endMs": 48000
+		},
+		{
+			"id": 6,
+			"speaker": "Morgan Example",
+			"text": "No, we're not cutting offline mode. It stays, just behind a flag.",
+			"startMs": 50000,
+			"endMs": 58000
+		},
+		{
+			"id": 7,
+			"speaker": "Casey Example",
+			"text": "Fine by me. I'll update the release checklist today.",
+			"startMs": 60000,
+			"endMs": 68000
+		},
+		{
+			"id": 8,
+			"speaker": "Morgan Example",
+			"text": "Hardly anyone uses the legacy sync, but we're not removing it yet.",
+			"startMs": 70000,
+			"endMs": 78000
+		},
+		{
+			"id": 9,
+			"speaker": "Jordan Example",
+			"text": "Agreed, legacy sync stays until the next major version.",
+			"startMs": 80000,
+			"endMs": 88000
+		}
+	],
+	"truth": {
+		"decisions": [
+			{
+				"text": "Keep the audit log in this release.",
+				"keywords": ["audit", "keep|kept|stay|stays|retain|remain"],
+				"segments": [2]
+			},
+			{
+				"text": "The mobile app will not ship in March.",
+				"keywords": [
+					"mobile|app",
+					"march",
+					"not|no|won|delay|move|april|later|postpone"
+				],
+				"segments": [3]
+			},
+			{
+				"text": "The mobile launch moves to April.",
+				"keywords": ["mobile|launch|app", "april"],
+				"segments": [4]
+			},
+			{
+				"text": "Offline mode stays, behind a flag.",
+				"keywords": ["offline", "keep|kept|stay|stays|flag|remain|not"],
+				"segments": [6]
+			},
+			{
+				"text": "Legacy sync stays until the next major version.",
+				"keywords": ["legacy", "keep|kept|stay|stays|remain|not|until"],
+				"segments": [8, 9]
+			}
+		],
+		"actionItems": [
+			{
+				"text": "Update the release checklist.",
+				"keywords": ["checklist"],
+				"segments": [7],
+				"owner": "Casey Example",
+				"due": "today"
+			}
+		]
+	},
+	"suggestions": {
+		"passesAfter": [4, 9],
+		"workItems": [
+			{
+				"identifier": "MOB-12",
+				"title": "Mobile app store submission",
+				"status": "In progress",
+				"priority": "HIGH",
+				"owner": "Jordan Example"
+			},
+			{
+				"identifier": "MOB-20",
+				"title": "Offline mode behind a feature flag",
+				"status": "To do",
+				"priority": "MEDIUM",
+				"owner": null
+			}
+		],
+		"agenda": null,
+		"previousQuestions": [],
+		"expected": [
+			{
+				"kind": "answer",
+				"text": "MOB-12 Mobile app store submission is in progress with Jordan Example; its date may need to move to April.",
+				"keywords": ["mob-12|submission|store", "april"]
+			},
+			{
+				"kind": "missed_question",
+				"text": "Who will put offline mode behind the flag, and by when?",
+				"keywords": ["offline", "who|owner|own|assign"]
+			}
+		]
+	}
+}

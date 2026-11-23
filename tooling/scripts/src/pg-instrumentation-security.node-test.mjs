@@ -1,18 +1,27 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 import {
 	installedConsumers,
 	installedDependency,
 } from "./installed-consumers.mjs";
+import {
+	addPackage,
+	assertRejectsMalformed,
+	entriesNamed,
+	isStableAtLeast,
+	mutableCopy,
+	readLockfile,
+	referencesTo,
+	requireLockfile,
+	semver,
+	validateLockfile,
+} from "./lockfile-shape.mjs";
 
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 const pgName = "@opentelemetry/instrumentation-pg";
+// [parent, parent version, PG instrumentation version that parent resolves]
 const pgParents = [
-	["@azure/monitor-opentelemetry", "1.20.1"],
-	["@opentelemetry/auto-instrumentations-node", "0.79.0"],
+	["@azure/monitor-opentelemetry", "1.20.1", "0.73.0"],
+	["@opentelemetry/auto-instrumentations-node", "0.81.2", "0.76.0"],
 ];
 const floors = {
 	pg: "0.73.0",
@@ -24,84 +33,71 @@ const floors = {
 	tedious: "0.40.0",
 	"cassandra-driver": "0.66.0",
 };
-const yaml = installedConsumers("@changesets/parse", "1.0.0")[0].require(
-	"yaml",
-);
-const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
-	"semver",
-);
-
 function verifyInstrumentation(lockfile) {
-	for (const section of ["packages", "snapshots"]) {
-		assert.ok(lockfile[section] && typeof lockfile[section] === "object");
-		for (const [instrumentation, floor] of Object.entries(floors)) {
-			const prefix = `@opentelemetry/instrumentation-${instrumentation}@`;
-			const entries = Object.keys(lockfile[section]).filter((key) =>
-				key.startsWith(prefix),
-			);
-			assert.ok(entries.length > 0, `Missing ${prefix}`);
-			for (const key of entries) {
+	requireLockfile(lockfile);
+	for (const [instrumentation, floor] of Object.entries(floors)) {
+		const name = `@opentelemetry/instrumentation-${instrumentation}`;
+		for (const section of ["packages", "snapshots"]) {
+			const entries = entriesNamed(lockfile, section, name);
+			assert.ok(entries.length > 0, `Missing ${name}@ in ${section}`);
+			for (const { key, version } of entries) {
 				assert.ok(
-					semver.gte(key.slice(prefix.length).split("(")[0], floor),
+					isStableAtLeast(version, floor),
 					`Vulnerable instrumentation: ${key}`,
 				);
 			}
 		}
-	}
-	for (const [section, owners] of [
-		["importer", lockfile.importers],
-		["snapshot", lockfile.snapshots],
-	]) {
-		assert.ok(owners);
-		for (const [owner, metadata] of Object.entries(owners)) {
-			for (const group of [
-				"dependencies",
-				"devDependencies",
-				"optionalDependencies",
-			]) {
-				for (const [name, dependency] of Object.entries(
-					metadata[group] ?? {},
-				)) {
-					const reference =
-						section === "importer"
-							? dependency.version
-							: dependency;
-					if (
-						name === pgName ||
-						reference?.startsWith(`${pgName}@`)
-					) {
-						const version = reference
-							.replace(`${pgName}@`, "")
-							.split("(")[0];
-						assert.ok(
-							semver.gte(version, floors.pg),
-							`Vulnerable PG reference: ${owner}`,
-						);
-					}
-				}
-			}
+		// Every direct or aliased reference, not only the PG one.
+		for (const reference of referencesTo(lockfile, name)) {
+			assert.ok(
+				reference.target?.name === name &&
+					isStableAtLeast(reference.target.version, floor),
+				`Vulnerable ${instrumentation === "pg" ? "PG" : instrumentation} reference: ${reference.owner}`,
+			);
 		}
 	}
 }
 
 test("all eight database instrumentation advisory floors cover every lockfile version", () => {
-	const lockfile = yaml.parse(
-		readFileSync(join(root, "pnpm-lock.yaml"), "utf8"),
-	);
+	const lockfile = readLockfile();
 	verifyInstrumentation(lockfile);
-	for (const section of ["packages", "snapshots"]) {
-		const bad = structuredClone(lockfile);
-		bad[section][`${pgName}@0.69.0`] = {};
+	for (const version of ["0.69.0", "0.80.0-rc.1"]) {
+		const bad = addPackage(mutableCopy(lockfile), `${pgName}@${version}`);
 		assert.throws(
-			() => verifyInstrumentation(bad),
+			() => verifyInstrumentation(validateLockfile(bad)),
 			/Vulnerable instrumentation/,
+			version,
 		);
 	}
-	const bad = structuredClone(lockfile);
+	// Registry references always name a snapshot the entry check reads, so
+	// the reference check is shown on `file:` copies.
+	for (const [name, version] of [
+		["unreviewed-pg-alias", `${pgName}@file:vendor/pg`],
+		[pgName, "file:vendor/pg"],
+	]) {
+		const bad = mutableCopy(lockfile);
+		bad.importers["."].dependencies = {
+			...bad.importers["."].dependencies,
+			[name]: { specifier: "*", version },
+		};
+		assert.throws(
+			() => verifyInstrumentation(validateLockfile(bad)),
+			/Vulnerable PG reference/,
+		);
+	}
+	const bad = mutableCopy(lockfile);
 	bad.importers["."].dependencies = {
-		"unreviewed-pg-alias": { version: `${pgName}@0.69.0` },
+		...bad.importers["."].dependencies,
+		"mysql-alias": {
+			specifier: "*",
+			version: "@opentelemetry/instrumentation-mysql2@file:vendor/mysql2",
+		},
 	};
-	assert.throws(() => verifyInstrumentation(bad), /Vulnerable PG reference/);
+	assert.throws(
+		() => verifyInstrumentation(validateLockfile(bad)),
+		/Vulnerable mysql2 reference/,
+	);
+	assertRejectsMalformed(verifyInstrumentation, lockfile);
 });
 
 const baseParams = {
@@ -146,11 +142,11 @@ const cases = [
 	},
 ];
 
-for (const [parentName, parentVersion] of pgParents) {
+for (const [parentName, parentVersion, pgVersion] of pgParents) {
 	test(`${parentName}: supported PG parent retains fixed instrumentation`, () => {
 		for (const parent of installedConsumers(parentName, parentVersion)) {
 			const pg = installedDependency(parent.require, pgName);
-			assert.equal(pg.manifest.version, "0.73.0");
+			assert.equal(pg.manifest.version, pgVersion);
 			assert.ok(
 				semver.satisfies(
 					pg.manifest.version,

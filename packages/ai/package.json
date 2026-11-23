@@ -6,6 +6,7 @@
 		"@ai-sdk/groq": "^4.0.57",
 		"@ai-sdk/openai": "^4.0.87",
 		"@ai-sdk/typesafe-ai": "^3.0.24",
+		"@azure/identity": "4.14.1",
 		"@repo/agent-prompts": "workspace:*",
 		"@repo/agent-types": "workspace:*",
 		"@repo/config": "workspace:*",

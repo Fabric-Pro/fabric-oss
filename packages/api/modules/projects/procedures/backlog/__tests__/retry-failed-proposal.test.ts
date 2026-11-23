@@ -34,6 +34,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		getPendingProposalReview: vi.fn(),
 		getAppliedChangeIndexes: vi.fn(),
 		finalizeBacklogUpdateSession: vi.fn(),
+		userStoryFindMany: vi.fn(),
 	};
 	return { handlers, mocks };
 });
@@ -45,6 +46,7 @@ vi.mock("@repo/database", () => ({
 	finalizeBacklogUpdateSession: mocks.finalizeBacklogUpdateSession,
 	db: {
 		project: { findFirst: mocks.projectFindFirst },
+		userStory: { findMany: mocks.userStoryFindMany },
 		pendingBacklogProposal: {
 			update: mocks.proposalUpdate,
 			updateMany: mocks.proposalUpdate,
@@ -1127,6 +1129,90 @@ describe("items moved to Rejected on a FAILED proposal", () => {
 			code: "CONFLICT",
 			message: expect.stringContaining("changed after you opened it"),
 		});
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+	});
+});
+
+describe("update targets on a retry", () => {
+	const MISSING_TARGET = "c0000000000000000000000009";
+	const changes = [
+		{
+			type: "feature",
+			action: "create",
+			title: { to: "New feature" },
+			kindOverride: null,
+		},
+		{
+			type: "feature",
+			action: "update",
+			existingId: MISSING_TARGET,
+			existingIdentifier: "F-9",
+			title: { from: "Old title", to: "Enriched title" },
+			kindOverride: null,
+		},
+	];
+	const retry = () =>
+		handlers.retry({
+			input: {
+				projectId: "project-1",
+				proposalId: "proposal-1",
+				organizationId: "org-1",
+			},
+			context: ctx,
+		});
+
+	it("replays the valid items and holds back an update whose target is not in the project", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			...baseProposal,
+			proposal: { changes },
+		});
+		mocks.userStoryFindMany.mockResolvedValue([]);
+
+		const result = (await retry()) as { heldBack?: string[] };
+
+		expect(mocks.userStoryFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					projectId: "project-1",
+					OR: [{ id: { in: [MISSING_TARGET] } }],
+				},
+			}),
+		);
+		const args = mocks.workflowStart.mock.calls[0]?.[1].args[0];
+		expect(args.approvedChanges).toEqual([changes[0]]);
+		expect(args.approvedChangeIndexes).toEqual([0]);
+		expect(result.heldBack).toEqual([
+			"“Enriched title” can't update F-9: it is not a work item in this project. Pick another target or create a new ticket.",
+		]);
+	});
+
+	it("returns the proposal to review, naming the item, when only invalid updates are left", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			...baseProposal,
+			proposal: { changes },
+			appliedChangeIndexes: [0],
+		});
+		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set([0]));
+		mocks.userStoryFindMany.mockResolvedValue([]);
+		mocks.returnFailedProposalToReview.mockResolvedValue(true);
+
+		const result = (await retry()) as {
+			workflowId: string | null;
+			message: string;
+			heldBack?: string[];
+		};
+
+		expect(result.workflowId).toBeNull();
+		expect(result.message).toBe(
+			"No item could be retried. The proposal is back in review.",
+		);
+		expect(result.heldBack).toEqual([
+			expect.stringContaining("“Enriched title” can't update F-9"),
+		]);
+		expect(mocks.returnFailedProposalToReview).toHaveBeenCalledWith(
+			"proposal-1",
+			expect.anything(),
+		);
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
 	});
 });

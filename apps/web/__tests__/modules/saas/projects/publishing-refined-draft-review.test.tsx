@@ -64,12 +64,12 @@ const { capturedEditorOptions, fakeEditor } = vi.hoisted(() => {
 	const insertNode = {
 		isText: true,
 		nodeSize: 5,
-		marks: [{ type: { name: "diffInsert" } }],
+		marks: [{ type: { name: "diffInsert" }, attrs: { move: null } }],
 	};
 	const deleteNode = {
 		isText: true,
 		nodeSize: 4,
-		marks: [{ type: { name: "diffDelete" } }],
+		marks: [{ type: { name: "diffDelete" }, attrs: { move: null } }],
 	};
 	return {
 		capturedEditorOptions: {

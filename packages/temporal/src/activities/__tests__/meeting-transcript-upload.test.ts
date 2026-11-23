@@ -242,6 +242,23 @@ describe("ingestUploadedTranscript", () => {
 		).toEqual(["Anna"]);
 	});
 
+	it("reads a Markdown file, whatever the case of its extension, and keeps the Markdown", async () => {
+		const markdown =
+			"## Standup\n\n**Alice:** One.\n**Bob:** Two.\n**Alice:** Three.\n";
+		mocks.contextFindFirst.mockResolvedValue(
+			storedContext({ originalFilename: "standup.MD" }),
+		);
+		mocks.downloadFile.mockResolvedValue({ data: Buffer.from(markdown) });
+
+		const result = await ingestUploadedTranscript(INPUT);
+
+		expect(result.outcome).toBe("ingested");
+		const stored = mocks.createUploadedTranscript.mock.calls[0]?.[0];
+		expect(stored.speakerNames).toEqual(["Alice"]);
+		expect(stored.content).toContain("**Alice:** One.");
+		expect(stored.content).toContain("## Standup");
+	});
+
 	it("removes what Postgres cannot store", async () => {
 		mocks.contextFindFirst.mockResolvedValue(
 			storedContext({ originalFilename: "Planning.txt" }),
@@ -311,7 +328,7 @@ describe("ingestUploadedTranscript", () => {
 			const result = await ingestUploadedTranscript(INPUT);
 
 			expect(result.outcome).toBe("rejected");
-			expect(failureMessage()).toContain(".txt, .vtt, .docx");
+			expect(failureMessage()).toContain(".txt, .vtt, .docx, .md");
 		});
 
 		it("says so when there is no text in it", async () => {
@@ -323,6 +340,20 @@ describe("ingestUploadedTranscript", () => {
 
 			expect(result.outcome).toBe("rejected");
 			expect(failureMessage()).toContain("no text");
+		});
+
+		it("says so when a Markdown file is empty", async () => {
+			mocks.contextFindFirst.mockResolvedValue(
+				storedContext({ originalFilename: "standup.md" }),
+			);
+			mocks.downloadFile.mockResolvedValue({
+				data: Buffer.from("  \n\n "),
+			});
+
+			const result = await ingestUploadedTranscript(INPUT);
+
+			expect(result.outcome).toBe("rejected");
+			expect(failureMessage()).toBe("There is no text in this file.");
 		});
 
 		it("says so when a Word file cannot be opened", async () => {

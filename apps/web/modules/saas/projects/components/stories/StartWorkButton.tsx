@@ -48,6 +48,8 @@ type Props = {
 	storyId: string;
 	story: UserStory;
 	projectName?: string;
+	/** Whether the viewer may change this work item (STORY_UPDATE). */
+	canEdit?: boolean;
 	canExecuteAgents?: boolean;
 	readOnlyMode?: boolean;
 	hasActiveCodingRun?: boolean;
@@ -70,6 +72,7 @@ export function StartWorkButton({
 	storyId,
 	story,
 	projectName,
+	canEdit = true,
 	canExecuteAgents = false,
 	readOnlyMode = false,
 	hasActiveCodingRun = false,
@@ -203,6 +206,7 @@ export function StartWorkButton({
 									<Button
 										size={size}
 										className={cn("gap-2", className)}
+										disabled={!canEdit}
 									>
 										<SparklesIcon className="size-4" />
 										<span>Start work</span>

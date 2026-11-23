@@ -29,8 +29,12 @@ const mocks = vi.hoisted(() => ({
 	listSessions: vi.fn(),
 	start: vi.fn(),
 	stop: vi.fn(),
+	deleteSession: vi.fn(),
+	regenerateNotes: vi.fn(),
+	proposeActionItem: vi.fn(),
 	history: vi.fn(),
 	usage: vi.fn(),
+	setConfidential: vi.fn(),
 }));
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: { projects: { parlume: mocks } },
@@ -132,6 +136,8 @@ describe("ParlumePage sessions table", () => {
 		["PROVIDER_FAILED", "Provider failed"],
 		["START_FAILED", "Never joined"],
 		["NOT_ADMITTED", "Not admitted from the lobby"],
+		["EXTERNAL_GUEST", "Left when a guest joined"],
+		["ATTENDEE_NOT_AUTHORIZED", "Left for an unconfirmed attendee"],
 	])("labels end reason %s as the outcome", async (endReason, label) => {
 		mocks.listSessions.mockResolvedValue(
 			page([session({ endReason: endReason as "STOPPED" })]),
@@ -142,7 +148,7 @@ describe("ParlumePage sessions table", () => {
 
 	it("says nobody admitted Parlume when it timed out in the lobby", async () => {
 		const reason =
-			"Nobody admitted Parlume from the lobby within 10 minutes.";
+			"Nobody admitted Parlume from the lobby within 5 minutes.";
 		mocks.listSessions.mockResolvedValue(
 			page([
 				session({
@@ -325,6 +331,253 @@ describe("ParlumePage sessions table", () => {
 		expect(screen.queryByText(/###/)).toBeNull();
 	});
 
+	const anchoredNotes = {
+		transcriptContextId: "ctx1",
+		notes: "### Decisions\n- Ship the draft on Friday.",
+		notesStatus: "COMPLETED",
+		notesItems: [
+			{
+				kind: "decision" as const,
+				text: "Ship the draft on Friday.",
+				anchorLine: 4,
+			},
+			{
+				kind: "action" as const,
+				text: "Write the release notes.",
+				anchorLine: 7,
+				tentativeOwnerName: "Dev One",
+				dueHint: "by Friday",
+			},
+		],
+	};
+
+	it("links each anchored note to the transcript line it rests on", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "a",
+					agentLabel: "Assistant A",
+					...anchoredNotes,
+				}),
+			]),
+		);
+		showPage();
+		await sessionsTable();
+
+		await user.click(within(rowOf("Assistant A")).getByRole("button"));
+
+		expect(
+			screen.getByRole("heading", { name: "Decisions" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("heading", { name: "Action items" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("(Owner: Dev One, Due: by Friday)"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("link", { name: "Open the transcript at line 4" }),
+		).toHaveAttribute("href", `${PROJECT_BASE_PATH}/contexts/ctx1#t-4`);
+		expect(
+			screen.getByRole("link", { name: "Open the transcript at line 7" }),
+		).toHaveAttribute("href", `${PROJECT_BASE_PATH}/contexts/ctx1#t-7`);
+		expect(screen.queryByText(/###/)).toBeNull();
+		// Proposing is for a member the list says may.
+		expect(screen.queryByRole("button", { name: /^Propose / })).toBeNull();
+	});
+
+	it("shows anchored notes without transcript links to a reader who may not open the transcript", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "a",
+					agentLabel: "Assistant A",
+					...anchoredNotes,
+					canReadTranscript: false,
+					canDeleteSession: false,
+				}),
+			]),
+		);
+		showPage();
+		await sessionsTable();
+
+		await user.click(within(rowOf("Assistant A")).getByRole("button"));
+
+		expect(
+			screen.getByText("Ship the draft on Friday."),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("link", { name: /Open the transcript at line/ }),
+		).toBeNull();
+	});
+
+	it("proposes an action item to the Proposal Inbox for a member who may", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "a",
+					agentLabel: "Assistant A",
+					...anchoredNotes,
+					canProposeActionItems: true,
+				}),
+			]),
+		);
+		mocks.proposeActionItem.mockResolvedValue({
+			status: "proposed",
+			proposalId: "proposal-1",
+		});
+		showPage();
+		await sessionsTable();
+		await user.click(within(rowOf("Assistant A")).getByRole("button"));
+
+		// Only the action item, not the decision, can be proposed.
+		const propose = screen.getAllByRole("button", { name: /^Propose / });
+		expect(propose).toHaveLength(1);
+		await user.click(
+			screen.getByRole("button", {
+				name: 'Propose "Write the release notes." as a ticket',
+			}),
+		);
+
+		expect(mocks.proposeActionItem).toHaveBeenCalledWith({
+			projectId: "example-project",
+			sessionId: "a",
+			anchorLine: 7,
+			text: "Write the release notes.",
+		});
+		expect(
+			await screen.findByText("Proposed to the Proposal Inbox."),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /^Propose / })).toBeNull();
+	});
+
+	it("says why an action item could not be proposed, and lets the reader try again", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "a",
+					agentLabel: "Assistant A",
+					...anchoredNotes,
+					canProposeActionItems: true,
+				}),
+			]),
+		);
+		mocks.proposeActionItem.mockRejectedValue(
+			new Error("This action item is no longer in the meeting's notes."),
+		);
+		showPage();
+		await sessionsTable();
+		await user.click(within(rowOf("Assistant A")).getByRole("button"));
+
+		await user.click(screen.getByRole("button", { name: /^Propose / }));
+
+		expect(
+			await screen.findByText(
+				"This action item is no longer in the meeting's notes.",
+			),
+		).toHaveAttribute("role", "alert");
+		expect(screen.getByRole("button", { name: /^Propose / })).toBeEnabled();
+	});
+
+	it("writes the notes again when someone who may delete the session asks", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "a",
+					agentLabel: "Assistant A",
+					...anchoredNotes,
+					canRegenerateNotes: true,
+				}),
+			]),
+		);
+		mocks.regenerateNotes.mockResolvedValue({ notesStatus: "PENDING" });
+		showPage();
+		await sessionsTable();
+		await user.click(within(rowOf("Assistant A")).getByRole("button"));
+		const listedBefore = mocks.listSessions.mock.calls.length;
+
+		await user.click(
+			screen.getByRole("button", { name: "Regenerate notes" }),
+		);
+
+		expect(mocks.regenerateNotes).toHaveBeenCalledWith({
+			projectId: "example-project",
+			sessionId: "a",
+		});
+		await waitFor(() =>
+			expect(mocks.listSessions.mock.calls.length).toBeGreaterThan(
+				listedBefore,
+			),
+		);
+	});
+
+	it("offers no regenerate to a reader who may not, and says when the notes are being written again", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "a",
+					agentLabel: "Assistant A",
+					...anchoredNotes,
+					notesStatus: "PENDING",
+				}),
+			]),
+		);
+		showPage();
+		await sessionsTable();
+
+		await user.click(within(rowOf("Assistant A")).getByRole("button"));
+
+		expect(
+			screen.getByText("Writing the notes again…"),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Regenerate notes" }),
+		).toBeNull();
+	});
+
+	it("says when writing the notes again failed and keeps the earlier notes", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "a",
+					agentLabel: "Assistant A",
+					...anchoredNotes,
+					notesStatus: "FAILED",
+					canRegenerateNotes: true,
+				}),
+			]),
+		);
+		mocks.regenerateNotes.mockRejectedValue(
+			new Error("Parlume is still writing the notes of this meeting."),
+		);
+		showPage();
+		await sessionsTable();
+		await user.click(within(rowOf("Assistant A")).getByRole("button"));
+
+		expect(
+			screen.getByText(
+				"The notes could not be written again. These are the earlier notes.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("Ship the draft on Friday."),
+		).toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("button", { name: "Regenerate notes" }),
+		);
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Parlume is still writing the notes of this meeting.",
+		);
+	});
+
 	it("opens and closes with the keyboard", async () => {
 		const user = userEvent.setup();
 		mocks.listSessions.mockResolvedValue(
@@ -398,6 +651,170 @@ describe("ParlumePage sessions table", () => {
 		expect(
 			screen.queryByRole("link", { name: "Open transcript" }),
 		).toBeNull();
+	});
+
+	it("keeps the transcript from a reader who did not invite Parlume and does not manage the project", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "a",
+					agentLabel: "Assistant A",
+					transcriptContextId: "ctx1",
+					notes: "Decided to ship.",
+					canReadTranscript: false,
+					canDeleteSession: false,
+				}),
+			]),
+		);
+		showPage();
+		await sessionsTable();
+
+		await user.click(within(rowOf("Assistant A")).getByRole("button"));
+
+		expect(screen.getByText("Decided to ship.")).toBeInTheDocument();
+		expect(
+			screen.queryByRole("link", { name: "Open transcript" }),
+		).toBeNull();
+		expect(
+			screen.getByText(
+				"Only the people invited to this meeting, the person who invited Parlume and project managers can open the transcript.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Delete session" }),
+		).toBeNull();
+	});
+
+	it("lets a member the meeting invited open the transcript, but not delete it for everyone", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "a",
+					agentLabel: "Assistant A",
+					transcriptContextId: "ctx1",
+					notes: "Decided to ship.",
+					canReadTranscript: true,
+					canDeleteSession: false,
+				}),
+			]),
+		);
+		showPage();
+		await sessionsTable();
+
+		await user.click(within(rowOf("Assistant A")).getByRole("button"));
+
+		expect(
+			screen.getByRole("link", { name: "Open transcript" }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Delete session" }),
+		).toBeNull();
+	});
+
+	it("says a deleted transcript is gone and keeps the notes", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "a",
+					agentLabel: "Assistant A",
+					transcriptContextId: "ctx1",
+					transcriptDeletedAt: new Date("2026-10-01T10:00:00Z"),
+					notes: "Decided to ship.",
+				}),
+			]),
+		);
+		showPage();
+		await sessionsTable();
+
+		await user.click(within(rowOf("Assistant A")).getByRole("button"));
+
+		expect(screen.getByText("Decided to ship.")).toBeInTheDocument();
+		expect(
+			screen.getByText("The transcript was deleted. The notes stay."),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("link", { name: "Open transcript" }),
+		).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Delete session" }),
+		).toBeNull();
+	});
+
+	it("deletes a finished session only after the reader confirms", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "a",
+					agentLabel: "Assistant A",
+					transcriptContextId: "ctx1",
+					notes: "Decided to ship.",
+				}),
+			]),
+		);
+		mocks.deleteSession.mockResolvedValue({
+			session: session({ id: "a" }),
+		});
+		showPage();
+		await sessionsTable();
+		await user.click(within(rowOf("Assistant A")).getByRole("button"));
+		const listedBefore = mocks.listSessions.mock.calls.length;
+
+		await user.click(
+			screen.getByRole("button", { name: "Delete session" }),
+		);
+		expect(mocks.deleteSession).not.toHaveBeenCalled();
+		const confirm = screen.getByRole("group", { name: "Confirm deletion" });
+		expect(
+			within(confirm).getByRole("button", { name: "Keep session" }),
+		).toHaveFocus();
+
+		await user.click(
+			within(confirm).getByRole("button", { name: "Delete now" }),
+		);
+
+		expect(mocks.deleteSession).toHaveBeenCalledWith({
+			projectId: "example-project",
+			sessionId: "a",
+		});
+		await waitFor(() =>
+			expect(mocks.listSessions.mock.calls.length).toBeGreaterThan(
+				listedBefore,
+			),
+		);
+	});
+
+	it("shows why a session could not be deleted", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "a",
+					agentLabel: "Assistant A",
+					transcriptContextId: "ctx1",
+				}),
+			]),
+		);
+		mocks.deleteSession.mockRejectedValue(
+			new Error(
+				"Parlume is still writing the notes of this meeting. Delete the session when they are ready.",
+			),
+		);
+		showPage();
+		await sessionsTable();
+		await user.click(within(rowOf("Assistant A")).getByRole("button"));
+
+		await user.click(
+			screen.getByRole("button", { name: "Delete session" }),
+		);
+		await user.click(screen.getByRole("button", { name: "Delete now" }));
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Parlume is still writing the notes of this meeting.",
+		);
 	});
 
 	it("offers each session's requests only when it has some", async () => {
@@ -618,5 +1035,72 @@ describe("ParlumePage session pages", () => {
 		expect(
 			await screen.findByText("No Parlume sessions yet."),
 		).toBeInTheDocument();
+	});
+});
+
+describe("ParlumePage confidential meetings", () => {
+	it("tells a reader who was not in a confidential meeting that its content is kept to the people in it", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "c",
+					agentLabel: "Confidential sync",
+					transcriptContextId: "ctx1",
+					confidential: true,
+					contentWithheld: true,
+					canReadTranscript: false,
+					canDeleteSession: false,
+				}),
+			]),
+		);
+		showPage(false);
+		await sessionsTable();
+
+		await user.click(
+			within(rowOf("Confidential sync")).getByRole("button"),
+		);
+
+		expect(
+			screen.getByText(
+				"This meeting is confidential. Its notes, requests, suggestions and transcript are kept to the people in it and the project's managers.",
+			),
+		).toBeInTheDocument();
+		expect(screen.queryByText("Meeting notes")).toBeNull();
+		expect(
+			screen.queryByRole("link", { name: "Open transcript" }),
+		).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Remove confidential mark" }),
+		).toBeNull();
+	});
+
+	it("lets someone who was in a finished meeting mark it confidential", async () => {
+		const user = userEvent.setup();
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "m",
+					agentLabel: "Planning",
+					transcriptContextId: "ctx1",
+					notes: "Decided to ship.",
+					canMarkConfidential: true,
+				}),
+			]),
+		);
+		mocks.setConfidential.mockResolvedValue({});
+		showPage();
+		await sessionsTable();
+
+		await user.click(within(rowOf("Planning")).getByRole("button"));
+		await user.click(
+			screen.getByRole("button", { name: "Mark meeting confidential" }),
+		);
+
+		expect(mocks.setConfidential).toHaveBeenCalledWith({
+			projectId: "example-project",
+			sessionId: "m",
+			confidential: true,
+		});
 	});
 });

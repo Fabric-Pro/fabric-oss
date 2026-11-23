@@ -7,7 +7,6 @@ import {
 import {
 	addDays,
 	formatDurationMinutes,
-	parseDurationInput,
 	TIME_ACTIVITIES,
 	TIME_ACTIVITY_LABELS,
 	type TimeEntryWarning,
@@ -288,16 +287,7 @@ export function SuggestionRow({
 					<EntryWarningQuestion
 						warning={question}
 						knownEntries={knownEntries}
-						proposed={{
-							workDate: suggestion.workDate,
-							durationMinutes: timed
-								? intervalMinutes
-								: parseDurationInput(draft.durationText),
-							activity: draft.activity,
-							target: draft.story
-								? `${draft.story.identifier} ${draft.story.title}`
-								: suggestion.projectName,
-						}}
+						workDate={suggestion.workDate}
 						isSaving={confirming}
 						onConfirm={onAnswerYes}
 						onDismiss={onAnswerNo}

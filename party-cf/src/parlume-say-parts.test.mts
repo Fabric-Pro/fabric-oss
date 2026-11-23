@@ -55,7 +55,8 @@ test("a reply sent in parts speaks its first part before the next exists, and pl
 	const result = plain(await (await playing).json());
 	clearInterval(keepAlive);
 
-	assert.deepEqual(added, { accepted: true });
+	// Answered before the first sentence was heard to its end.
+	assert.deepEqual(added, { accepted: true, heard: 0 });
 	assert.equal(result.played, true);
 	assert.equal(result.heard, 2);
 	assert.deepEqual(
@@ -90,7 +91,7 @@ test("a part that arrives before the part that starts its reply is kept for it, 
 	);
 	clearInterval(keepAlive);
 
-	assert.deepEqual(early, { accepted: true });
+	assert.deepEqual(early, { accepted: true, heard: 0 });
 	assert.equal(result.played, true);
 	assert.deepEqual(
 		auraCalls.map((call) => (call.inputs as { text: string }).text),
@@ -119,14 +120,15 @@ test("a part that arrives after its reply was played is refused, and nothing mor
 	clearInterval(keepAlive);
 
 	assert.equal(result.played, true);
-	assert.deepEqual(late, { accepted: false });
+	// The refusal still says how much of the reply was heard.
+	assert.deepEqual(late, { accepted: false, heard: 1 });
 	assert.equal(repeated.status, 409);
 	assert.equal(auraCalls.length, 1);
 	assert.equal(sent.length, framesAfter);
 	await bridge.onClose(bot, 1000, "done");
 });
 
-test("speech over a reply waiting for its next part ends it at once, and its later parts are dropped", async () => {
+test("a stop over a reply waiting for its next part ends it at once, and its later parts are dropped", async () => {
 	const { bridge, bot, flux, auraCalls } = await answeringMeeting();
 	const keepAlive = setInterval(() => {}, 1_000);
 
@@ -135,11 +137,11 @@ test("speech over a reply waiting for its next part ends it at once, and its lat
 	);
 	await sleep(250);
 	flux.turn({
-		event: "Update",
+		event: "EndOfTurn",
 		turn_index: 1,
 		audio_window_start: 0.06,
 		audio_window_end: 0.08,
-		transcript: "I think we should",
+		transcript: "Parlume, stop.",
 	});
 	await flush();
 	// Answered without the reply's last part ever arriving.
@@ -153,9 +155,9 @@ test("speech over a reply waiting for its next part ends it at once, and its lat
 	);
 	clearInterval(keepAlive);
 
-	assert.equal(result.muted, true);
+	assert.equal(result.interrupted, true);
 	assert.equal(result.played, false);
-	assert.deepEqual(dropped, { accepted: false });
+	assert.deepEqual(dropped, { accepted: false, heard: 0 });
 	assert.equal(auraCalls.length, 1);
 	await bridge.onClose(bot, 1000, "done");
 });
@@ -176,7 +178,7 @@ test("parts for a generation that was replaced are dropped", async () => {
 		).json(),
 	);
 
-	assert.deepEqual(stale, { accepted: false });
+	assert.deepEqual(stale, { accepted: false, heard: 0 });
 	assert.equal(opening.interrupted, true);
 	assert.equal(auraCalls.length, 0);
 	await bridge.onClose(bot, 1000, "done");
@@ -205,8 +207,8 @@ test("a stale part of an older reply does not end the reply being played", async
 	const result = plain(await (await playing).json());
 	clearInterval(keepAlive);
 
-	assert.deepEqual(stale, { accepted: false });
-	assert.deepEqual(added, { accepted: true });
+	assert.deepEqual(stale, { accepted: false, heard: 0 });
+	assert.deepEqual(added, { accepted: true, heard: 0 });
 	assert.equal(result.played, true);
 	assert.equal(result.heard, 2);
 	await bridge.onClose(bot, 1000, "done");
@@ -234,7 +236,7 @@ test("a withdrawn reply stops playing what it had queued", async () => {
 	await sleep(300);
 	clearInterval(keepAlive);
 
-	assert.deepEqual(withdrawn, { accepted: true });
+	assert.deepEqual(withdrawn, { accepted: true, heard: 0 });
 	assert.ok(framesBefore > 0, "it was speaking when withdrawn");
 	assert.ok(sent.length < framesBefore + 6, "playback stopped");
 	await bridge.onClose(bot, 1000, "done");

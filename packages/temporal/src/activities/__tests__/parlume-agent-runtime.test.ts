@@ -79,6 +79,7 @@ describe("Parlume canonical agent adapters", () => {
 		await executeParlumeAgent({
 			agent,
 			session,
+			requesterUserId: "user",
 			turnId: "turn",
 			message: "Question",
 			voiceInstructions: "Voice",
@@ -99,6 +100,39 @@ describe("Parlume canonical agent adapters", () => {
 				workspaceIds: [],
 			}),
 			[],
+			"",
+			"",
+		);
+	});
+	it("searches the Fabric Agent's knowledge as the participant who asked, not the inviter", async () => {
+		const agent = await loadParlumeAgent(session);
+		await executeParlumeAgent({
+			agent,
+			session,
+			requesterUserId: "asker",
+			turnId: "turn",
+			message: "Question",
+			voiceInstructions: "Voice",
+			knowledgeContext: "Project",
+			history: [],
+		});
+
+		expect(mocks.workspaceKnowledge).toHaveBeenCalledWith(
+			"Question",
+			"asker",
+			"org",
+			[],
+			undefined,
+			expect.any(Number),
+		);
+		// Fabric's tools act as the asker, whom the grant was minted for; the
+		// run itself stays the inviter's.
+		expect(mocks.builtin).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: session.userId,
+				actingUserId: "asker",
+			}),
+			expect.anything(),
 			"",
 			"",
 		);
@@ -135,6 +169,7 @@ describe("Parlume canonical agent adapters", () => {
 		await executeParlumeAgent({
 			agent,
 			session,
+			requesterUserId: "user",
 			turnId: "turn",
 			message: "Question",
 			voiceInstructions: "",
@@ -150,6 +185,7 @@ describe("Parlume canonical agent adapters", () => {
 		await executeParlumeAgent({
 			agent,
 			session,
+			requesterUserId: "user",
 			turnId: "turn",
 			message: "Question",
 			voiceInstructions: "",
@@ -169,6 +205,7 @@ describe("Parlume canonical agent adapters", () => {
 		await executeParlumeAgent({
 			agent,
 			session,
+			requesterUserId: "user",
 			turnId: "turn",
 			message: "Create a work item",
 			voiceInstructions: "",
@@ -193,7 +230,9 @@ describe("Parlume canonical agent adapters", () => {
 			"enabledFabricToolIds",
 		);
 	});
-	it("gives a project agent that has not opted in no external servers, integrations or workspaces in a meeting", async () => {
+	// External tools would show what other systems hold to people who may
+	// not have access to them, so the agent's old opt-in no longer counts.
+	it("gives a project agent no external servers, integrations or workspaces in a meeting, even one that opted in", async () => {
 		const customSession = {
 			...session,
 			agentKind: "TEMPLATE_INSTANCE" as const,
@@ -220,7 +259,7 @@ describe("Parlume canonical agent adapters", () => {
 		};
 		mocks.instance.mockResolvedValue({
 			...instance,
-			meetingExternalTools: false,
+			meetingExternalTools: true,
 		});
 		mocks.workspaces.mockResolvedValue({
 			allowed: ["workspace"],
@@ -243,6 +282,7 @@ describe("Parlume canonical agent adapters", () => {
 		await executeParlumeAgent({
 			agent,
 			session: customSession,
+			requesterUserId: "user",
 			turnId: "turn",
 			message: "Question",
 			voiceInstructions: "Voice",
@@ -267,18 +307,8 @@ describe("Parlume canonical agent adapters", () => {
 				workspaceIds: [],
 			}),
 		);
-
-		mocks.instance.mockResolvedValue({
-			...instance,
-			meetingExternalTools: true,
-		});
-		const optedIn = await loadParlumeAgent(customSession);
-		expect(optedIn.revision).not.toBe(agent.revision);
-		expect(optedIn).toMatchObject({
-			config: { mcpConfigIds: ["server"], workspaceIds: ["workspace"] },
-		});
 	});
-	it("reloads the current active custom version and forwards its complete canonical tool configuration when it opts in", async () => {
+	it("reloads the current active custom version and forwards its model and built-in tools, without its connections", async () => {
 		const customSession = {
 			...session,
 			agentKind: "TEMPLATE_INSTANCE" as const,
@@ -319,6 +349,7 @@ describe("Parlume canonical agent adapters", () => {
 		await executeParlumeAgent({
 			agent,
 			session: customSession,
+			requesterUserId: "user",
 			turnId: "turn",
 			message: "Question",
 			voiceInstructions: "Voice",
@@ -343,8 +374,8 @@ describe("Parlume canonical agent adapters", () => {
 		);
 		expect(mocks.custom).toHaveBeenCalledWith(
 			expect.objectContaining({
-				mcpConfigIds: ["server"],
-				integrationConfigurations: [{ integrationId: "integration" }],
+				mcpConfigIds: [],
+				integrationConfigurations: [],
 				builtInToolNames: ["future-builtin"],
 				model: "selected-model",
 				systemPrompt: "Current instructions\n\nVoice",

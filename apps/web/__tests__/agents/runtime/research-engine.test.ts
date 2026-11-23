@@ -234,6 +234,26 @@ describe("ResearchEngine — run validation and refusals", () => {
 });
 
 describe("ResearchEngine — a run", () => {
+	it("is admitted under the selected project, so the project's limits apply to it", async () => {
+		w.state.conversationProjects.set(THREAD, "project-example-2");
+		await run(RUN_1, QUESTION, {
+			extra: { forwardedProps: { projectId: "project-example-1" } },
+		});
+
+		expect(w.state.admittedBodies).toEqual([
+			expect.objectContaining({ projectId: "project-example-1" }),
+		]);
+	});
+
+	it("is admitted under the thread's project when none is selected", async () => {
+		w.state.conversationProjects.set(THREAD, "project-example-2");
+		await run(RUN_1, QUESTION);
+
+		expect(w.state.admittedBodies).toEqual([
+			expect.objectContaining({ projectId: "project-example-2" }),
+		]);
+	});
+
 	it("admits in order and starts once", async () => {
 		const list = await run(RUN_1, QUESTION, {
 			extra: {

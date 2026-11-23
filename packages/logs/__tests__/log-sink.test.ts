@@ -1,10 +1,12 @@
 /**
  * Unit tests for `addLogSink` — the generic hook that forwards warn/error/
- * fatal log lines to an external platform without `@repo/logs` depending on
+ * fatal (and opted-in info) log lines to an external platform without
+ * `@repo/logs` depending on
  * one (see the doc comment on `addLogSink` for the cycle it avoids).
  *
  * Verifies:
- *  - Only warn/error/fatal reach the sink; info/debug do not.
+ *  - warn/error/fatal reach the sink; info reaches it only with
+ *    `forward: true`, at info level and redacted; debug never does.
  *  - Both call conventions in this codebase are parsed (message-first,
  *    object-first).
  *  - The shared sensitive-key + value-shape redactor runs on message and
@@ -62,6 +64,60 @@ describe("addLogSink", () => {
 			logger.info("just info");
 			logger.debug("just debug");
 			expect(records).toHaveLength(0);
+		});
+	});
+
+	it("does not forward info whose properties do not opt in", () => {
+		withSink((records) => {
+			logger.info("routine", { event: "routine.step" });
+			logger.info("not quite", {
+				event: "routine.step",
+				forward: "true",
+			});
+			expect(records).toHaveLength(0);
+		});
+	});
+
+	it("forwards info that opts in with forward: true, at info level", () => {
+		withSink((records) => {
+			logger.info("[Parlume] session.started", {
+				event: "parlume.session.started",
+				sessionId: "session-1",
+				forward: true,
+			});
+			expect(records).toEqual([
+				{
+					level: "info",
+					message: "[Parlume] session.started",
+					properties: {
+						event: "parlume.session.started",
+						sessionId: "session-1",
+						forward: true,
+					},
+					error: undefined,
+				},
+			]);
+		});
+	});
+
+	it("does not forward debug even when it opts in", () => {
+		withSink((records) => {
+			logger.debug("detail", { forward: true });
+			expect(records).toHaveLength(0);
+		});
+	});
+
+	it("redacts an opted-in info record before the sink sees it", () => {
+		withSink((records) => {
+			logger.info("token check: Authorization: Bearer abcdef123456789", {
+				forward: true,
+				password: "s3cr3t",
+				userId: "u_1",
+			});
+			expect(records[0]?.level).toBe("info");
+			expect(records[0]?.message).not.toContain("abcdef123456789");
+			expect(records[0]?.properties.password).toBe("[REDACTED]");
+			expect(records[0]?.properties.userId).toBe("u_1");
 		});
 	});
 

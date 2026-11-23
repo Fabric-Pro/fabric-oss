@@ -56,7 +56,8 @@ async function drain(body: unknown): Promise<void> {
 }
 
 // These tests exercise the PCM routes, which carry a reply when Aura cannot
-// speak it: the bridge's `say` endpoint is made to refuse.
+// speak it: the bridge's `say` endpoint is made to refuse, with the 409 the
+// bridge refuses with. A 5xx would read as a bridge lost mid-reply.
 function stubPcmFetch(
 	handler: (url: string, init?: RequestInit) => Promise<Response> | Response,
 ) {
@@ -64,7 +65,7 @@ function stubPcmFetch(
 		"fetch",
 		vi.fn(async (url: string, init?: RequestInit) =>
 			String(url).includes("action=say")
-				? new Response("unavailable", { status: 503 })
+				? new Response("unavailable", { status: 409 })
 				: handler(String(url), init),
 		),
 	);

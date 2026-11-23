@@ -123,6 +123,15 @@ export async function GET(req: NextRequest) {
 			{ userId, organizationId },
 			metadata,
 		);
+		if (providerConfig.anthropicBearerSource) {
+			return NextResponse.json(
+				{
+					error: "Use the AI token exchange to obtain an Anthropic Bearer credential.",
+					code: "ANTHROPIC_BEARER_REQUIRED",
+				},
+				{ status: 409 },
+			);
+		}
 
 		// Resolve the effective gateway/base URL. Providers that require a
 		// tenant-supplied base URL (Databricks, Azure AI Foundry, AWS Bedrock,

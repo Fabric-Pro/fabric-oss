@@ -2,7 +2,10 @@
 
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { Badge } from "@ui/components/badge";
+import { Button } from "@ui/components/button";
+import { Markdown } from "@ui/components/markdown";
 import { ZapIcon } from "lucide-react";
+import Link from "next/link";
 import {
 	formatClock,
 	formatTimestamp,
@@ -15,19 +18,30 @@ import { MONO_LABEL } from "../lib/parlume-styles";
 import {
 	actionStatus,
 	actionSteps,
+	actionTagLabel,
+	requestPostsLabel,
+	requestStateLabel,
 	TONE_BADGE,
 	TONE_DOT,
 } from "../lib/parlume-view";
+import { ParlumeSpeakerMark } from "./ParlumeSpeakerMark";
 
-function ActionBlock({ action }: { action: ParlumeAction }) {
+function ActionBlock({
+	action,
+	projectBasePath,
+}: {
+	action: ParlumeAction;
+	projectBasePath: string;
+}) {
 	const status = actionStatus(action);
 	const steps = actionSteps(action);
+	const href = `${projectBasePath}/parlume/actions/${encodeURIComponent(action.id)}`;
 	return (
 		<div className="ml-[30px] space-y-2.5 rounded-lg border border-border px-3.5 py-3">
 			<div className="flex flex-wrap items-center justify-between gap-2">
 				<span className={`flex items-center gap-1.5 ${MONO_LABEL}`}>
 					<ZapIcon className="size-[13px]" aria-hidden="true" />
-					Action
+					{actionTagLabel(action)}
 				</span>
 				<Badge variant={TONE_BADGE[status.tone]}>{status.label}</Badge>
 			</div>
@@ -59,6 +73,18 @@ function ActionBlock({ action }: { action: ParlumeAction }) {
 					{action.outcome}
 				</p>
 			)}
+			{action.status === "PROPOSED" ? (
+				<Button asChild size="sm">
+					<Link href={href}>Confirm or dismiss</Link>
+				</Button>
+			) : (
+				<Link
+					href={href}
+					className="inline-block text-xs text-primary underline-offset-4 hover:underline"
+				>
+					Open the proposal
+				</Link>
+			)}
 			<details>
 				<summary className="min-h-6 cursor-pointer text-xs text-muted-foreground">
 					Exact action details
@@ -72,9 +98,16 @@ function ActionBlock({ action }: { action: ParlumeAction }) {
 }
 
 /** One question or action request, as the meeting asked it and Parlume answered. */
-export function ParlumeRequestItem({ request }: { request: ParlumeRequest }) {
+export function ParlumeRequestItem({
+	request,
+	projectBasePath,
+}: {
+	request: ParlumeRequest;
+	projectBasePath: string;
+}) {
 	const hasSpeaker = request.speakerName !== null;
-	const state = request.status === "COMPLETED" ? null : request.status;
+	const state = requestStateLabel(request);
+	const posts = requestPostsLabel(request);
 	return (
 		<li className="flex gap-3.5 border-b border-border px-6 py-[18px]">
 			<span
@@ -85,8 +118,9 @@ export function ParlumeRequestItem({ request }: { request: ParlumeRequest }) {
 			</span>
 			<div className="min-w-0 flex-1 space-y-2.5">
 				<div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-					<span className="text-sm font-medium">
+					<span className="flex items-center gap-2 text-sm font-medium">
 						{request.speakerName ?? "Unidentified attendee"}
+						<ParlumeSpeakerMark mark={request.speakerMark} />
 					</span>
 					<span className="text-xs text-muted-foreground">
 						<time
@@ -95,7 +129,11 @@ export function ParlumeRequestItem({ request }: { request: ParlumeRequest }) {
 							{formatTimestamp(request.createdAt)}
 						</time>{" "}
 						· {modeLabel(request.session.toolsReadOnly)}
-						{state ? ` · ${state.toLowerCase()}` : ""}
+						{request.replyChannel === "PAGE"
+							? " · asked on this page, not in the meeting"
+							: ""}
+						{state ? ` · ${state}` : ""}
+						{posts ? ` · ${posts}` : ""}
 					</span>
 				</div>
 				<p className="whitespace-pre-wrap break-words text-sm leading-[21px]">
@@ -109,16 +147,20 @@ export function ParlumeRequestItem({ request }: { request: ParlumeRequest }) {
 						>
 							<FabricLogo size={12} variant="inverse" />
 						</span>
-						<p className="whitespace-pre-wrap break-words text-sm leading-[21px] text-muted-foreground">
+						<Markdown className="min-w-0 flex-1 break-words leading-[21px] text-muted-foreground prose-headings:mt-3 prose-headings:mb-1 prose-headings:text-sm prose-headings:font-medium prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-hr:my-2 [&>:first-child]:mt-0 [&>:last-child]:mb-0">
 							{request.responseText}
-						</p>
+						</Markdown>
 					</div>
 				)}
 				{request.error && (
 					<p className="text-sm text-destructive">{request.error}</p>
 				)}
 				{request.actions.map((action) => (
-					<ActionBlock key={action.id} action={action} />
+					<ActionBlock
+						key={action.id}
+						action={action}
+						projectBasePath={projectBasePath}
+					/>
 				))}
 			</div>
 		</li>

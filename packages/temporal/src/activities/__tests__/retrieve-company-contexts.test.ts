@@ -80,6 +80,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 					mocks.companyContextUrlPageFindMany(...args),
 			},
 		},
+		findConfidentialTranscriptContextIds: async () => new Set<string>(),
 		getProjectRagSettings: (...args: unknown[]) =>
 			mocks.getProjectRagSettings(...args),
 		isFeatureEnabled: (...args: unknown[]) =>

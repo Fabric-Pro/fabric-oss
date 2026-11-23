@@ -59,6 +59,8 @@ export const restoreQuestionProcedure = tenantProtectedProcedure
 				organizationId: organizationId ?? null,
 				userId: context.user.id,
 			},
+			userStoryId: input.storyId,
+			projectId: input.projectId,
 			rootId: input.questionRootId,
 			status: "OPEN",
 		});

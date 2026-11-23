@@ -272,14 +272,7 @@ export function TimerPanel({
 				<EntryWarningQuestion
 					warning={stopper.warning}
 					knownEntries={[]}
-					proposed={{
-						workDate: todayInZone(timeZone),
-						durationMinutes: Math.round(elapsedSeconds / 60),
-						activity: timer.activity,
-						target: story
-							? `${story.identifier} ${story.title}`.trim()
-							: timer.projectName,
-					}}
+					workDate={todayInZone(timeZone)}
 					isSaving={stopper.busy}
 					onConfirm={stopper.confirmWarning}
 					onDismiss={stopper.cancel}

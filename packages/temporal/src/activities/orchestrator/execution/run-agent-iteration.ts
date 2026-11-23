@@ -19,6 +19,7 @@ import { getModelCapabilities } from "@repo/ai/capabilities";
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { clampRequestedOutputTokens } from "@repo/ai/lib/output-token-budget";
+import { providerFailureMessage } from "@repo/ai/lib/provider-failure-message";
 import {
 	observeModelRequests,
 	requestModelContextWindow,
@@ -85,15 +86,6 @@ import {
 	spliceImagePartsIntoLastUserMessage,
 	spliceImagePartsIntoMessage,
 } from "./vision-image-attachments";
-
-function sanitizeProviderError(message: string): string {
-	return message
-		.replace(/https?:\/\/\S+/g, "[endpoint]")
-		.replace(/sk-\S+/g, "[key]")
-		.replace(/api-key:\s*\S+/gi, "api-key: [redacted]")
-		.replace(/bearer\s+\S+/gi, "Bearer [redacted]")
-		.replace(/authorization:\s*\S+/gi, "Authorization: [redacted]");
-}
 
 function detectRequestedFrameOutput(
 	message: string,
@@ -1398,6 +1390,9 @@ async function runAgentIterationRound(
 		let invalidToolCallCount = 0;
 		let toolErrorCount = 0;
 		let streamError: string | null = null;
+		// The provider's own error behind `streamError`/`resolveError`, so the
+		// person reads its cause (by status) rather than its text.
+		let providerFailure: unknown = null;
 		let resolveError: string | null = null;
 		let resolvedUsage:
 			| { inputTokens?: number; outputTokens?: number }
@@ -1476,6 +1471,7 @@ async function runAgentIterationRound(
 			invalidToolCallCount = 0;
 			toolErrorCount = 0;
 			streamError = null;
+			providerFailure = null;
 			resolveError = null;
 			resolvedUsage = undefined;
 			finishReason = undefined;
@@ -1648,6 +1644,7 @@ async function runAgentIterationRound(
 							: String(part.error);
 					console.error(`[AgentIteration] Stream error: ${errorMsg}`);
 					streamError = errorMsg;
+					providerFailure ??= part.error;
 				} else {
 					// Every other v7 TextStreamPart (start, start-step,
 					// text-start/-end, reasoning-*, reasoning-file, custom,
@@ -1715,6 +1712,7 @@ async function runAgentIterationRound(
 					firstRejection instanceof Error
 						? firstRejection.message
 						: String(firstRejection);
+				providerFailure ??= firstRejection;
 				console.error(
 					`[AgentIteration] Stream produced no output after ${elapsed}ms: ${resolveError}`,
 					`(streamError: ${streamError}, text: ${responseText.length} chars, toolCalls: ${toolCallsToExecute.length})`,
@@ -1810,7 +1808,9 @@ async function runAgentIterationRound(
 		// Path A: usage/finishReason rejected — provider returned no usable output.
 		if (resolveError) {
 			const rawError = streamError || resolveError;
-			const sanitizedError = sanitizeProviderError(rawError);
+			const sanitizedError = providerFailureMessage(
+				providerFailure ?? rawError,
+			);
 			const limitSignal =
 				classifyLimitError(resolveError) ||
 				classifyLimitError(streamError || resolveError) ||
@@ -1882,7 +1882,11 @@ async function runAgentIterationRound(
 			}
 			return {
 				type: "stream_error",
-				message: sanitizeProviderError(streamError),
+				// A defect classified above carries no provider text and
+				// keeps its description.
+				message: providerFailure
+					? providerFailureMessage(providerFailure)
+					: streamError,
 				partialResponse: responseText,
 				usage,
 				...accounting,
@@ -1977,7 +1981,7 @@ async function runAgentIterationRound(
 		}
 		return {
 			type: "stream_error",
-			message: sanitizeProviderError(errorMessage),
+			message: providerFailureMessage(error),
 			partialResponse: "",
 			usage,
 			usageUnknown: true,

@@ -77,10 +77,11 @@ export function mintActingGrant(subject: {
 }
 
 /**
- * What a Parlume meeting turn is granted beyond the base set: the project,
- * document, feature, instruction and workspace-read scopes of the Fabric portal
- * tools. The gateway keeps only what its own ceiling
- * (`SERVICE_GRANT_MAX_SCOPES`) allows, and only for the project named.
+ * What a confirmed Parlume change is granted: the project, document, feature,
+ * instruction and workspace scopes of the Fabric portal tools and the
+ * runtime's workflow and frame scopes. A grant that names a project holds the
+ * base set's reads plus what it names, so the gateway keeps only what its own
+ * ceiling (`SERVICE_GRANT_MAX_SCOPES`) allows, and only for the project named.
  */
 export const PARLUME_GRANT_SCOPES: readonly string[] = [
 	"orgs:read",
@@ -100,43 +101,54 @@ export const PARLUME_GRANT_SCOPES: readonly string[] = [
 ];
 
 /**
- * A read-only meeting's grant: the portal scopes without their writes, so a
- * leaked grant from such a meeting cannot change the project either. The
- * workflow and frame writes stay, because the gateway's base set holds them
- * for every service session anyway.
+ * A live meeting turn's grant, in every meeting mode: the portal reads alone,
+ * so nothing said in a meeting can change the project, a workflow or a frame
+ * with the inviter's rights; the gateway itself refuses every write. A change the turn asks for is proposed, and runs only once a member
+ * confirms it, with that member's own grant.
  */
 export const PARLUME_READ_ONLY_GRANT_SCOPES: readonly string[] =
-	PARLUME_GRANT_SCOPES.filter((scope) => !scope.endsWith(":write"));
+	PARLUME_GRANT_SCOPES.filter((scope) => scope.endsWith(":read"));
+
+function mintParlumeGrant(
+	subject: { userId: string; organizationId: string; projectId: string },
+	scopes: readonly string[],
+): string | undefined {
+	try {
+		return mintActingGrant({ ...subject, scopes });
+	} catch (error) {
+		console.error(
+			"[Agent] Could not mint an acting grant; this Parlume step has no Fabric tools",
+			error instanceof Error ? error.message : error,
+		);
+		return undefined;
+	}
+}
 
 /**
  * The grant for one Parlume meeting turn: the inviter, the organization and the
- * meeting's project, with the portal scopes (reads only for a read-only
- * meeting). Minted for each turn, like the chat grant, so a meeting longer than
- * the grant's hour keeps working, and undefined when there is no secret to
- * sign with.
+ * meeting's project, with the portal reads only. Minted for each turn, like the
+ * chat grant, so a meeting longer than the grant's hour keeps working, and
+ * undefined when there is no secret to sign with.
  */
 export function mintParlumeActingGrantForTurn(subject: {
 	userId: string;
 	organizationId: string;
 	projectId: string;
-	readOnly: boolean;
 }): string | undefined {
-	try {
-		return mintActingGrant({
-			userId: subject.userId,
-			organizationId: subject.organizationId,
-			scopes: subject.readOnly
-				? PARLUME_READ_ONLY_GRANT_SCOPES
-				: PARLUME_GRANT_SCOPES,
-			projectId: subject.projectId,
-		});
-	} catch (error) {
-		console.error(
-			"[Agent] Could not mint an acting grant; this meeting turn has no Fabric tools",
-			error instanceof Error ? error.message : error,
-		);
-		return undefined;
-	}
+	return mintParlumeGrant(subject, PARLUME_READ_ONLY_GRANT_SCOPES);
+}
+
+/**
+ * The grant for one proposed change a member confirmed: that member, not the
+ * inviter, with the portal scopes on the meeting's project, so the member's own
+ * project rights decide what the change may do.
+ */
+export function mintParlumeActingGrantForConfirmedAction(subject: {
+	userId: string;
+	organizationId: string;
+	projectId: string;
+}): string | undefined {
+	return mintParlumeGrant(subject, PARLUME_GRANT_SCOPES);
 }
 
 /**

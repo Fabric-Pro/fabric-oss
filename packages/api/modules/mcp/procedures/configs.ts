@@ -1003,7 +1003,7 @@ export const configProcedures = {
 		}),
 
 	delete: tenantProtectedProcedure
-		.use(requirePermission(Permissions.MCP_DELETE))
+		.use(requirePermission(Permissions.MCP_CONNECT))
 		.route({
 			method: "DELETE",
 			path: "/mcp/configs/:id",
@@ -1071,7 +1071,7 @@ export const configProcedures = {
 				// caller's membership and role there, and refuse a config with
 				// no organization rather than disconnect into one.
 				await authorizeInputOrganization(
-					Permissions.MCP_DELETE,
+					Permissions.MCP_CONNECT,
 					config.organizationId,
 					context,
 					{ requireOrganization: true },

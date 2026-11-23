@@ -16,6 +16,7 @@ function state(overrides: Partial<ParlumeAutoJoinState> = {}) {
 		suggestionsEnabled: true,
 		suggestionAudience: "MEETING" as const,
 		enabledBy: { id: "user-1", name: "Dev Example" },
+		enabledAt: "2026-10-20T08:00:00.000Z",
 		error: null,
 		errorAt: null,
 		syncStopped: false,
@@ -70,11 +71,29 @@ describe("ParlumeAutoJoinControl", () => {
 		});
 	});
 
-	it("shows who turned it on and the invite card's mode and suggestion choices while on", () => {
+	it("shows the join notice Parlume posts, word for word, before anyone turns it on", () => {
+		renderControl(null);
+
+		expect(
+			screen.getByText(
+				"Fabric Parlume (AI assistant) is in this meeting",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				"I transcribe the meeting and write notes. I keep transcripts for 90 days, and notes until someone deletes them.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText('To pause me, say or type "Parlume, pause".'),
+		).toBeInTheDocument();
+	});
+
+	it("shows who turned it on and when, and the invite card's mode and suggestion choices while on", () => {
 		renderControl(state());
 
 		expect(
-			screen.getByText(/Turned on by Dev Example\./),
+			screen.getByText(/Turned on by Dev Example on Oct 20, 2026\./),
 		).toBeInTheDocument();
 		expect(screen.getByRole("radio", { name: "Read-only" })).toBeChecked();
 		expect(

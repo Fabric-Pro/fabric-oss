@@ -25,6 +25,9 @@ export interface AIProviderConfig {
 
 export interface ResolvedAIConfig {
 	apiKey: string;
+	anthropicBearerSource?: Awaited<
+		ReturnType<typeof getRAGProviderConfig>
+	>["anthropicBearerSource"];
 	provider: string | null;
 	baseUrl: string | null;
 	enabledProviders: string[];
@@ -64,13 +67,20 @@ export async function resolveAIProviderApiKey(
 		const config = await getRAGProviderConfig({ userId, organizationId });
 
 		return {
+			anthropicBearerSource: config.anthropicBearerSource,
 			apiKey: config.apiKey, // Already decrypted by getRAGProviderConfig()
 			provider: config.provider,
 			baseUrl: config.baseUrl,
 			enabledProviders: config.enabledProviders,
 			source: config.source,
 		};
-	} catch {
+	} catch (error) {
+		if (
+			error instanceof Error &&
+			error.name === "AnthropicFederationUnavailableError"
+		) {
+			throw error;
+		}
 		// Fallback to environment variable for backwards compatibility
 		if (process.env.AI_GATEWAY_API_KEY) {
 			return {
@@ -110,6 +120,7 @@ export async function getConfiguredAIModel(config: AIProviderConfig) {
 	return getModel(modelName, {
 		userId,
 		organizationId,
+		anthropicBearerSource: resolved.anthropicBearerSource,
 		apiKey: resolved.apiKey,
 		provider: resolved.provider ?? undefined,
 		baseUrl: resolved.baseUrl,

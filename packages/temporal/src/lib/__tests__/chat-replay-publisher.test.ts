@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
@@ -16,16 +17,41 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 vi.mock("@temporalio/activity", () => ({ Context: { current: h.current } }));
-vi.mock("ioredis", () => ({
-	default: class {
-		on() {
-			return this;
+const clients: FakeRedis[] = [];
+const connect = vi.fn();
+class FakeRedis extends EventEmitter {
+	live = false;
+	reconnecting = false;
+	publish = h.publish;
+	disconnect = vi.fn(() => {
+		this.reconnecting = false;
+		this.live = false;
+	});
+
+	constructor() {
+		super();
+		clients.push(this);
+	}
+
+	async connect() {
+		await connect();
+		this.live = true;
+	}
+
+	dropConnection() {
+		this.live = false;
+		// ioredis schedules the reconnect before delivering its close event.
+		this.reconnecting = true;
+		this.emit("close");
+	}
+
+	finishReconnect() {
+		if (this.reconnecting) {
+			this.live = true;
 		}
-		async connect() {}
-		publish = h.publish;
-		async quit() {}
-	},
-}));
+	}
+}
+vi.mock("ioredis", () => ({ default: FakeRedis }));
 const executionId = "orch-example";
 const cursor = { turnId: "example-turn", runId: "example-run", sequence: "1" };
 
@@ -33,6 +59,7 @@ describe("worker replay publication", () => {
 	beforeEach(() => {
 		vi.resetModules();
 		vi.resetAllMocks();
+		clients.length = 0;
 		vi.stubEnv("REDIS_URL", "redis://127.0.0.1:6379");
 		vi.stubEnv("CACHE_HOST", "");
 		h.current.mockReturnValue({
@@ -50,6 +77,85 @@ describe("worker replay publication", () => {
 		h.publish.mockResolvedValue(1);
 	});
 	afterEach(() => vi.unstubAllEnvs());
+	it("keeps one live client across repeated closes and concurrent replacements", async () => {
+		const { getRedisClient } = await import("../redis-publisher");
+		await getRedisClient();
+
+		for (let cycle = 0; cycle < 4; cycle++) {
+			const previous = clients[cycle];
+			previous.dropConnection();
+			const replacements = await Promise.all([
+				getRedisClient(),
+				getRedisClient(),
+			]);
+			previous.finishReconnect();
+
+			expect(clients.filter((client) => client.live)).toHaveLength(1);
+			expect(previous.disconnect).toHaveBeenCalledOnce();
+			expect(clients).toHaveLength(cycle + 2);
+			expect(replacements).toEqual([
+				clients[cycle + 1],
+				clients[cycle + 1],
+			]);
+		}
+	});
+
+	it("shares the pending handshake and backs off when it closes", async () => {
+		const { getRedisClient } = await import("../redis-publisher");
+		let failHandshake: (error: Error) => void = () => {};
+		connect.mockReturnValueOnce(
+			new Promise<void>((_, reject) => {
+				failHandshake = reject;
+			}),
+		);
+		const first = getRedisClient();
+		await vi.waitFor(() => expect(connect).toHaveBeenCalledOnce());
+
+		const duringHandshake = getRedisClient();
+		clients[0].dropConnection();
+		expect(clients[0].disconnect).toHaveBeenCalledOnce();
+		const afterClose = getRedisClient();
+		const now = Date.now();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+		try {
+			failHandshake(new Error("Connection is closed."));
+			await expect(
+				Promise.all([first, duringHandshake, afterClose]),
+			).resolves.toEqual([null, null, null]);
+			clock.mockReturnValue(now + 29_999);
+			await expect(getRedisClient()).resolves.toBeNull();
+			expect(clients).toHaveLength(1);
+			expect(connect).toHaveBeenCalledOnce();
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	it("backs off a failed connection and ignores a late close from that client", async () => {
+		const { getRedisClient } = await import("../redis-publisher");
+		const now = Date.now();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+		try {
+			connect.mockRejectedValueOnce(new Error("connection failed"));
+			await expect(getRedisClient()).resolves.toBeNull();
+			expect(clients[0].disconnect).toHaveBeenCalledOnce();
+
+			clock.mockReturnValue(now + 29_999);
+			await expect(getRedisClient()).resolves.toBeNull();
+			expect(clients).toHaveLength(1);
+
+			clock.mockReturnValue(now + 30_000);
+			const replacement = await getRedisClient();
+			expect(replacement).toBe(clients[1]);
+			expect(replacement).not.toBeNull();
+			clients[0].emit("close");
+			await expect(getRedisClient()).resolves.toBe(replacement);
+			expect(clients).toHaveLength(2);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
 	it("persists before publishing an acknowledged event", async () => {
 		let release: (value: typeof cursor) => void = () => {};
 		h.append.mockReturnValue(

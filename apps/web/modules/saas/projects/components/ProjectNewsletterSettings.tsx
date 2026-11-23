@@ -96,8 +96,9 @@ type Props = {
 	 *  straight there when no chat channel is linked yet. */
 	onNavigateToChatChannels?: () => void;
 	/** Server-side permission is the real enforcement; this only disables the
-	 *  controls for a viewer without edit rights. Defaults to `true` so
-	 *  existing callers that don't pass it keep behaving as before. */
+	 *  controls for a viewer without edit rights. The controls default to
+	 *  enabled so existing callers that don't pass it keep behaving as before;
+	 *  the review's automatic-capture link needs an explicit `true`. */
 	canEdit?: boolean;
 };
 
@@ -281,8 +282,9 @@ export function ProjectNewsletterSettings({
 	organizationId,
 	onNavigateToRepositories,
 	onNavigateToChatChannels,
-	canEdit = true,
+	canEdit: canEditProp,
 }: Props) {
+	const canEdit = canEditProp ?? true;
 	const queryClient = useQueryClient();
 	const releaseNotesGate = useCapabilityGate("release-notes.generate");
 	const orgId = organizationId ?? null;
@@ -551,8 +553,13 @@ export function ProjectNewsletterSettings({
 		});
 	};
 
+	// Settings saves run one at a time, in the order they were made, so two
+	// quick changes to one field cannot land out of order.
+	const settingsSaveScope = { id: `newsletter-settings-${projectId}` };
+
 	const updateSettings = useMutation(
 		orpc.newsletter.settings.update.mutationOptions({
+			scope: settingsSaveScope,
 			onSuccess: (_data, variables) => {
 				toast.success("Newsletter settings saved");
 				invalidate("settings");
@@ -570,11 +577,26 @@ export function ProjectNewsletterSettings({
 		}),
 	);
 
+	// A channel list is saved whole, built from the loaded settings. Its save
+	// stays pending until the settings are fetched again, so the next tick
+	// builds on a list that includes the last one.
+	const updateChatChannels = useMutation(
+		orpc.newsletter.settings.update.mutationOptions({
+			scope: settingsSaveScope,
+			onSuccess: () => {
+				toast.success("Newsletter settings saved");
+				return invalidate("settings");
+			},
+			onError: (e) => toast.error(`Failed to save: ${e.message}`),
+		}),
+	);
+
 	// Dedicated update mutation for the "Save appearance" action so it can show the
 	// embed-specific localized toast (newsletter.embed.saved) instead of the shared
 	// generic "settings saved" copy, without affecting the other update call sites.
 	const saveAppearanceMutation = useMutation(
 		orpc.newsletter.settings.update.mutationOptions({
+			scope: settingsSaveScope,
 			onSuccess: () => {
 				toast.success(tEmbed("saved"));
 				invalidate("settings");
@@ -749,17 +771,21 @@ export function ProjectNewsletterSettings({
 		| "BRIEF"
 		| "STANDARD"
 		| "DETAILED";
-	const settingsDisabled =
-		canEdit === false ||
-		settingsQuery.isLoading ||
-		updateSettings.isPending;
+	// Not disabled while a save is in flight: a control disabled under the
+	// keyboard drops focus to the page. Each control saves only its own
+	// value, so a second change during a save is simply another save.
+	const settingsDisabled = canEdit === false || settingsQuery.isLoading;
+	// Locked until the last tick is saved and loaded again (see
+	// `updateChatChannels`); a tick built on an older list would drop it.
+	const channelsDisabled = settingsDisabled || updateChatChannels.isPending;
 	// The review offers automatic capture only to someone who can set it up:
-	// images on, no environment chosen, edit rights, and a build where
-	// environments can be added.
+	// images on, no environment chosen, edit rights granted explicitly (not
+	// the default, so it never shows before permissions are known), and a
+	// build where environments can be added.
 	const canSetUpAutoCapture =
 		screenshotsEnabled &&
 		!s?.screenshotEnvironmentId &&
-		canEdit !== false &&
+		canEditProp === true &&
 		ENVIRONMENT_SETTINGS_ENABLED;
 	const setUpAutoCapture = () =>
 		navigateToProjectSettingsTab(projectId, "newsletter", {
@@ -783,7 +809,7 @@ export function ProjectNewsletterSettings({
 					(c) => chatChannelKey(c) !== targetKey,
 				)
 			: [...selectedChatChannels, channel];
-		updateSettings.mutate({
+		updateChatChannels.mutate({
 			projectId,
 			organizationId: orgId,
 			chatChannels: next,
@@ -806,7 +832,7 @@ export function ProjectNewsletterSettings({
 					(c) => chatChannelKey(c) !== targetKey,
 				)
 			: [...selectedApprovalChatChannels, channel];
-		updateSettings.mutate({
+		updateChatChannels.mutate({
 			projectId,
 			organizationId: orgId,
 			approvalChatChannels: next,
@@ -1165,7 +1191,7 @@ export function ProjectNewsletterSettings({
 														type="checkbox"
 														checked={checked}
 														disabled={
-															settingsDisabled
+															channelsDisabled
 														}
 														aria-label={label}
 														onChange={() =>
@@ -1524,7 +1550,7 @@ export function ProjectNewsletterSettings({
 														type="checkbox"
 														checked={checked}
 														disabled={
-															settingsDisabled
+															channelsDisabled
 														}
 														aria-label={label}
 														onChange={() =>

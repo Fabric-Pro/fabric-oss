@@ -1,6 +1,6 @@
 # Fabric Portal - .NET Aspire Orchestration
 
-This directory contains the .NET Aspire 13.6 orchestration layer for the Fabric Portal polyglot agent architecture.
+This directory contains the Aspire 17.0.0 orchestration layer for the Fabric Portal polyglot agent architecture.
 
 ## Overview
 
@@ -13,30 +13,26 @@ This directory contains the .NET Aspire 13.6 orchestration layer for the Fabric 
 
 ## Prerequisites
 
-1. **.NET 10 SDK** (10.0.0 or later)
+1. **.NET 10 SDK**
    ```bash
    dotnet --version
    ```
 
-2. **Aspire CLI 13.6+** (required for MCP tool discovery; the CLI ships as a NativeAOT global tool with instant startup)
+2. **Aspire CLI 17.0.0** for the local dashboard, developer control plane, and MCP tool discovery. Install the [Aspire CLI bundle](https://aspire.dev/get-started/install-cli/) or use the .NET global tool:
    ```bash
+   # For a new global tool installation
+   dotnet tool install --global Aspire.Cli --version 17.0.0
+   # For an existing global tool installation
+   dotnet tool update --global Aspire.Cli --version 17.0.0
    aspire --version
-   # Install: dotnet tool install -g Aspire.Cli
-   # Update a global-tool install: dotnet tool update -g Aspire.Cli
-   # Or update an existing install: aspire update --self
    ```
 
-3. **.NET Aspire 13 Templates** (Aspire 13 no longer requires a workload)
-   ```bash
-   dotnet new install Aspire.ProjectTemplates --force
-   ```
-
-4. **Docker Desktop** (for containers)
+3. **Docker Desktop** (for containers)
    ```bash
    docker --version
    ```
 
-5. **Node.js 22+** with pnpm
+4. **Node.js 22+** with pnpm
    ```bash
    node --version
    pnpm --version
@@ -44,14 +40,16 @@ This directory contains the .NET Aspire 13.6 orchestration layer for the Fabric 
 
 ## Quick Start
 
+Run the commands in this section from the repository root.
+
 ### 1. Configure Environment
 
-Copy the example configuration:
+Copy the example configuration.
 ```bash
-cp Fabric.AppHost/appsettings.Development.json.example Fabric.AppHost/appsettings.Development.json
+cp aspire/Fabric.AppHost/appsettings.Development.json.example aspire/Fabric.AppHost/appsettings.Development.json
 ```
 
-Edit `Fabric.AppHost/appsettings.Development.json` with your settings:
+Edit `aspire/Fabric.AppHost/appsettings.Development.json` with your settings.
 ```json
 {
   "Parameters": {
@@ -67,9 +65,7 @@ Edit `Fabric.AppHost/appsettings.Development.json` with your settings:
 ### 2. Install Dependencies
 
 ```bash
-# From repository root
-cd aspire/Fabric.AppHost
-dotnet restore
+dotnet restore aspire/Fabric.AppHost/Fabric.AppHost.csproj
 ```
 
 ### 3. Run the Application
@@ -77,30 +73,18 @@ dotnet restore
 **Recommended: Use Native Aspire CLI**
 
 ```bash
-# Start all services (use aspire run, not dotnet run, for MCP discovery)
-cd aspire/Fabric.AppHost
+# Start all services with MCP discovery
 aspire run
-
-# Stop all services (containers stop automatically!)
-Press Ctrl+C
 ```
+
+Press Ctrl+C to stop the AppHost. Persistent infrastructure containers keep running.
 
 **Alternative: Use Convenience Script**
 
 ```bash
 # From repository root
 ./aspire.sh run
-
-# Stop all services
-Press Ctrl+C
 ```
-
-### ✨ What's New (November 2025)
-
-- **Automatic Cleanup**: Containers now stop when you press Ctrl+C
-- **Data Persists**: Docker volumes persist between sessions (no data loss)
-- **Simpler Workflow**: No need for manual cleanup commands
-- **Fast Startup**: Web app starts in 2-3 seconds, agents start in parallel
 
 ### Other Commands
 
@@ -112,13 +96,13 @@ Press Ctrl+C
 ./aspire.sh clean       # Remove all containers, volumes, and networks (destructive!)
 ```
 
-For detailed usage guide, see [docs/ASPIRE_USAGE.md](../../docs/ASPIRE_USAGE.md)
+For detailed usage, see the [Aspire CLI usage guide](../docs/ASPIRE_USAGE.md).
 
 This single command starts:
 
 **Infrastructure Services (Docker Containers)**
 - ✅ PostgreSQL database (port 5432)
-- ✅ Redis cache (port 6379)
+- ✅ Redis cache (see the `cache` resource endpoint in the Aspire dashboard for the assigned host port)
 - ✅ Qdrant vector database (port 6333, 6334)
 - ✅ Temporal server (port 7233, 8233)
 - ✅ Temporal UI (port 8233)
@@ -143,7 +127,7 @@ This single command starts:
 
 - **Web App**: http://localhost:3001
 - **Aspire Dashboard**: https://localhost:17134 *(No authentication required in development)*
-  - The `web` resource exposes a child `web-browser-logs` resource (Aspire 13.6 `Aspire.Hosting.Browsers`). Use **Open tracked browser** to launch a Chromium tab whose console logs, errors, and network events stream into the dashboard alongside server-side OTLP. Requires a Chromium-based browser (Edge or Chrome) installed locally.
+  - The `web` resource exposes a child `web-browser-logs` resource through the experimental `Aspire.Hosting.Browsers` integration. Use **Open tracked browser** to launch a Chromium tab whose console logs, errors, and network events stream into the dashboard alongside server-side OTLP. Requires a Chromium-based browser (Edge or Chrome) installed locally.
 - **Document Generator**: http://localhost:8124/health
 - **Project Document Generator**: http://localhost:8125/health
 - **Temporal UI**: http://localhost:8233
@@ -312,7 +296,7 @@ vectors.
 
 ### Resource Shows FailedToStart on a Slow Machine
 
-Aspire 13.6.4 retries a timed-out create request and checks whether the
+Aspire retries a timed-out create request and checks whether the
 resource was created before marking it `FailedToStart`. If startup still times
 out, raise the orchestrator's limits (time-span values, at most ten minutes)
 through configuration or environment variables:

@@ -7,14 +7,25 @@
 import type { ORPCError } from "@orpc/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { handlers, mockGetContextById, mockWorkflowStart } = vi.hoisted(() => ({
+const {
+	handlers,
+	mockGetContextById,
+	mockTranscriptAccess,
+	mockWorkflowStart,
+} = vi.hoisted(() => ({
 	handlers: {} as Record<string, (...args: unknown[]) => unknown>,
 	mockGetContextById: vi.fn(),
+	mockTranscriptAccess: vi.fn(),
 	mockWorkflowStart: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
 	getContextById: mockGetContextById,
+}));
+
+vi.mock("../../lib/parlume-transcript-access", () => ({
+	PARLUME_TRANSCRIPT_WITHHELD: "Only the people invited can read it.",
+	resolveParlumeTranscriptAccess: mockTranscriptAccess,
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -77,9 +88,59 @@ function call(input: Record<string, unknown>) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mockTranscriptAccess.mockResolvedValue(null);
 });
 
 describe("startScopeIntake", () => {
+	it("refuses a Parlume transcript the caller may not read, and starts nothing", async () => {
+		mockGetContextById.mockResolvedValue({
+			id: "ctx-1",
+			projectId: "proj-A",
+			extractionStatus: "COMPLETED",
+			organizationId: "org-1",
+		});
+		mockTranscriptAccess.mockResolvedValue("withheld");
+
+		await expect(
+			call({
+				projectId: "proj-A",
+				contextId: "ctx-1",
+				organizationId: "org-1",
+			}),
+		).rejects.toMatchObject({
+			code: "FORBIDDEN",
+			message: "Only the people invited can read it.",
+		});
+		expect(mockTranscriptAccess).toHaveBeenCalledWith({
+			projectId: "proj-A",
+			userId: "user-1",
+			contextId: "ctx-1",
+		});
+		expect(mockWorkflowStart).not.toHaveBeenCalled();
+	});
+
+	it("takes a Parlume transcript the caller may read", async () => {
+		mockGetContextById.mockResolvedValue({
+			id: "ctx-1",
+			projectId: "proj-A",
+			extractionStatus: "COMPLETED",
+			organizationId: "org-1",
+		});
+		mockTranscriptAccess.mockResolvedValue("readable");
+		mockWorkflowStart.mockResolvedValue({
+			workflowId: "scope-intake-ctx-1",
+		});
+
+		await expect(
+			call({
+				projectId: "proj-A",
+				contextId: "ctx-1",
+				organizationId: "org-1",
+			}),
+		).resolves.toMatchObject({ success: true });
+		expect(mockWorkflowStart).toHaveBeenCalledTimes(1);
+	});
+
 	it("rejects a context that belongs to another project or tenant as NOT_FOUND", async () => {
 		// getContextById(contextId, projectId, tenant) applies the XOR tenant
 		// filter and returns null for a foreign row.

@@ -234,6 +234,7 @@ describe("createTranscriptUploadUrl", () => {
 		beforeEach(() => {
 			mocks.findUploadedTranscript.mockResolvedValue({
 				id: "transcript-0",
+				contextId: "context-1",
 				meetingSubject: "Planning call",
 				syncedAt,
 			});
@@ -260,7 +261,10 @@ describe("createTranscriptUploadUrl", () => {
 				context: CONTEXT,
 			});
 
-			expect(result).toEqual({ status: "reprocessing" });
+			expect(result).toEqual({
+				status: "reprocessing",
+				contextId: "context-1",
+			});
 			expect(mocks.createFileContext).not.toHaveBeenCalled();
 			expect(mocks.workflowStart).toHaveBeenCalledWith(
 				"extractMeetingInsightsOnDemandWorkflow",
@@ -291,7 +295,10 @@ describe("createTranscriptUploadUrl", () => {
 				context: CONTEXT,
 			});
 
-			expect(result).toEqual({ status: "reprocessing" });
+			expect(result).toEqual({
+				status: "reprocessing",
+				contextId: "context-1",
+			});
 		});
 	});
 });

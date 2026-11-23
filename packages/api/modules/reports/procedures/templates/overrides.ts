@@ -107,10 +107,14 @@ async function resolveOverrideScope(
 	context: OverrideCaller,
 ) {
 	if (input.projectId) {
+		// Reach is `canReachProjectReports`'s, which admits an organization
+		// admin to every project's reports.
 		await assertProjectPermission(
 			input.projectId,
 			context.user.id,
 			Permissions.REPORT_READ,
+			undefined,
+			{ admitUnreachableOrganizationMember: true },
 		);
 		if (!(await canReachProjectReports(input.projectId, context.user))) {
 			throw new ORPCError("FORBIDDEN", {

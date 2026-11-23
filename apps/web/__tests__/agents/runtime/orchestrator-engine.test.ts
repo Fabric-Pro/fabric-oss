@@ -50,6 +50,7 @@ const m = vi.hoisted(() => ({
 	oversized: vi.fn(() => null),
 	start: vi.fn(async () => ({ handle: {}, attached: false })),
 	saveClarification: vi.fn(async () => undefined),
+	saveRefused: vi.fn(async () => undefined),
 	follows: [] as Array<{
 		args: { turn: ConversationTurn; runId: string; decided?: Set<string> };
 		opening?: { announce: AGUIEvent[]; resumed: boolean };
@@ -110,6 +111,7 @@ vi.mock("@saas/agents/runtime/multi-agent-agents", () => ({
 }));
 vi.mock("@saas/agents/runtime/orchestrator-turn-record", () => ({
 	saveAnsweredClarification: m.saveClarification,
+	saveRefusedOrchestratorTurn: m.saveRefused,
 }));
 vi.mock("@saas/agents/runtime/orchestrator-turn-follow", () => ({
 	OrchestratorTurnFollow: class {
@@ -360,7 +362,11 @@ describe("a new turn", () => {
 	it("abandons an admitted turn its billing refuses, and reports the refusal", async () => {
 		m.bill.mockResolvedValueOnce(
 			Response.json(
-				{ error: "Limit", code: "AI_USAGE_LIMIT_EXCEEDED" },
+				{
+					error: "Limit",
+					code: "AI_USAGE_LIMIT_EXCEEDED",
+					data: { limitId: "limit-example", window: "DAILY" },
+				},
 				{ status: 429 },
 			),
 		);
@@ -368,6 +374,12 @@ describe("a new turn", () => {
 
 		expect(m.abandon).toHaveBeenCalledWith(
 			expect.objectContaining({ turnId: "turn-1", cancelled: false }),
+		);
+		// Saved with its question, so reopening the chat shows the refusal;
+		// in the paused state's words, never the limit's id.
+		expect(m.saveRefused).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "turn-1" }),
+			"AI calls are paused — the usage limit for today is reached. Manage limits to raise it, or try again after it resets.",
 		);
 		expect(events).toEqual([
 			expect.objectContaining({

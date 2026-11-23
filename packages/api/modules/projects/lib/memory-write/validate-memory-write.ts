@@ -25,7 +25,9 @@ import { PROJECT_NOT_FOUND_MESSAGE } from "../../../../orpc/middleware/project-v
 
 /**
  * Whether the member automatic runs act as can still create context in the
- * project, on the same resolution as the gate (`resolveContextSyncAccess`).
+ * project, on the same resolution as the gate (`resolveContextSyncAccess`),
+ * and as the worker's re-check (`canCreateProjectContexts`): a delegate who
+ * cannot open the project holds nothing there.
  */
 async function delegateHoldsContextCreate(
 	projectId: string,
@@ -37,6 +39,7 @@ async function delegateHoldsContextCreate(
 	);
 	return (
 		access !== null &&
+		access.isVisible !== false &&
 		(access.source === "owner" ||
 			hasPermission(access.permissions, Permissions.CONTEXT_CREATE))
 	);

@@ -15,9 +15,11 @@
  *    "act as anyone". Missing, forged, expired or minted for someone else is a
  *    401 with the reason.
  * 3. Membership of the named organization is read on every request and the
- *    session is held to that one tenant, with `SERVICE_CREDENTIAL_SCOPES` and,
- *    only for a grant that names a project the person can open, the scopes of
- *    that grant within `SERVICE_GRANT_MAX_SCOPES`, on that project alone.
+ *    session is held to that one tenant. A chat grant holds
+ *    `SERVICE_CREDENTIAL_SCOPES`. A grant that names a project the person can
+ *    open holds that set's reads plus the grant's own scopes within
+ *    `SERVICE_GRANT_MAX_SCOPES`, on that project alone, so a read-only grant
+ *    changes nothing.
  *
  * Not admitted at a project's URL: the runtime reaches the organization-wide
  * gateway, and a project's URL is for a credential issued for that project.

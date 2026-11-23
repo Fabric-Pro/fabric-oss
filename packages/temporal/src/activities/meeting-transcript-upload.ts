@@ -42,6 +42,7 @@ import {
 import {
 	decodeTranscriptBytes,
 	type ParsedTranscript,
+	parseMarkdownTranscript,
 	parsePlainTranscript,
 	parseVttTranscript,
 } from "./lib/transcript-file-text";
@@ -98,13 +99,18 @@ function isUniqueViolation(error: unknown): boolean {
 	return (error as { code?: string } | null)?.code === "P2002";
 }
 
-function readTextFile(bytes: Buffer, format: "txt" | "vtt"): ReadTranscript {
+function readTextFile(
+	bytes: Buffer,
+	format: "txt" | "vtt" | "md",
+): ReadTranscript {
 	const decoded = decodeTranscriptBytes(bytes);
 	const text = sanitizeTextForStorage(decoded.text);
 	const parsed =
 		format === "vtt"
 			? parseVttTranscript(text)
-			: parsePlainTranscript(text);
+			: format === "md"
+				? parseMarkdownTranscript(text)
+				: parsePlainTranscript(text);
 	return {
 		...parsed,
 		unreadableParts: parsed.unreadableLines + decoded.unreadableCharacters,

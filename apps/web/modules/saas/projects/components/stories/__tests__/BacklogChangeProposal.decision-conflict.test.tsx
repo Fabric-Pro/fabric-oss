@@ -11,7 +11,7 @@ import type {
 	DecisionConflictFinding,
 	DecisionPrecheckResult,
 } from "@repo/agent-types";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { axe } from "vitest-axe";
 import * as axeMatchers from "vitest-axe/matchers";
@@ -44,6 +44,7 @@ import {
 	BacklogChangeProposal,
 	type ChangeItem,
 } from "../BacklogChangeProposal";
+import { renderWithQueryClient } from "./render-with-query-client";
 
 function buildFinding(
 	overrides: Partial<DecisionConflictFinding> = {},
@@ -73,7 +74,7 @@ function buildChange(overrides: Partial<ChangeItem> = {}): ChangeItem {
 function renderProposal(
 	props: Partial<React.ComponentProps<typeof BacklogChangeProposal>> = {},
 ) {
-	return render(
+	return renderWithQueryClient(
 		<BacklogChangeProposal
 			summary="Test proposal"
 			contextSummary="Captured from a Teams thread"

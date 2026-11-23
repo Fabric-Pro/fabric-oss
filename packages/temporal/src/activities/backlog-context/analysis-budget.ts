@@ -71,3 +71,38 @@ export function truncateTranscriptToCeiling(
 
 export const TRANSCRIPT_TRUNCATION_NOTICE =
 	"\n\n[... truncated to fit transcript budget ...]";
+
+/**
+ * Cap for connected context in one structure-preserving merge prompt. Chosen
+ * after an offline comparison on real merges found no quality loss from capping
+ * while the uncapped block cost roughly nine times the input tokens (Fizzy #3523).
+ */
+export const REANALYSIS_CONNECTED_CONTEXT_MAX_CHARS = 24_000;
+
+const REANALYSIS_TRUNCATION_NOTICE =
+	"\n\n[... truncated to fit token budget ...]";
+
+/**
+ * Cap connected context to REANALYSIS_CONNECTED_CONTEXT_MAX_CHARS. Keeps the
+ * start because the block is ranked best-first. A truncated result, notice
+ * included, is the cap long, or one shorter when the cut would otherwise split
+ * a surrogate pair.
+ */
+export function capReanalysisConnectedContext(
+	text: string | undefined,
+): string {
+	if (!text) {
+		return "";
+	}
+	const max = REANALYSIS_CONNECTED_CONTEXT_MAX_CHARS;
+	if (text.length <= max) {
+		return text;
+	}
+	let end = max - REANALYSIS_TRUNCATION_NOTICE.length;
+	// A UTF-16 slice must not leave half a surrogate pair at its end.
+	const last = text.charCodeAt(end - 1);
+	if (last >= 0xd800 && last <= 0xdbff) {
+		end--;
+	}
+	return `${text.slice(0, end)}${REANALYSIS_TRUNCATION_NOTICE}`;
+}

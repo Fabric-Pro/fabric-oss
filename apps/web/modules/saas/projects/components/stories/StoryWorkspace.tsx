@@ -71,7 +71,12 @@ import { getOrpcCode } from "@saas/projects/components/field-mapping/orpc-error"
 import { StoryTimeSection } from "@saas/time-tracking/components/StoryTimeSection";
 import { useIsOverflowing } from "@shared/hooks/use-is-overflowing";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	mutationOptions,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
@@ -185,6 +190,15 @@ import {
 	STORY_TAB_PARAM,
 } from "../../lib/stories/routes";
 import { stageInkStyle } from "../../lib/stories/stage-ink";
+import {
+	decisionSaveOptions,
+	holdsSentText,
+	isServerUnreachable,
+	isUnanswered,
+	STORY_REQUEST_TIMEOUT_MS,
+	STORY_SERVER_UNREACHABLE_MESSAGE,
+	settleWithin,
+} from "../../lib/stories/story-request-bounds";
 import type {
 	FeatureDraftingStage,
 	MaturationStatus,
@@ -210,7 +224,7 @@ import {
 import { storyAttachmentsQueryOptions } from "../../lib/story-attachments-query";
 import {
 	ACCEPTANCE_CRITERIA_PRESERVED_MESSAGE,
-	formatStoryContent,
+	formatStoredStoryContent,
 	parseStoryContent,
 	resolveStoryContentForSave,
 } from "../../lib/story-content";
@@ -244,6 +258,7 @@ import { RunChangeSummaryCard } from "./maturation/RunChangeSummaryCard";
 import { SummaryQuestionsPanel } from "./maturation/SummaryQuestionsPanel";
 import type { AnswerSource } from "./maturation/types";
 import { NotifyButton } from "./NotifyButton";
+import { ProposalTicketReviewBar } from "./ProposalTicketReviewBar";
 import { AiReprioritizeControl } from "./priority/AiReprioritizeControl";
 import { useAiReassessEligibility } from "./priority/useAiReassessEligibility";
 import { ReadinessPanel } from "./ReadinessPanel";
@@ -251,6 +266,7 @@ import { StoryEvidence } from "./StoryEvidence";
 import { StoryKindRegenerationNotice } from "./StoryKindRegenerationNotice";
 import { StoryTagEditor } from "./StoryTagEditor";
 import { useConsumeSearchParam } from "./use-consume-search-param";
+import { useProposalTicketReview } from "./useProposalTicketReview";
 import {
 	useInvalidateStoryAfterRegeneration,
 	useStoryKindRegeneration,
@@ -545,10 +561,20 @@ const DEFERRED_ACCEPT_SAVE_DELAY_MS = 1000;
 const REVIEW_RESOLUTION_SETTLE_GRACE_MS = DEFERRED_ACCEPT_SAVE_DELAY_MS + 250;
 
 /**
+ * Said when the fresh read before a decision reached no server. Nothing is
+ * applied and the decision can be retried.
+ */
+const REVIEW_FRESH_READ_FAILED_MESSAGE =
+	"the latest version of this feature could not be read. Check your connection and try again";
+
+/**
  * How long after a run ends the editor waits for its review before it treats
  * the run's remaining diff marks as a draft no review will resolve.
  */
 const UNREVIEWED_DRAFT_CHECK_DELAY_MS = 1500;
+
+const UNREVIEWED_DRAFT_DISCARDED_MESSAGE =
+	"The assistant stopped before its draft was ready for review. Your specification is unchanged.";
 
 /**
  * The cross-tab review banner's own state machine (Fizzy #1929).
@@ -1507,6 +1533,15 @@ export function StoryWorkspace({
 
 	// True while the confirm_changes dialog is visible (keeps diff highlighting active)
 	const [isAwaitingConfirmation, setIsAwaitingConfirmation] = useState(false);
+	// True between a run ending with a draft nothing reviews and the check that
+	// puts the pre-run text back. The editor is read-only and autosave waits
+	// for that long, so neither a keystroke nor a save lands on the draft.
+	const [isCheckingUnreviewedDraft, setIsCheckingUnreviewedDraft] =
+		useState(false);
+	// Read by a run's start and by the unmount flush, which must not act on
+	// the draft either.
+	const isCheckingUnreviewedDraftRef = useRef(false);
+	isCheckingUnreviewedDraftRef.current = isCheckingUnreviewedDraft;
 	// Callbacks for the DiffReviewBar to trigger accept/reject
 	const confirmCallbacksRef = useRef<{
 		accept: () => boolean;
@@ -1623,7 +1658,7 @@ export function StoryWorkspace({
 				? getTurndownService().turndown(story.acceptanceCriteria)
 				: story.acceptanceCriteria
 			: "";
-		return formatStoryContent({
+		return formatStoredStoryContent({
 			description: desc,
 			acceptanceCriteria: ac,
 		});
@@ -1740,6 +1775,10 @@ export function StoryWorkspace({
 	const isProgrammaticAgentRunInFlightRef = useRef(false);
 	// Guard to suppress editor-to-state sync during context update diff review
 	const isContextUpdateActiveRef = useRef(false);
+	// A Proposal Inbox update is under review on this ticket: the body is
+	// read-only and nothing in it is an edit to save until the review ends.
+	// Kept in sync where the review hook runs, below.
+	const isProposalReviewActiveRef = useRef(false);
 
 	// Fetch project context for AI - wait for org context on org routes
 	// IMPORTANT: Pass null explicitly for personal context to prevent
@@ -1947,7 +1986,12 @@ export function StoryWorkspace({
 		// still resolving, or the agent run it started is still streaming) —
 		// otherwise this fires a second concurrent run on the same thread.
 		// Shared with `onEnhance` below since both post to the same thread.
-		if (isProgrammaticAgentRunInFlightRef.current || isAgentRunActive()) {
+		// A member without STORY_UPDATE could not apply the rewrite.
+		if (
+			!canEdit ||
+			isProgrammaticAgentRunInFlightRef.current ||
+			isAgentRunActive()
+		) {
 			return;
 		}
 		isProgrammaticAgentRunInFlightRef.current = true;
@@ -2046,6 +2090,7 @@ export function StoryWorkspace({
 			isProgrammaticAgentRunInFlightRef.current = false;
 		}
 	}, [
+		canEdit,
 		story.id,
 		// Read ONLY to detect drift against the server's answer — never to pick
 		// a template (Fizzy #2048 R2).
@@ -2203,7 +2248,8 @@ export function StoryWorkspace({
 					ed.isEditable &&
 					!isAiLoadingRef.current &&
 					!isSyncingFromPropRef.current &&
-					!isAwaitingConfirmationRef.current
+					!isAwaitingConfirmationRef.current &&
+					!isProposalReviewActiveRef.current
 				) {
 					setHasUnsavedChanges(true);
 					// Clear existing auto-save timer
@@ -2482,6 +2528,40 @@ export function StoryWorkspace({
 		maturationEditorInput,
 	]);
 
+	/**
+	 * Put the pre-run text back over a draft no review will resolve, and
+	 * return it. `baselineRef` still holds that text because Effect 4 does not
+	 * sync while diff marks remain.
+	 */
+	const restoreRunBaseline = (): string | null => {
+		if (!editor) {
+			return null;
+		}
+		const restored = baselineRef.current;
+		isSyncingFromPropRef.current = true;
+		editor.commands.setContent(
+			fromMarkdown(restored, USER_CONTENT_MD_OPTIONS),
+		);
+		isSyncingFromPropRef.current = false;
+		setAgentStateRef.current({ document: restored });
+		const dirty = isEditorDirty(restored, lastSavedMarkdownRef.current);
+		setHasUnsavedChanges(dirty);
+		// Saves were held while the draft was on screen, so arm one for the
+		// text that is unsaved now.
+		if (dirty) {
+			if (autoSaveTimeoutRef.current) {
+				clearTimeout(autoSaveTimeoutRef.current);
+			}
+			autoSaveTimeoutRef.current = setTimeout(() => {
+				triggerAutoSaveRef.current?.();
+			}, 10000);
+		}
+		return restored;
+	};
+	// The unmount flush is sealed at first render, when `editor` is null.
+	const restoreRunBaselineRef = useRef(restoreRunBaseline);
+	restoreRunBaselineRef.current = restoreRunBaseline;
+
 	// Effect 1: Capture baseline when loading STARTS (transition from false to true)
 	useEffect(() => {
 		// Do not advance the loading-edge ref until the editor exists.
@@ -2498,6 +2578,13 @@ export function StoryWorkspace({
 		}
 		// Only capture baseline on transition: wasLoading=false → isAiLoading=true
 		if (isAiLoading && !wasLoadingRef.current) {
+			// A run that starts while the previous run's unreviewed draft waits
+			// to be put back would otherwise take that draft as its baseline,
+			// and flush it below. Put the pre-run text back first.
+			if (isCheckingUnreviewedDraftRef.current) {
+				restoreRunBaseline();
+				toast.info(UNREVIEWED_DRAFT_DISCARDED_MESSAGE);
+			}
 			// The pending auto-save must not fire *during* AI review
 			// (it would persist unconfirmed diff content) — but discarding it
 			// threw away real user edits. Flush it first, then cancel.
@@ -2565,8 +2652,10 @@ export function StoryWorkspace({
 			}
 		}
 		wasLoadingRef.current = isAiLoading;
-		editor.setEditable(!isAiLoading);
-	}, [isAiLoading, editor]);
+		editor.setEditable(
+			canEdit && !isAiLoading && !isProposalReviewActiveRef.current,
+		);
+	}, [isAiLoading, editor, canEdit]);
 
 	// Effect 2: Final diff when nodeName becomes "end"
 	// Uses baselineRef instead of currentDocument state
@@ -2659,6 +2748,27 @@ export function StoryWorkspace({
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [editor?.state?.doc, isAiLoading]);
+
+	/**
+	 * Take `markdown`, the editor's own text, as the baseline outside Effect 4,
+	 * under Effect 4's conditions. Effect 4 runs only on a render, and the
+	 * editor does not re-render on every change. A path that copies the editor's
+	 * text into the agent's state must bring the baseline up to date first:
+	 * with `nodeName` still "end" from the previous run, Effect 2 paints any
+	 * difference between the two as the run's draft, and a restore of that
+	 * baseline then drops the text.
+	 */
+	const takeEditorTextAsBaseline = (markdown: string | null) => {
+		if (
+			markdown !== null &&
+			editor &&
+			!isAiLoadingRef.current &&
+			!isContextUpdateActiveRef.current &&
+			!editorHasDiffMarks(editor)
+		) {
+			baselineRef.current = markdown;
+		}
+	};
 
 	// D2: clicking a confirm-time change-summary bullet scrolls the diff to the
 	// referenced section and flashes it. Bullets are formatted "Section — change",
@@ -2777,7 +2887,12 @@ export function StoryWorkspace({
 		}
 		return registerDocumentEditor((content: string) => {
 			editor.commands.setContent(fromMarkdown(content));
-			setAgentStateRef.current({ document: content });
+			// The applied text is a direct edit, not a run's draft, so it is
+			// the baseline the agent's copy is compared with. Both take the
+			// editor's serialization of it, so the two compare equal.
+			const applied = getEditorMarkdownForSave(editor);
+			takeEditorTextAsBaseline(applied);
+			setAgentStateRef.current({ document: applied ?? content });
 			setHasUnsavedChanges(true);
 		});
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2829,6 +2944,7 @@ export function StoryWorkspace({
 		storyId: story.id,
 		organizationId: organizationId ?? null,
 		editor,
+		canEdit,
 		parseContent,
 		getEditorMarkdownForSave,
 		fromMarkdown,
@@ -2839,13 +2955,32 @@ export function StoryWorkspace({
 			onStoryUpdated?.();
 		},
 	});
-	// Keep ref in sync so Effects 4 & 5 (declared above) can read it
-	isContextUpdateActiveRef.current = contextUpdate.isActive;
+	// A Proposal Inbox update reviewed line by line on this ticket — the
+	// same in-editor diff review, started from the inbox.
+	const proposalReview = useProposalTicketReview({
+		story,
+		editor,
+		enabled: canEdit,
+		basePath,
+		isSyncingFromPropRef,
+		onTicketChanged: () => {
+			queryClient.invalidateQueries({ queryKey: storyGetQueryKey });
+			queryClient.invalidateQueries({ queryKey: storiesListQueryKey });
+			onStoryUpdated?.();
+		},
+	});
+	// Keep ref in sync so Effects 4 & 5 (declared above) can read it. Both
+	// reviews hold diff marks no prop sync or draft check may touch.
+	isContextUpdateActiveRef.current =
+		contextUpdate.isActive || proposalReview.isActive;
+	isProposalReviewActiveRef.current = proposalReview.isActive;
 
 	// Diff review-mode toggle (inline / side-by-side / full preview). Pure view
 	// state — switching never mutates the editor doc or the pending diff.
 	const isDiffReviewActive =
-		isAwaitingConfirmation || contextUpdate.showingDiff;
+		isAwaitingConfirmation ||
+		contextUpdate.showingDiff ||
+		proposalReview.showingDiff;
 	const {
 		diffViewMode,
 		setDiffViewMode,
@@ -2996,10 +3131,29 @@ export function StoryWorkspace({
 	 * A separate effect rather than a change to Effect 1's `setEditable` call:
 	 * this one is declared after the regeneration hook, so it runs last and its
 	 * answer wins whenever both fire.
+	 *
+	 * The body is also read-only while a run's unreviewed draft waits to be
+	 * put back (`isCheckingUnreviewedDraft`): anything typed into it then
+	 * would be overwritten by the pre-run text. And while a Proposal Inbox
+	 * update is under review on it: the review paints, applies and puts back
+	 * the body itself. A member without STORY_UPDATE never edits it.
 	 */
 	useEffect(() => {
-		editor?.setEditable(!isAiLoading && !regeneration.isBodyLocked);
-	}, [editor, isAiLoading, regeneration.isBodyLocked]);
+		editor?.setEditable(
+			canEdit &&
+				!isAiLoading &&
+				!regeneration.isBodyLocked &&
+				!isCheckingUnreviewedDraft &&
+				!proposalReview.isActive,
+		);
+	}, [
+		editor,
+		canEdit,
+		isAiLoading,
+		regeneration.isBodyLocked,
+		isCheckingUnreviewedDraft,
+		proposalReview.isActive,
+	]);
 
 	const convertKindMutation = useMutation({
 		mutationFn: async () => {
@@ -3034,8 +3188,84 @@ export function StoryWorkspace({
 		},
 	});
 
-	// Update story mutation with optimistic updates
-	const updateMutation = useMutation({
+	// Without re-arming, a failed save leaves no pending
+	// autosave — the timer that led here already fired and won't fire
+	// again — so the doc would sit dirty until the user types again.
+	// Same wedge as the `isSavingRef` guard above; see that comment.
+	//
+	// Bounded on two axes (see `isMountedRef` / `saveFailureCountRef`
+	// declarations above for the full rationale): skip the re-arm
+	// entirely once the component has unmounted (nothing left to save
+	// for), and once `MAX_AUTO_SAVE_RETRIES` consecutive failures have
+	// piled up (a live but permanently-failing save shouldn't retry —
+	// and therefore toast — forever either).
+	const reArmAutoSave = useCallback(() => {
+		if (
+			!isMountedRef.current ||
+			saveFailureCountRef.current > MAX_AUTO_SAVE_RETRIES
+		) {
+			return;
+		}
+		if (autoSaveTimeoutRef.current) {
+			clearTimeout(autoSaveTimeoutRef.current);
+		}
+		autoSaveTimeoutRef.current = setTimeout(() => {
+			// Re-check on fire, not just at arm time — the
+			// component can unmount during the 10s window between
+			// scheduling this timer and it firing.
+			if (!isMountedRef.current) {
+				return;
+			}
+			triggerAutoSaveRef.current?.();
+		}, 10000);
+	}, []);
+
+	// The story as the server holds it now: never from the cache, in any
+	// network state, and within `STORY_REQUEST_TIMEOUT_MS`.
+	const readStoryFromServer = useCallback(
+		() =>
+			settleWithin(
+				queryClient.fetchQuery({
+					...orpc.projects.stories.get.queryOptions({
+						input: { projectId, storyId: story.id, organizationId },
+					}),
+					staleTime: 0,
+					networkMode: "always",
+				}),
+				STORY_REQUEST_TIMEOUT_MS,
+			),
+		[queryClient, projectId, story.id, organizationId],
+	);
+
+	// A review decision's save that got no answer in time may have landed
+	// all the same. Read the story back: when it holds what the save sent,
+	// the save is done, and sending it again would add a version; otherwise,
+	// or when the read fails too, the autosave retries it.
+	const settleUnansweredSave = useCallback(
+		async (sent: {
+			description: string | null;
+			acceptanceCriteria: string | null;
+		}) => {
+			const landed = await readStoryFromServer().then(
+				(fresh) =>
+					fresh?.story !== undefined &&
+					holdsSentText(fresh.story, sent),
+				() => false,
+			);
+			if (landed) {
+				saveFailureCountRef.current = 0;
+				toast.success("Story saved");
+			} else {
+				reArmAutoSave();
+			}
+			return landed;
+		},
+		[readStoryFromServer, reArmAutoSave],
+	);
+
+	// Update story mutation with optimistic updates. Shared by the ordinary
+	// save and a review decision's (`decisionSaveMutation`).
+	const storySaveOptions = mutationOptions({
 		mutationFn: async (data: {
 			title?: string;
 			description?: string | null;
@@ -3131,7 +3361,9 @@ export function StoryWorkspace({
 				saveFailureCountRef.current > MAX_AUTO_SAVE_RETRIES
 			) {
 				toast.error("Failed to save story", {
-					description: error.message,
+					description: isServerUnreachable(error)
+						? STORY_SERVER_UNREACHABLE_MESSAGE
+						: error.message,
 				});
 			}
 			// A failed save must not leave the editor reading
@@ -3142,33 +3374,11 @@ export function StoryWorkspace({
 			// case. That's deliberate: failing safe (re-showing dirty and
 			// re-arming autosave) is preferable to risking a silent wedge.
 			setHasUnsavedChanges(true);
-			// Without re-arming, a failed save leaves no pending
-			// autosave — the timer that led here already fired and won't fire
-			// again — so the doc would sit dirty until the user types again.
-			// Same wedge as the `isSavingRef` guard above; see that comment.
-			//
-			// Bounded on two axes (see `isMountedRef` / `saveFailureCountRef`
-			// declarations above for the full rationale): skip the re-arm
-			// entirely once the component has unmounted (nothing left to save
-			// for), and once `MAX_AUTO_SAVE_RETRIES` consecutive failures have
-			// piled up (a live but permanently-failing save shouldn't retry —
-			// and therefore toast — forever either).
-			if (
-				isMountedRef.current &&
-				saveFailureCountRef.current <= MAX_AUTO_SAVE_RETRIES
-			) {
-				if (autoSaveTimeoutRef.current) {
-					clearTimeout(autoSaveTimeoutRef.current);
-				}
-				autoSaveTimeoutRef.current = setTimeout(() => {
-					// Re-check on fire, not just at arm time — the
-					// component can unmount during the 10s window between
-					// scheduling this timer and it firing.
-					if (!isMountedRef.current) {
-						return;
-					}
-					triggerAutoSaveRef.current?.();
-				}, 10000);
+			// A review decision's save that got no answer in time may still
+			// have landed; its caller reads the story back first
+			// (`settleUnansweredSave`).
+			if (!isUnanswered(error)) {
+				reArmAutoSave();
 			}
 			setIsSaving(false);
 		},
@@ -3207,10 +3417,18 @@ export function StoryWorkspace({
 			queryClient.invalidateQueries({ queryKey: storiesListQueryKey });
 		},
 	});
+	// Offline, an ordinary save pauses and goes through on reconnect.
+	const updateMutation = useMutation(storySaveOptions);
+	// An accept applying a draft must not read as applied while offline, so
+	// its save fails at once instead, toasts and re-arms the autosave.
+	const decisionSaveMutation = useMutation(
+		decisionSaveOptions(storySaveOptions),
+	);
 	// Keep the ref in sync so Effect 1 (declared above, before this mutation
 	// exists) can read the latest pending state without being listed in its
 	// own dependency array.
-	updateMutationPendingRef.current = updateMutation.isPending;
+	updateMutationPendingRef.current =
+		updateMutation.isPending || decisionSaveMutation.isPending;
 
 	const [isAiMode, setIsAiMode] = useState(false);
 	const [aiResult, setAiResult] = useState<AiReadinessData | null>(null);
@@ -3544,8 +3762,9 @@ export function StoryWorkspace({
 		},
 	});
 
-	// Update stage with version mutation (used by CopilotKit confirm flow)
-	const updateStageWithVersionMutation = useMutation({
+	// Update stage with version mutation (used by CopilotKit confirm flow), a
+	// review decision's save like `decisionSaveMutation`.
+	const stageSaveOptions = mutationOptions({
 		mutationFn: async (data: {
 			targetStage: FeatureDraftingStage;
 			description: string | null;
@@ -3613,10 +3832,15 @@ export function StoryWorkspace({
 				return;
 			}
 			toast.error("Failed to update stage", {
-				description: error.message,
+				description: isServerUnreachable(error)
+					? STORY_SERVER_UNREACHABLE_MESSAGE
+					: error.message,
 			});
 		},
 	});
+	const updateStageWithVersionMutation = useMutation(
+		decisionSaveOptions(stageSaveOptions),
+	);
 
 	const storyDetailQueryKey = orpc.projects.stories.get.queryKey({
 		input: { projectId, storyId: story.id, organizationId },
@@ -3676,9 +3900,28 @@ export function StoryWorkspace({
 		},
 	});
 
-	// Auto-save function — bail if AI is loading or confirmation dialog is open
+	// Auto-save function — bail if AI is loading, the confirmation dialog is
+	// open, or a Proposal Inbox update is under review: the editor then holds
+	// changes nobody accepted yet.
 	const triggerAutoSave = useCallback(() => {
-		if (!hasUnsavedChanges || isAiLoading || isAwaitingConfirmation) {
+		if (
+			!hasUnsavedChanges ||
+			isAiLoading ||
+			isAwaitingConfirmation ||
+			proposalReview.isActive
+		) {
+			return;
+		}
+		// The editor holds a draft that is about to be replaced by the pre-run
+		// text. Saving now would keep the draft's insertions, so wait and save
+		// what the editor holds once it is back.
+		if (isCheckingUnreviewedDraft) {
+			if (autoSaveTimeoutRef.current) {
+				clearTimeout(autoSaveTimeoutRef.current);
+			}
+			autoSaveTimeoutRef.current = setTimeout(() => {
+				triggerAutoSaveRef.current?.();
+			}, 10000);
 			return;
 		}
 		// `targetStage` is a *pending* selection from the drafting
@@ -3689,7 +3932,13 @@ export function StoryWorkspace({
 		// a page the user has since navigated away from). Only an explicit
 		// Save commits the stage.
 		handleSave({ includeStageTransition: false });
-	}, [hasUnsavedChanges, isAiLoading, isAwaitingConfirmation]);
+	}, [
+		hasUnsavedChanges,
+		isAiLoading,
+		isAwaitingConfirmation,
+		isCheckingUnreviewedDraft,
+		proposalReview.isActive,
+	]);
 
 	// Expose the latest `triggerAutoSave` to the sealed `onUpdate`
 	// closure via `triggerAutoSaveRef` (declared above, before this function
@@ -3699,7 +3948,8 @@ export function StoryWorkspace({
 
 	// Handle save
 	// Returns `false` only when the flush bailed (serializer
-	// failure — nothing was saved and nothing was sent). Returns `true` when
+	// failure, or a run's unreviewed draft waiting to be put back — nothing was
+	// saved and nothing was sent). Returns `true` when
 	// there was nothing to save, a save was successfully kicked off, *or* the
 	// re-entrancy guard below bailed because a save was already in flight —
 	// that last case is NOT distinguishable from "saved fine" by the return
@@ -3714,6 +3964,24 @@ export function StoryWorkspace({
 		}: {
 			includeStageTransition?: boolean;
 		} = {}): boolean => {
+			// The editor holds a run's draft that is about to be replaced by
+			// the pre-run text. A save now, by Ctrl/Cmd+S or a Save button,
+			// would store the draft. Once it is put back the editor reads as
+			// unsaved again if it is, and autosave is armed for it.
+			// Likewise while a Proposal Inbox update is under review: the
+			// editor shows changes nobody accepted yet. A member without
+			// STORY_UPDATE is refused by the server, and a refused autosave
+			// re-arms itself.
+			if (
+				!canEdit ||
+				(isCheckingUnreviewedDraftRef.current &&
+					editorHasDiffMarks(editor)) ||
+				isProposalReviewActiveRef.current
+			) {
+				// A held Save & Close must not close on a later save.
+				isManualSaveRef.current = false;
+				return false;
+			}
 			// Re-entrancy guard. Without it, the 10s autosave firing
 			// while a manual Ctrl+S (or vice versa) is still in flight kicks off a
 			// second overlapping `updateMutation.mutate` — the root cause of the
@@ -3877,6 +4145,7 @@ export function StoryWorkspace({
 			return true;
 		},
 		[
+			canEdit,
 			title,
 			priority,
 			size,
@@ -4092,10 +4361,23 @@ export function StoryWorkspace({
 	// initial commit — the helper's null-guard was correct, but
 	// the captured-stale-closure problem rendered the fix
 	// inoperative in the most common path (fresh session).
-	const recordOutcomeRef = useRef(recordConfirmChangesOutcome);
+	const latestRecordOutcomeRef = useRef(recordConfirmChangesOutcome);
 	useEffect(() => {
-		recordOutcomeRef.current = recordConfirmChangesOutcome;
+		latestRecordOutcomeRef.current = recordConfirmChangesOutcome;
 	}, [recordConfirmChangesOutcome]);
+	// The thread shows messages in the order they were saved. The proposal's
+	// turn is saved when its run ends, which comes after the decision, so a
+	// "Changes rejected." written at once landed above the proposal it
+	// answers. `resolvePendingReview` holds this until the proposal's outcome
+	// stamp lands, which the server accepts only once that turn is saved, and
+	// every outcome record waits for it. The recorder, and so the conversation
+	// it writes to, is taken when the record is asked for: a new chat or
+	// another thread opened while the stamp is pending must not receive it.
+	const proposalStampRef = useRef<Promise<void>>(Promise.resolve());
+	const recordOutcomeRef = useRef((options: RecordOnResolveOptions) => {
+		const record = latestRecordOutcomeRef.current;
+		return proposalStampRef.current.then(() => record(options));
+	});
 
 	// Confirmation action for agent changes
 	// CRITICAL FIX: Use editor content with diff tags stripped, NOT agentState.document
@@ -4266,7 +4548,9 @@ export function StoryWorkspace({
 							clearTimeout(autoSaveTimeoutRef.current);
 							autoSaveTimeoutRef.current = null;
 						}
-						void recordOutcomeRef.current({ accepted: false });
+						// Nothing was applied and the person did not reject, so
+						// the chat records no outcome: "Changes rejected." here
+						// answered a Confirm.
 						respond?.({ accepted: false });
 						return false;
 					}
@@ -4319,6 +4603,15 @@ export function StoryWorkspace({
 					editor?.commands.setContent(
 						fromMarkdown(finalContent, USER_CONTENT_MD_OPTIONS),
 					);
+					// What the editor now holds, in the editor's own
+					// serialization. `finalContent` comes from the document
+					// while it still carried the diff marks, and it does not
+					// always match the same text serialized without them, so
+					// confirming it as saved left the editor reading as
+					// unsaved after the save landed: the Save button stayed
+					// active and a reload raised the leave-page prompt.
+					const acceptedDocument =
+						getEditorMarkdownForSave(editor) ?? finalContent;
 					setCurrentDocument(finalContent);
 					baselineRef.current = finalContent; // Update baseline for next edit
 					setAgentState({ document: finalContent });
@@ -4480,50 +4773,59 @@ export function StoryWorkspace({
 							const isContextUpdate = true;
 							isRefreshCleanSpecPendingRef.current = false; // Reset for future edits
 
+							const sent = {
+								description: parsed.description || null,
+								acceptanceCriteria:
+									parsed.acceptanceCriteria || null,
+							};
+							// Mirror handleSave's per-call
+							// confirmation pattern — confirm THIS call's
+							// snapshot (`acceptedDocument`, the full
+							// document as `getEditorMarkdownForSave`
+							// writes it, not just the `description`
+							// field above) from its own `onSuccess`
+							// rather than a shared ref. See
+							// `lastSavedMarkdownRef`'s
+							// declaration comment for the race this
+							// replaced. Any new `updateMutation.mutate`
+							// call site should follow the same pattern.
+							const confirmSaved = () => {
+								lastSavedMarkdownRef.current = acceptedDocument;
+								const live = showRaw
+									? currentDocument
+									: getEditorMarkdownForSave(editor);
+								setHasUnsavedChanges(
+									isEditorDirty(
+										live,
+										lastSavedMarkdownRef.current,
+									),
+								);
+							};
+							const recordSaved = () =>
+								recordOutcome({
+									accepted: true,
+									summary: ACCEPT_OUTCOME_SUMMARIES.saved,
+								});
 							// `mutateAsync` for the same reason as the stage
 							// write above; the per-call `onSuccess` still runs
 							// first while the workspace is mounted.
-							const saveAnswer = updateMutation.mutateAsync(
-								{
-									description: parsed.description || null,
-									acceptanceCriteria:
-										parsed.acceptanceCriteria || null,
-									isContextUpdate,
-								},
-								{
-									// Mirror handleSave's per-call
-									// confirmation pattern — confirm THIS call's
-									// snapshot (`finalContent`, the full document
-									// markdown, same shape as
-									// `getEditorMarkdownForSave`/`buildInitialContent`
-									// output, not just the `description` field
-									// above) from its own `onSuccess` rather than a
-									// shared ref. See `lastSavedMarkdownRef`'s
-									// declaration comment for the race this
-									// replaced. Any new `updateMutation.mutate`
-									// call site should follow the same pattern.
-									onSuccess: () => {
-										lastSavedMarkdownRef.current =
-											finalContent;
-										const live = showRaw
-											? currentDocument
-											: getEditorMarkdownForSave(editor);
-										setHasUnsavedChanges(
-											isEditorDirty(
-												live,
-												lastSavedMarkdownRef.current,
-											),
-										);
-									},
-								},
+							const saveAnswer = decisionSaveMutation.mutateAsync(
+								{ ...sent, isContextUpdate },
+								{ onSuccess: confirmSaved },
 							);
 							void saveAnswer.then(
-								() =>
-									recordOutcome({
-										accepted: true,
-										summary: ACCEPT_OUTCOME_SUMMARIES.saved,
-									}),
-								recordFailed,
+								recordSaved,
+								async (error: unknown) => {
+									if (
+										isUnanswered(error) &&
+										(await settleUnansweredSave(sent))
+									) {
+										confirmSaved();
+										recordSaved();
+										return;
+									}
+									recordFailed();
+								},
 							);
 						});
 					}
@@ -4681,6 +4983,12 @@ export function StoryWorkspace({
 	diffOutcomeAuditRef.current = diffOutcomeAudit;
 	const stampReviewOutcome = useDiffOutcomeStamp();
 	const resolvingReviewRef = useRef(false);
+	// Settles once the decision in flight has been applied or has failed. A
+	// new chat waits for it: the new thread's connect raises the loading flag,
+	// and a baseline taken then, while the draft is still marked, holds the
+	// draft's text, so the reject that follows put that text back and read as
+	// saved, and its record went to the new chat.
+	const reviewSettledRef = useRef<Promise<void>>(Promise.resolve());
 
 	const resolvePendingReview = useCallback(
 		async (action: "accept" | "reject"): Promise<boolean> => {
@@ -4690,7 +4998,16 @@ export function StoryWorkspace({
 				return false;
 			}
 			resolvingReviewRef.current = true;
+			let settleReview: () => void = () => undefined;
+			reviewSettledRef.current = new Promise<void>((resolve) => {
+				settleReview = () => resolve();
+			});
 			setReviewResolution({ action, status: "pending" });
+			// Outcome records wait for the stamp (see `proposalStampRef`).
+			let releaseOutcomeRecords: () => void = () => undefined;
+			proposalStampRef.current = new Promise<void>((resolve) => {
+				releaseOutcomeRecords = () => resolve();
+			});
 			try {
 				// #1929, the crux. Both callbacks splice the server's
 				// pending-decisions appendix into the content they write, and
@@ -4708,14 +5025,23 @@ export function StoryWorkspace({
 				// interleave between the assignment and the call: the render
 				// that would re-mirror the stale prop cannot happen inside a
 				// synchronous block.
-				const fresh = await queryClient.fetchQuery(
-					orpc.projects.stories.get.queryOptions({
-						input: {
-							projectId,
-							storyId: story.id,
-							organizationId,
-						},
-					}),
+				//
+				// The read always goes to the server. Within the query's stale
+				// time the cache answered it with no request at all, so an
+				// offline decision applied against the cache and its save then
+				// waited. Offline, the default network mode paused the read
+				// until the connection returned, with no error for as long.
+				// Run in any network state, an offline read now fails as soon
+				// as its request does, and one that never answers gives up
+				// after `STORY_REQUEST_TIMEOUT_MS`. Only a read that reached
+				// no server says to check the connection; a refusal keeps its
+				// own message.
+				const fresh = await readStoryFromServer().catch(
+					(error: unknown): never => {
+						throw isServerUnreachable(error)
+							? new Error(REVIEW_FRESH_READ_FAILED_MESSAGE)
+							: error;
+					},
 				);
 				const freshStory = fresh?.story;
 				if (!freshStory) {
@@ -4734,20 +5060,30 @@ export function StoryWorkspace({
 				// baseline (Effect 4 holds `baselineRef` back), so a change
 				// accepted on its own is not the proposal's outcome, and
 				// stamping it would leave the chip on "Accepted" (Fizzy #3446).
-				const accepted =
-					action === "accept"
-						? callbacks.accept()
-						: callbacks.reject();
-				void stampReviewOutcome(
-					audit,
-					accepted === true ? "accepted" : "rejected",
-				);
+				//
+				// An accept that applied nothing (the editor could not be
+				// read) is no outcome at all; stamped "rejected", it answered
+				// a Confirm.
+				let outcome: "accepted" | "rejected" | null = "rejected";
+				if (action === "accept") {
+					outcome = callbacks.accept() ? "accepted" : null;
+				} else {
+					callbacks.reject();
+				}
+				if (outcome === null) {
+					releaseOutcomeRecords();
+				} else {
+					void stampReviewOutcome(audit, outcome).finally(
+						releaseOutcomeRecords,
+					);
+				}
 				return true;
 			} catch (error) {
 				// Covers the fresh read as well as the callbacks: a failed read
 				// must surface here rather than silently resolve against stale
 				// text. Nothing has been written in either case — the draft is
 				// still pending and still needs a decision.
+				releaseOutcomeRecords();
 				confirmCallbacksRef.current = callbacks;
 				setIsAwaitingConfirmation(true);
 				setReviewResolution({
@@ -4761,9 +5097,10 @@ export function StoryWorkspace({
 				return false;
 			} finally {
 				resolvingReviewRef.current = false;
+				settleReview();
 			}
 		},
-		[queryClient, projectId, story.id, organizationId, stampReviewOutcome],
+		[readStoryFromServer, stampReviewOutcome],
 	);
 	// See `resolvePendingReviewRef`'s declaration for why this is a render-body
 	// assignment and why the renderer above can rely on it.
@@ -4777,40 +5114,59 @@ export function StoryWorkspace({
 	// `confirmCallbacksRef` one render after the run's last event; if a
 	// review does arrive later, Accept re-applies the final draft (the race
 	// defense at the top of `handleAccept`).
+	//
+	// Until the check runs, the editor stays read-only and autosave waits
+	// (`isCheckingUnreviewedDraft`): a keystroke typed into the draft would be
+	// overwritten by the restore, and a save would keep the draft's insertions.
+	// A review that arrives in the meantime ends the wait at once.
+	//
+	// `nodeName` and the agent's document are dependencies because Effect 2
+	// paints the final diff whenever they change, the run's loading state
+	// aside: a draft painted after the run ended starts the wait then.
 	useEffect(() => {
 		if (!editor || isAiLoading || isAwaitingConfirmation) {
 			return;
 		}
+		const holdsUnreviewedDraft = () =>
+			hasUnreviewedDraft({
+				hasDiffMarks: editorHasDiffMarks(editor),
+				isAiLoading: isAiLoadingRef.current,
+				isAwaitingConfirmation: isAwaitingConfirmationRef.current,
+				hasPendingReview: confirmCallbacksRef.current !== null,
+				isResolvingReview: resolvingReviewRef.current,
+				isContextUpdateActive: isContextUpdateActiveRef.current,
+			});
+		const locked = holdsUnreviewedDraft();
+		if (locked) {
+			// Now rather than on the next render: Effect 1 has just made the
+			// editor editable again.
+			editor.setEditable(false);
+			setIsCheckingUnreviewedDraft(true);
+		}
 		const timer = setTimeout(() => {
-			if (
-				!hasUnreviewedDraft({
-					hasDiffMarks: editorHasDiffMarks(editor),
-					isAiLoading: isAiLoadingRef.current,
-					isAwaitingConfirmation: isAwaitingConfirmationRef.current,
-					hasPendingReview: confirmCallbacksRef.current !== null,
-					isResolvingReview: resolvingReviewRef.current,
-					isContextUpdateActive: isContextUpdateActiveRef.current,
-				})
-			) {
+			if (locked) {
+				setIsCheckingUnreviewedDraft(false);
+			}
+			if (!holdsUnreviewedDraft()) {
 				return;
 			}
-			const restored = baselineRef.current;
-			isSyncingFromPropRef.current = true;
-			editor.commands.setContent(
-				fromMarkdown(restored, USER_CONTENT_MD_OPTIONS),
-			);
-			isSyncingFromPropRef.current = false;
-			setAgentState({ document: restored });
-			setHasUnsavedChanges(
-				isEditorDirty(restored, lastSavedMarkdownRef.current),
-			);
-			toast.info(
-				"The assistant stopped before its draft was ready for review. Your specification is unchanged.",
-			);
+			restoreRunBaseline();
+			toast.info(UNREVIEWED_DRAFT_DISCARDED_MESSAGE);
 		}, UNREVIEWED_DRAFT_CHECK_DELAY_MS);
-		return () => clearTimeout(timer);
+		return () => {
+			clearTimeout(timer);
+			if (locked) {
+				setIsCheckingUnreviewedDraft(false);
+			}
+		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [editor, isAiLoading, isAwaitingConfirmation]);
+	}, [
+		editor,
+		isAiLoading,
+		isAwaitingConfirmation,
+		nodeName,
+		agentState?.document,
+	]);
 
 	/**
 	 * Route to the diff. Approving a whole-spec rewrite from a tab that shows
@@ -4876,6 +5232,7 @@ export function StoryWorkspace({
 			isAwaitingConfirmation ||
 			isSaving ||
 			updateMutation.isPending ||
+			decisionSaveMutation.isPending ||
 			updateStageWithVersionMutation.isPending
 		) {
 			return;
@@ -4908,6 +5265,7 @@ export function StoryWorkspace({
 		isAwaitingConfirmation,
 		isSaving,
 		updateMutation.isPending,
+		decisionSaveMutation.isPending,
 		updateStageWithVersionMutation.isPending,
 		focusActiveMaturationTabTrigger,
 	]);
@@ -5010,6 +5368,19 @@ export function StoryWorkspace({
 			}
 			if (deferredAcceptSaveTimeoutRef.current) {
 				clearTimeout(deferredAcceptSaveTimeoutRef.current);
+			}
+			// Closed while a run's unreviewed draft waits to be put back: save
+			// the pre-run text, not the draft, and only if it is unsaved.
+			if (isCheckingUnreviewedDraftRef.current) {
+				const restored = restoreRunBaselineRef.current();
+				if (
+					restored !== null &&
+					isEditorDirty(restored, lastSavedMarkdownRef.current) &&
+					!isSavingRef.current
+				) {
+					handleSaveRef.current?.({ includeStageTransition: false });
+				}
+				return;
 			}
 			if (hasUnsavedChangesRef.current && !isSavingRef.current) {
 				// Same reasoning as `triggerAutoSave` — this is not
@@ -5475,10 +5846,13 @@ export function StoryWorkspace({
 		if (!editor) {
 			return;
 		}
+		const editorMarkdown = getEditorMarkdownForSave(editor);
+		// The latest typing may not be in the baseline yet.
+		takeEditorTextAsBaseline(editorMarkdown);
 		// This only mirrors editor content into the agent's
 		// context state (not a save) — `?? ""` is fine here; a failed read
 		// just means the agent temporarily sees an empty document.
-		const markdown = getEditorMarkdownForSave(editor) ?? "";
+		const markdown = editorMarkdown ?? "";
 		if (agent?.state?.document !== toAgentDocument(markdown)) {
 			flushSync(() => {
 				setAgentStateRef.current({ document: markdown } as AgentState);
@@ -5580,8 +5954,32 @@ export function StoryWorkspace({
 	// safer than silently leaving the user staring at the previous
 	// transcript.
 	const startNewThread = useAssistantThread()?.startNewThread;
-	const handleNewConversation = useCallback(async () => {
-		const archivingId = activeAssistantConversationId;
+	// Read after the wait below, when the render that queued the click may be
+	// stale: the decision it waited for can change the conversation.
+	const activeAssistantConversationIdRef = useRef(
+		activeAssistantConversationId,
+	);
+	activeAssistantConversationIdRef.current = activeAssistantConversationId;
+	// One conversation switch at a time: a new conversation or a fork waits
+	// for a decision on a draft first, and a request meanwhile queued another.
+	const switchingConversationRef = useRef(false);
+	const switchConversation = useCallback(
+		async (switchTo: () => Promise<void>) => {
+			if (switchingConversationRef.current) {
+				return;
+			}
+			switchingConversationRef.current = true;
+			try {
+				await switchTo();
+			} finally {
+				switchingConversationRef.current = false;
+			}
+		},
+		[],
+	);
+	const startNewConversation = useCallback(async () => {
+		await reviewSettledRef.current;
+		const archivingId = activeAssistantConversationIdRef.current;
 		// The next turn runs on a fresh CopilotKit thread (`assistant-thread`).
 		startNewThread?.();
 		try {
@@ -5618,12 +6016,15 @@ export function StoryWorkspace({
 			toast.error(message);
 		}
 	}, [
-		activeAssistantConversationId,
 		startNewThread,
 		organizationId,
 		setCopilotMessages,
 		clearUploadedRagContexts,
 	]);
+	const handleNewConversation = useCallback(
+		() => switchConversation(startNewConversation),
+		[switchConversation, startNewConversation],
+	);
 
 	const handleOpenHistory = useCallback(() => {
 		setHistoryDrawerOpen(true);
@@ -6279,7 +6680,11 @@ export function StoryWorkspace({
 										const isSaved =
 											!isSaving && !hasUnsavedChanges;
 										const isPrimaryDisabled =
-											isSaving || isSaved;
+											!canEdit ||
+											isSaving ||
+											isSaved ||
+											isCheckingUnreviewedDraft ||
+											proposalReview.isActive;
 										const primaryLabel = isSaving
 											? "Saving…"
 											: isSaved
@@ -6561,9 +6966,11 @@ export function StoryWorkspace({
 									};
 									const totalStages = activeStages.length;
 									const enhanceDisabled =
+										!canEdit ||
 										!targetStage ||
 										targetStage === "CLOSED";
 									const updateContextDisabled =
+										!canEdit ||
 										isAiLoading ||
 										!orgContextReady ||
 										contextUpdate.isActive;
@@ -6960,6 +7367,7 @@ export function StoryWorkspace({
 																		reevaluateBugMutation.mutate()
 																	}
 																	disabled={
+																		!canEdit ||
 																		reevaluateBugMutation.isPending
 																	}
 																	className="h-8 gap-1.5 text-xs"
@@ -7130,6 +7538,7 @@ export function StoryWorkspace({
 																		: "outline"
 																}
 																disabled={
+																	!canEdit ||
 																	isAiLoading
 																}
 																onClick={
@@ -7201,6 +7610,7 @@ export function StoryWorkspace({
 																	);
 																}}
 																disabled={
+																	!canEdit ||
 																	convertKindMutation.isPending
 																}
 																aria-disabled={
@@ -7556,6 +7966,7 @@ export function StoryWorkspace({
 											size="sm"
 											onClick={handleRefreshCleanSpec}
 											disabled={
+												!canEdit ||
 												isAiLoading ||
 												isPendingReviewOpen
 											}
@@ -7675,6 +8086,7 @@ export function StoryWorkspace({
 														// type-change redraft is rewriting
 														// this exact text.
 														disabled={
+															!canEdit ||
 															isAiLoading ||
 															regeneration.isBodyLocked
 														}
@@ -7683,7 +8095,7 @@ export function StoryWorkspace({
 											) : (
 												/* Editor with diff highlighting support */
 												<div
-													className={`border-b ${isAiLoading || isAwaitingConfirmation || contextUpdate.showingDiff ? "streaming-diff-active" : ""}`}
+													className={`border-b ${isAiLoading || isDiffReviewActive ? "streaming-diff-active" : ""}`}
 												>
 													{/* Sticky diff-review header — keeps the mode toggle +
 								    accept/reject controls pinned while scrolling a long feature. */}
@@ -7779,6 +8191,23 @@ export function StoryWorkspace({
 																	/>
 																</section>
 															)}
+														{proposalReview.isActive && (
+															<ProposalTicketReviewBar
+																review={
+																	proposalReview
+																}
+																editor={editor}
+																mode={
+																	effectiveDiffViewMode
+																}
+																onBeforeChange={() => {
+																	isSyncingFromPropRef.current = true;
+																}}
+																onAfterChange={() => {
+																	isSyncingFromPropRef.current = false;
+																}}
+															/>
+														)}
 													</div>
 													<div
 														className={
@@ -8791,37 +9220,40 @@ export function StoryWorkspace({
 							onForked={({
 								forkedConversationId,
 								copiedMessages,
-							}) => {
-								// Mirror DocumentEditor's fork handler. We deliberately
-								// do NOT push the copied messages into CopilotKit's
-								// runtime via a second setMessages call — that
-								// triggers a "<CopilotKit> not wrapped" crash mid-
-								// render (see DocumentEditor.tsx's matching docblock
-								// for the staging trace). Agent context for the next
-								// user send comes from the LangGraph backend reading
-								// the persisted blob, not from the client runtime.
-								setCopilotMessages([]);
-								startNewThread?.(forkedConversationId);
-								setEffectiveAssistantMessages(
-									copiedMessages as unknown as ReadonlyArray<
-										Record<string, unknown>
-									>,
-								);
-								setEffectiveSsrConversationId(
-									forkedConversationId,
-								);
-								setEffectivePersistedMessageIds(
-									copiedMessages
-										.map((m) => m.id)
-										.filter(
-											(id): id is string =>
-												typeof id === "string",
-										),
-								);
-								setActiveAssistantConversationId(
-									forkedConversationId,
-								);
-							}}
+							}) =>
+								switchConversation(async () => {
+									await reviewSettledRef.current;
+									// Mirror DocumentEditor's fork handler. We deliberately
+									// do NOT push the copied messages into CopilotKit's
+									// runtime via a second setMessages call — that
+									// triggers a "<CopilotKit> not wrapped" crash mid-
+									// render (see DocumentEditor.tsx's matching docblock
+									// for the staging trace). Agent context for the next
+									// user send comes from the LangGraph backend reading
+									// the persisted blob, not from the client runtime.
+									setCopilotMessages([]);
+									startNewThread?.(forkedConversationId);
+									setEffectiveAssistantMessages(
+										copiedMessages as unknown as ReadonlyArray<
+											Record<string, unknown>
+										>,
+									);
+									setEffectiveSsrConversationId(
+										forkedConversationId,
+									);
+									setEffectivePersistedMessageIds(
+										copiedMessages
+											.map((m) => m.id)
+											.filter(
+												(id): id is string =>
+													typeof id === "string",
+											),
+									);
+									setActiveAssistantConversationId(
+										forkedConversationId,
+									);
+								})
+							}
 						/>
 					) : null}
 				</HydratedMessagesProvider>

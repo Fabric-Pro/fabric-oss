@@ -94,6 +94,7 @@ vi.mock("@temporalio/activity", async (importOriginal) => ({
 	Context: { current: () => mocks.activityContext() },
 }));
 
+import { heartbeat } from "@temporalio/activity";
 import {
 	claimPendingProposalForApply,
 	markProposalApplyDispatched,
@@ -996,4 +997,172 @@ it("retries only unfinished creates after a configuration refusal", async () => 
 	expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(2);
 	expect(retry.errors).toEqual([]);
 	expect(retry.appliedCount).toBe(2);
+});
+
+describe("applyBacklogChanges — an attempt that runs long", () => {
+	const isKeepalive = ([details]: unknown[]) =>
+		typeof details === "object" &&
+		details !== null &&
+		"keepalive" in details;
+	const keepalives = () =>
+		vi.mocked(heartbeat).mock.calls.filter(isKeepalive);
+	const linkKeepalives = () =>
+		keepalives().filter(
+			([details]) =>
+				typeof details === "object" &&
+				details !== null &&
+				"stage" in details &&
+				details.stage === "link-pm-card",
+		);
+
+	const applyLinkedChange = () =>
+		applyBacklogChanges({
+			projectId: "p1",
+			userId: "u1",
+			approvedChanges: [
+				featureChange("A", { existingExternalId: "EXT-1" }),
+			],
+			existingBacklog: emptyBacklog,
+			proposalId: "prop-1",
+			approvedChangeIndexes: [0],
+		});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("keeps heartbeating while a slow PM card link outlasts the heartbeat timeout", async () => {
+		vi.useFakeTimers();
+		let finishLink: () => void = () => {};
+		mocks.updateStory.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					finishLink = resolve;
+				}),
+		);
+
+		const pending = applyLinkedChange();
+		await vi.advanceTimersByTimeAsync(75_000);
+
+		expect(linkKeepalives()).toHaveLength(5);
+		finishLink();
+		await expect(pending).resolves.toMatchObject({ appliedCount: 1 });
+
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(linkKeepalives()).toHaveLength(5);
+	});
+
+	it("heartbeats before each later step of a change, so short steps never add up past the heartbeat timeout", async () => {
+		await applyLinkedChange();
+
+		const stages = vi
+			.mocked(heartbeat)
+			.mock.calls.filter((call) => !isKeepalive(call))
+			.map(([details]) =>
+				typeof details === "object" &&
+				details !== null &&
+				"stage" in details
+					? details.stage
+					: "change",
+			);
+		expect(stages).toEqual([
+			"change",
+			"link-pm-card",
+			"record-application",
+		]);
+	});
+
+	it("keeps heartbeating while a slow scope line import outlasts the heartbeat timeout", async () => {
+		vi.useFakeTimers();
+		let finishCreate: () => void = () => {};
+		mocks.createStory.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					finishCreate = () =>
+						resolve({
+							id: "story-a",
+							identifier: "F-001",
+							title: "A",
+							description: null,
+						});
+				}),
+		);
+
+		const pending = applyBacklogChanges({
+			projectId: "p1",
+			userId: "u1",
+			approvedChanges: [featureChange("A", { sourceRef: "AA-01" })],
+			existingBacklog: emptyBacklog,
+			proposalId: "prop-1",
+			approvedChangeIndexes: [0],
+		});
+		await vi.advanceTimersByTimeAsync(75_000);
+
+		expect(
+			keepalives().filter(
+				([details]) =>
+					typeof details === "object" &&
+					details !== null &&
+					"stage" in details &&
+					details.stage === "create-scope-line",
+			),
+		).toHaveLength(5);
+		finishCreate();
+		await expect(pending).resolves.toMatchObject({ appliedCount: 1 });
+	});
+
+	it("stops heartbeating for a PM card link that hangs, so the heartbeat timeout still fails the attempt", async () => {
+		vi.useFakeTimers();
+		mocks.updateStory.mockImplementationOnce(
+			() => new Promise<void>(() => {}),
+		);
+
+		void applyLinkedChange();
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+		// One keepalive every 15 s for the first two minutes, then none.
+		expect(linkKeepalives()).toHaveLength(8);
+		expect(keepalives()).toHaveLength(8);
+	});
+
+	it("retries a partial apply without creating the applied changes again", async () => {
+		// The first attempt applied the middle two changes, then timed out.
+		mockDb.pendingBacklogProposalApplication.findMany.mockResolvedValue([
+			{
+				changeIndex: 1,
+				createdEntityType: "story",
+				createdEntityId: "story-b",
+			},
+			{
+				changeIndex: 2,
+				createdEntityType: "story",
+				createdEntityId: "story-c",
+			},
+		]);
+
+		const retry = await applyBacklogChanges({
+			projectId: "p1",
+			userId: "u1",
+			approvedChanges: ["A", "B", "C", "D"].map((title) =>
+				featureChange(title),
+			),
+			existingBacklog: emptyBacklog,
+			proposalId: "prop-1",
+			approvedChangeIndexes: [0, 1, 2, 3],
+		});
+
+		expect(retry.skippedAlreadyApplied).toEqual([1, 2]);
+		expect(
+			mocks.createStoryFromProposal.mock.calls.map(
+				([params]) => params.title,
+			),
+		).toEqual(["A", "D"]);
+		expect(retry.createdItemMap).toEqual({
+			0: "drafted-1",
+			1: "story-b",
+			2: "story-c",
+			3: "drafted-2",
+		});
+		expect(mocks.recordProposalApplication).toHaveBeenCalledTimes(2);
+	});
 });

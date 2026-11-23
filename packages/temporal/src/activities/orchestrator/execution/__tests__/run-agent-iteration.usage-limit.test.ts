@@ -56,6 +56,7 @@ vi.mock("../../utils", () => ({
 		provider: "ANTHROPIC_DIRECT",
 		modelString: "claude-sonnet-5",
 		canonicalName: "claude-sonnet-5",
+		planSpentApiBilling: () => undefined,
 	})),
 }));
 
@@ -197,5 +198,43 @@ describe("usage-limit refusals", () => {
 			type: "stream_error",
 		});
 		expect(aiStubs.streamTextMock).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("provider failures", () => {
+	const AUTH_FAILURE =
+		"The AI provider rejected the request (authentication). Check the provider settings.";
+	const leaky = () =>
+		Object.assign(
+			new Error(
+				"Incorrect API key provided: sk-proj-abc123****wxyz. See https://platform.example.com/account/api-keys.",
+			),
+			{
+				url: "https://api.example.com/v1/chat/completions",
+				requestBodyValues: {},
+				statusCode: 401,
+			},
+		);
+
+	it("names the cause of a stream failure, never the provider's URL or key", async () => {
+		aiStubs.streamTextMock.mockImplementation(() =>
+			makeStreamResult({ parts: [{ type: "error", error: leaky() }] }),
+		);
+
+		expect(await runAgentIteration(buildInput())).toMatchObject({
+			type: "stream_error",
+			message: AUTH_FAILURE,
+		});
+	});
+
+	it("does the same for a request that throws", async () => {
+		aiStubs.streamTextMock.mockImplementation(() => {
+			throw leaky();
+		});
+
+		expect(await runAgentIteration(buildInput())).toMatchObject({
+			type: "stream_error",
+			message: AUTH_FAILURE,
+		});
 	});
 });

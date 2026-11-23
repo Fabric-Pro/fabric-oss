@@ -22,6 +22,7 @@ export interface ExchangeClientConfig {
 	fabricBaseUrl: string;
 	/** Enable caching of exchanged keys (default: true) */
 	enableCache?: boolean;
+	acceptBearer?: boolean;
 	/** Request timeout in milliseconds (default: 60000) */
 	timeoutMs?: number;
 	/**
@@ -123,6 +124,9 @@ export async function exchangeTokenForKey(
 			headers: {
 				"Content-Type": "application/json",
 				"X-AI-Token": token,
+				...(config.acceptBearer && {
+					"X-AI-Credential-Kind": "bearer",
+				}),
 			},
 			body: JSON.stringify(
 				excludeSources.length > 0 ? { excludeSources } : {},
@@ -152,7 +156,11 @@ export async function exchangeTokenForKey(
 		const result = (await response.json()) as ExchangeResult;
 
 		// Cache the result
-		if (enableCache && result.expiresIn > 0) {
+		if (
+			enableCache &&
+			result.credentialKind !== "bearer" &&
+			result.expiresIn > 0
+		) {
 			await setCachedKey(token, result);
 		}
 

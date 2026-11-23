@@ -1,5 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { parlumeChatHtml } from "../parlume-chat-html";
+import { parlumeChatHtml, parlumePlainChatHtml } from "../parlume-chat-html";
+
+// Suggestions and the recap are excluded from the meeting-chat formatting
+// of answers and results: they stay one escaped paragraph.
+describe("parlumePlainChatHtml", () => {
+	it("keeps one paragraph, with no lines, links or emphasis", () => {
+		expect(
+			parlumePlainChatHtml(
+				"[P1] Since last time\n• **F-12** shipped: https://example.com/a?b=1&c=2\n• F-13 <blocked>.",
+			),
+		).toBe(
+			"<p>[P1] Since last time • F-12 shipped: https://example.com/a?b=1&amp;c=2 • F-13 &lt;blocked&gt;.</p>",
+		);
+	});
+
+	it("links a suggestion's Say it action, and only a Markdown link", () => {
+		expect(
+			parlumePlainChatHtml(
+				'[P3] Suggestion on exports, re Dev: "can we?". Use the CSV export (reply "go P3" and I\'ll say it)\n[Say it](https://fabric.example/app/example-org/projects/p1/parlume?suggestion=P3)',
+			),
+		).toBe(
+			'<p>[P3] Suggestion on exports, re Dev: "can we?". Use the CSV export (reply "go P3" and I\'ll say it) <a href="https://fabric.example/app/example-org/projects/p1/parlume?suggestion=P3">Say it</a></p>',
+		);
+	});
+});
 
 // Attendee documents <p>, <br>, <b>, <i> and <a> for Teams chat; a post must
 // use nothing else and show no Markdown symbols.
@@ -47,11 +71,64 @@ describe("parlumeChatHtml", () => {
 		);
 	});
 
+	// "[P8] Project coding instructions:" over its address showed the raw,
+	// shortened address instead of a titled link.
+	it("titles the one address under a line ending in a colon, without the colon", () => {
+		expect(
+			parlumeChatHtml(
+				[
+					"[P8] Project coding instructions:",
+					"https://example.com/app/example-org/projects/p1?tab=coding-instructions",
+					"Ask me for any other page.",
+				].join("\n"),
+			),
+		).toBe(
+			'<p>[P8] <a href="https://example.com/app/example-org/projects/p1?tab=coding-instructions">Project coding instructions</a><br>Ask me for any other page.</p>',
+		);
+		expect(parlumeChatHtml("Roadmap:\nhttps://example.com/r")).toBe(
+			'<p><a href="https://example.com/r">Roadmap</a></p>',
+		);
+	});
+
+	// On staging the agent wrote a blank line between the colon line and its
+	// address, so the two sat in separate paragraphs and the address showed raw.
+	it("titles the one address a blank line below a line ending in a colon", () => {
+		expect(
+			parlumeChatHtml(
+				"[P15] Project coding instructions:\n\nhttps://example.com/p1?tab=coding-instructions",
+			),
+		).toBe(
+			'<p>[P15] <a href="https://example.com/p1?tab=coding-instructions">Project coding instructions</a></p>',
+		);
+		expect(
+			parlumeChatHtml(
+				"Roadmap:\n\nhttps://example.com/r\n\nAsk me for any other page.",
+			),
+		).toBe(
+			'<p><a href="https://example.com/r">Roadmap</a></p><p>Ask me for any other page.</p>',
+		);
+	});
+
+	it("does not title the first of several addresses, each a blank line apart", () => {
+		expect(
+			parlumeChatHtml(
+				"Here are the pages:\n\nhttps://example.com/a\n\nhttps://example.com/b",
+			),
+		).toBe(
+			'<p>Here are the pages:</p><p><a href="https://example.com/a">example.com/a</a></p><p><a href="https://example.com/b">example.com/b</a></p>',
+		);
+	});
+
 	it.each([
 		[
-			"a list introduction",
-			"Here are the pages:\nhttps://example.com/a",
-			'<p>Here are the pages:<br><a href="https://example.com/a">example.com/a</a></p>',
+			"an introduction to several addresses",
+			"Here are the pages:\nhttps://example.com/a\nhttps://example.com/b",
+			'<p>Here are the pages:<br><a href="https://example.com/a">example.com/a</a><br><a href="https://example.com/b">example.com/b</a></p>',
+		],
+		[
+			"an introduction to a list",
+			"Here are the pages:\nhttps://example.com/a\n• Roadmap",
+			'<p>Here are the pages:<br><a href="https://example.com/a">example.com/a</a><br>• Roadmap</p>',
 		],
 		[
 			"a sentence",
@@ -155,6 +232,43 @@ describe("parlumeChatHtml", () => {
 		expect(html.length).toBeLessThanOrEqual(10_000);
 		expect(html).not.toContain("<a ");
 		expect(html).toContain(`${url}<br>`);
+	});
+
+	it("renders a proposal as the bridge posts it: tag first, bold label, Confirm and Dismiss as links", () => {
+		const confirmUrl =
+			"https://example.com/app/example-org/projects/p1/parlume/actions/a1";
+		const dismissUrl = `${confirmUrl}?intent=dismiss`;
+		const message = [
+			"[P8] **Proposed change** · not made yet",
+			"Create feature “Export to CSV” in Example Project",
+			"Asked by Alex: “create a feature called Export to CSV”",
+			"Priority: High",
+			`[Confirm in Fabric](${confirmUrl}) · [Dismiss](${dismissUrl})`,
+			"Only a signed-in project member can confirm. Open for 24 hours.",
+		].join("\n");
+
+		const html = parlumeChatHtml(message);
+
+		expect(message.length).toBeLessThan(1_500);
+		expect(html.startsWith("<p>[P8] <b>Proposed change</b>")).toBe(true);
+		expect(html).toContain(
+			`<a href="${confirmUrl}">Confirm in Fabric</a> · <a href="${dismissUrl}">Dismiss</a>`,
+		);
+		expect(html.match(/<a /g)).toHaveLength(2);
+		expect(html.replace(ALLOWED_TAGS, "")).not.toMatch(/[<>*]/);
+	});
+
+	it("renders the go-on-a-proposal line with a link whose label never starts with a tag", () => {
+		const confirmUrl =
+			"https://example.com/app/example-org/projects/p1/parlume/actions/a1";
+
+		expect(
+			parlumeChatHtml(
+				`[P9] P8 is a proposed change. A signed-in member confirms it in Fabric: [Confirm P8 in Fabric](${confirmUrl})`,
+			),
+		).toBe(
+			`<p>[P9] P8 is a proposed change. A signed-in member confirms it in Fabric: <a href="${confirmUrl}">Confirm P8 in Fabric</a></p>`,
+		);
 	});
 
 	it("cuts escaped text to what Attendee accepts, never inside an entity", () => {

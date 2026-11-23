@@ -1,4 +1,10 @@
+import {
+	confidentialRangeSelect,
+	postParlumeConfidentialNotice,
+	setParlumeConfidentialRange,
+} from "@repo/api/modules/projects/lib/parlume-confidential";
 import { db } from "@repo/database";
+import { parseParlumeConfidentialCommand } from "@repo/utils/parlume-confidential";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
@@ -40,10 +46,7 @@ export async function POST(request: NextRequest) {
 			finalizedAt: null,
 		},
 		select: {
-			id: true,
-			projectId: true,
-			organizationId: true,
-			userId: true,
+			...confidentialRangeSelect,
 			captureStoppedAt: true,
 		},
 	});
@@ -56,6 +59,11 @@ export async function POST(request: NextRequest) {
 		// Durable Object can drain without retaining unauthorized capture.
 		return NextResponse.json({ accepted: true, discarded: true });
 	}
+	// "Parlume, confidential" and "Parlume, end confidential", said or typed.
+	// Either command is itself stored as said in the confidential part.
+	const command = parseParlumeConfidentialCommand(parsed.data.text);
+	const confidential =
+		session.confidentialSince !== null || command?.switch === "on";
 	const dedupeKey = parsed.data.chatMessageId
 		? chatMessageDedupeKey(session.id, parsed.data.chatMessageId)
 		: segmentDedupeKey(parsed.data);
@@ -72,9 +80,29 @@ export async function POST(request: NextRequest) {
 			speakerId: parsed.data.speakerId,
 			utteranceStartMs: parsed.data.utteranceStartMs,
 			utteranceEndMs: parsed.data.utteranceEndMs,
+			confidential,
 		},
 		skipDuplicates: true,
 	});
+	// Acted on once: a command delivered again after a later one must not
+	// undo it.
+	if (command && created.count > 0) {
+		const range = await setParlumeConfidentialRange({
+			session,
+			switch: command.switch,
+			by: parsed.data.speakerName,
+			offsetMs: parsed.data.utteranceStartMs,
+		});
+		// The chat is told whenever the mark changes, as it is for a pause. A
+		// command after the wake phrase is also a turn, which answers aloud.
+		if (range.changed) {
+			await postParlumeConfidentialNotice({
+				sessionId: session.id,
+				switch: command.switch,
+				by: parsed.data.speakerName,
+			});
+		}
+	}
 	return NextResponse.json({
 		accepted: true,
 		duplicate: created.count === 0,

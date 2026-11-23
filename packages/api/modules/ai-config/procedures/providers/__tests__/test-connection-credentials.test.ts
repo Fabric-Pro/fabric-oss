@@ -7,7 +7,22 @@
  * check for a credential that was never exercised, which they could then save.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@repo/ai/lib/anthropic-federation", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("@repo/ai/lib/anthropic-federation")
+	>()),
+	getAnthropicFederatedToken: vi.fn(async () => ({
+		kind: "bearer",
+		token: "example-access",
+		expiresAt: Date.now() + 600_000,
+	})),
+}));
+
+vi.mock("../../../../organizations/lib/membership", () => ({
+	requireOrgMembership: vi.fn(async () => ({ role: "admin" })),
+}));
 
 vi.mock("@repo/ai", () => ({
 	DatabricksOAuthError: class extends Error {},
@@ -197,4 +212,132 @@ describe("testConnection input — credential XOR", () => {
 
 		expect(errors.length).toBeGreaterThan(0);
 	});
+});
+
+describe("federated credential shape", () => {
+	const valid = { provider: "ANTHROPIC_DIRECT", authMode: "federated" };
+
+	it("accepts direct Anthropic without a stored secret", () => {
+		expect(validationErrors(valid)).toEqual([]);
+	});
+
+	it.each([
+		{ provider: "OPENAI_DIRECT" },
+		{ apiKey: "example-key" },
+		{ clientId: "example-client" },
+		{ clientSecret: "example-secret" },
+	])("rejects a conflicting federation field: %o", (overrides) => {
+		expect(validationErrors({ ...valid, ...overrides })).toEqual([
+			"Federation requires direct Anthropic without an API key or service principal.",
+		]);
+	});
+});
+
+describe("Anthropic connection dispatch", () => {
+	const connectedOrg = "example-org";
+	const federated = {
+		provider: "ANTHROPIC_DIRECT",
+		authMode: "federated",
+		organizationId: connectedOrg,
+	};
+
+	function testConnection(input: Record<string, unknown>) {
+		return (
+			testProviderConnectionProcedure as unknown as {
+				_handler: (
+					args: unknown,
+				) => Promise<{ success: boolean; message: string }>;
+			}
+		)._handler({
+			input,
+			context: { user: { id: "example-user" }, session: {} },
+		});
+	}
+
+	beforeEach(() => {
+		vi.stubEnv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_example");
+		vi.stubEnv(
+			"ANTHROPIC_ORGANIZATION_ID",
+			"00000000-0000-0000-0000-000000000000",
+		);
+		vi.stubEnv("ANTHROPIC_FEDERATION_AUDIENCE", "example-audience");
+		vi.stubEnv(
+			"ANTHROPIC_FEDERATION_ALLOWED_ORGANIZATION_IDS",
+			connectedOrg,
+		);
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		vi.unstubAllGlobals();
+	});
+
+	it.each([null, "different-org"])(
+		"refuses federation for organization %s",
+		async (organizationId) => {
+			const fetch = vi.fn();
+			vi.stubGlobal("fetch", fetch);
+			await expect(
+				testConnection({ ...federated, organizationId }),
+			).resolves.toMatchObject({
+				success: false,
+				message:
+					"Anthropic federation is unavailable for this organization.",
+			});
+			expect(fetch).not.toHaveBeenCalled();
+		},
+	);
+
+	it("does not treat a 400 Messages response as successful federation", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(null, { status: 400 })),
+		);
+		await expect(testConnection(federated)).resolves.toMatchObject({
+			success: false,
+		});
+		await expect(
+			testConnection({
+				provider: "ANTHROPIC_DIRECT",
+				apiKey: "example-key",
+			}),
+		).resolves.toMatchObject({ success: true });
+	});
+
+	it.each([false, true])(
+		"uses the correct headers (bearer=%s)",
+		async (bearer) => {
+			const headers: Headers[] = [];
+			const fetch = vi.fn(
+				async (input: string | Request, options?: RequestInit) => {
+					const request = new Request(input, options);
+					headers.push(request.headers);
+					return Response.json({});
+				},
+			);
+			vi.stubGlobal("fetch", fetch);
+			await expect(
+				testConnection(
+					bearer
+						? federated
+						: {
+								provider: "ANTHROPIC_DIRECT",
+								apiKey: "example-key",
+							},
+				),
+			).resolves.toMatchObject({ success: true });
+			expect(headers).toHaveLength(1);
+			expect(headers[0].get("x-api-key")).toBe(
+				bearer ? null : "example-key",
+			);
+			expect(headers[0].get("authorization")).toBe(
+				bearer ? "Bearer example-access" : null,
+			);
+			// Anthropic answers an unknown version with a 400, which the
+			// federated probe treats as a failure.
+			expect(headers[0].get("anthropic-version")).toBe(
+				bearer ? "2023-06-01" : "2024-01-01",
+			);
+		},
+	);
 });

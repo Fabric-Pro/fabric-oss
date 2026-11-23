@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ParlumeSentenceQueue } from "../parlume-spoken-text";
 import {
-	postParlumeHeldChange,
+	closeParlumeMeetingChat,
 	postParlumeMeetingChat,
+	postParlumeProposal,
 	readParlumeVoiceState,
 	requestParlumeMeetingStop,
 	speakParlumeResponse,
@@ -79,7 +80,8 @@ vi.mock("../parlume-log", () => ({
 }));
 
 // These tests exercise the PCM routes, which carry a reply when Aura cannot
-// speak it: the bridge's `say` endpoint is made to refuse.
+// speak it: the bridge's `say` endpoint is made to refuse, with the 409 the
+// bridge refuses with. A 5xx would read as a bridge lost mid-reply.
 function stubPcmFetch(
 	handler: (url: string, init?: RequestInit) => Promise<Response> | Response,
 ) {
@@ -87,7 +89,7 @@ function stubPcmFetch(
 		"fetch",
 		vi.fn(async (url: string, init?: RequestInit) =>
 			String(url).includes("action=say")
-				? new Response("unavailable", { status: 503 })
+				? new Response("unavailable", { status: 409 })
 				: handler(String(url), init),
 		),
 	);
@@ -232,6 +234,68 @@ describe("Parlume meeting chat", () => {
 		);
 	});
 
+	it("tells the bridge a typed request is answered without a post", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(Response.json({ closed: true }))
+			.mockResolvedValueOnce(
+				Response.json({ error: "Invalid message" }, { status: 400 }),
+			);
+		stubPcmFetch(fetchMock);
+		const turn = {
+			sessionId: "session-1",
+			turnId: "turn-1",
+			voiceGeneration: 3,
+		};
+
+		await expect(closeParlumeMeetingChat(turn)).resolves.toBe(true);
+		expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body)).toEqual({
+			message: "",
+			turnId: "turn-1",
+			voiceGeneration: 3,
+			final: true,
+			close: true,
+		});
+		// A bridge that does not know `close` yet refuses the empty message.
+		await expect(closeParlumeMeetingChat(turn)).resolves.toBe(false);
+	});
+
+	// A 5,004-character answer was cut to 4,000 with no sign of the cut,
+	// though the bridge takes 8,000 and splits long posts itself.
+	it("sends a long answer whole up to the bridge's limit", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(Response.json({ sent: true, tag: "P4" }));
+		stubPcmFetch(fetchMock);
+		const answer = `${"Detail that matters. ".repeat(238)}Close.`;
+		expect(answer).toHaveLength(5_004);
+
+		await postParlumeMeetingChat({
+			sessionId: "session-1",
+			message: answer,
+		});
+
+		const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body);
+		expect(body.message).toBe(answer);
+	});
+
+	it("marks where a message too long for the bridge was cut", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(Response.json({ sent: true, tag: "P4" }));
+		stubPcmFetch(fetchMock);
+
+		await postParlumeMeetingChat({
+			sessionId: "session-1",
+			message: "x".repeat(9_000),
+		});
+
+		const { message } = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body);
+		expect(message.length).toBeLessThanOrEqual(8_000);
+		expect(message.startsWith("x".repeat(7_900))).toBe(true);
+		expect(message).toMatch(/\[Cut here: .*\]$/);
+	});
+
 	it("passes on a chat the bridge has found out of reach", async () => {
 		stubPcmFetch(
 			vi
@@ -247,6 +311,23 @@ describe("Parlume meeting chat", () => {
 				message: "Answer",
 			}),
 		).resolves.toEqual({ sent: false, reason: "chat_unavailable" });
+	});
+
+	it("passes on a chat the bridge holds back while a guest is in the meeting", async () => {
+		stubPcmFetch(
+			vi
+				.fn()
+				.mockResolvedValue(
+					Response.json({ sent: false, reason: "guests_present" }),
+				),
+		);
+
+		await expect(
+			postParlumeMeetingChat({
+				sessionId: "session-1",
+				message: "Answer",
+			}),
+		).resolves.toEqual({ sent: false, reason: "guests_present" });
 	});
 
 	it("reports failure instead of throwing when the bridge is unreachable", async () => {
@@ -289,7 +370,7 @@ describe("Parlume dispatch generation", () => {
 					sessionId: "session",
 					voiceGeneration: 7,
 				}),
-			).resolves.toEqual({ current, muted: false, chatAvailable: true });
+			).resolves.toEqual({ current, chatAvailable: true });
 			expect(fetchMock).toHaveBeenCalledWith(
 				"https://bridge.example.com/parties/parlume/session?action=verify-generation",
 				expect.objectContaining({
@@ -300,7 +381,8 @@ describe("Parlume dispatch generation", () => {
 		},
 	);
 
-	it("reports a muted turn and a chat out of reach", async () => {
+	// A bridge from before talk stopped muting Parlume still sends `muted`.
+	it("reports a chat out of reach, and drops a mute an older bridge sends", async () => {
 		stubPcmFetch(
 			vi.fn().mockResolvedValue(
 				Response.json({
@@ -314,7 +396,6 @@ describe("Parlume dispatch generation", () => {
 			readParlumeVoiceState({ sessionId: "session", voiceGeneration: 7 }),
 		).resolves.toEqual({
 			current: true,
-			muted: true,
 			chatAvailable: false,
 		});
 	});
@@ -345,25 +426,33 @@ describe("Parlume dispatch generation", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
-	it("sends a held change for the bridge to word and tag", async () => {
+	it("sends a proposal with its action and links for the bridge to tag and keep", async () => {
 		const fetchMock = vi
 			.fn()
 			.mockResolvedValue(Response.json({ sent: true, tag: "P4" }));
 		stubPcmFetch(fetchMock);
 
 		await expect(
-			postParlumeHeldChange({
+			postParlumeProposal({
 				sessionId: "session",
 				turnId: "turn",
-				action: "create work item “Export”",
-				request: "create a work item called Export",
+				voiceGeneration: 3,
+				actionId: "action-1",
+				message: "**Proposed change** · not made yet",
+				spoken: "Proposed change, not made yet.",
+				confirmUrl: "https://app.example.com/a/action-1",
+				dismissUrl: "https://app.example.com/a/action-1?intent=dismiss",
 			}),
 		).resolves.toEqual({ sent: true, tag: "P4" });
 		expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
 			turnId: "turn",
-			held: {
-				action: "create work item “Export”",
-				request: "create a work item called Export",
+			voiceGeneration: 3,
+			message: "**Proposed change** · not made yet",
+			proposal: {
+				actionId: "action-1",
+				spoken: "Proposed change, not made yet.",
+				confirmUrl: "https://app.example.com/a/action-1",
+				dismissUrl: "https://app.example.com/a/action-1?intent=dismiss",
 			},
 		});
 	});

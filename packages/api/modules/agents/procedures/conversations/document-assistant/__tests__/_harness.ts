@@ -57,6 +57,9 @@ export const repoDatabaseMock = {
 	archiveDocumentAssistantConversation: vi.fn(),
 	deleteDocumentAssistantConversationByConversationId: vi.fn(),
 	countDocumentAssistantConversationsInLast24h: vi.fn(),
+	// The conversation row lock writers take inside their transaction; the
+	// row exists unless a test says otherwise.
+	lockConversationRow: vi.fn().mockResolvedValue(true),
 	// The document's project and the caller's access to it: by default the
 	// document is in the project every test names, and the caller can see
 	// it, so tests that don't exercise the check pass it.

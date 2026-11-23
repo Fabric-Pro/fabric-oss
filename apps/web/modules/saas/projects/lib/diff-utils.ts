@@ -5,6 +5,8 @@ import {
 	DIFF_ADD_START,
 	DIFF_DEL_END,
 	DIFF_DEL_START,
+	MOVE_TAG_SOURCE,
+	moveTagBlock,
 	resolveEncodedDiffMarkers,
 } from "@repo/utils/diff-markers";
 import {
@@ -13,11 +15,22 @@ import {
 	scanFences,
 	VISUAL_SLOT_TAG,
 } from "@repo/utils/glossy/outline";
+import {
+	listDepthLines,
+	listFenceRoles,
+} from "@repo/utils/proposal-update-summary";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { type ArrayChange, diffArrays, diffWords } from "diff";
 import MarkdownIt from "markdown-it";
 import type StateInline from "markdown-it/lib/rules_inline/state_inline.mjs";
 import type Token from "markdown-it/lib/token.mjs";
+import {
+	alignmentKeys,
+	type ListUnits,
+	movedListUnits,
+	planLineChunks,
+	tagMovedLines,
+} from "./diff-list-moves";
 import { mentionSpanInlinePlugin } from "./mention-markdown-plugin";
 
 // ============================================
@@ -33,6 +46,17 @@ function escapeRegExp(str: string): string {
 
 /** Every diff marker, for `String.replace` only (it resets `lastIndex`). */
 const ANY_MARKER_RE = new RegExp(ANY_MARKER_SOURCE, "g");
+
+/** Every move tag (`moveTag`), for `String.replace` only. */
+const MOVE_TAG_RE = new RegExp(MOVE_TAG_SOURCE, "g");
+
+/** The move tag a moved line carries at its start (`tagMovedLines`). */
+const LEADING_MOVE_TAG_RE = new RegExp(`^${MOVE_TAG_SOURCE}`);
+
+/** `text` without its move tags. */
+function withoutMoveTags(text: string): string {
+	return text.replace(MOVE_TAG_RE, "");
+}
 
 /**
  * Merge adjacent ADD or DEL diff blocks that are separated only by short
@@ -241,9 +265,16 @@ function splitMultilineDiffBlocks(text: string): string {
 			"g",
 		);
 		const wrapLineContent = (
-			line: string,
+			tagged: string,
 			inListContext: boolean,
 		): string => {
+			// A line of a moved list block carries its block's tag at its
+			// start (`tagMovedLines`). It goes right after the start marker,
+			// so whatever block prefix the line keeps outside the marker
+			// stays at the line's start.
+			const tag = LEADING_MOVE_TAG_RE.exec(tagged)?.[0] ?? "";
+			const line = tagged.slice(tag.length);
+			const open = `${startMarker}${tag}`;
 			if (line.trim().length === 0) {
 				return "";
 			}
@@ -254,15 +285,15 @@ function splitMultilineDiffBlocks(text: string): string {
 				// space keeps the children that follow it nested under it, so
 				// accepting can hand them to the item before it.
 				const padding = isAddSide ? listMatch[2] : " ";
-				return `${listMatch[1]}${padding}${startMarker}${listMatch[3]}${endMarker}`;
+				return `${listMatch[1]}${padding}${open}${listMatch[3]}${endMarker}`;
 			}
 			const headingMatch = line.match(/^(\s*#{1,6}\s+)(.*)$/);
 			if (headingMatch) {
-				return `${headingMatch[1]}${startMarker}${headingMatch[2]}${endMarker}`;
+				return `${headingMatch[1]}${open}${headingMatch[2]}${endMarker}`;
 			}
 			const quoteMatch = line.match(/^(\s*>\s*)(.*)$/);
 			if (quoteMatch) {
-				return `${quoteMatch[1]}${startMarker}${quoteMatch[2]}${endMarker}`;
+				return `${quoteMatch[1]}${open}${quoteMatch[2]}${endMarker}`;
 			}
 			// A separator row carries no diffable content, and a marker in it
 			// stops MarkdownIt from recognising the table at all. Leave it bare.
@@ -287,7 +318,7 @@ function splitMultilineDiffBlocks(text: string): string {
 						}
 						const lead = cell.slice(0, cell.indexOf(content));
 						const trail = cell.slice(lead.length + content.length);
-						return `${lead}${startMarker}${content}${endMarker}${trail}`;
+						return `${lead}${open}${content}${endMarker}${trail}`;
 					})
 					.join("|");
 			}
@@ -308,9 +339,9 @@ function splitMultilineDiffBlocks(text: string): string {
 				? line.match(/^([ \t]+)(\S.*)$/)
 				: null;
 			if (indentMatch) {
-				return `${indentMatch[1]}${startMarker}${indentMatch[2]}${endMarker}`;
+				return `${indentMatch[1]}${open}${indentMatch[2]}${endMarker}`;
 			}
-			return `${startMarker}${line}${endMarker}`;
+			return `${open}${line}${endMarker}`;
 		};
 		// A two-space hard break must stay at the very end of the line, after
 		// the end marker; inside it MarkdownIt no longer sees the break.
@@ -348,10 +379,12 @@ function splitMultilineDiffBlocks(text: string): string {
 			}
 			// A continuation only belongs to a list item when a list is
 			// actually open — the item may sit before this block or in it.
+			// Read without a moved line's leading tag (`tagMovedLines`).
 			const opensList = (candidate: string | undefined): boolean =>
-				!!candidate && /^\s*(?:\d+[.)]|[-*+])\s+\S/.test(candidate);
+				!!candidate &&
+				/^\s*(?:\d+[.)]|[-*+])\s+\S/.test(withoutMoveTags(candidate));
 			const continuesBlock = (candidate: string | undefined): boolean =>
-				!!candidate && /^[ \t]+\S/.test(candidate);
+				!!candidate && /^[ \t]+\S/.test(withoutMoveTags(candidate));
 			const precedingLine = result
 				.slice(0, offset)
 				.split("\n")
@@ -847,19 +880,23 @@ function unescapeBlockStartBullets(text: string): string {
  *
  * Also handles diff markers that can break block-level structures like tables.
  */
-/** `>` markers and spaces only: the start of a line inside a blockquote. */
-const BLOCKQUOTE_LINE_PREFIX = /^[ \t]*>[ \t>]*$/;
+/**
+ * Spaces and `>` markers only: the start of a line inside a list item or a
+ * blockquote.
+ */
+const NESTED_LINE_PREFIX = /^[ \t>]+$/;
 
 /**
- * Whether the ``` fence at `fenceIndex` of `text` sits inside a blockquote —
- * only `>` markers and spaces before it on its line. The fence opens or
- * closes a code block in the quote; moving it to a line of its own took it
- * out of the quote, and the quoted block loaded as a code block whose lines
- * began with `>` (Fizzy #2946).
+ * Whether the ``` fence at `fenceIndex` of `text` sits inside a list item or
+ * a blockquote — only spaces and `>` markers before it on its line. The
+ * fence opens or closes a code block in the item or the quote; moving it to
+ * a line of its own took it out. A quoted block loaded as a code block whose
+ * lines began with `>` (Fizzy #2946), and an item's code loaded after the
+ * list, which the save then wrote outside the item.
  */
-function fenceIsInBlockquote(text: string, fenceIndex: number): boolean {
+function fenceIsNested(text: string, fenceIndex: number): boolean {
 	const lineStart = text.lastIndexOf("\n", fenceIndex - 1) + 1;
-	return BLOCKQUOTE_LINE_PREFIX.test(text.slice(lineStart, fenceIndex));
+	return NESTED_LINE_PREFIX.test(text.slice(lineStart, fenceIndex));
 }
 
 function fixAIMarkdownIssues(text: string): string {
@@ -947,6 +984,9 @@ function fixAIMarkdownIssues(text: string): string {
 		let fenceDelimiter = "```";
 		let fenceLanguage = "";
 		let fenceBody: string[] = [];
+		// The opener's indentation, written back on both fence lines.
+		// Without it a code block in a list item loaded after the list.
+		let fenceIndent = "";
 
 		/**
 		 * `isTrailing` marks the final flush after the loop, i.e. a fence the
@@ -976,9 +1016,11 @@ function fixAIMarkdownIssues(text: string): string {
 				fenceBody = [];
 				return;
 			}
-			output.push(`${fenceDelimiter}${fenceLanguage}`.trimEnd());
+			output.push(
+				`${fenceIndent}${fenceDelimiter}${fenceLanguage}`.trimEnd(),
+			);
 			output.push(...fenceBody);
-			output.push(fenceDelimiter);
+			output.push(`${fenceIndent}${fenceDelimiter}`);
 			inFence = false;
 			fenceDelimiter = "```";
 			fenceLanguage = "";
@@ -991,6 +1033,10 @@ function fixAIMarkdownIssues(text: string): string {
 			const fenceMatch = trimmed.match(/^(`{3,}|~{3,})(.*)$/);
 			if (!inFence && fenceMatch) {
 				inFence = true;
+				fenceIndent = line.slice(
+					0,
+					line.length - line.trimStart().length,
+				);
 				fenceDelimiter = fenceMatch[1];
 				// Written back as spelled: a lowercased ```Cards loaded as
 				// ```cards, and the next save changed the body unedited
@@ -1194,16 +1240,14 @@ function fixAIMarkdownIssues(text: string): string {
 	fixed = fixed.replace(
 		/```(mermaid|c4context|c4container|c4component|c4deployment|flowchart|sequenceDiagram|classDiagram|erDiagram|gantt|pie|mindmap|graph\s+[TL][BDRB])/gi,
 		(match: string, _language: string, offset: number, whole: string) =>
-			fenceIsInBlockquote(whole, offset) ? match : `\n${match}`,
+			fenceIsNested(whole, offset) ? match : `\n${match}`,
 	);
 
 	// Ensure code blocks have newlines before them
 	fixed = fixed.replace(
 		/([^\n`])```(?!`)/g,
 		(match: string, before: string, offset: number, whole: string) =>
-			fenceIsInBlockquote(whole, offset + 1)
-				? match
-				: `${before}\n\`\`\``,
+			fenceIsNested(whole, offset + 1) ? match : `${before}\n\`\`\``,
 	);
 
 	// Ensure code blocks have newlines after closing fence
@@ -1810,11 +1854,56 @@ export function repairMarkdownDocument(text: string | undefined): string {
 interface ExtractedTable {
 	markdown: string;
 	type: "added" | "deleted";
+	/** The moved list block the table moves with (`tagMovedLines`). */
+	move?: number;
 }
 
 interface ExtractedHtmlTable {
 	html: string;
 	type: "added" | "deleted";
+	/** The moved list block the table moves with (`tagMovedLines`). */
+	move?: number;
+}
+
+/**
+ * The line break and indentation before a changed table's start marker,
+ * when the table is indented, as one in a list item is (`tableOnItsLines`).
+ */
+const TABLE_LINE_INDENT_SOURCE = "(\\n[ \\t]+)?";
+
+/** A list item's first line. */
+const LIST_ITEM_LINE_RE = /^[ \t]*(?:\d+[.)]|[-*+])[ \t]+\S/;
+
+/** The placeholder of a table taken out already. */
+const TABLE_PLACEHOLDER_LINE_RE = /^[ \t]*<!--DIFF_(?:HTML_)?TABLE_\d+-->$/;
+
+/**
+ * The indentation of a changed table's placeholder, from its captured line
+ * start: kept only for a table in a list item, which renders inside the
+ * item at it. A table is in an item when the first line above it indented
+ * less, other tables' placeholders aside, is a list item. Anywhere else the
+ * placeholder takes none: indented four spaces after a blank line it would
+ * be an indented code block.
+ */
+function tablePlaceholderIndent(
+	lineStart: string | undefined,
+	before: string,
+): string {
+	const indent = lineStart ? lineStart.slice(1) : "";
+	if (!indent) {
+		return "";
+	}
+	const lines = before.split("\n");
+	for (let index = lines.length - 1; index >= 0; index--) {
+		const line = withoutMoveTags(lines[index].replace(ANY_MARKER_RE, ""));
+		if (!line.trim() || TABLE_PLACEHOLDER_LINE_RE.test(line)) {
+			continue;
+		}
+		if (leadingIndent(line).length < indent.length) {
+			return LIST_ITEM_LINE_RE.test(line) ? indent : "";
+		}
+	}
+	return "";
 }
 
 /**
@@ -1839,8 +1928,13 @@ function extractDiffWrappedHtmlTables(text: string): {
 } {
 	const htmlTables: ExtractedHtmlTable[] = [];
 
+	// The start marker may carry the tag of the moved list block the table
+	// moves with (`tagMovedLines`). A table in a list item is indented: its
+	// placeholder takes the indentation, so it renders inside the item.
 	const addPattern = new RegExp(
-		escapeRegExp(DIFF_ADD_START) +
+		TABLE_LINE_INDENT_SOURCE +
+			escapeRegExp(DIFF_ADD_START) +
+			`(?:${MOVE_TAG_SOURCE})?` +
 			"\\s*" +
 			"(<table\\b[^>]*>[\\s\\S]*?<\\/table>)" +
 			"\\s*" +
@@ -1848,25 +1942,41 @@ function extractDiffWrappedHtmlTables(text: string): {
 		"gi",
 	);
 	const delPattern = new RegExp(
-		escapeRegExp(DIFF_DEL_START) +
+		TABLE_LINE_INDENT_SOURCE +
+			escapeRegExp(DIFF_DEL_START) +
+			`(?:${MOVE_TAG_SOURCE})?` +
 			"\\s*" +
 			"(<table\\b[^>]*>[\\s\\S]*?<\\/table>)" +
 			"\\s*" +
 			escapeRegExp(DIFF_DEL_END),
 		"gi",
 	);
+	const extract =
+		(type: ExtractedHtmlTable["type"]) =>
+		(
+			_match: string,
+			lineIndent: string | undefined,
+			digits: string | undefined,
+			tableHtml: string,
+			offset: number,
+			whole: string,
+		) => {
+			const index = htmlTables.length;
+			htmlTables.push({
+				html: tableHtml,
+				type,
+				move: digits === undefined ? undefined : moveTagBlock(digits),
+			});
+			const indent = tablePlaceholderIndent(
+				lineIndent,
+				whole.slice(0, offset),
+			);
+			return `\n\n${indent}<!--DIFF_HTML_TABLE_${index}-->\n\n`;
+		};
 
 	let processed = text;
-	processed = processed.replace(addPattern, (_match, tableHtml) => {
-		const index = htmlTables.length;
-		htmlTables.push({ html: tableHtml, type: "added" });
-		return `\n\n<!--DIFF_HTML_TABLE_${index}-->\n\n`;
-	});
-	processed = processed.replace(delPattern, (_match, tableHtml) => {
-		const index = htmlTables.length;
-		htmlTables.push({ html: tableHtml, type: "deleted" });
-		return `\n\n<!--DIFF_HTML_TABLE_${index}-->\n\n`;
-	});
+	processed = processed.replace(addPattern, extract("added"));
+	processed = processed.replace(delPattern, extract("deleted"));
 
 	return { processed, htmlTables };
 }
@@ -1896,29 +2006,36 @@ function extractDiffWrappedTables(
 	tables: ExtractedTable[];
 } {
 	const tables: ExtractedTable[] = [];
-	const placeholderFor = (localIndex: number) =>
-		`\n\n<!--DIFF_TABLE_${startIndex + localIndex}-->\n\n`;
+	const placeholderFor = (localIndex: number, indent = "") =>
+		`\n\n${indent}<!--DIFF_TABLE_${startIndex + localIndex}-->\n\n`;
 
 	// First, try to extract tables that are specifically wrapped in diff markers
-	// Pattern: DIFF_START ... table ... DIFF_END
+	// Pattern: DIFF_START ... table ... DIFF_END, the start marker followed by
+	// the tag of the moved list block the table moves with, if any. A table
+	// in a list item is indented, its rows too (`tableOnItsLines`): its
+	// placeholder takes the indentation, so it renders inside the item.
 	// Note: Use [^\\n\\r] and \\r?\\n to handle both Unix and Windows line endings
 	const addTablePattern = new RegExp(
-		escapeRegExp(DIFF_ADD_START) +
+		TABLE_LINE_INDENT_SOURCE +
+			escapeRegExp(DIFF_ADD_START) +
+			`(?:${MOVE_TAG_SOURCE})?` +
 			"\\s*" +
 			"(\\|[^\\n\\r]+\\|\\s*\\r?\\n" + // Header row: | ... |
-			"\\|[\\s\\-:]+\\|[^\\n\\r]*\\r?\\n" + // Separator row: | --- |
-			"(?:\\|[^\\n\\r]+\\|\\s*(?:\\r?\\n)?)*)" + // Body rows: | ... |
+			"[ \\t]*\\|[\\s\\-:]+\\|[^\\n\\r]*\\r?\\n" + // Separator row: | --- |
+			"(?:[ \\t]*\\|[^\\n\\r]+\\|\\s*(?:\\r?\\n)?)*)" + // Body rows: | ... |
 			"\\s*" +
 			escapeRegExp(DIFF_ADD_END),
 		"g",
 	);
 
 	const delTablePattern = new RegExp(
-		escapeRegExp(DIFF_DEL_START) +
+		TABLE_LINE_INDENT_SOURCE +
+			escapeRegExp(DIFF_DEL_START) +
+			`(?:${MOVE_TAG_SOURCE})?` +
 			"\\s*" +
 			"(\\|[^\\n\\r]+\\|\\s*\\r?\\n" +
-			"\\|[\\s\\-:]+\\|[^\\n\\r]*\\r?\\n" +
-			"(?:\\|[^\\n\\r]+\\|\\s*(?:\\r?\\n)?)*)" +
+			"[ \\t]*\\|[\\s\\-:]+\\|[^\\n\\r]*\\r?\\n" +
+			"(?:[ \\t]*\\|[^\\n\\r]+\\|\\s*(?:\\r?\\n)?)*)" +
 			"\\s*" +
 			escapeRegExp(DIFF_DEL_END),
 		"g",
@@ -1926,25 +2043,37 @@ function extractDiffWrappedTables(
 
 	let processed = text;
 
-	// Extract specifically wrapped added tables
-	processed = processed.replace(addTablePattern, (_match, tableContent) => {
-		const index = tables.length;
-		tables.push({
-			markdown: tableContent.trim(),
-			type: "added",
-		});
-		return placeholderFor(index);
-	});
+	const extract =
+		(type: ExtractedTable["type"]) =>
+		(
+			_match: string,
+			lineIndent: string | undefined,
+			digits: string | undefined,
+			tableContent: string,
+			offset: number,
+			whole: string,
+		) => {
+			const index = tables.length;
+			tables.push({
+				// Rendered on its own, at the top level: its rows lose the
+				// indentation of the item it sits in.
+				markdown: tableContent
+					.trim()
+					.split(/\r?\n/)
+					.map((row) => row.trim())
+					.join("\n"),
+				type,
+				move: digits === undefined ? undefined : moveTagBlock(digits),
+			});
+			return placeholderFor(
+				index,
+				tablePlaceholderIndent(lineIndent, whole.slice(0, offset)),
+			);
+		};
 
-	// Extract specifically wrapped deleted tables
-	processed = processed.replace(delTablePattern, (_match, tableContent) => {
-		const index = tables.length;
-		tables.push({
-			markdown: tableContent.trim(),
-			type: "deleted",
-		});
-		return placeholderFor(index);
-	});
+	// Extract specifically wrapped added tables, then deleted ones
+	processed = processed.replace(addTablePattern, extract("added"));
+	processed = processed.replace(delTablePattern, extract("deleted"));
 
 	// Now handle tables that are INSIDE a larger diff block
 	// These tables have diff markers somewhere around them but not specifically wrapping just the table
@@ -2038,6 +2167,8 @@ interface ExtractedFence {
 	language: string;
 	code: string;
 	type: "added" | "deleted";
+	/** The moved list block the fence moves with (`tagMovedLines`). */
+	move?: number;
 }
 
 function escapeHtml(str: string): string {
@@ -2050,7 +2181,168 @@ function escapeHtml(str: string): string {
 }
 
 /**
+ * Pull the fenced code blocks inside list items out of the `start`…`end`
+ * diff bodies of `text`, into `fences`, as `extractDiffWrappedFences` does
+ * for a fence at the top level. A list item added or removed whole keeps
+ * its code: the placeholder takes the fence's place at its indentation, so
+ * the code block renders inside its item, its whole content in one diff
+ * mark. The body's other lines keep the markers, a pair for each run
+ * between fences. Fences are read by the rule list depth is read with
+ * (`listFenceRoles`). A body is left as it is unless each of its fence
+ * lines belongs to a fence it holds whole, in a list item.
+ */
+function extractListItemFences(
+	text: string,
+	start: string,
+	end: string,
+	fences: ExtractedFence[],
+): string {
+	if (!text.includes(start)) {
+		return text;
+	}
+	const lines = text.split("\n");
+	// Read without markers, and without the tag a moved line carries at its
+	// start (`tagMovedLines`).
+	const unmarked = (line: string) =>
+		withoutMoveTags(line.replace(ANY_MARKER_RE, ""));
+	const bare = lines.map(unmarked);
+	const roles = listFenceRoles(bare);
+	const depths = listDepthLines(bare.join("\n"));
+	const lineStarts: number[] = [];
+	let lineStart = 0;
+	for (const line of lines) {
+		lineStarts.push(lineStart);
+		lineStart += line.length + 1;
+	}
+	const lineOf = (offset: number) => {
+		let low = 0;
+		let high = lineStarts.length - 1;
+		while (low < high) {
+			const mid = (low + high + 1) >> 1;
+			if (lineStarts[mid] <= offset) {
+				low = mid;
+			} else {
+				high = mid - 1;
+			}
+		}
+		return low;
+	};
+	const insideFenceAt = fenceContextOf(text);
+	const type = start === DIFF_ADD_START ? "added" : "deleted";
+	const re = new RegExp(
+		`${escapeRegExp(start)}([\\s\\S]*?)${escapeRegExp(end)}`,
+		"g",
+	);
+	return text.replace(re, (match, body: string, offset: number) => {
+		if (!/`{3}|~{3}/.test(body) || insideFenceAt(offset)) {
+			return match;
+		}
+		const first = lineOf(offset);
+		const bodyLines = body.split("\n");
+		// Each fence the body holds whole, in a list item: the body lines of
+		// its opening and closing markers.
+		const held: [number, number][] = [];
+		for (let k = 0; k < bodyLines.length; k++) {
+			if (roles[first + k] === null) {
+				continue;
+			}
+			if (roles[first + k] !== "open" || depths[first + k].depth === 0) {
+				return match;
+			}
+			let close = k + 1;
+			while (roles[first + close] === "inside") {
+				close += 1;
+			}
+			if (close >= bodyLines.length || roles[first + close] !== "close") {
+				return match;
+			}
+			for (let line = k; line <= close; line++) {
+				if (unmarked(bodyLines[line]) !== bare[first + line]) {
+					return match;
+				}
+			}
+			held.push([k, close]);
+			k = close;
+		}
+		if (held.length === 0) {
+			return match;
+		}
+		// A fence line carries no move tag: the fence moves with the text
+		// lines of its body, which all carry the same one.
+		const digits = new RegExp(MOVE_TAG_SOURCE).exec(body)?.[1];
+		const move = digits === undefined ? undefined : moveTagBlock(digits);
+		const groups: { fence: boolean; lines: string[] }[] = [];
+		let cursor = 0;
+		for (const [open, close] of held) {
+			if (open > cursor) {
+				groups.push({
+					fence: false,
+					lines: bodyLines.slice(cursor, open),
+				});
+			}
+			const opener = bare[first + open];
+			const indent = opener.slice(
+				0,
+				opener.length - opener.trimStart().length,
+			);
+			const info = opener
+				.trim()
+				.replace(/^(?:`{3,}|~{3,})/, "")
+				.trim();
+			const index = fences.length;
+			fences.push({
+				language: /^[\w+-]*/.exec(info)?.[0] ?? "",
+				code: bodyLines
+					.slice(open + 1, close)
+					.map((line) =>
+						line.slice(
+							Math.min(
+								indent.length,
+								line.length - line.trimStart().length,
+							),
+						),
+					)
+					.join("\n"),
+				type,
+				move,
+			});
+			groups.push({
+				fence: true,
+				lines: [`${indent}<!--DIFF_FENCE_${index}-->`],
+			});
+			cursor = close + 1;
+		}
+		if (cursor < bodyLines.length) {
+			groups.push({ fence: false, lines: bodyLines.slice(cursor) });
+		}
+		// A run of text keeps its markers around more than one line, so that
+		// `splitMultilineDiffBlocks` gives each of its lines a pair of its
+		// own, behind its list marker: the line break after the run goes
+		// inside them, or the one before it when the run ends the body.
+		let out = "";
+		let breakOwed = false;
+		groups.forEach((group, k) => {
+			const joined = group.lines.join("\n");
+			if (group.fence || joined.trim() === "") {
+				out += `${breakOwed ? "\n" : ""}${joined}`;
+				breakOwed = true;
+				return;
+			}
+			if (k === groups.length - 1) {
+				out += `${start}${breakOwed ? "\n" : ""}${joined}${end}`;
+			} else {
+				out += `${breakOwed ? "\n" : ""}${start}${joined}\n${end}`;
+			}
+			breakOwed = false;
+		});
+		return out;
+	});
+}
+
+/**
  * Pull out fenced code blocks that sit inside an ADD or DEL diff block.
+ * A fence inside a list item goes first, on both sides, and keeps its place
+ * in its item (`extractListItemFences`); the phases below take the rest.
  *
  * Phase A (pure): the entire diff body is just a fence with optional
  * surrounding whitespace. Extract and reinject as a `<pre><code>` whose
@@ -2078,7 +2370,12 @@ function extractDiffWrappedFences(text: string): {
 	fences: ExtractedFence[];
 } {
 	const fences: ExtractedFence[] = [];
-	let processed = text;
+	let processed = extractListItemFences(
+		extractListItemFences(text, DIFF_ADD_START, DIFF_ADD_END, fences),
+		DIFF_DEL_START,
+		DIFF_DEL_END,
+		fences,
+	);
 
 	// Phase A: pure fence-only diff blocks.
 	// Match DIFF_xxx_START (whitespace) ```lang\n...\n``` (whitespace) DIFF_xxx_END
@@ -2175,6 +2472,54 @@ function extractDiffWrappedFences(text: string): {
 	return { processed, fences };
 }
 
+/** A move tag right where an inline rule stands (`MOVE_TAG_SOURCE`). */
+const MOVE_TAG_AT_RE = new RegExp(MOVE_TAG_SOURCE, "y");
+
+/**
+ * Take the move tag right after a start marker into the marker's `<ins>` or
+ * `<del>`, as `data-diff-move`: the moved list block its line belongs to,
+ * which the editor's diff mark keeps (`findDiffRanges`).
+ */
+function takeMoveTag(state: StateInline, token: Token): void {
+	MOVE_TAG_AT_RE.lastIndex = state.pos;
+	const tag = MOVE_TAG_AT_RE.exec(state.src);
+	if (tag && state.pos + tag[0].length <= state.posMax) {
+		token.attrSet("data-diff-move", String(moveTagBlock(tag[1])));
+		state.pos += tag[0].length;
+	}
+}
+
+/** The `data-diff-move` attribute for a move tag's captured digits, if any. */
+function moveAttribute(digits: string | undefined): string {
+	return digits ? ` data-diff-move="${moveTagBlock(digits)}"` : "";
+}
+
+/**
+ * `html` with each diff marker written as its `<ins>` or `<del>` tag, and a
+ * start marker's move tag as its `data-diff-move`, as `diffMarkerPlugin`
+ * writes them: for markers the plugin never saw, and for plain text. A tag
+ * anywhere else is dropped.
+ */
+function markersToTags(html: string): string {
+	const start = (marker: string) =>
+		new RegExp(`${escapeRegExp(marker)}(?:${MOVE_TAG_SOURCE})?`, "g");
+	return withoutMoveTags(
+		html
+			.replace(
+				start(DIFF_ADD_START),
+				(_marker, digits: string | undefined) =>
+					`<ins class="diff-ins"${moveAttribute(digits)}>`,
+			)
+			.replace(new RegExp(escapeRegExp(DIFF_ADD_END), "g"), "</ins>")
+			.replace(
+				start(DIFF_DEL_START),
+				(_marker, digits: string | undefined) =>
+					`<del class="diff-del"${moveAttribute(digits)}>`,
+			)
+			.replace(new RegExp(escapeRegExp(DIFF_DEL_END), "g"), "</del>"),
+	);
+}
+
 /**
  * MarkdownIt plugin for handling diff markers as inline tokens
  *
@@ -2200,6 +2545,7 @@ function diffMarkerPlugin(md: MarkdownIt): void {
 			token.markup = marker;
 			token.attrSet("class", "diff-ins");
 			state.pos += marker.length;
+			takeMoveTag(state, token);
 			return true;
 		},
 	);
@@ -2233,6 +2579,7 @@ function diffMarkerPlugin(md: MarkdownIt): void {
 			token.markup = marker;
 			token.attrSet("class", "diff-del");
 			state.pos += marker.length;
+			takeMoveTag(state, token);
 			return true;
 		},
 	);
@@ -2327,6 +2674,11 @@ function normalizeMarkdownForDiff(text: string): string {
 		// content: trimming it turned the break into a soft break on accept.
 		n = /\S {2,}$/.test(n) ? `${n.trimEnd()}  ` : n.trimEnd();
 
+		// A table row keeps its indentation: a table in a list item is
+		// indented to the item's content, and without it leaves the item.
+		const indent = /^[ \t]*\|/.test(n) ? leadingIndent(n) : "";
+		n = n.slice(indent.length);
+
 		// Normalize table separator rows: |---|---| with varying dashes/spaces → consistent
 		if (/^\|[\s:]*-+[\s:]*(\|[\s:]*-+[\s:]*)*\|?\s*$/.test(n)) {
 			const cols = n.split("|").filter((s) => s.trim().length > 0);
@@ -2352,7 +2704,7 @@ function normalizeMarkdownForDiff(text: string): string {
 		n = n.replace(/\|\s{2,}/g, "| ");
 		n = n.replace(/\s{2,}\|/g, " |");
 
-		normalized.push(n);
+		normalized.push(`${indent}${n}`);
 	}
 
 	// Collapse multiple blank lines to a single blank line
@@ -2770,13 +3122,20 @@ function stripUnpairedMarkers(segment: string): string {
  * editor parses this HTML into ProseMirror, which has no node for a bare div
  * and silently drops it. The save path would then see two indistinguishable
  * tables and keep both. The Table node carries a `diff` attribute that
- * round-trips, so mark the element itself as well.
+ * round-trips, so mark the element itself as well. A table in a moved list
+ * block also carries the block's number (`data-diff-move`), so the review
+ * answers it with the block.
  */
 function markTableWithDiffType(
 	tableHtml: string,
 	type: "added" | "deleted",
+	move?: number,
 ): string {
-	return tableHtml.replace(/<table\b/i, `<table data-diff="${type}"`);
+	const moveAttr = move === undefined ? "" : ` data-diff-move="${move}"`;
+	return tableHtml.replace(
+		/<table\b/i,
+		`<table data-diff="${type}"${moveAttr}`,
+	);
 }
 
 /** Matches a GFM table separator row, with or without alignment colons. */
@@ -2854,14 +3213,18 @@ function extractGfmTablesForDiff(
 				end++;
 			}
 
-			const tableText = block.join("\n");
+			// The placeholder keeps the table's indentation, so a table in a
+			// list item stays in it, and the table is read without it, so
+			// a table moved to another level with its item is the same
+			// table (`restoreGfmTables` indents it back).
+			const tableText = block.map((row) => row.trimStart()).join("\n");
 			let placeholder = tableToPlaceholder.get(tableText);
 			if (!placeholder) {
 				placeholder = `xGFMTABLEx${nextIdx++}xENDx`;
 				tableToPlaceholder.set(tableText, placeholder);
 				placeholderToTable.set(placeholder, tableText);
 			}
-			output.push(placeholder);
+			output.push(`${leadingIndent(line)}${placeholder}`);
 			i = end;
 		}
 
@@ -2873,6 +3236,79 @@ function extractGfmTablesForDiff(
 		newProcessed: substitute(newText),
 		blocks: placeholderToTable,
 	};
+}
+
+/** The spaces and tabs `line` starts with. */
+function leadingIndent(line: string): string {
+	return line.slice(0, line.length - line.trimStart().length);
+}
+
+/**
+ * The indentation of the line `text` ends on, when that line holds nothing
+ * else so far (diff markers and move tags aside): the indentation of a
+ * table that starts there. Empty otherwise.
+ */
+function openLineIndent(text: string): string {
+	const line = text.slice(text.lastIndexOf("\n") + 1);
+	const bare = withoutMoveTags(line.replace(ANY_MARKER_RE, ""));
+	return /^[ \t]*$/.test(bare) ? bare : "";
+}
+
+/**
+ * `segment`, the text before a table when `beforeTable`, without the
+ * indentation its last line holds: that is the table's, and goes with it
+ * (`tableOnItsLines`).
+ */
+function withoutTableIndent(segment: string, beforeTable: boolean): string {
+	return beforeTable ? segment.replace(/(^|\n)[ \t]+$/, "$1") : segment;
+}
+
+/** `table`, its rows after the first at `indent`, as its first row's line has. */
+function indentTable(table: string, indent: string): string {
+	return indent ? table.split("\n").join(`\n${indent}`) : table;
+}
+
+/**
+ * A changed table in a marker pair of its own (`open` holds the start
+ * marker and any move tag), on lines of its own at `indent`, the
+ * indentation of its list item: `extractDiffWrappedTables` and
+ * `extractDiffWrappedHtmlTables` put it back there, inside its item.
+ */
+function tableOnItsLines(
+	table: string,
+	indent: string,
+	open: string,
+	endMarker: string,
+): string {
+	return `\n\n${indent}${open}${indentTable(table, indent)}${endMarker}\n\n`;
+}
+
+/**
+ * Restore the GFM table placeholders of `value` (`extractGfmTablesForDiff`),
+ * each table's rows at the indentation of the line its placeholder is on.
+ * `linePrefix` is the start of the line `value` begins on.
+ */
+function restoreGfmTables(
+	value: string,
+	blocks: Map<string, string>,
+	linePrefix: string,
+): string {
+	if (blocks.size === 0 || !GFM_TABLE_PLACEHOLDER.test(value)) {
+		return value;
+	}
+	let read = linePrefix;
+	return value
+		.split(GFM_TABLE_PLACEHOLDER_SPLIT)
+		.map((segment) => {
+			const table = blocks.get(segment);
+			const restored =
+				table === undefined
+					? segment
+					: indentTable(table, openLineIndent(read));
+			read += segment;
+			return restored;
+		})
+		.join("");
 }
 
 /**
@@ -3936,7 +4372,8 @@ function alignRunsWithFences(
 
 // Line identity for alignment: indentation, list-marker padding and the
 // marker character are formatting the serializer and the model write
-// differently, so they never decide whether a line changed.
+// differently, so they never decide whether a line changed. A list line's
+// nesting depth does (see `diff-list-moves`).
 function lineKey(line: string): string {
 	return line
 		.trim()
@@ -4076,8 +4513,16 @@ function alignHunkUnits(oldHunk: string[], newHunk: string[]): HunkStep[] {
  * Blank lines are left out of the alignment (a stored document may hold
  * loose lists, the model usually writes tight ones) and are emitted from the
  * new text.
+ *
+ * With `tagMoves`, the lines of each list block moved to another level carry
+ * its move tag (`tagMovedLines`), which `fromMarkdown` renders: a plain-text
+ * review has no renderer to read it.
  */
-function diffByLines(oldText: string, newText: string): DiffPart[] {
+function diffByLines(
+	oldText: string,
+	newText: string,
+	tagMoves: boolean,
+): DiffPart[] {
 	const oldLines = oldText.split("\n");
 	const newLines = newText.split("\n");
 	const oldRoles = scanFences(oldLines);
@@ -4086,6 +4531,30 @@ function diffByLines(oldText: string, newText: string): DiffPart[] {
 	const newRefs = lineUnits(newLines, newRoles);
 	const unitText = (lines: string[], unit: LineUnit) =>
 		lines.slice(unit.first, unit.last + 1).join("\n");
+	// The list units read with the list's own fence rule, which knows a
+	// fence indented inside a list item: no code line of one is taken for a
+	// moved line or for the line that closes a moved block. Every fence line
+	// is a unit of its own, so a unit's first line's role is its own.
+	const oldListRoles = listFenceRoles(oldLines);
+	const newListRoles = listFenceRoles(newLines);
+	const keyed = (
+		text: string,
+		lines: string[],
+		refs: LineUnit[],
+		roles: FenceRole[],
+	): ListUnits => {
+		const depths = listDepthLines(text);
+		return {
+			keys: refs.map((unit) => lineKey(unitText(lines, unit))),
+			depths: refs.map((unit) => depths[unit.first].depth),
+			roles: refs.map((unit) => roles[unit.first]),
+		};
+	};
+	const oldKeyed = keyed(oldText, oldLines, oldRefs, oldListRoles);
+	const newKeyed = keyed(newText, newLines, newRefs, newListRoles);
+	const unitRoles = (roles: FenceRole[], refs: LineUnit[]) =>
+		refs.map((unit) => roles[unit.first]);
+	const moved = movedListUnits(oldKeyed, newKeyed);
 	// A unit with a fence role is one line, so its first line's role is its own.
 	const allInside = (
 		roles: FenceRole[],
@@ -4100,19 +4569,25 @@ function diffByLines(oldText: string, newText: string): DiffPart[] {
 		}
 		return true;
 	};
-	const chunks = alignRunsWithFences(
-		diffArrays(
-			oldRefs.map((unit) => lineKey(unitText(oldLines, unit))),
-			newRefs.map((unit) => lineKey(unitText(newLines, unit))),
+	const chunks = planLineChunks(
+		alignRunsWithFences(
+			diffArrays(
+				alignmentKeys(oldKeyed, moved.before, "before"),
+				alignmentKeys(newKeyed, moved.after, "after"),
+			),
+			unitRoles(oldRoles, oldRefs),
+			unitRoles(newRoles, newRefs),
 		),
-		oldRefs.map((unit) => oldRoles[unit.first]),
-		newRefs.map((unit) => newRoles[unit.first]),
+		oldKeyed,
+		newKeyed,
+		moved,
 	);
 
 	const parts: DiffPart[] = [];
 	let oldPos = 0;
 	let newPos = 0;
 	let newCursor = 0;
+	let movedBlocks = 0;
 	const lastNewLine = newLines.length - 1;
 	const emitNewThrough = (lastIndex: number) => {
 		if (lastIndex < newCursor) {
@@ -4160,18 +4635,48 @@ function diffByLines(oldText: string, newText: string): DiffPart[] {
 
 	for (let i = 0; i < chunks.length; i++) {
 		const chunk = chunks[i];
-		const count = chunk.value.length;
-		if (!chunk.added && !chunk.removed) {
-			emitNewThrough(newRefs[newPos + count - 1].last);
-			oldPos += count;
-			newPos += count;
+		if (chunk.kind === "same") {
+			emitNewThrough(newRefs[newPos + chunk.count - 1].last);
+			oldPos += chunk.count;
+			newPos += chunk.count;
 			continue;
 		}
-		if (chunk.removed) {
+		if (chunk.kind === "moved") {
+			// A list line moved to another level is replaced whole, with
+			// the lines that move with it: a word diff would mark only
+			// indentation. `planLineChunks` says which side goes first, and
+			// each line is tagged with the block it belongs to, so the editor
+			// answers the block as one change.
+			const { removed, added, removedFirst } = chunk;
+			movedBlocks += 1;
+			const tagged = (text: string) =>
+				tagMoves ? tagMovedLines(text, movedBlocks) : text;
+			const removeBlock = () => {
+				const part = removedPart(oldSlice(removed));
+				parts.push({ ...part, value: tagged(part.value) });
+			};
+			const addBlock = () => {
+				emitNewThrough(newRefs[newPos].first - 1);
+				parts.push({ added: true, value: tagged(newSlice(added)) });
+				closeNewSlice(added);
+			};
+			if (removedFirst) {
+				removeBlock();
+				addBlock();
+			} else {
+				addBlock();
+				removeBlock();
+			}
+			oldPos += removed;
+			newPos += added;
+			continue;
+		}
+		const count = chunk.count;
+		if (chunk.kind === "removed") {
 			const next = chunks[i + 1];
 			const removed = oldSlice(count);
-			if (next?.added) {
-				const addedCount = next.value.length;
+			if (next?.kind === "added") {
+				const addedCount = next.count;
 				if (
 					allInside(oldRoles, oldRefs, oldPos, count) &&
 					allInside(newRoles, newRefs, newPos, addedCount)
@@ -4376,7 +4881,11 @@ export function diffPartialText(
 
 	const changes = mergePhantomEscapeDiffs(
 		isComplete
-			? diffByLines(oldTextToCompare, newProcessed)
+			? diffByLines(
+					oldTextToCompare,
+					newProcessed,
+					options.markdown !== false,
+				)
 			: diffWords(oldTextToCompare, newToCompare),
 	);
 
@@ -4387,12 +4896,19 @@ export function diffPartialText(
 	// markers to tightly wrap `<table>…</table>`) can pick it up. Without
 	// this split, the table ends up inside `<del class="diff-del">…</del>`
 	// after rendering, which TipTap can't apply as a mark on a table node.
+	// A table in a moved list block (`tagMovedLines`) takes the block's
+	// `tag`, right after its start marker, as the block's lines do.
+	// The table goes on lines of its own at the indentation of its line, so
+	// a table in a list item stays in it (`tableOnItsLines`). `linePrefix`
+	// is the start of the line `content` begins on.
 	const HTML_TABLE_SPLIT_RE = /(<table\b[^>]*>[\s\S]*?<\/table>)/gi;
 	const HTML_TABLE_OPEN_RE = /<table\b/i;
 	const wrapWithMarkers = (
 		content: string,
 		startMarker: string,
 		endMarker: string,
+		tag: string,
+		linePrefix: string,
 	): string => {
 		if (!content) {
 			return "";
@@ -4400,14 +4916,30 @@ export function diffPartialText(
 		if (htmlBlocks.size === 0 || !HTML_TABLE_OPEN_RE.test(content)) {
 			return `${startMarker}${content}${endMarker}`;
 		}
+		// The split puts every whole table at an odd index.
 		const segments = content.split(HTML_TABLE_SPLIT_RE);
 		let out = "";
-		for (const segment of segments) {
-			if (!segment) {
-				continue;
+		let read = linePrefix;
+		segments.forEach((segment, index) => {
+			if (index % 2 === 1) {
+				out += tableOnItsLines(
+					segment,
+					openLineIndent(read),
+					`${startMarker}${tag}`,
+					endMarker,
+				);
+				read += segment;
+				return;
 			}
-			out += `${startMarker}${segment}${endMarker}`;
-		}
+			read += segment;
+			const text = withoutTableIndent(
+				segment,
+				index < segments.length - 1,
+			);
+			if (text) {
+				out += `${startMarker}${text}${endMarker}`;
+			}
+		});
 		return out;
 	};
 
@@ -4423,45 +4955,66 @@ export function diffPartialText(
 		value: string,
 		startMarker: string,
 		endMarker: string,
+		linePrefix: string,
 	): string => {
+		// A table in a moved list block (`tagMovedLines`) takes the block's
+		// tag, right after its start marker, as its lines do.
+		const tag = new RegExp(MOVE_TAG_SOURCE).exec(value)?.[0] ?? "";
 		if (gfmBlocks.size === 0 || !GFM_TABLE_PLACEHOLDER.test(value)) {
 			return wrapWithMarkers(
 				restoreHtmlTables(restoreLinks(value), htmlBlocks),
 				startMarker,
 				endMarker,
+				tag,
+				linePrefix,
 			);
 		}
 
+		// The split puts every table placeholder at an odd index.
+		const segments = value.split(GFM_TABLE_PLACEHOLDER_SPLIT);
 		let out = "";
-		for (const segment of value.split(GFM_TABLE_PLACEHOLDER_SPLIT)) {
-			if (!segment) {
-				continue;
-			}
+		let read = linePrefix;
+		segments.forEach((segment, index) => {
 			const table = gfmBlocks.get(segment);
 			if (table) {
 				// Tight wrap, on its own lines so the block parser still sees a
 				// table once the markers are stripped out again.
-				out += `\n\n${startMarker}${table}${endMarker}\n\n`;
-				continue;
+				out += tableOnItsLines(
+					table,
+					openLineIndent(read),
+					`${startMarker}${tag}`,
+					endMarker,
+				);
+				read += segment;
+				return;
 			}
-			if (!/\S/.test(segment)) {
+			const before = read;
+			read += segment;
+			const text = withoutTableIndent(
+				segment,
+				index < segments.length - 1,
+			);
+			if (!/\S/.test(withoutMoveTags(text))) {
 				// A line break beside the table: the blank lines around it hold
-				// it already, and a marker pair of its own marks no text.
-				out += segment;
-				continue;
+				// it already, and a marker pair of its own marks no text. A
+				// move tag is no text either, and goes with it.
+				out += withoutMoveTags(text);
+				return;
 			}
 			out += wrapWithMarkers(
-				restoreHtmlTables(restoreLinks(segment), htmlBlocks),
+				restoreHtmlTables(restoreLinks(text), htmlBlocks),
 				startMarker,
 				endMarker,
+				tag,
+				before,
 			);
-		}
+		});
 		return out;
 	};
 
-	const restoreAll = (value: string): string =>
+	const restoreAll = (value: string, linePrefix: string): string =>
 		restoreHtmlTables(
-			restoreHtmlTables(restoreLinks(value), gfmBlocks),
+			restoreGfmTables(restoreLinks(value), gfmBlocks, linePrefix),
 			htmlBlocks,
 		);
 
@@ -4469,25 +5022,31 @@ export function diffPartialText(
 	changes.forEach((part) => {
 		// Use placeholder tokens instead of HTML tags
 		// These will be replaced with actual tags after markdown processing
+		const linePrefix = result.slice(result.lastIndexOf("\n") + 1);
 		if (part.added) {
 			result += wrapPartWithMarkers(
 				part.value,
 				DIFF_ADD_START,
 				DIFF_ADD_END,
+				linePrefix,
 			);
 		} else if (part.removed) {
 			result += wrapPartWithMarkers(
 				part.value,
 				DIFF_DEL_START,
 				DIFF_DEL_END,
+				linePrefix,
 			);
 		} else {
-			result += restoreAll(part.value);
+			result += restoreAll(part.value, linePrefix);
 		}
 	});
 
 	if (streamCut !== null) {
-		result += restoreAll(oldProcessed.slice(streamCut));
+		result += restoreAll(
+			oldProcessed.slice(streamCut),
+			result.slice(result.lastIndexOf("\n") + 1),
+		);
 	}
 
 	return result;
@@ -4711,6 +5270,7 @@ export function fromMarkdown(
 			const tableHtml = markTableWithDiffType(
 				tableMd.render(table.markdown, { references: env.references }),
 				table.type,
+				table.move,
 			);
 			const highlightClass =
 				table.type === "added"
@@ -4731,7 +5291,7 @@ export function fromMarkdown(
 	// drop deleted tables wholesale and unwrap added ones on save.
 	if (htmlTables.length > 0) {
 		htmlTables.forEach((entry, index) => {
-			const wrapped = `<div class="diff-table-${entry.type}">${markTableWithDiffType(entry.html, entry.type)}</div>`;
+			const wrapped = `<div class="diff-table-${entry.type}">${markTableWithDiffType(entry.html, entry.type, entry.move)}</div>`;
 			html = html.replace(`<!--DIFF_HTML_TABLE_${index}-->`, wrapped);
 		});
 	}
@@ -4751,8 +5311,11 @@ export function fromMarkdown(
 				: "";
 			const tag = fence.type === "added" ? "ins" : "del";
 			const markClass = fence.type === "added" ? "diff-ins" : "diff-del";
+			const moveAttr = fence.move
+				? ` data-diff-move="${fence.move}"`
+				: "";
 			const content = fence.code
-				? `<${tag} class="${markClass}">${escapeHtml(fence.code)}</${tag}>`
+				? `<${tag} class="${markClass}"${moveAttr}>${escapeHtml(fence.code)}</${tag}>`
 				: "";
 			html = html.replace(
 				`<!--DIFF_FENCE_${index}-->`,
@@ -4764,17 +5327,7 @@ export function fromMarkdown(
 	// Fallback: Replace any remaining markers that weren't handled by the plugin
 	// This can happen if markers appear in contexts where inline rules don't run
 	// (e.g., inside code blocks, which is fine - we don't want to highlight code)
-	html = html
-		.replace(
-			new RegExp(escapeRegExp(DIFF_ADD_START), "g"),
-			'<ins class="diff-ins">',
-		)
-		.replace(new RegExp(escapeRegExp(DIFF_ADD_END), "g"), "</ins>")
-		.replace(
-			new RegExp(escapeRegExp(DIFF_DEL_START), "g"),
-			'<del class="diff-del">',
-		)
-		.replace(new RegExp(escapeRegExp(DIFF_DEL_END), "g"), "</del>");
+	html = markersToTags(html);
 
 	html = keepSpaceBetweenInlineTags(html);
 
@@ -4799,7 +5352,7 @@ export function diffToHtml(text: string | undefined): string {
 	}
 
 	// Escape HTML entities in the content first (but not our placeholders)
-	let html = text
+	const html = text
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;");
@@ -4807,19 +5360,7 @@ export function diffToHtml(text: string | undefined): string {
 	// Replace placeholder tokens with actual HTML tags (class-tagged so the
 	// TipTap DiffInsert/DiffDelete marks can distinguish these from pasted
 	// bare <ins>/<del>).
-	html = html
-		.replace(
-			new RegExp(escapeRegExp(DIFF_ADD_START), "g"),
-			'<ins class="diff-ins">',
-		)
-		.replace(new RegExp(escapeRegExp(DIFF_ADD_END), "g"), "</ins>")
-		.replace(
-			new RegExp(escapeRegExp(DIFF_DEL_START), "g"),
-			'<del class="diff-del">',
-		)
-		.replace(new RegExp(escapeRegExp(DIFF_DEL_END), "g"), "</del>");
-
-	return html;
+	return markersToTags(html);
 }
 
 /**
@@ -4858,7 +5399,7 @@ export function stripDiffMarkup(text: string | undefined): string {
 	if (!text) {
 		return "";
 	}
-	return (
+	return withoutMoveTags(
 		text
 			// Remove HTML tags
 			.replace(/<ins[^>]*>/gi, "")
@@ -4869,7 +5410,7 @@ export function stripDiffMarkup(text: string | undefined): string {
 			.replace(new RegExp(escapeRegExp(DIFF_ADD_START), "g"), "")
 			.replace(new RegExp(escapeRegExp(DIFF_ADD_END), "g"), "")
 			.replace(new RegExp(escapeRegExp(DIFF_DEL_START), "g"), "")
-			.replace(new RegExp(escapeRegExp(DIFF_DEL_END), "g"), "")
+			.replace(new RegExp(escapeRegExp(DIFF_DEL_END), "g"), ""),
 	);
 }
 

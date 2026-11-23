@@ -1,21 +1,39 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
 	fetch: vi.fn(),
 	create: vi.fn(),
+	findFirst: vi.fn(),
+	embed: vi.fn(),
+	resolveText: vi.fn(async () => ({})),
 	warn: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
-	db: { projectContext: { create: h.create } },
-	resolveModelWithCredentials: vi.fn(async () => ({})),
+	db: { projectContext: { create: h.create, findFirst: h.findFirst } },
+	resolveModelWithCredentials: h.resolveText,
 	tenantWhere: vi.fn(),
 }));
+const documentsProvider = {
+	apiKey: "example-openai-key",
+	provider: "OPENAI_DIRECT",
+	baseUrl: null,
+};
 vi.mock("@repo/ai", () => ({
-	resolveProviderApiKey: vi.fn(async () => "example-key"),
+	resolveProviderApiKey: vi.fn(
+		async (config: { federatedOrganizationId?: string }) => {
+			if (config.federatedOrganizationId) {
+				throw new Error(
+					"Anthropic federation requires a Bearer credential",
+				);
+			}
+			return "example-key";
+		},
+	),
+	getSystemEmbeddingRAGProviderConfig: vi.fn(async () => documentsProvider),
 }));
 vi.mock("@repo/logs", () => ({ logger: { info: vi.fn(), warn: h.warn } }));
 vi.mock("@repo/rag/lib/project-contexts/auto-embed", () => ({
-	embedProjectContext: vi.fn(),
+	embedProjectContext: h.embed,
 }));
 vi.mock("../pm-integration/fetch-pm-hierarchy", () => ({
 	fetchPMWorkItemsByType: h.fetch,
@@ -24,7 +42,11 @@ vi.mock("../pm-integration/story-sync", () => ({
 	discoverPMToolCapabilities: vi.fn(async () => ({ taskList: {} })),
 }));
 
-import { ingestBacklogForRAG } from "../existing-project-setup";
+import { getSystemEmbeddingRAGProviderConfig } from "@repo/ai";
+import {
+	embedCodeAnalysisContext,
+	ingestBacklogForRAG,
+} from "../existing-project-setup";
 
 const input = {
 	projectId: "example-project",
@@ -108,3 +130,58 @@ it("warns on a truncated listing and still ingests the available items", async (
 		{ totalItems: 1 },
 	);
 });
+
+describe.each(["API key", "federated credentials"])(
+	"with Anthropic %s as the default",
+	(authMode) => {
+		beforeEach(() => {
+			h.resolveText.mockResolvedValue({
+				provider: "ANTHROPIC_DIRECT",
+				...(authMode === "federated credentials" && {
+					federatedOrganizationId: input.organizationId,
+				}),
+			});
+			h.fetch.mockResolvedValue({
+				epics: [],
+				features: [],
+				stories: [{ id: "42", title: "Example issue" }],
+				readStatus: "ok",
+			});
+			h.findFirst.mockResolvedValue({ content: "Example analysis" });
+		});
+
+		function expectDocumentsProvider(provider: string) {
+			expect(h.resolveText).not.toHaveBeenCalled();
+			expect(getSystemEmbeddingRAGProviderConfig).toHaveBeenCalledWith({
+				userId: input.userId,
+				organizationId: input.organizationId,
+			});
+			expect(h.embed).toHaveBeenCalledWith(
+				expect.objectContaining({
+					contextId: "example-context",
+					organizationId: input.organizationId,
+					apiKey: documentsProvider,
+					metadata: expect.objectContaining({ provider }),
+				}),
+			);
+		}
+
+		it("uses the documents provider for the backlog", async () => {
+			await expect(ingestBacklogForRAG(input)).resolves.toEqual({
+				contextId: "example-context",
+				itemCounts: { epics: 0, features: 0, stories: 1 },
+			});
+			expectDocumentsProvider("BACKLOG_INGEST");
+		});
+
+		it("uses the documents provider for code analysis", async () => {
+			await expect(
+				embedCodeAnalysisContext({
+					...input,
+					contextId: "example-context",
+				}),
+			).resolves.toBeUndefined();
+			expectDocumentsProvider("CODE_ANALYSIS");
+		});
+	},
+);

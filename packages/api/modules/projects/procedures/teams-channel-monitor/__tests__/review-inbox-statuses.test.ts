@@ -77,3 +77,16 @@ describe.each([
 		});
 	});
 });
+
+describe("Teams channel Rejected count", () => {
+	it("counts the Rejected proposals list when asked", async () => {
+		const count = channelCount as unknown as (input: unknown) => unknown;
+		const result = await count({
+			projectId: "example-project",
+			rejected: true,
+		});
+
+		expect(mocks.count).toHaveBeenCalledWith("example-project", "BACKLOG");
+		expect(result).toEqual({ count: 2 });
+	});
+});

@@ -27,6 +27,9 @@ export type MergeIntoProposalItemResult =
 /** Heading above text merged in from the manual create dialog. */
 export const MANUAL_ENTRY_HEADING = "Added from a manually entered work item";
 
+/** Heading above another inbox item merged in as a duplicate. */
+export const DUPLICATE_ITEM_HEADING = "Merged from a duplicate inbox item";
+
 /** Longest manual entry one merge accepts, in characters. */
 export const MERGE_ADDITION_MAX_LENGTH = 10_000;
 
@@ -41,10 +44,9 @@ export function appendManualEntry(
 	existing: string,
 	addition: string,
 	addedBy: string | null,
+	title: string = MANUAL_ENTRY_HEADING,
 ): string {
-	const heading = addedBy
-		? `${MANUAL_ENTRY_HEADING} (by ${addedBy}):`
-		: `${MANUAL_ENTRY_HEADING}:`;
+	const heading = addedBy ? `${title} (by ${addedBy}):` : `${title}:`;
 	const block = `${heading}\n\n${addition.trim()}`;
 	const base = existing.trim();
 	return base ? `${base}\n\n---\n\n${block}` : block;
@@ -59,11 +61,13 @@ export function mergeManualEntryIntoChange(
 	change: Record<string, unknown>,
 	addition: string,
 	addedBy: string | null,
+	heading: string = MANUAL_ENTRY_HEADING,
 ): Record<string, unknown> {
 	const merged = appendManualEntry(
 		readStoredChangeEntry(change, 0).description,
 		addition,
 		addedBy,
+		heading,
 	);
 	const description = asJsonRecord(change.description);
 	const routing = asJsonRecord(change.routing);
@@ -81,6 +85,7 @@ export function mergeManualEntryIntoChange(
 							capturedDescription,
 							addition,
 							addedBy,
+							heading,
 						),
 					},
 				}
@@ -108,9 +113,12 @@ interface MergeIntoProposalItemParams {
 	changeIndex: number;
 	addition: string;
 	addedBy: string | null;
+	/** Heading above the addition; the manual entry's by default. */
+	heading?: string;
 }
 
-async function mergeInTransaction(
+/** {@link mergeIntoPendingProposalItem} inside a caller's transaction. */
+export async function mergeInTransaction(
 	tx: Prisma.TransactionClient,
 	params: MergeIntoProposalItemParams,
 ): Promise<MergeIntoProposalItemResult> {
@@ -154,6 +162,7 @@ async function mergeInTransaction(
 		item.raw,
 		params.addition,
 		params.addedBy,
+		params.heading,
 	);
 	if (exceedsMergedDescriptionLimit(mergedItem)) {
 		return { outcome: "too_long" };

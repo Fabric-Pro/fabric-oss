@@ -5,6 +5,11 @@ const SENTENCE_END = /[.!?…](?:["')\]]*)\s+/g;
 
 const BARE_URL = /\b(?:https?:\/\/|www\.)[^\s<>()]+/gi;
 
+/** Whether the text holds a web address, which is never spoken aloud. */
+export function containsWebAddress(text: string): boolean {
+	return text.search(BARE_URL) >= 0;
+}
+
 /**
  * Markdown the agent may write that a voice should not read aloud, and every
  * URL: a link is posted in the meeting chat, never spelled out.

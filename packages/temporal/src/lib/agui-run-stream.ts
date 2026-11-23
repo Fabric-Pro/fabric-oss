@@ -343,7 +343,9 @@ export class RedisAgUiRunStore implements AgUiRunStore {
 	}
 
 	async close(): Promise<void> {
-		await this.redis.quit();
+		// Cleanup must work even if Redis cannot acknowledge QUIT or a
+		// blocking read still owns the connection.
+		this.redis.disconnect();
 	}
 }
 

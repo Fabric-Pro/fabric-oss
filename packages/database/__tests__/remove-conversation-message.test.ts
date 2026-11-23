@@ -14,7 +14,7 @@
  *   - an organization is required: a missing, null or empty one is refused
  *     before the row is read, so no unfiltered or personal read exists;
  *   - the read is a tenant-scoped `SELECT ... FOR UPDATE` inside a
- *     Serializable transaction, on the snake_case table name.
+ *     Read Committed transaction, on the snake_case table name.
  *
  * `$queryRaw` and the update are mocked; the row lock itself is Postgres's
  * job, so these tests check the query is issued, not that Postgres honours
@@ -114,8 +114,10 @@ describe("removeConversationMessage — removal", () => {
 		expect(result).toEqual({ removed: true });
 		expect(mocks.updateMock).toHaveBeenCalledTimes(1);
 		expect(writtenMessages()).toEqual([otherQuestion, otherAnswer]);
+		// Read Committed: a removal that waits on another writer's row lock
+		// reads the row as that writer committed it, instead of failing.
 		expect(mocks.$transactionMock.mock.calls[0]?.[1]).toMatchObject({
-			isolationLevel: "Serializable",
+			isolationLevel: "ReadCommitted",
 		});
 	});
 

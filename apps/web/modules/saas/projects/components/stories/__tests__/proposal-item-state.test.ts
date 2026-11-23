@@ -43,6 +43,22 @@ describe("deriveProposalItemState", () => {
 		expect(state.appliedCount).toBe(2);
 	});
 
+	it("reads a rejected item restored from the Rejected list as restored, with its ticket", () => {
+		const state = deriveProposalItemState({
+			resolvedItems: [
+				{ changeIndex: 0, reason: "rejected" },
+				{ changeIndex: 1, reason: "rejected" },
+			],
+			createdChangeIndexes: [],
+			appliedReason: "applied",
+			restoredItems: [{ changeIndex: 1, storyId: "story-restored" }],
+		});
+		expect(state.lockedReasons.get(0)).toBe("rejected");
+		expect(state.lockedReasons.get(1)).toBe("restored");
+		expect(state.lockedTargets.get(1)).toBe("story-restored");
+		expect(state.lockedTargets.has(0)).toBe(false);
+	});
+
 	it("reads an applied item that created nothing as already on the Roadmap", () => {
 		const state = deriveProposalItemState({
 			resolvedItems: [

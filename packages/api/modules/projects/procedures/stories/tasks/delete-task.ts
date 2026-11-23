@@ -25,12 +25,17 @@ export const deleteTaskProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input }) => {
-		try {
-			await deleteTask(input.taskId);
-			return { success: true };
-		} catch {
+		// Scoped to the story and project the gate authorized: a task id from
+		// anywhere else is not found, and nothing is deleted.
+		const deleted = await deleteTask({
+			taskId: input.taskId,
+			storyId: input.storyId,
+			projectId: input.projectId,
+		}).catch(() => false);
+		if (!deleted) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Task not found",
 			});
 		}
+		return { success: true };
 	});

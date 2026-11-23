@@ -2418,7 +2418,7 @@ describe("useOrchestratorStream usage-limit SSE", () => {
 	afterEach(() => {
 		global.fetch = originalFetch;
 	});
-	it("shows the limit toast and removes the assistant placeholder", async () => {
+	it("shows the limit toast and ends the answer with the paused state", async () => {
 		vi.mocked(toast.error).mockClear();
 		const { response, enqueueLine, enqueueDone } = makeSseResponse();
 		global.fetch = vi.fn(async () => response) as unknown as typeof fetch;
@@ -2443,8 +2443,50 @@ describe("useOrchestratorStream usage-limit SSE", () => {
 			result.current.messages.filter(
 				(message) => message.role === "assistant",
 			),
-		).toEqual([]);
+		).toMatchObject([
+			{
+				content:
+					"Error: AI calls are paused — the usage limit for today is reached. Manage limits to raise it, or try again after it resets.",
+				isError: true,
+				isStreaming: false,
+			},
+		]);
+		expect(JSON.stringify(result.current.messages)).not.toContain(
+			"example-limit",
+		);
+		// The live failure notice reads the failed state's error.
+		expect(result.current.state.status).toBe("failed");
+		expect(result.current.state.result?.error).toBe(
+			"AI calls are paused — the usage limit for today is reached. Manage limits to raise it, or try again after it resets.",
+		);
 		expect(result.current.isLoading).toBe(false);
+	});
+
+	it("removes the placeholder when the refusal names no limit window", async () => {
+		const { response, enqueueLine, enqueueDone } = makeSseResponse();
+		global.fetch = vi.fn(async () => response) as unknown as typeof fetch;
+		const { result } = renderHook(() => useOrchestratorStream());
+		let sending: Promise<void>;
+		act(() => {
+			sending = result.current.sendMessage("hello");
+		});
+		await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+		await act(async () => {
+			enqueueLine(
+				'data: {"type":"started","executionId":"example-execution"}',
+			);
+			enqueueLine(
+				'data: {"type":"error","code":"AI_USAGE_LIMIT_EXCEEDED","message":"Limit reached"}',
+			);
+			enqueueDone();
+			await sending;
+		});
+		expect(
+			result.current.messages.filter(
+				(message) => message.role === "assistant",
+			),
+		).toEqual([]);
+		expect(result.current.state.status).toBe("idle");
 	});
 });
 

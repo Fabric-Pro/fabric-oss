@@ -5,6 +5,7 @@ import type {
 	StreamStatus,
 	TokenUsage,
 } from "../hooks/useDirectStream";
+import { readAttachmentNames } from "./attachment-names";
 import { parseTurnTruncation } from "./chat-turn-truncation";
 import { parseChatGptPlanApiBilling } from "./chatgpt-plan-api-billing";
 import { settleUnfinishedToolCalls } from "./direct-chat-turns";
@@ -73,12 +74,27 @@ export function loadedDirectMessages(
 		// "Thought for X.Ys" header renders correctly after reload.
 		reasoningText: msg.reasoningText,
 		reasoningDurationMs: msg.reasoningDurationMs,
+		// Saved with the question, so a reload still lists what was
+		// attached; the caption showed only until the page reloaded.
+		...attachmentNamesOf(msg),
 		// Persisted with the assistant message on save.
 		usage: readPersistedUsage(persistedMetadata(msg)),
 		model: readPersistedModel(persistedMetadata(msg)),
 		// `content`, plus the failure / tools-off-retry state.
 		...readPersistedTurnOutcome(msg),
 	}));
+}
+
+function attachmentNamesOf(
+	message: PersistedDirectMessage,
+): Pick<DirectStreamMessage, "attachmentNames"> {
+	if (message.role !== "user") {
+		return {};
+	}
+	const attachmentNames = readAttachmentNames(
+		persistedMetadata(message)?.attachmentNames,
+	);
+	return attachmentNames ? { attachmentNames } : {};
 }
 
 /**

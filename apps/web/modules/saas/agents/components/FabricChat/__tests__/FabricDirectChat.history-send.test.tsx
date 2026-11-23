@@ -265,6 +265,9 @@ vi.mock("@saas/agents/lib/tool-call-status", () => ({
 }));
 
 vi.mock("@saas/agents/lib/direct-chat-tools", async (importOriginal) => ({
+	getConversationPlanModel: (
+		await importOriginal<typeof import("../../../lib/direct-chat-tools")>()
+	).getConversationPlanModel,
 	getSelectedConversationToolIds: (
 		await importOriginal<typeof import("../../../lib/direct-chat-tools")>()
 	).getSelectedConversationToolIds,
@@ -318,9 +321,23 @@ vi.mock("@saas/agents/components/FabricChat/shared", () => ({
 			agentId: string;
 			name: string;
 			modelOverride?: string;
+			chatOnly?: boolean;
 		}) => void;
 	}) => (
 		<>
+			<button
+				type="button"
+				onClick={() =>
+					props.onToggleAgent({
+						agentId: "plan-model:example-plan-model",
+						name: "Example Plan Model",
+						modelOverride: "chatgpt-plan:example-plan-model",
+						chatOnly: true,
+					})
+				}
+			>
+				choose plan model
+			</button>
 			<button
 				type="button"
 				onClick={() => props.onToggleAgent(restoredAgent)}
@@ -1437,6 +1454,77 @@ it("resets the selection when production instance keys remount a generic or dedi
 	expect(
 		createConversationMock.mock.calls.at(-1)?.[0].metadata.instanceId,
 	).toBe(nextAgent.id);
+});
+
+/**
+ * A ChatGPT plan model picked in the picker applies to this chat only: the
+ * conversation keeps it across a reload, and it never answers in another
+ * conversation, where the member's saved selection applies.
+ */
+describe("FabricDirectChat keeps a plan model in its own chat", () => {
+	const planModel = {
+		canonicalName: "example-plan-model",
+		name: "Example Plan Model",
+	};
+	const savedModel = {
+		agentId: "model:example-model",
+		name: "Example Model",
+		modelOverride: "example-model",
+	};
+
+	it("answers with the plan model the conversation keeps after a reload", async () => {
+		selectionMock.mockResolvedValue({ selectedAgents: [savedModel] });
+		const { ui } = harness();
+		const view = render(
+			ui("conv_old", { ...convOld, metadata: { planModel } }),
+		);
+		await waitFor(() => expect(selectionMock).toHaveBeenCalled());
+		await act(async () => {});
+
+		await sendAndSettle(view);
+
+		expect(streamBodies[0].modelOverride).toBe(
+			"chatgpt-plan:example-plan-model",
+		);
+	});
+
+	it("saves a plan model picked here in the conversation's settings", async () => {
+		const { ui } = harness();
+		const view = render(ui("conv_old", convOld));
+		await act(async () => {});
+		updateSettingsMock.mockClear();
+
+		fireEvent.click(
+			view.getByRole("button", { name: "choose plan model" }),
+		);
+
+		await waitFor(() =>
+			expect(updateSettingsMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					conversationId: "conv_old",
+					settings: expect.objectContaining({ planModel }),
+				}),
+			),
+		);
+	});
+
+	it("answers another conversation with the member's saved selection", async () => {
+		selectionMock.mockResolvedValue({ selectedAgents: [savedModel] });
+		const { ui } = harness();
+		const view = render(
+			ui("conv_old", { ...convOld, metadata: { planModel } }),
+		);
+		await waitFor(() => expect(selectionMock).toHaveBeenCalled());
+		await act(async () => {});
+
+		view.rerender(ui("conv_A", convA));
+		await waitFor(() =>
+			expect(view.container.textContent).toContain("question in A"),
+		);
+		await sendAndSettle(view);
+
+		expect(streamBodies[0].modelOverride).toBe("example-model");
+	});
 });
 
 describe("FabricDirectChat workflow confirmation", () => {

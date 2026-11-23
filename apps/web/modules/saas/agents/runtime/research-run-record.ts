@@ -1,3 +1,4 @@
+import { providerFailureMessageFromText } from "@repo/ai/lib/provider-failure-message";
 import {
 	type ConversationMessage,
 	type ConversationTurn,
@@ -19,6 +20,8 @@ import type {
 	CompletedTurnSettlement,
 	SettleCompletedTurn,
 } from "@saas/agents/lib/server/conversation-turn-admission";
+import { aiUsageLimitPausedMessage } from "../../../../app/api/agents/fabric-ai/stream/ai-usage-limit-paused-message";
+import { extractAiUsageLimitExceededError } from "../../../../app/api/agents/fabric-ai/stream/extract-ai-usage-limit-error";
 import type { RuntimeCaller } from "./engine";
 
 /**
@@ -34,6 +37,19 @@ export type ResearchRunEnding =
 type ResearchConversationMessage = ConversationMessage & {
 	streamStatus: "completed" | "error" | "cancelled";
 };
+
+/**
+ * What the person reads, live and saved, for a failed run: a usage limit's
+ * paused state without the limit's internal id, a provider failure's shared
+ * message without the provider's text, else the run's own words.
+ */
+export function researchFailureText(message: string): string {
+	const limit = extractAiUsageLimitExceededError({ message });
+	if (limit) {
+		return aiUsageLimitPausedMessage(limit.window);
+	}
+	return providerFailureMessageFromText(message) ?? message;
+}
 
 /** Whether a turn is a research run (and so this engine's own). */
 export function isResearchTurn(
@@ -125,14 +141,15 @@ function researchAnswer(
 			};
 		}
 		case "failed": {
+			const shown = researchFailureText(ending.message);
 			const record: ResearchRunRecord = {
 				status: "failed",
 				executionId,
-				error: ending.message,
+				error: shown,
 			};
 			return {
 				...base,
-				content: `Research failed: ${ending.message}`,
+				content: `Research failed: ${shown}`,
 				streamStatus: "error",
 				metadata: { research: record },
 			};

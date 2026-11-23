@@ -16,7 +16,9 @@
 import { createHash } from "node:crypto";
 import {
 	choosePairFocusKind,
+	type FocusTexts,
 	focusSectionName,
+	PAIR_FOCUS_KINDS,
 	type PairFocus,
 	type PairFocusKind,
 	weightedFocusSimilarity,
@@ -295,6 +297,34 @@ function scorePair(
 			weighted,
 			score: calibratedFocusScore(weighted, threshold),
 		},
+	};
+}
+
+/**
+ * The candidate rule for one pair, for a caller that compares items outside
+ * a scan (the Proposal Inbox flags): the pair's {@link candidateScore} and
+ * the effective threshold it must reach. The same proximity relaxation and,
+ * for two features sharing a section, the same Scope weighting as candidate
+ * selection.
+ */
+export function scoreDetectionPair(
+	first: DetectionItem,
+	second: DetectionItem,
+	threshold = CANDIDATE_COSINE_THRESHOLD,
+): {
+	score: number;
+	threshold: number;
+	/** Passed to the verifier, as the scan passes it. */
+	proximate: boolean;
+	/** The section the pair was scored on, which the verifier reads first. */
+	focusKind: PairFocusKind | null;
+} {
+	const scored = scorePair(first, second, threshold);
+	return {
+		score: candidateScore(scored),
+		threshold: scored.threshold,
+		proximate: scored.proximate,
+		focusKind: scored.focus?.kind ?? null,
 	};
 }
 
@@ -622,6 +652,14 @@ export function baseModelName(modelString: string): string {
  */
 export type StoryForPrompt = { identifier: string; text: string };
 
+/**
+ * The verifier's contract: bump it with any change to `buildVerifierPrompt`
+ * or to the verdict schema and its reading (`verifyDuplicatePair`). Verdicts
+ * kept for a manual entry's Proposal Inbox matches are keyed on it, so none
+ * outlives the contract it was given under.
+ */
+export const VERIFIER_VERSION = 1;
+
 /** Normalized 3-way relationship the verifier decides for a candidate pair. */
 export type VerifierRelationship =
 	| "same_work_item"
@@ -846,4 +884,30 @@ export function hashDetectionText(text: string): string {
 	return createHash("sha256")
 		.update(`v${DETECTION_VERSION}\n${text}`)
 		.digest("hex");
+}
+
+/**
+ * The hash a pair verdict is cached against. A feature's also covers its
+ * section texts, which can sit past the length the detection text is cut
+ * at, or — with no sections — its kind, so a bug turned feature is verified
+ * again under the feature prompt; a bug's is its detection-text hash. The
+ * roadmap scan and the Proposal Inbox verdicts both use it.
+ */
+export function detectionVerdictHash(subject: {
+	text: string;
+	kind: string;
+	focusTexts: FocusTexts | null;
+}): string {
+	const sections = PAIR_FOCUS_KINDS.flatMap(
+		(kind) => subject.focusTexts?.[kind] ?? [],
+	);
+	const parts =
+		sections.length > 0
+			? sections
+			: subject.kind === "FEATURE"
+				? ["kind:FEATURE"]
+				: [];
+	return parts.length > 0
+		? hashDetectionText([subject.text, ...parts].join("\n\n"))
+		: hashDetectionText(subject.text);
 }

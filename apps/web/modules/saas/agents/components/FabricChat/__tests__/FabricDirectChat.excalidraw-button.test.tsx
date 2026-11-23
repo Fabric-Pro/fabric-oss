@@ -148,11 +148,16 @@ vi.mock(
 	}),
 );
 
+// The full-page chat has no launcher project; tests set this to null.
+const launcherScope: { projectId: string | null } = {
+	projectId: "proj_feature_1",
+};
+
 vi.mock(
 	"@saas/projects/components/excalidraw-auto-insert/useChatScopedProject",
 	() => ({
 		useChatScopedProjectFromLauncher: () => ({
-			projectId: "proj_feature_1",
+			projectId: launcherScope.projectId,
 			organizationId: null,
 			lastUserPromptForMessage: (_id: string) =>
 				"Sketch the auth state machine",
@@ -274,6 +279,7 @@ vi.mock("@saas/agents/lib/tool-call-status", () => ({
 }));
 
 vi.mock("@saas/agents/lib/direct-chat-tools", () => ({
+	getConversationPlanModel: () => null,
 	getSelectedConversationToolIds: () => [],
 	mergeDirectConversationMetadata: (m: unknown) => m,
 }));
@@ -402,6 +408,8 @@ function buildExcalidrawMessage(
 		resourceUri?: string;
 		configId?: string;
 		checkpointId?: string;
+		/** The whole tool result, in place of `{ checkpointId }`. */
+		result?: unknown;
 		elements?: unknown;
 	} = {},
 ) {
@@ -412,6 +420,7 @@ function buildExcalidrawMessage(
 		resourceUri = "ui://excalidraw/scene-1",
 		configId = "cfg_excalidraw",
 		checkpointId = "cp_abc123",
+		result = { checkpointId },
 		elements = [{ type: "rectangle", id: "r1" }],
 	} = overrides;
 
@@ -425,7 +434,7 @@ function buildExcalidrawMessage(
 				id: toolCallId,
 				name: "create_view",
 				args: { elements, appState: { viewBackgroundColor: "#fff" } },
-				result: { checkpointId },
+				result,
 				status,
 				mcpAppResourceUri: resourceUri,
 				mcpAppConfigId: configId,
@@ -434,7 +443,7 @@ function buildExcalidrawMessage(
 	};
 }
 
-function renderFabricDirectChat() {
+function renderFabricDirectChat(attachedProjectId?: string | null) {
 	// The component persists the last-used agent through React Query, so it
 	// needs a client in scope. Retries off and a fresh client per render keeps
 	// a failed fetch from bleeding across tests.
@@ -448,12 +457,14 @@ function renderFabricDirectChat() {
 				reasoningMode="balanced"
 				activeConversationId={null}
 				compactMode={false}
+				attachedProjectId={attachedProjectId}
 			/>
 		</QueryClientProvider>,
 	);
 }
 
 beforeEach(() => {
+	launcherScope.projectId = "proj_feature_1";
 	insertDiagramButtonMock.mockReset();
 	mcpAppFrameMock.mockReset();
 	streamMessages.length = 0;
@@ -535,6 +546,68 @@ describe("FabricDirectChat — F3 Excalidraw button wiring", () => {
 		// mocked to passthrough first 60 chars). Confirms the chat-scope
 		// lookup -> deriveDiagramTitle wiring.
 		expect(props.title).toBe("Sketch the auth state machine");
+	});
+
+	it("scopes the insert picker to the attached project on the full-page chat", () => {
+		// The full-page agent chat sets no launcher project; the page's
+		// project is the one attached to the conversation.
+		launcherScope.projectId = null;
+		streamMessages.push(buildExcalidrawMessage());
+
+		renderFabricDirectChat("proj_page");
+
+		const props = insertDiagramButtonMock.mock.calls[0]?.[0] as {
+			chatScope: { projectId: string | null; organizationId: string };
+		};
+		expect(props.chatScope.projectId).toBe("proj_page");
+		expect(props.chatScope.organizationId).toBe("org_example");
+	});
+
+	it("keeps the launcher project when the launcher has one", () => {
+		streamMessages.push(buildExcalidrawMessage());
+
+		renderFabricDirectChat("proj_page");
+
+		const props = insertDiagramButtonMock.mock.calls[0]?.[0] as {
+			chatScope: { projectId: string | null };
+		};
+		expect(props.chatScope.projectId).toBe("proj_feature_1");
+	});
+
+	it("leaves the insert scope without a project when nothing is attached", () => {
+		launcherScope.projectId = null;
+		streamMessages.push(buildExcalidrawMessage());
+
+		renderFabricDirectChat(null);
+
+		const props = insertDiagramButtonMock.mock.calls[0]?.[0] as {
+			chatScope: { projectId: string | null };
+		};
+		expect(props.chatScope.projectId).toBeNull();
+	});
+
+	it("passes a checkpoint id the result carries only under structuredContent", () => {
+		// The shape the Excalidraw server returns to the Direct engine: no
+		// top-level id. Without one the real button renders nothing.
+		streamMessages.push(
+			buildExcalidrawMessage({
+				result: {
+					content: [{ type: "text", text: "Diagram created." }],
+					structuredContent: { checkpointId: "cp_structured" },
+					isError: false,
+				},
+			}),
+		);
+
+		const { queryByTestId } = renderFabricDirectChat();
+
+		expect(
+			queryByTestId("chat-message-insert-diagram-button"),
+		).not.toBeNull();
+		const props = insertDiagramButtonMock.mock.calls[0]?.[0] as {
+			toolResult: { checkpointId: string };
+		};
+		expect(props.toolResult.checkpointId).toBe("cp_structured");
 	});
 
 	it("does NOT render the button for non-Excalidraw MCP tool calls", () => {

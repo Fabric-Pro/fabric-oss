@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 	duplicates: vi.fn(),
 	drafts: vi.fn(),
 	copyDrafts: vi.fn(),
+	findMany: vi.fn(),
 }));
 
 vi.mock("../prisma/client", () => {
@@ -38,12 +39,14 @@ vi.mock("../prisma/client", () => {
 	return {
 		db: {
 			$transaction: async (run: (client: unknown) => unknown) => run(tx),
+			pendingBacklogProposal: { findMany: mocks.findMany },
 		},
 		Prisma: { AnyNull: "example-any-null" },
 	};
 });
 
 import {
+	listRestoredProposalItems,
 	movePendingProposalItemToBacklog,
 	splitItemSourceMetadata,
 } from "../prisma/queries/projects/pending-proposal-item-move";
@@ -102,7 +105,13 @@ describe("movePendingProposalItemToBacklog", () => {
 				proposal: { summary: "", changes: [changeB] },
 				summary: "B",
 				changeCount: 1,
-				sourceMetadata: { threadRootId: "example-thread" },
+				sourceMetadata: {
+					threadRootId: "example-thread",
+					splitFrom: {
+						proposalId: "example-proposal",
+						changeIndex: 1,
+					},
+				},
 				userId: "example-owner",
 				organizationId: "example-org",
 				reviewedAt: expect.any(Date),
@@ -359,4 +368,83 @@ describe("splitItemSourceMetadata", () => {
 	it("leaves a missing bag missing", () => {
 		expect(splitItemSourceMetadata(null, 0)).toBeUndefined();
 	});
+});
+
+describe("listRestoredProposalItems", () => {
+	it("finds the split rows that left the Rejected list, with their tickets", async () => {
+		mocks.findMany.mockResolvedValue([
+			{
+				status: "APPLIED",
+				sourceMetadata: {
+					splitFrom: {
+						proposalId: "example-proposal",
+						changeIndex: 2,
+					},
+				},
+				applications: [{ createdEntityId: "example-story" }],
+			},
+			{
+				status: "PENDING",
+				sourceMetadata: {
+					splitFrom: {
+						proposalId: "example-proposal",
+						changeIndex: 0,
+					},
+				},
+				applications: [],
+			},
+			{
+				status: "APPLIED",
+				sourceMetadata: { splitFrom: { changeIndex: "1" } },
+				applications: [],
+			},
+		]);
+
+		await expect(
+			listRestoredProposalItems({
+				id: "example-proposal",
+				projectId: "example-project",
+			}),
+		).resolves.toEqual([
+			{ changeIndex: 2, storyId: "example-story" },
+			{ changeIndex: 0, storyId: null },
+		]);
+
+		const where = mocks.findMany.mock.calls[0]?.[0].where;
+		expect(where).toEqual({
+			projectId: "example-project",
+			status: {
+				in: ["PENDING", "APPROVED", "APPLYING", "APPLIED", "FAILED"],
+			},
+			sourceMetadata: {
+				path: ["splitFrom", "proposalId"],
+				equals: "example-proposal",
+			},
+		});
+	});
+
+	it.each(["APPLYING", "FAILED"])(
+		"returns no ticket for a restore whose split row is %s",
+		async (status) => {
+			mocks.findMany.mockResolvedValue([
+				{
+					status,
+					sourceMetadata: {
+						splitFrom: {
+							proposalId: "example-proposal",
+							changeIndex: 2,
+						},
+					},
+					applications: [{ createdEntityId: "example-story" }],
+				},
+			]);
+
+			await expect(
+				listRestoredProposalItems({
+					id: "example-proposal",
+					projectId: "example-project",
+				}),
+			).resolves.toEqual([{ changeIndex: 2, storyId: null }]);
+		},
+	);
 });

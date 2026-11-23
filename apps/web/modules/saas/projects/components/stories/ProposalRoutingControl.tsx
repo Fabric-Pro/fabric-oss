@@ -14,7 +14,6 @@
  */
 
 import { useStoriesByLastEdit } from "@saas/projects/hooks/use-stories-by-last-edit";
-import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
@@ -41,6 +40,7 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 import type { BacklogProposalPanel } from "../../../../analytics/events/backlog-open-existing";
+import { enrichmentPreviewQueryOptions } from "./enrichment-preview";
 import { ProposalDiffField } from "./ProposalDiffField";
 import { StoryNewTabLink } from "./StoryNewTabLink";
 
@@ -151,6 +151,23 @@ export function resolveEffectiveRouting(
 }
 
 /**
+ * The ticket a re-routed enrichment now targets, or undefined. Its diff was
+ * merged against the system's match, so the merge is read again against
+ * this ticket. An unmodified enrichment keeps its analysis-time merge.
+ */
+export function rerouteTargetStoryId(
+	routing: RoutingAnnotation | undefined,
+	override: RoutingOverride | undefined,
+): string | undefined {
+	const effective = resolveEffectiveRouting(routing, override);
+	return effective?.decision === "enrich" && effective.overridden
+		? effective.targetStoryId
+		: undefined;
+}
+
+export type RoutingBlocker = "target-required" | "closed-target-unconfirmed";
+
+/**
  * Why a row cannot be approved yet, or `null` when it can. Exported and used by
  * the parent's Apply gate so the button's disabled state and the row's inline
  * message always agree.
@@ -158,7 +175,7 @@ export function resolveEffectiveRouting(
 export function routingBlocker(
 	routing: RoutingAnnotation | undefined,
 	override: RoutingOverride | undefined,
-): "target-required" | "closed-target-unconfirmed" | null {
+): RoutingBlocker | null {
 	const effective = resolveEffectiveRouting(routing, override);
 	if (!effective || effective.decision !== "enrich") {
 		return null;
@@ -212,6 +229,11 @@ type Props = {
 	projectId?: string;
 	organizationId?: string | null;
 	disabled?: boolean;
+	/**
+	 * The item is applied or rejected. Its merge is not previewed again: a
+	 * merge into the ticket as it is now is not what was written.
+	 */
+	resolved?: boolean;
 	/** Used to label controls uniquely when several rows are on screen. */
 	itemTitle: string;
 	/** Which panel hosts the control, for the target link's analytics event. */
@@ -225,6 +247,7 @@ export function ProposalRoutingControl({
 	projectId,
 	organizationId,
 	disabled,
+	resolved = false,
 	itemTitle,
 	panel,
 }: Props) {
@@ -296,26 +319,19 @@ export function ProposalRoutingControl({
 	// the system picked, so it describes the wrong ticket now. Re-run the same
 	// structure-preserving merge against the chosen one and diff THAT. Only
 	// fetched when the reviewer has actually re-targeted — an unmodified
-	// enrichment already carries an accurate diff from analysis time.
-	const previewTargetId =
-		effective?.decision === "enrich" && effective.overridden
-			? effective.targetStoryId
-			: undefined;
-	const { data: preview, isLoading: previewLoading } = useQuery({
-		...orpc.projects.stories.previewEnrichment.queryOptions({
-			input: {
-				projectId: projectId ?? "",
-				organizationId: organizationId ?? null,
-				targetStoryId: previewTargetId ?? "",
-				proposedDescription: routing.proposedDescription ?? undefined,
-				proposedAcceptanceCriteria:
-					routing.proposedAcceptanceCriteria ?? undefined,
-				reasoning: routing.reasoning ?? undefined,
-			},
+	// enrichment already carries an accurate diff from analysis time. Never
+	// for a resolved item, whose ticket already holds what was written.
+	const previewTargetId = resolved
+		? undefined
+		: rerouteTargetStoryId(routing, override);
+	const { data: preview, isLoading: previewLoading } = useQuery(
+		enrichmentPreviewQueryOptions({
+			projectId,
+			organizationId,
+			targetStoryId: previewTargetId,
+			routing,
 		}),
-		enabled: !!previewTargetId && !!projectId,
-		staleTime: 60_000,
-	});
+	);
 
 	/**
 	 * Whether a ticket is closed or archived RIGHT NOW, per the loaded list.

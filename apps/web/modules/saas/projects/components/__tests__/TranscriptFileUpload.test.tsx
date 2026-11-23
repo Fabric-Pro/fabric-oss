@@ -55,7 +55,15 @@ vi.mock(
 	"@saas/projects/lib/upload-transcript-file",
 	async (importOriginal) => ({
 		...(await importOriginal<object>()),
-		uploadTranscriptFile: mocks.upload,
+		uploadTranscriptFile: async (params: {
+			onStored?: (contextId: string) => void;
+		}) => {
+			const outcome = await mocks.upload(params);
+			if (outcome.status === "started") {
+				params.onStored?.(outcome.contextId);
+			}
+			return outcome;
+		},
 	}),
 );
 
@@ -77,14 +85,14 @@ function row(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-function renderUpload(props: { canEdit?: boolean } = {}) {
+function renderUpload(props: { canEdit?: boolean; onClose?: () => void } = {}) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
 	const wrapper = ({ children }: { children: ReactNode }) => (
 		<QueryClientProvider client={client}>{children}</QueryClientProvider>
 	);
-	return render(
+	const view = render(
 		<TranscriptFileUpload
 			projectId="project-1"
 			organizationId="org-1"
@@ -92,6 +100,7 @@ function renderUpload(props: { canEdit?: boolean } = {}) {
 		/>,
 		{ wrapper },
 	);
+	return { ...view, client };
 }
 
 function pickFiles(...files: File[]) {
@@ -106,7 +115,10 @@ const VTT = new File(["hello"], "Planning.vtt");
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.list.mockResolvedValue({ contexts: [] });
-	mocks.upload.mockResolvedValue({ status: "started" });
+	mocks.upload.mockResolvedValue({
+		status: "started",
+		contextId: "context-1",
+	});
 	mocks.deleteContext.mockResolvedValue({});
 });
 
@@ -139,6 +151,283 @@ describe("transcriptListPollInterval", () => {
 	});
 });
 
+const closeButton = () =>
+	screen.queryByRole("button", { name: "Close", exact: true });
+
+async function sendFiles(...files: File[]) {
+	pickFiles(...files);
+	await waitFor(() => {
+		expect(screen.getByRole("button", { name: "Upload" })).toBeEnabled();
+	});
+}
+
+describe("upload session completion", () => {
+	it("waits for a missing row to appear, then announces completion from polling", async () => {
+		const onClose = vi.fn();
+		renderUpload({ onClose });
+		await screen.findByText(/No transcripts uploaded yet/);
+		await sendFiles(VTT);
+		expect(closeButton()).toBeNull();
+
+		mocks.list.mockResolvedValue({
+			contexts: [row({ extractionStatus: "PENDING" })],
+		});
+		await screen.findByText("Processing", {}, { timeout: 4500 });
+		expect(closeButton()).toBeNull();
+
+		mocks.list.mockResolvedValue({ contexts: [row()] });
+		const status = await screen.findByText(
+			"Transcript read. It now appears in the Meeting Digest and on the Context tab.",
+			{},
+			{ timeout: 4500 },
+		);
+		expect(status.closest("output")?.querySelector("svg")).toHaveAttribute(
+			"aria-hidden",
+			"true",
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Close" }));
+		expect(onClose).toHaveBeenCalledOnce();
+		expect(mocks.deleteContext).not.toHaveBeenCalled();
+		expect(mocks.upload).toHaveBeenCalledOnce();
+	}, 10_000);
+
+	it.each(["PENDING", "FAILED", "CANCELLED"])(
+		"does not confirm a %s upload",
+		async (extractionStatus) => {
+			mocks.list.mockResolvedValue({
+				contexts: [
+					row({
+						extractionStatus,
+						extractionError: "Nothing could be read.",
+					}),
+				],
+			});
+			renderUpload({ onClose: vi.fn() });
+			await screen.findByText("Planning");
+			await sendFiles(VTT);
+			expect(closeButton()).toBeNull();
+			if (extractionStatus === "FAILED") {
+				expect(screen.getByRole("alert")).toHaveTextContent(
+					"Nothing could be read.",
+				);
+			}
+		},
+	);
+
+	it("keeps a stored upload pending when ingestion fails to start", async () => {
+		const error = "Failed to start processing this transcript";
+		mocks.list.mockResolvedValue({
+			contexts: [
+				row(),
+				row({
+					id: "context-2",
+					extractionStatus: "PENDING",
+					metadata: {
+						provider: "file-upload",
+						meetingSubject: "Review",
+					},
+				}),
+			],
+		});
+		mocks.upload
+			.mockResolvedValueOnce({
+				status: "started",
+				contextId: "context-1",
+			})
+			.mockImplementationOnce(async ({ onStored }) => {
+				onStored?.("context-2");
+				throw new Error(error);
+			});
+
+		renderUpload({ onClose: vi.fn() });
+		await screen.findByText("Processing");
+		await sendFiles(VTT, new File(["other"], "Review.vtt"));
+
+		expect(mocks.toastError).toHaveBeenCalledWith(error);
+		expect(closeButton()).toBeNull();
+		expect(screen.queryByText(/Transcripts? read/)).toBeNull();
+	});
+
+	it("waits for both uploads and stops counting a removed row", async () => {
+		const second = row({
+			id: "context-2",
+			extractionStatus: "EXTRACTING",
+			metadata: { provider: "file-upload", meetingSubject: "Review" },
+		});
+		mocks.list.mockResolvedValue({ contexts: [row(), second] });
+		mocks.upload
+			.mockResolvedValueOnce({
+				status: "started",
+				contextId: "context-1",
+			})
+			.mockResolvedValueOnce({
+				status: "started",
+				contextId: "context-2",
+			});
+		renderUpload({ onClose: vi.fn() });
+		await screen.findByText("Review");
+		await sendFiles(VTT, new File(["other"], "Review.vtt"));
+		expect(closeButton()).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Remove Review" }));
+		await act(async () => {
+			await mocks.confirm.mock.calls[0]?.[0].onConfirm();
+		});
+		expect(closeButton()).toBeInTheDocument();
+	});
+
+	it("hides completion while another upload starts and confirms both when read", async () => {
+		mocks.list.mockResolvedValue({ contexts: [row()] });
+		renderUpload({ onClose: vi.fn() });
+		await screen.findByText("Planning");
+		await sendFiles(VTT);
+		expect(closeButton()).toBeInTheDocument();
+
+		let finishUpload!: (outcome: {
+			status: string;
+			contextId: string;
+		}) => void;
+		mocks.upload.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					finishUpload = resolve;
+				}),
+		);
+		pickFiles(new File(["other"], "Review.vtt"));
+		expect(closeButton()).toBeNull();
+		await act(async () => {
+			finishUpload({ status: "started", contextId: "context-2" });
+		});
+		expect(closeButton()).toBeNull();
+
+		mocks.list.mockResolvedValue({
+			contexts: [row(), row({ id: "context-2" })],
+		});
+		expect(
+			await screen.findByText(
+				/Transcripts read\. They now appear/,
+				{},
+				{ timeout: 4500 },
+			),
+		).toBeInTheDocument();
+	});
+
+	it("ignores an earlier session's completed upload", async () => {
+		mocks.list.mockResolvedValue({ contexts: [row()] });
+		renderUpload({ onClose: vi.fn() });
+		await screen.findByText("Planning");
+		expect(closeButton()).toBeNull();
+		expect(screen.queryByText(/Transcript read/)).toBeNull();
+	});
+
+	it("does not offer completion in settings after sending a completed file", async () => {
+		mocks.list.mockResolvedValue({ contexts: [row()] });
+		renderUpload();
+		await screen.findByText("Planning");
+		await sendFiles(VTT);
+		expect(closeButton()).toBeNull();
+		expect(screen.queryByText(/Transcript read/)).toBeNull();
+	});
+
+	it.each([
+		{ status: "reprocessing", contextId: null },
+		{ status: "reprocessing" },
+	])(
+		"keeps existing completion when a retry returns no context ID (%j)",
+		async (outcome) => {
+			mocks.list.mockResolvedValue({ contexts: [row()] });
+			renderUpload({ onClose: vi.fn() });
+			await screen.findByText("Planning");
+			await sendFiles(VTT);
+
+			mocks.upload
+				.mockResolvedValueOnce({ status: "duplicate" })
+				.mockResolvedValueOnce(outcome);
+			pickFiles(VTT);
+			await waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+			await act(async () => {
+				await mocks.confirm.mock.calls[0]?.[0].onConfirm();
+			});
+			expect(closeButton()).toBeInTheDocument();
+		},
+	);
+
+	it.each([true, false])(
+		"waits for each Process again request before confirming a dialog batch (dialog: %s)",
+		async (inDialog) => {
+			mocks.list.mockResolvedValue({
+				contexts: [row(), row({ id: "context-2" })],
+			});
+			let finishUpload!: (outcome: {
+				status: string;
+				contextId: string;
+			}) => void;
+			mocks.upload
+				.mockResolvedValueOnce({ status: "duplicate" })
+				.mockResolvedValueOnce({ status: "duplicate" })
+				.mockResolvedValueOnce({
+					status: "reprocessing",
+					contextId: "context-1",
+				})
+				.mockImplementationOnce(
+					() =>
+						new Promise((resolve) => {
+							finishUpload = resolve;
+						}),
+				);
+			renderUpload({ onClose: inDialog ? vi.fn() : undefined });
+			pickFiles(VTT, new File(["other"], "Review.vtt"));
+			await waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+
+			let processing: Promise<void> | undefined;
+			await act(async () => {
+				processing = mocks.confirm.mock.calls[0]?.[0].onConfirm();
+			});
+			expect(mocks.upload).toHaveBeenCalledTimes(4);
+			expect(closeButton()).toBeNull();
+			const uploadButton = screen.getByRole("button", { name: "Upload" });
+			if (inDialog) {
+				expect(uploadButton).toBeDisabled();
+			} else {
+				expect(uploadButton).toBeEnabled();
+			}
+
+			await act(async () => {
+				finishUpload({
+					status: "reprocessing",
+					contextId: "context-2",
+				});
+				await processing;
+			});
+			expect(uploadButton).toBeEnabled();
+			if (inDialog) {
+				expect(closeButton()).toBeInTheDocument();
+			} else {
+				expect(closeButton()).toBeNull();
+			}
+		},
+	);
+
+	it("counts a previously read upload only after Process again is accepted", async () => {
+		mocks.list.mockResolvedValue({ contexts: [row()] });
+		mocks.upload
+			.mockResolvedValueOnce({ status: "duplicate" })
+			.mockResolvedValueOnce({
+				status: "reprocessing",
+				contextId: "context-1",
+			});
+		renderUpload({ onClose: vi.fn() });
+		await screen.findByText("Planning");
+		pickFiles(VTT);
+		await waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce());
+		expect(closeButton()).toBeNull();
+
+		await act(async () => {
+			await mocks.confirm.mock.calls[0]?.[0].onConfirm();
+		});
+		expect(closeButton()).toBeInTheDocument();
+	});
+});
+
 describe("TranscriptFileUpload", () => {
 	it("says what to do when nothing has been added", async () => {
 		renderUpload();
@@ -156,7 +445,7 @@ describe("TranscriptFileUpload", () => {
 		const input = screen.getByLabelText(
 			"Upload transcript files",
 		) as HTMLInputElement;
-		expect(input.accept).toBe(".txt,.vtt,.docx");
+		expect(input.accept).toBe(".txt,.vtt,.docx,.md");
 		expect(input.multiple).toBe(true);
 	});
 
@@ -275,7 +564,10 @@ describe("TranscriptFileUpload", () => {
 			.mockRejectedValueOnce(
 				new Error("Planning.vtt could not be uploaded."),
 			)
-			.mockResolvedValueOnce({ status: "started" });
+			.mockResolvedValueOnce({
+				status: "started",
+				contextId: "context-1",
+			});
 
 		renderUpload();
 		pickFiles(VTT, new File(["other"], "Review.vtt"));
@@ -314,7 +606,10 @@ describe("TranscriptFileUpload", () => {
 		});
 
 		it("processes it again only when told to", async () => {
-			mocks.upload.mockResolvedValueOnce({ status: "reprocessing" });
+			mocks.upload.mockResolvedValueOnce({
+				status: "reprocessing",
+				contextId: "context-1",
+			});
 			renderUpload();
 			pickFiles(VTT);
 			await waitFor(() => {

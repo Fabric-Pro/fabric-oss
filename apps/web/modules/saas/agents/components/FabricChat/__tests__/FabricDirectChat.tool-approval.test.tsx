@@ -166,6 +166,7 @@ vi.mock("@saas/agents/lib/tool-call-status", () => ({
 	toolCallToPersistedStatus: (s: string) => s,
 }));
 vi.mock("@saas/agents/lib/direct-chat-tools", () => ({
+	getConversationPlanModel: () => null,
 	getSelectedConversationToolIds: () => [],
 	mergeDirectConversationMetadata: (m: unknown) => m,
 }));

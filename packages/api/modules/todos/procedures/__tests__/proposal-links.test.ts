@@ -993,11 +993,14 @@ describe("todos.linkedWorkItems", () => {
 
 		// BOTH checks ran and they answered differently — which is the whole
 		// argument for keeping both. Neither is redundant.
+		// The permission check is told to admit this caller, so the reach
+		// check can degrade instead of the request failing.
 		expect(mocks.assertProjectPermission).toHaveBeenCalledWith(
 			WIDE_ONLY_PROJECT,
 			VIEWER,
 			"PROJECT_READ",
 			baseCtx,
+			{ admitUnreachableOrganizationMember: true },
 		);
 		const where = mocks.dbMock.project.findFirst.mock.calls[0][0].where;
 		const now = clockFromProjectPredicate(where);
@@ -1029,6 +1032,7 @@ describe("todos.linkedWorkItems", () => {
 			VIEWER,
 			"PROJECT_READ",
 			baseCtx,
+			{ admitUnreachableOrganizationMember: true },
 		);
 	});
 

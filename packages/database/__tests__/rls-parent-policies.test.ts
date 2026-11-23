@@ -611,6 +611,7 @@ describe.each([
 		"PendingBacklogProposalReviewEntry",
 		"pending_backlog_proposal_review_entry",
 	],
+	["ProposalItemDuplicateVerdict", "proposal_item_duplicate_verdict"],
 ])("review parent isolation: %s", (model, table) => {
 	it("uses the proposal tenant predicate for reads and writes", () => {
 		const { using, withCheck } = splitPolicy(

@@ -89,7 +89,7 @@ export function OrgAiProvidersSettingsForm({
 	// Providers flagged `supportsServicePrincipal` (Databricks) can authenticate
 	// with an OAuth M2M service principal instead of a static key. The two modes
 	// are exclusive — the server rejects a payload carrying both.
-	const [authMode, setAuthMode] = useState<AuthMode>("apiKey");
+	const [authMode, setAuthMode] = useState<AuthMode | "federated">("apiKey");
 	const [clientId, setClientId] = useState("");
 	const [clientSecret, setClientSecret] = useState("");
 	const [showClientSecret, setShowClientSecret] = useState(false);
@@ -150,6 +150,7 @@ export function OrgAiProvidersSettingsForm({
 	const testConnectionMutation = useMutation({
 		mutationFn: async (data: {
 			provider: string;
+			authMode?: "federated";
 			apiKey?: string;
 			clientId?: string;
 			clientSecret?: string;
@@ -159,6 +160,7 @@ export function OrgAiProvidersSettingsForm({
 			// Cast to never to satisfy API type (API validates on server)
 			return await orpcClient.aiConfig.providers.testConnection({
 				provider: data.provider as never,
+				...(data.authMode && { authMode: data.authMode }),
 				apiKey: data.apiKey,
 				clientId: data.clientId,
 				clientSecret: data.clientSecret,
@@ -207,6 +209,7 @@ export function OrgAiProvidersSettingsForm({
 	const saveProviderMutation = useMutation({
 		mutationFn: async (data: {
 			provider: string;
+			authMode?: "federated";
 			apiKey?: string;
 			clientId?: string;
 			clientSecret?: string;
@@ -219,6 +222,7 @@ export function OrgAiProvidersSettingsForm({
 			// Cast to never to satisfy API type (API validates on server)
 			return await orpcClient.aiConfig.providers.upsert({
 				provider: data.provider as never,
+				...(data.authMode && { authMode: data.authMode }),
 				apiKey: data.apiKey,
 				clientId: data.clientId,
 				clientSecret: data.clientSecret,
@@ -456,22 +460,32 @@ export function OrgAiProvidersSettingsForm({
 	// Whether the dialog is currently collecting a service principal rather than
 	// an API key. Derived (not stored) so it can never disagree with the
 	// provider's capability flag.
+	const canUseFederation = Boolean(
+		selectedProvider?.supportsFederation &&
+			configStatus?.anthropicFederationAvailable,
+	);
+	const usingFederation = canUseFederation && authMode === "federated";
+	const keyAuthMode = authMode === "federated" ? "apiKey" : authMode;
 	const usingServicePrincipal = isServicePrincipalMode(
 		selectedProvider,
-		authMode,
+		keyAuthMode,
 	);
-	const credentialsComplete = hasCompleteCredentials({
-		provider: selectedProvider,
-		authMode,
-		apiKey,
-		clientId,
-		clientSecret,
-	});
+	const credentialsComplete =
+		usingFederation ||
+		hasCompleteCredentials({
+			provider: selectedProvider,
+			authMode: keyAuthMode,
+			apiKey,
+			clientId,
+			clientSecret,
+		});
 
 	/** The credential payload for the current mode — exactly one is populated. */
-	const credentialPayload = usingServicePrincipal
-		? { clientId, clientSecret }
-		: { apiKey };
+	const credentialPayload = usingFederation
+		? { authMode: "federated" as const }
+		: usingServicePrincipal
+			? { clientId, clientSecret }
+			: { apiKey };
 
 	/**
 	 * Azure AI Foundry's deployment name or CUSTOM remote bridge's optional
@@ -661,6 +675,9 @@ export function OrgAiProvidersSettingsForm({
 				}
 				if (saved.deploymentName) {
 					setDeploymentName(saved.deploymentName);
+				}
+				if (saved.hasFederation) {
+					setAuthMode("federated");
 				}
 				if (saved.hasServicePrincipal) {
 					setAuthMode("servicePrincipal");
@@ -2049,7 +2066,8 @@ export function OrgAiProvidersSettingsForm({
 						{/* Authentication mode — only for providers that support
 						    an OAuth M2M service principal (Databricks). Others
 						    keep the single API-key field unchanged. */}
-						{selectedProvider?.supportsServicePrincipal && (
+						{(selectedProvider?.supportsServicePrincipal ||
+							canUseFederation) && (
 							<div className="space-y-2">
 								<Label className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
 									Authentication
@@ -2058,7 +2076,9 @@ export function OrgAiProvidersSettingsForm({
 									value={authMode}
 									onValueChange={(value) => {
 										supersedePrefill();
-										setAuthMode(value as AuthMode);
+										setAuthMode(
+											value as AuthMode | "federated",
+										);
 										// Clear the other mode's fields so a
 										// half-filled credential can't be sent.
 										setApiKey("");
@@ -2085,45 +2105,62 @@ export function OrgAiProvidersSettingsForm({
 											className="flex-1 cursor-pointer"
 										>
 											<div className="font-medium">
-												Personal access token
+												{canUseFederation
+													? "API key"
+													: "Personal access token"}
 											</div>
 											<div className="text-muted-foreground text-xs">
-												A long-lived workspace token.
+												{canUseFederation
+													? "An Anthropic API key."
+													: "A long-lived workspace token."}
 											</div>
 										</Label>
 									</div>
-									<div
-										className={`flex items-start gap-3 rounded-lg border p-3 transition-colors ${
-											authMode === "servicePrincipal"
-												? "border-primary bg-primary/5"
-												: "border-border hover:bg-muted/50"
-										}`}
-									>
-										<RadioGroupItem
-											value="servicePrincipal"
-											id="org-auth-mode-service-principal"
-											className="mt-0.5"
-										/>
-										<Label
-											htmlFor="org-auth-mode-service-principal"
-											className="flex-1 cursor-pointer"
+									{selectedProvider?.supportsServicePrincipal && (
+										<div
+											className={`flex items-start gap-3 rounded-lg border p-3 transition-colors ${
+												authMode === "servicePrincipal"
+													? "border-primary bg-primary/5"
+													: "border-border hover:bg-muted/50"
+											}`}
 										>
-											<div className="font-medium">
-												Service principal
-											</div>
-											<div className="text-muted-foreground text-xs">
-												OAuth client credentials. Tokens
-												are minted on demand and rotate
-												automatically.
-											</div>
-										</Label>
-									</div>
+											<RadioGroupItem
+												value="servicePrincipal"
+												id="org-auth-mode-service-principal"
+												className="mt-0.5"
+											/>
+											<Label
+												htmlFor="org-auth-mode-service-principal"
+												className="flex-1 cursor-pointer"
+											>
+												<div className="font-medium">
+													Service principal
+												</div>
+												<div className="text-muted-foreground text-xs">
+													OAuth client credentials.
+													Tokens are minted on demand
+													and rotate automatically.
+												</div>
+											</Label>
+										</div>
+									)}
+									{canUseFederation && (
+										<div className="flex items-start gap-3 rounded-lg border p-3">
+											<RadioGroupItem
+												value="federated"
+												id="org-auth-mode-federated"
+											/>
+											<Label htmlFor="org-auth-mode-federated">
+												Workload identity federation
+											</Label>
+										</div>
+									)}
 								</RadioGroup>
 							</div>
 						)}
 
 						{/* API Key Input */}
-						{!usingServicePrincipal && (
+						{!usingServicePrincipal && !usingFederation && (
 							<div className="space-y-2">
 								<Label htmlFor="apiKey">API Key</Label>
 								<div className="relative">

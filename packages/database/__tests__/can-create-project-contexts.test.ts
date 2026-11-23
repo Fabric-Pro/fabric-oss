@@ -70,12 +70,23 @@ beforeEach(() => {
 });
 
 describe("canCreateProjectContexts", () => {
-	it("grants an organization member with no project row (the member org role holds context:create)", async () => {
-		orgProject();
+	it("grants the project's creator as an organization member with no project row (the member org role holds context:create)", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			userId: USER_ID,
+			organizationId: ORG_ID,
+		});
 		mocks.projectMemberFindUnique.mockResolvedValue(null);
 		mocks.memberFindFirst.mockResolvedValue({ role: "member" });
 
 		expect(await canCreateProjectContexts(PROJECT_ID, USER_ID)).toBe(true);
+	});
+
+	it("refuses an organization member with no project row who cannot open the project", async () => {
+		orgProject();
+		mocks.projectMemberFindUnique.mockResolvedValue(null);
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+
+		expect(await canCreateProjectContexts(PROJECT_ID, USER_ID)).toBe(false);
 	});
 
 	it("grants an invited guest whose project role is EDITOR, without consulting any org role", async () => {
@@ -140,7 +151,7 @@ describe("canCreateProjectContexts", () => {
 		const tx = {
 			project: {
 				findUnique: vi.fn().mockResolvedValue({
-					userId: OWNER_ID,
+					userId: USER_ID,
 					organizationId: ORG_ID,
 				}),
 			},

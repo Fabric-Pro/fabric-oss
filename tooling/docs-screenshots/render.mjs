@@ -95,7 +95,6 @@ const SHOTS = {
 	],
 	parlume: [
 		["#shot-invite", "parlume-invite.png"],
-		["#shot-live", "parlume-live-session.png"],
 		["#shot-chat", "parlume-meeting-chat.png"],
 	],
 	"time-tracking": [

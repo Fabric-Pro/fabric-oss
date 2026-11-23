@@ -17,6 +17,8 @@ import { ensureAiUsageSchedules } from "./scripts/ensure-ai-usage-schedules";
 import { ensureContextSummarizationSchedules } from "./scripts/ensure-context-summarization-schedules";
 import { ensureMonitoringSchedules } from "./scripts/ensure-monitoring-schedules";
 import { ensureParlumeAutoJoinSchedule } from "./scripts/ensure-parlume-auto-join-schedule";
+import { ensureParlumeRetentionSchedule } from "./scripts/ensure-parlume-retention-schedule";
+import { ensureParlumeSweepSchedule } from "./scripts/ensure-parlume-sweep-schedule";
 import { ensureRecurringErrorSchedules } from "./scripts/ensure-recurring-error-schedules";
 
 const PROJECT_DELETE_SCHEDULE_ID = "project-delete-cleanup";
@@ -528,6 +530,8 @@ export async function registerSystemSchedules(): Promise<void> {
 		await ensureAiUsageSchedules(scheduleClient);
 		await ensureRecurringErrorSchedules(scheduleClient);
 		await ensureParlumeAutoJoinSchedule(scheduleClient);
+		await ensureParlumeRetentionSchedule(scheduleClient);
+		await ensureParlumeSweepSchedule(scheduleClient);
 	} finally {
 		await connection.close();
 	}

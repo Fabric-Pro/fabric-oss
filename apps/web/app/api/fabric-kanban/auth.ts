@@ -151,28 +151,45 @@ function credentialNamesOrganization(
 	);
 }
 
+/**
+ * The caller's access to a Kanban project, or `null` when the credential may
+ * not name its organization or the caller cannot open the project. As at the
+ * oRPC project gate, an organization role alone does not open a project: its
+ * creator, an accepted member or an invited guest can.
+ */
+async function openKanbanProject(
+	auth: KanbanAuthContext,
+	project: { id: string; organizationId: string | null },
+) {
+	if (!credentialNamesOrganization(auth, project.organizationId)) {
+		return null;
+	}
+	const access = await resolveProjectAccess(project.id, auth.userId);
+	if (
+		!access?.isVisible ||
+		access.organizationId !== project.organizationId
+	) {
+		return null;
+	}
+	return access;
+}
+
 export async function canReadKanbanProject(
 	auth: KanbanAuthContext,
 	project: { id: string; organizationId: string | null },
 ): Promise<boolean> {
-	if (!credentialNamesOrganization(auth, project.organizationId)) {
-		return false;
-	}
-	const access = await resolveProjectAccess(project.id, auth.userId);
-	return (
-		access?.organizationId === project.organizationId &&
-		access.permissions.includes("story:read")
-	);
+	const access = await openKanbanProject(auth, project);
+	return access?.permissions.includes("story:read") ?? false;
 }
 
 export async function canUpdateKanbanProject(
 	auth: KanbanAuthContext,
 	project: { id: string; organizationId: string | null },
 ): Promise<boolean> {
-	if (!credentialNamesOrganization(auth, project.organizationId)) {
-		return false;
-	}
-	return await canUpdateProjectStory(project.id, auth.userId);
+	return (
+		(await openKanbanProject(auth, project)) !== null &&
+		(await canUpdateProjectStory(project.id, auth.userId))
+	);
 }
 
 export function kanbanPermissionRefusal(message: string) {

@@ -84,6 +84,7 @@ import {
 	classifyVerdict,
 	type DetectionItem,
 	detectionTextForStory,
+	detectionVerdictHash,
 	effectiveCandidateThreshold,
 	extractFocusTexts,
 	getDuplicateLinkState,
@@ -215,9 +216,15 @@ type FocusedPairOutcome =
 
 /** What a verdict does to a pair's row: raise or keep a flag at a tier,
  * clear an unreviewed flag, or only cache a negative verdict. */
-type VerdictEffect = "link:DUPLICATE" | "link:OVERLAP" | "clear" | "cache";
+export type VerdictEffect =
+	| "link:DUPLICATE"
+	| "link:OVERLAP"
+	| "clear"
+	| "cache";
 
-type DuplicateLinkState = Awaited<ReturnType<typeof getDuplicateLinkState>>;
+export type DuplicateLinkState = Awaited<
+	ReturnType<typeof getDuplicateLinkState>
+>;
 
 /** Whether applying `effect` would change what people see for the pair:
  * a flag raised over a cached negative verdict, an unreviewed flag cleared,
@@ -268,6 +275,51 @@ export function confirmedEffect(
 		second.startsWith("link:")
 		? "link:OVERLAP"
 		: null;
+}
+
+/** The verifier model, as `getAIModelWithMetadata` resolves it. */
+export type DuplicateVerifier = Pick<
+	Awaited<ReturnType<typeof getAIModelWithMetadata>>,
+	"model" | "trackUsage"
+>;
+
+/**
+ * One verifier call on a candidate pair, and what its verdict does to the
+ * pair. The roadmap scan and the Proposal Inbox both decide a pair with it,
+ * on a prompt from `buildVerifierPrompt`.
+ */
+export async function verifyDuplicatePair(params: {
+	verifier: DuplicateVerifier;
+	prompt: string;
+	bothFeatures: boolean;
+	abortSignal?: AbortSignal;
+}): Promise<{
+	verdict: z.infer<typeof VerdictSchema>;
+	effect: VerdictEffect;
+}> {
+	const { output: verdict } = await requireStructuredOutput(
+		generateText({
+			model: params.verifier.model,
+			output: Output.object({ schema: VerdictSchema }),
+			prompt: params.prompt,
+			...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
+		}),
+	);
+	params.verifier.trackUsage();
+	const relationship = normalizeVerifierRelationship(verdict);
+	const outcome = classifyVerdict(relationship, verdict.confidence);
+	// An unsure "same" or "overlapping" verdict is cached, but does not
+	// withdraw a flag a confident one raised. Only a feature pair's flag is
+	// withdrawn: bug and mixed pairs are scored and verified exactly as
+	// before, so a distinct re-check of theirs is a second opinion on the
+	// same logic, not a fix for a false positive.
+	const effect: VerdictEffect =
+		outcome.action === "link"
+			? `link:${outcome.linkType}`
+			: params.bothFeatures && relationship === "distinct"
+				? "clear"
+				: "cache";
+	return { verdict, effect };
 }
 
 /** Whether a stored row already carries a verdict on exactly this content. */
@@ -352,29 +404,9 @@ export async function runDuplicateScanCore(
 	const currentHashById = new Map(
 		withText.map((s) => [s.id, hashDetectionText(s.text)]),
 	);
-	// The hash a pair verdict is cached against. A feature's also covers its
-	// section texts, which can sit past the length the detection text is cut
-	// at, or — with no sections — its kind, so a bug turned feature is
-	// verified again under the feature prompt; a bug's is its detection-text
-	// hash.
+	// The hash a pair verdict is cached against (see detectionVerdictHash).
 	const verdictHashById = new Map(
-		withText.map((s) => {
-			const sections = PAIR_FOCUS_KINDS.flatMap(
-				(kind) => s.focusTexts?.[kind] ?? [],
-			);
-			const parts =
-				sections.length > 0
-					? sections
-					: s.kind === "FEATURE"
-						? ["kind:FEATURE"]
-						: [];
-			return [
-				s.id,
-				parts.length > 0
-					? hashDetectionText([s.text, ...parts].join("\n\n"))
-					: (currentHashById.get(s.id) ?? ""),
-			];
-		}),
+		withText.map((s) => [s.id, detectionVerdictHash(s)]),
 	);
 	const cacheMeta = await listStoryDuplicateEmbeddingMetadata(projectId);
 	const cacheMetaByStoryId = new Map(cacheMeta.map((r) => [r.storyId, r]));
@@ -740,7 +772,7 @@ export async function runDuplicateScanCore(
 	//    progress over a large candidate set is monotonic. A distinct verdict
 	//    on a feature pair also clears its unreviewed PENDING flag: under the
 	//    current logic it is a stale false positive (see recordDistinctVerdict).
-	const { model, trackUsage } = await getAIModelWithMetadata(
+	const verifier: DuplicateVerifier = await getAIModelWithMetadata(
 		{ taskType: params.aiTaskType },
 		// projectId and featureKey are threaded so the verifier's token spend
 		// is attributed to the project and to duplicate detection in
@@ -801,30 +833,8 @@ export async function runDuplicateScanCore(
 			focus,
 			bothFeatures,
 		});
-		const verify = async () => {
-			const { output: verdict } = await requireStructuredOutput(
-				generateText({
-					model,
-					output: Output.object({ schema: VerdictSchema }),
-					prompt,
-				}),
-			);
-			trackUsage();
-			const relationship = normalizeVerifierRelationship(verdict);
-			const outcome = classifyVerdict(relationship, verdict.confidence);
-			// An unsure "same" or "overlapping" verdict is cached, but does not
-			// withdraw a flag a confident one raised. Only a feature pair's
-			// flag is withdrawn: bug and mixed pairs are scored and verified
-			// exactly as before, so a distinct re-check of theirs is a second
-			// opinion on the same logic, not a fix for a false positive.
-			const effect: VerdictEffect =
-				outcome.action === "link"
-					? `link:${outcome.linkType}`
-					: bothFeatures && relationship === "distinct"
-						? "clear"
-						: "cache";
-			return { verdict, effect };
-		};
+		const verify = () =>
+			verifyDuplicatePair({ verifier, prompt, bothFeatures });
 		const readState = () =>
 			getDuplicateLinkState(projectId, pair.storyAId, pair.storyBId);
 		let focusOutcome: FocusedPairOutcome = "failed";

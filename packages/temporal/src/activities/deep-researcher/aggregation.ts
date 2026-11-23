@@ -18,7 +18,7 @@ import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import { heartbeat } from "@temporalio/activity";
 import { z } from "zod";
 import type { SubAgentResult } from "../../workflows/deep-researcher";
-import { getAiModel } from "../orchestrator/utils/model-selector";
+import { researchModel } from "./research-model";
 
 // =============================================================================
 // Heartbeat Helper
@@ -73,6 +73,8 @@ export interface AggregateResultsInput {
 	context?: string;
 	userId: string;
 	organizationId?: string;
+	/** The run's project: its usage limits apply and its usage is counted. */
+	projectId?: string;
 }
 
 export interface AggregateResultsOutput {
@@ -110,6 +112,8 @@ export interface EvaluateSuccessInput {
 	successCriteria: string;
 	userId: string;
 	organizationId?: string;
+	/** The run's project: its usage limits apply and its usage is counted. */
+	projectId?: string;
 }
 
 export interface EvaluateSuccessOutput {
@@ -226,7 +230,11 @@ export async function aggregateResults(
 			complexity: "medium",
 			requiresToolCalling: false,
 		},
-		{ userId: input.userId, organizationId: input.organizationId },
+		{
+			userId: input.userId,
+			organizationId: input.organizationId,
+			projectId: input.projectId,
+		},
 	);
 	console.log(
 		`[Orchestrator] Dynamic model selected: ${modelMetadata.modelString} (source: ${modelMetadata.selectionSource}, provider: ${modelMetadata.provider})`,
@@ -465,7 +473,7 @@ export async function evaluateSuccess(
 		resultLength: input.result.length,
 	});
 
-	const model = await getAiModel(input.userId, input.organizationId, false);
+	const model = await researchModel(input);
 
 	const prompt = `You are evaluating whether a research effort has successfully addressed its goal.
 

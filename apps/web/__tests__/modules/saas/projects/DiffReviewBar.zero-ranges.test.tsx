@@ -37,7 +37,7 @@ function makeEditorWithOneAddition(): Editor {
 	const insertNode = {
 		isText: true,
 		nodeSize: 5,
-		marks: [{ type: { name: "diffInsert" } }],
+		marks: [{ type: { name: "diffInsert" }, attrs: { move: null } }],
 	};
 	return {
 		state: {

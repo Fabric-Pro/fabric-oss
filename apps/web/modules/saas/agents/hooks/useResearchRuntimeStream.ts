@@ -517,6 +517,7 @@ export function useResearchRuntimeStream(options: UseResearchRunStreamOptions) {
 				maxSubAgents,
 				maxIterations,
 				successCriteria,
+				projectId,
 			} = optionsRef.current;
 			await startSession(
 				threadId,
@@ -544,6 +545,7 @@ export function useResearchRuntimeStream(options: UseResearchRunStreamOptions) {
 							maxSubAgents,
 							maxIterations,
 							successCriteria,
+							...(projectId ? { projectId } : {}),
 						},
 					},
 					isConnect: false,

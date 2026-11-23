@@ -118,7 +118,7 @@ describe("setParlumeAutoJoin", () => {
 		expect(captured.permissions).toEqual(["project:members:manage"]);
 	});
 
-	it("records the caller as the enabler, with the chosen mode and suggestions, and clears the last error", async () => {
+	it("records the caller as the enabler and when, with the chosen mode and suggestions, and clears the last error", async () => {
 		await expect(run()).resolves.toEqual({
 			linkedMeetingId: "lm-1",
 			enabled: true,
@@ -131,6 +131,7 @@ describe("setParlumeAutoJoin", () => {
 			data: {
 				parlumeAutoJoin: true,
 				parlumeAutoJoinUserId: "user-1",
+				parlumeAutoJoinEnabledAt: expect.any(Date),
 				parlumeAutoJoinToolsReadOnly: false,
 				parlumeAutoJoinSuggestions: false,
 				parlumeAutoJoinSuggestionAudience: "TEAM",
@@ -215,6 +216,7 @@ describe("setParlumeAutoJoin", () => {
 				data: {
 					parlumeAutoJoin: false,
 					parlumeAutoJoinUserId: null,
+					parlumeAutoJoinEnabledAt: null,
 					parlumeAutoJoinError: null,
 					parlumeAutoJoinErrorAt: null,
 				},

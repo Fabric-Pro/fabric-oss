@@ -17,10 +17,19 @@
  * left over, so each run gets its own timeout and retries. (Looping inside one
  * activity could not work: a full run takes minutes, so a second never fit its
  * timeout.) No signals/queries.
+ *
+ * The verifier may run on an organization's shared ChatGPT plans (job type
+ * "duplicate-detection", Fizzy #3538). When a run's model resolution is
+ * refused because the plans it may use are spent, the run fails with
+ * `SubscriptionPlanExhaustedError`; the workflow then waits for the estimated
+ * reset (capped by the helper) and makes that run once more
+ * (`withChatGptPlanWait`). A refusal part-way through the pairs is still a
+ * failed pair inside the activity.
  */
 
 import { patched, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { withChatGptPlanWait } from "./lib/chatgpt-plan-wait";
 
 const { detectDuplicateStoriesActivity } = proxyActivities<typeof activities>({
 	// A run stops starting verifications after RUN_TIME_BUDGET_MS (7 minutes);
@@ -31,6 +40,10 @@ const { detectDuplicateStoriesActivity } = proxyActivities<typeof activities>({
 		backoffCoefficient: 2,
 		maximumAttempts: 6,
 		maximumInterval: "2m",
+		// Retrying cannot refill a spent ChatGPT plan; `withChatGptPlanWait`
+		// waits for a reset instead (Fizzy #3538). Retry options are not part
+		// of the command sequence, so no `patched()` guard.
+		nonRetryableErrorTypes: ["SubscriptionPlanExhaustedError"],
 	},
 });
 
@@ -55,7 +68,16 @@ const MAX_DETECTION_RUNS = 5;
 export async function detectDuplicatesWorkflow(
 	input: DetectDuplicatesWorkflowInput,
 ): Promise<DetectDuplicatesWorkflowOutput> {
-	let run = await detectDuplicateStoriesActivity(input);
+	// Each run waits out a spent plan on its own and is made once more; a
+	// second refusal fails the workflow. No stopped notice: no one asked for
+	// this check, and the items stay stale for the next scan. The helper's own
+	// `patched()` keeps older histories unchanged.
+	const detect = () =>
+		withChatGptPlanWait(() => detectDuplicateStoriesActivity(input), {
+			organizationId: input.organizationId,
+			userId: input.userId,
+		});
+	let run = await detect();
 	// Executions started before the runs moved here made one activity call.
 	if (!patched("detect-duplicates-runs-in-workflow")) {
 		return run;
@@ -77,7 +99,7 @@ export async function detectDuplicatesWorkflow(
 		run.verifierFailures === 0;
 		runs++
 	) {
-		run = await detectDuplicateStoriesActivity(input);
+		run = await detect();
 		total.scanned = run.scanned;
 		total.candidates += run.candidates;
 		total.confirmed += run.confirmed;

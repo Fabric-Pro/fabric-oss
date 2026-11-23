@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const ai = vi.hoisted(() => ({
 	getAIModelWithMetadata: vi.fn(),
-	getRAGProviderConfig: vi.fn(),
+	getRAGProviderConfigForModel: vi.fn(),
 	chatGptPlanServesCall: vi.fn(),
 }));
 
@@ -42,7 +42,7 @@ describe("resolveModelForTenant", () => {
 			},
 			trackUsage: vi.fn(),
 		});
-		ai.getRAGProviderConfig.mockResolvedValue({ apiKey: "sk-org" });
+		ai.getRAGProviderConfigForModel.mockResolvedValue({ apiKey: "sk-org" });
 
 		await expect(
 			resolveModelForTenant(tenant, "CHAT"),
@@ -61,7 +61,7 @@ describe("resolveModelForTenant", () => {
 			new Error("No AI provider"),
 		);
 		await expect(resolveModelForTenant(tenant, "CHAT")).resolves.toBeNull();
-		expect(ai.getRAGProviderConfig).not.toHaveBeenCalled();
+		expect(ai.getRAGProviderConfigForModel).not.toHaveBeenCalled();
 	});
 });
 

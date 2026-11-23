@@ -571,9 +571,12 @@ export {
 	parlumeChannelNotificationIngressWorkflow,
 	parlumeChannelNotificationWorkflow,
 } from "./parlume-channel-notification";
+export { parlumeConfirmedActionWorkflow } from "./parlume-confirmed-action";
 export { parlumeMeetingTurnWorkflow } from "./parlume-meeting-turn";
 export { parlumeNotesWorkflow } from "./parlume-notes";
 export { parlumeRecapWorkflow } from "./parlume-recap";
+export { parlumeTranscriptRetentionWorkflow } from "./parlume-retention";
+export { parlumeSessionSweepWorkflow } from "./parlume-sweep";
 export { parlumeWarmupWorkflow } from "./parlume-warmup";
 // QA pipeline-results sync (cards 1834/1688) — live pull of CI Test Runs into the
 // ingestion engine + RCA→BUG.
@@ -906,6 +909,8 @@ export {
 	type UrlSourceScope,
 	urlSourceCrawlWorkflow,
 } from "./url-source-crawl";
+// Proposal Inbox duplicate verifier (fire-and-forget, one run per project)
+export { verifyInboxDuplicatesWorkflow } from "./verify-inbox-duplicates";
 // Weave Execution Watchdog workflow (every-5-min cron — kills stale rows)
 export {
 	type WeaveExecutionWatchdogInput,

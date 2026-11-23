@@ -167,7 +167,7 @@ overrides:
   "axios": "^1.20.0"
   "browserslist": "^4.28.8"
   "defu@^6.0.0": "^6.1.5"
-  "effect@^3.0.0": "^3.20.0"
+  "effect@^3.0.0": "^3.22.1"
   "express-rate-limit@^8.0.0": "^8.2.2"
   "flatted@^3.0.0": "^3.4.2"
   "follow-redirects@^1.0.0": "^1.16.2"
@@ -191,6 +191,14 @@ overrides:
   "@mastra/core@1.0.4>@ai-sdk/provider-utils-v6": "npm:@ai-sdk/provider-utils@4.0.51"
   "@azure/monitor-opentelemetry@1.20.1>@azure/identity": "^4.14.1"
   "applicationinsights@3.17.0>@azure/identity": "^4.14.1"
+  # GHSA-x8rm-f576-gq67: the PhoneNumber ReDoS affects graphql-scalars
+  # >=1.24.1 <=2.0.0, and the fix (2.0.1) is outside CopilotKit's `^1.23.0` and
+  # its type-graphql 2.0.0-rc.1 peer `^1.22.4`. 1.24.0 predates the regex
+  # change and satisfies both ranges; 1.24.1-1.25.0 added only that regex, npm
+  # provenance, a CUID2 scalar and three currencies. Scoped to the exact parent
+  # so a CopilotKit bump drops the pin and must be re-reviewed (osv-scanner
+  # fails on any vulnerable copy).
+  "@copilotkit/runtime@1.80.0>graphql-scalars": "1.24.0"
   "graphql-yoga@^5.0.0": "5.24.4"
   "@graphql-yoga/plugin-defer-stream@^3.0.0": "3.24.4"
   "@graphql-tools/schema@^10.0.0": "10.1.3"

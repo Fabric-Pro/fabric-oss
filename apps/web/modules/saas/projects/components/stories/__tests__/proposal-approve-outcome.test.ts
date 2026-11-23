@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
 	approveClosesDetail,
+	approvedChangesText,
+	approveHeldBackToast,
 	approveOutcomeToast,
+	approveRefusalTitle,
+	heldBackToast,
 	PROPOSAL_CONFLICT_MESSAGE,
 	proposalConflictMessage,
 } from "../proposal-approve-outcome";
@@ -97,9 +101,84 @@ describe("approveOutcomeToast — one item", () => {
 			approveOutcomeToast({ status: "failed", errors: ["Boom"] }, ITEM),
 		).toEqual({
 			variant: "error",
-			title: "Couldn't apply “Alpha item”",
+			title: "Couldn't approve “Alpha item”",
 			description: "Boom",
 		});
+	});
+});
+
+describe("approve refusal headings", () => {
+	it("uses one wording for an item and for the whole proposal", () => {
+		expect(approveRefusalTitle("Alpha item")).toBe(
+			"Couldn't approve “Alpha item”",
+		);
+		expect(approveRefusalTitle(null)).toBe("Couldn't approve proposal");
+		expect(
+			approveOutcomeToast({ status: "failed", errors: ["Boom"] }, WHOLE)
+				.title,
+		).toBe("Couldn't approve proposal");
+	});
+});
+
+describe("heldBackToast", () => {
+	const refusal =
+		"“Alpha item” can't update F-2: it is not a work item in this project. Pick another target or create a new ticket.";
+
+	it("names each held-back item and says it stays in review", () => {
+		expect(heldBackToast([refusal])).toEqual({
+			variant: "error",
+			title: "Couldn't approve 1 item",
+			description: `${refusal}\nIt stays in review.`,
+		});
+		expect(heldBackToast([refusal, refusal])).toMatchObject({
+			title: "Couldn't approve 2 items",
+			description: `${refusal}\n${refusal}\nThey stay in review.`,
+		});
+	});
+
+	it("shows nothing when no item was held back", () => {
+		expect(heldBackToast(undefined)).toBeNull();
+		expect(heldBackToast([])).toBeNull();
+	});
+
+	// A live check showed the two held-back items twice, in two stacked
+	// toasts: the failed approve's and the held-back one.
+	it("names each held-back item once when the failed approve's errors already name it", () => {
+		const other =
+			"“Beta item” can't update F-3: it is not a work item in this project. Pick another target or create a new ticket.";
+		const result = {
+			status: "failed" as const,
+			errors: [refusal, other],
+			heldBack: [refusal, other],
+		};
+
+		expect(approveHeldBackToast(result)).toBeNull();
+		expect(approveOutcomeToast(result, WHOLE)).toEqual({
+			variant: "error",
+			title: "Couldn't approve proposal",
+			description: `${refusal}\n${other}\nThey stay in review.`,
+		});
+	});
+
+	it("still names the held-back items a failed approve's errors do not", () => {
+		const result = {
+			status: "failed" as const,
+			errors: [
+				"No item could be applied. The proposal is back in review.",
+			],
+			heldBack: [refusal],
+		};
+
+		expect(approveHeldBackToast(result)).toEqual(heldBackToast([refusal]));
+		expect(approveOutcomeToast(result, WHOLE).description).toBe(
+			"No item could be applied. The proposal is back in review.",
+		);
+	});
+
+	it("names the items held back beside an approve that applied the rest", () => {
+		expect(
+			approveHeldBackToast({ status: "dispatched", heldBack: [refusal] }),
+		).toEqual(heldBackToast([refusal]));
 	});
 });
 
@@ -215,5 +294,25 @@ describe("proposalConflictMessage", () => {
 			),
 		).toBeNull();
 		expect(proposalConflictMessage("CONFLICT")).toBeNull();
+	});
+});
+
+describe("approvedChangesText", () => {
+	it("counts only the changes that apply, and names how many are held back", () => {
+		expect(approvedChangesText(5, 5, 2)).toEqual({
+			approved: "Approved 3 of 5 proposed changes",
+			heldBack:
+				"2 held back: their target ticket is not in this project.",
+		});
+		expect(approvedChangesText(2, 5, 1).heldBack).toBe(
+			"1 held back: its target ticket is not in this project.",
+		);
+	});
+
+	it("says nothing about held-back changes when none is", () => {
+		expect(approvedChangesText(4, 5, 0)).toEqual({
+			approved: "Approved 4 of 5 proposed changes",
+			heldBack: null,
+		});
 	});
 });

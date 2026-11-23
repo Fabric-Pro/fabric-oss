@@ -71,7 +71,6 @@ function createApp(
 			response:
 				typeof output.response === "string" ? output.response : "",
 		}),
-		undefined,
 		async function* () {
 			for (const step of steps) {
 				if (step === "throw") {

@@ -8,8 +8,9 @@
  *    runs reanalyzeBodyByKind and persists the MERGED body.
  *  - An UPDATE already flagged `structurePreserved` (merged at analysis time)
  *    does NOT re-run the merge (no double LLM call) and persists its body as-is.
- *  - On safe-hold fallback the existing body is kept (description NOT written),
- *    and `bodyMergeFallback` is stamped.
+ *  - On a merge fallback the existing body is kept with the update's new
+ *    detail appended unchanged (no write when it adds nothing), and
+ *    `bodyMergeFallback` is stamped.
  *  - The merge uses the item's TRUE DB kind (type-aware).
  *  - Fizzy #2048: the defensive `detectDestructiveRewrite` guard below the
  *    merge used to short-circuit to "not destructive" for FEATURE updates —
@@ -308,7 +309,15 @@ describe("applyBacklogChanges → apply-time structure-preserving merge", () => 
 			fallbackUsed: false,
 		});
 
-		await run(makeUpdate());
+		// The merge writes only text the update holds: here, its root cause.
+		await run(
+			makeUpdate({
+				description: {
+					from: "stale snapshot",
+					to: "## Root Cause\nNull form ref.",
+				},
+			}),
+		);
 
 		expect(mocks.reanalyzeBodyByKind).toHaveBeenCalledOnce();
 		// Type-aware: uses the item's TRUE DB kind + existing body.
@@ -343,7 +352,7 @@ describe("applyBacklogChanges → apply-time structure-preserving merge", () => 
 	it("merges into the current body when the ticket changed since analysis", async () => {
 		const preMerged =
 			"## Steps to Reproduce\n1. x\n## Root Cause\nmerged against an older body\n## Original Description from User (Do Not Modify)\nlogin broken";
-		const merged = `${EXISTING_BUG_BODY}\n## Root Cause\nmerged against the current body`;
+		const merged = `${EXISTING_BUG_BODY.replace("1. Open /login", "1. x")}\n## Root Cause\nmerged against an older body`;
 		mocks.reanalyzeBodyByKind.mockResolvedValue({
 			description: merged,
 			acceptanceCriteria: undefined,
@@ -371,7 +380,38 @@ describe("applyBacklogChanges → apply-time structure-preserving merge", () => 
 		expect(lastUpdateData().description).toBe(merged);
 	});
 
-	it("safe-holds on fallback: keeps the existing body (no description write) + flags it", async () => {
+	it("on fallback keeps the existing body, appends the update's new detail unchanged, and flags it", async () => {
+		mocks.reanalyzeBodyByKind.mockResolvedValue({
+			description: EXISTING_BUG_BODY,
+			acceptanceCriteria: undefined,
+			fallbackUsed: true,
+			fallbackReason: "destructive",
+		});
+		const change = makeUpdate({
+			title: { from: "Login fails", to: "Login fails (urgent)" },
+			description: {
+				from: "stale snapshot",
+				to: "## Root Cause\nNull form ref.",
+			},
+		});
+
+		await run(change);
+
+		expect(mocks.reanalyzeBodyByKind).toHaveBeenCalledOnce();
+		const data = lastUpdateData();
+		expect(data.title).toBe("Login fails (urgent)");
+		// Nothing the update proposed is dropped: the body as it was, then
+		// the update's own lines as it wrote them.
+		expect(data.description).toBe(
+			`${EXISTING_BUG_BODY}\n\n## Root Cause\nNull form ref.`,
+		);
+		expect(
+			(change as unknown as { bodyMergeFallback?: boolean })
+				.bodyMergeFallback,
+		).toBe(true);
+	});
+
+	it("on fallback keeps the existing body (no description write) when the update adds nothing it lacks, and flags it", async () => {
 		mocks.reanalyzeBodyByKind.mockResolvedValue({
 			description: EXISTING_BUG_BODY,
 			acceptanceCriteria: undefined,
@@ -381,13 +421,15 @@ describe("applyBacklogChanges → apply-time structure-preserving merge", () => 
 		// Include a title change so updateStory is still called.
 		const change = makeUpdate({
 			title: { from: "Login fails", to: "Login fails (urgent)" },
+			description: {
+				from: "stale snapshot",
+				to: "## Actual Result\nNothing.",
+			},
 		});
 
 		await run(change);
 
-		expect(mocks.reanalyzeBodyByKind).toHaveBeenCalledOnce();
 		const data = lastUpdateData();
-		// Title applied; description withheld (safe-hold).
 		expect(data.title).toBe("Login fails (urgent)");
 		expect(data.description).toBeUndefined();
 		expect(
@@ -461,15 +503,14 @@ describe("applyBacklogChanges → destructive-rewrite guard now covers FEATURE u
 		});
 	});
 
-	it("refuses a FEATURE update whose candidate body is empty (previously waved through)", async () => {
+	it("refuses a FEATURE update whose candidate body is empty: every line stays, and the update's new detail is appended", async () => {
 		mocks.reanalyzeBodyByKind.mockResolvedValue({
 			description: "",
 			acceptanceCriteria: undefined,
 			fallbackUsed: false,
 		});
 		// Include a title change so updateStory is still called — proves this
-		// is a safe-hold on the DESCRIPTION field, not a skip of the whole
-		// update, mirroring the existing fallback test above.
+		// is a hold on the DESCRIPTION field, not a skip of the whole update.
 		const change = makeFeatureUpdate({
 			title: {
 				from: "Choose prompt template",
@@ -482,7 +523,12 @@ describe("applyBacklogChanges → destructive-rewrite guard now covers FEATURE u
 		expect(mocks.reanalyzeBodyByKind).toHaveBeenCalledOnce();
 		const data = lastUpdateData();
 		expect(data.title).toBe("Choose prompt template (updated)");
-		expect(data.description).toBeUndefined();
+		// The update deletes none of the ticket's lines, so the empty merge
+		// deletes none either; its new detail, which the merge dropped, is
+		// appended unchanged.
+		expect(data.description).toBe(
+			`${EXISTING_FEATURE_BODY}\n\nanalyzer generic regenerated body`,
+		);
 		expect(
 			(change as unknown as { bodyMergeFallback?: boolean })
 				.bodyMergeFallback,
@@ -495,10 +541,16 @@ describe("applyBacklogChanges → destructive-rewrite guard now covers FEATURE u
 			acceptanceCriteria: undefined,
 			fallbackUsed: false,
 		});
+		// The update proposes the collapsed text, so the merge is held to it
+		// and reaches the guard.
 		const change = makeFeatureUpdate({
 			title: {
 				from: "Choose prompt template",
 				to: "Choose prompt template (updated)",
+			},
+			description: {
+				from: "stale snapshot",
+				to: "Reviewer can now pick a template.",
 			},
 		});
 
@@ -530,7 +582,13 @@ describe("applyBacklogChanges → destructive-rewrite guard now covers FEATURE u
 			acceptanceCriteria: undefined,
 			fallbackUsed: false,
 		});
-		const change = makeFeatureUpdate();
+		// The update holds the new wording the merge puts in.
+		const change = makeFeatureUpdate({
+			description: {
+				from: "stale snapshot",
+				to: "Fewer rewrites after the first draft — measured over the following\nsprint — and fewer support threads asking why the draft used the wrong\nsection structure.",
+			},
+		});
 
 		await run(change);
 
@@ -551,14 +609,18 @@ describe("applyBacklogChanges → destructive-rewrite guard now covers FEATURE u
 			acceptanceCriteria: "",
 			labels: ["bug"],
 		});
+		const featureShaped =
+			"## Feature Narrative\nA nicer login experience.\n\n## Acceptance Criteria\nGIVEN a user WHEN they sign in THEN it works.";
 		mocks.reanalyzeBodyByKind.mockResolvedValue({
-			description:
-				"## Feature Narrative\nA nicer login experience.\n\n## Acceptance Criteria\nGIVEN a user WHEN they sign in THEN it works.",
+			description: featureShaped,
 			acceptanceCriteria: undefined,
 			fallbackUsed: false,
 		});
+		// The update proposes the feature-shaped text, so the merge is held
+		// to it and reaches the guard.
 		const change = makeUpdate({
 			title: { from: "Login fails", to: "Login fails (urgent)" },
+			description: { from: "stale snapshot", to: featureShaped },
 		});
 
 		await run(change);
@@ -566,6 +628,126 @@ describe("applyBacklogChanges → destructive-rewrite guard now covers FEATURE u
 		const data = lastUpdateData();
 		expect(data.title).toBe("Login fails (urgent)");
 		expect(data.description).toBeUndefined();
+		expect(
+			(change as unknown as { bodyMergeFallback?: boolean })
+				.bodyMergeFallback,
+		).toBe(true);
+	});
+});
+
+describe("applyBacklogChanges → Apply all writes only the update's own edits", () => {
+	// A meeting update in the inbox's shape: the ticket names its export
+	// limit thirteen times, and the update lowers it once, adds a sentence
+	// and adds a criterion, written as a whole version of each body.
+	const LIMITS = Array.from({ length: 13 }, (_, index) =>
+		index === 0
+			? "- Exports are limited to 10,000 rows per file."
+			: `- Rule ${index + 1}: a batch stays under 10,000 rows.`,
+	);
+	const DESCRIPTION = [
+		"## Overview",
+		"Supervisors export the break queue as CSV.",
+		"",
+		"### Limits",
+		...LIMITS,
+		"",
+		"### Benefit Hypothesis",
+		"Supervisors spend less time on exports.",
+	].join("\n");
+	const CRITERIA =
+		"1. GIVEN a supervisor  \n   WHEN they export the queue  \n   THEN a CSV downloads.";
+	const PROPOSED_DESCRIPTION = DESCRIPTION.replace(
+		"limited to 10,000 rows",
+		"limited to 5,000 rows",
+	).replace(
+		"### Benefit Hypothesis",
+		"Supervisors can schedule a nightly export.\n\n### Benefit Hypothesis",
+	);
+	const PROPOSED_CRITERIA = `${CRITERIA}\n\n### Scheduling\n\n6. GIVEN a supervisor schedules a nightly export  \n   WHEN the schedule runs  \n   THEN the CSV is produced without manual action.`;
+
+	function meetingUpdate(descriptionFrom?: string) {
+		return makeUpdate({
+			type: "feature" as const,
+			title: { from: "Export the queue", to: "Export the queue" },
+			description: { from: descriptionFrom, to: PROPOSED_DESCRIPTION },
+			acceptanceCriteria: { to: PROPOSED_CRITERIA },
+			bodyMergeFallback: true,
+			sourceContext: "meeting_transcript",
+		});
+	}
+
+	function written() {
+		return (mocks.updateStory.mock.calls.at(-1)?.[2] ?? {}) as {
+			description?: string;
+			acceptanceCriteria?: string;
+		};
+	}
+
+	beforeEach(() => {
+		mocks.dbUserStoryFindFirst.mockResolvedValue({
+			kind: "FEATURE",
+			title: "Export the queue",
+			identifier: "F-030",
+			description: DESCRIPTION,
+			acceptanceCriteria: CRITERIA,
+			labels: [],
+		});
+	});
+
+	it("writes a whole version of the ticket as it is, with no merge", async () => {
+		await run(meetingUpdate());
+
+		expect(mocks.reanalyzeBodyByKind).not.toHaveBeenCalled();
+		const data = written();
+		expect(data.description).toBe(PROPOSED_DESCRIPTION);
+		expect(data.acceptanceCriteria).toBe(PROPOSED_CRITERIA);
+		expect(data.description?.split("5,000").length).toBe(2);
+		expect(data.description?.split("10,000").length).toBe(13);
+	});
+
+	it("holds a merge to the update once the ticket changed since it was written", async () => {
+		// What a model merge wrote: every limit lowered, and blocks that are
+		// in neither the ticket nor the update.
+		mocks.reanalyzeBodyByKind.mockResolvedValue({
+			description: `${PROPOSED_DESCRIPTION.replaceAll("10,000", "5,000")}\n\n### UC2 Scheduled export\nFR6: exports run on a schedule.\n\n### Open questions\n- Which time zone?`,
+			acceptanceCriteria: `${PROPOSED_CRITERIA}\n\n7. GIVEN a gap in the schedule  \n   THEN it is flagged.`,
+			fallbackUsed: false,
+		});
+
+		await run(meetingUpdate("## Overview\nAn older text."));
+
+		expect(mocks.reanalyzeBodyByKind).toHaveBeenCalledOnce();
+		const data = written();
+		expect(data.description?.trim()).toBe(PROPOSED_DESCRIPTION);
+		expect(data.acceptanceCriteria?.trim()).toBe(PROPOSED_CRITERIA);
+	});
+
+	it("appends new detail the merge reworded, unchanged, and marks the merge as fallen back", async () => {
+		// The merge reworded the update's sentence and added a block nobody
+		// proposed: the filter leaves none of the update's detail.
+		mocks.reanalyzeBodyByKind.mockResolvedValue({
+			description: DESCRIPTION.replace(
+				"### Benefit Hypothesis",
+				"Supervisors may set up nightly exports.\n\n### UC2 Scheduled export\n\n### Benefit Hypothesis",
+			),
+			acceptanceCriteria: undefined,
+			fallbackUsed: false,
+		});
+		const change = makeUpdate({
+			type: "feature" as const,
+			title: { from: "Export the queue", to: "Export the queue" },
+			description: { to: "Supervisors can schedule a nightly export." },
+			sourceContext: "chat",
+		});
+
+		await run(change);
+
+		expect(mocks.reanalyzeBodyByKind).toHaveBeenCalledOnce();
+		const data = written();
+		expect(data.description).toBe(
+			`${DESCRIPTION}\n\nSupervisors can schedule a nightly export.`,
+		);
+		expect(data.acceptanceCriteria).toBeUndefined();
 		expect(
 			(change as unknown as { bodyMergeFallback?: boolean })
 				.bodyMergeFallback,

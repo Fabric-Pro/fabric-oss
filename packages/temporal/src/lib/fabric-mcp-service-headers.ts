@@ -30,14 +30,23 @@ const MAX_HEADER_VALUE_LENGTH = 200;
 const MAX_GRANT_LENGTH = 2_000;
 const HEADER_VALUE_PATTERN = /^[A-Za-z0-9_.:-]+$/;
 
-const SURFACES = ["artifact", "workspace"] as const;
-type ActingSurface = (typeof SURFACES)[number];
+const SURFACES = ["artifact", "workspace", "parlume"] as const;
+export type ActingSurface = (typeof SURFACES)[number];
+
+/**
+ * The name audit rows give Parlume, Fabric's meeting assistant, as the agent
+ * that acted; the row's user is the person who invited it.
+ */
+export const PARLUME_ACTOR_NAME = "Fabric Parlume";
 
 /** Where the acting user is when the agent calls a tool. Never widens access. */
 interface FabricServiceActingContext {
 	projectId?: string;
 	workspaceId?: string;
-	/** The kind of page the chat was opened from, when it is one a new page belongs on. */
+	/**
+	 * The kind of page the chat was opened from, when it is one a new page
+	 * belongs on, or `parlume` for a turn Parlume runs in a meeting.
+	 */
 	surface?: ActingSurface;
 	conversationId?: string;
 	sourceRunType?: string;

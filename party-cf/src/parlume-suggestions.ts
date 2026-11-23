@@ -189,27 +189,53 @@ export function acceptParlumeSuggestion(
 }
 
 /**
- * The chat post, a line each: what it is about, whose words it answers, the
- * suggestion, and how to have it said.
+ * The chat post, one paragraph: what it is about and whose words it answers,
+ * then the suggestion. Suggestions keep this form; the meeting-chat
+ * formatting of answers and results does not apply to them. With the
+ * session's Parlume page, a "Say it" link to it ends the post.
  */
 export function formatParlumeSuggestion(
 	tag: string,
 	suggestion: ParlumeSuggestion,
+	pageUrl: string | null = null,
 ): string {
-	const anchor = `${suggestion.topic}\nRe ${suggestion.speaker}: "${suggestion.quote}"\n${suggestion.text}`;
-	switch (suggestion.kind) {
+	const anchor = `${suggestion.topic}, re ${suggestion.speaker}: "${suggestion.quote}". ${suggestion.text}`;
+	const post = suggestionPost(tag, suggestion.kind, anchor);
+	return pageUrl ? `${post}\n${sayItLink(pageUrl, tag)}` : post;
+}
+
+function suggestionPost(
+	tag: string,
+	kind: ParlumeSuggestion["kind"],
+	anchor: string,
+): string {
+	switch (kind) {
 		case "answer":
-			return `Suggestion on ${anchor}\nReply "go ${tag}" and I'll say it.`;
+			return `Suggestion on ${anchor} (reply "go ${tag}" and I'll say it)`;
 		case "missed_question":
-			return `Possibly missed question on ${anchor}\nReply "go ${tag}" and I'll ask it.`;
+			return `Possibly missed question on ${anchor} (reply "go ${tag}" and I'll ask it)`;
 		default: {
-			const unreachable: never = suggestion.kind;
+			const unreachable: never = kind;
 			return unreachable;
 		}
 	}
 }
 
-/** What "go P4" reads aloud: whose remark it answers, then the suggestion. */
+/**
+ * The post's one action: the Parlume page, open on this suggestion, where a
+ * member can have it said.
+ */
+function sayItLink(pageUrl: string, tag: string): string {
+	const url = new URL(pageUrl);
+	url.searchParams.set("suggestion", tag);
+	return `[Say it](${url.toString()})`;
+}
+
+/**
+ * What "go P4" reads aloud: whose remark it answers, then the suggestion.
+ * Suggestions keep this lead; the spoken readability changes of answers and
+ * results do not apply to them.
+ */
 export function spokenParlumeSuggestion(suggestion: ParlumeSuggestion): string {
 	switch (suggestion.kind) {
 		case "answer":

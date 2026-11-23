@@ -141,7 +141,10 @@ export const createTranscriptUploadUrlProcedure = tenantProtectedProcedure
 				userId: user.id,
 				transcriptRecordId: existing.id,
 			});
-			return { status: "reprocessing" as const };
+			return {
+				status: "reprocessing" as const,
+				contextId: existing.contextId,
+			};
 		}
 
 		const contentType = TRANSCRIPT_UPLOAD_FORMATS[format];

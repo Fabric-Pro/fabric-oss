@@ -84,7 +84,7 @@ vi.mock("@repo/agent-tools", () => ({
 
 vi.mock("@repo/ai", () => ({
 	buildEffectiveBaseUrl: (_provider: string, baseUrl: string) => baseUrl,
-	getRAGProviderConfig: async () => ({
+	getRAGProviderConfigForModel: async () => ({
 		apiKey: "sk-test",
 		baseUrl: "https://gateway.example.com/v1",
 	}),

@@ -154,6 +154,7 @@ export interface ProviderMetadata {
 	 * key. Gates the auth-mode choice in the provider settings forms and the
 	 * XOR validation in the upsert procedure.
 	 */
+	supportsFederation?: boolean;
 	supportsServicePrincipal?: boolean;
 	clientIdPlaceholder?: string;
 	clientSecretPlaceholder?: string;
@@ -240,6 +241,7 @@ export const AI_PROVIDER_METADATA: Record<
 	},
 	ANTHROPIC_DIRECT: {
 		id: "ANTHROPIC_DIRECT",
+		supportsFederation: true,
 		name: "Anthropic",
 		displayName: "Anthropic",
 		category: "direct",

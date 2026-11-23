@@ -57,6 +57,36 @@ describe("canEditProjectAdminSettings", () => {
 		);
 	});
 
+	it("returns false for an org role that grants it on a project the caller cannot open", async () => {
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			source: "org",
+			isVisible: false,
+			permissions: [
+				Permissions.PROJECT_READ,
+				Permissions.PROJECT_SETTINGS_EDIT,
+			],
+		});
+
+		expect(await canEditProjectAdminSettings("proj-1", "user-1")).toBe(
+			false,
+		);
+	});
+
+	it("returns true for the project's creator through the same org role", async () => {
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			source: "org",
+			isVisible: true,
+			permissions: [
+				Permissions.PROJECT_READ,
+				Permissions.PROJECT_SETTINGS_EDIT,
+			],
+		});
+
+		expect(await canEditProjectAdminSettings("proj-1", "user-1")).toBe(
+			true,
+		);
+	});
+
 	it("returns false when user has no access (resolver returns null)", async () => {
 		mocks.resolveEffectiveProjectPermissions.mockResolvedValue(null);
 

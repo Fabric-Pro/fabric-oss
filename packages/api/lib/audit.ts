@@ -324,9 +324,13 @@ export function recordAuditFromRequest(
 		// `activity.*` row for the same call. `error.*` rows do not count:
 		// an error capture describes a FAILED call, and suppressing the
 		// activity row on its account would lose the record of the attempt.
+		// Nor do rows attributed to an agent: they record what the AI did
+		// (a ticket an approval created), so the caller's own call still
+		// needs its activity row.
 		if (
 			!isActivityAction(input.action) &&
-			input.category !== ERROR_CATEGORY
+			input.category !== ERROR_CATEGORY &&
+			actor.type !== "agent"
 		) {
 			markCuratedAuditWritten();
 		}

@@ -20,6 +20,7 @@ const { handlers, mocks } = vi.hoisted(() => ({
 		projectDocumentUpdate: vi.fn(),
 		getContextById: vi.fn(),
 		getMcpConfigById: vi.fn(),
+		transcriptAccess: vi.fn(),
 		workflowStart: vi.fn(),
 		workflowDescribe: vi.fn(),
 		workflowSignal: vi.fn(),
@@ -59,6 +60,11 @@ vi.mock("@repo/database", () => {
 
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
+vi.mock("../../lib/parlume-transcript-access", () => ({
+	PARLUME_TRANSCRIPT_WITHHELD: "Only the people invited can read it.",
+	resolveParlumeTranscriptAccess: mocks.transcriptAccess,
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -136,6 +142,7 @@ beforeEach(() => {
 	mocks.discoveryRunUpdate.mockResolvedValue({});
 	mocks.discoveryRunUpdateMany.mockResolvedValue({ count: 1 });
 	mocks.workflowStart.mockResolvedValue({});
+	mocks.transcriptAccess.mockResolvedValue(null);
 });
 
 describe("projects.discovery.start", () => {
@@ -181,6 +188,36 @@ describe("projects.discovery.start", () => {
 			{ userId: "user-1", organizationId: "org-1" },
 		);
 		expect(mocks.discoveryRunCreate).not.toHaveBeenCalled();
+	});
+
+	it("refuses a Parlume transcript the caller may not read before creating a run", async () => {
+		mocks.getContextById.mockResolvedValue({
+			id: "ctx-transcript",
+			projectId: "proj-1",
+			extractionStatus: "COMPLETED",
+		});
+		mocks.transcriptAccess.mockResolvedValue("withheld");
+
+		await expect(
+			start({
+				input: {
+					projectId: "proj-1",
+					storyId: "story-1",
+					sources: { openApi: { contextId: "ctx-transcript" } },
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "FORBIDDEN",
+			message: "Only the people invited can read it.",
+		});
+		expect(mocks.transcriptAccess).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			userId: "user-1",
+			contextId: "ctx-transcript",
+		});
+		expect(mocks.discoveryRunCreate).not.toHaveBeenCalled();
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
 	});
 
 	it("rejects an MCP config the caller does not own as NOT_FOUND", async () => {

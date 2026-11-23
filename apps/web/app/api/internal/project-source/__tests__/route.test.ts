@@ -9,12 +9,14 @@ const h = vi.hoisted(() => ({
 	page: vi.fn(),
 	retrieve: vi.fn(),
 	format: vi.fn(),
+	confidential: vi.fn(),
 }));
 vi.mock("@repo/ai-token", () => ({
 	AI_TOKEN_HEADER: "X-AI-Token",
 	verifyAIToken: h.token,
 }));
 vi.mock("@repo/database", () => ({
+	findConfidentialTranscriptContextIds: h.confidential,
 	getProjectAccessContext: h.access,
 	getContextById: h.source,
 	readProjectContextBodyPage: h.page,
@@ -72,6 +74,7 @@ beforeEach(() => {
 		},
 	]);
 	h.format.mockReturnValue("legacy whole document");
+	h.confidential.mockResolvedValue(new Set());
 });
 it("rejects a missing token", async () => {
 	expect((await POST(request({}, ""))).status).toBe(401);
@@ -125,6 +128,16 @@ it("defaults to 24000 and normalizes invalid windows", async () => {
 		expect.anything(),
 		{ offset: 0, maxLength: 24000 },
 	);
+});
+it("refuses a Parlume or confidential-series transcript without reading it", async () => {
+	h.confidential.mockResolvedValue(new Set(["example-source"]));
+	const response = await POST(request());
+	expect(response.status).toBe(403);
+	expect(h.confidential).toHaveBeenCalledWith({
+		projectId: "example-project",
+		contextIds: ["example-source"],
+	});
+	expect(h.page).not.toHaveBeenCalled();
 });
 it("returns an unavailable reason", async () => {
 	h.page.mockResolvedValue({

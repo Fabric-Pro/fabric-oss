@@ -46,7 +46,7 @@
 	"dependencies": {
 		"@opentelemetry/api": "1.9.1",
 		"@opentelemetry/api-logs": "0.217.0",
-		"@opentelemetry/auto-instrumentations-node": "0.79.0",
+		"@opentelemetry/auto-instrumentations-node": "0.81.2",
 		"@opentelemetry/exporter-logs-otlp-grpc": "0.217.0",
 		"@opentelemetry/exporter-metrics-otlp-grpc": "0.217.0",
 		"@opentelemetry/exporter-trace-otlp-grpc": "0.217.0",

@@ -844,14 +844,17 @@ module secrets 'modules/secrets.bicep' = {
 }
 
 // Reference existing Key Vault (created by secrets module) for Redis secret
-resource keyVaultRef 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+resource keyVaultRef 'Microsoft.KeyVault/vaults@2026-02-01' existing = {
   name: keyVaultName
 }
 
 // Redis URL secret in Key Vault (for real-time execution streaming)
-resource redisUrlSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (enableRedis) {
+resource redisUrlSecret 'Microsoft.KeyVault/vaults/secrets@2026-02-01' = if (enableRedis) {
   parent: keyVaultRef
   name: 'redis-url'
+  dependsOn: [
+    secrets
+  ]
   properties: {
     value: enableRedis ? 'rediss://:${redisCache.listKeys().primaryKey}@${redisCache.properties.hostName}:${redisCache.properties.sslPort}' : ''
   }

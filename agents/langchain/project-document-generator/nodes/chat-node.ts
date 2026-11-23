@@ -66,6 +66,7 @@ import {
 	restoreVisualPlaceholders,
 	type VisualPlaceholderView,
 } from "@repo/utils/proposal-artifact/visual-placeholders";
+import { providerFailureMessageFromText } from "@repo/utils/provider-failure-text";
 import { v4 as uuidv4 } from "uuid";
 import { buildSystemPromptAsync, getPredictStateConfig } from "../prompts";
 import {
@@ -6277,7 +6278,8 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				},
 			);
 			const userFacingError = replyFor(
-				`Failed to generate document: ${errorMessage}`,
+				providerFailureMessageFromText(errorMessage) ??
+					`Failed to generate document: ${errorMessage}`,
 			);
 			return new Command({
 				goto: END,
@@ -6347,7 +6349,10 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			userFacingError =
 				"The AI model encountered difficulty generating the document. This can happen with complex content. Please try again with a simpler request, or try regenerating the document.";
 		} else {
-			userFacingError = `Failed to generate document: ${errorMessage}`;
+			// A provider's own text can carry its URL or a key fragment.
+			userFacingError =
+				providerFailureMessageFromText(errorMessage) ??
+				`Failed to generate document: ${errorMessage}`;
 		}
 		userFacingError = replyFor(userFacingError);
 

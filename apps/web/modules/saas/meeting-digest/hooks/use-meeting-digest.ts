@@ -32,6 +32,7 @@ export interface ConfigMeeting {
 /** A series' Parlume auto-join switch, as listConfigurable returns it. */
 export interface ParlumeAutoJoinState extends ParlumeAutoJoinSettings {
 	enabledBy: { id: string; name: string } | null;
+	enabledAt: Date | string | null;
 	error: string | null;
 	errorAt: Date | string | null;
 	syncStopped: boolean;

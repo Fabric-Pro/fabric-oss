@@ -305,12 +305,24 @@ export async function listTimeEntriesForAuthorStory(params: {
 	return rows.map(toTimeEntryRow);
 }
 
+/** How many grouped notes one read of `listRecentTimeEntryNotes` fetches. */
+const RECENT_NOTES_BATCH = 50;
+
+/** A note as it reads: whitespace collapsed, as HTML renders it. */
+function noteReading(note: string): string {
+	return note.trim().replace(/\s+/g, " ");
+}
+
 /**
  * The author's distinct notes on one project, most recently saved first, for
  * a new entry to reuse. Only entries the author logged themselves count: an
  * entry confirmed from a suggestion (`sourceSuggestionId` set) does not, even
- * after its note was edited. Identical notes collapse into one, dated by
- * their latest save; equal dates fall back to the note's text.
+ * after its note was edited. Notes that read the same once their whitespace
+ * is collapsed are one note, dated by their latest save and returned as that
+ * save's text; equal dates fall back to the text. A blank note offers nothing.
+ *
+ * The collapse happens before the limit, so spacing variants never take the
+ * place of another note. Groups are read in batches until the limit is met.
  */
 export async function listRecentTimeEntryNotes(params: {
 	organizationId: string;
@@ -318,20 +330,43 @@ export async function listRecentTimeEntryNotes(params: {
 	userId: string;
 	limit: number;
 }): Promise<string[]> {
-	const rows = await db.timeEntry.groupBy({
-		by: ["description"],
-		where: {
-			organizationId: params.organizationId,
-			projectId: params.projectId,
-			userId: params.userId,
-			sourceSuggestionId: null,
-			description: { not: null },
-		},
-		_max: { updatedAt: true },
-		orderBy: [{ _max: { updatedAt: "desc" } }, { description: "asc" }],
-		take: params.limit,
-	});
-	return rows.flatMap((row) => (row.description ? [row.description] : []));
+	const notes: string[] = [];
+	const readings = new Set<string>();
+	for (
+		let skip = 0;
+		notes.length < params.limit;
+		skip += RECENT_NOTES_BATCH
+	) {
+		const rows = await db.timeEntry.groupBy({
+			by: ["description"],
+			where: {
+				organizationId: params.organizationId,
+				projectId: params.projectId,
+				userId: params.userId,
+				sourceSuggestionId: null,
+				description: { not: null },
+			},
+			_max: { updatedAt: true },
+			orderBy: [{ _max: { updatedAt: "desc" } }, { description: "asc" }],
+			skip,
+			take: RECENT_NOTES_BATCH,
+		});
+		for (const { description } of rows) {
+			const reading = noteReading(description ?? "");
+			if (!description || !reading || readings.has(reading)) {
+				continue;
+			}
+			readings.add(reading);
+			notes.push(description);
+			if (notes.length === params.limit) {
+				break;
+			}
+		}
+		if (rows.length < RECENT_NOTES_BATCH) {
+			break;
+		}
+	}
+	return notes;
 }
 
 /** One of the author's entries, or null when it is not theirs or not there. */

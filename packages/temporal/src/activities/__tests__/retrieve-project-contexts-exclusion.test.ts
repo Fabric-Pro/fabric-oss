@@ -24,6 +24,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		findMany: vi.fn(),
+		findConfidentialTranscriptContextIds: vi.fn(),
 		getProjectRagSettings: vi.fn(),
 		searchSimilarProjectContexts: vi.fn(),
 		applyContextSummary: vi.fn(),
@@ -46,6 +47,8 @@ vi.mock("@repo/database", async (importOriginal) => {
 				findMany: (...args: unknown[]) => mocks.findMany(...args),
 			},
 		},
+		findConfidentialTranscriptContextIds: (...args: unknown[]) =>
+			mocks.findConfidentialTranscriptContextIds(...args),
 		getProjectRagSettings: (...args: unknown[]) =>
 			mocks.getProjectRagSettings(...args),
 	};
@@ -138,6 +141,7 @@ beforeEach(() => {
 	mocks.applyContextSummary.mockImplementation(
 		async (contexts: unknown) => contexts,
 	);
+	mocks.findConfidentialTranscriptContextIds.mockResolvedValue(new Set());
 	mocks.findMany.mockImplementation(
 		async ({ where }: { where: { id: { in: string[] } } }) =>
 			where.id.in.map((id) => ({
@@ -211,6 +215,33 @@ describe("retrieveProjectContexts exclusion", () => {
 
 		expect(requestedContextIds()).toEqual(["ctx_a", "ctx_b"]);
 		expect(contexts).toEqual(["content of ctx_a", "content of ctx_b"]);
+	});
+
+	it("never reads a confidential series' transcript or a Parlume transcript, chunked or not", async () => {
+		mocks.searchSimilarProjectContexts.mockResolvedValue([
+			{ contextId: "ctx_parlume_transcript-chunk-0", score: 0.95 },
+			{ contextId: "ctx_prd-chunk-0", score: 0.9 },
+			{ contextId: "ctx_secret_transcript", score: 0.85 },
+			{ contextId: "ctx_parlume_transcript-chunk-3", score: 0.8 },
+		]);
+		mocks.findConfidentialTranscriptContextIds.mockResolvedValue(
+			new Set(["ctx_parlume_transcript", "ctx_secret_transcript"]),
+		);
+
+		const contexts = await retrieveProjectContexts(PARAMS);
+
+		expect(mocks.findConfidentialTranscriptContextIds).toHaveBeenCalledWith(
+			{
+				projectId: "proj_1",
+				contextIds: [
+					"ctx_parlume_transcript",
+					"ctx_prd",
+					"ctx_secret_transcript",
+				],
+			},
+		);
+		expect(requestedContextIds()).toEqual(["ctx_prd"]);
+		expect(contexts).toEqual(["content of ctx_prd"]);
 	});
 
 	it("excludes nothing when the id matches no retrieved context", async () => {

@@ -6,7 +6,11 @@ import {
 	proposalRevision,
 	readRejectedChangeIndexes,
 } from "@repo/database";
-import { isFabricDbId } from "@repo/temporal/resolve-backlog-update-target";
+import {
+	isFabricDbId,
+	type ResolvableBacklogItem,
+	resolveBacklogUpdateTarget,
+} from "@repo/temporal/resolve-backlog-update-target";
 
 const TITLE_MAX_LENGTH = 200;
 
@@ -64,43 +68,206 @@ interface UpdateTargetChange {
 	action: "create" | "update";
 	existingId?: string | null;
 	existingIdentifier?: string | null;
-	title: { to: string };
+	existingExternalId?: string | null;
+	title: { from?: string | null; to: string };
+}
+
+/** An update whose target is not a work item in this project. */
+interface InvalidUpdateTarget<T extends UpdateTargetChange> {
+	change: T;
+	/** Names the item and its target, for the reviewer. */
+	message: string;
+}
+
+function namesTarget(change: UpdateTargetChange): boolean {
+	return [
+		change.existingId,
+		change.existingIdentifier,
+		change.existingExternalId,
+	].some((reference) => !!reference?.trim());
+}
+
+function invalidTargetMessage(change: UpdateTargetChange): string {
+	const title = change.title.to.trim().slice(0, TITLE_MAX_LENGTH);
+	const target =
+		change.existingIdentifier?.trim() ||
+		change.existingExternalId?.trim() ||
+		"the selected ticket";
+	return `“${title}” can't update ${target}: it is not a work item in this project. Pick another target or create a new ticket.`;
+}
+
+function fabricIdOf(change: UpdateTargetChange): string | null {
+	return change.existingId && isFabricDbId(change.existingId)
+		? change.existingId
+		: null;
+}
+
+/** Distinct non-empty values. */
+function distinct(values: readonly (string | null | undefined)[]): string[] {
+	return Array.from(
+		new Set(values.filter((value): value is string => !!value)),
+	);
 }
 
 /**
- * Refuse the whole approval before anything is claimed or applied when an
- * update names a Fabric work item that is not in this project (wrong,
- * foreign, or deleted target). Non-Fabric ids (PM card ids) keep their
- * apply-time resolution path.
+ * The project's tickets any of `updates` could resolve to: by Fabric id, or,
+ * for any other reference, by identifier, PM card id or title, the
+ * strategies the apply resolves with. Only those tickets are read, not the
+ * whole project.
+ */
+async function candidateTargets(
+	projectId: string,
+	updates: readonly UpdateTargetChange[],
+): Promise<ResolvableBacklogItem[]> {
+	const others = updates.filter((change) => !fabricIdOf(change));
+	const titles = distinct(
+		others.map((change) => change.title.from || change.title.to),
+	);
+	const fabricIds = distinct(updates.map(fabricIdOf));
+	const identifiers = distinct(
+		others.map((change) => change.existingIdentifier),
+	);
+	const externalIds = distinct(
+		others.map((change) => change.existingExternalId),
+	);
+	return await db.userStory.findMany({
+		where: {
+			projectId,
+			OR: [
+				...(fabricIds.length > 0 ? [{ id: { in: fabricIds } }] : []),
+				...(identifiers.length > 0
+					? [{ identifier: { in: identifiers } }]
+					: []),
+				...(externalIds.length > 0
+					? [{ externalId: { in: externalIds } }]
+					: []),
+				...titles.map((title) => ({
+					title: { equals: title, mode: "insensitive" as const },
+				})),
+			],
+		},
+		select: { id: true, identifier: true, title: true, externalId: true },
+	});
+}
+
+/**
+ * Every update whose named target is not a work item in this project (a
+ * wrong, foreign or deleted ticket), each with a message naming the item and
+ * its target. A Fabric id must be a ticket of this project; any other
+ * reference (an identifier or a PM card id) must resolve the way the apply
+ * resolves it. An update that names no target keeps its apply-time handling.
+ */
+async function findInvalidUpdateTargets<T extends UpdateTargetChange>(
+	projectId: string,
+	changes: readonly T[],
+): Promise<InvalidUpdateTarget<T>[]> {
+	const updates = changes.filter(
+		(change) => change.action === "update" && namesTarget(change),
+	);
+	if (updates.length === 0) {
+		return [];
+	}
+	const stories = await candidateTargets(projectId, updates);
+	const inProject = new Set(stories.map((story) => story.id));
+	return updates
+		.filter((change) => {
+			const id = fabricIdOf(change);
+			return id
+				? !inProject.has(id)
+				: resolveBacklogUpdateTarget(stories, change).status ===
+						"unresolved";
+		})
+		.map((change) => ({ change, message: invalidTargetMessage(change) }));
+}
+
+/**
+ * Refuse the whole AI Update apply before anything is claimed or applied
+ * when an update names a Fabric work item that is not in this project
+ * (wrong, foreign, or deleted target), naming every such item. Non-Fabric
+ * references (PM card ids, identifiers) keep their apply-time resolution,
+ * which turns an unresolved one into a create. Proposal approvals and
+ * retries use the stricter {@link holdBackInvalidUpdateTargets}.
  */
 export async function assertUpdateTargetsInProject(
 	projectId: string,
 	changes: readonly UpdateTargetChange[],
 ): Promise<void> {
-	const updates = changes.filter(
-		(change): change is UpdateTargetChange & { existingId: string } =>
-			change.action === "update" && isFabricDbId(change.existingId),
+	const invalid = await findInvalidUpdateTargets(
+		projectId,
+		changes.filter((change) => fabricIdOf(change) !== null),
 	);
-	if (updates.length === 0) {
-		return;
+	if (invalid.length > 0) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: invalid.map((entry) => entry.message).join("\n"),
+		});
 	}
-	const found = await db.userStory.findMany({
-		where: {
-			projectId,
-			id: { in: Array.from(new Set(updates.map((u) => u.existingId))) },
-		},
-		select: { id: true },
-	});
-	const inProject = new Set(found.map((story) => story.id));
-	const missing = updates.find((u) => !inProject.has(u.existingId));
-	if (!missing) {
-		return;
+}
+
+/** The updates held back for an invalid target, and why. */
+export interface HeldBackTargets<T> {
+	heldBack: ReadonlySet<T>;
+	refusals: string[];
+}
+
+/**
+ * Split off every update in `pending` whose target is not a work item in
+ * this project: those items are left out of the apply and stay in review,
+ * and `refusals` names each one. Never refuses; a retry with nothing left to
+ * replay returns the proposal to review.
+ */
+export async function partitionUpdateTargets<T extends UpdateTargetChange>(
+	projectId: string,
+	pending: readonly T[],
+): Promise<HeldBackTargets<T>> {
+	const invalid = await findInvalidUpdateTargets(projectId, pending);
+	return {
+		heldBack: new Set(invalid.map((entry) => entry.change)),
+		refusals: invalid.map((entry) => entry.message),
+	};
+}
+
+/**
+ * The indexes of a proposal's open update items that an approval would hold
+ * back, by the rule {@link partitionUpdateTargets} applies, so the review can
+ * say so before anything is submitted. `resolved` items are not checked.
+ */
+export async function listHeldBackUpdateIndexes(
+	projectId: string,
+	changes: readonly UpdateTargetChange[],
+	resolved: ReadonlySet<number>,
+): Promise<number[]> {
+	const open = changes.flatMap((change, index) =>
+		!resolved.has(index) && typeof change.title?.to === "string"
+			? [{ change, index }]
+			: [],
+	);
+	const { heldBack } = await partitionUpdateTargets(
+		projectId,
+		open.map(({ change }) => change),
+	);
+	return open
+		.filter(({ change }) => heldBack.has(change))
+		.map(({ index }) => index);
+}
+
+/**
+ * {@link partitionUpdateTargets} for a proposal approval: the other items
+ * still apply, and the request is refused when every item in `pending` is
+ * held back, since the reviewer is there to pick another target.
+ */
+export async function holdBackInvalidUpdateTargets<
+	T extends UpdateTargetChange,
+>(projectId: string, pending: readonly T[]): Promise<HeldBackTargets<T>> {
+	const targets = await partitionUpdateTargets(projectId, pending);
+	if (
+		targets.refusals.length > 0 &&
+		targets.refusals.length === pending.length
+	) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: targets.refusals.join("\n"),
+		});
 	}
-	const title = missing.title.to.trim().slice(0, TITLE_MAX_LENGTH);
-	const target = missing.existingIdentifier?.trim() || "the selected ticket";
-	throw new ORPCError("BAD_REQUEST", {
-		message: `“${title}” can't update ${target}: it is not a work item in this project. Pick another target or create a new ticket.`,
-	});
+	return targets;
 }
 
 /**

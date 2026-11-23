@@ -44,6 +44,7 @@ import type {
 import {
 	computeAppliedProposalIndexes,
 	isPmTicketMissingError,
+	perChangeFailureClass,
 } from "./backlog-apply-outcome";
 import { BACKLOG_APPLY_CANCELLED_TYPE } from "./backlog-constants";
 import { BACKLOG_APPLY_SYNC_ACTIVITY_OPTIONS } from "./pm-create-activity-options";
@@ -927,7 +928,14 @@ export async function backlogApplyChangesWorkflow(
 				await finalizeProposal({
 					outcome: hadErrors ? "failed" : "applied",
 					appliedChangeIndexes: appliedIndexes,
-					errorClass: hadErrors ? "default" : undefined,
+					errorClass: hadErrors
+						? perChangeFailureClass({
+								applyErrors: applyResult.errors.map(
+									(failure) => failure.error,
+								),
+								failureCount: progress.errors.length,
+							})
+						: undefined,
 					errorMessage: firstErrorMessage,
 					rawApplyError,
 					// Fabric-applied changes whose PM push hit a content

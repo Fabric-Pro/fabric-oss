@@ -63,6 +63,30 @@ it("does not mount the runtime before provider status resolves", () => {
 	expect(screen.queryByText("Runtime mounted")).toBeNull();
 	expect(screen.getByRole("status")).toHaveAttribute("aria-busy", "true");
 });
+it.each([
+	["the organization re-resolves", () => Object.assign(f, { scope: false })],
+	[
+		"the plan status is read again",
+		() => Object.assign(f, { planKnown: false }),
+	],
+	[
+		"provider status is pending again",
+		() => f.query.mockReturnValue({ isPending: true }),
+	],
+])("keeps a mounted runtime mounted while %s", (_label, reresolve) => {
+	const { rerender } = mount();
+	expect(screen.getByText("Runtime mounted")).toBeVisible();
+
+	reresolve();
+	rerender(
+		<PortalAiGate fallback={<p>Configure Portal AI</p>}>
+			<p>Runtime mounted</p>
+		</PortalAiGate>,
+	);
+
+	expect(screen.getByText("Runtime mounted")).toBeVisible();
+	expect(screen.queryByRole("status")).toBeNull();
+});
 it("shows setup instead of mounting a runtime that would reject info/connect", () => {
 	f.query.mockReturnValue({
 		data: { canResolveProvider: false },

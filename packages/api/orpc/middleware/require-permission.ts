@@ -5,7 +5,8 @@
  *   Use for org-scoped procedures.
  *
  * - `requireProjectPermission(key)` — checks either:
- *     (a) the caller's org role (if the project belongs to their active org), or
+ *     (a) the caller's org role (if the project belongs to their active org
+ *         and they created it), or
  *     (b) the caller's ProjectMember row (guest path; populated by the guest
  *         invite flow in Phase 4).
  *   Use for procedures whose input includes a `projectId`.
@@ -150,6 +151,47 @@ export function requirePermission(permission: Permission) {
 }
 
 /**
+ * `requirePermission`'s check for a request without an oRPC tenant context,
+ * such as an agent runtime run: the permission is judged on the caller's role
+ * in the organization their session names, the role `tenantContextMiddleware`
+ * resolves for a procedure. A session that names no organization is personal
+ * context and passes, as it does there. A session naming an organization the
+ * caller has left, or one that is deleted, is refused as that middleware
+ * refuses it.
+ */
+export async function assertSessionOrganizationPermission(
+	permission: Permission,
+	caller: { userId: string; activeOrganizationId: string | null },
+): Promise<void> {
+	if (!caller.activeOrganizationId) {
+		return;
+	}
+	const membership = await getOrganizationMembership(
+		caller.activeOrganizationId,
+		caller.userId,
+	);
+	if (!membership) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "This operation requires an organization context",
+			data: { errorCode: MISSING_ORGANIZATION_CONTEXT_ERROR_CODE },
+		});
+	}
+	if (membership.organization?.deletedAt) {
+		throw new ORPCError("FORBIDDEN", {
+			message: "This organization has been deleted",
+			data: { errorCode: DELETED_ORGANIZATION_ERROR_CODE },
+		});
+	}
+	if (!hasPermission(resolveOrgPermissions(membership.role), permission)) {
+		denyPermission(
+			permission,
+			`Missing required permission: ${permission}`,
+			caller.userId,
+		);
+	}
+}
+
+/**
  * Require a permission on a specific project. The procedure input must include
  * a `projectId: string` field.
  *
@@ -180,17 +222,23 @@ export function requirePermission(permission: Permission) {
  *     new organization project. Remove it and every organization project is
  *     inert from birth: nobody can reach `PROJECT_MEMBERS_MANAGE` to create
  *     the first member row.
+ *
+ *     The bootstrap is the project's CREATOR, and only the creator can open
+ *     the project through this path. Every other organization member it
+ *     resolves is answered NOT_FOUND, as in 4: the project list and page
+ *     (`hasProjectAccess`) do not admit them, and a caller who cannot read a
+ *     project must not be able to change it. Organization admins included —
+ *     an organization role does not open a project on its own.
  *  4. Otherwise, NOT_FOUND — in the same words as an id that names no
  *     project. A caller none of the three paths tie to the project must not
  *     learn that it exists (Fizzy #2639). FORBIDDEN is reserved for a caller
  *     one of the paths DOES tie to the project whose role lacks the permission.
  *
- * THIS GATE IS WIDER THAN `buildProjectAccessWhere`, ON PURPOSE. That predicate
- * (`@repo/database`, behind `getProjectById` and `hasProjectAccess`) has no
- * org-role path. The two answer different questions — this one "may you act",
- * that one "may you discover" — and
+ * So the callers this gate admits are exactly the callers `hasProjectAccess`
+ * admits ("may you discover"); it then asks which permissions they hold ("may
+ * you act"). A handler behind it loads the project by id alone —
  * `packages/api/__tests__/project-scoped-lookup-ownership-ratchet.test.ts`
- * exists to stop anyone collapsing them.
+ * stops one re-scoping that lookup to the caller as owner.
  */
 /**
  * The project-permission decision, extracted from the middleware around it.
@@ -225,7 +273,9 @@ export function requirePermission(permission: Permission) {
  * call there is no binding holder and only the return value carries it.
  *
  * Refusals, in order — existence-hiding stays first:
- *  1. NOT_FOUND for a missing project and for a caller no path ties to it.
+ *  1. NOT_FOUND for a missing project, for a caller no path ties to it, and
+ *     for an organization member who cannot open it (unless the caller opts
+ *     in with `admitUnreachableOrganizationMember`).
  *  2. FORBIDDEN with `DELETED_ORGANIZATION_ERROR_CODE` when the project's
  *     organization is soft-deleted — the same answer the tenant middleware
  *     gives for a deleted workspace, which it could not give here because it
@@ -244,6 +294,17 @@ export async function assertProjectPermission(
 	userId: string,
 	permission: Permission,
 	context?: { allowedProjectIds?: string[] },
+	options?: {
+		/**
+		 * Admit an organization member who cannot open the project. Only for a
+		 * surface that applies its own reach rule right after this check: the
+		 * reports module, where an organization admin inherits Project Editor
+		 * on every project's reports (`modules/reports/lib/report-access.ts`),
+		 * and the to-do linked-work-items read, which answers such a caller
+		 * with an empty result instead of an error.
+		 */
+		admitUnreachableOrganizationMember?: boolean;
+	},
 ): Promise<AuthorizedProject> {
 	const access = await resolveEffectiveProjectPermissions(projectId, userId);
 	if (!access) {
@@ -264,6 +325,21 @@ export async function assertProjectPermission(
 	// a permission denial to a warning, but this is not a permission decision
 	// and must never be downgraded.
 	if (access.source === "none") {
+		throw new ORPCError("NOT_FOUND", {
+			message: PROJECT_NOT_FOUND_MESSAGE,
+		});
+	}
+
+	// REACH BEFORE PERMISSION. An organization member with no active
+	// ProjectMember row on a project they did not create holds permissions
+	// through the org-role fallback, but the project list and page refuse
+	// them. Admitting them here let them change a project they cannot read.
+	// They hear what a caller with no tie hears. Not a permission decision
+	// either, so never downgraded by RBAC_DRY_RUN.
+	if (
+		access.isVisible === false &&
+		!options?.admitUnreachableOrganizationMember
+	) {
 		throw new ORPCError("NOT_FOUND", {
 			message: PROJECT_NOT_FOUND_MESSAGE,
 		});

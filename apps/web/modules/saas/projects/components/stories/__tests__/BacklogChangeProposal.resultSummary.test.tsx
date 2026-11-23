@@ -9,13 +9,14 @@
  * aria-live status region.
  */
 
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
 	BacklogChangeProposal,
 	type ChangeItem,
 } from "../BacklogChangeProposal";
+import { renderWithQueryClient } from "./render-with-query-client";
 
 vi.mock("../../../../../shared/lib/orpc-client", () => ({
 	orpcClient: {
@@ -63,7 +64,7 @@ function buildChange(): ChangeItem {
 async function renderAndApprove(
 	props: Partial<React.ComponentProps<typeof BacklogChangeProposal>> = {},
 ) {
-	const result = render(
+	const result = renderWithQueryClient(
 		<BacklogChangeProposal
 			summary="Test proposal"
 			contextSummary="Captured from an AI Update batch"
@@ -302,16 +303,18 @@ describe("controller-owned approval rendering", () => {
 			approval: { state: "approved" as const, count: 1 },
 			applyProgressMsg: "Applying example item",
 		};
-		const first = render(<BacklogChangeProposal {...props} />);
+		const first = renderWithQueryClient(
+			<BacklogChangeProposal {...props} />,
+		);
 		first.unmount();
-		render(<BacklogChangeProposal {...props} />);
+		renderWithQueryClient(<BacklogChangeProposal {...props} />);
 		expect(screen.getByText("Applying example item")).toBeInTheDocument();
 		expect(
 			screen.queryByRole("button", { name: /apply selected/i }),
 		).not.toBeInTheDocument();
 	});
 	it("renders an unconfirmed apply neutrally in the live region without offering approval", () => {
-		render(
+		renderWithQueryClient(
 			<BacklogChangeProposal
 				{...base}
 				approval={{ state: "approved", count: 1 }}
@@ -341,7 +344,7 @@ describe("controller-owned approval rendering", () => {
 		).not.toBeInTheDocument();
 	});
 	it("restores a failed result as an error rather than pending progress", () => {
-		render(
+		renderWithQueryClient(
 			<BacklogChangeProposal
 				{...base}
 				approval={{ state: "approved", count: 1 }}
@@ -367,7 +370,7 @@ describe("controller-owned approval rendering", () => {
 	});
 	it("keeps approval actionable when the controller returns to reviewing", async () => {
 		const approve = vi.fn();
-		const view = render(
+		const view = renderWithQueryClient(
 			<BacklogChangeProposal
 				{...base}
 				approval={{ state: "reviewing", count: 0 }}

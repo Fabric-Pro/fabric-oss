@@ -1,14 +1,17 @@
 /**
  * A service session whose grant names a meeting's project.
  *
- * It holds the base scopes plus the portal scopes within the ceiling, and the
- * gateway itself keeps every call on that project: a project named anywhere in
+ * It holds the base set's reads plus the grant's scopes within the ceiling, and
+ * the gateway itself keeps every call on that project: a project named anywhere in
  * the arguments, a feature, document or context that lives in another project,
  * and every tool outside the portal and the runtime's own families. The session
  * is not a project connection, so the workflow, frame and workspace tools stay.
  */
 
-import { PARLUME_GRANT_SCOPES } from "@repo/api/lib/agent-service-auth";
+import {
+	PARLUME_GRANT_SCOPES,
+	PARLUME_READ_ONLY_GRANT_SCOPES,
+} from "@repo/api/lib/agent-service-auth";
 import { FABRIC_FRAME_TOOL_DEFINITIONS } from "@repo/temporal/fabric-frame-tool-definitions";
 import { FABRIC_FRAME_VERSION_TOOL_DEFINITIONS } from "@repo/temporal/fabric-frame-version-tool-definitions";
 import { FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS } from "@repo/temporal/fabric-page-discovery-tool-definitions";
@@ -83,17 +86,18 @@ describe("the scopes a service session holds", () => {
 		]);
 	});
 
-	it("adds a project grant's scopes within the ceiling", () => {
+	const BASE_READS = SERVICE_CREDENTIAL_SCOPES.filter((scope) =>
+		scope.endsWith(":read"),
+	);
+	const RUNTIME_WRITES = ["workflows:write", "workflows:run", "frames:write"];
+
+	it("holds the base set's reads plus a project grant's scopes within the ceiling", () => {
 		expect(
 			serviceSessionScopes({
 				projectId: PROJECT,
 				scopes: ["features:read", "features:write"],
 			}),
-		).toEqual([
-			...SERVICE_CREDENTIAL_SCOPES,
-			"features:read",
-			"features:write",
-		]);
+		).toEqual([...BASE_READS, "features:read", "features:write"]);
 	});
 
 	it("adds nothing for scopes that name no project", () => {
@@ -116,7 +120,7 @@ describe("the scopes a service session holds", () => {
 	])("never adds %s, however the grant names it", (scope) => {
 		expect(
 			serviceSessionScopes({ projectId: PROJECT, scopes: [scope] }),
-		).toEqual([...SERVICE_CREDENTIAL_SCOPES]);
+		).toEqual(BASE_READS);
 	});
 
 	it.each(["orgs:read", "mcp:read"])(
@@ -124,9 +128,54 @@ describe("the scopes a service session holds", () => {
 		(scope) => {
 			expect(
 				serviceSessionScopes({ projectId: PROJECT, scopes: [scope] }),
-			).toEqual([...new Set([...SERVICE_CREDENTIAL_SCOPES, scope])]);
+			).toEqual([...new Set([...BASE_READS, scope])]);
 		},
 	);
+
+	it("gives a meeting turn's read-only grant no workflow or frame write", () => {
+		const scopes = serviceSessionScopes({
+			projectId: PROJECT,
+			scopes: PARLUME_READ_ONLY_GRANT_SCOPES,
+		});
+
+		for (const scope of RUNTIME_WRITES) {
+			expect(scopes).not.toContain(scope);
+		}
+		expect(scopes.every((scope) => scope.endsWith(":read"))).toBe(true);
+		expect(
+			scopeSatisfied(
+				scopes,
+				platformToolScope("fabric_execute_workflow"),
+				"service",
+			),
+		).toBe(false);
+	});
+
+	it("keeps the workflow and frame writes for a confirmed change's grant, which names them", () => {
+		const scopes = serviceSessionScopes({
+			projectId: PROJECT,
+			scopes: PARLUME_GRANT_SCOPES,
+		});
+
+		for (const scope of RUNTIME_WRITES) {
+			expect(scopes).toContain(scope);
+		}
+		expect(
+			scopeSatisfied(
+				scopes,
+				platformToolScope("fabric_execute_workflow"),
+				"service",
+			),
+		).toBe(true);
+	});
+
+	it("keeps a chat grant's workflow and frame writes", () => {
+		const scopes = serviceSessionScopes({});
+
+		for (const scope of RUNTIME_WRITES) {
+			expect(scopes).toContain(scope);
+		}
+	});
 
 	it("keeps the ceiling clear of every write to organizations, chats, connected servers, authority and the wildcard", () => {
 		expect(SERVICE_GRANT_MAX_SCOPES).toContain("orgs:read");
@@ -137,11 +186,20 @@ describe("the scopes a service session holds", () => {
 		}
 	});
 
-	it("holds every scope the portal tools need and nothing a tool does not", () => {
+	it("holds every scope the portal tools need and nothing a portal or runtime-family tool does not", () => {
 		const needed = new Set(
 			FABRIC_PORTAL_TOOL_NAMES.map(
 				(name) => platformToolScope(name).scope,
 			),
+		);
+		const runtimeNeeded = new Set(
+			[
+				...FABRIC_WORKFLOW_TOOL_DEFINITIONS,
+				...FABRIC_FRAME_TOOL_DEFINITIONS,
+				...FABRIC_FRAME_VERSION_TOOL_DEFINITIONS,
+				...FABRIC_PAGE_TOOL_DEFINITIONS,
+				...FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS,
+			].map((tool) => platformToolScope(tool.name).scope),
 		);
 		const ceiling = new Set(SERVICE_GRANT_MAX_SCOPES);
 
@@ -151,7 +209,11 @@ describe("the scopes a service session holds", () => {
 			).toBe(true);
 		}
 		for (const scope of ceiling) {
-			expect(needed.has(scope) || scope === "mcp:read").toBe(true);
+			expect(
+				needed.has(scope) ||
+					runtimeNeeded.has(scope) ||
+					scope === "mcp:read",
+			).toBe(true);
 		}
 	});
 

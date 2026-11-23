@@ -22,6 +22,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 	const handlers: Record<string, (...args: unknown[]) => unknown> = {};
 	const mocks = {
 		projectFindUnique: vi.fn(),
+		userStoryFindMany: vi.fn(),
 		architectureDecisionFindMany: vi.fn(),
 		createPendingBacklogProposal: vi.fn(),
 		pendingBacklogProposalUpdate: vi.fn(),
@@ -35,6 +36,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		finalizeProposalApply: vi.fn(),
 		getBoundPromptForAgent: vi.fn(),
 		markProposalApplyDispatched: vi.fn(),
+		returnFailedProposalToReview: vi.fn(),
 		callOrder: [] as string[],
 	};
 	return { handlers, mocks };
@@ -43,6 +45,9 @@ const { handlers, mocks } = vi.hoisted(() => {
 vi.mock("@repo/database", () => ({
 	db: {
 		project: { findUnique: mocks.projectFindUnique },
+		userStory: {
+			findMany: (...args: unknown[]) => mocks.userStoryFindMany(...args),
+		},
 		architectureDecision: {
 			findMany: (...args: unknown[]) =>
 				mocks.architectureDecisionFindMany(...args),
@@ -57,6 +62,7 @@ vi.mock("@repo/database", () => ({
 		},
 	},
 	markProposalApplyDispatched: mocks.markProposalApplyDispatched,
+	returnFailedProposalToReview: mocks.returnFailedProposalToReview,
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	getAppliedChangeIndexes: mocks.getAppliedChangeIndexes,
 	readRejectedChangeIndexes: () => [],
@@ -144,6 +150,18 @@ beforeEach(() => {
 	}
 	mocks.callOrder.length = 0;
 	mocks.claimPendingProposalWithReview.mockResolvedValue(true);
+	// Every update target is a ticket of the project.
+	mocks.userStoryFindMany.mockImplementation(
+		async ({ where }: { where: { OR?: { id?: { in: string[] } }[] } }) =>
+			(where.OR ?? [])
+				.flatMap((clause) => clause.id?.in ?? [])
+				.map((id) => ({
+					id,
+					identifier: "EX-1",
+					title: "Example ticket",
+					externalId: null,
+				})),
+	);
 	mocks.projectFindUnique.mockResolvedValue({
 		id: "project-1",
 		organizationId: "org-1",
@@ -949,7 +967,7 @@ describe("review submission snapshots", () => {
 		const edited = {
 			...baseChange,
 			action: "update",
-			existingId: "example-story",
+			existingId: "c0000000000000000000000001",
 			title: { to: "Edited title" },
 		};
 		await handlers.applyChanges({
@@ -972,6 +990,91 @@ describe("review submission snapshots", () => {
 			approvedChangeIndexes: [2],
 			pmSyncOverrides: { 0: { skip: true } },
 		});
+	});
+	it("holds back a proposal update whose target is not in the project and applies the rest", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			id: "example-proposal",
+			projectId: baseInput.projectId,
+			source: "SCOPE_DOCUMENT",
+			status: "PENDING",
+			proposal: { changes: [baseChange, baseChange, baseChange] },
+			appliedChangeIndexes: [],
+		});
+		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set());
+		mocks.userStoryFindMany.mockResolvedValueOnce([]);
+		const invalid = {
+			...baseChange,
+			action: "update",
+			existingId: "c0000000000000000000000002",
+			existingIdentifier: "EX-404",
+			title: { to: "Rerouted item" },
+		};
+		const result = (await handlers.applyChanges({
+			input: {
+				...baseInput,
+				proposalId: "example-proposal",
+				approvedChanges: [invalid, baseChange],
+				approvedChangeIndexes: [0, 2],
+				pmSyncOverrides: { 1: { skip: true } },
+			},
+			context: ctx,
+		})) as { heldBack?: string[] };
+		const claim = mocks.claimPendingProposalWithReview.mock.calls[0]?.[0];
+		expect(
+			claim.entries.map((e: { selected: boolean }) => e.selected),
+		).toEqual([false, false, true]);
+		expect(claim.entries[2].pmSyncOverride).toEqual({ skip: true });
+		expect(mocks.workflowStart.mock.calls[0]?.[1].args[0]).toMatchObject({
+			approvedChanges: [baseChange],
+			approvedChangeIndexes: [2],
+			pmSyncOverrides: { 0: { skip: true } },
+		});
+		expect(result.heldBack).toEqual([
+			"“Rerouted item” can't update EX-404: it is not a work item in this project. Pick another target or create a new ticket.",
+		]);
+	});
+	it("returns a FAILED proposal to review when its resubmit holds back every item", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			id: "example-proposal",
+			projectId: baseInput.projectId,
+			source: "SCOPE_DOCUMENT",
+			status: "FAILED",
+			applyWorkflowId: "wf-failed",
+			applyReviewId: null,
+			proposal: { changes: [baseChange] },
+			appliedChangeIndexes: [],
+		});
+		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set());
+		mocks.userStoryFindMany.mockResolvedValueOnce([]);
+		mocks.returnFailedProposalToReview.mockResolvedValue(true);
+		const invalid = {
+			...baseChange,
+			action: "update",
+			existingId: "c0000000000000000000000002",
+			existingIdentifier: "EX-404",
+			title: { to: "Rerouted item" },
+		};
+
+		const result = (await handlers.applyChanges({
+			input: {
+				...baseInput,
+				proposalId: "example-proposal",
+				approvedChanges: [invalid],
+				approvedChangeIndexes: [0],
+			},
+			context: ctx,
+		})) as { workflowId: string | null; heldBack?: string[] };
+
+		expect(mocks.returnFailedProposalToReview).toHaveBeenCalledWith(
+			"example-proposal",
+			{ applyWorkflowId: "wf-failed", applyReviewId: null },
+		);
+		expect(result.workflowId).toBeNull();
+		expect(result.heldBack).toEqual([
+			expect.stringContaining("“Rerouted item” can't update EX-404"),
+		]);
+		expect(mocks.claimPendingProposalWithReview).not.toHaveBeenCalled();
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
 	});
 	it("refuses a stale client resubmitting an applied item of a PENDING proposal", async () => {
 		mocks.getPendingBacklogProposal.mockResolvedValue({

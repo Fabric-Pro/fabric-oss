@@ -2,52 +2,110 @@
  * Embedding side of duplicate detection against the Proposal Inbox. The
  * scoring itself is pure and lives in `proposal-duplicate-scoring.ts`.
  *
- * Inbox items have no embedding cache (they are short-lived and change on
- * every merge), so their texts ride in the SAME batched request as the
- * routing corpus's stale ticket re-embeds (`loadRoutingCorpus` `itemTexts`):
- * one embedding pass per call. A project with no tickets loads no corpus, so
- * its inbox texts are embedded in one direct request instead. The item count
- * is capped per call and every text is capped by `buildDetectionText`, which
- * bounds the cost whatever the inbox holds.
+ * Texts to embed, and a feature item's Scope and acceptance-criteria
+ * sections, ride in the SAME batched request as the routing corpus's stale
+ * ticket re-embeds (`loadRoutingCorpus` `itemTexts`): one embedding pass per
+ * call. A project with no tickets loads no corpus, so these texts are
+ * embedded in one direct request instead. Every text is capped where it is
+ * read.
  *
- * Ticket matches follow `stories.checkDuplicate`: the same routing shortlist
- * and, for a shortlist below the duplicate bar, the same routing judge. See
- * `proposal-duplicate-scoring.ts` for the rule.
+ * The inbox check covers every unresolved item of every PENDING proposal.
+ * Item vectors are cached in Upstash (`proposal-item-vector-cache.ts`), and
+ * one call embeds at most `MAX_NEW_INBOX_EMBEDS` uncached items: it returns
+ * the flags of the items it could compare and how many are still waiting, and
+ * the client asks again until none are.
+ *
+ * A manual entry's check puts the entry's own text and sections first in the
+ * request, and embeds an inbox item's section only when the entry has the
+ * same section, since no other section can weigh the pair. It embeds its
+ * inbox items fresh, so it reads at most `MAX_INBOX_ITEMS_SCANNED` of them.
+ *
+ * A ticket's section vectors come from the roadmap scan's focus cache. A
+ * section whose cached vector no longer matches its text or the embedding
+ * model is not re-embedded here; that ticket is compared on its whole
+ * document until the next roadmap scan refreshes the cache.
+ *
+ * A candidate is shown only once the roadmap scan's verifier has confirmed
+ * it. The inbox check reads the stored verdicts and starts the verification
+ * workflow for the candidates with no verdict on their current texts; their
+ * items are reported as still being checked until a later call reads the
+ * verdicts. A pair whose verification keeps failing waits, and its item is
+ * not reported as being checked meanwhile. A manual entry's candidates are
+ * verified inline on its final check, and the verdicts kept for a day
+ * (`manual-entry-verification.ts`), since the entry is never stored.
  */
 
+import { resolveModelWithProvider } from "@repo/ai";
 import {
-	buildDetectionText,
+	baseModelName,
+	type DetectionItem,
+	detectionTextForStory,
+	detectionVerdictHash,
+	extractFocusTexts,
+	type FocusTexts,
+	hashDetectionText,
+	type InboxItemRef,
+	inboxItemSubject,
+	listProposalItemDuplicateVerdicts,
+	listStoryDuplicateFocusEmbeddings,
 	listUnresolvedPendingProposalItems,
+	MAX_LLM_VERIFICATIONS,
+	PAIR_FOCUS_KINDS,
+	type PairFocusKind,
 	type PendingProposalMatchItem,
-	routingConfidenceThreshold,
+	storySubject,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { generateEmbeddings } from "@repo/rag";
 import {
 	type EmptyRoutingCorpus,
-	judgeRoutingItem,
 	loadRoutingCorpus,
 	type ReadyRoutingCorpus,
-	resolveRoutingModels,
-	type RoutingAlternative,
-	routingShortlist,
 } from "@repo/temporal/backlog-routing-core";
+import { startInboxDuplicateVerification } from "@repo/temporal/inbox-duplicate-verification-start";
+import { waitUntil } from "@vercel/functions";
+import { confirmManualEntryCandidates } from "./manual-entry-verification";
 import {
 	buildDuplicateFlags,
-	confidentTickets,
-	judgeBand,
+	candidateMatches,
 	MAX_MANUAL_ENTRY_MATCHES,
 	type ProposalDuplicateFlag,
 	type ProposalInboxMatch,
-	rankSimilar,
+	rankCandidates,
+	type ScoredInboxItem,
+	type ScoredTicket,
+	settleCandidates,
 } from "./proposal-duplicate-scoring";
+import {
+	type ItemVectorScope,
+	type ItemVectors,
+	itemVectorHash,
+	readCachedItemVectors,
+	writeCachedItemVectors,
+} from "./proposal-item-vector-cache";
 
-/** Inbox items embedded per call, newest proposals first. */
-export const MAX_INBOX_ITEMS_SCANNED = 150;
+/**
+ * Inbox items a manual-create check embeds, newest proposals first. Sized so
+ * one call stays one embedding request in the usual case: each item is at
+ * most ~3,200 characters of text plus two sections of at most
+ * `MAX_FOCUS_CHARS`, and most are far shorter.
+ */
+const MAX_INBOX_ITEMS_SCANNED = 150;
 
-/** How an inbox item was captured, as the judge prompt renders it. */
-const INBOX_ITEM_REASONING =
-	"Proposed in the Proposal Inbox as a new roadmap work item.";
+/**
+ * Uncached inbox items the inbox check embeds per call, newest proposals
+ * first; the rest wait for the next call. Smaller than
+ * `MAX_INBOX_ITEMS_SCANNED`, so a call that also re-embeds stale tickets
+ * stays well inside the request deadline.
+ */
+export const MAX_NEW_INBOX_EMBEDS = 100;
+
+type FocusVectors = Partial<Record<PairFocusKind, number[]>>;
+
+type SectionHashes = Partial<Record<PairFocusKind, string>>;
+
+/** A subject's whole-text vector and its section vectors. */
+type SubjectVectors = ItemVectors;
 
 interface EmbeddingScope {
 	projectId: string;
@@ -62,31 +120,143 @@ export interface InboxMatchEntry {
 	text: string;
 }
 
-/** The unresolved inbox items a duplicate check scans, with their texts. */
-export async function listInboxMatchEntries(
+/** Unresolved inbox items with their texts; every one without `maxItems`. */
+async function readInboxMatchEntries(
 	projectId: string,
+	signal: AbortSignal | undefined,
+	maxItems?: number,
 ): Promise<InboxMatchEntry[]> {
 	const items = await listUnresolvedPendingProposalItems({
 		projectId,
-		maxItems: MAX_INBOX_ITEMS_SCANNED,
+		maxItems,
+		signal,
 	});
 	return items
-		.map((item) => ({
-			item,
-			text: buildDetectionText(item.title, item.description),
-		}))
+		.map((item) => ({ item, text: detectionTextForStory(item) }))
 		.filter((entry) => entry.text.length > 0);
+}
+
+/** The unresolved inbox items a manual-create check scans, with their texts. */
+export async function listInboxMatchEntries(
+	projectId: string,
+	signal?: AbortSignal,
+): Promise<InboxMatchEntry[]> {
+	return await readInboxMatchEntries(
+		projectId,
+		signal,
+		MAX_INBOX_ITEMS_SCANNED,
+	);
+}
+
+/** A text compared for duplicates, with a feature's comparable sections. */
+interface DetectionSubject {
+	text: string;
+	focusTexts: FocusTexts | null;
+}
+
+/**
+ * A manually entered work item as the roadmap candidate rule reads it. The
+ * create dialog collects only a description and the classifier picks the
+ * kind on create, so the entry is read as a feature, the kind every non-bug
+ * create gets: a Scope or acceptance-criteria section in the description
+ * weighs it against an inbox feature with the same section, and a
+ * description with neither is compared on its whole text.
+ */
+export function manualEntry(
+	itemText: string,
+	description: string,
+): DetectionSubject {
+	return {
+		text: itemText,
+		focusTexts: extractFocusTexts({ kind: "FEATURE", description }),
+	};
+}
+
+/** Every subject's sections, in subject order. */
+function focusSections(subjects: readonly DetectionSubject[]) {
+	return subjects.flatMap((subject, index) =>
+		PAIR_FOCUS_KINDS.flatMap((kind) => {
+			const text = subject.focusTexts?.[kind];
+			return text ? [{ index, kind, text }] : [];
+		}),
+	);
+}
+
+/** The texts one embedding request carries: every subject's text, in order,
+ * then every subject's sections. */
+function detectionBatchTexts(subjects: readonly DetectionSubject[]): string[] {
+	return [
+		...subjects.map((subject) => subject.text),
+		...focusSections(subjects).map((section) => section.text),
+	];
+}
+
+/** Each subject's vectors, read back from the embeddings of
+ * `detectionBatchTexts(subjects)`. */
+function readDetectionBatch(
+	subjects: readonly DetectionSubject[],
+	embedded: readonly number[][],
+): SubjectVectors[] {
+	const read: SubjectVectors[] = subjects.map((_, index) => ({
+		embedding: embedded[index] ?? [],
+	}));
+	focusSections(subjects).forEach((section, position) => {
+		const vector = embedded[subjects.length + position];
+		const target = read[section.index];
+		if (vector && target) {
+			target.focusVectors = {
+				...target.focusVectors,
+				[section.kind]: vector,
+			};
+		}
+	});
+	return read;
+}
+
+/** The inbox items as subjects: their text, and their sections. */
+function inboxSubjects(
+	entries: readonly InboxMatchEntry[],
+): DetectionSubject[] {
+	return entries.map((entry) => ({
+		text: entry.text,
+		focusTexts: entry.item.focusTexts,
+	}));
+}
+
+/**
+ * A manual check's subjects: the entry first, then the inbox items, each
+ * keeping only the sections the entry also has. No other section can weigh
+ * the pair, so a description with no section adds nothing to the request.
+ */
+function manualEntrySubjects(
+	entry: DetectionSubject,
+	entries: readonly InboxMatchEntry[],
+): DetectionSubject[] {
+	return [
+		entry,
+		...inboxSubjects(entries).map((subject) => {
+			const shared: FocusTexts = {};
+			for (const kind of PAIR_FOCUS_KINDS) {
+				const text = subject.focusTexts?.[kind];
+				if (text && entry.focusTexts?.[kind]) {
+					shared[kind] = text;
+				}
+			}
+			return { text: subject.text, focusTexts: shared };
+		}),
+	];
 }
 
 /**
  * The texts a manual-create check passes to `loadRoutingCorpus`: the entry
- * first, then the inbox items, so all of them are embedded in one request.
+ * first, then the inbox items, then the sections compared, so all of them
+ * are embedded in one request and `itemEmbeddings[0]` is the entry's.
  */
 export function manualEntryCorpusTexts(
-	itemText: string,
+	entry: DetectionSubject,
 	entries: readonly InboxMatchEntry[],
 ): string[] {
-	return [itemText, ...entries.map((entry) => entry.text)];
+	return detectionBatchTexts(manualEntrySubjects(entry, entries));
 }
 
 /** What the matcher reads from a loaded `RoutingCorpus`. */
@@ -94,16 +264,12 @@ type CorpusItemEmbeddings =
 	| EmptyRoutingCorpus
 	| Pick<ReadyRoutingCorpus, "kind" | "itemEmbeddings">;
 
-/** The embeddings of `texts`: from the corpus batch, else one request. */
-async function embedItemTexts(
+/** `texts` embedded in one request of their own, with the model used. */
+async function embedDirectly(
 	texts: string[],
-	corpus: CorpusItemEmbeddings,
 	scope: EmbeddingScope,
-): Promise<number[][]> {
-	if (corpus.kind === "ready") {
-		return corpus.itemEmbeddings;
-	}
-	const { embeddings } = await generateEmbeddings(
+): Promise<{ embeddings: number[][]; model: string }> {
+	return await generateEmbeddings(
 		texts,
 		{
 			userId: scope.userId,
@@ -114,211 +280,437 @@ async function embedItemTexts(
 		undefined,
 		scope.abortSignal,
 	);
-	return embeddings;
 }
 
+/** The embeddings of `texts`: from the corpus batch, else one request. */
+async function embedItemTexts(
+	texts: string[],
+	corpus: CorpusItemEmbeddings,
+	scope: EmbeddingScope,
+): Promise<number[][]> {
+	if (corpus.kind === "ready") {
+		return corpus.itemEmbeddings;
+	}
+	return (await embedDirectly(texts, scope)).embeddings;
+}
+
+/** A manual entry's inbox matches, and its candidates left unverified. */
+export interface ManualEntryInboxMatches {
+	matches: ProposalInboxMatch[];
+	/** Candidates with no kept verdict, left by a check that does not
+	 * verify; a check that verifies decides them. */
+	unverified: number;
+}
+
+const NO_MANUAL_ENTRY_MATCHES: ManualEntryInboxMatches = {
+	matches: [],
+	unverified: 0,
+};
+
 /**
- * Pending inbox items similar to a manually entered work item, strongest
- * first. `corpus` was loaded with `manualEntryCorpusTexts(itemText,
- * entries)`. Throws on an embedding failure; the caller decides how that
- * degrades.
+ * Pending inbox items a manually entered work item may duplicate: the
+ * candidates the roadmap candidate rule selects, strongest first, that the
+ * roadmap scan's verifier confirms (`confirmManualEntryCandidates`), each
+ * with the rule's score. Without `verify`, only the candidates a kept
+ * verdict confirmed are listed. The entry is scored as created now.
+ * `corpus` was loaded with `manualEntryCorpusTexts(entry, entries)`. Throws
+ * on an embedding failure; the caller decides how that degrades.
  */
 export async function findProposalInboxMatches(
 	params: EmbeddingScope & {
-		itemText: string;
+		entry: DetectionSubject;
 		entries: readonly InboxMatchEntry[];
 		corpus: CorpusItemEmbeddings;
+		verify: boolean;
 	},
-): Promise<ProposalInboxMatch[]> {
+): Promise<ManualEntryInboxMatches> {
 	if (params.entries.length === 0) {
-		return [];
+		return NO_MANUAL_ENTRY_MATCHES;
 	}
-	const [query, ...vectors] = await embedItemTexts(
-		manualEntryCorpusTexts(params.itemText, params.entries),
-		params.corpus,
-		params,
+	const subjects = manualEntrySubjects(params.entry, params.entries);
+	const [query, ...vectors] = readDetectionBatch(
+		subjects,
+		await embedItemTexts(
+			detectionBatchTexts(subjects),
+			params.corpus,
+			params,
+		),
 	);
 	if (!query) {
-		return [];
+		return NO_MANUAL_ENTRY_MATCHES;
 	}
-	const candidates = params.entries.map((entry, index) => ({
-		...entry.item,
-		embedding: vectors[index] ?? [],
+	const entry: DetectionItem = {
+		storyId: "manual-entry",
+		createdAt: new Date(),
+		...query,
+	};
+	const candidates = params.entries.map(({ item }, index) => ({
+		item,
+		detection: inboxDetection(item, vectors[index]),
 	}));
-	return rankSimilar(query, candidates, MAX_MANUAL_ENTRY_MATCHES).map(
-		({ candidate, similarity }) => ({
-			proposalId: candidate.proposalId,
-			changeIndex: candidate.changeIndex,
-			title: candidate.title,
-			summary: candidate.proposalSummary,
-			source: candidate.source,
-			similarity,
-		}),
-	);
-}
-
-/** Resolves to null once `signal` aborts; never rejects. */
-function abandonedOn(signal: AbortSignal): Promise<null> {
-	return new Promise((resolve) => {
-		if (signal.aborted) {
-			resolve(null);
-			return;
-		}
-		signal.addEventListener("abort", () => resolve(null), { once: true });
+	const ranked = rankCandidates(entry, candidates, MAX_MANUAL_ENTRY_MATCHES);
+	if (ranked.length === 0) {
+		return NO_MANUAL_ENTRY_MATCHES;
+	}
+	const { confirmed, unverified } = await confirmManualEntryCandidates({
+		scope: params,
+		entry: params.entry,
+		candidates: ranked.map(({ candidate, found }) => ({
+			item: candidate.item,
+			found,
+		})),
+		verify: params.verify,
 	});
+	const matches = ranked
+		.filter((_, index) => confirmed[index])
+		.map(({ candidate: { item }, found }) => ({
+			proposalId: item.proposalId,
+			changeIndex: item.changeIndex,
+			title: item.title,
+			summary: item.proposalSummary,
+			source: item.source,
+			similarity: found.score,
+		}));
+	return { matches, unverified };
 }
 
 /**
- * The routing judge's verdict for each item in `band` (positions into
- * `texts`), as `stories.checkDuplicate` runs it: the target of an `enrich`
- * verdict, by position. A `create` or `failed` verdict, a failed model
- * resolution, or the judge stage's abort adds nothing; the stage never
- * throws.
+ * The project's tickets as the roadmap candidate rule scores them: their
+ * whole-document vectors from the corpus and, for a feature, the section
+ * vectors the roadmap scan cached, used only while they still match the
+ * section's text and the corpus's embedding model.
  */
-async function verifyBand(
-	params: Omit<EmbeddingScope, "abortSignal"> & {
-		logPrefix: string;
-		corpus: ReadyRoutingCorpus;
-		texts: readonly string[];
-		vectors: readonly number[][];
-		band: readonly number[];
-		judgeSignal: AbortSignal;
-	},
-): Promise<Map<number, RoutingAlternative>> {
-	const verified = new Map<number, RoutingAlternative>();
-	if (params.band.length === 0) {
-		return verified;
+async function scoredTickets(
+	projectId: string,
+	corpus: ReadyRoutingCorpus,
+): Promise<ScoredTicket[]> {
+	const sectionHashes = new Map<string, SectionHashes>();
+	for (const story of corpus.storyById.values()) {
+		const texts = extractFocusTexts(story);
+		if (!texts) {
+			continue;
+		}
+		const hashes: SectionHashes = {};
+		for (const kind of PAIR_FOCUS_KINDS) {
+			const text = texts[kind];
+			if (text) {
+				hashes[kind] = hashDetectionText(text);
+			}
+		}
+		sectionHashes.set(story.id, hashes);
 	}
-	const abandoned = abandonedOn(params.judgeSignal);
-	const models = await Promise.race([
-		resolveRoutingModels({
-			userId: params.userId,
-			organizationId: params.organizationId,
-			projectId: params.projectId,
-			logPrefix: params.logPrefix,
-		}).catch(() => null),
-		abandoned,
-	]);
-	if (!models) {
-		logger.warn(`${params.logPrefix} judge stage skipped`, {
-			projectId: params.projectId,
-			items: params.band.length,
-			aborted: params.judgeSignal.aborted,
-		});
-		return verified;
+	const focusVectors = new Map<string, FocusVectors>();
+	if (sectionHashes.size > 0) {
+		for (const row of await listStoryDuplicateFocusEmbeddings(projectId)) {
+			if (
+				row.model === corpus.model &&
+				sectionHashes.get(row.storyId)?.[row.kind] === row.contentHash
+			) {
+				focusVectors.set(row.storyId, {
+					...focusVectors.get(row.storyId),
+					[row.kind]: row.embedding,
+				});
+			}
+		}
 	}
+	return corpus.candidateVectors.flatMap((candidate): ScoredTicket[] => {
+		const story = corpus.storyById.get(candidate.id);
+		if (!story) {
+			return [];
+		}
+		const detection: DetectionItem = {
+			storyId: story.id,
+			embedding: candidate.embedding,
+			createdAt: story.createdAt,
+			focusVectors: focusVectors.get(story.id),
+		};
+		return [
+			{
+				storyId: story.id,
+				identifier: story.identifier,
+				title: story.title,
+				detection,
+				verdictHash: detectionVerdictHash(storySubject(story)),
+			},
+		];
+	});
+}
 
-	const verdicts = await Promise.all(
-		params.band.map((index) =>
-			Promise.race([
-				judgeRoutingItem({
-					itemText: params.texts[index] ?? "",
-					analyzerReasoning: INBOX_ITEM_REASONING,
-					itemEmbedding: params.vectors[index] ?? [],
-					candidateVectors: params.corpus.candidateVectors,
-					storyById: params.corpus.storyById,
-					textByStoryId: params.corpus.textByStoryId,
-					judge: models.judge,
-					decisionModel: models.decisionModel,
-					threshold: routingConfidenceThreshold(),
-					userId: params.userId,
-					organizationId: params.organizationId,
-					projectId: params.projectId,
-					logPrefix: params.logPrefix,
-					abortSignal: params.judgeSignal,
-				}),
-				abandoned,
-			]),
-		),
-	);
-	let failed = 0;
-	let unfinished = 0;
-	verdicts.forEach((verdict, position) => {
-		const index = params.band[position];
-		if (verdict === null) {
-			unfinished += 1;
-		} else if (verdict.kind === "failed") {
-			failed += 1;
-		} else if (verdict.kind === "enrich" && index !== undefined) {
-			verified.set(index, verdict.target);
+/** An inbox item as the roadmap candidate rule scores it. */
+function inboxDetection(
+	item: PendingProposalMatchItem,
+	vectors: SubjectVectors | undefined,
+): DetectionItem {
+	return {
+		storyId: `${item.proposalId}:${item.changeIndex}`,
+		embedding: vectors?.embedding ?? [],
+		createdAt: item.createdAt,
+		focusVectors: vectors?.focusVectors,
+	};
+}
+
+/** The inbox items as the roadmap candidate rule scores them. */
+function scoredInboxItems(
+	entries: readonly InboxMatchEntry[],
+	vectors: readonly SubjectVectors[],
+): ScoredInboxItem[] {
+	return entries.map(({ item }, index) => ({
+		proposalId: item.proposalId,
+		changeIndex: item.changeIndex,
+		title: item.title,
+		detection: inboxDetection(item, vectors[index]),
+		verdictHash: detectionVerdictHash(inboxItemSubject(item)),
+	}));
+}
+
+/** One inbox check: the flags found, and what is left to compare. */
+export interface InboxDuplicateCheck {
+	/** Only items with at least one confirmed match. */
+	flags: ProposalDuplicateFlag[];
+	/** Items not compared yet because their vectors are still to be
+	 * embedded; a later call compares them. Zero once the whole inbox is. */
+	stillChecking: number;
+	/** Items compared whose candidates still wait for the verifier; it runs
+	 * in the background, and a later call shows its verdicts. */
+	verifying: number;
+	/** Every item without a final answer yet, for either reason. */
+	checking: InboxItemRef[];
+}
+
+/** No flags and nothing left: what the check returns when it cannot use the
+ * vector cache, so the review goes on without flags. */
+const NOTHING_TO_FLAG: InboxDuplicateCheck = {
+	flags: [],
+	stillChecking: 0,
+	verifying: 0,
+	checking: [],
+};
+
+/**
+ * The first uncached subject of each hash, newest proposals first, at most
+ * `MAX_NEW_INBOX_EMBEDS` of them: what this call embeds.
+ */
+function subjectsToEmbed(
+	subjects: readonly DetectionSubject[],
+	hashes: readonly string[],
+	cached: ReadonlyMap<string, SubjectVectors>,
+): Map<string, DetectionSubject> {
+	const toEmbed = new Map<string, DetectionSubject>();
+	hashes.forEach((hash, index) => {
+		const subject = subjects[index];
+		if (
+			subject &&
+			!cached.has(hash) &&
+			!toEmbed.has(hash) &&
+			toEmbed.size < MAX_NEW_INBOX_EMBEDS
+		) {
+			toEmbed.set(hash, subject);
 		}
 	});
-	if (failed > 0 || unfinished > 0) {
-		logger.warn(`${params.logPrefix} judge stage incomplete`, {
-			projectId: params.projectId,
-			items: params.band.length,
-			failed,
-			unfinished,
-		});
-	}
-	return verified;
+	return toEmbed;
 }
 
 /**
  * Possible duplicates for every unresolved create item of the project's
- * PENDING proposals, in one embedding pass: roadmap tickets, and the other
- * inbox items, siblings included.
+ * PENDING proposals: roadmap tickets, and the other inbox items, siblings
+ * included.
  *
- * A ticket on an item's routing shortlist at or above the duplicate bar is
- * a match outright. Items whose best ticket is below it go to the routing
- * judge (at most `MAX_VERIFIED_INBOX_ITEMS`, in parallel, under
- * `judgeSignal`), and only an `enrich` verdict adds its target. When the
- * judge stage aborts, the matches found without it are returned. Throws
- * only on a wholesale load or embedding failure.
+ * Each item's vectors come from the Upstash cache, or are embedded in this
+ * call's one embedding pass, at most `MAX_NEW_INBOX_EMBEDS` new items per
+ * call. Items still without vectors are counted in `stillChecking` and
+ * compared on a later call. Without a readable cache the check returns no
+ * flags and nothing to wait for, so the inbox is never re-embedded on every
+ * call. Vectors the cache could not store still flag this call's result;
+ * they are embedded again on the next call.
+ *
+ * `beforeEmbed` runs, after the cache read, just before the call's one
+ * embedding request: when it has inbox items to embed or stale roadmap
+ * tickets to re-embed. A call with every vector in hand sends no request
+ * and does not run it. It refuses the call by throwing.
+ *
+ * Only a ticket or inbox item the roadmap candidate rule selects, or the
+ * verifier flagged before, and the verifier flagged on both current texts,
+ * is a match. A candidate with no such verdict is sent to the verification
+ * workflow and its item is counted in `verifying`. Throws only on a
+ * wholesale load or embedding failure.
  */
 export async function detectInboxDuplicates(
 	params: EmbeddingScope & {
 		maxStaleEmbeds: number;
 		logPrefix: string;
-		judgeSignal: AbortSignal;
+		beforeEmbed?: () => Promise<void>;
 	},
-): Promise<ProposalDuplicateFlag[]> {
-	const entries = await listInboxMatchEntries(params.projectId);
+): Promise<InboxDuplicateCheck> {
+	const entries = await readInboxMatchEntries(
+		params.projectId,
+		params.abortSignal,
+	);
 	if (entries.length === 0) {
-		return [];
+		return NOTHING_TO_FLAG;
 	}
-	const texts = entries.map((entry) => entry.text);
+	const resolved = await resolveModelWithProvider("EMBEDDING", {
+		userId: params.userId,
+		organizationId: params.organizationId,
+	});
+	const cacheScope: ItemVectorScope = {
+		organizationId: params.organizationId ?? null,
+		projectId: params.projectId,
+		model: baseModelName(resolved.modelString),
+	};
+	const subjects = inboxSubjects(entries);
+	const hashes = subjects.map(itemVectorHash);
+	const vectorsByHash = await readCachedItemVectors(cacheScope, hashes);
+	if (!vectorsByHash) {
+		logger.warn(
+			`${params.logPrefix} item vector cache unavailable; no flags`,
+			{ projectId: params.projectId },
+		);
+		return NOTHING_TO_FLAG;
+	}
+
+	const toEmbed = subjectsToEmbed(subjects, hashes, vectorsByHash);
+	const embedSubjects = Array.from(toEmbed.values());
+	const embeddedTexts = detectionBatchTexts(embedSubjects);
 	const corpus = await loadRoutingCorpus({
 		projectId: params.projectId,
 		userId: params.userId,
 		organizationId: params.organizationId,
-		itemTexts: texts,
+		itemTexts: embeddedTexts,
 		logPrefix: params.logPrefix,
 		maxStaleEmbeds: params.maxStaleEmbeds,
 		abortSignal: params.abortSignal,
+		beforeEmbed: params.beforeEmbed,
 	});
-	const vectors = await embedItemTexts(texts, corpus, params);
-	const shortlists = vectors.map((vector) =>
-		corpus.kind === "ready" ? routingShortlist(vector, corpus) : [],
-	);
-	const verified =
-		corpus.kind === "ready"
-			? await verifyBand({
-					projectId: params.projectId,
-					userId: params.userId,
-					organizationId: params.organizationId,
-					logPrefix: params.logPrefix,
-					corpus,
-					texts,
-					vectors,
-					band: judgeBand(shortlists),
-					judgeSignal: params.judgeSignal,
-				})
-			: new Map<number, RoutingAlternative>();
+	if (corpus.kind === "ready" && corpus.model !== cacheScope.model) {
+		logger.warn(`${params.logPrefix} embedding model changed mid-check`, {
+			projectId: params.projectId,
+		});
+		return NOTHING_TO_FLAG;
+	}
+	if (embedSubjects.length > 0) {
+		// An empty roadmap sent no request: the items are embedded here.
+		if (corpus.kind === "empty") {
+			await params.beforeEmbed?.();
+		}
+		const embedded =
+			corpus.kind === "ready"
+				? corpus.itemEmbeddings
+				: await embedDirectlyAs(
+						cacheScope.model,
+						embeddedTexts,
+						params,
+					);
+		if (!embedded) {
+			logger.warn(
+				`${params.logPrefix} embedding model changed mid-check`,
+				{ projectId: params.projectId },
+			);
+			return NOTHING_TO_FLAG;
+		}
+		const fresh = new Map<string, SubjectVectors>();
+		const hashesToEmbed = Array.from(toEmbed.keys());
+		const batch = readDetectionBatch(embedSubjects, embedded);
+		batch.forEach((vectors, index) => {
+			const hash = hashesToEmbed[index];
+			if (hash && vectors.embedding.length > 0) {
+				fresh.set(hash, vectors);
+			}
+		});
+		if (!(await writeCachedItemVectors(cacheScope, fresh))) {
+			logger.warn(`${params.logPrefix} item vectors not stored`, {
+				projectId: params.projectId,
+			});
+		}
+		for (const [hash, vectors] of fresh) {
+			vectorsByHash.set(hash, vectors);
+		}
+	}
 
-	return buildDuplicateFlags({
-		items: entries.map(({ item }, index) => {
-			const target = verified.get(index);
-			return {
+	const ready = entries.flatMap((entry, index) => {
+		const vectors = vectorsByHash.get(hashes[index] ?? "");
+		return vectors ? [{ entry, vectors }] : [];
+	});
+	const items = scoredInboxItems(
+		ready.map(({ entry }) => entry),
+		ready.map(({ vectors }) => vectors),
+	);
+	const verdicts = await listProposalItemDuplicateVerdicts(params.projectId);
+	const candidates = candidateMatches({
+		items,
+		tickets:
+			corpus.kind === "ready"
+				? await scoredTickets(params.projectId, corpus)
+				: [],
+		verdicts,
+	});
+	const settled = settleCandidates(candidates, verdicts, Date.now());
+	// The verdicts are in hand: a slow or unreachable Temporal never holds
+	// them back. The start keeps running past the response (`waitUntil`),
+	// and logs its own failure.
+	const start = startInboxDuplicateVerification({
+		projectId: params.projectId,
+		userId: params.userId,
+		organizationId: params.organizationId,
+		pairs: settled.unverified.slice(0, MAX_LLM_VERIFICATIONS),
+	});
+	waitUntil(start);
+	await waitAtMost(START_VERIFICATION_WAIT_MS, start);
+	const verifyingItems = items.filter((_, index) => settled.waiting[index]);
+	const unembedded = entries.filter(
+		(_, index) => !vectorsByHash.has(hashes[index] ?? ""),
+	);
+	const stillChecking = unembedded.length;
+	logger.info(`${params.logPrefix} inbox checked`, {
+		projectId: params.projectId,
+		items: entries.length,
+		embedded: embedSubjects.length,
+		stillChecking,
+		verifying: verifyingItems.length,
+		unverifiedPairs: settled.unverified.length,
+	});
+	return {
+		flags: buildDuplicateFlags({
+			items: items.map((item, index) => ({
 				proposalId: item.proposalId,
 				changeIndex: item.changeIndex,
-				title: item.title,
-				embedding: vectors[index] ?? [],
-				storyMatches: [
-					...confidentTickets(shortlists[index] ?? []),
-					...(target ? [target] : []),
-				],
-			};
+				matches: settled.matches[index] ?? [],
+			})),
 		}),
-	});
+		stillChecking,
+		verifying: verifyingItems.length,
+		checking: [
+			...unembedded.map(({ item }) => itemRef(item)),
+			...verifyingItems.map(itemRef),
+		],
+	};
+}
+
+function itemRef(item: InboxItemRef): InboxItemRef {
+	return { proposalId: item.proposalId, changeIndex: item.changeIndex };
+}
+
+/** The longest the inbox check waits for the verification to start. */
+export const START_VERIFICATION_WAIT_MS = 1_000;
+
+/** Waits for `work` at most `ms`; past that it keeps running unawaited. */
+async function waitAtMost(ms: number, work: Promise<void>): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	await Promise.race([
+		work,
+		new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, ms);
+		}),
+	]);
+	clearTimeout(timer);
+}
+
+/** `texts` embedded directly, or null when the provider answered with a
+ * model other than the one the cache is keyed on. */
+async function embedDirectlyAs(
+	model: string,
+	texts: string[],
+	scope: EmbeddingScope,
+): Promise<number[][] | null> {
+	const embedded = await embedDirectly(texts, scope);
+	return embedded.model === model ? embedded.embeddings : null;
 }

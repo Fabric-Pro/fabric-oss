@@ -650,6 +650,12 @@
 			"accept": "Einladung ansehen",
 			"subject": "Fabric AI: Einladung zur Zusammenarbeit an einem Projekt"
 		},
+		"parlumeNotesReady": {
+			"subject": "Meeting-Notizen zu \"{meetingName}\" sind fertig",
+			"headline": "Ihre Meeting-Notizen sind fertig",
+			"body": "Die Notizen von Parlume zu „{meetingName}“ in „{projectName}“ sind fertig. Öffnen Sie die Parlume-Seite, um sie zu lesen.",
+			"cta": "Notizen lesen"
+		},
 		"reportExecutionReady": {
 			"subject": "Ihr Bericht \"{instanceName}\" ist fertig",
 			"headline": "Ihr Bericht ist fertig",
@@ -1150,7 +1156,9 @@
 				"impersonation": "über Identitätswechsel",
 				"deletedResource": "gelöscht",
 				"system": "System",
-				"apiKey": "API-Schlüssel"
+				"apiKey": "API-Schlüssel",
+				"agent": "KI-Agent",
+				"actingFor": "für {email}"
 			},
 			"outcomes": {
 				"success": "Erfolg",
@@ -1494,10 +1502,24 @@
 						"sync_stopped": "Meeting-Synchronisierung gestoppt oder fortgesetzt"
 					},
 					"parlume": {
-						"action_confirmed": "Parlume-Aktion ausgeführt",
+						"action_confirmed": "Parlume-Änderung bestätigt",
+						"action_dismissed": "Parlume-Änderung verworfen",
+						"action_executed": "Bestätigte Parlume-Änderung ausgeführt",
+						"action_item_proposed": "Parlume-Aktion vorgeschlagen",
 						"auto_join_changed": "Automatische Parlume-Teilnahme geändert",
+						"confidential_cleared": "Vertraulich-Markierung des Parlume-Meetings entfernt",
+						"confidential_marked": "Parlume-Meeting als vertraulich markiert",
+						"listening_paused": "Parlume-Zuhören pausiert",
+						"listening_resumed": "Parlume-Zuhören fortgesetzt",
+						"notes_regenerated": "Parlume-Notizen neu erstellt",
+						"reading_continued": "Parlume-Vorlesen fortgesetzt",
+						"request_answered": "Parlume hat eine Meeting-Anfrage beantwortet",
+						"session_deleted": "Parlume-Sitzung gelöscht",
 						"session_started": "Parlume-Meeting-Sitzung gestartet",
-						"session_stopped": "Beenden der Parlume-Meeting-Sitzung angefordert"
+						"session_stopped": "Beenden der Parlume-Meeting-Sitzung angefordert",
+						"speech_stopped": "Parlume-Antwort gestoppt",
+						"suggestion_dismissed": "Parlume-Vorschlag verworfen",
+						"suggestion_spoken": "Parlume-Vorschlag im Meeting gesagt"
 					},
 					"invitation": {
 						"widget_dismissed": "Invitation widget dismissed"
@@ -7782,6 +7804,7 @@
 		},
 		"warnings": {
 			"duplicate": "Sie haben für dieses Datum bereits {duration} {activity} in {target} erfasst. Ist das eine andere Arbeit?",
+			"duplicateUnlisted": "Sie haben bereits Zeit erfasst, die diesem Eintrag entspricht. Ist das eine andere Arbeit?",
 			"duplicateConfirm": "Ja, hinzufügen",
 			"overLimit": "Damit kommt {date} auf {total}. Beibehalten?",
 			"overLimitConfirm": "Ja, beibehalten",

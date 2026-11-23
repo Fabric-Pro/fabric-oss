@@ -38,8 +38,11 @@ import { useTranslations } from "next-intl";
 export interface ChatMessageDiagramErrorBannerProps {
 	/** Doc / feature title -- substituted into `{docName}`. */
 	docName: string;
-	/** Chat-scoped project name -- substituted into `{projectName}`. */
-	projectName: string;
+	/**
+	 * Chat-scoped project name -- substituted into `{projectName}`. Null
+	 * while the name is unknown; the message then says "this project".
+	 */
+	projectName: string | null;
 	/** Click handler for the Retry button. Caller owns the retry flow. */
 	onRetry: () => void;
 	/**
@@ -75,7 +78,9 @@ export function ChatMessageDiagramErrorBanner({
 			)}
 		>
 			<span className="leading-snug">
-				{t("bannerEditorFailure", { docName, projectName })}
+				{projectName
+					? t("bannerEditorFailure", { docName, projectName })
+					: t("bannerEditorFailureThisProject", { docName })}
 			</span>
 			<Button
 				type="button"

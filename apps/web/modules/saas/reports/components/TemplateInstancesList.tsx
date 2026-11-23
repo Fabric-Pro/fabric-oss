@@ -27,6 +27,7 @@ import {
 import { formatDistanceToNow } from "date-fns";
 import {
 	CalendarIcon,
+	HistoryIcon,
 	Loader2Icon,
 	MoreVerticalIcon,
 	PlayIcon,
@@ -37,6 +38,7 @@ import Link from "next/link";
 import { parseAsInteger, useQueryState } from "nuqs";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
+import { ReportViewAction, viewLatestReportHref } from "./ReportViewAction";
 
 /**
  * Pagination constants
@@ -170,7 +172,7 @@ export function TemplateInstancesList({
 						<TableHead>Status</TableHead>
 						<TableHead>Runs</TableHead>
 						<TableHead>Last Run</TableHead>
-						<TableHead className="w-[100px]">Actions</TableHead>
+						<TableHead>Actions</TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>
@@ -179,10 +181,17 @@ export function TemplateInstancesList({
 							<TableCell>
 								<div>
 									<Link
-										href={`${basePath}/instances/${instance.id}`}
-										className="font-medium hover:text-primary transition-colors"
+										href={`${basePath}/instances/${instance.id}?tab=history`}
+										className="inline-flex items-center gap-1 font-medium underline decoration-muted-foreground/50 underline-offset-4 hover:text-primary hover:decoration-primary motion-safe:transition-colors"
 									>
 										{instance.name}
+										<HistoryIcon
+											aria-hidden="true"
+											className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+										/>
+										<span className="sr-only">
+											, execution history
+										</span>
 									</Link>
 									{instance.description && (
 										<p className="text-sm text-muted-foreground line-clamp-1">
@@ -261,7 +270,16 @@ export function TemplateInstancesList({
 								})()}
 							</TableCell>
 							<TableCell>
-								<div className="flex items-center gap-1">
+								<div className="flex items-start gap-1">
+									<ReportViewAction
+										hasSuccessfulReport={
+											instance.latestSuccessfulReport !==
+											null
+										}
+										href={viewLatestReportHref(
+											`${basePath}/instances/${instance.id}`,
+										)}
+									/>
 									<Button
 										size="sm"
 										variant="default"

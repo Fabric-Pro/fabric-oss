@@ -17,7 +17,6 @@
  * while closed so the chat can show whether that pick applies.
  */
 
-import { CHATGPT_PLAN_MODEL_OVERRIDE_PREFIX } from "@repo/agent-types/chatgpt-plan-fetch";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 import { PERSONAL_AI_PROVIDERS_PATH } from "@saas/settings/lib/personal-ai-providers-path";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
@@ -36,6 +35,7 @@ import { AgentAvatar, VendorLogo } from "./AgentIdentity";
 import {
 	buildInstanceAgentConfig,
 	PLAN_MODEL_AGENT_PREFIX,
+	planModelPick,
 	type SelectedAgent,
 } from "./agent-selection";
 import {
@@ -76,6 +76,24 @@ export interface AgentModelPickerProps {
 	 * replacing what it is.
 	 */
 	catalog?: "all" | "models";
+}
+
+/**
+ * The menu's scope note: how long a pick lasts, by kind, so it matches what
+ * is saved. A ChatGPT plan pick stays in this chat (`chatOnly`); a provider
+ * model or an agent is saved as the member's selection and opens their next
+ * chats too. No pick changes the model behind any other surface, nor, on the
+ * orchestrator, the model of the specialists it delegates to; without saying
+ * so, picking a model reads as a global setting. Followed by the settings
+ * page's name.
+ */
+function scopeNote(onPlan: boolean, modelsOnly: boolean): string {
+	if (!onPlan) {
+		return "Kept for your next chats. Everywhere else uses your configured defaults in ";
+	}
+	return modelsOnly
+		? "A model picked here applies to this chat only. The organization's default comes from "
+		: "A model picked here applies to this chat only; an agent is kept for your next chats. The organization's default comes from ";
 }
 
 export function AgentModelPicker({
@@ -206,13 +224,12 @@ export function AgentModelPicker({
 	const handleTogglePlanModel = (
 		model: NonNullable<typeof chatgptPlan>["models"][number],
 	) => {
-		onToggleAgent?.({
-			agentId: `${PLAN_MODEL_AGENT_PREFIX}${model.canonicalName}`,
-			name: model.displayName,
-			modelOverride: `${CHATGPT_PLAN_MODEL_OVERRIDE_PREFIX}${model.canonicalName}`,
-			vendor: "OpenAI",
-			chatOnly: true,
-		});
+		onToggleAgent?.(
+			planModelPick({
+				canonicalName: model.canonicalName,
+				name: model.displayName,
+			}),
+		);
 	};
 
 	const filteredModels = availableModels.filter((m) => {
@@ -505,20 +522,10 @@ export function AgentModelPicker({
 						)}
 				</div>
 
-				{/*
-				 * Scope note. A pick here is a per-conversation override and
-				 * nothing more — it does not change the model behind any other
-				 * surface, and on the orchestrator it will not change the model
-				 * the specialists it delegates to run on. Without saying so,
-				 * picking a model reads as a global setting.
-				 *
-				 * Plan settings above open in a new tab to preserve the chat.
-				 */}
+				{/* Plan settings above open in a new tab to preserve the chat. */}
 				<div className="border-t border-border/60 px-3 py-2">
 					<p className="text-[11px] leading-relaxed text-muted-foreground">
-						{chatgptPlan
-							? "A model picked here applies to this chat only. The organization's default comes from "
-							: "Applies to this chat only. Everywhere else uses your configured defaults in "}
+						{scopeNote(Boolean(chatgptPlan), modelsOnly)}
 						<span className="text-foreground">
 							Settings → AI Models
 						</span>

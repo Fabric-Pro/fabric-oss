@@ -298,6 +298,39 @@ describe("CopilotSidebarHeader — plus-icon (new conversation)", () => {
 		// `handleNewConversation`). The header is just the trigger.
 		expect(mockArchive).not.toHaveBeenCalled();
 	});
+
+	it("stays focused and busy, taking no second click, until the start settles", async () => {
+		let settle: () => void = () => undefined;
+		const onNewConversation = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					settle = resolve;
+				}),
+		);
+		render(
+			<CopilotSidebarHeader config={baseConfig({ onNewConversation })} />,
+		);
+		const button = screen.getByRole("button", {
+			name: /Start a new conversation/i,
+		});
+		button.focus();
+
+		fireEvent.click(button);
+		await waitFor(() =>
+			expect(button.getAttribute("aria-busy")).toBe("true"),
+		);
+		fireEvent.click(button);
+
+		expect(onNewConversation).toHaveBeenCalledTimes(1);
+		expect(button.getAttribute("aria-disabled")).toBe("true");
+		expect(document.activeElement).toBe(button);
+
+		settle();
+		await waitFor(() =>
+			expect(button.getAttribute("aria-busy")).toBe("false"),
+		);
+		expect(document.activeElement).toBe(button);
+	});
 });
 
 describe("CopilotSidebarHeader — history-icon", () => {

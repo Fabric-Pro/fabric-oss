@@ -14,6 +14,10 @@
  * location. See spec 2026-06-23-meeting-transcript-viewer §5.3.
  */
 
+import {
+	parlumeTranscriptNotice,
+	resolveParlumeTranscriptAccess,
+} from "@repo/api/modules/projects/lib/parlume-transcript-access";
 import { getContextById, getUrlSourceContext } from "@repo/database";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { MeetingTranscriptPageView } from "@saas/projects/components/MeetingTranscriptPageView";
@@ -80,6 +84,12 @@ export default async function OrganizationContextViewerPage({
 				)
 			: [];
 		const wasSummarized = metadata.wasSummarized === true;
+		// Only the people in a Parlume meeting read what it said.
+		const parlume = await resolveParlumeTranscriptAccess({
+			projectId,
+			userId: session.user.id,
+			contextId: context.id,
+		});
 
 		return (
 			<>
@@ -93,7 +103,11 @@ export default async function OrganizationContextViewerPage({
 						meetingDate,
 						speakerNames,
 						wasSummarized,
-						content: context.content ?? "",
+						content:
+							parlume === "withheld"
+								? ""
+								: (context.content ?? ""),
+						withheldReason: parlumeTranscriptNotice(parlume),
 						syncedAt: context.createdAt.toISOString(),
 					}}
 					backHref={backHref}

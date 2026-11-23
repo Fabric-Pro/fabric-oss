@@ -109,6 +109,163 @@ export function stripInlineDecoration(line: string | null | undefined): string {
 	return normalized;
 }
 
+// A fenced code block's opening fence: three or more backticks or tildes, then
+// an info string, which for a backtick fence holds no backtick (CommonMark), so
+// "```ts```" is inline code, not a fence. Any indentation is accepted: a fence
+// inside a list item sits at the item's content column, four spaces or more in
+// a nested list, and the heading matchers test trimmed lines, so a code block
+// there must still hide its `# comment` lines.
+const FENCE_OPEN_RE = /^\s*(`{3,}|~{3,})(.*)$/;
+
+// A closing fence: a run of one fence character, alone on its line.
+const FENCE_CLOSE_RE = /^\s*(`{3,}|~{3,})\s*$/;
+
+/** `line` without the "\r" a CRLF document ends it with. */
+function withoutCarriageReturn(line: string): string {
+	return line.endsWith("\r") ? line.slice(0, -1) : line;
+}
+
+function fenceOpener(line: string): string | null {
+	const match = FENCE_OPEN_RE.exec(withoutCarriageReturn(line));
+	const marker = match?.[1];
+	if (!marker) {
+		return null;
+	}
+	return marker.startsWith("`") && (match?.[2] ?? "").includes("`")
+		? null
+		: marker;
+}
+
+/** The run of fence characters a closing fence on `line` is made of. */
+function fenceCloser(line: string): string | undefined {
+	return FENCE_CLOSE_RE.exec(withoutCarriageReturn(line))?.[1];
+}
+
+/** A fence closes on a run of the opener's character, at least as long. */
+function closesFence(open: string, closer: string | undefined): boolean {
+	return (
+		closer !== undefined &&
+		closer[0] === open[0] &&
+		closer.length >= open.length
+	);
+}
+
+/** Per line, the longest closing run of `char` on that line or after it. */
+function longestCloserFrom(
+	closers: readonly (string | undefined)[],
+	char: string,
+): number[] {
+	const longest = closers.map(() => 0).concat(0);
+	for (let i = closers.length - 1; i >= 0; i--) {
+		const closer = closers[i];
+		longest[i] = Math.max(
+			longest[i + 1] ?? 0,
+			closer?.[0] === char ? closer.length : 0,
+		);
+	}
+	return longest;
+}
+
+/**
+ * Which of `lines` are code: inside a fenced code block, fences included. A
+ * heading-shaped line there is code, never a section boundary.
+ *
+ * A fence the document never closes runs to its end, as CommonMark has it,
+ * unless that hides every line `isBoundary` matches. Such a fence is far more
+ * likely a stray line than a code block holding the boundary, and taking it
+ * for one folds the criteria into the description, where the editor shows
+ * them beside the column's copy. Its opener is then read as text and the
+ * scan goes on with the line after it.
+ *
+ * One pass: each line is classified once, and whether a fence ever closes,
+ * or a boundary follows, is read from tables built back to front, so a
+ * document of many stray openers still costs time linear in its lines.
+ */
+export function fencedCodeLines(
+	lines: readonly string[],
+	isBoundary: (line: string) => boolean,
+): boolean[] {
+	const code = lines.map(() => false);
+	const boundary = lines.map((line) => isBoundary(line));
+	const boundaryFrom = boundary.concat(false);
+	for (let i = lines.length - 1; i >= 0; i--) {
+		boundaryFrom[i] =
+			(boundary[i] ?? false) || (boundaryFrom[i + 1] ?? false);
+	}
+	const closers = lines.map(fenceCloser);
+	const longestBacktickFrom = longestCloserFrom(closers, "`");
+	const longestTildeFrom = longestCloserFrom(closers, "~");
+
+	let boundaryOutsideCode = false;
+	for (let i = 0; i < lines.length; i++) {
+		const open = fenceOpener(lines[i] ?? "");
+		if (open === null) {
+			boundaryOutsideCode ||= boundary[i] ?? false;
+			continue;
+		}
+		const longestFrom = open.startsWith("`")
+			? longestBacktickFrom
+			: longestTildeFrom;
+		if ((longestFrom[i + 1] ?? 0) >= open.length) {
+			code[i] = true;
+			do {
+				i++;
+				code[i] = true;
+			} while (!closesFence(open, closers[i]));
+			continue;
+		}
+		if (boundaryOutsideCode || !boundaryFrom[i + 1]) {
+			code.fill(true, i);
+			break;
+		}
+		boundaryOutsideCode ||= boundary[i] ?? false;
+	}
+	return code;
+}
+
+/**
+ * Offsets, into the ORIGINAL text, of the first line outside code that
+ * `matches`; null when there is none.
+ *
+ * The running offset over the original lines is the point: a normalized line
+ * is shorter than the line, so an offset taken from a normalized copy would
+ * not map back. A trailing "\r" stays part of its line, so CRLF documents keep
+ * correct offsets.
+ */
+function findLineOutsideCode(
+	text: string,
+	matches: (line: string) => boolean,
+): { start: number; length: number } | null {
+	const lines = text.split("\n");
+	const code = fencedCodeLines(lines, matches);
+	let start = 0;
+	for (const [i, line] of lines.entries()) {
+		if (!code[i] && matches(line)) {
+			return { start, length: line.length };
+		}
+		// + 1 for the "\n" that `split` consumed.
+		start += line.length + 1;
+	}
+	return null;
+}
+
+/**
+ * Offsets, into the ORIGINAL text, of the first line outside code whose
+ * decoration-stripped form matches `pattern`; null when there is none.
+ *
+ * Shared so every surface that looks for a section heading skips the same
+ * fenced lines the acceptance splits (`parseStoryContent`, `splitCleanSpec`)
+ * skip.
+ */
+export function findHeadingLine(
+	text: string,
+	pattern: RegExp,
+): { start: number; length: number } | null {
+	return findLineOutsideCode(text, (line) =>
+		pattern.test(stripInlineDecoration(line)),
+	);
+}
+
 /**
  * Index of the line that ends the section opened at `headerIdx` — the next
  * `#`/`##` heading, or the end of the array.
@@ -155,18 +312,16 @@ export function findSectionEndIdx(lines: string[], headerIdx: number): number {
  * replaces: a demoted `### Resolved Decisions (pending integration)` still
  * contains the heading and still counts as the section.
  *
+ * A line inside a fenced code block is code, never the heading, as for
+ * `findHeadingLine`.
+ *
  * Shared because both the server path that writes a section and the client path
  * that has to find the same section in a document about to be saved must agree
  * on where it is; two scanners would drift the moment one learned a new shape.
  */
 export function findHeadingLineEnd(text: string, heading: string): number {
-	let offset = 0;
-	for (const line of text.split("\n")) {
-		if (stripInlineDecoration(line).includes(heading)) {
-			return offset + line.length;
-		}
-		// + 1 for the "\n" that `split` consumed.
-		offset += line.length + 1;
-	}
-	return -1;
+	const line = findLineOutsideCode(text, (candidate) =>
+		stripInlineDecoration(candidate).includes(heading),
+	);
+	return line === null ? -1 : line.start + line.length;
 }

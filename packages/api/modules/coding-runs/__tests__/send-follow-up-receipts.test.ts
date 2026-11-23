@@ -6,6 +6,7 @@ const f = vi.hoisted(() => ({
 	run: vi.fn(),
 	role: vi.fn(),
 	allowed: vi.fn(),
+	visible: vi.fn(),
 	readonly: vi.fn(),
 	send: vi.fn(),
 	event: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("@repo/database", () => ({
 	getCodingRun: f.run,
 	getProjectMemberRole: f.role,
 	canEditProject: f.allowed,
+	hasProjectAccess: f.visible,
 	isProjectReadOnly: f.readonly,
 	addCodingRunEvent: f.event,
 	db: {
@@ -93,6 +95,7 @@ beforeEach(() => {
 		status: "AWAITING_REVIEW",
 	});
 	f.allowed.mockReturnValue(true);
+	f.visible.mockResolvedValue(true);
 	f.readonly.mockResolvedValue(false);
 	f.send.mockResolvedValue({ messageId: "example-native-message" });
 	f.update.mockResolvedValue({ count: 1 });
@@ -161,6 +164,16 @@ describe("follow-up prompt receipts", () => {
 		f.allowed.mockReturnValue(false);
 		await expect(invoke()).rejects.toMatchObject({ code: "FORBIDDEN" });
 		expect(f.send).not.toHaveBeenCalled();
+	});
+	it("does not send to a run on a project the caller cannot open, whatever their organization role", async () => {
+		f.visible.mockResolvedValue(false);
+		await expect(invoke()).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(f.visible).toHaveBeenCalledWith(
+			"example-project",
+			"example-user",
+		);
+		expect(f.send).not.toHaveBeenCalled();
+		expect(f.event).not.toHaveBeenCalled();
 	});
 });
 

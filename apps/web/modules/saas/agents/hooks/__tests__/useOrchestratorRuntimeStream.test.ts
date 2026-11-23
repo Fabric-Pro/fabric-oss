@@ -467,6 +467,101 @@ describe("refusals", () => {
 		expect(result.current.isLoading).toBe(false);
 	});
 
+	it("ends a turn a limit refused with the paused state, without the limit's id", async () => {
+		const data = {
+			limitId: "limit-example",
+			dimension: "TOKENS",
+			window: "DAILY",
+			used: "10",
+			max: "1",
+			manageLimitsUrl: "/app/example-org/settings/ai-usage",
+		};
+		respond = () =>
+			sse([
+				{
+					type: "RUN_ERROR",
+					message:
+						"AI usage limit exceeded: limit-example (TOKENS, DAILY) — used 10 of 1",
+					code: "AI_USAGE_LIMIT_EXCEEDED",
+					metadata: {
+						fabric: {
+							status: 429,
+							code: "AI_USAGE_LIMIT_EXCEEDED",
+							data,
+						},
+					},
+				},
+			]);
+		const { result } = render({ conversationId: "conversation-1" });
+
+		await act(async () => {
+			await result.current.sendMessage("Too much");
+		});
+
+		const paused =
+			"AI calls are paused — the usage limit for today is reached. Manage limits to raise it, or try again after it resets.";
+		expect(result.current.messages.at(-1)).toMatchObject({
+			role: "assistant",
+			content: `Error: ${paused}`,
+			isError: true,
+		});
+		expect(result.current.state.result?.error).toBe(paused);
+		expect(JSON.stringify(result.current.messages)).not.toContain(
+			"limit-example",
+		);
+		expect(result.current.isLoading).toBe(false);
+	});
+
+	it("ends a turn its workflow failed on a limit with the paused state, live", async () => {
+		const message =
+			"AI usage limit exceeded: limit-example (TOKENS, DAILY) — used 10 of 1";
+		const data = {
+			limitId: "limit-example",
+			dimension: "TOKENS",
+			window: "DAILY",
+			used: "10",
+			max: "1",
+			manageLimitsUrl: "/app/example-org/settings/ai-usage",
+		};
+		respond = (request) =>
+			sse([
+				...opened(request.body.threadId, request.body.runId),
+				{
+					type: "RUN_ERROR",
+					message,
+					code: "AI_USAGE_LIMIT_EXCEEDED",
+					metadata: {
+						fabric: {
+							type: "error",
+							message,
+							code: "AI_USAGE_LIMIT_EXCEEDED",
+							data,
+						},
+					},
+				},
+			]);
+		const { result } = render({ conversationId: "conversation-1" });
+
+		await act(async () => {
+			await result.current.sendMessage("Too much");
+		});
+
+		expect(result.current.messages.at(-1)).toMatchObject({
+			role: "assistant",
+			content:
+				"Error: AI calls are paused — the usage limit for today is reached. Manage limits to raise it, or try again after it resets.",
+			isError: true,
+		});
+		expect(JSON.stringify(result.current.messages)).not.toContain(
+			"limit-example",
+		);
+		expect(result.current.state.status).toBe("failed");
+		expect(result.current.state.result?.error).toBe(
+			"AI calls are paused — the usage limit for today is reached. Manage limits to raise it, or try again after it resets.",
+		);
+		expect(result.current.isLoading).toBe(false);
+	});
+
 	it("waits and sends the same run again while a stopped turn is still ending", async () => {
 		let runs = 0;
 		respond = (request) => {

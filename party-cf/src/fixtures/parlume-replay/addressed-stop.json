@@ -1,0 +1,113 @@
+{
+	"source": "Written by hand: Dev Example asks Parlume, and QA Example says \"Parlume, stop\" while it answers.",
+	"audio": [
+		{
+			"at": 0,
+			"seconds": 14
+		}
+	],
+	"speech": [
+		{
+			"at": 0.5,
+			"name": "Dev Example",
+			"id": "participant-1",
+			"speaking": true
+		},
+		{
+			"at": 2.5,
+			"name": "Dev Example",
+			"id": "participant-1",
+			"speaking": false
+		},
+		{
+			"at": 6,
+			"name": "QA Example",
+			"id": "participant-2",
+			"speaking": true
+		},
+		{
+			"at": 7.4,
+			"name": "QA Example",
+			"id": "participant-2",
+			"speaking": false
+		}
+	],
+	"flux": [
+		{
+			"at": 1.2,
+			"event": {
+				"type": "TurnInfo",
+				"event": "Update",
+				"turn_index": 0,
+				"audio_window_start": 0.5,
+				"audio_window_end": 1.1,
+				"transcript": "Hey Fabric"
+			}
+		},
+		{
+			"at": 2.6,
+			"event": {
+				"type": "TurnInfo",
+				"event": "EndOfTurn",
+				"turn_index": 0,
+				"audio_window_start": 0.5,
+				"audio_window_end": 2.4,
+				"transcript": "Hey Fabric, what changed this week?"
+			}
+		},
+		{
+			"at": 6.5,
+			"event": {
+				"type": "TurnInfo",
+				"event": "Update",
+				"turn_index": 1,
+				"audio_window_start": 6,
+				"audio_window_end": 6.4,
+				"transcript": "Parlume"
+			}
+		},
+		{
+			"at": 6.9,
+			"event": {
+				"type": "TurnInfo",
+				"event": "Update",
+				"turn_index": 1,
+				"audio_window_start": 6,
+				"audio_window_end": 6.8,
+				"transcript": "Parlume, stop"
+			}
+		},
+		{
+			"at": 7.6,
+			"event": {
+				"type": "TurnInfo",
+				"event": "EndOfTurn",
+				"turn_index": 1,
+				"audio_window_start": 6,
+				"audio_window_end": 7.3,
+				"transcript": "Parlume, stop."
+			}
+		}
+	],
+	"questions": [
+		{
+			"speaker": "Dev Example",
+			"contains": "changed"
+		}
+	],
+	"parlume": [
+		{
+			"at": 3.5,
+			"sentences": [
+				"Three features moved to review this week.",
+				"The export fix, the migration and the new report all wait for a reviewer."
+			],
+			"seconds": 10
+		}
+	],
+	"stops": [
+		{
+			"speaker": "QA Example"
+		}
+	]
+}

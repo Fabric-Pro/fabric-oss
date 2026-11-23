@@ -5,6 +5,7 @@ const f = vi.hoisted(() => ({
 	inputSchema: undefined as any,
 	get: vi.fn(),
 	edit: vi.fn(),
+	visible: vi.fn(),
 	access: vi.fn(),
 	update: vi.fn(),
 	event: vi.fn(),
@@ -14,6 +15,7 @@ const f = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	getCodingRun: f.get,
 	canEditProject: f.edit,
+	hasProjectAccess: f.visible,
 	recordAuditTx: f.audit,
 	db: {
 		$transaction: async (fn: any) =>
@@ -79,6 +81,7 @@ beforeEach(() => {
 	vi.resetAllMocks();
 	f.get.mockResolvedValue(run);
 	f.edit.mockResolvedValue(true);
+	f.visible.mockResolvedValue(true);
 	f.describe.mockResolvedValue({ status: { name: "COMPLETED" } });
 	f.access.mockResolvedValue({});
 	f.update.mockResolvedValue({ count: 1 });
@@ -154,6 +157,15 @@ it("refuses tenant-invisible rows", async () => {
 	f.get.mockResolvedValue(null);
 	await expect(call()).rejects.toMatchObject({ code: "NOT_FOUND" });
 	expect(f.update).not.toHaveBeenCalled();
+});
+it("refuses a run on a project the caller cannot open, whatever their organization role", async () => {
+	f.visible.mockResolvedValue(false);
+	await expect(call("example-org-admin")).rejects.toMatchObject({
+		code: "NOT_FOUND",
+	});
+	expect(f.visible).toHaveBeenCalledWith(run.projectId, "example-org-admin");
+	expect(f.update).not.toHaveBeenCalled();
+	expect(f.audit).not.toHaveBeenCalled();
 });
 it("does not audit or release a row that changed during recovery", async () => {
 	f.update.mockResolvedValue({ count: 0 });

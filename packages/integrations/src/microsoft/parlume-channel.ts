@@ -63,11 +63,16 @@ export const parlumeChannelOperationSchema = z.discriminatedUnion("kind", [
 		expiresAt: z.iso.datetime(),
 	}),
 	z.object({ kind: z.literal("unsubscribe"), subscriptionId: id }),
+	/** Who a signed-in meeting participant is, by their Entra object id. */
+	z.object({ kind: z.literal("user"), userId: z.guid() }),
+	/** Whether the connection still works: the cheapest call it can make. */
+	z.object({ kind: z.literal("me") }),
 	z.object({
 		kind: z.literal("send"),
 		sessionId: id,
 		destination: channelDestinationSchema,
-		text: z.string().min(1).max(4_200),
+		/** The post as `parlumeChatHtml` renders it for every meeting chat. */
+		html: z.string().min(1).max(10_000),
 	}),
 ]);
 
@@ -124,8 +129,41 @@ function isOrdinaryMeetingUrl(value: string): boolean {
 	}
 }
 
+/** A join link's or a short link's path, with the meeting's id. */
+const MEETING_PATH = /^\/(?:l\/meetup-join|meet)\/[^/]/;
+
+/**
+ * The meeting a Teams link joins: its path without a trailing slash, the
+ * query or the fragment, which carry credentials (`?p=` is a passcode). Teams
+ * on the web keeps the path in the fragment (`/v2/?meetingjoin=true#/l/meetup-join/...`,
+ * `/_#/l/meetup-join/...`, `/v2/#/meet/<id>?p=...`): it is taken out, so each
+ * form of a link names the same meeting. Null for a link that names no
+ * meeting, such as the web client's bare `/v2/`, which every meeting shares.
+ */
+export function teamsMeetingJoinUrl(value: string): string | null {
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return null;
+	}
+	const fragmentPath = url.hash.slice(1).split("?")[0] ?? "";
+	const path = MEETING_PATH.test(fragmentPath) ? fragmentPath : url.pathname;
+	if (!MEETING_PATH.test(path)) {
+		return null;
+	}
+	url.pathname = path.replace(/\/$/, "");
+	url.search = "";
+	url.hash = "";
+	return url.href;
+}
+
 export function teamsMeetingIdentity(value: string): string | null {
-	const channel = parseChannelMeetingUrl(value);
+	const joinUrl = teamsMeetingJoinUrl(value);
+	if (!joinUrl) {
+		return null;
+	}
+	const channel = parseChannelMeetingUrl(joinUrl);
 	if (channel) {
 		return JSON.stringify([
 			"channel",
@@ -133,10 +171,10 @@ export function teamsMeetingIdentity(value: string): string | null {
 			channel.rootMessageId,
 		]);
 	}
-	return isOrdinaryMeetingUrl(value)
+	return isOrdinaryMeetingUrl(joinUrl)
 		? JSON.stringify([
 				"meeting",
-				decodeURIComponent(new URL(value).pathname).replace(/\/$/, ""),
+				decodeURIComponent(new URL(joinUrl).pathname),
 			])
 		: null;
 }
@@ -323,8 +361,8 @@ export async function executeParlumeChannelOperation(
 						method: "POST",
 						body: JSON.stringify({
 							body: {
-								contentType: "text",
-								content: operation.text,
+								contentType: "html",
+								content: operation.html,
 							},
 						}),
 					},
@@ -380,6 +418,42 @@ export async function executeParlumeChannelOperation(
 				);
 			}
 			return null;
+		}
+		case "user": {
+			// `User.ReadBasic.All` reads these for anyone in the inviter's
+			// tenant; a participant from another tenant is not found.
+			const response = await graphFetch(
+				`${GRAPH}/users/${encodeURIComponent(operation.userId)}?$select=id,mail,userPrincipalName`,
+			);
+			if (!response.ok) {
+				throw new Error(
+					`Microsoft user lookup failed (HTTP ${response.status}).`,
+				);
+			}
+			const user = z
+				.object({
+					id,
+					mail: z.string().max(320).nullish(),
+					userPrincipalName: z.string().max(320).nullish(),
+				})
+				.parse(await response.json());
+			if (user.id.toLowerCase() !== operation.userId.toLowerCase()) {
+				throw new Error("Microsoft user identity mismatch.");
+			}
+			return {
+				emails: [user.mail, user.userPrincipalName].filter(
+					(email): email is string => !!email?.includes("@"),
+				),
+			};
+		}
+		case "me": {
+			const response = await graphFetch(`${GRAPH}/me?$select=id`);
+			if (!response.ok) {
+				throw new Error(
+					`Microsoft connection check failed (HTTP ${response.status}).`,
+				);
+			}
+			return z.object({ id }).parse(await response.json());
 		}
 		default: {
 			const exhaustive: never = operation;

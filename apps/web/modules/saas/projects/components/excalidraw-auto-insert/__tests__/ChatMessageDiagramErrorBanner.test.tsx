@@ -27,6 +27,9 @@ vi.mock("next-intl", () => ({
 			if (key === "bannerEditorFailure") {
 				return `Saved to ${values?.projectName} diagrams — couldn't add it to ${values?.docName}.`;
 			}
+			if (key === "bannerEditorFailureThisProject") {
+				return `Saved to this project's diagrams — couldn't add it to ${values?.docName}.`;
+			}
 			if (key === "bannerEditorFailureRetry") {
 				return "Retry";
 			}
@@ -53,6 +56,22 @@ describe("ChatMessageDiagramErrorBanner -- D6 / spec § 8.4", () => {
 		expect(
 			screen.getByText(
 				/Saved to Atlas diagrams — couldn't add it to Architecture spec\./,
+			),
+		).toBeInTheDocument();
+	});
+
+	it("says 'this project' when the project name is unknown", () => {
+		render(
+			<ChatMessageDiagramErrorBanner
+				docName="Architecture spec"
+				projectName={null}
+				onRetry={() => {}}
+			/>,
+		);
+
+		expect(
+			screen.getByText(
+				"Saved to this project's diagrams — couldn't add it to Architecture spec.",
 			),
 		).toBeInTheDocument();
 	});

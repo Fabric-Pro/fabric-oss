@@ -338,6 +338,7 @@ describe("useDirectRuntimeStream — a turn", () => {
 					attachedDocumentIds: ["att-1"],
 					messageChatId: "chat-1",
 					inlineAttachmentContexts: ["<file/>"],
+					attachmentNames: ["diagram.png"],
 				},
 			);
 		});
@@ -357,6 +358,7 @@ describe("useDirectRuntimeStream — a turn", () => {
 			chatId: "chat-1",
 			attachedDocumentIds: ["att-1"],
 			inlineAttachmentContexts: ["<file/>"],
+			attachmentNames: ["diagram.png"],
 			workspaceIds: ["ws-1"],
 			workspaceDocumentIds: ["wd-1"],
 			projectId: "proj-1",
@@ -519,7 +521,7 @@ describe("useDirectRuntimeStream — failures", () => {
 		expect(answer?.streamStatus).toBe("error");
 	});
 
-	it("drops the placeholder and raises the usage-limit toast when admission refuses on the limit", async () => {
+	it("ends the answer with the paused state and raises the usage-limit toast when a limit refuses the turn", async () => {
 		const data = {
 			limitId: "limit-1",
 			dimension: "TOKENS",
@@ -544,7 +546,17 @@ describe("useDirectRuntimeStream — failures", () => {
 		});
 
 		expect(toastMock).toHaveBeenCalledWith(data);
-		expect(result.current.messages.map((m) => m.role)).toEqual(["user"]);
+		expect(result.current.messages.map((m) => m.role)).toEqual([
+			"user",
+			"assistant",
+		]);
+		expect(lastAssistant(result)).toMatchObject({
+			isError: true,
+			isStreaming: false,
+			streamStatus: "error",
+			errorMessage:
+				"AI calls are paused — the usage limit for this month is reached. Manage limits to raise it, or try again after it resets.",
+		});
 		expect(result.current.state.status).toBe("idle");
 		expect(result.current.isLoading).toBe(false);
 	});

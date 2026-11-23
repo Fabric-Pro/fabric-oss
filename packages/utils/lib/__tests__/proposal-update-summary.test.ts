@@ -3,7 +3,7 @@ import {
 	buildLineHunks,
 	changedLineHunks,
 	describeLineCounts,
-	mergeAcceptedHunks,
+	listDepthLines,
 	proposalUpdateAppliedNoteLines,
 	proposalUpdateRejectedNoteLines,
 	summarizeProposalUpdate,
@@ -121,6 +121,76 @@ describe("summarizeProposalUpdate", () => {
 		expect(line?.added).toBe(0);
 	});
 
+	it("does not count lines the editor only re-indented", () => {
+		const from = [
+			"- Q: Which notifications?",
+			"    - Why it matters: Defines the choices.",
+			"    - Owner: Product",
+			"Old closing line.",
+		].join("\n");
+		const to = [
+			"- Q: Which notifications?",
+			"  - Why it matters: Defines the choices.",
+			"  - Owner: Product",
+			"New closing line.",
+		].join("\n");
+
+		const [line] = summarizeProposalUpdate({ description: { from, to } });
+
+		expect(line?.added).toBe(1);
+		expect(line?.removed).toBe(1);
+		expect(line?.explanation).toBe("Adds “New closing line.”");
+	});
+
+	it("reads an indentation-only body edit as formatting", () => {
+		const [line] = summarizeProposalUpdate({
+			description: { from: "- A\n    - B", to: "- A\n  - B" },
+		});
+
+		expect(line?.explanation).toBe("Formatting changes only");
+		expect(line?.added).toBe(0);
+		expect(line?.removed).toBe(0);
+	});
+
+	it.each([
+		{
+			name: "a nested bullet moved to the top level",
+			from: "- A\n  - B",
+			to: "- A\n- B",
+			adds: "B",
+		},
+		{
+			name: "indentation inside a fenced code block",
+			from: "Steps:\n```\nif ok:\n    run()\n```",
+			to: "Steps:\n```\nif ok:\nrun()\n```",
+			adds: "run()",
+		},
+		{
+			name: "an indented code paragraph made plain text",
+			from: "Run:\n\n    pnpm build",
+			to: "Run:\n\npnpm build",
+			adds: "pnpm build",
+		},
+		{
+			name: "code inside a list item made plain text",
+			from: "- Run:\n\n      pnpm build",
+			to: "- Run:\n\n  pnpm build",
+			adds: "pnpm build",
+		},
+		{
+			name: "a removed hard break",
+			from: "First line  \nSecond line",
+			to: "First line\nSecond line",
+			adds: "First line",
+		},
+	])("counts $name as a change", ({ from, to, adds }) => {
+		const [line] = summarizeProposalUpdate({ description: { from, to } });
+
+		expect(line?.added).toBe(1);
+		expect(line?.removed).toBe(1);
+		expect(line?.explanation).toBe(`Adds “${adds}”`);
+	});
+
 	it("does not treat an empty title, priority or size as a change", () => {
 		expect(
 			summarizeProposalUpdate({
@@ -144,7 +214,41 @@ describe("summarizeProposalUpdate", () => {
 	});
 });
 
-describe("buildLineHunks / mergeAcceptedHunks", () => {
+describe("listDepthLines", () => {
+	const depths = (text: string) =>
+		listDepthLines(text).map((line) => line.depth);
+
+	it("reads a list the editor re-indented at the same depths", () => {
+		const nested = "- Q\n    - Why\n    - Owner\n- Next";
+
+		expect(depths(nested)).toEqual([0, 1, 1, 0]);
+		expect(depths(nested.replace(/^ {4}/gm, "  "))).toEqual([0, 1, 1, 0]);
+	});
+
+	it("reads a line moved up a level at its new depth", () => {
+		expect(depths("- Q\n- Why\n    - Owner\n- Next")).toEqual([0, 0, 1, 0]);
+	});
+
+	it("reads a fence in a list item at the item's depth, as it is", () => {
+		expect(listDepthLines("- Step\n  ```\n  code\n  ```\n- Next")).toEqual([
+			{ depth: 0, text: "- Step" },
+			{ depth: 1, text: "  ```" },
+			{ depth: 1, text: "  code" },
+			{ depth: 1, text: "  ```" },
+			{ depth: 0, text: "- Next" },
+		]);
+	});
+
+	it("keeps lines outside a list at depth 0, as they are", () => {
+		const text = "Intro\n\n```\n    code\n```";
+
+		expect(listDepthLines(text)).toEqual(
+			text.split("\n").map((line) => ({ depth: 0, text: line })),
+		);
+	});
+});
+
+describe("buildLineHunks / changedLineHunks", () => {
 	const from = "Intro\nOld step\nShared\nRemove me\nTail";
 	const to = "Intro\nNew step\nShared\nTail\nAdded at end";
 
@@ -162,37 +266,11 @@ describe("buildLineHunks / mergeAcceptedHunks", () => {
 		]);
 	});
 
-	it("rebuilds the proposed text when every region is accepted", () => {
-		expect(mergeAcceptedHunks(from, to, new Set())).toBe(to);
-	});
-
-	it("rebuilds the original text when every region is rejected", () => {
-		expect(mergeAcceptedHunks(from, to, new Set([0, 1, 2]))).toBe(from);
-	});
-
-	it("keeps a rejected removal and drops a rejected addition", () => {
-		expect(mergeAcceptedHunks(from, to, new Set([1, 2]))).toBe(
-			"Intro\nNew step\nShared\nRemove me\nTail",
-		);
-	});
-
-	it("keeps a rejected replacement's original lines", () => {
-		expect(mergeAcceptedHunks(from, to, new Set([0]))).toBe(
-			"Intro\nOld step\nShared\nTail\nAdded at end",
-		);
-	});
-
-	it("keeps a final newline exactly as each side has it", () => {
-		expect(mergeAcceptedHunks("a\nb\n", "a\nc", new Set())).toBe("a\nc");
-		expect(mergeAcceptedHunks("a\nb\n", "a\nc", new Set([0]))).toBe(
-			"a\nb\n",
-		);
-	});
-
 	it("treats an empty side as no lines to share", () => {
 		expect(buildLineHunks("", "")).toEqual([]);
-		expect(mergeAcceptedHunks("", "x\ny", new Set())).toBe("x\ny");
-		expect(mergeAcceptedHunks("", "x\ny", new Set([0]))).toBe("");
+		expect(changedLineHunks("", "x\ny").map((hunk) => hunk.added)).toEqual([
+			["x", "y"],
+		]);
 	});
 });
 
@@ -218,6 +296,22 @@ describe("Decision Log note lines", () => {
 			"Why: The team asked for this in standup.",
 			"Prompted by a Slack channel: Two backlog updates from the release thread",
 		]);
+	});
+
+	it("logs only the real change when the editor re-indented a nested list", () => {
+		const [, line] = proposalUpdateAppliedNoteLines(
+			{
+				description: {
+					from: "- Gap\n    - Impact: unclear\nStep one",
+					to: "- Gap\n  - Impact: unclear\nStep one (changed)",
+				},
+			},
+			{},
+		);
+
+		expect(line).toBe(
+			"Description: 1 line added, 1 removed. Adds “Step one (changed)”",
+		);
 	});
 
 	it("includes line counts for body changes", () => {

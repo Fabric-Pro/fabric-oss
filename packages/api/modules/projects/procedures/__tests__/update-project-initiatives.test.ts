@@ -24,6 +24,7 @@ vi.mock("@repo/database", async () => ({
 	countProjectInitiatives: (...a: unknown[]) =>
 		mockCountProjectInitiatives(...a),
 	getProjectRole: vi.fn(),
+	canEditProject: vi.fn().mockResolvedValue(true),
 	hasProjectAccess: vi.fn().mockResolvedValue(true),
 	isFeatureEnabled: vi.fn().mockReturnValue(false),
 	resolveAttachmentRetentionOverrides: vi.fn().mockResolvedValue(new Map()),

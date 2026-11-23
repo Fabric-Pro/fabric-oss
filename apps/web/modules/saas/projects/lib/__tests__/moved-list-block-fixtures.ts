@@ -1,0 +1,111 @@
+/**
+ * A ticket body and the update that moves its list blocks to other levels,
+ * as a live check of the line-by-line review seeded them: a plain moved
+ * block, a removed parent, and moved items holding a fenced code block, a
+ * heading and a quote, a Markdown table and an HTML table.
+ */
+
+const FENCE = "```";
+
+/** The tables section of {@link MOVED_BLOCKS_BEFORE}. */
+export const MOVED_TABLES_BEFORE = [
+	"## Tables in a moved block",
+	"- Compare the plans",
+	"  - Plan table",
+	"    | Plan | Price |",
+	"    | --- | --- |",
+	"    | Basic | 5 |",
+	"- Choose a plan",
+	"- Keep the HTML table",
+	"  - HTML plan table",
+	"    <table><tr><td>Pro</td><td>9</td></tr></table>",
+	"- Close the comparison",
+].join("\n");
+
+/** The tables section of {@link MOVED_BLOCKS_AFTER}. */
+export const MOVED_TABLES_AFTER = [
+	"## Tables in a moved block",
+	"- Compare the plans",
+	"- Plan table",
+	"  | Plan | Price |",
+	"  | --- | --- |",
+	"  | Basic | 5 |",
+	"- Choose a plan",
+	"- Keep the HTML table",
+	"- HTML plan table",
+	"  <table><tr><td>Pro</td><td>9</td></tr></table>",
+	"- Close the comparison",
+].join("\n");
+
+export const MOVED_BLOCKS_BEFORE = [
+	"## Overview",
+	"A ticket for reviewing moved list blocks line by line.",
+	"",
+	"## Moved list block",
+	"- Plan the release",
+	"  - Draft the notes",
+	"    - Collect merged changes",
+	"- Publish the notes",
+	"",
+	"## Removed parent",
+	"- Keep this item",
+	"- Remove this parent",
+	"  - First nested item",
+	"  - Second nested item",
+	"- Last item",
+	"",
+	"## Fenced code in a list item",
+	"- Install the tools",
+	"  - Run the installer:",
+	`    ${FENCE}bash`,
+	"    pnpm install",
+	`    ${FENCE}`,
+	"- Start the app",
+	"",
+	"## Heading and quote in a moved block",
+	"- Write the guide",
+	"  - Add the summary section",
+	"    ### Summary heading",
+	"    > A quoted tip for readers.",
+	"- Review the guide",
+	"",
+	MOVED_TABLES_BEFORE,
+	"",
+	"## Notes",
+	"A closing paragraph that the update edits.",
+].join("\n");
+
+export const MOVED_BLOCKS_AFTER = [
+	"## Overview",
+	"A ticket for reviewing moved list blocks line by line.",
+	"",
+	"## Moved list block",
+	"- Plan the release",
+	"  - Draft the notes",
+	"  - Collect merged changes",
+	"  - Publish the notes",
+	"",
+	"## Removed parent",
+	"- Keep this item",
+	"- Last item",
+	"",
+	"## Fenced code in a list item",
+	"- Install the tools",
+	"- Run the installer:",
+	`  ${FENCE}bash`,
+	"  pnpm install",
+	`  ${FENCE}`,
+	"- Start the app",
+	"",
+	"## Heading and quote in a moved block",
+	"- Write the guide",
+	"- Add the summary section",
+	"  ### Summary heading",
+	"  > A quoted tip for readers.",
+	"- Review the guide",
+	"",
+	MOVED_TABLES_AFTER,
+	"",
+	"## Notes",
+	"A closing paragraph that the update edited.",
+].join("\n");

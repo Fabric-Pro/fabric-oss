@@ -62,6 +62,10 @@ const m = vi.hoisted(() => ({
 	isFeatureEnabled: vi.fn(),
 	hasWorkspaceAccess: vi.fn(),
 	getEffectiveRagSettings: vi.fn(),
+	/** The person's saved document conversation of an organization's workspace. */
+	savedHistory: [] as Array<{ role: "user" | "assistant"; content: string }>,
+	getWorkspaceDocumentChat: vi.fn(),
+	appendWorkspaceDocumentChat: vi.fn(),
 }));
 
 vi.mock("@repo/ai", () => ({
@@ -82,6 +86,10 @@ vi.mock("@repo/database", () => ({
 	hasWorkspaceAccess: (...args: unknown[]) => m.hasWorkspaceAccess(...args),
 	getEffectiveRagSettings: (...args: unknown[]) =>
 		m.getEffectiveRagSettings(...args),
+	getWorkspaceDocumentChat: (...args: unknown[]) =>
+		m.getWorkspaceDocumentChat(...args),
+	appendWorkspaceDocumentChat: (...args: unknown[]) =>
+		m.appendWorkspaceDocumentChat(...args),
 	db: {
 		workspace: {
 			findUnique: async () =>
@@ -295,6 +303,18 @@ beforeEach(() => {
 		topK: 8,
 		similarityThreshold: 0.2,
 	});
+	// The saved conversation holds the exchange the run's messages carry.
+	m.savedHistory = [
+		{ role: "user", content: "What is in the plan?" },
+		{ role: "assistant", content: "A launch." },
+	];
+	m.getWorkspaceDocumentChat.mockImplementation(async () => ({
+		id: "conversation-example",
+		messages: m.savedHistory,
+	}));
+	m.appendWorkspaceDocumentChat.mockResolvedValue({
+		id: "conversation-example",
+	});
 	m.streamText.mockImplementation(
 		({ onError }: { onError: (event: { error: unknown }) => void }) => ({
 			textStream: (async function* () {
@@ -416,6 +436,7 @@ describe("the library-chat engine", () => {
 			EventType.TEXT_MESSAGE_CONTENT,
 			EventType.TEXT_MESSAGE_END,
 			EventType.CUSTOM,
+			EventType.CUSTOM,
 			EventType.RUN_FINISHED,
 		]);
 		expect(events[1]).toEqual({
@@ -469,6 +490,58 @@ describe("the library-chat engine", () => {
 				usage: USAGE,
 			}),
 		);
+	});
+
+	it("keeps an organization workspace's conversation, as the route does", async () => {
+		// The run's messages are not the history: a reopened dialog sends
+		// none, and the saved conversation answers.
+		m.savedHistory = [
+			{ role: "user", content: "Saved question" },
+			{ role: "assistant", content: "Saved answer" },
+		];
+		const events = await run([
+			{ id: "m-1", role: "user", content: "When does it ship?" },
+		]);
+
+		expect(m.streamText).toHaveBeenCalledWith(
+			expect.objectContaining({
+				messages: [
+					{ role: "user", content: "Saved question" },
+					{ role: "assistant", content: "Saved answer" },
+					{ role: "user", content: "When does it ship?" },
+				],
+			}),
+		);
+		expect(m.appendWorkspaceDocumentChat).toHaveBeenCalledWith({
+			workspaceId: "workspace-example-1",
+			userId: "user-example-1",
+			organizationId: "org-example-1",
+			question: "When does it ship?",
+			answer: "It ships in May.",
+			sources: [expect.objectContaining({ filename: "plan.pdf" })],
+		});
+		expect(events.at(-2)).toEqual({
+			type: EventType.CUSTOM,
+			name: "fabric.library-chat.history",
+			value: { persisted: true },
+		});
+	});
+
+	it("keeps the answer and says so when the conversation could not be saved", async () => {
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		m.appendWorkspaceDocumentChat.mockRejectedValueOnce(
+			new Error("database unavailable"),
+		);
+
+		const events = await run();
+
+		expect(deltasOf(events)).toEqual(["It ships ", "in May."]);
+		expect(events.at(-2)).toMatchObject({
+			name: "fabric.library-chat.history",
+			value: { persisted: false },
+		});
+		expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
+		log.mockRestore();
 	});
 
 	it("retrieves with the workspace's own search settings, as the route does", async () => {
@@ -557,9 +630,16 @@ describe("the library-chat engine", () => {
 		const events = await run();
 
 		expect(deltasOf(events)).toEqual([EMPTY_WORKSPACE_CHAT_ANSWER]);
-		expect(events.at(-2)).toMatchObject({
+		expect(events.at(-3)).toMatchObject({
 			type: EventType.TEXT_MESSAGE_END,
 		});
+		expect(events.at(-2)).toMatchObject({
+			name: "fabric.library-chat.history",
+			value: { persisted: true },
+		});
+		expect(m.appendWorkspaceDocumentChat).toHaveBeenCalledWith(
+			expect.objectContaining({ answer: EMPTY_WORKSPACE_CHAT_ANSWER }),
+		);
 		expect(events.at(-1)).toMatchObject({ type: EventType.RUN_FINISHED });
 		expect(m.logModelUsageAsync).toHaveBeenCalledTimes(1);
 		expect(m.logModelUsageAsync).toHaveBeenCalledWith(

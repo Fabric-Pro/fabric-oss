@@ -205,9 +205,7 @@ function resolveRequestedSettingsTab(
 		return null;
 	}
 	const effective =
-		requested === "development" &&
-		anchorId === PM_SETTINGS_ANCHOR_ID &&
-		gates.pmFieldMappingEnabled
+		requested === "development" && anchorId === PM_SETTINGS_ANCHOR_ID
 			? "project-management"
 			: requested;
 	return resolveStoredSettingsTab(effective, gates);
@@ -307,12 +305,11 @@ export function ProjectSettings({
 	const timeTrackingEnabled = Boolean(project.organizationId);
 	const gates = useMemo<SettingsTabGates>(
 		() => ({
-			pmFieldMappingEnabled,
 			qaEnabled: ENVIRONMENT_SETTINGS_ENABLED,
 			publishingEnabled: publishingSuiteEnabled,
 			timeTrackingEnabled,
 		}),
-		[pmFieldMappingEnabled, publishingSuiteEnabled, timeTrackingEnabled],
+		[publishingSuiteEnabled, timeTrackingEnabled],
 	);
 	const [settingsTab, setSettingsTab] = useSettingsTab(project.id, gates);
 	// Honor a `?settingsTab=<id>` (and optional `?settingsAnchor=<id>`) deep link
@@ -435,13 +432,9 @@ export function ProjectSettings({
 		development: !!(
 			project.repositoryUrl ||
 			(project.repositoryIntegrations &&
-				project.repositoryIntegrations.length > 0) ||
-			// PM lives on Development only while the flag is off.
-			(!pmFieldMappingEnabled && project.projectManagementMcpConfigId)
+				project.repositoryIntegrations.length > 0)
 		),
-		"project-management": !!(
-			pmFieldMappingEnabled && project.projectManagementMcpConfigId
-		),
+		"project-management": !!project.projectManagementMcpConfigId,
 		"agent-runtime": !!(
 			project.implementationDefaultChannel ||
 			project.implementationDefaultProvider
@@ -478,7 +471,6 @@ export function ProjectSettings({
 						: undefined
 				}
 				showDanger={canDelete}
-				showProjectManagement={pmFieldMappingEnabled}
 				showQa={ENVIRONMENT_SETTINGS_ENABLED}
 				showPublishing={publishingSuiteEnabled}
 				showTimeTracking={timeTrackingEnabled}
@@ -517,8 +509,7 @@ export function ProjectSettings({
 						}
 					/>
 				)}
-				{/* What the project shows: which tabs exist for members and
-				    which feature stages appear in the dropdown. */}
+				{/* Which project tabs members see. */}
 				{settingsTab === "navigation" && (
 					<div className="space-y-6">
 						{tabMeta && (
@@ -538,14 +529,6 @@ export function ProjectSettings({
 								}
 							/>
 						)}
-						<ProjectStageVisibilitySettings
-							project={project}
-							canEdit={canEditStageVisibility}
-						/>
-						<ProjectInitiativesSettings
-							project={project}
-							canEdit={canEditSettings}
-						/>
 					</div>
 				)}
 				{settingsTab === "knowledge" && (
@@ -665,22 +648,13 @@ export function ProjectSettings({
 						<div>
 							<p className={sectionTitleClass}>Development</p>
 							<h3 className="mt-2 text-xl font-semibold text-foreground">
-								{pmFieldMappingEnabled
-									? "Repositories"
-									: "Project management and repositories"}
+								Repositories
 							</h3>
 							<p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-								{pmFieldMappingEnabled
-									? "Connect Git repositories, configure branches, and manage codebase indexing for this project."
-									: "Connect project management tools, Git repositories, and codebase indexing for this project."}
+								Connect Git repositories, configure branches,
+								and manage codebase indexing for this project.
 							</p>
 						</div>
-						{/* When the field-mapping flag is on the PM card moves to
-						    its own Project Management tab; otherwise it stays here
-						    so no capability is lost. */}
-						{!pmFieldMappingEnabled && (
-							<ProjectManagementSettings project={project} />
-						)}
 						{currentUserId && (
 							<ProjectRepositoryIntegrationSettings
 								project={project}
@@ -691,26 +665,36 @@ export function ProjectSettings({
 					</div>
 				)}
 
-				{pmFieldMappingEnabled &&
-					settingsTab === "project-management" && (
-						<div className="space-y-6">
-							<div>
-								<p className={sectionTitleClass}>
-									Project Management
-								</p>
-								<h3 className="mt-2 text-xl font-semibold text-foreground">
-									PM tool connection & field mapping
-								</h3>
-								<p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-									Connect your project management tool and
-									configure how its work-item fields map into
-									Fabric.
-								</p>
-							</div>
-							<ProjectManagementSettings project={project} />
-							<FieldMappingPanel project={project} />
+				{settingsTab === "project-management" && (
+					<div className="space-y-6">
+						<div>
+							<p className={sectionTitleClass}>
+								Project Management
+							</p>
+							<h3 className="mt-2 text-xl font-semibold text-foreground">
+								PM tool, feature stages &amp; work item types
+							</h3>
+							<p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+								Connect your project management tool and choose
+								which feature stages and work item types this
+								project uses.
+							</p>
 						</div>
-					)}
+						<ProjectManagementSettings project={project} />
+						{/* Also switches sync replace-mode, so it stays per-project. */}
+						{pmFieldMappingEnabled && (
+							<FieldMappingPanel project={project} />
+						)}
+						<ProjectStageVisibilitySettings
+							project={project}
+							canEdit={canEditStageVisibility}
+						/>
+						<ProjectInitiativesSettings
+							project={project}
+							canEdit={canEditSettings}
+						/>
+					</div>
+				)}
 
 				{settingsTab === "agent-runtime" && (
 					<div className="space-y-6">

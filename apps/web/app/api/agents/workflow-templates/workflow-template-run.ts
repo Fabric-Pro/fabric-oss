@@ -2,6 +2,7 @@ import {
 	filterAccessibleWorkspaceIds,
 	getInstanceWithTemplate,
 	getOrganizationMembership,
+	getProjectAccessContext,
 	getTemplateWorkflow,
 } from "@repo/database";
 import type { DeepResearcherInput, getTemporalClient } from "@repo/temporal";
@@ -25,6 +26,8 @@ export interface WorkflowTemplateRunBody {
 	maxIterations?: number;
 	successCriteria?: string;
 	reasoningEffort?: DeepResearcherInput["reasoningEffort"];
+	/** The project the run is for: its usage limits apply and count it. */
+	projectId?: string | null;
 }
 
 export interface AdmittedWorkflowTemplateRun {
@@ -52,6 +55,7 @@ export async function admitWorkflowTemplateRun(
 		maxIterations,
 		successCriteria,
 		reasoningEffort,
+		projectId,
 	} = body;
 
 	// Validate required fields
@@ -202,8 +206,33 @@ export async function admitWorkflowTemplateRun(
 				instanceWorkspaceIds.length > 0
 					? instanceWorkspaceIds
 					: undefined,
+			projectId: projectId
+				? await runProjectId(projectId, userId, organizationId ?? null)
+				: undefined,
 		},
 	};
+}
+
+/**
+ * The project a run is counted under, as the Direct chat keeps one: only a
+ * project the caller can open in the run's own tenant (personal with
+ * personal, the same organization with the organization). Any other is
+ * dropped, so the run never takes another tenant's project.
+ */
+async function runProjectId(
+	projectId: string,
+	userId: string,
+	organizationId: string | null,
+): Promise<string | undefined> {
+	const access = await getProjectAccessContext(projectId, userId);
+	if (!access || (access.organizationId ?? null) !== organizationId) {
+		console.warn(
+			"[Workflow Template Stream] Ignoring a project the caller cannot use in this tenant",
+			{ userId, projectId },
+		);
+		return undefined;
+	}
+	return projectId;
 }
 
 /**

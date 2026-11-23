@@ -10,13 +10,19 @@ import {
 	isTeamsMeetingUrl,
 	leaveParlumeMeetingBot,
 	normalizeAttendeeBaseUrl,
+	noteParlumeLeaving,
 	PARLUME_ATTENDEE_ALLOWED_HOSTS_ENV,
 	type ParlumeAttendeeSettings,
+	ParlumeBridgeUnavailableError,
 	ParlumeProviderError,
+	purgeParlumeBridgeStorage,
 	sendParlumeChatMessage,
+	sendParlumeGuestUpdates,
+	sendParlumeLiveControl,
 	sendParlumeMeetingChat,
 	sendParlumeSpeakerUpdates,
 	startParlumeMeetingBot,
+	waitForParlumeBotInCall,
 } from "../parlume-attendee";
 
 const settings = {
@@ -29,6 +35,8 @@ const attendee: ParlumeAttendeeSettings = {
 	apiKey: "operator-key",
 	baseUrl: "https://app.attendee.dev",
 	teamsLoginMode: null,
+	teamsLoginGroup: null,
+	webhookSecret: null,
 	source: "environment",
 };
 
@@ -102,7 +110,7 @@ describe("startParlumeMeetingBot", () => {
 			sessionId: "session-1",
 			meetingUrl: "https://teams.microsoft.com/meet/123456?p=abc",
 			streamToken: "stream-token",
-			callbackSecret: "callback-secret",
+			callbackToken: "callback-token",
 			hardStopAt,
 		});
 	}
@@ -135,6 +143,7 @@ describe("startParlumeMeetingBot", () => {
 				format: "none",
 				record_participant_speech_start_stop_events: true,
 			},
+			transcription_settings: { enabled: false },
 			websocket_settings: {
 				audio: {
 					url: "wss://bridge.fabric.example/live/session-1?token=stream-token",
@@ -143,21 +152,42 @@ describe("startParlumeMeetingBot", () => {
 			},
 			webhooks: [
 				{
-					url: "https://fabric.example/api/internal/parlume/callback?sessionId=session-1&token=callback-secret",
+					url: "https://fabric.example/api/internal/parlume/callback?sessionId=session-1&token=callback-token",
 					triggers: [
 						"bot.state_change",
 						"participant_events.speech_start_stop",
+						"participant_events.join_leave",
 						"chat_messages.update",
 					],
 				},
 			],
 			automatic_leave_settings: {
-				// Ten minutes in the lobby; three alone.
-				waiting_room_timeout_seconds: 600,
+				// Five minutes in the lobby; three alone.
+				waiting_room_timeout_seconds: 300,
 				only_participant_in_meeting_timeout_seconds: 180,
 				// Four hours to the hard stop, plus the two-minute backstop.
 				max_uptime_seconds: 4 * 60 * 60 + 120,
 			},
+		});
+	});
+
+	it("asks Attendee to transcribe nothing, so it keeps no captions of the meeting", async () => {
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ id: "bot_abc123" }), { status: 201 }),
+		);
+
+		await start();
+
+		const body = requestBody(0);
+		expect(body).toMatchObject({
+			transcription_settings: { enabled: false },
+		});
+		// Parlume's own transcript still needs the audio and the speech events.
+		expect(body).toMatchObject({
+			recording_settings: {
+				record_participant_speech_start_stop_events: true,
+			},
+			websocket_settings: { audio: { sample_rate: 16_000 } },
 		});
 	});
 
@@ -175,8 +205,42 @@ describe("startParlumeMeetingBot", () => {
 			expect(requestBody(0)).toMatchObject({
 				teams_settings: { use_login: true, login_mode: mode },
 			});
+			// Without a group, Attendee uses the project's oldest one.
+			expect(requestBody(0)).not.toHaveProperty(
+				"teams_settings.login_group_name",
+			);
 		},
 	);
+
+	it("signs the bot in with the organization's own Teams login group", async () => {
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ id: "bot_abc123" }), { status: 201 }),
+		);
+
+		await start({
+			teamsLoginMode: "always",
+			teamsLoginGroup: "example-org bot",
+			source: "organization",
+		});
+
+		expect(requestBody(0)).toMatchObject({
+			teams_settings: {
+				use_login: true,
+				login_mode: "always",
+				login_group_name: "example-org bot",
+			},
+		});
+	});
+
+	it("sends no login group for an anonymous bot", async () => {
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ id: "bot_abc123" }), { status: 201 }),
+		);
+
+		await start({ teamsLoginGroup: "example-org bot" });
+
+		expect(requestBody(0)).not.toHaveProperty("teams_settings");
+	});
 
 	it("joins as an anonymous guest when no Teams login is configured", async () => {
 		fetchMock.mockResolvedValue(
@@ -229,7 +293,7 @@ describe("startParlumeMeetingBot", () => {
 			sessionId: "session-1",
 			meetingUrl: "https://teams.microsoft.com/meet/123456?p=abc",
 			streamToken: "stream-token",
-			callbackSecret: "callback-secret",
+			callbackToken: "callback-token",
 			hardStopAt: new Date("2029-12-31T00:00:00.000Z"),
 		});
 
@@ -304,6 +368,7 @@ describe("media bridge control", () => {
 				settings,
 				sessionId: "session-1",
 				hardStopAt: new Date("2030-01-01T00:00:00.000Z"),
+				chatTagStart: 6,
 			}),
 		).resolves.toBeUndefined();
 
@@ -315,6 +380,11 @@ describe("media bridge control", () => {
 				}),
 			}),
 		);
+		const [, init] = fetchMock.mock.calls[0] ?? [];
+		expect(JSON.parse(init.body)).toEqual({
+			hardStopAt: "2030-01-01T00:00:00.000Z",
+			chatTagStart: 6,
+		});
 	});
 
 	it("tells the bridge to close the stream of a bot that is gone", async () => {
@@ -329,6 +399,131 @@ describe("media bridge control", () => {
 		expect(init.headers).toEqual({
 			Authorization: "Bearer service-secret",
 		});
+	});
+
+	it("tells the bridge the bot is about to leave, and reports a refusal as the bridge being unavailable", async () => {
+		fetchMock.mockResolvedValueOnce(Response.json({ posted: true }));
+
+		await noteParlumeLeaving({ settings, sessionId: "session-1" });
+
+		const [url, init] = fetchMock.mock.calls[0] ?? [];
+		expect(String(url)).toBe(
+			"https://bridge.fabric.example/live/session-1?action=leaving",
+		);
+		expect(init.method).toBe("POST");
+		expect(init.headers).toEqual({
+			"content-type": "application/json",
+			Authorization: "Bearer service-secret",
+		});
+		expect(requestBody(0)).toEqual({});
+
+		fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+		await expect(
+			noteParlumeLeaving({ settings, sessionId: "session-1" }),
+		).rejects.toThrow(ParlumeBridgeUnavailableError);
+	});
+
+	it("hands the bridge why Parlume is leaving, to post before the leaving line", async () => {
+		fetchMock.mockResolvedValueOnce(
+			Response.json({ posted: true, noticed: true }),
+		);
+
+		await expect(
+			noteParlumeLeaving({
+				settings,
+				sessionId: "session-1",
+				notice: "I'm leaving: example.",
+			}),
+		).resolves.toBe(true);
+
+		expect(requestBody(0)).toEqual({ notice: "I'm leaving: example." });
+	});
+
+	it("reports a notice the bridge could not post", async () => {
+		fetchMock.mockResolvedValueOnce(
+			Response.json({ posted: false, noticed: false }),
+		);
+
+		await expect(
+			noteParlumeLeaving({
+				settings,
+				sessionId: "session-1",
+				notice: "I'm leaving: example.",
+			}),
+		).resolves.toBe(false);
+	});
+
+	// The bridge's own calls that lead to a leave allow 15 seconds in all.
+	it("gives up on the leaving line after four seconds", async () => {
+		const timeout = vi.spyOn(AbortSignal, "timeout");
+		fetchMock.mockResolvedValueOnce(Response.json({ posted: true }));
+
+		await noteParlumeLeaving({ settings, sessionId: "session-1" });
+
+		expect(timeout).toHaveBeenCalledWith(4_000);
+		timeout.mockRestore();
+	});
+
+	it("asks the bridge to purge a finished session's storage, and reads a refusal while a stream is connected", async () => {
+		fetchMock.mockResolvedValueOnce(Response.json({ purged: true }));
+
+		await expect(
+			purgeParlumeBridgeStorage({ settings, sessionId: "session-1" }),
+		).resolves.toEqual({ purged: true });
+
+		const [url, init] = fetchMock.mock.calls[0] ?? [];
+		expect(String(url)).toBe(
+			"https://bridge.fabric.example/live/session-1?action=purge",
+		);
+		expect(init.method).toBe("POST");
+		expect(init.headers).toEqual({
+			Authorization: "Bearer service-secret",
+		});
+
+		fetchMock.mockResolvedValueOnce(
+			Response.json({ purged: false }, { status: 409 }),
+		);
+		await expect(
+			purgeParlumeBridgeStorage({ settings, sessionId: "session-1" }),
+		).resolves.toEqual({ purged: false });
+
+		fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+		await expect(
+			purgeParlumeBridgeStorage({ settings, sessionId: "session-1" }),
+		).rejects.toThrow(ParlumeBridgeUnavailableError);
+	});
+
+	it("hands the bridge a page control with the member it is for, and reads back whether it changed anything", async () => {
+		fetchMock.mockResolvedValue(Response.json({ changed: true }));
+
+		const result = await sendParlumeLiveControl({
+			settings,
+			sessionId: "session-1",
+			control: "pause",
+			actor: { id: "user-1", name: "Dana Member" },
+		});
+
+		const [url, init] = fetchMock.mock.calls[0] ?? [];
+		expect(String(url)).toBe(
+			"https://bridge.fabric.example/live/session-1?action=pause",
+		);
+		expect(JSON.parse(init.body)).toEqual({
+			actor: { id: "user-1", name: "Dana Member" },
+		});
+		expect(result).toEqual({ changed: true });
+	});
+
+	it("reports a page control the bridge refused as the bridge being unavailable", async () => {
+		fetchMock.mockResolvedValue(new Response(null, { status: 503 }));
+
+		await expect(
+			sendParlumeLiveControl({
+				settings,
+				sessionId: "session-1",
+				control: "stop-speech",
+				actor: { id: "user-1", name: null },
+			}),
+		).rejects.toThrow(ParlumeBridgeUnavailableError);
 	});
 
 	it("hands the bridge who started and stopped speaking", async () => {
@@ -403,6 +598,30 @@ describe("media bridge control", () => {
 			Authorization: "Bearer service-secret",
 		});
 		expect(requestBody(0)).toEqual(message);
+	});
+
+	it("hands the bridge the guests who joined or left, and its checks", async () => {
+		fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+		const updates = [{ id: "8:teamsvisitor:guest-1", joined: true }];
+		const placing = [
+			{ id: "8:orgid:member", pending: false, userId: "user-2" },
+		];
+
+		await sendParlumeGuestUpdates({
+			settings,
+			sessionId: "session-1",
+			updates,
+			placing,
+		});
+
+		const [url, init] = fetchMock.mock.calls[0] ?? [];
+		expect(String(url)).toBe(
+			"https://bridge.fabric.example/live/session-1?action=guests",
+		);
+		expect(init.headers).toMatchObject({
+			Authorization: "Bearer service-secret",
+		});
+		expect(requestBody(0)).toEqual({ updates, placing });
 	});
 
 	it("reports a bridge that refuses a chat message", async () => {
@@ -633,18 +852,87 @@ describe("leaveParlumeMeetingBot", () => {
 	});
 });
 
+// Attendee refused the notice of a guest present at entry: "Bot is in state
+// joining and cannot send chat messages".
+describe("waitForParlumeBotInCall", () => {
+	function stateResponse(state: string) {
+		return new Response(JSON.stringify({ id: "bot_abc123", state }), {
+			status: 200,
+		});
+	}
+
+	it("waits while the bot is joining, until it is in the call", async () => {
+		fetchMock
+			.mockResolvedValueOnce(stateResponse("joining"))
+			.mockResolvedValueOnce(new Response("{}", { status: 503 }))
+			.mockResolvedValueOnce(stateResponse("joined_recording"));
+
+		const waiting = waitForParlumeBotInCall({
+			attendee,
+			providerBotId: "bot_abc123",
+		});
+		await vi.advanceTimersByTimeAsync(4_000);
+
+		await expect(waiting).resolves.toBe("in_call");
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://app.attendee.dev/api/v1/bots/bot_abc123",
+			expect.objectContaining({
+				headers: { Authorization: "Token operator-key" },
+			}),
+		);
+	});
+
+	it("says the bot is gone when it left before it was in the call", async () => {
+		fetchMock.mockResolvedValueOnce(stateResponse("fatal_error"));
+
+		await expect(
+			waitForParlumeBotInCall({ attendee, providerBotId: "bot_abc123" }),
+		).resolves.toBe("gone");
+	});
+
+	it("gives up once the bound has passed", async () => {
+		fetchMock.mockImplementation(async () => stateResponse("waiting_room"));
+
+		const waiting = waitForParlumeBotInCall({
+			attendee,
+			providerBotId: "bot_abc123",
+			timeoutMs: 5_000,
+		});
+		await vi.advanceTimersByTimeAsync(5_000);
+
+		await expect(waiting).resolves.toBe("timeout");
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+	});
+});
+
 describe("getEnvironmentAttendeeSettings", () => {
 	it("is the operator's Attendee project, anonymous by default", () => {
 		vi.stubEnv("PARLUME_ATTENDEE_API_KEY", "operator-key");
 		vi.stubEnv("PARLUME_ATTENDEE_BASE_URL", "");
 		vi.stubEnv("PARLUME_ATTENDEE_TEAMS_LOGIN", "");
+		vi.stubEnv("PARLUME_ATTENDEE_WEBHOOK_SECRET", "");
 
 		expect(getEnvironmentAttendeeSettings()).toEqual({
 			apiKey: "operator-key",
 			baseUrl: "https://app.attendee.dev",
 			teamsLoginMode: null,
+			teamsLoginGroup: null,
+			webhookSecret: null,
 			source: "environment",
 		});
+	});
+
+	it("carries the project's webhook secret", () => {
+		vi.stubEnv("PARLUME_ATTENDEE_API_KEY", "operator-key");
+		vi.stubEnv(
+			"PARLUME_ATTENDEE_WEBHOOK_SECRET",
+			" c2VjcmV0LWZvci10ZXN0cw== ",
+		);
+
+		expect(getEnvironmentAttendeeSettings()?.webhookSecret).toBe(
+			"c2VjcmV0LWZvci10ZXN0cw==",
+		);
 	});
 
 	it("is absent without a key", () => {

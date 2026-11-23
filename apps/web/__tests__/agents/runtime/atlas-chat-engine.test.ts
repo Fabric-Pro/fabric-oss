@@ -460,7 +460,23 @@ describe("the atlas-chat engine — refusals before the turn", () => {
 		await run();
 
 		expect(m.authorize).toHaveBeenCalledWith(
-			{ userId: USER, organizationId: ORG },
+			{ userId: USER, organizationId: ORG, activeOrganizationId: ORG },
+			PROJECT,
+		);
+	});
+
+	it("authorizes against the organization the caller's session names", async () => {
+		const caller = callerOf(USER);
+		caller.audit.session.activeOrganizationId = OTHER_ORG;
+
+		await run(input(), caller);
+
+		expect(m.authorize).toHaveBeenCalledWith(
+			{
+				userId: USER,
+				organizationId: ORG,
+				activeOrganizationId: OTHER_ORG,
+			},
 			PROJECT,
 		);
 	});

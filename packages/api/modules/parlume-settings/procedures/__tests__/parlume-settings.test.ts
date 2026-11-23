@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	findUnique: vi.fn(),
 	upsert: vi.fn(),
+	sharedConnections: vi.fn(),
+	users: vi.fn(),
 	isFeatureEnabled: vi.fn(),
 	recordAudit: vi.fn(),
 	checkConnection: vi.fn(),
@@ -21,8 +23,10 @@ vi.mock("@repo/database", () => ({
 			findUnique: mocks.findUnique,
 			upsert: mocks.upsert,
 		},
+		user: { findMany: mocks.users },
 	},
 	isFeatureEnabled: mocks.isFeatureEnabled,
+	listOrganizationSharedIntegrations: mocks.sharedConnections,
 }));
 
 vi.mock("@repo/utils", () => ({
@@ -103,6 +107,10 @@ function call(procedure: unknown, input: Record<string, unknown> = {}) {
 
 const SAVED_KEY = "attendee-saved-key-1234";
 const NEW_KEY = "attendee-new-key-abcd9876";
+// Shaped like the base64 secret Attendee's dashboard shows; not a real one.
+const WEBHOOK_SECRET = Buffer.from("example-webhook-secret-000000").toString(
+	"base64",
+);
 
 function storedRow(overrides: Record<string, unknown> = {}) {
 	return {
@@ -128,6 +136,8 @@ beforeEach(() => {
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.findUnique.mockResolvedValue(storedRow());
 	mocks.upsert.mockResolvedValue(undefined);
+	mocks.sharedConnections.mockResolvedValue([]);
+	mocks.users.mockResolvedValue([]);
 	mocks.checkConnection.mockResolvedValue({ status: "ok" });
 });
 
@@ -175,11 +185,13 @@ describe("getParlumeSettings", () => {
 		expect(view).toMatchObject({
 			attendee: {
 				maskedApiKey: "••••1234",
+				hasWebhookSecret: false,
 				baseUrl: null,
 				teamsLoginMode: null,
 				effectiveSource: "organization",
 			},
 			voice: { realtimeDeployment: null },
+			guests: { policy: "NOTES_ONLY" },
 			defaults: {
 				attendeeBaseUrl: "https://app.attendee.dev",
 				realtimeDeployment: "gpt-realtime-2.1",
@@ -217,8 +229,10 @@ describe("updateParlumeSettings", () => {
 		);
 		expect(savedData()).toEqual({
 			encryptedAttendeeApiKey: `encrypted:${NEW_KEY}`,
+			encryptedAttendeeWebhookSecret: null,
 			attendeeBaseUrl: null,
 			teamsLoginMode: "ALWAYS",
+			teamsLoginGroup: null,
 			updatedById: "user-1",
 		});
 		expect(mocks.recordAudit).toHaveBeenCalledWith(
@@ -230,9 +244,14 @@ describe("updateParlumeSettings", () => {
 				metadata: {
 					keyChanged: true,
 					keyCleared: false,
+					webhookVerificationChanged: false,
+					webhookVerificationSet: false,
 					customAttendeeUrl: false,
 					teamsLoginMode: "ALWAYS",
+					teamsLoginGroupSet: false,
+					channelConnectionSet: false,
 					realtimeDeploymentSet: false,
+					guestPolicy: "NOTES_ONLY",
 				},
 			}),
 		);
@@ -314,6 +333,7 @@ describe("updateParlumeSettings", () => {
 				attendeeBaseUrl: "https://attendee.example.com",
 				teamsLoginMode: "ALWAYS",
 				realtimeDeployment: "example-realtime",
+				encryptedAttendeeWebhookSecret: `encrypted:${WEBHOOK_SECRET}`,
 			}),
 		);
 
@@ -321,8 +341,10 @@ describe("updateParlumeSettings", () => {
 
 		expect(savedData()).toEqual({
 			encryptedAttendeeApiKey: null,
+			encryptedAttendeeWebhookSecret: null,
 			attendeeBaseUrl: null,
 			teamsLoginMode: null,
+			teamsLoginGroup: null,
 			updatedById: "user-1",
 		});
 		expect(mocks.recordAudit.mock.calls[0][1].metadata).toMatchObject({
@@ -341,6 +363,57 @@ describe("updateParlumeSettings", () => {
 		expect(mocks.upsert).not.toHaveBeenCalled();
 	});
 
+	it("encrypts the webhook secret, keeps it when the field is left empty, and never audits it", async () => {
+		await call(updateParlumeSettings, {
+			attendeeWebhookSecret: ` ${WEBHOOK_SECRET} `,
+		});
+
+		expect(savedData().encryptedAttendeeWebhookSecret).toBe(
+			`encrypted:${WEBHOOK_SECRET}`,
+		);
+		expect(mocks.recordAudit.mock.calls[0][1].metadata).toMatchObject({
+			webhookVerificationChanged: true,
+			webhookVerificationSet: true,
+		});
+		expect(JSON.stringify(mocks.recordAudit.mock.calls)).not.toContain(
+			WEBHOOK_SECRET,
+		);
+
+		mocks.upsert.mockClear();
+		mocks.findUnique.mockResolvedValue(
+			storedRow({
+				encryptedAttendeeWebhookSecret: `encrypted:${WEBHOOK_SECRET}`,
+			}),
+		);
+		await call(updateParlumeSettings, { attendeeWebhookSecret: "" });
+
+		expect(savedData().encryptedAttendeeWebhookSecret).toBe(
+			`encrypted:${WEBHOOK_SECRET}`,
+		);
+	});
+
+	it("says a webhook secret is saved without showing any of it", async () => {
+		mocks.findUnique.mockResolvedValue(
+			storedRow({
+				encryptedAttendeeWebhookSecret: `encrypted:${WEBHOOK_SECRET}`,
+			}),
+		);
+
+		const view = await call(getParlumeSettings);
+
+		expect(view).toMatchObject({ attendee: { hasWebhookSecret: true } });
+		expect(JSON.stringify(view)).not.toContain(WEBHOOK_SECRET);
+	});
+
+	it("refuses a webhook secret that is not base64", async () => {
+		await expect(
+			call(updateParlumeSettings, {
+				attendeeWebhookSecret: "not a webhook secret",
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(mocks.upsert).not.toHaveBeenCalled();
+	});
+
 	it("refuses a key with spaces in it", async () => {
 		await expect(
 			call(updateParlumeSettings, { attendeeApiKey: "not a key value" }),
@@ -350,6 +423,7 @@ describe("updateParlumeSettings", () => {
 	it.each([
 		{ attendeeBaseUrl: "https://attendee.example.com" },
 		{ teamsLoginMode: "only_if_required" },
+		{ attendeeWebhookSecret: WEBHOOK_SECRET },
 	])(
 		"refuses %o without the organization's own key, so the operator's key never meets it",
 		async (input) => {
@@ -390,10 +464,210 @@ describe("updateParlumeSettings", () => {
 		).rejects.toMatchObject({ code: "BAD_REQUEST" });
 	});
 
-	it("clears the deployment name back to the model id on an empty value", async () => {
+	it("clears the deployment name on an empty value, back to the classic voice", async () => {
 		await call(updateParlumeSettings, { realtimeDeployment: "" });
 
 		expect(savedData().realtimeDeployment).toBeNull();
+	});
+
+	it("saves and audits the guest policy, and keeps it when another field changes", async () => {
+		await call(updateParlumeSettings, { guestPolicy: "INTERNAL_ONLY" });
+
+		expect(savedData().guestPolicy).toBe("INTERNAL_ONLY");
+		expect(mocks.recordAudit.mock.calls[0][1].metadata).toMatchObject({
+			guestPolicy: "INTERNAL_ONLY",
+		});
+
+		mocks.upsert.mockClear();
+		mocks.findUnique.mockResolvedValue(
+			storedRow({ guestPolicy: "INTERNAL_ONLY" }),
+		);
+		await call(updateParlumeSettings, { teamsLoginMode: "always" });
+		expect(savedData()).not.toHaveProperty("guestPolicy");
+	});
+
+	it("saves the Teams login group with a sign-in mode, and audits only that one is set", async () => {
+		await call(updateParlumeSettings, {
+			teamsLoginMode: "always",
+			teamsLoginGroup: " example-org bot ",
+		});
+
+		expect(savedData()).toMatchObject({
+			teamsLoginMode: "ALWAYS",
+			teamsLoginGroup: "example-org bot",
+		});
+		expect(mocks.recordAudit.mock.calls[0][1].metadata).toMatchObject({
+			teamsLoginGroupSet: true,
+		});
+		expect(JSON.stringify(mocks.recordAudit.mock.calls)).not.toContain(
+			"example-org bot",
+		);
+	});
+
+	it("drops the login group when the bot joins anonymously again", async () => {
+		mocks.findUnique.mockResolvedValue(
+			storedRow({
+				teamsLoginMode: "ALWAYS",
+				teamsLoginGroup: "example-org bot",
+			}),
+		);
+
+		await call(updateParlumeSettings, { teamsLoginMode: null });
+
+		expect(savedData()).toMatchObject({
+			teamsLoginMode: null,
+			teamsLoginGroup: null,
+		});
+	});
+
+	it("keeps the saved login group when another field changes", async () => {
+		mocks.findUnique.mockResolvedValue(
+			storedRow({
+				teamsLoginMode: "ALWAYS",
+				teamsLoginGroup: "example-org bot",
+			}),
+		);
+
+		await call(updateParlumeSettings, { guestPolicy: "INTERNAL_ONLY" });
+
+		expect(savedData().teamsLoginGroup).toBe("example-org bot");
+	});
+
+	it.each(["", "   "])(
+		"clears the login group on the empty value %j, back to the project's oldest group",
+		async (teamsLoginGroup) => {
+			mocks.findUnique.mockResolvedValue(
+				storedRow({
+					teamsLoginMode: "ALWAYS",
+					teamsLoginGroup: "example-org bot",
+				}),
+			);
+
+			await call(updateParlumeSettings, { teamsLoginGroup });
+
+			expect(savedData().teamsLoginGroup).toBeNull();
+		},
+	);
+
+	it("refuses a login group without the organization's own key, so no organization picks one on the operator's project", async () => {
+		mocks.findUnique.mockResolvedValue(null);
+
+		await expect(
+			call(updateParlumeSettings, {
+				teamsLoginGroup: "example-org bot",
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: expect.stringContaining("Attendee API key"),
+		});
+		expect(mocks.upsert).not.toHaveBeenCalled();
+	});
+
+	it("refuses a login group name Attendee would not show", async () => {
+		await expect(
+			call(updateParlumeSettings, {
+				teamsLoginMode: "always",
+				teamsLoginGroup: "<script>",
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(mocks.upsert).not.toHaveBeenCalled();
+	});
+
+	it("saves one of the organization's shared Microsoft connections for channel replies, and clears it", async () => {
+		mocks.sharedConnections.mockResolvedValue([
+			{ id: "shared-1", name: "Microsoft 365", userId: "user-2" },
+		]);
+
+		await call(updateParlumeSettings, { channelIntegrationId: "shared-1" });
+
+		expect(savedData().channelIntegrationId).toBe("shared-1");
+		expect(mocks.sharedConnections).toHaveBeenCalledWith(
+			"MICROSOFT_GRAPH",
+			"org-1",
+		);
+		expect(mocks.recordAudit.mock.calls[0][1].metadata).toMatchObject({
+			channelConnectionSet: true,
+		});
+
+		mocks.upsert.mockClear();
+		await call(updateParlumeSettings, { channelIntegrationId: null });
+		expect(savedData().channelIntegrationId).toBeNull();
+	});
+
+	it("refuses a connection that is not one of the organization's shared Microsoft connections", async () => {
+		mocks.sharedConnections.mockResolvedValue([
+			{ id: "shared-1", name: "Microsoft 365", userId: "user-2" },
+		]);
+
+		await expect(
+			call(updateParlumeSettings, {
+				channelIntegrationId: "someone-elses-own",
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(mocks.upsert).not.toHaveBeenCalled();
+	});
+
+	it("leaves the channel connection alone when it is not in the request", async () => {
+		await call(updateParlumeSettings, { guestPolicy: "INTERNAL_ONLY" });
+
+		expect(savedData()).not.toHaveProperty("channelIntegrationId");
+	});
+});
+
+describe("getParlumeSettings channel connection", () => {
+	it("lists the shared Microsoft connections with who connected them, and the chosen one", async () => {
+		mocks.findUnique.mockResolvedValue(
+			storedRow({ channelIntegrationId: "shared-1" }),
+		);
+		mocks.sharedConnections.mockResolvedValue([
+			{ id: "shared-1", name: "Microsoft 365", userId: "user-2" },
+		]);
+		mocks.users.mockResolvedValue([{ id: "user-2", name: "Dana Admin" }]);
+
+		const view = await call(getParlumeSettings);
+
+		expect(view).toMatchObject({
+			channel: {
+				integrationId: "shared-1",
+				connections: [
+					{
+						id: "shared-1",
+						name: "Microsoft 365",
+						connectedBy: "Dana Admin",
+					},
+				],
+			},
+		});
+	});
+
+	it("shows no choice when the chosen connection is no longer shared", async () => {
+		mocks.findUnique.mockResolvedValue(
+			storedRow({ channelIntegrationId: "gone" }),
+		);
+
+		const view = await call(getParlumeSettings);
+
+		expect(view).toMatchObject({
+			channel: { integrationId: null, connections: [] },
+		});
+	});
+
+	it("shows the saved Teams login group", async () => {
+		mocks.findUnique.mockResolvedValue(
+			storedRow({
+				teamsLoginMode: "ALWAYS",
+				teamsLoginGroup: "example-org bot",
+			}),
+		);
+
+		const view = await call(getParlumeSettings);
+
+		expect(view).toMatchObject({
+			attendee: {
+				teamsLoginMode: "always",
+				teamsLoginGroup: "example-org bot",
+			},
+		});
 	});
 });
 

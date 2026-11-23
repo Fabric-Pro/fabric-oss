@@ -463,7 +463,11 @@ describe("task toggling refuses before it toggles", () => {
 
 	it("toggles and dispatches in the project's organization", async () => {
 		await call(toggleTaskProcedure, { ...input }, { context });
-		expect(mocks.toggleTaskComplete).toHaveBeenCalledWith("task-1");
+		expect(mocks.toggleTaskComplete).toHaveBeenCalledWith({
+			taskId: "task-1",
+			storyId: "story-1",
+			projectId: PROJECT_ID,
+		});
 		expect(mocks.dispatchLifecycleEvent).toHaveBeenCalledWith(
 			expect.objectContaining({ organizationId: ORG_PROJECT }),
 		);
@@ -474,5 +478,13 @@ describe("task toggling refuses before it toggles", () => {
 		await expect(
 			call(toggleTaskProcedure, { ...input }, { context }),
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
+	});
+
+	it("answers NOT_FOUND, with no event, for a task outside the story and project", async () => {
+		mocks.toggleTaskComplete.mockResolvedValue(null);
+		await expect(
+			call(toggleTaskProcedure, { ...input }, { context }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(mocks.dispatchLifecycleEvent).not.toHaveBeenCalled();
 	});
 });

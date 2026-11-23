@@ -23,7 +23,7 @@ import {
 	SelectValue,
 } from "@ui/components/select";
 import { Switch } from "@ui/components/switch";
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import {
 	ENVIRONMENT_SETTINGS_ENABLED,
 	NEWSLETTER_AUTO_CAPTURE_ANCHOR_ID,
@@ -135,9 +135,10 @@ function AutomaticScreenshots({
 				<>
 					<p className="break-words text-muted-foreground text-sm">
 						Automatic capture needs an environment Fabric can open:
-						one that shows sample data only, with its address and a
-						sign-in saved in Settings, Environments. Choose it under
-						Capture from. Until you do, nothing is captured.
+						one that shows sample data only, with its address saved
+						in Settings, Environments, and a sign-in if its pages
+						need one. Choose it under Capture from. Until you do,
+						nothing is captured.
 					</p>
 					<Button
 						type="button"
@@ -186,6 +187,7 @@ function CaptureFromPicker({
 	onChange: (change: EnvironmentChange) => void;
 }) {
 	const captureFromId = useId();
+	const captureFromRef = useRef<HTMLButtonElement>(null);
 	const confirmId = useId();
 	const environmentsQuery = useQuery(
 		orpc.projects.environments.list.queryOptions({
@@ -224,7 +226,11 @@ function CaptureFromPicker({
 						}
 					}}
 				>
-					<SelectTrigger id={captureFromId} className="max-w-sm">
+					<SelectTrigger
+						ref={captureFromRef}
+						id={captureFromId}
+						className="max-w-sm"
+					>
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>
@@ -260,7 +266,14 @@ function CaptureFromPicker({
 					}
 				}}
 			>
-				<AlertDialogContent>
+				<AlertDialogContent
+					// The dialog has no trigger of its own, so Radix would
+					// leave focus on the page. Return it to the picker.
+					onCloseAutoFocus={(event) => {
+						event.preventDefault();
+						captureFromRef.current?.focus();
+					}}
+				>
 					<AlertDialogHeader>
 						<AlertDialogTitle>
 							Capture from{" "}

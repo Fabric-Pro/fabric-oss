@@ -57,12 +57,15 @@ describe("Parlume realtime session", () => {
 	});
 
 	it("tells the bridge to stay classic when realtime is unavailable", async () => {
-		mocks.create.mockResolvedValue({ engine: "classic", reason: "no_key" });
+		mocks.create.mockResolvedValue({
+			engine: "classic",
+			reason: "not_configured",
+		});
 		const response = await POST(ask());
 		expect(response.status).toBe(404);
 		expect(await response.json()).toEqual({
 			engine: "classic",
-			reason: "no_key",
+			reason: "not_configured",
 		});
 	});
 

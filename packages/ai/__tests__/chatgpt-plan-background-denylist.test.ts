@@ -82,6 +82,23 @@ describe("own-plan background denylist", () => {
 		},
 	);
 
+	// Fizzy #3538: this start carried no job type before, and a no-job-type
+	// call may run on the creator's own plan when they included background
+	// jobs. Adding the key must not change that, so it stays off the denylist.
+	it.each(["duplicate-detection"] as const)(
+		"resolves %s exactly as a call with no job type",
+		async (jobType) => {
+			expect(OWN_PLAN_BACKGROUND_DENYLIST).not.toContain(jobType);
+			const withoutJobType = await resolveOwnChatGptPlan(background);
+			await expect(
+				resolveOwnChatGptPlan({ ...background, jobType }),
+			).resolves.toBe(withoutJobType);
+			await expect(
+				resolveOwnChatGptPlan({ ...background, jobType }),
+			).resolves.toBe("own");
+		},
+	);
+
 	it("keeps the phase-1 rule for a background call with no job type", async () => {
 		await expect(resolveOwnChatGptPlan(background)).resolves.toBe("own");
 	});

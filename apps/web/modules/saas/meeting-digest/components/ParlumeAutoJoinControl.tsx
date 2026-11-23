@@ -1,11 +1,17 @@
 "use client";
 
+import {
+	PARLUME_JOIN_NOTICE_BODY,
+	PARLUME_JOIN_NOTICE_PAUSE,
+	PARLUME_JOIN_NOTICE_TITLE,
+} from "@repo/utils/parlume-join-notice";
 import { ParlumeModePicker } from "@saas/parlume/components/ParlumeModePicker";
 import { ParlumeSuggestionAudiencePicker } from "@saas/parlume/components/ParlumeSuggestionAudiencePicker";
 import { ParlumeSuggestionsToggle } from "@saas/parlume/components/ParlumeSuggestionsToggle";
 import { useSettingsReturnUrl } from "@saas/settings/hooks/use-settings-return-url";
 import { Label } from "@ui/components/label";
 import { Switch } from "@ui/components/switch";
+import { format } from "date-fns";
 import { CircleAlertIcon } from "lucide-react";
 import Link from "next/link";
 import type {
@@ -51,6 +57,7 @@ const DEFAULT_STATE: ParlumeAutoJoinState = {
 	suggestionsEnabled: true,
 	suggestionAudience: "TEAM",
 	enabledBy: null,
+	enabledAt: null,
 	error: null,
 	errorAt: null,
 	syncStopped: false,
@@ -119,8 +126,17 @@ export function ParlumeAutoJoinControl({
 					>
 						{current.syncStopped
 							? "Syncing is stopped for this series, so Parlume cannot join it automatically. Resume syncing in the project's Settings → Meeting Transcript Sync first."
-							: "Parlume joins each meeting in this series about a minute before it starts, with no invite needed. The organizer may need to admit it from the lobby."}
+							: "Parlume joins each meeting in this series about a minute before it starts, with no invite needed. The organizer may need to admit it from the lobby. When it is admitted, it posts this notice in the meeting chat:"}
 					</p>
+					{!current.syncStopped && (
+						<blockquote className="mt-1.5 space-y-0.5 border-l-2 border-border pl-3 text-xs text-muted-foreground">
+							<p className="font-medium text-foreground">
+								{PARLUME_JOIN_NOTICE_TITLE}
+							</p>
+							<p>{PARLUME_JOIN_NOTICE_BODY}</p>
+							<p>{PARLUME_JOIN_NOTICE_PAUSE}</p>
+						</blockquote>
+					)}
 				</div>
 			</div>
 
@@ -128,7 +144,7 @@ export function ParlumeAutoJoinControl({
 				<div className="space-y-3 sm:pl-12">
 					<p className="text-xs text-muted-foreground">
 						{current.enabledBy
-							? `Turned on by ${current.enabledBy.name}. Joins use their Teams calendar and their permissions.`
+							? `Turned on by ${current.enabledBy.name}${current.enabledAt ? ` on ${format(new Date(current.enabledAt), "MMM d, yyyy")}` : ""}. Joins use their Teams calendar and their permissions.`
 							: "The person who turned this on no longer has an account. Turn it off and on again to keep it working."}
 					</p>
 					<ParlumeModePicker

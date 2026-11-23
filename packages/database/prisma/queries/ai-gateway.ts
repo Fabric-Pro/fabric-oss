@@ -10,9 +10,16 @@ import { encryptApiKey } from "@repo/utils";
 import { db } from "../client";
 import type { AIProvider } from "../generated/client";
 import {
+	AnthropicFederationUnavailableError,
+	getAnthropicFederationConfig,
+} from "./anthropic-federation";
+import { hasProviderCredentials } from "./provider-credential-presence";
+import {
 	materializeTaskDefaultsSnapshot,
 	type TaskDefaultsSnapshot,
 } from "./task-default-snapshots";
+
+export { hasProviderCredentials } from "./provider-credential-presence";
 
 /** Shared fields for credential resolution and connection task defaults. */
 const PROVIDER_CONFIG_SELECT = {
@@ -21,30 +28,6 @@ const PROVIDER_CONFIG_SELECT = {
 	encryptedClientSecret: true,
 	taskDefaultsSnapshot: true,
 } as const;
-
-/**
- * True when a provider config carries ANY usable credential — a static API
- * key/PAT or a complete service principal.
- *
- * THE shared "is this provider configured?" predicate. Every consumer that
- * would otherwise write `if (config.apiKey)` must use this instead: an
- * OAuth-only Databricks row has a null `encryptedApiKey`, so a bare truthiness
- * check silently classifies a correctly-configured tenant as unconfigured —
- * falling through to another config source, or hard-failing a preflight.
- *
- * Lives here because `@repo/database` owns `AiProviderConfig` and everything
- * downstream (`@repo/api`, `@repo/temporal`, `@repo/ai`) already depends on it,
- * so there is no import-direction problem. `@repo/ai` additionally exports a
- * structurally identical predicate for callers holding a `ResolvedModelConfig`
- * without pulling in Prisma.
- */
-export function hasProviderCredentials(row: {
-	apiKey?: string | null;
-	clientId?: string | null;
-	encryptedClientSecret?: string | null;
-}): boolean {
-	return Boolean(row.apiKey || (row.clientId && row.encryptedClientSecret));
-}
 
 /**
  * Read a stored provider row's credentials the way the resolver does.
@@ -62,12 +45,22 @@ export function hasProviderCredentials(row: {
  * coalescing rule in one place.
  */
 export function readProviderRowCredentials(row: {
+	provider?: string;
+	organizationId?: string;
 	encryptedApiKey: string | null;
 	clientId: string | null;
 	encryptedClientSecret: string | null;
 	config: unknown;
 }): { apiKey: string | null; hasCredentials: boolean } {
 	const configData = (row.config as Record<string, unknown>) || {};
+	if (configData.authMode === "federated") {
+		return {
+			apiKey: null,
+			hasCredentials:
+				row.provider === "ANTHROPIC_DIRECT" &&
+				Boolean(getAnthropicFederationConfig(row.organizationId)),
+		};
+	}
 	const apiKey =
 		row.encryptedApiKey ||
 		(configData?.apiKey as string | undefined) ||
@@ -87,6 +80,7 @@ export function readProviderRowCredentials(row: {
  * Full provider config result for AI API calls
  */
 export interface AiProviderConfig {
+	federatedOrganizationId?: string;
 	taskDefaultsSnapshot?: TaskDefaultsSnapshot | null;
 	apiKey: string | null;
 	configId: string | null;
@@ -138,6 +132,7 @@ const EMPTY_PROVIDER_CONFIG: AiProviderConfig = {
 async function toAiProviderConfig(
 	row: {
 		id: string;
+		organizationId?: string;
 		provider: string;
 		encryptedApiKey: string | null;
 		clientId: string | null;
@@ -146,16 +141,28 @@ async function toAiProviderConfig(
 		taskDefaultsSnapshot: unknown;
 	},
 	source: "organization" | "user",
+	retainUnavailableFederation = false,
 ): Promise<AiProviderConfig | null> {
 	const { apiKey, hasCredentials } = readProviderRowCredentials(row);
 
-	if (!hasCredentials) {
+	const configData = (row.config as Record<string, unknown>) || {};
+	const federated = configData.authMode === "federated";
+	if (
+		federated &&
+		(source !== "organization" ||
+			row.provider !== "ANTHROPIC_DIRECT" ||
+			!row.organizationId ||
+			(!hasCredentials && !retainUnavailableFederation))
+	) {
+		throw new AnthropicFederationUnavailableError();
+	}
+
+	if (!hasCredentials && !federated) {
 		return null;
 	}
 
-	const configData = (row.config as Record<string, unknown>) || {};
-
 	return {
+		...(federated && { federatedOrganizationId: row.organizationId }),
 		apiKey,
 		configId: row.id,
 		taskDefaultsSnapshot: await materializeTaskDefaultsSnapshot(
@@ -184,6 +191,7 @@ export async function getOrganizationGatewaySearchConfig(
 		select: {
 			id: true,
 			provider: true,
+			organizationId: true,
 			...PROVIDER_CONFIG_SELECT,
 			config: true,
 		},
@@ -229,18 +237,26 @@ export async function getOrganizationDefaultProvider(
  */
 async function resolveOrganizationProviderConfig(
 	organizationId: string,
+	retainUnavailableFederation = false,
 ): Promise<AiProviderConfig | null> {
 	const orgConfig = await db.cloudProviderConfig.findFirst({
 		where: organizationDefaultProviderWhere(organizationId),
 		select: {
 			id: true,
 			provider: true,
+			organizationId: true,
 			...PROVIDER_CONFIG_SELECT,
 			config: true,
 		},
 	});
 
-	return orgConfig ? toAiProviderConfig(orgConfig, "organization") : null;
+	return orgConfig
+		? toAiProviderConfig(
+				orgConfig,
+				"organization",
+				retainUnavailableFederation,
+			)
+		: null;
 }
 
 /**
@@ -265,9 +281,11 @@ async function resolveOrganizationProviderConfig(
 async function resolveTenantProviderConfig({
 	userId,
 	organizationId,
+	retainUnavailableFederation,
 }: {
 	userId: string;
 	organizationId?: string | null;
+	retainUnavailableFederation?: boolean;
 }): Promise<AiProviderConfig | null> {
 	// First, try organization-level config if in org context
 	if (organizationId) {
@@ -282,8 +300,10 @@ async function resolveTenantProviderConfig({
 		// charged, NOT what a guest may see — guests still reach no other
 		// project, no organization settings, and never the key itself.
 		// Adding a membership filter here would silently change who pays.
-		const orgConfig =
-			await resolveOrganizationProviderConfig(organizationId);
+		const orgConfig = await resolveOrganizationProviderConfig(
+			organizationId,
+			retainUnavailableFederation,
+		);
 		if (orgConfig) {
 			return orgConfig;
 		}
@@ -390,13 +410,17 @@ export async function getPlanSpentPersonalProviderConfig({
 export async function getAiProviderApiKey({
 	userId,
 	organizationId,
+	retainUnavailableFederation,
 }: {
 	userId: string;
 	organizationId?: string | null;
+	/** Model selection can route around an unavailable default, then validates the selected credential. */
+	retainUnavailableFederation?: boolean;
 }): Promise<AiProviderConfig> {
 	const resolved = await resolveTenantProviderConfig({
 		userId,
 		organizationId,
+		retainUnavailableFederation,
 	});
 
 	return resolved ?? { ...EMPTY_PROVIDER_CONFIG };
@@ -566,6 +590,7 @@ export async function getEmbeddingProviderConfig({
 			select: {
 				id: true,
 				provider: true,
+				organizationId: true,
 				...PROVIDER_CONFIG_SELECT,
 				config: true,
 			},
@@ -698,6 +723,7 @@ export async function getAiProviderApiKeyByProvider({
 			select: {
 				id: true,
 				provider: true,
+				organizationId: true,
 				...PROVIDER_CONFIG_SELECT,
 				config: true,
 			},

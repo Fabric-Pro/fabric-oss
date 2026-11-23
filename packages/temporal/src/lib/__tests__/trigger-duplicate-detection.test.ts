@@ -10,6 +10,7 @@
  *     enqueue failure must never break the calling create/approve flow.
  */
 
+import { currentAiJobType, runWithAiJobType } from "@repo/ai/lib/job-context";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mockStart, mockGetClient, mockIsAvailable } = vi.hoisted(() => ({
@@ -76,6 +77,36 @@ describe("triggerDuplicateDetection", () => {
 			targetStoryIds: ["s1", "s2"],
 		});
 		expect(result).toEqual({ workflowId: "dup-detect-proj-1-123" });
+	});
+
+	// Fizzy #3538: the job type reaches the client interceptor through the
+	// ambient context at the moment of the start.
+	it("starts as duplicate-detection when no job is ambient", async () => {
+		let seen: string | undefined;
+		mockStart.mockImplementation(async () => {
+			seen = currentAiJobType();
+			return { workflowId: "dup-detect-proj-1-123" };
+		});
+		await triggerDuplicateDetection({
+			...baseParams,
+			targetStoryIds: ["s1"],
+		});
+		expect(seen).toBe("duplicate-detection");
+	});
+
+	it("keeps an ambient job type instead of overriding it", async () => {
+		let seen: string | undefined;
+		mockStart.mockImplementation(async () => {
+			seen = currentAiJobType();
+			return { workflowId: "dup-detect-proj-1-123" };
+		});
+		await runWithAiJobType("recurring-error-scan", () =>
+			triggerDuplicateDetection({
+				...baseParams,
+				targetStoryIds: ["s1"],
+			}),
+		);
+		expect(seen).toBe("recurring-error-scan");
 	});
 
 	it("returns null (no start) when Temporal is unavailable", async () => {

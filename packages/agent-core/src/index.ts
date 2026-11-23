@@ -365,7 +365,6 @@ export type {
 	LangGraphExecutor,
 	LangGraphPlatformStreamExecutor,
 	LangGraphStreamEvent,
-	LangGraphStreamExecutor,
 	TransformResult,
 	UnifiedServerConfig,
 } from "./unified-server";

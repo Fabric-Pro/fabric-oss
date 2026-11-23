@@ -296,8 +296,39 @@ export const AUDIT_ACTIONS = [
 	"project.meeting.restored",
 	"project.parlume.session_started",
 	"project.parlume.action_confirmed",
+	// The confirmed change ran: Parlume, as an agent acting for the member
+	// who confirmed it, made it or did not.
+	"project.parlume.action_executed",
+	// Parlume, as an agent acting for the person who invited it, answered a
+	// request asked in a meeting, reading project data with their access.
+	"project.parlume.request_answered",
+	"project.parlume.action_dismissed",
 	"project.parlume.session_stopped",
+	// A member stopped Parlume's answer, paused or resumed its listening, or
+	// had it read the next part of a long post, from the Parlume page.
+	"project.parlume.speech_stopped",
+	"project.parlume.listening_paused",
+	"project.parlume.listening_resumed",
+	"project.parlume.reading_continued",
+	// A member had Parlume say a suggestion in the meeting, or dismissed one,
+	// from the Parlume page.
+	"project.parlume.suggestion_spoken",
+	"project.parlume.suggestion_dismissed",
+	// The inviter or a project manager deleted a finished meeting's
+	// transcript, requests and suggestions; its notes stay.
+	"project.parlume.session_deleted",
+	// The inviter or a project manager had a finished meeting's notes written
+	// again from its transcript.
+	"project.parlume.notes_regenerated",
+	// A reader of a meeting's transcript proposed one of its notes' action
+	// items as a ticket, into the Proposal Inbox.
+	"project.parlume.action_item_proposed",
 	"project.parlume.auto_join_changed",
+	// A meeting's discussion was marked confidential, or the mark removed,
+	// from the Parlume page; it then reads only for its verified attendees
+	// and the project's managers.
+	"project.parlume.confidential_marked",
+	"project.parlume.confidential_cleared",
 	// Channel/chat context-source lifecycle (#2355). The same two intentions the
 	// meeting rows record, for the Teams and Slack monitors: scanning was paused
 	// or resumed, and the account a monitor collects under was changed. The second

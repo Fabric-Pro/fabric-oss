@@ -6,7 +6,8 @@
  * Preconditions:
  *   - the feature is on the DISCOVERY track (PRECONDITION_FAILED otherwise)
  *   - an OpenAPI context must belong to the project AND the caller's tenant
- *     (XOR via `getContextById`; foreign ids are NOT_FOUND)
+ *     (XOR via `getContextById`; foreign ids are NOT_FOUND), and must not be
+ *     a Parlume transcript the caller may not read (FORBIDDEN)
  *   - every MCP config must belong to the caller within the project's
  *     context (XOR via `getMcpConfigById`; foreign ids are NOT_FOUND)
  *   - an OpenAPI URL must pass the literal SSRF check here; the DNS-pinned
@@ -30,6 +31,10 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	PARLUME_TRANSCRIPT_WITHHELD,
+	resolveParlumeTranscriptAccess,
+} from "../../lib/parlume-transcript-access";
 import {
 	ACTIVE_DISCOVERY_RUN_CONFLICT_MESSAGE,
 	ACTIVE_DISCOVERY_RUN_INDEX,
@@ -161,6 +166,19 @@ export const startDiscoveryProcedure = tenantProtectedProcedure
 				if (!projectContext || projectContext.projectId !== projectId) {
 					throw new ORPCError("NOT_FOUND", {
 						message: "OpenAPI context not found in this project",
+					});
+				}
+				// A Parlume transcript this caller may not read is not handed
+				// to the agent either.
+				if (
+					(await resolveParlumeTranscriptAccess({
+						projectId,
+						userId: user.id,
+						contextId: projectContext.id,
+					})) === "withheld"
+				) {
+					throw new ORPCError("FORBIDDEN", {
+						message: PARLUME_TRANSCRIPT_WITHHELD,
 					});
 				}
 				if (projectContext.extractionStatus === "FAILED") {

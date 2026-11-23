@@ -332,12 +332,14 @@ export function applyResearchRuntimeEvent(
 			if (event.code === "AI_USAGE_LIMIT_EXCEEDED") {
 				const limit = usageLimitSchema.safeParse(event.metadata);
 				const data = limit.success ? limit.data.fabric.data : null;
+				// The run ended: the view leaves its last phase for the
+				// paused state the runtime words, as a reopen shows it.
 				return {
 					state: {
 						...state,
-						status: "idle",
-						phase: "idle",
-						error: null,
+						status: "failed",
+						phase: "failed",
+						error: event.message,
 					},
 					effect: {
 						kind: "usageLimit",

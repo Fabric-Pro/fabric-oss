@@ -78,10 +78,10 @@ type Props = {
  * toolbar and the case editor's link control.
  *
  * Searching, filtering and ranking all happen in the coverage query: it returns
- * one already-ranked page — untested work first, then most recently updated —
- * with each option's coverage count, so the reader is offered the gaps first and
- * can see what is already tested before picking. Ranking a fetched page here
- * instead would only reorder whichever rows happened to arrive.
+ * one already-ranked page, most recently edited first like every work-item
+ * picker, with each option's coverage count, so the reader can see what is
+ * already tested before picking. Ranking a fetched page here instead would only
+ * reorder whichever rows happened to arrive.
  *
  * Defaults to features: bugs and closed items are behind a toggle, because
  * picking something to test is nearly always picking an open feature. The
@@ -123,7 +123,7 @@ export function FeaturePicker({
 				search: debouncedQuery.trim() || undefined,
 				kind: includeBugsAndClosed ? undefined : "FEATURE",
 				excludeClosed: !includeBugsAndClosed,
-				order: "UNCOVERED_FIRST",
+				order: "RECENT_FIRST",
 				limit: MAX_OPTIONS,
 			},
 		}),

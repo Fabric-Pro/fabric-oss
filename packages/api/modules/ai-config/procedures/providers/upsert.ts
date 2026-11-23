@@ -1,3 +1,7 @@
+import {
+	ANTHROPIC_FEDERATION_UNAVAILABLE,
+	getAnthropicFederationConfig,
+} from "@repo/database/prisma/queries/anthropic-federation";
 /**
  * Upsert User Provider Configuration
  *
@@ -77,10 +81,18 @@ interface ProviderCredentialFields {
  * and nulls the unused mode.
  */
 function buildCredentialFields(input: {
+	authMode?: "federated";
 	apiKey?: string;
 	clientId?: string;
 	clientSecret?: string;
 }): ProviderCredentialFields {
+	if (input.authMode === "federated") {
+		return {
+			encryptedApiKey: null,
+			clientId: null,
+			encryptedClientSecret: null,
+		};
+	}
 	if (input.clientId && input.clientSecret) {
 		return {
 			encryptedApiKey: null,
@@ -299,6 +311,7 @@ async function promoteOrganizationProvider(
  * Saves to cloud_provider_config table for organization-wide access
  */
 interface OrganizationProviderUpsert {
+	authMode?: "federated";
 	organizationId: string;
 	userId: string;
 	provider: AIProvider;
@@ -313,6 +326,7 @@ interface OrganizationProviderUpsert {
 }
 
 async function upsertOrganizationProvider({
+	authMode,
 	organizationId,
 	userId,
 	provider,
@@ -477,6 +491,9 @@ async function upsertOrganizationProvider({
 				...existingConfig,
 				// Remove apiKey from config (now stored in encryptedApiKey column)
 				apiKey: undefined,
+				...(authMode || existingConfig.authMode === "federated"
+					? { authMode: authMode ?? null }
+					: {}),
 				...(enabledProviders !== undefined && { enabledProviders }),
 				...(baseUrl !== undefined && { baseUrl }),
 				...(deploymentName !== undefined && {
@@ -519,6 +536,7 @@ async function upsertOrganizationProvider({
 				? deploymentName.trim() || undefined
 				: undefined;
 		const newConfig = {
+			...(authMode && { authMode }),
 			...(enabledProviders !== undefined && { enabledProviders }),
 			...(baseUrl !== undefined && { baseUrl }),
 			...(normalizedDeploymentName !== undefined && {
@@ -580,6 +598,7 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 				// Optional at the schema level so a Databricks service principal
 				// can be saved instead; the superRefine below still requires it
 				// for every other provider.
+				authMode: z.literal("federated").optional(),
 				apiKey: z.string().optional(),
 				// Databricks service-principal (OAuth M2M) credentials.
 				clientId: z.string().optional(),
@@ -636,6 +655,15 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 		);
 		const provider = input.provider as AIProvider;
 		const keyChanged = Boolean(input.apiKey || input.clientSecret);
+		if (
+			input.authMode === "federated" &&
+			(input.organizationId === null ||
+				!getAnthropicFederationConfig(organizationId))
+		) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: ANTHROPIC_FEDERATION_UNAVAILABLE,
+			});
+		}
 
 		// Enforce the `requiresBaseUrl` invariant at the persistence boundary.
 		// The client forms already block an empty base URL for these providers,
@@ -707,6 +735,7 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 			}
 
 			const outcome = await upsertOrganizationProvider({
+				authMode: input.authMode,
 				organizationId,
 				userId: user.id,
 				provider,
@@ -1989,6 +2018,7 @@ export const getProviderConfigProcedure = tenantProtectedProcedure
 			// returned — only whether one is stored, plus the non-secret
 			// client id so the form can prefill it.
 			hasServicePrincipal: z.boolean(),
+			hasFederation: z.boolean().optional(),
 			clientId: z.string().nullable(),
 			baseUrl: z.string().nullable(), // Custom base URL for gateways
 			deploymentName: z.string().nullable(), // For Azure AI Foundry - the deployment name
@@ -2076,6 +2106,7 @@ export const getProviderConfigProcedure = tenantProtectedProcedure
 			enabledProviders,
 			hasApiKey,
 			hasServicePrincipal,
+			...(configData.authMode === "federated" && { hasFederation: true }),
 			// Client id is not a secret (it is an application id); the secret
 			// stays server-side and is never returned.
 			clientId: config.clientId,

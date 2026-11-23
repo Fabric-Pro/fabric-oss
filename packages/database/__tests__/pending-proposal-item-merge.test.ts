@@ -7,6 +7,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_FOCUS_CHARS } from "../prisma/queries/projects/duplicate-focus";
 
 const mocks = vi.hoisted(() => ({
 	findUnique: vi.fn(),
@@ -65,6 +66,8 @@ const updateC = {
 	title: { to: "Existing" },
 };
 
+const CAPTURED_AT = new Date("2026-11-02T09:00:00.000Z");
+
 function row(overrides: Record<string, unknown> = {}) {
 	return {
 		id: "example-proposal",
@@ -76,6 +79,7 @@ function row(overrides: Record<string, unknown> = {}) {
 		changeCount: 3,
 		appliedChangeIndexes: [],
 		sourceMetadata: { threadRootId: "example-thread" },
+		createdAt: CAPTURED_AT,
 		...overrides,
 	};
 }
@@ -167,6 +171,7 @@ describe("unresolvedNewWorkItems", () => {
 					changes: [createA, createB, updateC, { action: "create" }],
 				},
 				changeCount: 4,
+				createdAt: CAPTURED_AT,
 			},
 			new Set([1]),
 		);
@@ -176,13 +181,16 @@ describe("unresolvedNewWorkItems", () => {
 				changeIndex: 0,
 				source: "SLACK_CHANNEL",
 				proposalSummary: "Summary",
+				createdAt: CAPTURED_AT,
 				title: "Queue exports",
 				description: "Exports need a queue.",
+				acceptanceCriteria: "",
+				focusTexts: {},
 			},
 		]);
 	});
 
-	it("caps the title and description read from the proposal JSON", () => {
+	it("caps the title and bodies read from the proposal JSON", () => {
 		const [item] = unresolvedNewWorkItems(
 			{
 				id: "example-proposal",
@@ -194,15 +202,63 @@ describe("unresolvedNewWorkItems", () => {
 							action: "create",
 							title: "t".repeat(500),
 							description: "d".repeat(20_000),
+							acceptanceCriteria: { to: "a".repeat(20_000) },
 						},
 					],
 				},
 				changeCount: 1,
+				createdAt: CAPTURED_AT,
 			},
 			new Set(),
 		);
 		expect(item?.title).toHaveLength(200);
 		expect(item?.description).toHaveLength(2_000);
+		expect(item?.acceptanceCriteria).toHaveLength(1_000);
+		expect(item?.focusTexts?.acceptance_criteria).toHaveLength(
+			MAX_FOCUS_CHARS,
+		);
+	});
+
+	it("reads a feature's Scope section past the description cap, and none for a bug", () => {
+		const description = [
+			"## Overview",
+			"o".repeat(3_000),
+			"## Scope",
+			"### In Scope",
+			"- Queue large exports",
+			"### Out of Scope",
+			"- Scheduled exports",
+		].join("\n");
+		const [feature, bug] = unresolvedNewWorkItems(
+			{
+				id: "example-proposal",
+				source: "SLACK_CHANNEL",
+				summary: "",
+				proposal: {
+					changes: [
+						{
+							action: "create",
+							type: "feature",
+							title: "Queue exports",
+							description,
+						},
+						{
+							action: "create",
+							type: "bug",
+							title: "Export fails",
+							description,
+						},
+					],
+				},
+				changeCount: 2,
+				createdAt: CAPTURED_AT,
+			},
+			new Set(),
+		);
+		expect(feature?.focusTexts?.scope).toBe(
+			"In scope:\n- Queue large exports\nOut of scope:\n- Scheduled exports",
+		);
+		expect(bug?.focusTexts).toBeNull();
 	});
 
 	it("reads a description from description.to or a bare string", () => {
@@ -232,13 +288,14 @@ describe("listUnresolvedPendingProposalItems", () => {
 			maxItems: 10,
 		});
 
+		expect(mocks.findMany).toHaveBeenCalledTimes(1);
 		expect(mocks.findMany).toHaveBeenCalledWith(
 			expect.objectContaining({
 				where: {
 					projectId: "example-project",
 					status: "PENDING",
 				},
-				orderBy: { createdAt: "desc" },
+				orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 				take: 50,
 			}),
 		);
@@ -248,6 +305,100 @@ describe("listUnresolvedPendingProposalItems", () => {
 			["p-new", 1],
 			["p-old", 0],
 		]);
+	});
+
+	const page = (
+		from: number,
+		count: number,
+		changes: unknown[] = [createA],
+	) =>
+		Array.from({ length: count }, (_, offset) =>
+			row({
+				id: `p-${from + offset}`,
+				proposal: { summary: "", changes },
+				changeCount: changes.length,
+			}),
+		);
+
+	it("reads past the newest 50 proposals, strictly after the last row read", async () => {
+		mocks.findMany
+			.mockResolvedValueOnce(page(0, 50))
+			.mockResolvedValueOnce(page(50, 10));
+
+		const items = await listUnresolvedPendingProposalItems({
+			projectId: "example-project",
+			maxItems: 150,
+		});
+
+		expect(items).toHaveLength(60);
+		expect(items.at(-1)?.proposalId).toBe("p-59");
+		expect(mocks.findMany).toHaveBeenCalledTimes(2);
+		const second = mocks.findMany.mock.calls[1]?.[0];
+		expect(second).toEqual(
+			expect.objectContaining({
+				where: {
+					projectId: "example-project",
+					status: "PENDING",
+					OR: [
+						{ createdAt: { lt: CAPTURED_AT } },
+						{ createdAt: CAPTURED_AT, id: { lt: "p-49" } },
+					],
+				},
+				orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+				take: 50,
+			}),
+		);
+		expect(second).not.toHaveProperty("cursor");
+		expect(second).not.toHaveProperty("skip");
+	});
+
+	it("reads every PENDING proposal when no cap is given, past pages that hold only updates", async () => {
+		for (let start = 0; start < 400; start += 50) {
+			mocks.findMany.mockResolvedValueOnce(page(start, 50, [updateC]));
+		}
+		mocks.findMany.mockResolvedValueOnce(page(400, 3));
+
+		const items = await listUnresolvedPendingProposalItems({
+			projectId: "example-project",
+		});
+
+		expect(mocks.findMany).toHaveBeenCalledTimes(9);
+		expect(items.map((item) => item.proposalId)).toEqual([
+			"p-400",
+			"p-401",
+			"p-402",
+		]);
+	});
+
+	it("stops reading once the signal aborts", async () => {
+		const controller = new AbortController();
+		mocks.findMany.mockImplementation(async () => {
+			controller.abort();
+			return page(0, 50, [updateC]);
+		});
+
+		await expect(
+			listUnresolvedPendingProposalItems({
+				projectId: "example-project",
+				maxItems: 150,
+				signal: controller.signal,
+			}),
+		).rejects.toThrow();
+		expect(mocks.findMany).toHaveBeenCalledTimes(1);
+	});
+
+	it("stops reading proposals once the item cap is reached", async () => {
+		mocks.findMany.mockResolvedValue(
+			Array.from({ length: 50 }, (_, index) => row({ id: `p-${index}` })),
+		);
+
+		const items = await listUnresolvedPendingProposalItems({
+			projectId: "example-project",
+			maxItems: 40,
+		});
+
+		expect(items).toHaveLength(40);
+		expect(mocks.findMany).toHaveBeenCalledTimes(1);
 	});
 
 	it("caps the number of items returned", async () => {

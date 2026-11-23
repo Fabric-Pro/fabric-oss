@@ -206,3 +206,38 @@ it("carries the resolved canonical identity into delegated model config", () => 
 		).ai_canonical_model_name,
 	).toBeUndefined();
 });
+
+it("keeps a Bearer run's Fabric token in usage scope just like a key run", () => {
+	const input = {
+		ai_model: "example-claude",
+		ai_provider: "ANTHROPIC_DIRECT",
+		ai_token: "example-fabric-token",
+	};
+	const key = buildAgentConfigurable({ ...input, ai_api_key: "example-key" });
+	const { ai_api_key: _, ...withoutProviderKey } = key;
+	expect(
+		buildAgentConfigurable({ ...input, ai_credential_kind: "bearer" }),
+	).toEqual({ ...withoutProviderKey, ai_credential_kind: "bearer" });
+});
+
+it("keeps the authenticated Bearer usage token and ignores an input API key", () => {
+	const config = buildAgentConfigurable(
+		{ ai_token: "example-body-token", ai_api_key: "example-body-key" },
+		{
+			ai_model: "example-claude",
+			ai_provider: "ANTHROPIC_DIRECT",
+			ai_credential_kind: "bearer",
+			fabric_usage: { ai_token: "example-scoped-token" },
+		},
+	);
+	expect(config).toEqual({
+		ai_model: "example-claude",
+		ai_provider: "ANTHROPIC_DIRECT",
+		ai_credential_kind: "bearer",
+		fabric_usage: {
+			ai_model: "example-claude",
+			ai_provider: "ANTHROPIC_DIRECT",
+			ai_token: "example-scoped-token",
+		},
+	});
+});

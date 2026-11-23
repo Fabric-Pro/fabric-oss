@@ -1,0 +1,127 @@
+{
+	"id": "no-decisions",
+	"title": "Status round with no decisions",
+	"covers": [
+		"a meeting with no decisions",
+		"a choice explicitly deferred",
+		"a commitment with no owner and a vague date",
+		"a missed question carried from the previous meeting"
+	],
+	"segments": [
+		{
+			"id": 1,
+			"speaker": "Casey Example",
+			"text": "This is just a status round, no decisions needed today.",
+			"startMs": 0,
+			"endMs": 8000
+		},
+		{
+			"id": 2,
+			"speaker": "Riley Example",
+			"text": "Search indexing finished for all projects yesterday.",
+			"startMs": 10000,
+			"endMs": 18000
+		},
+		{
+			"id": 3,
+			"speaker": "Sam Example",
+			"text": "The billing dashboard is about eighty percent done.",
+			"startMs": 20000,
+			"endMs": 28000
+		},
+		{
+			"id": 4,
+			"speaker": "Casey Example",
+			"text": "Any blockers?",
+			"startMs": 30000,
+			"endMs": 33000
+		},
+		{
+			"id": 5,
+			"speaker": "Sam Example",
+			"text": "Not really, waiting on design for the empty states.",
+			"startMs": 35000,
+			"endMs": 43000
+		},
+		{
+			"id": 6,
+			"speaker": "Riley Example",
+			"text": "I wonder if we should move the nightly reindex to the weekend, but let's not decide now.",
+			"startMs": 45000,
+			"endMs": 53000
+		},
+		{
+			"id": 7,
+			"speaker": "Casey Example",
+			"text": "Let's think about it and bring data next time.",
+			"startMs": 55000,
+			"endMs": 63000
+		},
+		{
+			"id": 8,
+			"speaker": "Sam Example",
+			"text": "Do we know how long the nightly reindex takes now?",
+			"startMs": 65000,
+			"endMs": 73000
+		},
+		{
+			"id": 9,
+			"speaker": "Riley Example",
+			"text": "Not exactly, somewhere between one and two hours.",
+			"startMs": 75000,
+			"endMs": 83000
+		},
+		{
+			"id": 10,
+			"speaker": "Casey Example",
+			"text": "Okay, thanks everyone, see you Thursday.",
+			"startMs": 85000,
+			"endMs": 93000
+		}
+	],
+	"truth": {
+		"decisions": [],
+		"actionItems": [
+			{
+				"text": "Bring data on the nightly reindex to the next meeting.",
+				"keywords": ["data|reindex"],
+				"segments": [7],
+				"owner": null,
+				"due": "next time"
+			}
+		]
+	},
+	"suggestions": {
+		"passesAfter": [5, 9],
+		"workItems": [
+			{
+				"identifier": "OPS-22",
+				"title": "Measure nightly reindex duration",
+				"status": "To do",
+				"priority": "LOW",
+				"owner": "Riley Example"
+			},
+			{
+				"identifier": "BIL-5",
+				"title": "Billing dashboard",
+				"status": "In progress",
+				"priority": "HIGH",
+				"owner": "Sam Example"
+			}
+		],
+		"agenda": "1. Status round\n2. Billing dashboard\n3. Nightly reindex schedule",
+		"previousQuestions": ["Who signs off the billing dashboard design?"],
+		"expected": [
+			{
+				"kind": "missed_question",
+				"text": "Who signs off the billing dashboard design for the empty states? It was open from the previous meeting.",
+				"keywords": ["billing|dashboard|design", "sign|approve|who"]
+			},
+			{
+				"kind": "answer",
+				"text": "OPS-22 Measure nightly reindex duration is assigned to Riley Example.",
+				"keywords": ["ops-22|reindex", "riley|measure|duration"]
+			}
+		]
+	}
+}

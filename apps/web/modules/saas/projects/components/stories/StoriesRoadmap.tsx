@@ -234,6 +234,7 @@ import { useDetailLoadFeedback } from "./use-detail-load-feedback";
 import { useClassifyTracks } from "./useClassifyTracks";
 import { useDuplicateCheckPrefetch } from "./useDuplicateCheckPrefetch";
 import { useExportEstimate } from "./useExportEstimate";
+import { useRejectedProposalsCount } from "./useRejectedProposalsCount";
 
 // The AI Backlog chat pulls in the full CopilotKit runtime (react-core +
 // react-ui). Load it lazily on first open so it stays out of the roadmap's
@@ -1142,6 +1143,10 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 		recommendationStarter,
 		canUpdateProject: projectData?.project?.canUpdateProject,
 	});
+	const rejectedProposalsCount = useRejectedProposalsCount(
+		projectId,
+		organizationId,
+	);
 
 	// Flat sorted list, before user-applied filter UI is taken into account.
 	// Used to compute the "of N" denominator in the result count.
@@ -3185,6 +3190,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 								setInboxDefaultFilter("backlog");
 								setInboxOpen(true);
 							},
+							rejectedCount: rejectedProposalsCount,
 						}}
 					/>
 				</RoadmapHeader>
@@ -4270,6 +4276,7 @@ export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 					onOpenChange={handleInboxOpenChange}
 					defaultFilter={inboxDefaultFilter}
 					initialProposalId={pendingProposalId}
+					navigate={router.push}
 					aiRecommendedLifecycleEnabled={
 						roadmapBlock?.aiRecommendedLifecycleEnabled === true
 					}

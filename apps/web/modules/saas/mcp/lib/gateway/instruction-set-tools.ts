@@ -18,6 +18,7 @@ import {
 	defineFabricTools,
 	TOOL_ANNOTATIONS,
 } from "@repo/temporal/fabric-tool-definition";
+import { parlumeAuditActor } from "./parlume-audit-actor";
 import { errorResult, jsonResult } from "./tool-results";
 import {
 	type PlatformToolHandler,
@@ -225,7 +226,7 @@ async function audit(
 			id: event.set.id,
 			name: event.set.name,
 		},
-		actor: {
+		actor: parlumeAuditActor(session) ?? {
 			type:
 				session.credential === "session"
 					? "user"

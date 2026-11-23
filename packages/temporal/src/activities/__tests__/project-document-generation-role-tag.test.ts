@@ -21,6 +21,7 @@ vi.mock("@repo/database", () => ({
 			findMany: vi.fn().mockResolvedValue([]),
 		},
 	},
+	findConfidentialTranscriptContextIds: async () => new Set<string>(),
 	getProjectRagSettings: (...args: unknown[]) =>
 		mocks.getProjectRagSettings(...args),
 	hasProjectAccess: (...args: unknown[]) => mocks.hasProjectAccess(...args),

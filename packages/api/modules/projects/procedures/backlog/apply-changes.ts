@@ -13,6 +13,7 @@ import {
 	getPendingBacklogProposal,
 	markProposalApplyDispatched,
 	type Prisma,
+	returnFailedProposalToReview,
 } from "@repo/database";
 import { getTemporalClient, runDecisionPrecheck } from "@repo/temporal";
 import {
@@ -39,7 +40,9 @@ import {
 	assertProposalItemsUnresolved,
 	assertProposalRevision,
 	assertUpdateTargetsInProject,
+	holdBackInvalidUpdateTargets,
 	lostClaimConflict,
+	partitionUpdateTargets,
 } from "./proposal-approval-guards";
 import {
 	buildProposalReviewEntries,
@@ -251,6 +254,12 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			 * on the no-op zero-changes short-circuit.
 			 */
 			proposalId: z.string().nullable().optional(),
+			/**
+			 * With `proposalId`: why each update left out of this apply was
+			 * held back (its target is not a work item in this project). Those
+			 * items stay in review.
+			 */
+			heldBack: z.array(z.string()).optional(),
 			pmSyncResults: z
 				.array(
 					z.object({
@@ -496,12 +505,15 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				proposalId: null,
 			};
 		}
-		// Nothing is claimed or applied when an update names a work item that
-		// is not in this project.
-		await assertUpdateTargetsInProject(
-			input.projectId,
-			input.approvedChanges,
-		);
+		// An AI Update apply has no review to leave an item in: nothing is
+		// applied when an update names a work item that is not in this
+		// project. A proposal holds such items back below instead.
+		if (!input.proposalId) {
+			await assertUpdateTargetsInProject(
+				input.projectId,
+				input.approvedChanges,
+			);
+		}
 		const sidebarEntries = !input.proposalId
 			? buildSidebarReviewEntries(
 					input.approvedChanges,
@@ -558,6 +570,8 @@ export const applyChangesProcedure = tenantProtectedProcedure
 		let keptPositions = input.approvedChanges.map(
 			(_c, position) => position,
 		);
+		// Proposal items held back for an invalid update target.
+		let heldBack: string[] = [];
 
 		if (input.proposalId) {
 			const existing = await getPendingBacklogProposal(input.proposalId);
@@ -576,7 +590,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				input.approvedChanges,
 				input.approvedChangeIndexes,
 			);
-			const indexed = input.approvedChanges.map((change, position) => ({
+			const submitted = input.approvedChanges.map((change, position) => ({
 				change,
 				index: indexes[position]!,
 				position,
@@ -595,9 +609,44 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				sourceMetadata: existing.sourceMetadata,
 				allowApplied: existing.status === "FAILED",
 			});
+			// An update whose target is not a work item in this project is
+			// left out and stays in review; the other items apply. A FAILED
+			// proposal's resubmit with every item held back returns to
+			// review, as a retry does, instead of being refused.
+			const isResubmit = existing.status === "FAILED";
+			const pending = submitted
+				.filter(({ index }) => !alreadyApplied.has(index))
+				.map(({ change }) => change);
+			const targets = isResubmit
+				? await partitionUpdateTargets(input.projectId, pending)
+				: await holdBackInvalidUpdateTargets(input.projectId, pending);
+			heldBack = targets.refusals;
+			const indexed = submitted.filter(
+				({ change }) => !targets.heldBack.has(change),
+			);
+			const reviewPositions = indexed.map(({ position }) => position);
 			const remaining = indexed.filter(
 				({ index }) => !alreadyApplied.has(index),
 			);
+			if (isResubmit && remaining.length === 0 && heldBack.length > 0) {
+				const returned = await returnFailedProposalToReview(
+					input.proposalId,
+					{
+						applyWorkflowId: existing.applyWorkflowId ?? null,
+						applyReviewId: existing.applyReviewId ?? null,
+					},
+				);
+				if (!returned) {
+					throw await lostClaimConflict(input.proposalId, ["FAILED"]);
+				}
+				return {
+					workflowId: null,
+					message:
+						"No item could be applied. The proposal is back in review.",
+					proposalId: input.proposalId,
+					heldBack,
+				};
+			}
 			// Fizzy #2208 (FR27): an accepted recommendation is drafted through
 			// the Clean Spec prompt, never as a stub. Refuse up front when no
 			// prompt is bound rather than failing every item inside the apply.
@@ -630,9 +679,14 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				pmConfig: input.pmConfig,
 				entries: buildProposalReviewEntries(
 					proposalChanges,
-					input.approvedChanges,
-					indexes,
-					input.pmSyncOverrides,
+					indexed.map(({ change }) => change),
+					indexed.map(({ index }) => index),
+					input.pmSyncOverrides
+						? remapPmSyncOverrides(
+								input.pmSyncOverrides,
+								reviewPositions,
+							)
+						: undefined,
 				),
 				...(isRecommendation ? { admitBacklog: true } : {}),
 			});
@@ -984,6 +1038,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				runId: handle.firstExecutionRunId,
 				message: `Applying ${approvedChanges.length} change(s)`,
 				proposalId,
+				...(heldBack.length > 0 ? { heldBack } : {}),
 			};
 		} catch (error) {
 			if (error instanceof ORPCError) {

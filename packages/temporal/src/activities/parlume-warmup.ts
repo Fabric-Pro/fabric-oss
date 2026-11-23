@@ -139,6 +139,7 @@ async function listFabricTools(session: {
 			organizationId: session.organizationId,
 			actingGrant: session.actingGrant,
 			projectId: session.projectId,
+			surface: "parlume",
 			conversationId: session.id,
 			sourceRunType: "direct-chat",
 		},

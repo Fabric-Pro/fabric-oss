@@ -50,6 +50,78 @@ export const CONVERSATION_TURN_TERMINAL_STATUSES = [
 export type ConversationTurnTerminalStatus =
 	(typeof CONVERSATION_TURN_TERMINAL_STATUSES)[number];
 
+/**
+ * Removes a turn that just ended if its conversation was deleted while it
+ * ran: the conversation's delete kept it only because its workflow still
+ * wrote it (`deleteFinishedTurnsOfConversations`). Such a turn has lost its
+ * conversation (`conversationId` nulled by the FK) but keeps the one it was
+ * created for (`scopeConversationId`); a turn of a surface with no
+ * conversation has neither and is kept. Called by every write that ends a
+ * turn, after it.
+ */
+async function deleteTurnOfDeletedConversation(
+	client: Prisma.TransactionClient | typeof db,
+	turnId: string,
+): Promise<void> {
+	await client.conversationTurn.deleteMany({
+		where: {
+			id: turnId,
+			conversationId: null,
+			scopeConversationId: { not: null },
+			status: { in: [...CONVERSATION_TURN_TERMINAL_STATUSES] },
+		},
+	});
+}
+
+/**
+ * Removes the finished turns of conversations being deleted, with their
+ * attempts, events and tool results (FK cascade); the turns hold the
+ * person's question and the answer. Call it in the delete's transaction,
+ * before the conversation goes. A turn still running keeps its row until
+ * it ends: its workflow writes it, and the cancel route finds it by
+ * `scopeConversationId` once the conversation FK is nulled. The write that
+ * ends it then deletes it (`deleteTurnOfDeletedConversation`).
+ */
+export async function deleteFinishedTurnsOfConversations(
+	tx: Prisma.TransactionClient,
+	conversationIds: readonly string[],
+): Promise<void> {
+	if (conversationIds.length === 0) {
+		return;
+	}
+	// A multi-agent turn's other agents run under turns of no conversation,
+	// keyed `<turn key>_a<index>` (`multiAgentMemberKey` in the web app's
+	// multi-agent runtime protocol, whose keys start with "ma_").
+	const multiAgentTurns = await tx.conversationTurn.findMany({
+		where: {
+			conversationId: { in: [...conversationIds] },
+			clientRequestKey: { startsWith: "ma_" },
+		},
+		select: { userId: true, organizationId: true, clientRequestKey: true },
+	});
+	if (multiAgentTurns.length > 0) {
+		await tx.conversationTurn.deleteMany({
+			where: {
+				conversationId: null,
+				status: { in: [...CONVERSATION_TURN_TERMINAL_STATUSES] },
+				OR: multiAgentTurns.map((turn) => ({
+					userId: turn.userId,
+					organizationId: turn.organizationId,
+					clientRequestKey: {
+						startsWith: `${turn.clientRequestKey}_a`,
+					},
+				})),
+			},
+		});
+	}
+	await tx.conversationTurn.deleteMany({
+		where: {
+			conversationId: { in: [...conversationIds] },
+			status: { in: [...CONVERSATION_TURN_TERMINAL_STATUSES] },
+		},
+	});
+}
+
 export function isTerminalConversationTurnStatus(
 	status: ConversationTurnStatus,
 ): status is ConversationTurnTerminalStatus {
@@ -361,14 +433,22 @@ export async function abandonConversationTurnStart(args: {
 				}
 			: { status: "FAILED", terminalAt, terminalReason: args.reason },
 	});
-	if (abandoned.count === 1) {
-		return true;
+	const ended =
+		abandoned.count === 1 ||
+		(
+			await db.conversationTurn.updateMany({
+				where: { ...owned, status: "CANCEL_REQUESTED" },
+				data: {
+					status: "CANCELLED",
+					terminalAt,
+					terminalReason: args.reason,
+				},
+			})
+		).count === 1;
+	if (ended) {
+		await deleteTurnOfDeletedConversation(db, args.turnId);
 	}
-	const cancelled = await db.conversationTurn.updateMany({
-		where: { ...owned, status: "CANCEL_REQUESTED" },
-		data: { status: "CANCELLED", terminalAt, terminalReason: args.reason },
-	});
-	return cancelled.count === 1;
+	return ended;
 }
 
 /**
@@ -772,6 +852,7 @@ export async function finalizeConversationTurn(
 				data,
 				select: { status: true, budgetStop: true },
 			});
+			await deleteTurnOfDeletedConversation(tx, row.id);
 			return {
 				outcome: "finalized",
 				status: written.status as ConversationTurnTerminalStatus,
@@ -823,9 +904,11 @@ export async function finalizeOrphanedConversationTurn(args: {
 			terminalReason: args.terminalReason,
 		},
 	});
-	return count === 1
-		? { outcome: "finalized", status }
-		: { outcome: "changed" };
+	if (count !== 1) {
+		return { outcome: "changed" };
+	}
+	await deleteTurnOfDeletedConversation(db, args.turnId);
+	return { outcome: "finalized", status };
 }
 
 // ============================================================================

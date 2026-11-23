@@ -67,6 +67,15 @@ describe("loadFabricToolsForTurn", () => {
 		);
 	});
 
+	it("acts as the user the grant was minted for when that is not the turn's user", async () => {
+		await loadFabricToolsForTurn(input({ actingUserId: "asker-1" }));
+
+		expect(mocks.loadFabricPlatformTools).toHaveBeenCalledWith(
+			expect.objectContaining({ userId: "asker-1" }),
+			{ confirmationMode: "unavailable" },
+		);
+	});
+
 	it("loads the tools for a page that is not an artifact or a Workspace", async () => {
 		await loadFabricToolsForTurn(input());
 

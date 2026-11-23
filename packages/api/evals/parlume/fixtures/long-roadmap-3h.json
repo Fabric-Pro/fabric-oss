@@ -1,0 +1,347 @@
+{
+	"id": "long-roadmap-3h",
+	"title": "Quarterly roadmap review, three hours",
+	"covers": [
+		"a three-hour meeting, written as checkpoint notes and merged",
+		"decisions in the first, middle and last hour",
+		"a later decision that replaces an earlier one",
+		"a due date that moves",
+		"long stretches of discussion with nothing to note"
+	],
+	"segments": [
+		{
+			"id": 1,
+			"speaker": "Alex Example",
+			"text": "Welcome to the quarterly roadmap review. It's a long one, we have three hours booked.",
+			"startMs": 0,
+			"endMs": 8000
+		},
+		{
+			"id": 2,
+			"speaker": "Dev Example",
+			"text": "First, the public beta. We decided last week to launch the beta on May 4.",
+			"startMs": 10000,
+			"endMs": 18000
+		},
+		{
+			"id": 3,
+			"speaker": "Alex Example",
+			"text": "Confirmed, the beta launch stays on May 4 for now.",
+			"startMs": 20000,
+			"endMs": 28000
+		},
+		{
+			"id": 4,
+			"speaker": "Sam Example",
+			"text": "I'll prepare the beta announcement draft by April 20.",
+			"startMs": 30000,
+			"endMs": 38000
+		},
+		{
+			"id": 5,
+			"speaker": "Riley Example",
+			"text": "Back to pricing. We agreed the team plan stays at the current price this year.",
+			"startMs": 3660000,
+			"endMs": 3668000
+		},
+		{
+			"id": 6,
+			"speaker": "Jordan Example",
+			"text": "Yes, no price change for the team plan in this calendar year.",
+			"startMs": 3672000,
+			"endMs": 3680000
+		},
+		{
+			"id": 7,
+			"speaker": "Jordan Example",
+			"text": "I'll update the pricing page FAQ by the end of the month.",
+			"startMs": 3684000,
+			"endMs": 3692000
+		},
+		{
+			"id": 8,
+			"speaker": "Dev Example",
+			"text": "Bad news on the beta. The security review will not finish before May 4.",
+			"startMs": 7800000,
+			"endMs": 7808000
+		},
+		{
+			"id": 9,
+			"speaker": "Alex Example",
+			"text": "Then we move the beta launch to May 18. That replaces the May 4 date.",
+			"startMs": 7812000,
+			"endMs": 7820000
+		},
+		{
+			"id": 10,
+			"speaker": "Dev Example",
+			"text": "Agreed, May 18 it is.",
+			"startMs": 7824000,
+			"endMs": 7828000
+		},
+		{
+			"id": 11,
+			"speaker": "Sam Example",
+			"text": "Then I'll move the announcement draft to May 8.",
+			"startMs": 7836000,
+			"endMs": 7844000
+		},
+		{
+			"id": 12,
+			"speaker": "Riley Example",
+			"text": "Last item, data residency. We are not offering an EU region this year.",
+			"startMs": 10980000,
+			"endMs": 10988000
+		},
+		{
+			"id": 13,
+			"speaker": "Alex Example",
+			"text": "Right, the EU region is out of scope for this year. We revisit it in January.",
+			"startMs": 10992000,
+			"endMs": 11000000
+		},
+		{
+			"id": 14,
+			"speaker": "Jordan Example",
+			"text": "Riley, can you write the customer note about the EU region by Friday?",
+			"startMs": 11004000,
+			"endMs": 11012000
+		},
+		{
+			"id": 15,
+			"speaker": "Riley Example",
+			"text": "Yes, I'll write it by Friday.",
+			"startMs": 11016000,
+			"endMs": 11024000
+		},
+		{
+			"id": 16,
+			"speaker": "Alex Example",
+			"text": "That's three hours. Thanks, everyone.",
+			"startMs": 11028000,
+			"endMs": 11036000
+		}
+	],
+	"filler": [
+		{
+			"afterSegment": 4,
+			"count": 300,
+			"everyMs": 12000,
+			"speakers": [
+				"Dev Example",
+				"Sam Example",
+				"Riley Example",
+				"Jordan Example",
+				"Alex Example"
+			],
+			"lines": [
+				"I pulled the latest numbers on {topic} this morning, nothing surprising yet.",
+				"For {topic}, the trend looks flat compared with last month.",
+				"Can you share your screen again? I lost the {topic} chart.",
+				"I think {topic} needs more data before we read anything into it.",
+				"The {topic} dashboard is loading slowly for me today.",
+				"Let me scroll back up to the {topic} slide for a second.",
+				"We talked about {topic} in the last review as well.",
+				"I have a few comments on {topic}, mostly about the wording on the slide.",
+				"Nothing new from support about {topic} this week.",
+				"The customer interviews mentioned {topic} a couple of times.",
+				"I'm still reading through the {topic} notes from the workshop.",
+				"Sorry, someone is at the door, carry on with {topic}.",
+				"So the {topic} slide is next, right after this one.",
+				"That matches what I heard about {topic} from the sales team.",
+				"Okay, moving on from {topic} to the next slide.",
+				"Quick note, the {topic} numbers exclude the trial accounts.",
+				"I can hear an echo when we talk about {topic}, is someone unmuted?",
+				"Interesting, the {topic} line dips every second week."
+			],
+			"topics": [
+				"activation",
+				"churn",
+				"trial conversion",
+				"support tickets",
+				"page load times",
+				"the mobile funnel",
+				"seat expansion",
+				"invoice disputes",
+				"onboarding drop-off",
+				"API usage",
+				"search usage",
+				"survey comments"
+			]
+		},
+		{
+			"afterSegment": 7,
+			"count": 340,
+			"everyMs": 12000,
+			"speakers": [
+				"Jordan Example",
+				"Alex Example",
+				"Dev Example",
+				"Riley Example",
+				"Sam Example"
+			],
+			"lines": [
+				"Looking at {topic} again, the second quarter was a bit stronger.",
+				"I'd want to double-check the {topic} query before anyone quotes it.",
+				"The {topic} chart has a gap in March from the tracking outage.",
+				"Is the {topic} number per workspace or per user?",
+				"Per user, I think. The {topic} slide says so in the footnote.",
+				"I remember {topic} looking like this last year too.",
+				"The {topic} slide could use a bigger font, it's hard to read.",
+				"Can we go back one slide? I missed the {topic} comparison.",
+				"For {topic}, the enterprise accounts behave very differently.",
+				"I'm not sure {topic} tells us much on its own.",
+				"There's a typo on the {topic} slide, but never mind.",
+				"My connection dropped for a moment, were we still on {topic}?",
+				"Yes, still on {topic}, nothing missed.",
+				"The {topic} breakdown by plan is in the appendix."
+			],
+			"topics": [
+				"retention",
+				"expansion revenue",
+				"page views",
+				"time to first project",
+				"weekly active teams",
+				"export usage",
+				"integration installs",
+				"mobile sessions",
+				"error rates",
+				"ticket response times"
+			]
+		},
+		{
+			"afterSegment": 11,
+			"count": 260,
+			"everyMs": 12000,
+			"speakers": [
+				"Riley Example",
+				"Sam Example",
+				"Jordan Example",
+				"Alex Example",
+				"Dev Example"
+			],
+			"lines": [
+				"The {topic} section of the deck is mostly background.",
+				"I skimmed the {topic} write-up, it reads well.",
+				"For {topic}, there were three questions from the partner call.",
+				"The {topic} map on this slide is from last quarter.",
+				"I'm muting for a moment, I have a delivery, keep going on {topic}.",
+				"Back now. Still {topic}?",
+				"Yes, {topic}. We're on the second chart.",
+				"The {topic} figures are rounded to the nearest thousand.",
+				"I'd love a coffee right now, this {topic} section is dense.",
+				"The legend on the {topic} chart is cut off on my screen.",
+				"The {topic} slide was shared in the chat earlier."
+			],
+			"topics": [
+				"regional demand",
+				"hosting costs",
+				"partner requests",
+				"compliance questions",
+				"latency by region",
+				"storage growth",
+				"backup windows",
+				"vendor contracts"
+			]
+		}
+	],
+	"truth": {
+		"decisions": [
+			{
+				"text": "The beta launches on May 4 (later replaced by May 18).",
+				"keywords": ["beta|launch", "may", "4"],
+				"segments": [2, 3]
+			},
+			{
+				"text": "The beta launch moves to May 18.",
+				"keywords": ["beta|launch", "may", "18"],
+				"segments": [9, 10]
+			},
+			{
+				"text": "The team plan keeps its current price this year.",
+				"keywords": [
+					"team|plan",
+					"price|pricing",
+					"stay|stays|same|current|no|unchanged|keep|keeps|not"
+				],
+				"segments": [5, 6]
+			},
+			{
+				"text": "No EU region this year; revisit in January.",
+				"keywords": [
+					"eu|region",
+					"not|no|out|scope|without|none|revisit|january"
+				],
+				"segments": [12, 13]
+			}
+		],
+		"actionItems": [
+			{
+				"text": "Prepare the beta announcement draft.",
+				"keywords": ["announcement|draft"],
+				"segments": [4, 11],
+				"owner": "Sam Example",
+				"due": "May 8"
+			},
+			{
+				"text": "Update the pricing page FAQ.",
+				"keywords": ["faq|pricing"],
+				"segments": [7],
+				"owner": "Jordan Example",
+				"due": "end of the month"
+			},
+			{
+				"text": "Write the customer note about the EU region.",
+				"keywords": ["eu|region|customer"],
+				"segments": [14, 15],
+				"owner": "Riley Example",
+				"due": "Friday"
+			}
+		]
+	},
+	"suggestions": {
+		"passesAfter": [3, 9, 13],
+		"workItems": [
+			{
+				"identifier": "BETA-1",
+				"title": "Public beta launch",
+				"status": "In progress",
+				"priority": "URGENT",
+				"owner": "Alex Example"
+			},
+			{
+				"identifier": "SEC-5",
+				"title": "Security review for the beta",
+				"status": "In progress",
+				"priority": "HIGH",
+				"owner": "Dev Example"
+			},
+			{
+				"identifier": "PRC-2",
+				"title": "Pricing page FAQ refresh",
+				"status": "To do",
+				"priority": "LOW",
+				"owner": null
+			}
+		],
+		"agenda": "1. Public beta\n2. Pricing\n3. Beta readiness\n4. Data residency",
+		"previousQuestions": [],
+		"expected": [
+			{
+				"kind": "answer",
+				"text": "BETA-1 Public beta launch is in progress with Alex Example.",
+				"keywords": ["beta-1|beta", "alex|progress"]
+			},
+			{
+				"kind": "answer",
+				"text": "SEC-5 Security review for the beta is still in progress with Dev Example.",
+				"keywords": ["sec-5|security", "progress|dev"]
+			},
+			{
+				"kind": "missed_question",
+				"text": "Who tells the customers that asked for an EU region, and by when?",
+				"keywords": ["eu|region", "customer|tell|inform|who"]
+			}
+		]
+	}
+}

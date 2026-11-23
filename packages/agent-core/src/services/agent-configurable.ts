@@ -1,4 +1,7 @@
-import { agentUsageConfigFromInput } from "./usage-logging";
+import {
+	agentUsageConfigFromInput,
+	readUsageScopedAiToken,
+} from "./usage-logging";
 
 /** Model, tenant and logger context for delegated and direct graph invocations. */
 export function buildAgentConfigurable(
@@ -12,6 +15,15 @@ export function buildAgentConfigurable(
 	// A supplied runtime config is authoritative even when a reserved value is absent.
 	const resolved = runtimeConfigurable ?? input;
 	const configurable: Record<string, unknown> = {};
+	const bearer = resolved.ai_credential_kind === "bearer";
+	if (bearer) {
+		configurable.ai_credential_kind = "bearer";
+	} else {
+		const apiKey = pick("ai_api_key");
+		if (apiKey) {
+			configurable.ai_api_key = apiKey;
+		}
+	}
 	// Unified server sanitizes this reserved field after body spreads.
 	if (resolved.ai_model_pinned === true) {
 		configurable.ai_model_pinned = true;
@@ -22,7 +34,6 @@ export function buildAgentConfigurable(
 		}
 	}
 	for (const key of [
-		"ai_api_key",
 		"ai_model",
 		"ai_provider",
 		"usage_conversation_id",
@@ -65,6 +76,10 @@ export function buildAgentConfigurable(
 		...agentUsageConfigFromInput({
 			...input,
 			...runtimeConfigurable,
+			...(bearer && {
+				ai_token:
+					readUsageScopedAiToken(resolved) ?? str(resolved.ai_token),
+			}),
 			ai_billing_mode: resolved.ai_billing_mode,
 			ai_billing_customer_id: resolved.ai_billing_customer_id,
 			ai_plan_source: resolved.ai_plan_source,

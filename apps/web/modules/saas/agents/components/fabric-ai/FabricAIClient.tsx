@@ -91,6 +91,7 @@ import { useLoomModePersistence } from "@saas/agents/hooks/useLoomModePersistenc
 import { useMultiAgentOffered } from "@saas/agents/hooks/useMultiAgentChat";
 import { useResearchRunStream } from "@saas/agents/hooks/useResearchRunStream";
 import { useSavedAgentUnavailableNotice } from "@saas/agents/hooks/useSavedAgentUnavailableNotice";
+import { useUrlConversationSync } from "@saas/agents/hooks/useUrlConversationSync";
 import { useWorkspaceFiles } from "@saas/agents/hooks/useWorkspaceFiles";
 import { useSession } from "@saas/auth/hooks/use-session";
 import {
@@ -1456,47 +1457,14 @@ function FabricChatContent({
 		onConversationRestoredMode,
 	]);
 
-	// Sync conversation selection with URL
-	useEffect(() => {
-		if (
-			conversationIdFromUrl &&
-			conversationIdFromUrl !== activeConversationId
-		) {
-			selectConversationInternal(conversationIdFromUrl);
-		} else if (!conversationIdFromUrl && activeConversationId) {
-			// URL was cleared, clear selection
-			selectConversationInternal(null);
-		}
-	}, [
-		conversationIdFromUrl,
-		activeConversationId,
-		selectConversationInternal,
-	]);
-
-	// Clear URL if conversation doesn't exist (e.g., stale bookmark, deleted conversation)
-	useEffect(() => {
-		// If URL has a conversation ID, selection was made, but conversation is null
-		// (after loading completes), then the conversation doesn't exist
-		if (
-			conversationIdFromUrl &&
-			activeConversationId === conversationIdFromUrl &&
-			activeConversation === null &&
-			!isLoadingDetail
-		) {
-			console.warn(
-				`[FabricChat] Conversation not found, clearing URL: ${conversationIdFromUrl}`,
-			);
-			onConversationChange(null);
-			selectConversationInternal(null);
-		}
-	}, [
-		conversationIdFromUrl,
+	useUrlConversationSync({
+		urlConversationId: conversationIdFromUrl,
 		activeConversationId,
 		activeConversation,
 		isLoadingDetail,
+		selectConversation: selectConversationInternal,
 		onConversationChange,
-		selectConversationInternal,
-	]);
+	});
 
 	// Auto-switch mode based on conversation metadata when loading from history
 	// Also restore documentChatId for uploaded documents
@@ -1557,6 +1525,14 @@ function FabricChatContent({
 		[selectConversationInternal, onConversationChange],
 	);
 
+	// Pending project ID — selected before or after conversation creation
+	// Works like workspace IDs: stored client-side and passed to the stream request.
+	// Falls back to the agent's bound project (toolConnections["project-context"])
+	// so opening an agent with a configured project pre-attaches it.
+	const [pendingProjectId, setPendingProjectId] = useState<string | null>(
+		contextLaunch?.projectId ?? instanceToolConfig?.boundProjectId ?? null,
+	);
+
 	// Deep Research. On the agent runtime a run is saved as a Research
 	// conversation: opening one of the reader's own on the Research surface
 	// shows its saved result (or its run, while it still goes).
@@ -1582,6 +1558,7 @@ function FabricChatContent({
 		organizationId: organizationId ?? undefined,
 		reasoningEffort: researchReasoningEffort,
 		executionMode: reasoningMode,
+		projectId: pendingProjectId,
 		conversationId: researchConversationId,
 		onConversationStarted: handleResearchConversationStarted,
 		onStopFailed: () => toast.message("Couldn't stop the research."),
@@ -1741,14 +1718,6 @@ function FabricChatContent({
 	// Document chat ID state - tracks the AiChat where uploaded documents are stored
 	// This is separate from the AgentConversation ID
 	const [documentChatId, setDocumentChatId] = useState<string | null>(null);
-
-	// Pending project ID — selected before or after conversation creation
-	// Works like workspace IDs: stored client-side and passed to the stream request.
-	// Falls back to the agent's bound project (toolConnections["project-context"])
-	// so opening an agent with a configured project pre-attaches it.
-	const [pendingProjectId, setPendingProjectId] = useState<string | null>(
-		contextLaunch?.projectId ?? instanceToolConfig?.boundProjectId ?? null,
-	);
 
 	// Apply the agent's bound project once it loads — agentInstance is fetched
 	// async, so the useState initializer above usually misses it on first render.

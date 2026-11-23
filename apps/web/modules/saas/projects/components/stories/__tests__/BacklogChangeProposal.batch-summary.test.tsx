@@ -10,13 +10,14 @@
  * retry the failed ones.
  */
 
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
 	BacklogChangeProposal,
 	type ChangeItem,
 } from "../BacklogChangeProposal";
+import { renderWithQueryClient } from "./render-with-query-client";
 
 vi.mock("../../../../../shared/lib/orpc-client", () => ({
 	orpcClient: {
@@ -57,7 +58,7 @@ function buildChange(): ChangeItem {
 function renderProposal(
 	props: Partial<React.ComponentProps<typeof BacklogChangeProposal>> = {},
 ) {
-	return render(
+	return renderWithQueryClient(
 		<BacklogChangeProposal
 			summary="Test proposal"
 			contextSummary="Captured from an AI Update batch"

@@ -98,6 +98,7 @@ import {
 	useState,
 } from "react";
 import { toast } from "sonner";
+import { aiUsageLimitPausedText } from "../../../../../app/api/agents/fabric-ai/stream/ai-usage-limit-paused-message";
 // AI Elements for consistent UI rendering
 import {
 	Conversation,
@@ -109,6 +110,7 @@ import {
 	McpAppFrame,
 	prefetchMcpAppHtml,
 } from "../../../../../components/ai-elements/McpAppFrame";
+import { extractCheckpointId } from "../../../../../components/ai-elements/mcp-scene-utils";
 import {
 	Message,
 	MessageContent,
@@ -4369,14 +4371,15 @@ export function FabricTemporalOrchestratorChat({
 																		>
 																			{execution.terminalStatus ===
 																			"FAILED"
-																				? "Execution failed"
+																				? "The request did not go through"
 																				: "Answer may be incomplete"}
 																		</output>
 																		{execution.terminalReason && (
 																			<p className="text-xs text-muted-foreground">
-																				{
-																					execution.terminalReason
-																				}
+																				{aiUsageLimitPausedText(
+																					execution.terminalReason,
+																				) ??
+																					execution.terminalReason}
 																			</p>
 																		)}
 																	</div>
@@ -5764,57 +5767,6 @@ export interface OrchestratorExcalidrawToolCall {
 }
 
 /**
- * Probe locations for `checkpointId` mirror `extractCheckpointId` in
- * `apps/web/components/ai-elements/McpAppFrame.tsx:229-273`. Kept as a
- * local copy to avoid taking a runtime dependency on the canvas
- * component (the canvas is loaded by `next/dynamic` and we want to keep
- * this slot lightweight enough to render on every chat message).
- */
-function extractCheckpointIdLocal(toolResult: unknown): string | null {
-	if (!toolResult || typeof toolResult !== "object") {
-		return null;
-	}
-	const res = toolResult as Record<string, unknown>;
-	if (typeof res.checkpointId === "string") {
-		return res.checkpointId;
-	}
-	if (typeof res.checkpoint_id === "string") {
-		return res.checkpoint_id;
-	}
-	const structuredContent =
-		typeof res.structuredContent === "object" &&
-		res.structuredContent !== null
-			? (res.structuredContent as Record<string, unknown>)
-			: null;
-	if (structuredContent) {
-		if (typeof structuredContent.checkpointId === "string") {
-			return structuredContent.checkpointId;
-		}
-		if (typeof structuredContent.checkpoint_id === "string") {
-			return structuredContent.checkpoint_id;
-		}
-	}
-	const content = res.content;
-	if (Array.isArray(content)) {
-		for (const block of content) {
-			const text =
-				typeof block === "object" && block !== null && "text" in block
-					? (block as { text: unknown }).text
-					: null;
-			if (typeof text === "string") {
-				const m = text.match(
-					/checkpoint[_\s-]?id[:\s"]+([a-zA-Z0-9_-]+)/i,
-				);
-				if (m?.[1]) {
-					return m[1];
-				}
-			}
-		}
-	}
-	return null;
-}
-
-/**
  * Read `elements` and `appState` from the tool args. The
  * MCP `create_view` shape is `{ elements: ExcalidrawElement[],
  * appState?: ExcalidrawState }`; we tolerate `appState` being absent.
@@ -5873,7 +5825,7 @@ export function ExcalidrawAutoInsertSlot({
 	if (!mcpAppResourceUri.includes("excalidraw")) {
 		return null;
 	}
-	const checkpointId = extractCheckpointIdLocal(toolCall.result);
+	const checkpointId = extractCheckpointId(toolCall.result);
 	if (!checkpointId) {
 		return null;
 	}

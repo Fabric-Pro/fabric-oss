@@ -63,7 +63,7 @@ beforeEach(() => {
 });
 
 describe("findConfidentialTranscriptContextIds", () => {
-	it("finds synced and Parlume transcripts of the project's confidential series among the candidates", async () => {
+	it("finds the synced transcripts of the project's confidential series and every Parlume transcript among the candidates", async () => {
 		mocks.transcriptFindMany.mockResolvedValue([
 			{ contextId: "ctx-synced" },
 		]);
@@ -85,13 +85,14 @@ describe("findConfidentialTranscriptContextIds", () => {
 			},
 			select: { contextId: true },
 		});
+		// A Parlume transcript is left out whether or not its series is
+		// confidential: answers read its notes, not what the meeting said.
 		expect(mocks.sessionFindMany).toHaveBeenCalledWith({
 			where: {
 				projectId: "project-1",
 				transcriptContextId: {
 					in: ["ctx-synced", "ctx-parlume", "ctx-prd"],
 				},
-				linkedMeeting: { confidential: true },
 			},
 			select: { transcriptContextId: true },
 		});
@@ -108,7 +109,6 @@ describe("findConfidentialTranscriptContextIds", () => {
 		expect(mocks.sessionFindMany.mock.calls[0]?.[0].where).toEqual({
 			projectId: "project-1",
 			transcriptContextId: { not: null },
-			linkedMeeting: { confidential: true },
 		});
 	});
 

@@ -104,6 +104,7 @@ beforeEach(() => {
 	mocks.boundPrompt.mockResolvedValue(null);
 	mocks.model.mockResolvedValue({
 		model: "fast-model",
+		metadata: { provider: "OPENAI_DIRECT", modelString: "fast-model" },
 		trackUsage: mocks.trackUsage,
 	});
 	mocks.generate.mockResolvedValue({
@@ -118,6 +119,20 @@ const anchored = {
 	quote: "who owns the export",
 	topic: "Export ownership",
 };
+
+/** The parts of the one user message the first pass sent. */
+function promptParts(): Array<{ text: string; providerOptions?: unknown }> {
+	const [{ prompt }] = mocks.generate.mock.calls[0];
+	expect(prompt).toHaveLength(1);
+	expect(prompt[0].role).toBe("user");
+	return prompt[0].content;
+}
+
+/** The text of that message, parts in order. */
+function promptText(): string {
+	const parts = promptParts();
+	return parts.map((part) => part.text).join("\n\n");
+}
 
 /** What the service answers for `anchored`: an answer, for the whole meeting. */
 const answered = { ...anchored, kind: "answer", audience: "MEETING" };
@@ -264,7 +279,8 @@ describe("suggestParlumeMeetingContribution", () => {
 		);
 		expect(mocks.trackUsage).toHaveBeenCalledTimes(1);
 		expect(mocks.generate).toHaveBeenCalledTimes(1);
-		const [{ prompt, instructions }] = mocks.generate.mock.calls[0];
+		const [{ instructions }] = mocks.generate.mock.calls[0];
+		const prompt = promptText();
 		expect(instructions).toContain("You are Parlume");
 		expect(prompt).toContain(
 			'<meeting_input source="transcript" trust="untrusted">\nSam: We said Friday.\nAlex: Who owns the export?\n</meeting_input>',
@@ -283,10 +299,56 @@ describe("suggestParlumeMeetingContribution", () => {
 		);
 	});
 
+	it("sends the project context before the meeting, and marks it cacheable for an Anthropic model", async () => {
+		mocks.model.mockResolvedValue({
+			model: "fast-model",
+			metadata: {
+				provider: "ANTHROPIC_DIRECT",
+				modelString: "claude-haiku-5-5",
+			},
+			trackUsage: mocks.trackUsage,
+		});
+
+		await suggestParlumeMeetingContribution(input);
+
+		const [shared, meeting] = promptParts();
+		expect(shared.text).toContain('source="work_items"');
+		expect(shared.text).not.toContain('source="transcript"');
+		expect(shared.providerOptions).toEqual({
+			anthropic: { cacheControl: { type: "ephemeral" } },
+		});
+		expect(meeting.text).toContain('source="transcript"');
+		expect(meeting.text).toContain('source="chat"');
+		expect(meeting.text).not.toContain('source="work_items"');
+		expect(meeting.providerOptions).toBeUndefined();
+	});
+
+	it("marks nothing cacheable for a provider that does not take the marker", async () => {
+		await suggestParlumeMeetingContribution(input);
+
+		const [shared] = promptParts();
+		expect(shared.text).toContain('source="work_items"');
+		expect(shared.providerOptions).toBeUndefined();
+	});
+
+	it("keeps the work items in one order from pass to pass", async () => {
+		await suggestParlumeMeetingContribution(input);
+
+		expect(mocks.stories).toHaveBeenCalledWith(
+			expect.objectContaining({
+				orderBy: [
+					{ priority: "asc" },
+					{ updatedAt: "desc" },
+					{ id: "asc" },
+				],
+			}),
+		);
+	});
+
 	it("gives the meeting before the window, oldest first, fenced as untrusted data", async () => {
 		await suggestParlumeMeetingContribution(input);
 
-		const [{ prompt }] = mocks.generate.mock.calls[0];
+		const prompt = promptText();
 		expect(prompt).toContain(
 			'<meeting_input source="earlier_meeting" trust="untrusted">\nAlex: Welcome, everyone.\nDana: Next we cover the data migration.\n</meeting_input>',
 		);
@@ -300,6 +362,15 @@ describe("suggestParlumeMeetingContribution", () => {
 		);
 	});
 
+	it("never reads a part of the meeting marked confidential", async () => {
+		await suggestParlumeMeetingContribution(input);
+
+		expect(mocks.segments).toHaveBeenCalledTimes(3);
+		for (const [{ where }] of mocks.segments.mock.calls) {
+			expect(where).toMatchObject({ confidential: false });
+		}
+	});
+
 	it("keeps the most recent part of a long earlier meeting", async () => {
 		const long = Array.from({ length: 300 }, (_, index) => ({
 			text: `Remark number ${index} about the plan.`,
@@ -311,7 +382,7 @@ describe("suggestParlumeMeetingContribution", () => {
 
 		await suggestParlumeMeetingContribution(input);
 
-		const [{ prompt }] = mocks.generate.mock.calls[0];
+		const prompt = promptText();
 		// Newest first from the database: index 0 is the latest remark.
 		expect(prompt).toContain("Remark number 0 about the plan.");
 		expect(prompt).not.toContain("Remark number 299 about the plan.");
@@ -320,7 +391,7 @@ describe("suggestParlumeMeetingContribution", () => {
 	it("leaves out the agenda and previous questions for a session outside a series", async () => {
 		await suggestParlumeMeetingContribution(input);
 
-		const [{ prompt }] = mocks.generate.mock.calls[0];
+		const prompt = promptText();
 		expect(prompt).not.toContain('source="agenda"');
 		expect(prompt).not.toContain('source="previous_meeting_questions"');
 		expect(mocks.agenda).not.toHaveBeenCalled();
@@ -353,7 +424,7 @@ describe("suggestParlumeMeetingContribution", () => {
 
 		await suggestParlumeMeetingContribution(input);
 
-		const [{ prompt }] = mocks.generate.mock.calls[0];
+		const prompt = promptText();
 		expect(prompt).toContain(
 			'<meeting_input source="agenda" trust="untrusted">\n1. Data migration\n2. Training plan\n</meeting_input>',
 		);
@@ -481,7 +552,7 @@ describe("suggestParlumeMeetingContribution", () => {
 
 		await suggestParlumeMeetingContribution(input);
 
-		const [{ prompt }] = mocks.generate.mock.calls[0];
+		const prompt = promptText();
 		expect(prompt).toContain("Release plan: ship on Friday");
 		expect(prompt).not.toContain("Last week: nobody owns the export");
 		expect(mocks.retrieve).toHaveBeenCalledWith(
@@ -578,9 +649,7 @@ describe("suggestParlumeMeetingContribution", () => {
 		await expect(suggestParlumeMeetingContribution(input)).resolves.toEqual(
 			answered,
 		);
-		expect(mocks.generate.mock.calls[0]?.[0].prompt).not.toContain(
-			'source="project"',
-		);
+		expect(promptText()).not.toContain('source="project"');
 	});
 
 	it("logs, without meeting text, a suggestion it dropped as unanchored", async () => {

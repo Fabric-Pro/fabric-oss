@@ -116,7 +116,8 @@ interface AutoInsertStrings {
 	pickerDescription: string;
 	pickerTabDocuments: string;
 	pickerTabFeatures: string;
-	pickerEmpty: string;
+	pickerEmptyDocuments: string;
+	pickerEmptyFeatures: string;
 	toastSuccess: string;
 	toastSuccessAction: string;
 	toastErrorDb: string;

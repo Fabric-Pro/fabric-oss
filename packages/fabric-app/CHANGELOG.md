@@ -1,5 +1,105 @@
 # fabric-app
 
+## 1.16.48
+
+### Patch Changes
+
+- 10c020b: The agent server's streaming endpoints now share one connection helper for enqueueing, closing and keepalive handling, with no intended change in behavior.
+- 10c020b: Organizations that the operator has enabled can set their Anthropic provider to use short-lived workload identity federation tokens instead of a stored API key.
+- 10c020b: Update local Fabric development to Aspire 17.0.0, which requires the Aspire CLI bundle and includes the redesigned local dashboard.
+- 10c020b: Replace the local Aspire ngrok container with an opt-in fixed-ID dev tunnel and add a read-only MCP server for the local Postgres database.
+- 10c020b: The audit log now names an AI agent acting for a member, such as Fabric Parlume, instead of showing "system", and marks the row with an AI agent badge.
+- 10c020b: Azure deployments now use the stable 2026-02-01 Key Vault management API to provision the vault and configure the Redis URL secret. The Redis secret now waits for vault creation on a new deployment.
+- 10c020b: Apply to document no longer copies the Direct chat's "no tool ran" notice into a story, and a quick Reject keeps its outcome and chat record.
+- 10c020b: Automatic duplicate checks on new work items can now run on an organization's shared ChatGPT plan accounts. When those accounts are used up as a check starts and the organization does not allow falling back to its API provider, the check waits for the estimated reset, up to six hours, and tries once more.
+- 10c020b: Fix Editing Assistant decisions, duplicated story criteria, fenced code splits, the model picker's scope note and Direct attachments lost on reload.
+- 10c020b: Viewers get a read-only story editor, a chat keeps its ChatGPT plan model after a reload, and a refined Weave request waits for Use refined request.
+- 10c020b: Viewers get a read-only document editor and no write controls, and the story's kind change and Start work are disabled for them.
+- 10c020b: Chat engines now share one end state and safe error text for failures and limits, and deleted conversations take their finished turns with them.
+- 10c020b: Chat engines now tell declined Weave refinements apart, survive deleting the open conversation, hide usage-limit ids, and apply project limits to Research.
+- 10c020b: A Proposal Inbox item now lists every confirmed possible duplicate, so a matching roadmap ticket is no longer hidden behind other inbox matches.
+- 10c020b: A Proposal Inbox item keeps showing the duplicates the verifier confirmed, and shows "Still checking" while a changed one is verified again.
+- 10c020b: Proposal Inbox duplicate flags now show only pairs the roadmap's duplicate verifier has confirmed, and say when an item is still being checked.
+- 10c020b: A possible duplicate between two items of one inbox proposal can now be merged or moved to Rejected from its note.
+- 10c020b: The diagram picker now opens on the full-page agent chat, names the project, and labels each tab's search and empty state correctly.
+- 10c020b: The story assistant names a provider failure in one line, multi-agent deletes remove every agent's turns, and Parlume's Done post says what was not done.
+- 10c020b: Moving off the open multi-agent conversation clears its turn from screen, and a Parlume chat post that may be in the thread stays playable.
+- 10c020b: Parlume now says when a chat post it made for a request did not show up, and the realtime voice answers the request said after a bare "Hey, Fabric."
+- 10c020b: Parlume's realtime voice no longer answers "Hey Fabric, …" before the request is heard, and a refused newsletter screenshot capture says what is missing.
+- 10c020b: Parlume's realtime voice says it is posting to the meeting chat, never that a post is already there.
+- 10c020b: Parlume's realtime voice says a chat post is there only once the chat shows it, and no longer answers the pause after "Hey Fabric," before the request.
+- 10c020b: Parlume's realtime voice posts to the meeting chat in a read-only meeting instead of refusing.
+- 10c020b: Parlume's realtime voice no longer posts a Fabric answer to the chat a second time when Fabric already posted it.
+- 10c020b: Weave shows policy rejections as declined, a live Orchestrator turn stopped by a usage limit shows the paused line, and two inbox and Reports fixes.
+- 10c020b: A live Orchestrator turn refused by a usage limit before any output now shows the paused message in the thread.
+- 10c020b: The Add dialog's Proposal Inbox matches now use the roadmap duplicate rule, including Scope weighting when the description has a Scope section.
+- 10c020b: Projects can now add meeting transcripts as Markdown (.md) files, through the transcript upload and connected OneDrive folders, with speaker names read from bold or heading-style labels.
+- 10c020b: Organization members can now delete their own MCP server connections without organization admin permissions; deleting the organization's custom MCP servers still requires an admin.
+- 10c020b: Parlume keeps chat tags unique across sessions, routes realtime links through Fabric, and lets "go" cut in without cancelling Fabric work.
+- 10c020b: Parlume's audit row for an answered meeting request now names the participant who asked, whose access the request used, not the inviter.
+- 10c020b: Parlume's Actions mode now says a member confirms each change, and the proposal page and live activity show results and dismissals in plain words.
+- 10c020b: Parlume no longer says it cannot write in the meeting chat when its join notice shows up just after the confirmation window.
+- 10c020b: Parlume's meeting chat now titles a lone link written a blank line below a line ending in a colon, instead of showing its raw address.
+- 10c020b: Parlume answers only in front of people it confirms can read the project, and its chat says plainly what became of a tag or a request.
+- 10c020b: Parlume invited back to a meeting no longer reuses the tag of the notice it posted when it last left.
+- 10c020b: Parlume: in a meeting's last two minutes, a held request that comes while Fabric is busy asks its asker to type it instead of failing.
+- 10c020b: The organization audit log now records the outcome of every Parlume change a member confirms, with Fabric Parlume acting for that member.
+- 10c020b: Parlume's audit row for a confirmed meeting change now also names the member who invited Parlume, as the answered-request row already does.
+- 10c020b: Parlume waits five minutes in the Teams lobby with an admit hint, caches shared suggestion context, and sends its lifecycle and speech-health events to Application Insights.
+- 10c020b: Parlume's realtime voice no longer loses a meeting's first spoken request to an audio-buffer error, or turns later requests away as still running.
+- 10c020b: Parlume's "Notes only" chat notice for an invited guest now waits until the meeting has the join notice, so it is no longer lost.
+- 10c020b: Parlume understands a spoken post tag above twenty, such as "Parlume, go P thirty", and the guide's meeting chat picture shows the current posts.
+- 10c020b: Members invited to a meeting Parlume joined on its own can read its transcript, and the bridge deletes its copy as soon as the meeting is saved.
+- 10c020b: Parlume records when the meeting got its join notice before it posts the notes-only notice, so the recorded time is no longer late.
+- 10c020b: Parlume's realtime voice now posts answers with links, keeps requests made while muted, and no longer cuts long chat answers short.
+- 10c020b: Parlume now says why it leaves when an unconfirmed attendee was there first, posts the recap after its join notice, and labels proposal fields.
+- 10c020b: Parlume explains a guest-caused leave while still joining, keeps tag numbers across meeting links, finalizes a left session, and tags a held recap.
+- 10c020b: Parlume explains an entry leave, refuses a second bot in one meeting, names requested parts it cannot do, and hears a split wake request.
+- 10c020b: Parlume no longer posts a second "waits for a member" line after a proposal, answers private messages only by asking for the chat, and links a change's result only when it was made on this site.
+- 10c020b: Parlume now tells the inviter when its bot waits in a Teams lobby, and keeps each chat post to eight lines and 600 characters.
+- 10c020b: Parlume now gives every item of a list you ask for in the meeting chat, with "more" for the part a post leaves out, instead of silently dropping items.
+- 10c020b: Parlume looks things up with the access of the person who asked, and a meeting or part of one can be marked confidential and kept to the people in it.
+- 10c020b: Parlume notes link each bullet to its transcript line, cover long meetings end to end, and survive a failed model call; join failures now tell the inviter.
+- 10c020b: Parlume warns before its four-hour limit and shows its state on its video tile; its page adds a live transcript, questions and suggestion buttons.
+- 10c020b: Parlume posts a join notice, stays quiet with guests, needs a member to confirm changes, can be stopped or paused, and deletes transcripts after 90 days.
+- 10c020b: A Parlume proposal to create a bug now reads "Create bug" instead of "Create feature".
+- 10c020b: The audit log now records each meeting request Parlume answers, and shows under Fabric Parlume the email of the person it acted for.
+- 10c020b: In a meeting's last two minutes, Parlume's realtime voice answers requests still waiting, and their Fabric results, in the chat instead of aloud.
+- 10c020b: Parlume's realtime voice can post code names like "React.memo/useMemo" and reads the fixed line for an unknown post tag.
+- 10c020b: Parlume's realtime voice now reads "go P#" posts reliably, repeats a Fabric answer a read cut off, and titles lone links in the meeting chat.
+- 10c020b: Parlume stops only on a stop phrase, queues new requests behind the current answer, and never speaks longer than 45 seconds at a time.
+- 10c020b: Parlume now records an answer stopped from the chat or the Parlume page as stopped, even when its worker finished first.
+- 10c020b: Parlume keeps the meeting of a Teams web short link, so meetings invited from the web client no longer continue one another's chat tags.
+- 10c020b: Parlume keeps prepared answers playable all meeting, says when they end, reads posts word for word, and announces itself once it can hear.
+- 10c020b: A meeting's confidential marks sit where they were set in its transcript, the transcript page keeps one line per line, and the refusal to download a confidential transcript no longer points to notes the reader cannot see.
+- 10c020b: The Context tab no longer shows a preview of a Parlume meeting transcript to project members who may not read that transcript.
+- 10c020b: Project settings now always show a Project Management tab, and feature stages and work item types have moved there from Navigation; existing settings are preserved.
+- 10c020b: Proposal Inbox duplicate flags now follow the roadmap's rule and survive a slow check, and Reject all changes works on the first click.
+- 10c020b: A line-by-line review now applies nothing until a change is accepted, and keeps a table in a moved list item one change, inside its item.
+- 10c020b: Proposal Inbox summaries and counts now match what apply writes, held-back items are named on every path, and the Rejected list shows its count.
+- 10c020b: A line-by-line review now marks a list line moved to another level as one change, and Apply Selected names the real reason an Enrich item blocks it.
+- 10c020b: Proposal inbox updates change a sentence inside a paragraph in place, summarize the real change, and report a failed restore of a deleted ticket clearly.
+- 10c020b: Proposal Inbox items show accurate approve labels, restored and checking states, and keep keyboard focus after an item decision.
+- 10c020b: Proposal Inbox checks every pending item for duplicates, merges duplicate items, and reviews updates line by line on the ticket.
+- 10c020b: An inbox update now writes only its own edits, in the line review and with Apply all changes, never text a model merge added or changed.
+- 10c020b: Applying a line-by-line review now writes only the changes the reviewer decided; every other line of the ticket is saved exactly as it was.
+- 10c020b: AI updates to existing work items now include a size-limited portion of project context when merging each change, which reduces the input sent for each merge on projects with long context documents.
+- 10c020b: Remove unused streaming code paths from the shared agent server; agent behavior is unchanged.
+- 10c020b: A project's report card keeps Generate busy from the press until the list shows the new run, so a second press cannot start a second run.
+- 10c020b: A project's report card leaves "Running now" when its run ends, and its Generate button keeps keyboard focus while the run starts.
+- 10c020b: Enter now chooses an option in a select that asks for confirmation, and focus returns to the control after newsletter and report dialogs close.
+- 10c020b: A report's "Couldn't delete" toast closes when a later attempt for that report starts, so a retry that deletes it no longer leaves the failure beside "Report deleted".
+- 10c020b: Report deletes ask you to sign in when your session has expired, and the story editor no longer loses typing after an AI run ends without a review.
+- 10c020b: Recent time notes show five distinct, distinguishable notes, reports open after a workspace switch, and two misleading time prompts are fixed.
+- 10c020b: Report lists gain View and history links, duplicate warnings compare every report, and recent time notes are easier to tell apart.
+- 10c020b: OpenTelemetry HTTP and undici instrumentation spans no longer record query-string values or URL credentials from outgoing `fetch` requests, or signed-URL credentials such as `sig` from incoming requests, and the AI chat runtime's GraphQL scalars library now uses a release without the PhoneNumber regular-expression denial-of-service flaw.
+- 10c020b: Store acceptance criteria once for older stories that held them twice, list "Changes rejected." after its proposal, and clear unsaved state after Approve.
+- 10c020b: Project access checks now apply consistently to every project action.
+- 10c020b: Teams monitor reconnect reports when the connected Microsoft account lacks permission to read a channel or chat.
+- 10c020b: The background worker releases dropped Redis connections before opening replacements, preventing them from accumulating and exhausting the server’s connection limit.
+- 10c020b: Transcript uploads now show a check mark and confirmation once the files have been read, with a Close button to dismiss the upload dialog.
+- 10c020b: Report Rename focuses the name from any tab, typed text survives an assistant send, stored criteria show once, and pickers rank by last edit.
+
 ## 1.16.47
 
 ### Patch Changes

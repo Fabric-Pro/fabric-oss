@@ -13,14 +13,8 @@
  */
 
 import { logger } from "@repo/logs";
+import { UNBACKED_CLAIM_NOTICE } from "@repo/utils/unbacked-claim-notice";
 import { checkCompletionClaimActivity } from "../orchestrator/execution/check-completion-claim";
-
-/**
- * Shown under a reply that claims an action no tool call backs. Product copy,
- * not model instructions: it tells the user what did not happen.
- */
-export const UNBACKED_CLAIM_NOTICE =
-	"_Note: no tool ran while this reply was written, so nothing it describes was created, scheduled, run or changed just now, and nothing was checked. Ask again to have it done._";
 
 export async function withUnbackedClaimNotice(params: {
 	reply: string;

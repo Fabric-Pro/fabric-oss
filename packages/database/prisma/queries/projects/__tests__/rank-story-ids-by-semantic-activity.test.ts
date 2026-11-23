@@ -59,9 +59,15 @@ describe("rankStoryIdsBySemanticActivity", () => {
 			([args]) => args,
 		);
 		expect(editedCall.where.lastEditedAt).toEqual({ not: null });
-		expect(editedCall.orderBy).toEqual({ lastEditedAt: "desc" });
+		expect(editedCall.orderBy).toEqual([
+			{ lastEditedAt: "desc" },
+			{ id: "asc" },
+		]);
 		expect(neverEditedCall.where.lastEditedAt).toBeNull();
-		expect(neverEditedCall.orderBy).toEqual({ createdAt: "desc" });
+		expect(neverEditedCall.orderBy).toEqual([
+			{ createdAt: "desc" },
+			{ id: "asc" },
+		]);
 	});
 
 	// The reason a compound `lastEditedAt desc nulls last, createdAt desc` is

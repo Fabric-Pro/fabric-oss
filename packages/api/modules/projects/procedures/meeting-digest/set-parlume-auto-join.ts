@@ -112,6 +112,7 @@ export const setParlumeAutoJoinProcedure = tenantProtectedProcedure
 				? {
 						parlumeAutoJoin: true,
 						parlumeAutoJoinUserId: context.user.id,
+						parlumeAutoJoinEnabledAt: new Date(),
 						parlumeAutoJoinToolsReadOnly: input.toolsReadOnly,
 						parlumeAutoJoinSuggestions: input.suggestionsEnabled,
 						...(input.suggestionAudience
@@ -126,6 +127,7 @@ export const setParlumeAutoJoinProcedure = tenantProtectedProcedure
 				: {
 						parlumeAutoJoin: false,
 						parlumeAutoJoinUserId: null,
+						parlumeAutoJoinEnabledAt: null,
 						parlumeAutoJoinError: null,
 						parlumeAutoJoinErrorAt: null,
 					},

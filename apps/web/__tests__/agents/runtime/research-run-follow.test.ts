@@ -374,6 +374,26 @@ describe("the research settles", () => {
 		expect(w.state.finalizes).toEqual([]);
 	});
 
+	it("saves a usage-limit refusal as the paused state, without the limit's id", async () => {
+		const turn = await seedRun({ status: "COMPLETED" });
+
+		await settleUnwatchedResearchRun(
+			researchOutput({
+				status: "failed",
+				error: "AI usage limit exceeded: limit-example (TOKENS, DAILY) — used 1 of 1",
+			}),
+			turn,
+		);
+
+		const paused =
+			"AI calls are paused — the usage limit for today is reached. Manage limits to raise it, or try again after it resets.";
+		expect(savedAnswer()).toMatchObject({
+			content: `Research failed: ${paused}`,
+			metadata: { research: { status: "failed", error: paused } },
+		});
+		expect(JSON.stringify(savedAnswer())).not.toContain("limit-example");
+	});
+
 	it("settleLatestResearchRun returns none when the latest turn is a Direct turn", async () => {
 		await seedRun({ status: "COMPLETED", result: researchOutput() });
 		const now = new Date();

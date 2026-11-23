@@ -55,6 +55,19 @@ vi.mock("@analytics", () => ({
 	useAnalytics: () => ({ trackEvent: vi.fn() }),
 }));
 
+vi.mock("@shared/lib/orpc-query-utils", () => ({
+	orpc: {
+		projects: {
+			get: {
+				queryOptions: ({ input }: { input: unknown }) => ({
+					queryKey: ["projects.get", input],
+					queryFn: vi.fn(),
+				}),
+			},
+		},
+	},
+}));
+
 vi.mock("../useInsertDiagramAction", () => ({
 	useInsertDiagramAction: () => ({
 		enabled: true,

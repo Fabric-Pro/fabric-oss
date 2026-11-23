@@ -747,6 +747,47 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 		);
 
 		// -------------------------------------------------------------------
+		// RECENT_FIRST — the work-item pickers' order, coverage aside
+		// -------------------------------------------------------------------
+
+		it("ranks by last edit alone under RECENT_FIRST, covered or not, and pages by that rank", async () => {
+			const editedAt = new Map(
+				PAGING_ROWS.map((row) => [row.identifier, row.edited]),
+			);
+			const page = await listFeatureCoverage({
+				projectId: pagingProjectId,
+				order: "RECENT_FIRST",
+				limit: PAGING_TOTAL,
+			});
+
+			expect(page.total).toBe(PAGING_TOTAL);
+			const edits = identifiersOf(page.items).map(
+				(identifier) => editedAt.get(identifier) ?? -1,
+			);
+			expect(edits).toEqual([...edits].sort((a, b) => b - a));
+			// The two most recent edits are COVERED rows, and they lead.
+			expect(identifiersOf(page.items).slice(0, 2).sort()).toEqual([
+				"001",
+				"009",
+			]);
+
+			const second = await listFeatureCoverage({
+				projectId: pagingProjectId,
+				order: "RECENT_FIRST",
+				limit: 3,
+				offset: 2,
+			});
+			expect(identifiersOf(second.items)).toEqual(
+				identifiersOf(page.items).slice(2, 5),
+			);
+			expect(identifiersOf(second.items).sort()).toEqual([
+				"002",
+				"005",
+				"008",
+			]);
+		});
+
+		// -------------------------------------------------------------------
 		// 3. The rows a `_count` ranking gets wrong
 		// -------------------------------------------------------------------
 

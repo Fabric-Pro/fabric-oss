@@ -1,4 +1,12 @@
-import { generateObject, getAIModelWithMetadata } from "@repo/ai";
+import {
+	generateObject,
+	getAIModelWithMetadata,
+	type LanguageModel,
+} from "@repo/ai";
+import {
+	ANTHROPIC_EPHEMERAL_CACHE,
+	isPromptCacheTarget,
+} from "@repo/ai/prompt-cache";
 import { db, getBoundPromptForAgent, hasProjectAccess } from "@repo/database";
 import { formatContextsForPrompt, retrieveProjectContexts } from "@repo/rag";
 import {
@@ -18,7 +26,7 @@ import {
 	PARLUME_SUGGESTION_PROMPT_AGENT_KEY,
 } from "@repo/utils/parlume-suggestion-prompt";
 import { fenceUntrusted } from "@repo/utils/untrusted-fence";
-import { zodSchema } from "ai";
+import { type LanguageModelUsage, zodSchema } from "ai";
 import { z } from "zod";
 import { utcDayRange } from "../procedures/meeting-digest/occurrence-day";
 import { parlumeLog } from "./parlume-log";
@@ -32,7 +40,7 @@ const MAX_TOPIC_CHARS = 60;
 const MAX_PREVIOUS_SUGGESTIONS = 12;
 // The fast model may reason before it answers, and its reasoning counts against
 // this budget: at 300 a staging pass spent all of it and returned nothing.
-const MAX_OUTPUT_TOKENS = 1_500;
+export const PARLUME_SUGGESTION_MAX_OUTPUT_TOKENS = 1_500;
 /** The tail of the transcript that keys the project search. */
 const RAG_QUERY_CHARS = 1_000;
 /** Open work items shown to the model, highest priority first. */
@@ -197,7 +205,13 @@ async function loadOpenWorkItems(projectId: string): Promise<string> {
 				assigneeId: true,
 				status: { select: { name: true } },
 			},
-			orderBy: [{ priority: "asc" }, { updatedAt: "desc" }],
+			// A total order: the list is part of the cached prefix, which every
+			// pass must repeat byte for byte.
+			orderBy: [
+				{ priority: "asc" },
+				{ updatedAt: "desc" },
+				{ id: "asc" },
+			],
 			take: MAX_WORK_ITEMS,
 		}),
 		db.userStory.count({ where }),
@@ -228,6 +242,10 @@ async function loadOpenWorkItems(projectId: string): Promise<string> {
 	);
 }
 
+function joinSections(sections: ReadonlyArray<string | null>): string {
+	return sections.filter((section) => section !== null).join("\n\n");
+}
+
 /**
  * The meeting before the live window as lines, oldest first, cut from the
  * front so the most recent remarks are kept.
@@ -238,6 +256,146 @@ function formatEarlierMeeting(newestFirst: ReadonlyArray<SpokenLine>): string {
 		.map(({ text, speakerName }) => `${speakerName ?? "Attendee"}: ${text}`)
 		.join("\n")
 		.slice(-MAX_EARLIER_MEETING_CHARS);
+}
+
+/**
+ * What one suggestion pass reads. The meeting's lines come newest first, as
+ * the segment queries return them: the live window, the meeting before it,
+ * and the chat.
+ */
+export type ParlumeSuggestionMaterial = {
+	speech: ReadonlyArray<SpokenLine>;
+	earlierSpeech: ReadonlyArray<SpokenLine>;
+	chat: ReadonlyArray<SpokenLine>;
+	workItems: string;
+	agenda: string | null;
+	previousQuestions: string | null;
+	passages: string | null;
+	previous: ReadonlyArray<string>;
+};
+
+/**
+ * The prompt of one suggestion pass, each source fenced as untrusted data:
+ * first what a meeting's passes share, so a provider can cache it with the
+ * instructions, then the meeting itself, which changes every pass.
+ */
+function parlumeSuggestionPromptParts(material: ParlumeSuggestionMaterial): {
+	shared: string;
+	meeting: string;
+} {
+	const earlierMeeting = formatEarlierMeeting(material.earlierSpeech);
+	const meetingChat = formatMeetingChat(material.chat);
+	const previous = material.previous.slice(-MAX_PREVIOUS_SUGGESTIONS);
+	const shared = joinSections([
+		material.agenda
+			? fenceUntrusted(
+					MEETING_INPUT_TAG,
+					{ source: "agenda" },
+					material.agenda,
+				)
+			: null,
+		material.previousQuestions
+			? fenceUntrusted(
+					MEETING_INPUT_TAG,
+					{ source: "previous_meeting_questions" },
+					material.previousQuestions,
+				)
+			: null,
+		fenceUntrusted(
+			MEETING_INPUT_TAG,
+			{ source: "work_items" },
+			material.workItems,
+		),
+	]);
+	const meeting = joinSections([
+		fenceUntrusted(
+			MEETING_INPUT_TAG,
+			{ source: "transcript" },
+			formatLiveTranscript(material.speech),
+		),
+		earlierMeeting
+			? fenceUntrusted(
+					MEETING_INPUT_TAG,
+					{ source: "earlier_meeting" },
+					earlierMeeting,
+				)
+			: null,
+		meetingChat
+			? fenceUntrusted(MEETING_INPUT_TAG, { source: "chat" }, meetingChat)
+			: null,
+		material.passages
+			? fenceUntrusted(
+					MEETING_INPUT_TAG,
+					{ source: "project" },
+					material.passages,
+				)
+			: null,
+		previous.length > 0
+			? fenceUntrusted(
+					MEETING_INPUT_TAG,
+					{ source: "earlier_suggestions" },
+					previous.join("\n"),
+				)
+			: null,
+	]);
+	return { shared, meeting };
+}
+
+/** The whole prompt of one suggestion pass, as the model reads it. */
+export function parlumeSuggestionPrompt(
+	material: ParlumeSuggestionMaterial,
+): string {
+	const { shared, meeting } = parlumeSuggestionPromptParts(material);
+	return joinSections([shared, meeting]);
+}
+
+/**
+ * One suggestion pass: the model's answer to the material, kept only when it
+ * is anchored in the meeting. `proposed` says the model offered one, anchored
+ * or not. `cacheSharedContext` marks the shared part as a cache breakpoint,
+ * for the providers that take the marker ({@link isPromptCacheTarget}).
+ */
+export async function requestParlumeSuggestion(input: {
+	model: LanguageModel;
+	instructions: string;
+	material: ParlumeSuggestionMaterial;
+	cacheSharedContext: boolean;
+}): Promise<{
+	suggestion: ParlumeSuggestion;
+	proposed: boolean;
+	usage: LanguageModelUsage;
+}> {
+	const { shared, meeting } = parlumeSuggestionPromptParts(input.material);
+	const { object, usage } = await generateObject({
+		model: input.model,
+		schema: zodSchema(suggestionSchema),
+		instructions: input.instructions,
+		prompt: [
+			{
+				role: "user",
+				content: [
+					{
+						type: "text",
+						text: shared,
+						...(input.cacheSharedContext
+							? { providerOptions: ANTHROPIC_EPHEMERAL_CACHE }
+							: {}),
+					},
+					{ type: "text", text: meeting },
+				],
+			},
+		],
+		maxOutputTokens: PARLUME_SUGGESTION_MAX_OUTPUT_TOKENS,
+	});
+	return {
+		suggestion: normalizeParlumeSuggestion(
+			object,
+			input.material.speech,
+			input.material.earlierSpeech,
+		),
+		proposed: object.suggest === true,
+		usage,
+	};
 }
 
 type SeriesScope = {
@@ -349,11 +507,14 @@ export async function suggestParlumeMeetingContribution(input: {
 	}
 	const audience: ParlumeSuggestionAudience = session.suggestionAudience;
 	const windowStart = new Date(Date.now() - LIVE_TRANSCRIPT_WINDOW_MS);
+	// A suggestion is posted where everyone invited can read it, so it never
+	// draws on a part of the meeting marked confidential.
 	const [speech, earlierSpeech, chat] = await Promise.all([
 		db.parlumeMeetingSegment.findMany({
 			where: {
 				sessionId: session.id,
 				source: "SPEECH",
+				confidential: false,
 				createdAt: { gte: windowStart },
 			},
 			select: { text: true, speakerName: true },
@@ -364,6 +525,7 @@ export async function suggestParlumeMeetingContribution(input: {
 			where: {
 				sessionId: session.id,
 				source: "SPEECH",
+				confidential: false,
 				createdAt: { lt: windowStart },
 			},
 			select: { text: true, speakerName: true },
@@ -371,7 +533,11 @@ export async function suggestParlumeMeetingContribution(input: {
 			take: MAX_EARLIER_MEETING_SEGMENTS,
 		}),
 		db.parlumeMeetingSegment.findMany({
-			where: { sessionId: session.id, source: "CHAT" },
+			where: {
+				sessionId: session.id,
+				source: "CHAT",
+				confidential: false,
+			},
 			select: { text: true, speakerName: true },
 			orderBy: { createdAt: "desc" },
 			take: MAX_PARLUME_CHAT_MESSAGES,
@@ -386,7 +552,6 @@ export async function suggestParlumeMeetingContribution(input: {
 	const chatTail =
 		chatBudget > 0 ? formatMeetingChat(chat).slice(-chatBudget) : "";
 	const query = [transcriptTail, chatTail].filter(Boolean).join(" ");
-	const earlierMeeting = formatEarlierMeeting(earlierSpeech);
 	const series: SeriesScope | null = session.linkedMeetingId
 		? {
 				projectId: session.projectId,
@@ -424,7 +589,7 @@ export async function suggestParlumeMeetingContribution(input: {
 			organizationId: session.organizationId,
 			projectId: session.projectId,
 		});
-		const { model, trackUsage } = await getAIModelWithMetadata(
+		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{ taskType: "SIMPLE", complexity: "simple" },
 			{
 				userId: session.userId,
@@ -436,79 +601,32 @@ export async function suggestParlumeMeetingContribution(input: {
 				promptVersionId: boundPrompt?.version?.id,
 			},
 		);
-		const meetingChat = formatMeetingChat(chat);
-		const previous = input.previous.slice(-MAX_PREVIOUS_SUGGESTIONS);
-		const { object } = await generateObject({
+		const { suggestion, proposed } = await requestParlumeSuggestion({
 			model,
-			schema: zodSchema(suggestionSchema),
 			instructions:
 				boundPrompt?.version?.content?.trim() ||
 				PARLUME_SUGGESTION_FALLBACK_BODY,
-			prompt: [
-				fenceUntrusted(
-					MEETING_INPUT_TAG,
-					{ source: "transcript" },
-					transcript,
-				),
-				earlierMeeting
-					? fenceUntrusted(
-							MEETING_INPUT_TAG,
-							{ source: "earlier_meeting" },
-							earlierMeeting,
-						)
-					: null,
-				agenda
-					? fenceUntrusted(
-							MEETING_INPUT_TAG,
-							{ source: "agenda" },
-							agenda,
-						)
-					: null,
-				previousQuestions
-					? fenceUntrusted(
-							MEETING_INPUT_TAG,
-							{ source: "previous_meeting_questions" },
-							previousQuestions,
-						)
-					: null,
-				fenceUntrusted(
-					MEETING_INPUT_TAG,
-					{ source: "work_items" },
-					workItems,
-				),
-				meetingChat
-					? fenceUntrusted(
-							MEETING_INPUT_TAG,
-							{ source: "chat" },
-							meetingChat,
-						)
-					: null,
-				passages.length > 0
-					? fenceUntrusted(
-							MEETING_INPUT_TAG,
-							{ source: "project" },
-							formatContextsForPrompt(passages),
-						)
-					: null,
-				previous.length > 0
-					? fenceUntrusted(
-							MEETING_INPUT_TAG,
-							{ source: "earlier_suggestions" },
-							previous.join("\n"),
-						)
-					: null,
-			]
-				.filter(Boolean)
-				.join("\n\n"),
-			maxOutputTokens: MAX_OUTPUT_TOKENS,
+			// Bedrock, Foundry and other gateways do not take the marker.
+			cacheSharedContext: isPromptCacheTarget(
+				metadata.provider,
+				metadata.modelString,
+			),
+			material: {
+				speech,
+				earlierSpeech,
+				chat,
+				workItems,
+				agenda,
+				previousQuestions,
+				passages:
+					passages.length > 0
+						? formatContextsForPrompt(passages)
+						: null,
+				previous: input.previous,
+			},
 		});
 		trackUsage();
-		const suggestion = normalizeParlumeSuggestion(
-			object,
-			speech,
-			earlierSpeech,
-		);
-		if (!suggestion.suggest && object.suggest === true) {
+		if (!suggestion.suggest && proposed) {
 			parlumeLog("info", "suggestion.unanchored", {
 				sessionId: session.id,
 			});

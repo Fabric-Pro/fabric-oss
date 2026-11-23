@@ -490,6 +490,24 @@ describe("log forwarding (independent of feature-burn-rate-alerts)", () => {
 		]);
 	});
 
+	it("forwards an opted-in info record at Information severity", async () => {
+		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
+			validConnectionString;
+		const { initAppInsightsLogs, trackLog } =
+			await installDirectClientFactory();
+		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
+
+		trackLog("info", "info message", { event: "test.info", forward: true });
+
+		expect(captured.traces).toEqual([
+			{
+				message: "info message",
+				severity: "Information",
+				properties: { event: "test.info", forward: "true" },
+			},
+		]);
+	});
+
 	it("forwards through trackException, exception included, severity defaulted to Error", async () => {
 		process.env.APPLICATIONINSIGHTS_CONNECTION_STRING =
 			validConnectionString;

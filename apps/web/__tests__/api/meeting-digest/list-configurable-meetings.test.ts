@@ -32,15 +32,17 @@ describe("toParlumeAutoJoinState", () => {
 		parlumeAutoJoinError: "Reconnect Microsoft in Settings → Integrations.",
 		parlumeAutoJoinErrorAt: new Date("2026-10-27T09:00:00Z"),
 		parlumeAutoJoinUser: { id: "user-1", name: "Dev Example" },
+		parlumeAutoJoinEnabledAt: new Date("2026-10-20T08:00:00Z"),
 	};
 
-	it("names who turned auto-join on and carries its last error", () => {
+	it("names who turned auto-join on and when, and carries its last error", () => {
 		expect(toParlumeAutoJoinState(row)).toEqual({
 			enabled: true,
 			toolsReadOnly: false,
 			suggestionsEnabled: true,
 			suggestionAudience: "TEAM",
 			enabledBy: { id: "user-1", name: "Dev Example" },
+			enabledAt: new Date("2026-10-20T08:00:00Z"),
 			error: "Reconnect Microsoft in Settings → Integrations.",
 			errorAt: new Date("2026-10-27T09:00:00Z"),
 			syncStopped: false,
@@ -56,11 +58,10 @@ describe("toParlumeAutoJoinState", () => {
 		).toBe(true);
 	});
 
-	it("names no enabler while the switch is off", () => {
-		expect(
-			toParlumeAutoJoinState({ ...row, parlumeAutoJoin: false })
-				.enabledBy,
-		).toBeNull();
+	it("names no enabler and no time while the switch is off", () => {
+		const off = toParlumeAutoJoinState({ ...row, parlumeAutoJoin: false });
+		expect(off.enabledBy).toBeNull();
+		expect(off.enabledAt).toBeNull();
 	});
 });
 

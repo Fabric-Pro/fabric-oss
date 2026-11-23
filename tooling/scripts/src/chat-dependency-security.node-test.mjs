@@ -4,6 +4,15 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import {
+	addPackage,
+	assertRejectsMalformed,
+	entriesNamed,
+	mutableCopy,
+	readLockfile,
+	requireLockfile,
+	validateLockfile,
+} from "./lockfile-shape.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const webRequire = createRequire(join(root, "apps/web/package.json"));
@@ -72,27 +81,33 @@ test("Streamdown's KaTeX stylesheet covers generated HTML classes and ships its 
 });
 
 test("chat-related transitive security floors cover every lockfile copy", () => {
-	// Use the existing Changesets parser's YAML dependency.
-	const changesetsRequire = createRequire(
-		join(
-			root,
-			"node_modules/.pnpm/@changesets+parse@1.0.0/node_modules/@changesets/parse/package.json",
-		),
-	);
-	const yaml = changesetsRequire("yaml");
-	const lockfile = yaml.parse(
-		readFileSync(join(root, "pnpm-lock.yaml"), "utf8"),
-	);
+	const lockfile = readLockfile();
+	verifyChatFloors(lockfile);
+	assertRejectsMalformed(verifyChatFloors, lockfile);
+	for (const [name, version] of [
+		["qs", "6.16.0"],
+		["katex", "0.16.22"],
+	]) {
+		const bad = addPackage(mutableCopy(lockfile), `${name}@${version}`);
+		assert.throws(
+			() => verifyChatFloors(validateLockfile(bad)),
+			(error) => !/could not check/.test(error.message),
+		);
+	}
+});
+
+function verifyChatFloors(lockfile) {
+	requireLockfile(lockfile);
 	for (const [name, reviewed] of [
 		["qs", "6.16.1"],
 		["fast-copy", "3.1.0"],
 		["@fastify/busboy", "3.2.2"],
 		["katex", "0.18.2"],
 	]) {
-		const copies = Object.keys(lockfile.packages).filter((key) =>
-			key.startsWith(`${name}@`),
+		const copies = entriesNamed(lockfile, "packages", name).map(
+			(entry) => entry.key,
 		);
 		assert.ok(copies.length > 0, `Missing ${name} from lockfile`);
 		assert.deepEqual(copies, [`${name}@${reviewed}`]);
 	}
-});
+}

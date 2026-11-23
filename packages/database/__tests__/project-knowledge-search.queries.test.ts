@@ -48,7 +48,7 @@ it("leaves Store only rows out of the context source", async () => {
 	const sql = raw.mock.calls[0][0];
 	expect(sql.text).toContain('NOT c."indexingExcluded"');
 });
-it("leaves a confidential series' synced and Parlume transcripts out of the context source", async () => {
+it("leaves a confidential series' synced transcripts and every Parlume transcript out of the context source", async () => {
 	raw.mockClear();
 	await searchProjectKnowledge({
 		projectId: "example-project",
@@ -59,6 +59,9 @@ it("leaves a confidential series' synced and Parlume transcripts out of the cont
 	const sql = raw.mock.calls[0][0];
 	expect(sql.text).toContain('WHERE t."contextId" = c.id AND l.confidential');
 	expect(sql.text).toContain(
+		'FROM parlume_meeting_session s\n     WHERE s."transcriptContextId" = c.id)',
+	);
+	expect(sql.text).not.toContain(
 		'WHERE s."transcriptContextId" = c.id AND l.confidential',
 	);
 });

@@ -44,7 +44,7 @@ export async function loadFabricToolsForTurn(
 		return null;
 	}
 	const actor = {
-		userId: input.userId,
+		userId: input.actingUserId ?? input.userId,
 		organizationId: input.organizationId,
 		actingGrant: input.actingGrant,
 		projectId: input.projectId,

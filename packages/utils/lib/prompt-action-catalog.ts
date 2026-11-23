@@ -37,6 +37,7 @@ import { documentTypeShortLabel } from "./document-type-catalog";
 import { LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY } from "./living-memory-decisions-prompt";
 import { ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY } from "./orchestrator-memory-prompt";
 import { PAGE_ASK_PROMPT_AGENT_KEY } from "./page-ask-prompt";
+import { PARLUME_NOTES_PROMPT_AGENT_KEY } from "./parlume-notes-prompt";
 import { PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY } from "./parlume-realtime-voice-prompt";
 import { PARLUME_RECAP_PROMPT_AGENT_KEY } from "./parlume-recap-prompt";
 import { PARLUME_SUGGESTION_PROMPT_AGENT_KEY } from "./parlume-suggestion-prompt";
@@ -622,6 +623,16 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		// the worker.
 		key: PARLUME_RECAP_PROMPT_AGENT_KEY,
 		label: "Parlume Series Recap",
+		featureType: "MEETINGS",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The notes Parlume writes after a meeting. Editing it changes what
+		// the notes cover and how they read; the transcript lines are fenced
+		// as untrusted data code-side, and a note is kept only when the line
+		// it cites holds its quote, whatever the wording asks for.
+		key: PARLUME_NOTES_PROMPT_AGENT_KEY,
+		label: "Parlume Meeting Notes",
 		featureType: "MEETINGS",
 		actions: nonStage("GENERAL"),
 	},

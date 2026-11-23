@@ -99,6 +99,7 @@ import {
 	useDeleteDocumentAssistantConversation,
 	useDocumentAssistantConversationById,
 	useDocumentAssistantHistoryList,
+	useRecordDocumentAssistantDiffOutcome,
 	useRenameDocumentAssistantConversation,
 } from "../useDocumentAssistantHistory";
 
@@ -574,5 +575,63 @@ describe("useDocumentAssistantConversationById", () => {
 		await waitFor(() => expect(result.current.isSuccess).toBe(true));
 		// No override → the QueryClient's `staleTime: Infinity` default holds.
 		expect(result.current.isStale).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// `useRecordDocumentAssistantDiffOutcome` — a review answered before the
+// proposal's turn is saved
+// ---------------------------------------------------------------------------
+
+describe("useRecordDocumentAssistantDiffOutcome", () => {
+	const STAMP = {
+		conversationId: "c-1",
+		projectId: "proj-1",
+		organizationId: "org-1",
+		messageId: "msg-1",
+		toolCallId: "tc-1",
+		outcome: "rejected" as const,
+		at: "2026-05-19T00:00:00.000Z",
+	};
+
+	it("retries while the proposal's turn is not saved yet, then records the outcome", async () => {
+		mockClient.agents.conversations.recordDiffOutcome
+			.mockRejectedValueOnce(new Error("Tool call not found"))
+			.mockResolvedValueOnce({ success: true });
+		const client = new QueryClient();
+		const { result } = renderHook(
+			() => useRecordDocumentAssistantDiffOutcome(),
+			{ wrapper: makeWrapper(client) },
+		);
+
+		await act(async () => {
+			await expect(result.current.mutateAsync(STAMP)).resolves.toEqual({
+				success: true,
+			});
+		});
+
+		expect(
+			mockClient.agents.conversations.recordDiffOutcome,
+		).toHaveBeenCalledTimes(2);
+	}, 10_000);
+
+	it("does not retry another refusal", async () => {
+		mockClient.agents.conversations.recordDiffOutcome.mockRejectedValueOnce(
+			new Error("Conversation not found"),
+		);
+		const client = new QueryClient();
+		const { result } = renderHook(
+			() => useRecordDocumentAssistantDiffOutcome(),
+			{ wrapper: makeWrapper(client) },
+		);
+
+		await expect(
+			act(async () => {
+				await result.current.mutateAsync(STAMP);
+			}),
+		).rejects.toThrow("Conversation not found");
+		expect(
+			mockClient.agents.conversations.recordDiffOutcome,
+		).toHaveBeenCalledTimes(1);
 	});
 });

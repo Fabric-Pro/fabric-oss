@@ -18,8 +18,8 @@
  *     secret) with `X-Fabric-Acting-User`, `X-Fabric-Acting-Organization` and
  *     the `X-Fabric-Acting-Grant` the web route minted for the chat turn, used
  *     by Fabric's own agent runtime. Membership of the named organization is
- *     re-read on every request and the session holds only
- *     `SERVICE_CREDENTIAL_SCOPES`; see `./gateway/service-auth`.
+ *     re-read on every request and the session holds only the scopes its
+ *     grant allows; see `./gateway/service-auth`.
  *   - OAuth access token: `Authorization: Bearer fat_xxx`, obtained by signing
  *     in from the agent (discovery starts at the `WWW-Authenticate` challenge on
  *     a 401). Bound to the organization chosen at consent, or to the one

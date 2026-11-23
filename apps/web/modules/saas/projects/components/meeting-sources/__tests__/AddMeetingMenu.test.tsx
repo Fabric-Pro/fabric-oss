@@ -12,14 +12,28 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@saas/projects/components/TranscriptFileUpload", () => ({
-	TranscriptFileUpload: (props: { projectId: string }) => (
-		<div data-testid="uploader">uploader for {props.projectId}</div>
+	TranscriptFileUpload: (props: {
+		projectId: string;
+		onClose?: () => void;
+	}) => (
+		<div data-testid="uploader">
+			uploader for {props.projectId}
+			<button type="button" onClick={props.onClose}>
+				Close
+			</button>
+		</div>
 	),
 }));
 
@@ -155,6 +169,19 @@ describe("AddMeetingMenu", () => {
 		expect(screen.getByTestId("uploader")).toHaveTextContent(
 			"uploader for project-1",
 		);
+	});
+
+	it("dismisses the dialog through the uploader Close and unmounts it", async () => {
+		const page = renderPage();
+		await choose(/upload transcript/i);
+		await screen.findByRole("dialog");
+		fireEvent.click(
+			within(screen.getByTestId("uploader")).getByRole("button", {
+				name: "Close",
+			}),
+		);
+		expect(screen.queryByTestId("uploader")).toBeNull();
+		expect(page.onSourcesChanged).toHaveBeenCalledOnce();
 	});
 
 	it("keeps the uploader open when the button that opened it goes away", async () => {

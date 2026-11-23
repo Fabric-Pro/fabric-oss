@@ -14,9 +14,17 @@ export type ParlumeRequest = Awaited<
 
 export type ParlumeAction = ParlumeRequest["actions"][number];
 
+export type ParlumeActionDetail = Awaited<
+	ReturnType<typeof orpcClient.projects.parlume.action>
+>;
+
 export type ParlumeSuggestionItem = Awaited<
 	ReturnType<typeof orpcClient.projects.parlume.suggestions>
 >["items"][number];
+
+export type ParlumeTranscriptSegment = Awaited<
+	ReturnType<typeof orpcClient.projects.parlume.transcript>
+>["segments"][number];
 
 export type ParlumeAgent = Awaited<
 	ReturnType<typeof orpcClient.projects.parlume.listAgents>
@@ -38,11 +46,41 @@ export function isLiveSession(session: Pick<ParlumeSession, "status">) {
 	return LIVE_STATUSES.has(session.status);
 }
 
+/**
+ * How long after a meeting ends, or its notes are asked for again, the list
+ * waits for its notes. Notes still being written after that are stuck, and
+ * a reload shows them when they come.
+ */
+const NOTES_WAIT_MS = 30 * 60_000;
+
+/** Live, or its notes are being written: the sessions list keeps polling. */
+export function isSessionChanging(
+	session: Pick<
+		ParlumeSession,
+		"status" | "notesStatus" | "endedAt" | "notesRequestedAt"
+	>,
+	now: number,
+): boolean {
+	if (isLiveSession(session)) {
+		return true;
+	}
+	if (session.notesStatus !== "PENDING") {
+		return false;
+	}
+	const since = Math.max(
+		session.endedAt ? new Date(session.endedAt).getTime() : 0,
+		session.notesRequestedAt
+			? new Date(session.notesRequestedAt).getTime()
+			: 0,
+	);
+	return now - since < NOTES_WAIT_MS;
+}
+
 export function modeLabel(toolsReadOnly: boolean): string {
 	return toolsReadOnly ? "Read-only" : "Actions";
 }
 
-export function statusLabel(status: string): string {
+function statusLabel(status: string): string {
 	const text = status.toLowerCase().replaceAll("_", " ");
 	return text.charAt(0).toUpperCase() + text.slice(1);
 }
@@ -69,6 +107,10 @@ export function endReasonLabel(endReason: string | null): string | null {
 			return "Never joined";
 		case "NOT_ADMITTED":
 			return "Not admitted from the lobby";
+		case "EXTERNAL_GUEST":
+			return "Left when a guest joined";
+		case "ATTENDEE_NOT_AUTHORIZED":
+			return "Left for an unconfirmed attendee";
 		default:
 			return statusLabel(endReason);
 	}

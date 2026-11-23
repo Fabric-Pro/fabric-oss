@@ -29,6 +29,7 @@ const deps = {
 	hasAccess: vi.fn(),
 	isDeleted: vi.fn(),
 	list: vi.fn(),
+	withheldTranscriptIds: vi.fn(),
 };
 const read = createContextManifestReader(deps);
 beforeEach(() => {
@@ -46,8 +47,32 @@ beforeEach(() => {
 		excludedCodeContexts: 2,
 		hasMore: true,
 	});
+	deps.withheldTranscriptIds.mockResolvedValue(new Set());
 });
 describe("authorized inspectable Context manifest", () => {
+	it("gives a Parlume transcript the reader may not read a revision that is no digest of its content", async () => {
+		deps.withheldTranscriptIds.mockResolvedValue(new Set([row.sourceId]));
+		const withheld = await read(actor, {});
+		const revision = withheld.sources[0]?.revision;
+		expect(revision).toMatch(/^[a-f0-9]{64}$/);
+		expect(revision).not.toBe(hash);
+		expect(withheld.sources[0]?.citation).toMatchObject({ revision });
+		expect(deps.withheldTranscriptIds).toHaveBeenCalledWith(actor);
+		// The same transcript, unchanged, keeps that revision.
+		expect((await read(actor, {})).sources[0]?.revision).toBe(revision);
+		// It moves when the transcript does.
+		deps.list.mockResolvedValue({
+			rows: [{ ...row, updatedAt: new Date("2026-02-01") }],
+			total: 1,
+			excludedCodeContexts: 0,
+			hasMore: false,
+		});
+		expect((await read(actor, {})).sources[0]?.revision).not.toBe(revision);
+
+		// A reader who may read it keeps the content's own revision.
+		deps.withheldTranscriptIds.mockResolvedValue(new Set());
+		expect((await read(actor, {})).sources[0]?.revision).toBe(hash);
+	});
 	it("returns metadata, current source pins/read refs/citations/omissions without exporting bodies or inferring Workspace attachments", async () => {
 		deps.list.mockResolvedValue({
 			rows: [

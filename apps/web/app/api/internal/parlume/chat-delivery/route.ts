@@ -9,7 +9,7 @@ const bodySchema = z.object({
 	botId: z.string().min(1).max(256),
 	turnId: z.string().min(1).max(128).nullable(),
 	tag: z.string().regex(/^P\d{1,6}$/),
-	kind: z.enum(["reply", "suggestion", "held"]),
+	kind: z.enum(["reply", "suggestion", "proposal", "notice"]),
 	outcome: z.enum(["confirmed", "unconfirmed", "unavailable"]),
 	latencyMs: z.number().int().min(0).max(86_400_000),
 });
@@ -39,9 +39,34 @@ function deliveryNote(
 }
 
 /**
+ * A request's own posts (its answer, detail, rest or error line) as the
+ * Parlume page lists them: the tags the chat showed, and those it did not. A
+ * post seen late moves from the second list to the first.
+ */
+function turnPostTags(
+	turn: { chatTags: string[]; chatUnshownTags: string[] },
+	tag: string,
+	shown: boolean,
+): { chatTags: string[]; chatUnshownTags: string[] } {
+	const others = (tags: string[]) => tags.filter((other) => other !== tag);
+	return shown
+		? {
+				chatTags: [...others(turn.chatTags), tag],
+				chatUnshownTags: others(turn.chatUnshownTags),
+			}
+		: {
+				chatTags: others(turn.chatTags),
+				chatUnshownTags: [...others(turn.chatUnshownTags), tag],
+			};
+}
+
+/**
  * What became of a Parlume chat post, as the bridge observed it. A post that
  * never showed up, or showed up late, is noted on its request so the request
- * history does not claim a message reached the chat when it did not.
+ * history does not claim a message reached the chat when it did not. The
+ * Parlume page shows the outcome on the post's own row: a request keeps the
+ * tags of its posts, and a proposal, a suggestion and the recap (a post with
+ * no request) whether the chat showed theirs. A notice belongs to no row.
  */
 export async function POST(request: NextRequest) {
 	if (
@@ -73,24 +98,67 @@ export async function POST(request: NextRequest) {
 		outcome,
 		latencyMs,
 	});
+	const shown = outcome === "confirmed";
 	// A prompt confirmation is the expected case and needs no note.
-	const noted =
+	const notes = !shown || latencyMs > CONFIRM_WINDOW_MS;
+	const ownPost = kind === "reply";
+	const turn =
 		turnId !== null &&
-		(outcome !== "confirmed" || latencyMs > CONFIRM_WINDOW_MS) &&
+		(notes || ownPost) &&
 		(await db.parlumeMeetingTurn.findFirst({
 			where: { id: turnId, sessionId: session.id },
-			select: { id: true, error: true },
+			select: {
+				id: true,
+				error: true,
+				chatTags: true,
+				chatUnshownTags: true,
+			},
 		}));
-	if (noted) {
+	if (turn) {
 		// A late post replaces the "did not appear" note it was reported with.
-		const earlier = noted.error
+		const earlier = turn.error
 			?.replace(deliveryNote(tag, "unconfirmed", latencyMs), "")
 			.trim();
 		const note = deliveryNote(tag, outcome, latencyMs);
 		await db.parlumeMeetingTurn.update({
-			where: { id: noted.id },
-			data: { error: earlier ? `${earlier} ${note}` : note },
+			where: { id: turn.id },
+			data: {
+				...(notes
+					? { error: earlier ? `${earlier} ${note}` : note }
+					: {}),
+				...(ownPost ? turnPostTags(turn, tag, shown) : {}),
+			},
 		});
+	}
+	const chatDelivery = shown ? "SHOWN" : "NOT_SHOWN";
+	const tagged = { sessionId: session.id, chatTag: tag };
+	switch (kind) {
+		case "reply":
+			if (turnId === null) {
+				await db.parlumeSuggestion.updateMany({
+					where: { ...tagged, kind: "RECAP" },
+					data: { chatDelivery },
+				});
+			}
+			break;
+		case "suggestion":
+			await db.parlumeSuggestion.updateMany({
+				where: tagged,
+				data: { chatDelivery },
+			});
+			break;
+		case "proposal":
+			await db.parlumeAction.updateMany({
+				where: tagged,
+				data: { chatDelivery },
+			});
+			break;
+		case "notice":
+			break;
+		default: {
+			const unreachable: never = kind;
+			return unreachable;
+		}
 	}
 	return NextResponse.json({ accepted: true });
 }

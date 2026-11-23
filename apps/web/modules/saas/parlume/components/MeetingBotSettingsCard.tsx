@@ -39,9 +39,9 @@ function sourceSentence(
 }
 
 /**
- * The Attendee project Parlume's meeting bot runs on. The key, URL and Teams
- * sign-in mode belong together: they apply only with the organization's own
- * key, and removing the key removes all three.
+ * The Attendee project Parlume's meeting bot runs on. The key, URL, Teams
+ * sign-in mode and login group belong together: they apply only with the
+ * organization's own key, and removing the key removes them all.
  */
 export function MeetingBotSettingsCard({
 	organizationId,
@@ -55,10 +55,14 @@ export function MeetingBotSettingsCard({
 	const queryClient = useQueryClient();
 	const saved = settings.attendee;
 	const [apiKey, setApiKey] = useState("");
+	const [webhookSecret, setWebhookSecret] = useState("");
 	const [baseUrl, setBaseUrl] = useState(saved.baseUrl ?? "");
 	const [teamsChoice, setTeamsChoice] = useState<TeamsLoginChoice>(
 		teamsChoiceFrom(saved.teamsLoginMode),
 	);
+	const [loginGroup, setLoginGroup] = useState(saved.teamsLoginGroup ?? "");
+	// A login group names the account a signed-in bot uses.
+	const signsIn = teamsChoice !== "anonymous";
 	const [check, setCheck] = useState<{ ok: boolean; message: string } | null>(
 		null,
 	);
@@ -66,8 +70,10 @@ export function MeetingBotSettingsCard({
 	const applySaved = (next: ParlumeSettings) => {
 		queryClient.setQueryData([SETTINGS_QUERY_KEY, organizationId], next);
 		setApiKey("");
+		setWebhookSecret("");
 		setBaseUrl(next.attendee.baseUrl ?? "");
 		setTeamsChoice(teamsChoiceFrom(next.attendee.teamsLoginMode));
+		setLoginGroup(next.attendee.teamsLoginGroup ?? "");
 	};
 
 	const save = useMutation({
@@ -75,8 +81,10 @@ export function MeetingBotSettingsCard({
 			orpcClient.parlumeSettings.update({
 				organizationId,
 				attendeeApiKey: apiKey,
+				attendeeWebhookSecret: webhookSecret,
 				attendeeBaseUrl: baseUrl.trim() || null,
 				teamsLoginMode: teamsModeFrom(teamsChoice),
+				teamsLoginGroup: signsIn ? loginGroup.trim() || null : null,
 			}),
 		onSuccess: (next) => {
 			applySaved(next);
@@ -185,6 +193,36 @@ export function MeetingBotSettingsCard({
 				</div>
 
 				<div className="space-y-2">
+					<Label htmlFor="parlume-attendee-webhook-secret">
+						Attendee webhook secret
+					</Label>
+					<Input
+						id="parlume-attendee-webhook-secret"
+						type="password"
+						autoComplete="off"
+						value={webhookSecret}
+						onChange={(event) =>
+							setWebhookSecret(event.target.value)
+						}
+						placeholder={
+							saved.hasWebhookSecret
+								? "Saved. Leave empty to keep it."
+								: "Paste the secret from Settings → Webhooks in the Attendee dashboard"
+						}
+						aria-describedby="parlume-attendee-webhook-secret-hint"
+						disabled={readOnly || busy}
+					/>
+					<p
+						id="parlume-attendee-webhook-secret-hint"
+						className="text-xs text-muted-foreground"
+					>
+						Attendee signs every event it sends with this secret.
+						Once it is saved, Fabric refuses events whose signature
+						does not match.
+					</p>
+				</div>
+
+				<div className="space-y-2">
 					<Label htmlFor="parlume-attendee-url">Attendee URL</Label>
 					<Input
 						id="parlume-attendee-url"
@@ -247,6 +285,35 @@ export function MeetingBotSettingsCard({
 						up in the Attendee dashboard; Fabric cannot set it.
 					</p>
 				</fieldset>
+
+				{signsIn && (
+					<div className="space-y-2">
+						<Label htmlFor="parlume-teams-login-group">
+							Teams login group
+						</Label>
+						<Input
+							id="parlume-teams-login-group"
+							value={loginGroup}
+							onChange={(event) =>
+								setLoginGroup(event.target.value)
+							}
+							placeholder="The project's oldest login group"
+							maxLength={120}
+							autoComplete="off"
+							disabled={readOnly || busy}
+							aria-describedby="parlume-teams-login-group-hint"
+						/>
+						<p
+							id="parlume-teams-login-group-hint"
+							className="text-xs text-muted-foreground"
+						>
+							The name of the Teams login group in your Attendee
+							project whose account the bot signs in with, so
+							meetings see your organization's own Parlume
+							account. Empty uses the project's oldest group.
+						</p>
+					</div>
+				)}
 
 				{check && (
 					<SettingsCheckResult

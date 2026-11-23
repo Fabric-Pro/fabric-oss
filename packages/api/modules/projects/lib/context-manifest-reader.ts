@@ -1,4 +1,8 @@
-import type { listContextManifestMetadata } from "@repo/database/prisma/queries/projects/context-manifest";
+import { createHash } from "node:crypto";
+import type {
+	ContextManifestMetadata,
+	listContextManifestMetadata,
+} from "@repo/database/prisma/queries/projects/context-manifest";
 import { ProjectContextTypeSchema } from "@repo/database/prisma/zod";
 import { hasPermission, Permissions } from "@repo/permissions";
 import { z } from "zod";
@@ -49,6 +53,23 @@ interface Dependencies {
 	) => Promise<boolean>;
 	isDeleted: (projectId: string) => Promise<boolean>;
 	list: typeof listContextManifestMetadata;
+	/** The Parlume transcripts this reader may not read. */
+	withheldTranscriptIds: (
+		actor: ContextManifestActor,
+	) => Promise<Set<string>>;
+}
+
+/**
+ * A Parlume transcript the reader may not read keeps its row, but its
+ * revision is no digest of what the meeting said: hashing a guess would
+ * confirm it. It is derived from the source and its last change instead.
+ */
+function withheldRevision(
+	row: Pick<ContextManifestMetadata, "sourceId" | "updatedAt">,
+): string {
+	return createHash("sha256")
+		.update(`withheld:${row.sourceId}:${row.updatedAt.toISOString()}`)
+		.digest("hex");
 }
 
 /** All advertised transports repeat the UI's current object/role decision before and after metadata reads. */
@@ -79,15 +100,20 @@ export function createContextManifestReader(dependencies: Dependencies) {
 		if (!actor.success || !page.success)
 			throw new ContextManifestError("INVALID_INPUT");
 		await authorize(actor.data);
-		const observed = await dependencies.list({
-			...actor.data,
-			...page.data,
-		});
+		const [observed, withheld] = await Promise.all([
+			dependencies.list({ ...actor.data, ...page.data }),
+			dependencies.withheldTranscriptIds(actor.data),
+		]);
 		await authorize(actor.data);
 		return buildContextDiscoveryManifest({
 			...actor.data,
 			...page.data,
 			...observed,
+			rows: observed.rows.map((row) =>
+				withheld.has(row.sourceId) && row.revision !== null
+					? { ...row, revision: withheldRevision(row) }
+					: row,
+			),
 		});
 	};
 }
@@ -95,15 +121,21 @@ export async function readContextManifest(
 	actor: ContextManifestActor,
 	page: unknown,
 ) {
-	const [database, permissions, metadata] = await Promise.all([
+	const [database, permissions, metadata, transcripts] = await Promise.all([
 		import("@repo/database"),
 		import("../../../lib/effective-project-permissions"),
 		import("@repo/database/prisma/queries/projects/context-manifest"),
+		import("./parlume-transcript-access"),
 	]);
 	return createContextManifestReader({
 		resolveAccess: permissions.resolveEffectiveProjectPermissions,
 		hasAccess: database.hasProjectAccess,
 		isDeleted: database.isProjectSoftDeleted,
 		list: metadata.listContextManifestMetadata,
+		withheldTranscriptIds: (reader) =>
+			transcripts.withheldParlumeTranscriptIds({
+				projectId: reader.projectId,
+				userId: reader.userId,
+			}),
 	})(actor, page);
 }

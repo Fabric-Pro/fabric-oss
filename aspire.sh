@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Aspire orchestration helper for local development
 # Thin wrapper around native Aspire CLI for convenience
-# 
-# NOTE: With the updated configuration, containers now stop automatically when you Ctrl+C.
+#
 # You can also use native Aspire commands directly:
 #   cd aspire/Fabric.AppHost && aspire run    # Start all services (enables MCP discovery)
-#   Ctrl+C                                    # Stop all services
+#   Ctrl+C                                   # Stop the AppHost. Persistent containers keep running.
+# See aspire/README.md#run-one-fabric-stack-at-a-time before switching checkouts.
 #
 # Usage:
 #   bash aspire.sh run          # start Aspire AppHost (all services) - alias for 'up'
@@ -62,7 +62,8 @@ up() {
   info "Starting Aspire AppHost..."
   info "This will start all infrastructure, observability, agents, and applications"
   info ""
-  info "To stop all services, press Ctrl+C (containers will stop automatically)"
+  info "Press Ctrl+C to stop the AppHost. Persistent containers keep running."
+  info "Before switching checkouts, see aspire/README.md#run-one-fabric-stack-at-a-time"
   info "Aspire Dashboard will be available at https://localhost:17134"
   echo ""
 
@@ -415,10 +416,10 @@ Commands:
 ✨ RECOMMENDED: Use Native Aspire CLI
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   cd aspire/Fabric.AppHost && aspire run    # Start all services (enables MCP)
-  Press Ctrl+C                              # Stop all services (automatic cleanup!)
+  Press Ctrl+C                              # Stop the AppHost. Persistent containers keep running.
 
 Services Started by Aspire:
-  Infrastructure:   postgres, redis, qdrant, temporal, minio
+  Infrastructure:   postgres, cache (Redis), qdrant, temporal, minio
   Observability:    prometheus, grafana, jaeger, node-exporter
   Agents:           document-generator, project-document-generator, prompt-enhancer
   Applications:     web, temporal-worker
@@ -448,14 +449,15 @@ Important Notes:
 
 🛠️  Troubleshooting:
   - If containers fail: Run './aspire.sh fix' to restart failed containers
-  - If containers don't stop: Run './aspire.sh down'
+  - Before switching checkouts, see aspire/README.md#run-one-fabric-stack-at-a-time
   - Continuous monitoring: Run './aspire.sh monitor' in another terminal
   - To remove all data: Run './aspire.sh clean' (destructive!)
   - Check service status: './aspire.sh status'
 
 Configuration:
   - Environment variables in .env.local at repository root
-  - Secrets managed via: dotnet user-secrets (see aspire/Fabric.AppHost/)
+  - From aspire/Fabric.AppHost, use: aspire secret set Parameters:<name>
+  - See docs/ASPIRE_USAGE.md#aspire-secrets for configuration precedence
 USAGE
 }
 

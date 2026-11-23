@@ -590,3 +590,57 @@ describe("delete audit", () => {
 		expect(mockRecordAudit).not.toHaveBeenCalled();
 	});
 });
+
+it.each([
+	["apiKey", "federated"],
+	["federated", "apiKey"],
+] as const)(
+	"audits an Anthropic credential change from %s to %s",
+	async (from, to) => {
+		vi.stubEnv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_example");
+		vi.stubEnv(
+			"ANTHROPIC_ORGANIZATION_ID",
+			"00000000-0000-0000-0000-000000000000",
+		);
+		vi.stubEnv("ANTHROPIC_FEDERATION_AUDIENCE", "example-audience");
+		vi.stubEnv("ANTHROPIC_FEDERATION_ALLOWED_ORGANIZATION_IDS", "org-1");
+		try {
+			const existing = {
+				...existingRow,
+				provider: "ANTHROPIC_DIRECT",
+				organizationId: "org-1",
+				encryptedApiKey:
+					from === "apiKey" ? `encrypted:${API_KEY}` : null,
+				config: from === "federated" ? { authMode: "federated" } : {},
+			};
+			tx.cloudProviderConfig.findFirst
+				.mockReset()
+				.mockResolvedValue(null);
+			tx.cloudProviderConfig.findUnique.mockResolvedValue(existing);
+			tx.cloudProviderConfig.update.mockImplementation(
+				async ({ data }) => ({ ...existing, ...data }),
+			);
+			await call(
+				upsertUserProviderProcedure,
+				{
+					provider: "ANTHROPIC_DIRECT",
+					...(to === "federated"
+						? { authMode: "federated" }
+						: { apiKey: API_KEY }),
+				},
+				orgContext,
+			);
+			const audit = auditCall();
+			expect(audit.action).toBe("org.ai_provider.updated");
+			expect(audit.metadata).toMatchObject({
+				keyChanged: true,
+				before: { authMode: from },
+				after: { authMode: to },
+				changedFields: expect.arrayContaining(["authMode"]),
+			});
+			expectNoSecrets(audit);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	},
+);

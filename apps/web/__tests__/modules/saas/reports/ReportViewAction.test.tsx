@@ -3,7 +3,8 @@ import {
 	ReportViewAction,
 	viewLatestReportHref,
 } from "@saas/reports/components/ReportViewAction";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 const REPORT = "/app/example-org/report-templates/instances/example-report";
@@ -34,6 +35,27 @@ describe("ReportViewAction", () => {
 		);
 
 		expect(onView).toHaveBeenCalledTimes(1);
+	});
+
+	// A disabled button would drop focus to the page, and the report would
+	// have nowhere to return it when it closes.
+	it("keeps focus on View while the report opens", async () => {
+		const user = userEvent.setup();
+		const onView = vi.fn();
+		render(
+			<ReportViewAction hasSuccessfulReport onView={onView} isOpening />,
+		);
+		const view = screen.getByRole("button", {
+			name: "View latest successful report",
+		});
+
+		act(() => view.focus());
+		await user.keyboard("{Enter}");
+
+		expect(onView).not.toHaveBeenCalled();
+		expect(view).toBeEnabled();
+		expect(view).toHaveAttribute("aria-disabled", "true");
+		expect(view).toHaveFocus();
 	});
 
 	it("stays visible but disabled before a run succeeds, and says why in text", () => {

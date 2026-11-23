@@ -65,6 +65,7 @@ import {
 	useState,
 } from "react";
 import type { ChatSurface } from "./types";
+import { useProjectName } from "./useProjectName";
 
 /**
  * The "kind" of picker target. Matches the resolver target kind plus
@@ -103,8 +104,11 @@ export interface InsertDiagramPickerDialogProps {
 	 * filter enforces XOR isolation server-side.
 	 */
 	organizationId: string;
-	/** Project name -- shown in the dialog description for context. */
-	projectName: string;
+	/**
+	 * Project name -- shown in the dialog description for context. When the
+	 * caller does not know it, the dialog looks it up from `projectId`.
+	 */
+	projectName?: string | null;
 	/** Called with the user's pick. The parent handles the navigation. */
 	onPick(target: PickerPick): void;
 }
@@ -149,6 +153,13 @@ export function InsertDiagramPickerDialog({
 		...orpc.projects.documents.list.queryOptions({
 			input: { projectId, organizationId },
 		}),
+		enabled: open,
+	});
+
+	const resolvedProjectName = useProjectName({
+		projectId,
+		organizationId,
+		knownName: projectName,
 		enabled: open,
 	});
 
@@ -318,12 +329,6 @@ export function InsertDiagramPickerDialog({
 		[activeRows, focusedRowIndex, handlePick],
 	);
 
-	const bothEmpty =
-		!documentsQuery.isLoading &&
-		!storiesQuery.isLoading &&
-		documents.length === 0 &&
-		features.length === 0;
-
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent
@@ -339,7 +344,11 @@ export function InsertDiagramPickerDialog({
 				<DialogHeader>
 					<DialogTitle>{t("pickerTitle")}</DialogTitle>
 					<DialogDescription>
-						{t("pickerDescription", { projectName })}
+						{resolvedProjectName
+							? t("pickerDescription", {
+									projectName: resolvedProjectName,
+								})
+							: t("pickerDescriptionThisProject")}
 					</DialogDescription>
 				</DialogHeader>
 
@@ -357,7 +366,11 @@ export function InsertDiagramPickerDialog({
 								setSearchTerm(event.target.value)
 							}
 							onKeyDown={handleSearchKeyDown}
-							placeholder={t("pickerTabDocuments")}
+							placeholder={t(
+								activeTab === "document"
+									? "pickerSearchDocuments"
+									: "pickerSearchFeatures",
+							)}
 							className="pl-9"
 							aria-label={t("pickerTitle")}
 						/>
@@ -384,8 +397,11 @@ export function InsertDiagramPickerDialog({
 								focusedIndex={focusedRowIndex}
 								onPick={handlePick}
 								isLoading={documentsQuery.isLoading}
-								emptyState={bothEmpty}
-								t={t}
+								emptyMessage={
+									documents.length === 0
+										? t("pickerEmptyDocuments")
+										: t("pickerNoMatches")
+								}
 								hasMoreThanCap={
 									activeTab === "document" && hasMoreThanCap
 								}
@@ -398,8 +414,11 @@ export function InsertDiagramPickerDialog({
 								focusedIndex={focusedRowIndex}
 								onPick={handlePick}
 								isLoading={storiesQuery.isLoading}
-								emptyState={bothEmpty}
-								t={t}
+								emptyMessage={
+									features.length === 0
+										? t("pickerEmptyFeatures")
+										: t("pickerNoMatches")
+								}
 								hasMoreThanCap={
 									activeTab === "feature" && hasMoreThanCap
 								}
@@ -421,8 +440,7 @@ interface PickerRowListProps {
 	focusedIndex: number;
 	onPick(row: PickerRow): void;
 	isLoading: boolean;
-	emptyState: boolean;
-	t: ReturnType<typeof useTranslations>;
+	emptyMessage: string;
 	hasMoreThanCap: boolean;
 }
 
@@ -431,8 +449,7 @@ function PickerRowList({
 	focusedIndex,
 	onPick,
 	isLoading,
-	emptyState,
-	t,
+	emptyMessage,
 	hasMoreThanCap,
 }: PickerRowListProps): JSX.Element {
 	if (isLoading) {
@@ -443,18 +460,10 @@ function PickerRowList({
 		);
 	}
 
-	if (rows.length === 0 && emptyState) {
-		return (
-			<div className="flex h-64 flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
-				<p>{t("pickerEmpty")}</p>
-			</div>
-		);
-	}
-
 	if (rows.length === 0) {
 		return (
-			<div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
-				{t("pickerEmpty")}
+			<div className="flex h-64 flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+				<p>{emptyMessage}</p>
 			</div>
 		);
 	}

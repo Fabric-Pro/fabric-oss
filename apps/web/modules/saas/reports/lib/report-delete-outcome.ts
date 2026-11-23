@@ -2,6 +2,7 @@
 export type ReportDeleteFailure =
 	| { kind: "gone"; message: string }
 	| { kind: "forbidden"; message: string }
+	| { kind: "signed-out"; message: string }
 	| { kind: "failed"; message: string };
 
 function errorCode(error: unknown): string | undefined {
@@ -14,10 +15,11 @@ function errorCode(error: unknown): string | undefined {
 }
 
 /**
- * Only a refusal for permission says so. A report the server no longer finds
- * for the caller is gone from their view, deleted already or no longer open to
- * them, and anything else is a failure worth trying again: neither is
- * described as a missing permission.
+ * Only a refusal for permission says so. A session that ended asks the person
+ * to sign in again. A report the server no longer finds for the caller is gone
+ * from their view, deleted already or no longer open to them, and anything
+ * else is a failure worth trying again: none of these is described as a
+ * missing permission.
  */
 export function reportDeleteFailure(error: unknown): ReportDeleteFailure {
 	switch (errorCode(error)) {
@@ -28,10 +30,15 @@ export function reportDeleteFailure(error: unknown): ReportDeleteFailure {
 					"This report was already deleted, or you can no longer open it.",
 			};
 		case "FORBIDDEN":
-		case "UNAUTHORIZED":
 			return {
 				kind: "forbidden",
 				message: "You don't have permission to delete this report.",
+			};
+		case "UNAUTHORIZED":
+			return {
+				kind: "signed-out",
+				message:
+					"Your session has expired. Please sign in and try again.",
 			};
 		default:
 			return {

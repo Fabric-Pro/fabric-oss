@@ -38,6 +38,44 @@ export const ANY_MARKER_SOURCE = [
 
 const ANY_MARKER_RE = new RegExp(ANY_MARKER_SOURCE, "g");
 
+const MOVE_TAG_OPEN = String.fromCodePoint(0x200b);
+/** The digits of a move tag's number, in base 2: zero-width non-joiner, joiner. */
+const MOVE_TAG_DIGITS = [
+	String.fromCodePoint(0x200c),
+	String.fromCodePoint(0x200d),
+];
+const MOVE_TAG_CLOSE = String.fromCodePoint(0xa0);
+
+/**
+ * The tag a line of a list block moved to another level carries in a review
+ * diff, right after its start marker, so the review answers the block as one
+ * change: a zero-width space, the block's number (from 1) in base 2 written
+ * with the zero-width non-joiner and joiner, and a non-breaking space, so
+ * emphasis right after it parses as it does after the marker. No marker
+ * holds a non-joiner or joiner, so a tag is never part of one.
+ */
+export function moveTag(block: number): string {
+	const digits = block
+		.toString(2)
+		.replace(/[01]/g, (digit) => MOVE_TAG_DIGITS[Number(digit)]);
+	return `${MOVE_TAG_OPEN}${digits}${MOVE_TAG_CLOSE}`;
+}
+
+/** A move tag; its capture holds the block number's digits. */
+export const MOVE_TAG_SOURCE = `${MOVE_TAG_OPEN}([${MOVE_TAG_DIGITS.join("")}]+)${MOVE_TAG_CLOSE}`;
+
+const MOVE_TAG_RE = new RegExp(MOVE_TAG_SOURCE, "g");
+
+/** The block number of a move tag's captured digits (`MOVE_TAG_SOURCE`). */
+export function moveTagBlock(digits: string): number {
+	return Number.parseInt(
+		Array.from(digits, (digit) =>
+			digit === MOVE_TAG_DIGITS[1] ? "1" : "0",
+		).join(""),
+		2,
+	);
+}
+
 /**
  * A marker as a link destination carries it: markdown-it percent-encodes the
  * zero-width and non-breaking spaces, and `encodeURI` writes the same bytes.
@@ -78,11 +116,13 @@ const ANY_ENCODED_MARKER_RE = new RegExp(
  * from markdown that is about to be saved. A marker that escaped the diff
  * plugin reaches the editor as plain text, and without this pass its invisible
  * characters were written into the stored document. Ordinary non-breaking
- * spaces are left alone; only the ones inside a whole marker are removed.
+ * spaces are left alone; only the ones inside a whole marker or move tag
+ * (`moveTag`) are removed, the tag whole.
  * Encoded markers are resolved first, as `resolveEncodedDiffMarkers` does.
  */
 export function stripResidualDiffMarkers(markdown: string): string {
 	return resolveEncodedDiffMarkers(markdown)
+		.replace(MOVE_TAG_RE, "")
 		.replace(ANY_MARKER_RE, "")
 		.replace(/[\u200B\uFEFF]/g, "");
 }

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	findUnique: vi.fn(),
 	updateManyAndReturn: vi.fn(),
+	pageUrl: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -15,6 +16,7 @@ vi.mock("@repo/database", () => ({
 				mocks.updateManyAndReturn(...args),
 		},
 	},
+	buildParlumePageUrl: mocks.pageUrl,
 }));
 
 vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
@@ -42,6 +44,9 @@ beforeEach(() => {
 	vi.resetAllMocks();
 	process.env.AGENT_SERVICE_SECRET = "service-secret";
 	mocks.updateManyAndReturn.mockResolvedValue([{ streamGeneration: 2 }]);
+	mocks.pageUrl.mockResolvedValue(
+		"https://fabric.example/app/example-org/projects/p1/parlume",
+	);
 });
 
 describe("Parlume stream verification", () => {
@@ -170,6 +175,49 @@ describe("Parlume stream verification", () => {
 			expect.objectContaining({
 				select: expect.objectContaining({ suggestionAudience: true }),
 			}),
+		);
+	});
+
+	it("hands the bridge the join notice with the session's Parlume page, and whether a guest was invited", async () => {
+		mocks.findUnique.mockResolvedValue({
+			id: "s1",
+			providerBotId: "b1",
+			streamTokenDigest: createHash("sha256")
+				.update("a".repeat(32))
+				.digest("hex"),
+			status: "ACTIVE",
+			hardStopAt: new Date("2030-01-01T00:00:00.000Z"),
+			projectId: "p1",
+			organizationId: "o1",
+			externalInvitees: true,
+		});
+
+		const response = await POST(
+			request(
+				{ sessionId: "s1", streamToken: "a".repeat(32), botId: "b1" },
+				"service-secret",
+			),
+		);
+
+		const body = await response.json();
+		expect(body.joinNotice.text).toBe(
+			[
+				"**Fabric Parlume (AI assistant) is in this meeting**",
+				"I transcribe the meeting and write notes. I keep transcripts for 90 days, and notes until someone deletes them.",
+				'To pause me, say or type "Parlume, pause". [Parlume page](https://fabric.example/app/example-org/projects/p1/parlume)',
+			].join("\n"),
+		);
+		expect(body.joinNotice.spoken).toMatch(
+			/^Fabric Parlume, an AI assistant/,
+		);
+		expect(body).toMatchObject({
+			externalInvitees: true,
+			checksAttendees: true,
+			pageUrl:
+				"https://fabric.example/app/example-org/projects/p1/parlume",
+		});
+		expect(mocks.pageUrl).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "p1", organizationId: "o1" }),
 		);
 	});
 });

@@ -1,7 +1,11 @@
-import { db } from "@repo/database";
+import { buildParlumePageUrl, db } from "@repo/database";
+import {
+	PARLUME_JOIN_NOTICE_SPOKEN,
+	parlumeJoinNoticeText,
+} from "@repo/utils/parlume-join-notice";
 import { after, type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { isParlumeServiceRequestAuthorized, streamTokenDigest } from "../lib";
+import { isParlumeServiceRequestAuthorized, sessionTokenDigest } from "../lib";
 
 const bodySchema = z.object({
 	sessionId: z.string().min(1).max(128),
@@ -37,11 +41,13 @@ export async function POST(request: NextRequest) {
 			toolsReadOnly: true,
 			linkedMeetingId: true,
 			channelChatStatus: true,
+			externalInvitees: true,
 		},
 	});
 	if (
 		!session ||
-		session.streamTokenDigest !== streamTokenDigest(parsed.data.streamToken)
+		session.streamTokenDigest !==
+			sessionTokenDigest(parsed.data.streamToken)
 	) {
 		return NextResponse.json({ error: "Invalid stream" }, { status: 401 });
 	}
@@ -130,11 +136,26 @@ export async function POST(request: NextRequest) {
 			});
 		}
 	}
+	const pageUrl = await buildParlumePageUrl(session);
 	return NextResponse.json({
 		valid: true,
 		hardStopAt: session.hardStopAt,
 		streamGeneration: verified.streamGeneration,
 		suggestionsEnabled: session.suggestionsEnabled,
 		suggestionAudience: session.suggestionAudience,
+		// The bridge posts it once, when the bot is first admitted.
+		joinNotice: {
+			text: parlumeJoinNoticeText(pageUrl),
+			spoken: PARLUME_JOIN_NOTICE_SPOKEN,
+		},
+		// An invitee from outside the organization counts as a guest in the
+		// meeting from the start.
+		externalInvitees: session.externalInvitees,
+		// The participant callback checks everyone who joins: the bridge holds
+		// its answers until someone is confirmed and while anyone is checked.
+		checksAttendees: true,
+		// The session's Parlume page. A suggestion posted in the meeting links
+		// to it with `?suggestion=<tag>`, where a member can have it said.
+		pageUrl,
 	});
 }

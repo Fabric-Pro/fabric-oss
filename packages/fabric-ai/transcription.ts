@@ -295,10 +295,16 @@ async function resolveTranscriptionProvider(
 	userContext: UserContext,
 ): Promise<RAGProviderConfig> {
 	try {
-		return await getRAGProviderConfig({
+		const config = await getRAGProviderConfig({
 			userId: userContext.userId,
 			organizationId: userContext.organizationId ?? undefined,
 		});
+		if (config.anthropicBearerSource) {
+			throw new Error(
+				"Anthropic federation cannot be used for transcription.",
+			);
+		}
+		return config;
 	} catch (error) {
 		if (error instanceof AIProviderNotConfiguredError) {
 			throw new Error(AUDIO_PROVIDER_REQUIRED.transcription);

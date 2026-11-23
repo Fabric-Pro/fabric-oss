@@ -162,14 +162,19 @@ export function describeImageRefusal(code: NewsletterImageRefusalCode): string {
  */
 export function describeImageFailure(error: unknown): ReviewFeedback {
 	const code = readDataCode(error);
-	if (getOrpcCode(error) === "CONFLICT" && code !== "capture_in_progress") {
+	const orpcCode = getOrpcCode(error);
+	if (orpcCode === "CONFLICT" && code !== "capture_in_progress") {
 		return describeReviewConflict(error);
 	}
+	// A readiness gate (for example no connected repository) says what is
+	// missing; the generic fallback would hide it.
+	const gateMessage =
+		orpcCode === "PRECONDITION_FAILED" ? errorMessage(error) : "";
 	return {
 		level: "error",
 		message: isImageRefusalCode(code)
 			? IMAGE_REFUSAL_COPY[code]
-			: IMAGE_FAILURE_FALLBACK,
+			: gateMessage || IMAGE_FAILURE_FALLBACK,
 		refresh: false,
 	};
 }

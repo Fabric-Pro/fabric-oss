@@ -507,3 +507,48 @@ it("returns the resolved canonical model for an unpinned Databricks alias", asyn
 		canonicalModelName: "claude-sonnet-5",
 	});
 });
+
+describe("Anthropic Bearer exchange", () => {
+	it("requires a compatible agent and returns separate credential fields with the provider expiry", async () => {
+		mocks.verifyAIToken.mockResolvedValue(claims());
+		mocks.getAIModelWithMetadata.mockResolvedValue(
+			resolved("ANTHROPIC_DIRECT", "claude-haiku-4-5"),
+		);
+		const expiresAt = Date.now() + 120_000;
+		const source = vi.fn(async () => ({
+			kind: "bearer",
+			token: "example-access-token",
+			expiresAt,
+		}));
+		mocks.getRAGProviderConfig.mockResolvedValue({
+			apiKey: "",
+			anthropicBearerSource: source,
+		});
+
+		const oldClient = await exchange();
+		expect(oldClient.status).toBe(409);
+		expect(source).not.toHaveBeenCalled();
+
+		const response = await POST(
+			new Request("http://localhost/api/ai/keys/exchange", {
+				method: "POST",
+				headers: {
+					"X-AI-Token": "jwt",
+					"X-AI-Credential-Kind": "bearer",
+				},
+			}),
+		);
+		expect(response.status).toBe(200);
+		expect(response.headers.get("cache-control")).toBe("no-store");
+		const body = await response.json();
+		expect(body).toMatchObject({
+			apiKey: "",
+			provider: "ANTHROPIC_DIRECT",
+			credentialKind: "bearer",
+			accessToken: "example-access-token",
+			credentialExpiresAt: expiresAt,
+		});
+		expect(body.expiresIn).toBeGreaterThan(100);
+		expect(body.expiresIn).toBeLessThanOrEqual(120);
+	});
+});

@@ -74,6 +74,8 @@ type Call = { url: string; init?: RequestInit };
 
 // Later parts of a reply sent in parts, apart from the calls that start it.
 let parts: Call[] = [];
+// The bridge asked what it knows of the reply's generation.
+let verifies: Call[] = [];
 
 function stubBridge(handlers: {
 	/** The first part of a reply: answered with its whole playback. */
@@ -81,13 +83,22 @@ function stubBridge(handlers: {
 	part?: (call: Call) => Promise<Response> | Response;
 	speak?: (call: Call) => Promise<Response> | Response;
 	openai?: () => Response;
+	/** `verify-generation`: by default, current and with a bot socket. */
+	verify?: (call: Call) => Response;
 }) {
 	const calls: Call[] = [];
 	parts = [];
+	verifies = [];
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (url: string, init?: RequestInit) => {
 			const call = { url: String(url), init };
+			if (String(url).includes("action=verify-generation")) {
+				verifies.push(call);
+				return (
+					handlers.verify?.(call) ?? Response.json({ current: true })
+				);
+			}
 			if (
 				String(url).includes("action=say") &&
 				header(call, "x-parlume-reply-part") !== "0"
@@ -400,7 +411,7 @@ describe("when Aura cannot speak", () => {
 	it.each([
 		[
 			"the bridge refuses the request",
-			() => new Response("no", { status: 503 }),
+			() => new Response("no", { status: 409 }),
 		],
 		[
 			"the bridge sends an unreadable answer",
@@ -448,7 +459,139 @@ describe("when Aura cannot speak", () => {
 		await expect(
 			speakParlumeResponse({ ...speaker, sentences: spoken("Hello.") }),
 		).resolves.toMatchObject({ played: true });
-		expect(calls).toHaveLength(3);
+		// The opening part, its withdrawal, the bridge asked how much was
+		// heard, then the PCM route's two calls.
+		expect(calls).toHaveLength(5);
+	});
+
+	it("resumes a reply the bridge lost at the sentences its stored record says were heard", async () => {
+		stubBridge({
+			say: () => new Response("restarted", { status: 503 }),
+			part: () => Response.json({ accepted: true, heard: 0 }),
+			verify: () =>
+				Response.json({ current: true, live: true, heard: 2 }),
+		});
+		const openaiFetch = vi.mocked(fetch);
+
+		const result = await speakParlumeResponse({
+			...speaker,
+			sentences: spoken(
+				"First sentence is heard. Second sentence is heard. Third one is not.",
+			),
+		});
+
+		expect(
+			openaiFetch.mock.calls
+				.filter(
+					([url]) =>
+						new URL(String(url)).origin ===
+						"https://api.openai.com",
+				)
+				.map(([, init]) => JSON.parse(String(init?.body)).input),
+		).toEqual(["Third one is not."]);
+		expect(JSON.parse(String(verifies[0]?.init?.body))).toMatchObject({
+			replyId: expect.any(String),
+		});
+		expect(result.played).toBe(true);
+	});
+
+	it("speaks none of a reply the bridge lost when no bot socket is back within 15 seconds", async () => {
+		vi.useFakeTimers();
+		try {
+			const calls = stubBridge({
+				say: () => new Response("restarted", { status: 503 }),
+				part: () => Response.json({ accepted: true, heard: 0 }),
+				verify: () =>
+					Response.json({ current: true, live: false, heard: 1 }),
+			});
+
+			const speaking = speakParlumeResponse({
+				...speaker,
+				sentences: spoken("First one is heard. Second one is not."),
+			});
+			await vi.runAllTimersAsync();
+
+			await expect(speaking).resolves.toMatchObject({
+				played: false,
+				interrupted: true,
+				heard: 1,
+				lost: true,
+			});
+			expect(verifies.length).toBeGreaterThan(1);
+			expect(calls.map((call) => call.url)).not.toContain(
+				"https://api.openai.com/v1/audio/speech",
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("resumes a reply whose opening part was lost at the sentences the bridge heard, after withdrawing it", async () => {
+		const sentences = new ParlumeSentenceQueue(800);
+		let opened: () => void = () => {};
+		const lastPartSent = new Promise<void>((resolve) => {
+			opened = resolve;
+		});
+		stubBridge({
+			say: async () => {
+				sentences.push(" sentence is unheard.");
+				sentences.end();
+				await lastPartSent;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				// The bridge restarted: the answer to the first part is lost.
+				throw new Error("connection reset");
+			},
+			part: (call) => {
+				if (header(call, "x-parlume-reply-cancel") === "1") {
+					return Response.json({ accepted: true, heard: 0 });
+				}
+				opened();
+				return Response.json({ accepted: true, heard: 2 });
+			},
+		});
+		const openaiFetch = vi.mocked(fetch);
+
+		sentences.push(
+			"First sentence is heard. Second sentence is heard. Third",
+		);
+		const result = await speakParlumeResponse({ ...speaker, sentences });
+
+		expect(
+			openaiFetch.mock.calls
+				.filter(
+					([url]) =>
+						new URL(String(url)).origin ===
+						"https://api.openai.com",
+				)
+				.map(([, init]) => JSON.parse(String(init?.body)).input),
+		).toEqual(["Third sentence is unheard."]);
+		expect(
+			parts.map((part) => header(part, "x-parlume-reply-cancel")),
+		).toEqual([undefined, "1"]);
+		expect(result.played).toBe(true);
+	});
+
+	it("takes the heard count from the withdrawal when no later part answered", async () => {
+		stubBridge({
+			say: () => new Response("reset", { status: 502 }),
+			part: () => Response.json({ accepted: true, heard: 1 }),
+		});
+		const openaiFetch = vi.mocked(fetch);
+
+		await speakParlumeResponse({
+			...speaker,
+			sentences: spoken("First sentence is heard. Second one is not."),
+		});
+
+		expect(
+			openaiFetch.mock.calls
+				.filter(
+					([url]) =>
+						new URL(String(url)).origin ===
+						"https://api.openai.com",
+				)
+				.map(([, init]) => JSON.parse(String(init?.body)).input),
+		).toEqual(["Second one is not."]);
 	});
 
 	it("tries the AI Gateway route before the direct OpenAI key, as before", async () => {

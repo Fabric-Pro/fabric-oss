@@ -42,7 +42,10 @@ export async function parlumeAutoJoinPlannerWorkflow(): Promise<
  * Started by the planner with a delay that ends a minute before the
  * occurrence, under an id that makes it one per occurrence. The occurrence
  * is confirmed on the calendar again first, since it may have been cancelled
- * or moved while the workflow waited.
+ * or moved while the workflow waited; the join takes the invitees' email
+ * domains, and the internal invitees' addresses, the confirmation read. The
+ * same two activities run in the same order as before, so a history recorded
+ * earlier replays unchanged.
  */
 export async function parlumeAutoJoinOccurrenceWorkflow(input: {
 	linkedMeetingId: string;
@@ -52,5 +55,10 @@ export async function parlumeAutoJoinOccurrenceWorkflow(input: {
 	if (!confirmed.proceed) {
 		return { outcome: confirmed.outcome, reason: confirmed.reason };
 	}
-	return requestParlumeAutoJoin(input);
+	return requestParlumeAutoJoin({
+		...input,
+		// Absent from a confirmation recorded before invitees were read.
+		inviteeDomains: confirmed.inviteeDomains ?? [],
+		inviteeEmails: confirmed.inviteeEmails ?? [],
+	});
 }

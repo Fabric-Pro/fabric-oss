@@ -2,6 +2,7 @@ import { buildSharedSessionSummary } from "@repo/utils/shared-session-summary";
 import { db } from "../client";
 import type { AgentConversationStatus, Prisma } from "../generated/client";
 import { hydrateConversationTurnResults } from "./conversation-turn-results";
+import { deleteFinishedTurnsOfConversations } from "./conversation-turns";
 
 /**
  * Prefix prepended to the synthetic assistant turn that seeds a continued
@@ -439,7 +440,12 @@ export async function addMessageToConversation({
  *
  * Behaviour contract:
  *
- *   1. Runs inside `db.$transaction({ isolationLevel: 'Serializable' })`.
+ *   1. Runs inside a Read Committed transaction (`inRowLockTransaction`).
+ *      Other writers of the same row (a document thread's review stamp
+ *      and tool-result update) take the same row lock, and under
+ *      Serializable an append that waited on one of them would fail with
+ *      "could not serialize access due to concurrent update" instead of
+ *      appending to the row as that writer left it.
  *   2. Acquires a row lock on the target conversation via
  *      `SELECT ... FOR UPDATE` BEFORE inspecting any state. A pre-lock
  *      scan would race with concurrent appends carrying the same
@@ -559,12 +565,27 @@ async function selectConversationMessagesForUpdate(
 	return await raw.$queryRaw`SELECT messages FROM "agent_conversation" WHERE id = ${id} AND "userId" = ${userId} AND "organizationId" = ${organizationId} FOR UPDATE`;
 }
 
-type SerializableTransactionClient = {
-	$transaction: <T>(
-		fn: (tx: typeof db) => Promise<T>,
-		opts?: { isolationLevel?: "Serializable" },
-	) => Promise<T>;
-};
+/**
+ * Takes the row lock on a conversation inside the caller's Read Committed
+ * transaction (Prisma's and Postgres's default). Run it before reading
+ * `messages` for a read-modify-write: a writer that waits on the lock then
+ * reads the row as the previous writer committed it, so neither overwrites
+ * the other's change. Every writer of the same row must take the lock for
+ * that to hold; `appendConversationMessage` and `saveConversationTurn` do.
+ *
+ * Returns false when no conversation has this id. There is no tenant filter:
+ * the caller resolves the conversation through a row it has already scoped
+ * to the caller's tenant, and the lock only orders writers.
+ */
+export async function lockConversationRow(
+	tx: Prisma.TransactionClient,
+	id: string,
+): Promise<boolean> {
+	const rows = await tx.$queryRaw<
+		{ id: string }[]
+	>`SELECT id FROM "agent_conversation" WHERE id = ${id} FOR UPDATE`;
+	return rows.length > 0;
+}
 
 export async function appendConversationMessage({
 	id,
@@ -590,62 +611,58 @@ export async function appendConversationMessage({
 		);
 	}
 
-	return await (db as unknown as SerializableTransactionClient).$transaction(
-		async (tx) => {
-			const rows = await selectConversationMessagesForUpdate(tx, {
-				id,
-				userId,
-				organizationId,
-			});
+	return await inRowLockTransaction(async (tx) => {
+		const rows = await selectConversationMessagesForUpdate(tx, {
+			id,
+			userId,
+			organizationId,
+		});
 
-			if (rows.length === 0) {
-				// Tenant mismatch OR conversation doesn't exist. We
-				// can't tell the two apart without leaking information
-				// across tenants — and we deliberately don't try. The
-				// caller maps this to a NOT_FOUND HTTP response.
-				throw new ConversationNotFoundError();
-			}
+		if (rows.length === 0) {
+			// Tenant mismatch OR conversation doesn't exist. We
+			// can't tell the two apart without leaking information
+			// across tenants — and we deliberately don't try. The
+			// caller maps this to a NOT_FOUND HTTP response.
+			throw new ConversationNotFoundError();
+		}
 
-			const firstRow = rows[0];
-			const currentMessages =
-				firstRow && Array.isArray(firstRow.messages)
-					? (firstRow.messages as ConversationMessage[])
-					: [];
+		const firstRow = rows[0];
+		const currentMessages =
+			firstRow && Array.isArray(firstRow.messages)
+				? (firstRow.messages as ConversationMessage[])
+				: [];
 
-			// Scan AFTER the lock is held. A previous transaction holding
-			// the lock may have already written the dedup target —
-			// scanning here, post-lock, guarantees we observe its
-			// committed write before deciding whether to append.
-			const existing = currentMessages.find((m) => {
-				const meta = m?.metadata as
-					| { operationKey?: unknown }
-					| undefined
-					| null;
-				return (
-					meta !== null &&
-					meta !== undefined &&
-					typeof meta === "object" &&
-					meta.operationKey === operationKey
-				);
-			});
+		// Scan AFTER the lock is held. A previous transaction holding
+		// the lock may have already written the dedup target —
+		// scanning here, post-lock, guarantees we observe its
+		// committed write before deciding whether to append.
+		const existing = currentMessages.find((m) => {
+			const meta = m?.metadata as
+				| { operationKey?: unknown }
+				| undefined
+				| null;
+			return (
+				meta !== null &&
+				meta !== undefined &&
+				typeof meta === "object" &&
+				meta.operationKey === operationKey
+			);
+		});
 
-			if (existing) {
-				return { persisted: existing, deduplicated: true };
-			}
+		if (existing) {
+			return { persisted: existing, deduplicated: true };
+		}
 
-			const updatedMessages = [...currentMessages, message];
-			await tx.agentConversation.update({
-				where: { id },
-				data: {
-					messages:
-						updatedMessages as unknown as Prisma.InputJsonValue,
-				},
-			});
+		const updatedMessages = [...currentMessages, message];
+		await tx.agentConversation.update({
+			where: { id },
+			data: {
+				messages: updatedMessages as unknown as Prisma.InputJsonValue,
+			},
+		});
 
-			return { persisted: message, deduplicated: false };
-		},
-		{ isolationLevel: "Serializable" },
-	);
+		return { persisted: message, deduplicated: false };
+	});
 }
 
 /**
@@ -686,43 +703,39 @@ export async function removeConversationMessage({
 		throw new ConversationNotFoundError();
 	}
 
-	return await (db as unknown as SerializableTransactionClient).$transaction(
-		async (tx) => {
-			const rows = await selectConversationMessagesForUpdate(tx, {
-				id,
-				userId,
-				organizationId,
-			});
+	return await inRowLockTransaction(async (tx) => {
+		const rows = await selectConversationMessagesForUpdate(tx, {
+			id,
+			userId,
+			organizationId,
+		});
 
-			if (rows.length === 0) {
-				throw new ConversationNotFoundError();
-			}
+		if (rows.length === 0) {
+			throw new ConversationNotFoundError();
+		}
 
-			const firstRow = rows[0];
-			const currentMessages =
-				firstRow && Array.isArray(firstRow.messages)
-					? (firstRow.messages as ConversationMessage[])
-					: [];
+		const firstRow = rows[0];
+		const currentMessages =
+			firstRow && Array.isArray(firstRow.messages)
+				? (firstRow.messages as ConversationMessage[])
+				: [];
 
-			const remainingMessages = currentMessages.filter(
-				(m) => !(m?.id === messageId && m?.role === "user"),
-			);
-			if (remainingMessages.length === currentMessages.length) {
-				return { removed: false };
-			}
+		const remainingMessages = currentMessages.filter(
+			(m) => !(m?.id === messageId && m?.role === "user"),
+		);
+		if (remainingMessages.length === currentMessages.length) {
+			return { removed: false };
+		}
 
-			await tx.agentConversation.update({
-				where: { id },
-				data: {
-					messages:
-						remainingMessages as unknown as Prisma.InputJsonValue,
-				},
-			});
+		await tx.agentConversation.update({
+			where: { id },
+			data: {
+				messages: remainingMessages as unknown as Prisma.InputJsonValue,
+			},
+		});
 
-			return { removed: true };
-		},
-		{ isolationLevel: "Serializable" },
-	);
+		return { removed: true };
+	});
 }
 
 /**
@@ -731,15 +744,17 @@ export async function removeConversationMessage({
  *
  * `selectedMcpConfigIds`: absent keeps the stored selection, `null` removes
  * it ("no selection"), an array replaces it. Null instanceId removes its pin;
- * absent instanceId keeps it. Other keys are written when non-empty. A missing
- * mode uses the settings update engine, defaulting to orchestrator; stored modes
- * are kept (Fizzy #2040, Fizzy #3472).
+ * absent instanceId keeps it. `planModel`, the ChatGPT plan model picked for
+ * this chat only, follows the same rule. Other keys are written when
+ * non-empty. A missing mode uses the settings update engine, defaulting to
+ * orchestrator; stored modes are kept (Fizzy #2040, Fizzy #3472).
  */
 export interface AdvisorConversationSettings {
 	executionMode?: string;
 	instanceId?: string | null;
 	selectedMcpConfigIds?: string[] | null;
 	documentChatId?: string;
+	planModel?: { canonicalName: string; name: string } | null;
 }
 
 /** One saved Advisor execution record (`metadata.executions[]`). */
@@ -852,6 +867,11 @@ function mergeAdvisorSettings(
 		delete next.selectedMcpConfigIds;
 	} else if (settings.selectedMcpConfigIds !== undefined) {
 		next.selectedMcpConfigIds = settings.selectedMcpConfigIds;
+	}
+	if (settings.planModel === null) {
+		delete next.planModel;
+	} else if (settings.planModel) {
+		next.planModel = settings.planModel;
 	}
 	next.lastUpdated = new Date().toISOString();
 	return next;
@@ -1329,8 +1349,11 @@ export async function deleteAgentConversation({
 		throw new Error("Conversation not found or access denied");
 	}
 
-	return await db.agentConversation.delete({
-		where: { id },
+	return await db.$transaction(async (tx) => {
+		await deleteFinishedTurnsOfConversations(tx, [id]);
+		return await tx.agentConversation.delete({
+			where: { id },
+		});
 	});
 }
 

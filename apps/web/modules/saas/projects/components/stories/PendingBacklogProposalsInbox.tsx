@@ -75,22 +75,33 @@ import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { SlackIcon } from "../../../workflows/lib/plugins/slack/icon";
-import { buildStoryDetailsRoute } from "../../lib/stories/routes";
+import {
+	buildStoryCleanSpecRoute,
+	buildStoryDetailsRoute,
+} from "../../lib/stories/routes";
 import { BacklogChangeProposal } from "./BacklogChangeProposal";
 import { failureClassToCopy } from "./lib/failure-class-copy";
 import {
 	ProposalInboxSearch,
 	ProposalSearchNoMatches,
 } from "./ProposalInboxSearch";
+import { MergedIntoNote } from "./ProposalItemNotes";
 import {
 	type ApproveOutcome,
 	approveClosesDetail,
+	approveHeldBackToast,
 	approveOutcomeToast,
+	approveRefusalTitle,
+	heldBackToast,
 	proposalConflictMessage,
 } from "./proposal-approve-outcome";
 import {
 	endpointForSource,
 	invalidateProposalInboxQueries,
+	type ProposalApprovalRequest,
+	type ProposalPmConfig,
+	ROADMAP_RECOMMENDATION_SOURCE,
+	requestProposalApproval,
 } from "./proposal-inbox-client";
 import {
 	filterProposalsByQuery,
@@ -103,8 +114,10 @@ import {
 	type ProposalApplication,
 	type ProposalDuplicateResolution,
 	type ResolvedProposalItem,
+	type RestoredProposalItem,
 } from "./proposal-item-state";
 import { isApplyInFlight } from "./proposal-status";
+import { startProposalTicketReview } from "./proposal-ticket-review";
 import {
 	isRecurringErrorSource,
 	RecurringErrorSourceBadge,
@@ -148,30 +161,19 @@ type Props = {
 	 * backlog-apply workflow. (CREATE changes resolve the config server-side
 	 * and don't need this.) Mirrors what `BacklogChat` (AI Update) passes.
 	 */
-	pmConfig?: {
-		mcpConfigId: string;
-		containerId: string;
-		additionalContext?: Record<string, string>;
-	};
+	pmConfig?: ProposalPmConfig;
 	/**
 	 * `project.roadmap.aiRecommendedLifecycleEnabled` (Fizzy #2211). When on,
 	 * accepting a Roadmap recommendation batch also says how to remove the
 	 * batch later.
 	 */
 	aiRecommendedLifecycleEnabled?: boolean;
+	/**
+	 * Client-side navigation within the app. With it, an update can be
+	 * reviewed line by line on its ticket ("Review line by line").
+	 */
+	navigate?: (href: string) => void;
 };
-
-/** Roadmap recommendation batches (Fizzy #2208). */
-const ROADMAP_RECOMMENDATION_SOURCE = "ROADMAP_RECOMMENDATION";
-
-/**
- * Sources applied through the backlog apply workflow with the proposal id,
- * never through a channel-monitor approve door.
- */
-const ASYNC_APPLY_SOURCES = new Set([
-	"SCOPE_DOCUMENT",
-	ROADMAP_RECOMMENDATION_SOURCE,
-]);
 
 /**
  * How often, and for how long, an accepted recommendation batch is watched
@@ -245,10 +247,20 @@ type PendingProposalDetail = PendingProposalRow & {
 	proposalRevision?: string;
 	/** Update items whose ticket changed after the proposal was made. */
 	targetChangedSinceProposalIndexes?: number[];
+	/** The ticket bodies now of the update items whose body has no `from`. */
+	updateTargetBodies?: Array<{
+		changeIndex: number;
+		description: string;
+		acceptanceCriteria: string;
+	}>;
+	/** Update items an approval would hold back: no such ticket here. */
+	heldBackUpdateIndexes?: number[];
 	/** What each applied item created or updated. */
 	applications?: ProposalApplication[];
 	/** The existing ticket each duplicate-resolved item matched. */
 	duplicateResolutions?: ProposalDuplicateResolution[];
+	/** Items moved to Rejected and then restored from there. */
+	restoredItems?: RestoredProposalItem[];
 	/** Teams deep link to a chat proposal's source message, while the chat is linked. */
 	teamsChatSourceLink?: string | null;
 	projectId: string;
@@ -636,6 +648,7 @@ export function PendingBacklogProposalsInbox({
 	pmToolName,
 	pmConfig,
 	aiRecommendedLifecycleEnabled = false,
+	navigate,
 }: Props) {
 	const queryClient = useQueryClient();
 	const basePath = useBasePath();
@@ -772,7 +785,7 @@ export function PendingBacklogProposalsInbox({
 	// Possible duplicates for the open proposal only, once it is known to be
 	// in review. A duplicate note can open another proposal; the search is
 	// cleared so the list behind it does not hide that proposal.
-	const duplicateFlags = useProposalDuplicateFlags({
+	const duplicateReview = useProposalDuplicateFlags({
 		projectId,
 		organizationId,
 		proposalId: selectedProposalId,
@@ -879,6 +892,26 @@ export function PendingBacklogProposalsInbox({
 		});
 	}, [queryClient, projectId, organizationId]);
 
+	// Resolves once the open proposal has been read again after an action.
+	// The action's mutation awaits it, so the actions stay busy until the
+	// item it decided shows as locked; a background refresh of the proposal
+	// (the tab regaining focus, another view's action) never disables them.
+	const refreshOpenProposal = useCallback(
+		() =>
+			queryClient.refetchQueries(
+				{
+					queryKey: [
+						"teams-channel-monitor-pending-proposal",
+						projectId,
+						organizationId,
+					],
+					type: "active",
+				},
+				{ cancelRefetch: false },
+			),
+		[queryClient, projectId, organizationId],
+	);
+
 	// Close the detail once the open proposal leaves the review queue while
 	// it is on screen (its last item resolved, or a running apply finished
 	// it), and refresh the lists when a running apply settles. A proposal that
@@ -981,87 +1014,42 @@ export function PendingBacklogProposalsInbox({
 	};
 
 	const approveMutation = useMutation({
-		mutationFn: async (payload: {
-			proposalId: string;
-			source: string;
-			approvedChanges: unknown[];
-			approvedChangeIndexes?: number[];
-			pmSyncOverrides?: Record<
-				number,
-				{ pushAnyway?: boolean; skip?: boolean }
-			>;
-			syncToPM: boolean;
-			/** `proposalRevision` of the detail the reviewer approved from. */
-			expectedProposalRevision?: string;
-			/** Items the proposal had already created (a returned batch). */
-			createdBefore?: number;
-			/** Set when one item is approved on its own (row or dialog). */
-			changeIndex?: number;
-			itemTitle?: string;
-			/** That item was the proposal's last undecided one. */
-			lastItem?: boolean;
-			/** The ticket that item updates, when it is an update. */
-			targetStoryId?: string;
-		}): Promise<ApproveOutcome> => {
-			// Scope-document proposals (inverted-loop Slice 1) are applied
-			// through the backlog apply workflow with the proposal id: the
-			// handler claims the row (plan §F3) and every change is recorded
-			// with an application key, so a retried apply cannot create the
-			// same items twice. The channel-monitor approve path materialises
-			// creates synchronously and must not be used for them.
-			//
-			// Roadmap recommendation batches (Fizzy #2208) take the same door,
-			// and honour the reviewer's PM-sync choice: the server defaults to
-			// no sync (FR43), so only an explicit tick pushes.
-			if (ASYNC_APPLY_SOURCES.has(payload.source)) {
-				const isRecommendation =
-					payload.source === ROADMAP_RECOMMENDATION_SOURCE;
-				const dispatched =
-					await orpcClient.projects.backlog.applyChanges({
-						projectId,
-						organizationId,
-						proposalId: payload.proposalId,
-						approvedChanges: payload.approvedChanges as never,
-						approvedChangeIndexes: payload.approvedChangeIndexes,
-						expectedProposalRevision:
-							payload.expectedProposalRevision,
-						pmSyncOverrides: payload.pmSyncOverrides,
-						...(isRecommendation
-							? {
-									syncToPM: payload.syncToPM,
-									pmConfig: payload.syncToPM
-										? pmConfig
-										: undefined,
-								}
-							: { syncToPM: false }),
-					});
-				return dispatched.workflowId
-					? { status: "dispatched" }
-					: { status: "failed", errors: [dispatched.message] };
-			}
-			return await endpointForSource(payload.source).approve({
+		mutationFn: async (
+			payload: Omit<
+				ProposalApprovalRequest,
+				"projectId" | "organizationId" | "pmConfig"
+			> & {
+				/** Items the proposal had already created (a returned batch). */
+				createdBefore?: number;
+				/** Set when one item is approved on its own (row or dialog). */
+				changeIndex?: number;
+				itemTitle?: string;
+				/** That item was the proposal's last undecided one. */
+				lastItem?: boolean;
+				/** The ticket that item updates, when it is an update. */
+				targetStoryId?: string;
+			},
+		): Promise<ApproveOutcome> =>
+			requestProposalApproval({
 				projectId,
 				organizationId,
-				proposalId: payload.proposalId,
-				// The approve procedure will handle its own Zod validation
-				// on the change shape; we pass whatever BacklogChangeProposal
-				// produced after normalization.
-				approvedChanges: payload.approvedChanges as never,
-				approvedChangeIndexes: payload.approvedChangeIndexes,
-				// A proposal changed since it was opened is refused (CONFLICT).
-				expectedProposalRevision: payload.expectedProposalRevision,
-				// Explicit user choice from the proposal-review checkbox. Pass
-				// the boolean verbatim (never undefined): the approve procedure
-				// treats `undefined` as "sync if a PM tool is configured", so an
-				// explicit `false` is required to honor an unchecked box.
-				syncToPM: payload.syncToPM,
-				// Lets the checkbox govern UPDATE-change sync too (CREATE
-				// resolves the config server-side). Undefined when no PM tool.
 				pmConfig,
-			});
-		},
-		onSuccess: (result, variables) => {
+				proposalId: payload.proposalId,
+				source: payload.source,
+				approvedChanges: payload.approvedChanges,
+				approvedChangeIndexes: payload.approvedChangeIndexes,
+				pmSyncOverrides: payload.pmSyncOverrides,
+				syncToPM: payload.syncToPM,
+				expectedProposalRevision: payload.expectedProposalRevision,
+			}),
+		onSuccess: async (result, variables) => {
 			rememberSkippedTargets(variables.proposalId, result.skipped);
+			const heldBack = approveHeldBackToast(result);
+			if (heldBack) {
+				toast.error(heldBack.title, {
+					description: heldBack.description,
+				});
+			}
 			const message = approveOutcomeToast(result, variables);
 			if (message.variant === "error") {
 				toast.error(message.title, {
@@ -1117,9 +1105,11 @@ export function PendingBacklogProposalsInbox({
 			// whose last item was just approved, returns to the list.
 			if (approveClosesDetail(result, variables)) {
 				setSelectedProposalId(null);
+				return;
 			}
+			await refreshOpenProposal();
 		},
-		onError: (error, variables) => {
+		onError: async (error, variables) => {
 			const conflict = proposalConflictMessage(error);
 			if (conflict) {
 				// A second reviewer raced us, or the proposal changed since it
@@ -1129,15 +1119,16 @@ export function PendingBacklogProposalsInbox({
 				// left the queue.
 				toast.error(conflict);
 				invalidateAll();
+				await refreshOpenProposal();
 				return;
 			}
 			// The server's message names what is wrong (e.g. an update whose
 			// target is not in this project), so it is shown as is.
-			const itemTitle = variables.itemTitle ?? "this item";
-			const title =
+			const title = approveRefusalTitle(
 				variables.changeIndex === undefined
-					? "Failed to approve proposal"
-					: `Couldn't approve “${itemTitle}”`;
+					? null
+					: (variables.itemTitle ?? "this item"),
+			);
 			toast.error(title, {
 				description:
 					error instanceof Error ? error.message : "Unknown error",
@@ -1187,8 +1178,6 @@ export function PendingBacklogProposalsInbox({
 			/** Set when one item is moved alone; the rest stay in review. */
 			changeIndex?: number;
 			itemTitle?: string;
-			/** Every change of this update was rejected line by line. */
-			noteRejectedUpdate?: boolean;
 		}) => {
 			if (payload.changeIndex !== undefined) {
 				return await orpcClient.projects.backlog.proposals.rejectItem({
@@ -1196,7 +1185,6 @@ export function PendingBacklogProposalsInbox({
 					organizationId,
 					proposalId: payload.proposalId,
 					changeIndex: payload.changeIndex,
-					noteRejectedUpdate: payload.noteRejectedUpdate,
 				});
 			}
 			return await endpointForSource(payload.source).backlog({
@@ -1205,14 +1193,12 @@ export function PendingBacklogProposalsInbox({
 				proposalId: payload.proposalId,
 			});
 		},
-		onSuccess: (_result, variables) => {
+		onSuccess: async (_result, variables) => {
 			const itemTitle = variables.itemTitle ?? "this item";
 			const title =
 				variables.changeIndex === undefined
 					? "Moved to Rejected"
-					: variables.noteRejectedUpdate
-						? `Rejected every change to “${itemTitle}”`
-						: `Moved “${itemTitle}” to Rejected`;
+					: `Moved “${itemTitle}” to Rejected`;
 			toast.success(title, {
 				description:
 					"Find it anytime in Rejected proposals on your roadmap.",
@@ -1222,9 +1208,11 @@ export function PendingBacklogProposalsInbox({
 			// refreshed detail closes itself if nothing is left.
 			if (variables.changeIndex === undefined) {
 				setSelectedProposalId(null);
+				return;
 			}
+			await refreshOpenProposal();
 		},
-		onError: (error, variables) => {
+		onError: async (error, variables) => {
 			const conflict = proposalConflictMessage(error);
 			if (conflict) {
 				// A second reviewer already actioned it, or the proposal
@@ -1232,6 +1220,7 @@ export function PendingBacklogProposalsInbox({
 				// changed. The detail stays open on the refreshed state.
 				toast.error(conflict);
 				invalidateAll();
+				await refreshOpenProposal();
 				return;
 			}
 			const itemTitle = variables.itemTitle ?? "this item";
@@ -1271,10 +1260,16 @@ export function PendingBacklogProposalsInbox({
 			} else {
 				toast.success("Retry queued.");
 			}
+			const heldBack = heldBackToast(result?.heldBack);
+			if (heldBack) {
+				toast.error(heldBack.title, {
+					description: heldBack.description,
+				});
+			}
 			invalidateAll();
 		},
 		onError: (error) => {
-			toast.error("Failed to retry proposal", {
+			toast.error("Couldn't retry proposal", {
 				description:
 					error instanceof Error ? error.message : "Unknown error",
 			});
@@ -1695,6 +1690,7 @@ export function PendingBacklogProposalsInbox({
 			createdChangeIndexes: detail.createdChangeIndexes,
 			applications: detail.applications,
 			duplicateResolutions: detail.duplicateResolutions,
+			restoredItems: detail.restoredItems,
 			appliedReason: isRecommendation ? "accepted" : "applied",
 			skippedTargets:
 				skippedTargets?.proposalId === detail.id
@@ -1740,8 +1736,7 @@ export function PendingBacklogProposalsInbox({
 		const actionsBusy =
 			approveMutation.isPending ||
 			backlogMutation.isPending ||
-			rejectMutation.isPending ||
-			detailQuery.isFetching;
+			rejectMutation.isPending;
 		const entryPointLabel =
 			typeof metadata?.entryPoint === "string"
 				? (RECOMMENDATION_ENTRY_POINT_LABELS[metadata.entryPoint] ??
@@ -1945,7 +1940,7 @@ export function PendingBacklogProposalsInbox({
 								aria-hidden="true"
 							/>
 							<p className="text-sm font-medium">
-								{failureClassToCopy(detail.errorClass)}
+								{failureClassToCopy(detail.errorClass, detail)}
 							</p>
 						</div>
 						{(detail.errorMessage || detail.applyError) && (
@@ -2043,10 +2038,21 @@ export function PendingBacklogProposalsInbox({
 						lockedReasons: itemState.lockedReasons,
 						lockedTargets: itemState.lockedTargets,
 						pendingItemAction,
-						duplicateFlags,
+						duplicateFlags: duplicateReview.flags,
+						duplicateChecking: duplicateReview.checking,
+						duplicateLoading: duplicateReview.loading,
 						onOpenProposal: openProposalFromDuplicate,
 						targetChangedIndexes: new Set(
 							detail.targetChangedSinceProposalIndexes,
+						),
+						updateTargetBodies: new Map(
+							(detail.updateTargetBodies ?? []).map((bodies) => [
+								bodies.changeIndex,
+								bodies,
+							]),
+						),
+						heldBackUpdateIndexes: new Set(
+							detail.heldBackUpdateIndexes,
 						),
 						onApproveItem: (
 							approvedChange,
@@ -2073,19 +2079,50 @@ export function PendingBacklogProposalsInbox({
 										: undefined,
 							});
 						},
-						onRejectItem: (
-							changeIndex,
-							itemTitle,
-							noteRejectedUpdate,
-						) => {
+						onRejectItem: (changeIndex, itemTitle) => {
 							backlogMutation.mutate({
 								proposalId: detail.id,
 								source: detail.source,
 								changeIndex,
 								itemTitle,
-								noteRejectedUpdate,
 							});
 						},
+						onReviewOnTicket: navigate
+							? (
+									approvedChange,
+									syncToPM,
+									pmSyncOverrides,
+									changeIndex,
+								) => {
+									if (
+										approvedChange.action !== "update" ||
+										!approvedChange.existingId
+									) {
+										return;
+									}
+									startProposalTicketReview({
+										projectId,
+										organizationId,
+										storyId: approvedChange.existingId,
+										proposalId: detail.id,
+										source: detail.source,
+										changeIndex,
+										change: approvedChange,
+										syncToPM,
+										pmSyncOverrides,
+										pmConfig,
+										expectedProposalRevision:
+											detail.proposalRevision,
+									});
+									navigate(
+										buildStoryCleanSpecRoute(
+											basePath,
+											projectId,
+											approvedChange.existingId,
+										),
+									);
+								}
+							: undefined,
 					}}
 					showSelectAll={isRecommendation}
 					allowKindOverride={!isRecommendation}
@@ -2282,6 +2319,9 @@ function ProposalRow({
 				<p className="line-clamp-2 text-sm text-foreground/80">
 					{stripMarkdown(proposal.summary)}
 				</p>
+				{proposal.status === "BACKLOG" && (
+					<MergedIntoNote sourceMetadata={metadata} />
+				)}
 				<div className="text-xs text-muted-foreground">
 					{changeCountLabel(proposal)}
 				</div>
@@ -2338,7 +2378,7 @@ function FailedProposalRow({
 				addSuffix: true,
 			});
 	const isSidebarSource = proposal.source === "AI_UPDATE_SIDEBAR";
-	const failureCopy = failureClassToCopy(proposal.errorClass);
+	const failureCopy = failureClassToCopy(proposal.errorClass, proposal);
 	const rawError = proposal.errorMessage ?? proposal.applyError;
 
 	return (

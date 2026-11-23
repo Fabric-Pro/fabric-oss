@@ -66,3 +66,102 @@ test("a question Flux hears as its own turn wakes Parlume once, for the one who 
 	assert.equal(scorecard.questions[0]?.trigger, "EagerEndOfTurn");
 	assert.equal(scorecard.interrupts, 0);
 });
+
+// Parlume's speech plays in real time, so these replay slower: its 300 ms of
+// lead-in silence is 1.2 s of meeting time.
+const SPEAKING_SPEED = 4;
+
+test("side talk over Parlume's answer, its requester's included, never stops it", async () => {
+	const scorecard = await replayMeeting(fixture("side-talk-over-answer"), {
+		speed: SPEAKING_SPEED,
+	});
+
+	assert.equal(scorecard.wakes, 1);
+	assert.deepEqual(scorecard.falseWakes, []);
+	assert.deepEqual(scorecard.replies, [{ played: true, interrupted: false }]);
+	assert.deepEqual(scorecard.stops, []);
+	assert.deepEqual(scorecard.falseStops, []);
+	assert.equal(scorecard.holds, 0);
+	assert.equal(scorecard.interrupts, 0);
+});
+
+test("a request made while Parlume answers another is asked of Fabric after that answer, and stops nothing", async () => {
+	const scorecard = await replayMeeting(fixture("two-requests-overlap"), {
+		speed: SPEAKING_SPEED,
+	});
+
+	assert.equal(scorecard.wakes, 2);
+	assert.deepEqual(
+		scorecard.questions.map(({ speaker, heardRight }) => ({
+			speaker,
+			heardRight,
+		})),
+		[
+			{ speaker: "Dev Example", heardRight: true },
+			{ speaker: "QA Example", heardRight: true },
+		],
+	);
+	assert.deepEqual(scorecard.falseWakes, []);
+	assert.deepEqual(scorecard.missed, []);
+	assert.deepEqual(scorecard.replies, [
+		{ played: true, interrupted: false },
+		{ played: true, interrupted: false },
+	]);
+	assert.equal(scorecard.interrupts, 0);
+});
+
+test("'wait' and 'hold on' said to the room, without Parlume's name, leave its answer playing", async () => {
+	const scorecard = await replayMeeting(fixture("wait-in-side-talk"), {
+		speed: SPEAKING_SPEED,
+	});
+
+	assert.equal(scorecard.wakes, 1);
+	assert.deepEqual(scorecard.replies, [{ played: true, interrupted: false }]);
+	assert.deepEqual(scorecard.falseStops, []);
+	assert.equal(scorecard.holds, 0);
+	assert.equal(scorecard.interrupts, 0);
+});
+
+test("'Parlume, stop' from someone who did not ask holds the answer on its partial and stops it on its final, and is not asked as a request", async () => {
+	const scorecard = await replayMeeting(fixture("addressed-stop"), {
+		speed: SPEAKING_SPEED,
+	});
+
+	assert.equal(scorecard.wakes, 1);
+	assert.deepEqual(scorecard.replies, [{ played: false, interrupted: true }]);
+	assert.deepEqual(scorecard.stops, [{ by: "QA Example" }]);
+	assert.deepEqual(scorecard.falseStops, []);
+	assert.deepEqual(scorecard.missedStops, []);
+	assert.equal(scorecard.holds, 1);
+});
+
+test("a bare 'Stop.' from someone who did not ask stops the answer on its final, and its partial holds nothing", async () => {
+	const scorecard = await replayMeeting(fixture("bare-stop-other-speaker"), {
+		speed: SPEAKING_SPEED,
+	});
+
+	assert.equal(scorecard.wakes, 1);
+	assert.deepEqual(scorecard.replies, [{ played: false, interrupted: true }]);
+	assert.deepEqual(scorecard.stops, [{ by: "QA Example" }]);
+	assert.deepEqual(scorecard.falseStops, []);
+	assert.deepEqual(scorecard.missedStops, []);
+	assert.equal(scorecard.holds, 0);
+});
+
+test("a bare 'Stop.' from a speaker the meeting never names stops the answer too", async () => {
+	const recorded = fixture("bare-stop-other-speaker");
+	const scorecard = await replayMeeting(
+		{
+			...recorded,
+			speech: [],
+			questions: [],
+			stops: [{ speaker: null }],
+		},
+		{ speed: SPEAKING_SPEED },
+	);
+
+	assert.deepEqual(scorecard.replies, [{ played: false, interrupted: true }]);
+	assert.deepEqual(scorecard.stops, [{ by: null }]);
+	assert.deepEqual(scorecard.falseStops, []);
+	assert.deepEqual(scorecard.missedStops, []);
+});

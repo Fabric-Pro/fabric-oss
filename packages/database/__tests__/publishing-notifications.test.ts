@@ -949,7 +949,9 @@ it.skipIf(!RUN_DB)(
 		const demoted = await seedUser("Demoted admin");
 		await addProjectMember(project.id, demoted.id, "VIEWER");
 		await addOrgMember(orgId, demoted.id, "admin");
-		// No project row at all — reached only if the org roster is actually loaded.
+		// The creator with no project row — reached only if the org roster is actually loaded.
+		await addOrgMember(orgId, user.id, "member");
+		// Another org member with no project row cannot open the project, so is not a recipient.
 		const orgMember = await seedUser("Org member");
 		await addOrgMember(orgId, orgMember.id, "member");
 		const orgViewer = await seedUser("Org viewer");
@@ -959,12 +961,10 @@ it.skipIf(!RUN_DB)(
 			projectId: project.id,
 		});
 
-		expect(ids?.sort()).toEqual([editor.id, orgMember.id].sort());
+		expect(ids?.sort()).toEqual([editor.id, user.id].sort());
 		expect(ids).not.toContain(demoted.id);
+		expect(ids).not.toContain(orgMember.id);
 		expect(ids).not.toContain(orgViewer.id);
-		// `Project.userId` on an ORGANIZATION project is the denormalized tenant owner, not a
-		// recipient. This user has neither a project row nor an org role, so nothing makes them one.
-		expect(ids).not.toContain(user.id);
 	},
 );
 
@@ -2276,6 +2276,36 @@ it.skipIf(!RUN_DB)(
 			channel: "EMAIL",
 		});
 		expect(verdict).toBe("RECIPIENT_UNAUTHORIZED");
+	},
+);
+
+it.skipIf(!RUN_DB)(
+	"re-authorization admits the creator through the org role, and no other org member without a project row",
+	async () => {
+		const { orgId, user, project } = await seedOrgProject();
+		await addOrgMember(orgId, user.id, "member");
+		const orgAdmin = await seedUser("Org admin");
+		await addOrgMember(orgId, orgAdmin.id, "admin");
+		// The cycle's tenant on an organization project carries a null userId, so the creator must
+		// come from the project row, not from the cycle.
+		const cycleTenant = { organizationId: orgId, userId: null };
+
+		await expect(
+			reauthorizePublishingRecipient({
+				projectId: project.id,
+				recipientUserId: user.id,
+				cycleTenant,
+				channel: "IN_APP",
+			}),
+		).resolves.toBe("OK");
+		await expect(
+			reauthorizePublishingRecipient({
+				projectId: project.id,
+				recipientUserId: orgAdmin.id,
+				cycleTenant,
+				channel: "IN_APP",
+			}),
+		).resolves.toBe("RECIPIENT_UNAUTHORIZED");
 	},
 );
 

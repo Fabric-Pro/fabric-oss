@@ -13,7 +13,7 @@ const captured = vi.hoisted(() => ({
 vi.mock("@repo/agent-core/unified-server", () => ({
 	createUnifiedServer: (...args: unknown[]) => {
 		captured.run = args[1] as typeof captured.run;
-		captured.streamRun = args[4] as typeof captured.streamRun;
+		captured.streamRun = args[3] as typeof captured.streamRun;
 		return { app: {}, start: vi.fn() };
 	},
 }));

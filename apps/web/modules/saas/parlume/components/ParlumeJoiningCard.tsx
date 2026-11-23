@@ -3,9 +3,14 @@
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
 import { CheckIcon, Loader2Icon } from "lucide-react";
-import type { ParlumeSession } from "../lib/parlume-format";
+import { formatClock, type ParlumeSession } from "../lib/parlume-format";
 import { CARD_TITLE } from "../lib/parlume-styles";
-import { JOIN_STEPS, joinStepIndex, joinTitle } from "../lib/parlume-view";
+import {
+	JOIN_STEPS,
+	joinStepIndex,
+	joinTitle,
+	lobbyDeadline,
+} from "../lib/parlume-view";
 
 const STEP_BAR = {
 	done: "bg-success",
@@ -43,10 +48,14 @@ export function ParlumeJoiningCard({
 					/>
 					<div aria-live="polite" className="space-y-1">
 						<h3 className={CARD_TITLE}>{joinTitle(session)}</h3>
-						<p className="text-sm text-muted-foreground">
-							Ask the organizer to admit “Fabric Parlume” from the
-							Teams lobby.
-						</p>
+						{!isLeaving && (
+							<p className="text-sm text-muted-foreground">
+								Admit “Fabric Parlume” from the Teams lobby if
+								you are the organizer or a presenter; otherwise
+								ask the organizer. It stops waiting at about{" "}
+								{formatClock(lobbyDeadline(session))}.
+							</p>
+						)}
 					</div>
 				</div>
 				{canStop && (

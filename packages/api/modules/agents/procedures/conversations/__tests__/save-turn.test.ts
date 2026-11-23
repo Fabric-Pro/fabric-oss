@@ -456,3 +456,26 @@ it("keeps saveTurn rejecting null instance pins and strips engine hints", () => 
 		settings: { instanceId: null },
 	});
 });
+
+it("accepts the chat's plan model in settings, or null to remove it", () => {
+	const settingsSchema = mocks.schemas.get(UPDATE_SETTINGS);
+	if (!settingsSchema) {
+		throw new Error("Missing settings schema");
+	}
+	const planModel = { canonicalName: "gpt-6-luna", name: "GPT-6 Luna" };
+
+	for (const value of [planModel, null]) {
+		expect(
+			settingsSchema.parse({
+				conversationId: "conv-1",
+				settings: { planModel: value },
+			}),
+		).toEqual({ conversationId: "conv-1", settings: { planModel: value } });
+	}
+	expect(() =>
+		settingsSchema.parse({
+			conversationId: "conv-1",
+			settings: { planModel: { canonicalName: "", name: "GPT-6 Luna" } },
+		}),
+	).toThrow();
+});

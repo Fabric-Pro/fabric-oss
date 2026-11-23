@@ -1,4 +1,8 @@
 import { stripTrailingSlashes } from "@repo/utils/strip-trailing-slashes";
+import {
+	type AnthropicBearerSource,
+	anthropicBearerFetch,
+} from "./lib/anthropic-federation";
 /**
  * Model Factory - Core AI Model Creation Functions
  *
@@ -608,10 +612,17 @@ function getOpenAIProviderWithKey(
 function getAnthropicProviderWithKey(
 	apiKey: string,
 ): ReturnType<typeof createAnthropic> {
-	if (!anthropicProviderCache.has(apiKey)) {
-		anthropicProviderCache.set(apiKey, createAnthropic({ apiKey }));
+	const cacheKey = createHash("sha256").update(apiKey).digest("hex");
+	if (!anthropicProviderCache.has(cacheKey)) {
+		if (anthropicProviderCache.size >= 64) {
+			const oldestKey = anthropicProviderCache.keys().next().value;
+			if (oldestKey !== undefined) {
+				anthropicProviderCache.delete(oldestKey);
+			}
+		}
+		anthropicProviderCache.set(cacheKey, createAnthropic({ apiKey }));
 	}
-	const provider = anthropicProviderCache.get(apiKey);
+	const provider = anthropicProviderCache.get(cacheKey);
 	if (!provider) {
 		throw new Error("Failed to create Anthropic provider");
 	}
@@ -843,6 +854,7 @@ export function getModel(
 		userId?: string;
 		organizationId?: string;
 		apiKey?: string;
+		anthropicBearerSource?: AnthropicBearerSource;
 		provider?: ProviderType | string;
 		baseUrl?: string | null;
 		headers?: Record<string, string>;
@@ -874,6 +886,26 @@ export function getModel(
 	const modelProvider = extractProvider(model);
 	const normalizedModel = normalizeModelForGateway(model);
 	const modelWithoutPrefix = extractModelName(model);
+
+	if (context?.anthropicBearerSource) {
+		if (context.provider !== "ANTHROPIC_DIRECT") {
+			throw new Error(
+				"Anthropic Bearer credentials require the direct Anthropic provider.",
+			);
+		}
+		const provider = createAnthropic({
+			baseURL: "https://api.anthropic.com/v1",
+			authToken: "resolved-at-dispatch",
+			fetch: anthropicBearerFetch(context.anthropicBearerSource),
+		});
+		return wrapWithProviderMiddleware(
+			provider(modelWithoutPrefix),
+			model,
+			modelProvider,
+			"ANTHROPIC_DIRECT",
+			context.isReasoningModel,
+		);
+	}
 
 	// If API key and provider are specified, route appropriately
 	if (context?.apiKey && context?.provider) {

@@ -4,6 +4,9 @@ import {
 	DIFF_ADD_START,
 	DIFF_DEL_END,
 	DIFF_DEL_START,
+	MOVE_TAG_SOURCE,
+	moveTag,
+	moveTagBlock,
 	resolveEncodedDiffMarkers,
 	stripResidualDiffMarkers,
 } from "../lib/diff-markers";
@@ -68,6 +71,32 @@ describe("stripResidualDiffMarkers: raw markers and zero-width characters", () =
 		expect(stripResidualDiffMarkers("a\u200Bb\uFEFFc\u00A0d")).toBe(
 			"abc\u00A0d",
 		);
+	});
+});
+
+describe("move tags", () => {
+	it("reads back the block number each tag writes", () => {
+		const tag = new RegExp(MOVE_TAG_SOURCE);
+		for (const block of [1, 2, 5, 37, 1024]) {
+			const digits = tag.exec(moveTag(block))?.[1] ?? "";
+
+			expect(moveTagBlock(digits)).toBe(block);
+		}
+		expect(moveTag(1024).length).toBe(13);
+	});
+
+	it("are removed whole, after a start marker or on their own, before a save", () => {
+		expect(
+			stripResidualDiffMarkers(
+				`- ${DIFF_ADD_START}${moveTag(3)}Moved${DIFF_ADD_END} and ${moveTag(1)}stray`,
+			),
+		).toBe("- Moved and stray");
+	});
+
+	it("leave a joiner outside a tag alone", () => {
+		const family = `a${String.fromCodePoint(0x200d)}b`;
+
+		expect(stripResidualDiffMarkers(family)).toBe(family);
 	});
 });
 

@@ -18,11 +18,12 @@ it("routes root environment entries into Aspire's web resource", () => {
 	);
 	expect(appHost).toContain('Path.Combine(repoRoot, ".env.local")');
 	expect(appHost).toContain("envVars[key] = value;");
-	const web = appHost.slice(appHost.indexOf('builder.AddExecutable("web"'));
-	const forwarding = web.slice(
-		web.indexOf("foreach (var (key, value) in envVars)"),
-		web.indexOf("if (devTunnelUrl is not null)"),
-	);
+	const web = appHost.slice(appHost.indexOf('builder.AddNextJsApp("web"'));
+	const start = web.indexOf("foreach (var (key, value) in envVars)");
+	const end = web.indexOf("if (devTunnelId is { Length: > 0 })");
+	expect(start).toBeGreaterThanOrEqual(0);
+	expect(end).toBeGreaterThan(start);
+	const forwarding = web.slice(start, end);
 	expect(forwarding).toContain("web = web.WithEnvironment(key, value);");
 	expect(forwarding).not.toContain("ADVISOR_HISTORY_RETENTION");
 });

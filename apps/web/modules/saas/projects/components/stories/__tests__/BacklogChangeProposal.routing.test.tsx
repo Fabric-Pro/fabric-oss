@@ -84,6 +84,8 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 							targetClosed: false,
 							currentDescription: "Bulk export needs work.",
 							currentAcceptanceCriteria: "",
+							currentPriority: "P2_MEDIUM",
+							currentSize: null,
 							mergedDescription:
 								"Bulk export needs work.\n\nAlso rate limit it.",
 							mergedAcceptanceCriteria: "",
@@ -355,6 +357,16 @@ describe("BacklogChangeProposal — Create/Enrich routing row", () => {
 			expect(
 				screen.getByRole("button", { name: /Apply Selected/ }),
 			).toBeDisabled();
+			// A target is chosen, so Apply names the row's own control it
+			// waits for.
+			expect(
+				screen.getByText(
+					/Choose 'Enrich it anyway' for "Export throttling" or pick another ticket before applying/i,
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByText(/Choose a ticket to enrich for/i),
+			).not.toBeInTheDocument();
 
 			// …and it must survive a round trip through the toggle, which
 			// rebuilds the target and previously reset the closed flag.
@@ -375,9 +387,40 @@ describe("BacklogChangeProposal — Create/Enrich routing row", () => {
 			await user.click(
 				screen.getByRole("button", { name: /Enrich it anyway/i }),
 			);
+			// A re-routed row waits for its merge into the target to be read.
+			await waitFor(() =>
+				expect(
+					screen.getByRole("button", { name: /Apply Selected/ }),
+				).toBeEnabled(),
+			);
+		} finally {
+			storyStages["story-1"] = "READY";
+		}
+	});
+
+	it("names each row's own blocker when rows block Apply for different reasons", async () => {
+		storyStages["story-1"] = "CLOSED";
+		try {
+			const user = userEvent.setup();
+			renderProposal({ changes: [enrichChange(), createChange()] });
+
 			expect(
-				screen.getByRole("button", { name: /Apply Selected/ }),
-			).toBeEnabled();
+				await screen.findByText(/is closed or archived/i),
+			).toBeInTheDocument();
+			const [, createRowEnrich] = screen.getAllByRole("button", {
+				name: "Enrich existing",
+			});
+			await user.click(createRowEnrich);
+
+			const output = screen.getByText(
+				/Choose 'Enrich it anyway' for "Export throttling" or pick another ticket before applying/i,
+			);
+			expect(output).toHaveTextContent(
+				/Choose a ticket to enrich for "Rate limit the export endpoint" before applying/i,
+			);
+			expect(output).not.toHaveTextContent(
+				/Choose a ticket to enrich for "Export throttling"/i,
+			);
 		} finally {
 			storyStages["story-1"] = "READY";
 		}
@@ -536,6 +579,54 @@ describe("BacklogChangeProposal — the merge target link", () => {
 		expect(
 			screen.queryByRole("link", { name: /Open merge target/ }),
 		).not.toBeInTheDocument();
+	});
+
+	it("follows the target the reviewer picks instead", async () => {
+		const user = userEvent.setup();
+		renderProposal();
+
+		await screen.findByRole("link", {
+			name: "Open merge target F-12 for Export throttling in a new tab",
+		});
+		await user.click(
+			screen.getByRole("combobox", {
+				name: /Choose the ticket to enrich for/,
+			}),
+		);
+		await user.click(await screen.findByRole("option", { name: /F-20/ }));
+
+		const link = await screen.findByRole("link", {
+			name: "Open merge target F-20 for Export throttling in a new tab",
+		});
+		expect(link).toHaveAttribute(
+			"href",
+			"/app/acme/projects/proj-1/stories/story-2",
+		);
+		expect(link).toHaveAttribute("target", "_blank");
+		expect(
+			screen.queryByRole("link", { name: /Open merge target F-12/ }),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps the link beside the warning when the target is closed", async () => {
+		storyStages["story-1"] = "CLOSED";
+		try {
+			renderProposal();
+
+			expect(
+				await screen.findByText(/is closed or archived/i),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("link", {
+					name: "Open merge target F-12 for Export throttling in a new tab",
+				}),
+			).toHaveAttribute(
+				"href",
+				"/app/acme/projects/proj-1/stories/story-1",
+			);
+		} finally {
+			storyStages["story-1"] = "READY";
+		}
 	});
 
 	it("offers no link for a target the ticket list does not have", async () => {

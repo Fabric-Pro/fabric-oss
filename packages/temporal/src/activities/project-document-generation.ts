@@ -100,6 +100,7 @@ import {
 import {
 	hydrateProjectContextHits,
 	searchProjectContextHits,
+	withoutConfidentialTranscripts,
 } from "@repo/rag/lib/project-contexts/search-hits";
 import { documentTypeLabel } from "@repo/utils/document-type-catalog";
 import { countDocumentWords } from "@repo/utils/document-word-count";
@@ -511,7 +512,7 @@ async function retrieveProjectContextEntries(
 		});
 
 		let queryEmbedding: number[] = [];
-		const results = await searchProjectContextHits({
+		const hits = await searchProjectContextHits({
 			query: finalSearchQuery,
 			embedQuery: async (boundedQuery) => {
 				// Generate embedding for the query using configured model
@@ -548,6 +549,9 @@ async function retrieveProjectContextEntries(
 			excludeDocumentChunks: true,
 			minSimilarity: similarityThreshold,
 		});
+		// A confidential series' transcript and every Parlume transcript stay
+		// out of a generated document, as they do in the main retrieval path.
+		const results = await withoutConfidentialTranscripts(hits, projectId);
 
 		// Diagnostic: pin down WHY retrieval can return nothing for a context
 		// that is embedded (Business Case QA, AC-4). The query vector dimension
@@ -561,7 +565,8 @@ async function retrieveProjectContextEntries(
 			queryEmbeddingDimensions: queryEmbedding.length,
 			minimumSemanticSimilarity: similarityThreshold,
 			scoreKind: "hybrid RRF ranks or dense similarity after fallback",
-			rawResultCount: results.length,
+			rawResultCount: hits.length,
+			confidentialTranscriptHits: hits.length - results.length,
 			topScores: results.slice(0, 5).map((r) => r.score),
 		});
 

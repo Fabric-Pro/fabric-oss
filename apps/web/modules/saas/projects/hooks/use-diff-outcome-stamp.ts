@@ -4,6 +4,9 @@ import { useCallback } from "react";
 import { toast } from "sonner";
 import { useRecordDocumentAssistantDiffOutcome } from "./useDocumentAssistantHistory";
 
+const DIFF_OUTCOME_NOT_RECORDED_MESSAGE =
+	"Couldn't record your decision in the conversation history.";
+
 /**
  * Which proposal an outcome is stamped on: the conversation, and the
  * `(messageId, toolCallId)` entry in its persisted messages blob.
@@ -69,9 +72,10 @@ export function useDiffOutcomeStamp() {
 					at: new Date().toISOString(),
 				});
 			} catch {
-				toast.error(
-					"Couldn't record diff outcome — your accept/reject was still applied.",
-				);
+				// This write is only the conversation's record, so the toast
+				// says nothing about whether the edit itself was applied or
+				// saved: the editor and the save report that.
+				toast.error(DIFF_OUTCOME_NOT_RECORDED_MESSAGE);
 			}
 		},
 		[recordDiffOutcomeMutation],

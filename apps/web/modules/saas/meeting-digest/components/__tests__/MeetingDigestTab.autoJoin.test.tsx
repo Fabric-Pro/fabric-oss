@@ -30,6 +30,7 @@ vi.mock("../../hooks/use-meeting-digest", () => ({
 					suggestionsEnabled: true,
 					suggestionAudience: "TEAM",
 					enabledBy: null,
+					enabledAt: null,
 					error: null,
 					errorAt: null,
 					syncStopped: false,

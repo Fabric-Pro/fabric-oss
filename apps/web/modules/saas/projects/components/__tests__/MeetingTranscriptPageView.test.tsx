@@ -120,6 +120,20 @@ describe("MeetingTranscriptPageView — heading + metadata", () => {
 		expect(screen.getByText("Alice, Bob")).toBeInTheDocument();
 	});
 
+	it("keeps each transcript line on its own line", () => {
+		render(
+			<MeetingTranscriptPageView
+				transcript={makeTranscript()}
+				backHref={backHref}
+			/>,
+		);
+
+		const body = screen.getByTestId("meeting-transcript-markdown");
+		expect(body.querySelectorAll("br")).toHaveLength(1);
+		expect(body).toHaveTextContent("Alice: Hello everyone");
+		expect(body).toHaveTextContent("Bob: Hi Alice");
+	});
+
 	it("gracefully shows 'Date unavailable' when there is no meeting date", () => {
 		render(
 			<MeetingTranscriptPageView
@@ -196,6 +210,25 @@ describe("MeetingTranscriptPageView — body", () => {
 		expect(
 			screen.queryByTestId("meeting-transcript-markdown"),
 		).not.toBeInTheDocument();
+	});
+
+	it("says why a Parlume transcript is not shown to this reader", () => {
+		render(
+			<MeetingTranscriptPageView
+				transcript={makeTranscript({
+					content: "",
+					withheldReason:
+						"Only the person who invited Parlume and project managers can read this meeting's transcript. Its notes are on the Parlume page.",
+				})}
+				backHref={backHref}
+			/>,
+		);
+
+		const empty = screen.getByTestId("meeting-transcript-empty");
+		expect(empty).toHaveTextContent(
+			"Only the person who invited Parlume and project managers can read this meeting's transcript.",
+		);
+		expect(empty).not.toHaveTextContent("could not be loaded");
 	});
 
 	it("treats whitespace-only content as empty", () => {

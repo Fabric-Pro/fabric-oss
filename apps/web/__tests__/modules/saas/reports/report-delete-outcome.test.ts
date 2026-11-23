@@ -12,6 +12,16 @@ describe("reportDeleteFailure", () => {
 		});
 	});
 
+	it("asks an expired session to sign in again, not for a permission", () => {
+		const failure = reportDeleteFailure({ code: "UNAUTHORIZED" });
+
+		expect(failure).toEqual({
+			kind: "signed-out",
+			message: "Your session has expired. Please sign in and try again.",
+		});
+		expect(failure.message).not.toMatch(/permission/i);
+	});
+
 	it("treats a report that no longer exists as deleted, not as a refusal", () => {
 		const failure = reportDeleteFailure({
 			code: "NOT_FOUND",

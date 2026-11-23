@@ -18,6 +18,7 @@ import {
 	ATTR_SERVICE_NAME,
 	ATTR_SERVICE_VERSION,
 } from "@opentelemetry/semantic-conventions";
+import { undiciRedactedUrlAttributes } from "./url-redaction";
 
 /**
  * OpenTelemetry Configuration for MCP Operations
@@ -135,6 +136,10 @@ export function initializeTracing() {
 		}),
 		instrumentations: [
 			getNodeAutoInstrumentations({
+				// GHSA-hgpx-52j8-8gq2: see init.ts.
+				"@opentelemetry/instrumentation-undici": {
+					startSpanHook: undiciRedactedUrlAttributes,
+				},
 				// Disable instrumentations that are too verbose in development
 				"@opentelemetry/instrumentation-fs": {
 					enabled: isProduction,

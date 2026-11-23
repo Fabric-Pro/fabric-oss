@@ -73,7 +73,27 @@ describe("Parlume auto-join route", () => {
 		expect(mocks.run).toHaveBeenCalledWith({
 			linkedMeetingId: "lm-1",
 			occurrenceStart: new Date("2026-10-27T09:00:00.000Z"),
+			inviteeDomains: [],
+			inviteeEmails: [],
 		});
+	});
+
+	it("passes on the invitees' email domains and internal addresses the scheduler read", async () => {
+		await POST(
+			request({
+				linkedMeetingId: "lm-1",
+				occurrenceStart: "2026-10-27T09:00:00.000Z",
+				inviteeDomains: ["example.com", "partner.example"],
+				inviteeEmails: ["dev.two@example.com"],
+			}),
+		);
+
+		expect(mocks.run).toHaveBeenCalledWith(
+			expect.objectContaining({
+				inviteeDomains: ["example.com", "partner.example"],
+				inviteeEmails: ["dev.two@example.com"],
+			}),
+		);
 	});
 
 	it("answers a refusal with 200, so the scheduler does not retry it", async () => {

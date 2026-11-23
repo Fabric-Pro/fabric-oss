@@ -163,7 +163,7 @@ export function ParlumeInviteCard({
 				</p>
 			</CardHeader>
 			<CardContent className="space-y-6 p-6 pt-0">
-				{!operatorReady && readiness && (
+				{readiness && (
 					<ParlumeReadinessChecklist
 						readiness={readiness}
 						settingsBasePath={settingsBasePath}

@@ -1,0 +1,162 @@
+{
+	"id": "side-talk",
+	"title": "Onboarding sync with side talk",
+	"covers": [
+		"side talk between agenda items",
+		"joking \"decisions\" that the meeting did not make",
+		"a due date said twice by different people"
+	],
+	"segments": [
+		{
+			"id": 1,
+			"speaker": "Avery Example",
+			"text": "Before we start, did anyone watch the match last night?",
+			"startMs": 0,
+			"endMs": 8000
+		},
+		{
+			"id": 2,
+			"speaker": "Blake Example",
+			"text": "Don't remind me. We should decide to never schedule standups after a match day, ha.",
+			"startMs": 10000,
+			"endMs": 18000
+		},
+		{
+			"id": 3,
+			"speaker": "Drew Example",
+			"text": "I vote we order pizza every Friday forever.",
+			"startMs": 20000,
+			"endMs": 28000
+		},
+		{
+			"id": 4,
+			"speaker": "Avery Example",
+			"text": "Ha, noted. Okay, the onboarding flow.",
+			"startMs": 30000,
+			"endMs": 38000
+		},
+		{
+			"id": 5,
+			"speaker": "Blake Example",
+			"text": "The new signup form drops about a third of users at the company size step.",
+			"startMs": 40000,
+			"endMs": 48000
+		},
+		{
+			"id": 6,
+			"speaker": "Drew Example",
+			"text": "Then let's remove the company size field from signup and ask for it later in settings.",
+			"startMs": 50000,
+			"endMs": 58000
+		},
+		{
+			"id": 7,
+			"speaker": "Avery Example",
+			"text": "Yes, decided. Company size moves out of signup.",
+			"startMs": 60000,
+			"endMs": 68000
+		},
+		{
+			"id": 8,
+			"speaker": "Blake Example",
+			"text": "My coffee machine is broken again, by the way.",
+			"startMs": 70000,
+			"endMs": 78000
+		},
+		{
+			"id": 9,
+			"speaker": "Drew Example",
+			"text": "Mine too, they must be on strike.",
+			"startMs": 80000,
+			"endMs": 88000
+		},
+		{
+			"id": 10,
+			"speaker": "Avery Example",
+			"text": "Drew, can you ship the shorter signup form by next Tuesday?",
+			"startMs": 90000,
+			"endMs": 98000
+		},
+		{
+			"id": 11,
+			"speaker": "Drew Example",
+			"text": "Sure, next Tuesday.",
+			"startMs": 100000,
+			"endMs": 104000
+		},
+		{
+			"id": 12,
+			"speaker": "Blake Example",
+			"text": "Also I'm thinking about adopting a cat.",
+			"startMs": 110000,
+			"endMs": 118000
+		},
+		{
+			"id": 13,
+			"speaker": "Avery Example",
+			"text": "Good luck with that. Last thing, the welcome email copy still says beta.",
+			"startMs": 120000,
+			"endMs": 128000
+		},
+		{
+			"id": 14,
+			"speaker": "Blake Example",
+			"text": "I'll fix the welcome email copy today.",
+			"startMs": 130000,
+			"endMs": 138000
+		}
+	],
+	"truth": {
+		"decisions": [
+			{
+				"text": "Remove the company size field from signup and ask for it later in settings.",
+				"keywords": ["company", "size"],
+				"segments": [6, 7]
+			}
+		],
+		"actionItems": [
+			{
+				"text": "Ship the shorter signup form.",
+				"keywords": ["signup|sign up|form"],
+				"segments": [10, 11],
+				"owner": "Drew Example",
+				"due": "next Tuesday"
+			},
+			{
+				"text": "Fix the welcome email copy.",
+				"keywords": ["welcome|email"],
+				"segments": [14],
+				"owner": "Blake Example",
+				"due": "today"
+			}
+		]
+	},
+	"suggestions": {
+		"passesAfter": [7, 14],
+		"workItems": [
+			{
+				"identifier": "ONB-3",
+				"title": "Shorter signup form",
+				"status": "To do",
+				"priority": "HIGH",
+				"owner": null
+			},
+			{
+				"identifier": "ONB-9",
+				"title": "Welcome email still mentions beta",
+				"status": "To do",
+				"priority": "LOW",
+				"owner": "Blake Example"
+			}
+		],
+		"agenda": null,
+		"previousQuestions": [],
+		"expected": [
+			{
+				"kind": "answer",
+				"text": "ONB-3 Shorter signup form is in the backlog with no owner yet.",
+				"keywords": ["onb-3|signup|form", "owner|unassigned|assign"]
+			}
+		]
+	}
+}

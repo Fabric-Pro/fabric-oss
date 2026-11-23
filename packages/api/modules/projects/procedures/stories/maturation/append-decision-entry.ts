@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/client";
 import {
 	createDecisionLogEntry,
+	getDecisionLogEntryById,
 	getFeatureMaturationState,
 	hasProjectAccess,
 	type MaturationTenantFilter,
@@ -91,6 +92,20 @@ export const appendDecisionEntryProcedure = tenantProtectedProcedure
 			organizationId: organizationId ?? null,
 			userId: context.user.id,
 		};
+
+		// A reply joins a thread on this feature only: a parent id from another
+		// feature, project or organization is not found.
+		if (
+			input.parentId &&
+			!(await getDecisionLogEntryById({
+				tenantFilter,
+				userStoryId: input.storyId,
+				projectId: input.projectId,
+				id: input.parentId,
+			}))
+		) {
+			throw new ORPCError("NOT_FOUND", { message: "Entry not found" });
+		}
 
 		const entry = await createDecisionLogEntry({
 			tenantFilter,

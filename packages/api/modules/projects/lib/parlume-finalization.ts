@@ -4,10 +4,16 @@ import {
 	buildParlumeChatDeliveryEvidence,
 	formatParlumeChatDeliveryEvidence,
 } from "@repo/utils/parlume-chat-delivery-evidence";
+import {
+	PARLUME_TRANSCRIPT_RECORDS_HEADER,
+	PARLUME_TRANSCRIPT_SPEECH_HEADER,
+} from "@repo/utils/parlume-notes";
 import { startTimeSuggestionsAfterMeeting } from "../../time-tracking/lib/automatic-suggestions";
 import { deleteParlumeMeetingBotData } from "./parlume-attendee";
+import { requestParlumeBridgePurge } from "./parlume-bridge-purge";
 import { parlumeLog } from "./parlume-log";
 import { resolveParlumeAttendeeSettings } from "./parlume-provider-settings";
+import { parlumeTranscriptLine } from "./parlume-transcript-line";
 import {
 	recordParlumeMeetingProviderUsage,
 	resolveParlumeMeetingEnd,
@@ -47,9 +53,15 @@ export async function cleanupParlumeProviderData(
 		attendee,
 		providerBotId: session.providerBotId,
 	});
+	// Nothing more is owed to the bot's webhooks: revoke the session's webhook
+	// token, which also makes its delivery receipts unnecessary.
 	await db.parlumeMeetingSession.update({
 		where: { id: sessionId },
-		data: { providerDataDeletedAt: new Date() },
+		data: {
+			providerDataDeletedAt: new Date(),
+			callbackTokenDigest: null,
+			webhookReceipts: { deleteMany: {} },
+		},
 	});
 }
 
@@ -78,6 +90,8 @@ export async function finalizeParlumeSession(
 			transcriptContextId: true,
 			trigger: true,
 			createdAt: true,
+			memberSpeakerIds: true,
+			guestSpeakerIds: true,
 		},
 	});
 	if (!session?.providerBotId) {
@@ -141,15 +155,24 @@ export async function finalizeParlumeSession(
 			projectId: session.projectId,
 			organizationId: session.organizationId,
 		};
+		// A question a member asked on the Parlume page was never part of the
+		// meeting: it stays out of the saved transcript, the notes and the
+		// recap, and so do the changes it proposed.
+		const meetingTurn = { replyChannel: { not: "PAGE" } } as const;
 		const [segments, turns, actions, channelPosts] = await Promise.all([
 			db.parlumeMeetingSegment.findMany({
 				where,
-				select: { text: true, speakerName: true, source: true },
+				select: {
+					text: true,
+					speakerName: true,
+					speakerId: true,
+					source: true,
+				},
 				orderBy: [{ utteranceStartMs: "asc" }, { createdAt: "asc" }],
 				take: MAX_PARLUME_TRANSCRIPT_RECORDS + 1,
 			}),
 			db.parlumeMeetingTurn.findMany({
-				where,
+				where: { ...where, ...meetingTurn },
 				select: {
 					id: true,
 					requestText: true,
@@ -161,7 +184,7 @@ export async function finalizeParlumeSession(
 				take: MAX_PARLUME_TRANSCRIPT_RECORDS + 1,
 			}),
 			db.parlumeAction.findMany({
-				where,
+				where: { ...where, turn: meetingTurn },
 				select: { turnId: true, toolName: true, status: true },
 				orderBy: [{ createdAt: "asc" }, { id: "asc" }],
 				take: MAX_PARLUME_TRANSCRIPT_RECORDS + 1,
@@ -210,16 +233,13 @@ export async function finalizeParlumeSession(
 			content += `${line}\n`;
 		};
 		if (segments.length) {
-			append("Captured incoming speech:");
+			append(PARLUME_TRANSCRIPT_SPEECH_HEADER);
 		}
 		for (const segment of segments) {
-			const line = segment.speakerName
-				? `${segment.speakerName}: ${segment.text}`
-				: segment.text;
-			append(segment.source === "CHAT" ? `[chat] ${line}` : line);
+			append(parlumeTranscriptLine(segment, session));
 		}
 		if (turns.length) {
-			append("\nRecorded Fabric responses and mutation receipts:");
+			append(`\n${PARLUME_TRANSCRIPT_RECORDS_HEADER}`);
 			append(
 				"Responses are generated text. A COMPLETED request does not prove a Fabric mutation, channel chat delivery or audio playback. PENDING/RUNNING requests are incomplete. Playback interruption does not determine mutation success.",
 			);
@@ -336,6 +356,9 @@ export async function finalizeParlumeSession(
 				: null,
 			botMs: endedAt.getTime() - session.createdAt.getTime(),
 		});
+		// Fabric now holds everything the bridge did: nothing of the meeting
+		// waits in its storage for the hard stop.
+		await requestParlumeBridgePurge(session.id, "finalized");
 		// Only a meeting the member had the agent join is evidence of their
 		// time (see `time-evidence.ts`). The session is already committed as
 		// finalized; awaited so a serverless route does not cut it off, and
@@ -359,28 +382,11 @@ export async function finalizeParlumeSession(
 			}
 		}
 	}
+	// The transcript is not embedded: answers and search leave it out, and
+	// only the people in the meeting read what it said.
 	if (transcriptContextId) {
 		const { getTemporalClient } = await import("@repo/temporal");
 		const temporal = await getTemporalClient();
-		await temporal.workflow.start("contextEmbeddingWorkflow", {
-			workflowIdConflictPolicy: "USE_EXISTING",
-			taskQueue: "project-documents",
-			workflowId: `context-embedding-parlume-${session.id}`,
-			args: [
-				{
-					contextId: transcriptContextId,
-					projectId: session.projectId,
-					userId: session.userId,
-					organizationId: session.organizationId,
-					type: "MEETING_TRANSCRIPT",
-					metadata: {
-						sourceTitle: "Parlume meeting transcript",
-						provider: "attendee",
-						parlumeSessionId: session.id,
-					},
-				},
-			],
-		});
 		await temporal.workflow.start("parlumeNotesWorkflow", {
 			workflowIdConflictPolicy: "USE_EXISTING",
 			taskQueue: "project-documents",

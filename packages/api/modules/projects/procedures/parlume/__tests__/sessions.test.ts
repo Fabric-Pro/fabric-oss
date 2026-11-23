@@ -1,12 +1,16 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { handlers, mocks } = vi.hoisted(() => {
 	const handlers: Record<string, (...args: never[]) => Promise<unknown>> = {};
 	const mocks = {
+		realtimeDeployment: vi.fn(),
 		projectFindFirst: vi.fn(),
 		agentFindMany: vi.fn(),
 		agentFindFirst: vi.fn(),
 		sessionFindMany: vi.fn(),
+		transaction: vi.fn(),
+		executeRaw: vi.fn(),
 		sessionCount: vi.fn(),
 		sessionFindFirst: vi.fn(),
 		sessionFindUniqueOrThrow: vi.fn(),
@@ -22,21 +26,29 @@ const { handlers, mocks } = vi.hoisted(() => {
 		speechModel: vi.fn(),
 		getSettings: vi.fn(),
 		armBridge: vi.fn(),
+		chatTagStart: vi.fn(),
 		isTeamsMeetingUrl: vi.fn(),
 		startBot: vi.fn(),
 		leaveBot: vi.fn(),
+		noteLeaving: vi.fn(),
 		finalize: vi.fn(),
 		recordAudit: vi.fn(),
 		contextFindMany: vi.fn(),
 		azure: vi.fn(),
 		attendee: vi.fn(),
 		membership: vi.fn(),
+		managesTranscripts: vi.fn(),
+		readerEmail: vi.fn(),
+		mayPropose: vi.fn(),
+		notifyJoinFailure: vi.fn(),
 	};
 	return { handlers, mocks };
 });
 
 vi.mock("@repo/database", () => ({
 	db: {
+		$transaction: (...args: unknown[]) => mocks.transaction(...args),
+		$executeRaw: (...args: unknown[]) => mocks.executeRaw(...args),
 		project: {
 			findFirst: (...args: unknown[]) => mocks.projectFindFirst(...args),
 		},
@@ -94,15 +106,42 @@ vi.mock("../../../lib/parlume-attendee", async (importOriginal) => ({
 	isTeamsMeetingUrl: (...args: unknown[]) => mocks.isTeamsMeetingUrl(...args),
 	startParlumeMeetingBot: (...args: unknown[]) => mocks.startBot(...args),
 	leaveParlumeMeetingBot: (...args: unknown[]) => mocks.leaveBot(...args),
+	noteParlumeLeaving: (...args: unknown[]) => mocks.noteLeaving(...args),
+}));
+
+vi.mock("../../../lib/parlume-chat-tags", () => ({
+	parlumeChatTagStart: (...args: unknown[]) => mocks.chatTagStart(...args),
 }));
 
 vi.mock("../../../lib/parlume-provider-settings", () => ({
 	resolveParlumeAttendeeSettings: (...args: unknown[]) =>
 		mocks.attendee(...args),
+	attendeeSourceToStored: (source: string) => source.toUpperCase(),
+	resolveParlumeRealtimeDeployment: (...args: unknown[]) =>
+		mocks.realtimeDeployment(...args),
 }));
 
 vi.mock("../../../lib/parlume-finalization", () => ({
 	finalizeParlumeSession: (...args: unknown[]) => mocks.finalize(...args),
+}));
+
+vi.mock("../../../lib/parlume-notices", () => ({
+	notifyParlumeJoinFailure: (...args: unknown[]) =>
+		mocks.notifyJoinFailure(...args),
+}));
+
+vi.mock("../../../lib/parlume-transcript-access", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("../../../lib/parlume-transcript-access")
+	>()),
+	managesParlumeTranscripts: (...args: unknown[]) =>
+		mocks.managesTranscripts(...args),
+	parlumeReaderEmail: (...args: unknown[]) => mocks.readerEmail(...args),
+}));
+
+vi.mock("../../../lib/parlume-note-proposals", () => ({
+	mayProposeParlumeActionItems: (...args: unknown[]) =>
+		mocks.mayPropose(...args),
 }));
 
 vi.mock("../../../../../orpc/procedures", () => {
@@ -133,6 +172,10 @@ const { PARLUME_VOICE_REQUIRED } = await import(
 	"../../../lib/parlume-readiness"
 );
 const { ParlumeProviderError } = await import("../../../lib/parlume-attendee");
+const { startParlumeMeetingSession } = await import(
+	"../../../lib/parlume-start"
+);
+const { db } = await import("@repo/database");
 
 const context = {
 	user: { id: "user-1", email: "dev@example.com", name: "Dev" },
@@ -166,15 +209,17 @@ const attendee = {
 	apiKey: "org-key",
 	baseUrl: "https://attendee.example.com",
 	teamsLoginMode: null,
+	webhookSecret: "org-webhook-secret",
 	source: "organization",
 };
 
 beforeEach(() => {
 	vi.resetAllMocks();
+	mocks.mayPropose.mockResolvedValue(false);
 	mocks.contextFindMany.mockResolvedValue([]);
 	mocks.linkedFindFirst.mockResolvedValue(null);
 	mocks.linkedFindMany.mockResolvedValue([]);
-	mocks.integration.mockResolvedValue(null);
+	mocks.integration.mockResolvedValue({ id: "example-integration" });
 	mocks.sessionCount.mockResolvedValue(0);
 	mocks.projectFindFirst.mockResolvedValue(project);
 	mocks.isFeatureEnabled.mockResolvedValue(true);
@@ -189,10 +234,16 @@ beforeEach(() => {
 		serviceSecret: "service-secret",
 	});
 	mocks.armBridge.mockResolvedValue(undefined);
+	mocks.chatTagStart.mockResolvedValue(4);
 	mocks.isTeamsMeetingUrl.mockReturnValue(true);
 	mocks.agentFindFirst.mockResolvedValue(agent);
 	mocks.agentFindMany.mockResolvedValue([agent]);
 	mocks.sessionCreate.mockResolvedValue({ id: "session-1" });
+	mocks.sessionFindMany.mockResolvedValue([]);
+	mocks.executeRaw.mockResolvedValue(1);
+	mocks.transaction.mockImplementation(
+		(run: (tx: unknown) => Promise<unknown>) => run(db),
+	);
 	mocks.sessionUpdateMany.mockResolvedValue({ count: 1 });
 	mocks.sessionFindUniqueOrThrow.mockResolvedValue(session);
 	mocks.sessionFindFirst.mockResolvedValue({
@@ -205,6 +256,10 @@ beforeEach(() => {
 	mocks.sessionUpdate.mockResolvedValue(session);
 	mocks.startBot.mockResolvedValue("provider-bot-1");
 	mocks.leaveBot.mockResolvedValue({ kind: "LEAVE_REQUESTED" });
+	mocks.noteLeaving.mockResolvedValue(undefined);
+	mocks.managesTranscripts.mockResolvedValue(false);
+	mocks.readerEmail.mockResolvedValue(null);
+	mocks.notifyJoinFailure.mockResolvedValue(undefined);
 });
 
 describe("Parlume session procedures", () => {
@@ -241,7 +296,7 @@ describe("Parlume session procedures", () => {
 
 		expect(result.operatorReady).toBe(false);
 		expect(result.readiness).toEqual({
-			meetingBot: { ready: false, source: null },
+			meetingBot: { ready: false, source: null, webhookSigned: false },
 			voice: { ready: false, engine: null },
 			platform: { ready: false },
 			canConfigure: false,
@@ -264,11 +319,30 @@ describe("Parlume session procedures", () => {
 		expect(result.readiness.meetingBot).toEqual({
 			ready: false,
 			source: null,
+			webhookSigned: false,
 		});
+	});
+
+	it("stays ready, with an unsigned-webhook advisory, while the meeting bot's project has no webhook secret", async () => {
+		mocks.attendee.mockResolvedValue({ ...attendee, webhookSecret: null });
+
+		const result = (await handlers.listAgents({
+			input: { projectId: "project-1" },
+			context,
+		})) as { operatorReady: boolean; readiness: { meetingBot: unknown } };
+
+		expect(result.operatorReady).toBe(true);
+		expect(result.readiness.meetingBot).toEqual({
+			ready: true,
+			source: "organization",
+			webhookSigned: false,
+		});
+		expect(JSON.stringify(result)).not.toContain("org-webhook-secret");
 	});
 
 	it("is ready with an Azure AI Foundry resource as the only voice provider", async () => {
 		mocks.resolveVoiceKey.mockResolvedValue(null);
+		mocks.realtimeDeployment.mockResolvedValue("gpt-realtime");
 		mocks.azure.mockResolvedValue({
 			origin: "https://example-resource.openai.azure.com",
 			apiKey: "azure-key",
@@ -281,7 +355,11 @@ describe("Parlume session procedures", () => {
 
 		expect(result.operatorReady).toBe(true);
 		expect(result.readiness).toEqual({
-			meetingBot: { ready: true, source: "organization" },
+			meetingBot: {
+				ready: true,
+				source: "organization",
+				webhookSigned: true,
+			},
 			voice: { ready: true, engine: "realtime" },
 			platform: { ready: true },
 			canConfigure: true,
@@ -488,6 +566,63 @@ describe("Parlume session procedures", () => {
 		expect(mocks.finalize).not.toHaveBeenCalled();
 	});
 
+	it("tells the meeting chat its offers end before an active session's bot is asked to leave", async () => {
+		const order: string[] = [];
+		mocks.noteLeaving.mockImplementation(async () => {
+			order.push("notice");
+		});
+		mocks.sessionUpdateMany.mockImplementation(async () => {
+			order.push("claim");
+			return { count: 1 };
+		});
+		mocks.leaveBot.mockImplementation(async () => {
+			order.push("leave");
+			return { kind: "LEAVE_REQUESTED" };
+		});
+
+		await handlers.stop({
+			input: { projectId: "project-1", sessionId: "session-1" },
+			context,
+		});
+
+		expect(mocks.noteLeaving).toHaveBeenCalledWith({
+			settings: expect.objectContaining({
+				serviceSecret: "service-secret",
+			}),
+			sessionId: "session-1",
+		});
+		expect(order.slice(0, 3)).toEqual(["notice", "claim", "leave"]);
+	});
+
+	it("still asks the bot to leave when the bridge cannot post the notice", async () => {
+		mocks.noteLeaving.mockRejectedValue(new Error("bridge down"));
+
+		await handlers.stop({
+			input: { projectId: "project-1", sessionId: "session-1" },
+			context,
+		});
+
+		expect(mocks.leaveBot).toHaveBeenCalled();
+	});
+
+	it("posts no notice for a bot that was never admitted", async () => {
+		mocks.sessionFindFirst.mockResolvedValue({
+			id: "session-1",
+			providerBotId: "provider-bot-1",
+			status: "JOINING",
+			streamClosedAt: null,
+			streamGeneration: 1,
+		});
+
+		await handlers.stop({
+			input: { projectId: "project-1", sessionId: "session-1" },
+			context,
+		});
+
+		expect(mocks.noteLeaving).not.toHaveBeenCalled();
+		expect(mocks.leaveBot).toHaveBeenCalled();
+	});
+
 	it("uses the project-admin permission, which excludes editors", async () => {
 		const source = await import("node:fs/promises").then((fs) =>
 			fs.readFile(new URL("../sessions.ts", import.meta.url), "utf8"),
@@ -497,6 +632,9 @@ describe("Parlume session procedures", () => {
 		);
 	});
 
+	// Past its hard stop, or fifteen minutes after the provider reported the
+	// bot gone: a stream close the bridge never reports no longer keeps the
+	// session LEAVING until the hard stop.
 	it("finalizes a stranded session past its hard stop when listing", async () => {
 		mocks.sessionFindMany
 			.mockResolvedValueOnce([
@@ -517,7 +655,10 @@ describe("Parlume session procedures", () => {
 					projectId: "project-1",
 					terminalCallbackAt: { not: null },
 					finalizedAt: null,
-					hardStopAt: { lt: expect.any(Date) },
+					OR: [
+						{ hardStopAt: { lt: expect.any(Date) } },
+						{ terminalCallbackAt: { lt: expect.any(Date) } },
+					],
 				}),
 				take: 5,
 			}),
@@ -553,6 +694,7 @@ describe("Parlume session procedures", () => {
 			id: `session-${index}`,
 			createdAt,
 			transcriptContextId: null,
+			attendeeUserIds: [],
 			_count: { turns: index, suggestions: index * 2 },
 		}));
 		mocks.sessionFindMany
@@ -601,11 +743,288 @@ describe("Parlume session procedures", () => {
 		});
 	});
 
+	it("lists anchored notes, and offers their regeneration to the inviter once they are done", async () => {
+		const items = [
+			{ kind: "decision", text: "Ship the draft.", anchorLine: 2 },
+		];
+		const row = (id: string, contextId: string) => ({
+			id,
+			userId: "user-1",
+			createdAt: new Date("2026-09-30T12:00:00Z"),
+			transcriptContextId: contextId,
+			transcriptDeletedAt: null,
+			attendeeUserIds: [],
+			_count: { turns: 0, suggestions: 0 },
+		});
+		mocks.sessionFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([
+			row("done", "ctx-done"),
+			row("writing", "ctx-writing"),
+			{
+				...row("deleted", "ctx-deleted"),
+				transcriptDeletedAt: new Date(),
+			},
+		]);
+		mocks.contextFindMany.mockResolvedValue([
+			{
+				id: "ctx-done",
+				metadata: {
+					parlumeNotes: "### Decisions\n- Ship the draft.",
+					parlumeNotesItems: { version: 1, items },
+					parlumeNotesStatus: "COMPLETED",
+				},
+			},
+			{ id: "ctx-writing", metadata: { parlumeNotesStatus: "PENDING" } },
+			{ id: "ctx-deleted", metadata: { parlumeNotesStatus: "FAILED" } },
+		]);
+
+		const page = (await handlers.listSessions({
+			input: { projectId: "project-1" },
+			context,
+		})) as { sessions: Array<Record<string, unknown>> };
+
+		expect(page.sessions).toMatchObject([
+			{ id: "done", notesItems: items, canRegenerateNotes: true },
+			{ id: "writing", notesItems: [], canRegenerateNotes: false },
+			{ id: "deleted", canRegenerateNotes: false },
+		]);
+	});
+
+	it("offers proposing action items to a transcript reader who may create work items, never for a confidential meeting", async () => {
+		const row = (id: string, contextId: string | null) => ({
+			id,
+			userId: "user-1",
+			createdAt: new Date("2026-09-30T12:00:00Z"),
+			confidential: false,
+			transcriptContextId: contextId,
+			transcriptDeletedAt: null,
+			attendeeUserIds: ["user-1"],
+			_count: { turns: 0, suggestions: 0 },
+		});
+		const rows = [
+			row("open", "ctx-open"),
+			{ ...row("secret", "ctx-secret"), confidential: true },
+			{
+				...row("deleted", "ctx-deleted"),
+				transcriptDeletedAt: new Date(),
+			},
+			row("no-transcript", null),
+		];
+		const list = async () => {
+			mocks.sessionFindMany
+				.mockResolvedValueOnce([])
+				.mockResolvedValueOnce(rows);
+			const page = (await handlers.listSessions({
+				input: { projectId: "project-1" },
+				context,
+			})) as {
+				sessions: Array<{ id: string; canProposeActionItems: boolean }>;
+			};
+			return page.sessions.map(({ id, canProposeActionItems }) => [
+				id,
+				canProposeActionItems,
+			]);
+		};
+
+		mocks.mayPropose.mockResolvedValue(true);
+		expect(await list()).toEqual([
+			["open", true],
+			["secret", false],
+			["deleted", false],
+			["no-transcript", false],
+		]);
+		expect(mocks.mayPropose).toHaveBeenCalledWith({
+			projectId: "project-1",
+			userId: "user-1",
+		});
+
+		mocks.mayPropose.mockResolvedValue(false);
+		expect((await list())[0]).toEqual(["open", false]);
+	});
+
+	it("lets the inviter and a project manager read a session's transcript, and no other reader", async () => {
+		const rows = [
+			{
+				id: "invited-by-viewer",
+				userId: "user-1",
+				createdAt: new Date("2026-09-30T12:00:00Z"),
+				transcriptContextId: "ctx-1",
+				attendeeUserIds: [],
+				_count: { turns: 0, suggestions: 0 },
+			},
+			{
+				id: "invited-by-someone-else",
+				userId: "user-2",
+				createdAt: new Date("2026-09-30T11:00:00Z"),
+				transcriptContextId: "ctx-2",
+				attendeeUserIds: [],
+				_count: { turns: 0, suggestions: 0 },
+			},
+		];
+		const list = async () => {
+			mocks.sessionFindMany
+				.mockResolvedValueOnce([])
+				.mockResolvedValueOnce(rows);
+			return (await handlers.listSessions({
+				input: { projectId: "project-1" },
+				context,
+			})) as {
+				sessions: Array<{ id: string; canReadTranscript: boolean }>;
+			};
+		};
+
+		const reader = await list();
+		expect(
+			reader.sessions.map(({ id, canReadTranscript }) => [
+				id,
+				canReadTranscript,
+			]),
+		).toEqual([
+			["invited-by-viewer", true],
+			["invited-by-someone-else", false],
+		]);
+		expect(reader.sessions[0]).not.toHaveProperty("userId");
+		expect(mocks.managesTranscripts).toHaveBeenCalledWith({
+			projectId: "project-1",
+			userId: "user-1",
+		});
+
+		mocks.managesTranscripts.mockResolvedValue(true);
+		const manager = await list();
+		expect(manager.sessions.every((entry) => entry.canReadTranscript)).toBe(
+			true,
+		);
+	});
+
+	it("lets a member the meeting's invitation named read its transcript, but not delete it", async () => {
+		mocks.readerEmail.mockResolvedValue("dev@example.com");
+		const rows = [
+			{
+				id: "invited-to-meeting",
+				userId: "user-2",
+				inviteeEmails: ["dev@example.com"],
+				createdAt: new Date("2026-09-30T12:00:00Z"),
+				transcriptContextId: "ctx-1",
+				attendeeUserIds: [],
+				_count: { turns: 0, suggestions: 0 },
+			},
+			{
+				id: "not-invited",
+				userId: "user-2",
+				inviteeEmails: ["dev.two@example.com"],
+				createdAt: new Date("2026-09-30T11:00:00Z"),
+				transcriptContextId: "ctx-2",
+				attendeeUserIds: [],
+				_count: { turns: 0, suggestions: 0 },
+			},
+		];
+		mocks.sessionFindMany
+			.mockResolvedValueOnce([])
+			.mockResolvedValueOnce(rows);
+
+		const page = (await handlers.listSessions({
+			input: { projectId: "project-1" },
+			context,
+		})) as {
+			sessions: Array<{
+				id: string;
+				canReadTranscript: boolean;
+				canDeleteSession: boolean;
+			}>;
+		};
+
+		expect(page.sessions).toMatchObject([
+			{
+				id: "invited-to-meeting",
+				canReadTranscript: true,
+				canDeleteSession: false,
+			},
+			{
+				id: "not-invited",
+				canReadTranscript: false,
+				canDeleteSession: false,
+			},
+		]);
+		expect(page.sessions[0]).not.toHaveProperty("inviteeEmails");
+		expect(mocks.readerEmail).toHaveBeenCalledWith("user-1");
+	});
+
+	it("shows a confidential meeting the viewer was not in only as having taken place, even to its inviter", async () => {
+		mocks.readerEmail.mockResolvedValue("dev@example.com");
+		const rows = [
+			{
+				id: "confidential-not-attended",
+				userId: "user-1",
+				inviteeEmails: ["dev@example.com"],
+				confidential: true,
+				attendeeUserIds: ["user-2"],
+				createdAt: new Date("2026-09-30T12:00:00Z"),
+				transcriptContextId: null,
+				_count: { turns: 3, suggestions: 2 },
+			},
+			{
+				id: "confidential-attended",
+				userId: "user-2",
+				inviteeEmails: [],
+				confidential: true,
+				attendeeUserIds: ["user-1", "user-2"],
+				createdAt: new Date("2026-09-30T11:00:00Z"),
+				transcriptContextId: null,
+				_count: { turns: 1, suggestions: 0 },
+			},
+		];
+		mocks.sessionFindMany
+			.mockResolvedValueOnce([])
+			.mockResolvedValueOnce(rows);
+
+		const page = (await handlers.listSessions({
+			input: { projectId: "project-1" },
+			context,
+		})) as { sessions: Array<Record<string, unknown>> };
+
+		expect(page.sessions).toMatchObject([
+			{
+				id: "confidential-not-attended",
+				contentWithheld: true,
+				requestCount: 0,
+				suggestionCount: 0,
+				notes: null,
+				canReadTranscript: false,
+				canDeleteSession: false,
+				canMarkConfidential: false,
+				canClearConfidential: false,
+			},
+			{
+				id: "confidential-attended",
+				contentWithheld: false,
+				requestCount: 1,
+				canDeleteSession: false,
+				canMarkConfidential: true,
+				canClearConfidential: false,
+			},
+		]);
+		expect(page.sessions[0]).not.toHaveProperty("attendeeUserIds");
+
+		mocks.managesTranscripts.mockResolvedValue(true);
+		mocks.sessionFindMany
+			.mockResolvedValueOnce([])
+			.mockResolvedValueOnce(rows);
+		const manager = (await handlers.listSessions({
+			input: { projectId: "project-1" },
+			context,
+		})) as { sessions: Array<Record<string, unknown>> };
+		expect(manager.sessions[0]).toMatchObject({
+			contentWithheld: false,
+			requestCount: 3,
+			canClearConfidential: true,
+		});
+	});
+
 	it("has no cursor on the last page", async () => {
 		const rows = Array.from({ length: 5 }, (_, index) => ({
 			id: `session-${index}`,
 			createdAt: new Date("2026-09-30T12:00:00Z"),
 			transcriptContextId: null,
+			attendeeUserIds: [],
 			_count: { turns: 0 },
 		}));
 		mocks.sessionFindMany
@@ -627,6 +1046,7 @@ describe("Parlume session procedures", () => {
 			id: `session-${index}`,
 			createdAt,
 			transcriptContextId: null,
+			attendeeUserIds: [],
 			_count: { turns: 0 },
 		}));
 		mocks.sessionFindMany.mockResolvedValueOnce(rows);
@@ -774,6 +1194,61 @@ describe("Parlume session procedures", () => {
 		expect(mocks.sessionCreate).not.toHaveBeenCalled();
 	});
 
+	// Parlume places the people in the meeting through this connection.
+	it("refuses an invitation from someone without a Microsoft Teams connection", async () => {
+		mocks.integration.mockResolvedValue(null);
+
+		await expect(
+			handlers.start({
+				input: {
+					projectId: "project-1",
+					agentKind: "FABRIC_AGENT",
+					meetingUrl:
+						"https://teams.microsoft.com/l/meetup-join/example",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message: expect.stringContaining("Microsoft Teams connection"),
+		});
+		expect(mocks.integration).toHaveBeenCalledWith(
+			"MICROSOFT_GRAPH",
+			"user-1",
+			"org-1",
+		);
+		expect(mocks.sessionCreate).not.toHaveBeenCalled();
+		expect(mocks.startBot).not.toHaveBeenCalled();
+	});
+
+	it("asks the inviter to reconnect Microsoft Teams when the connection no longer works", async () => {
+		mocks.graph.mockRejectedValue(new Error("token expired"));
+
+		await expect(
+			handlers.start({
+				input: {
+					projectId: "project-1",
+					agentKind: "FABRIC_AGENT",
+					meetingUrl:
+						"https://teams.microsoft.com/l/meetup-join/example",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message: expect.stringContaining("Reconnect Microsoft Teams"),
+		});
+		expect(mocks.graph).toHaveBeenCalledWith(
+			"parlume_channel",
+			{ kind: "me" },
+			"user-1",
+			"org-1",
+			"example-integration",
+		);
+		expect(mocks.sessionCreate).not.toHaveBeenCalled();
+		expect(mocks.startBot).not.toHaveBeenCalled();
+	});
+
 	it("refuses an invitation without leaking settings it could not read", async () => {
 		mocks.attendee.mockRejectedValue(new Error("secret-bearing detail"));
 
@@ -836,6 +1311,97 @@ describe("Parlume session procedures", () => {
 			expect.objectContaining({ meetingUrl }),
 		);
 	});
+	// The web client's link keeps the meeting in its fragment: the session
+	// was stored as the bare `/v2/` path, found none of the earlier sessions
+	// in the same chat, and numbered its posts from P1 again.
+	it("counts tags and stores the meeting by its join path when the link carries it in the fragment", async () => {
+		const meetingUrl =
+			"https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/19:meeting_example@thread.v2/0?context=%7b%7d&anon=true";
+		const joinPath =
+			"https://teams.microsoft.com/l/meetup-join/19:meeting_example@thread.v2/0";
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl,
+			},
+			context,
+		});
+		expect(mocks.chatTagStart).toHaveBeenCalledWith({
+			organizationId: "org-1",
+			meetingUrl: joinPath,
+		});
+		expect(mocks.sessionCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					meetingUrl: joinPath,
+					channelChatStatus: "ATTENDEE",
+				}),
+			}),
+		);
+		expect(mocks.startBot).toHaveBeenCalledWith(
+			expect.objectContaining({ meetingUrl }),
+		);
+	});
+	// The web client's short link was stored as the bare `/v2/`: meetings
+	// invited that way continued one another's tags.
+	it("stores and resolves a web client's short link as the short link it carries", async () => {
+		const meetingUrl =
+			"https://teams.microsoft.com/v2/#/meet/1234567890123?p=example-passcode";
+		const shortUrl = "https://teams.microsoft.com/meet/1234567890123";
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl,
+			},
+			context,
+		});
+		expect(mocks.graph).toHaveBeenCalledWith(
+			"parlume_channel",
+			{ kind: "canonical", meetingUrl: shortUrl },
+			"user-1",
+			"org-1",
+			"example-integration",
+		);
+		expect(mocks.chatTagStart).toHaveBeenCalledWith({
+			organizationId: "org-1",
+			meetingUrl: shortUrl,
+		});
+		expect(mocks.sessionCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					meetingUrl: shortUrl,
+					channelChatStatus: "PENDING",
+				}),
+			}),
+		);
+		expect(mocks.startBot).toHaveBeenCalledWith(
+			expect.objectContaining({ meetingUrl }),
+		);
+	});
+	it("stores no meeting and starts at P1 for a link that names none", async () => {
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl: "https://teams.microsoft.com/v2/",
+			},
+			context,
+		});
+		expect(mocks.chatTagStart).not.toHaveBeenCalled();
+		expect(mocks.sessionCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					meetingUrl: null,
+					channelChatStatus: "ATTENDEE",
+				}),
+			}),
+		);
+		expect(mocks.armBridge).toHaveBeenCalledWith(
+			expect.objectContaining({ chatTagStart: 1 }),
+		);
+	});
 	it("associates a manually invited short link with its exact canonical project series before joining", async () => {
 		const canonical =
 			"https://teams.microsoft.com/l/meetup-join/19%3Aexample%40thread.tacv2/1700000000000?context=example";
@@ -876,7 +1442,7 @@ describe("Parlume session procedures", () => {
 			expect.objectContaining({ meetingUrl }),
 		);
 	});
-	it("refuses a manual short-link bot while an automatic session of its canonical series is live", async () => {
+	it("sends no second bot for a manual short link while an automatic session of its canonical series is live", async () => {
 		const canonical =
 			"https://teams.microsoft.com/l/meetup-join/19%3Aexample%40thread.tacv2/1700000000000";
 		mocks.integration.mockResolvedValue({ id: "example-integration" });
@@ -884,6 +1450,11 @@ describe("Parlume session procedures", () => {
 		mocks.linkedFindMany.mockResolvedValue([
 			{ id: "example-series", joinUrl: canonical },
 		]);
+		mocks.sessionFindFirst.mockResolvedValue({
+			id: "session-0",
+			status: "ACTIVE",
+			projectId: "project-1",
+		});
 		await expect(
 			handlers.start({
 				input: {
@@ -894,7 +1465,7 @@ describe("Parlume session procedures", () => {
 				},
 				context,
 			}),
-		).rejects.toMatchObject({ code: "CONFLICT" });
+		).resolves.toMatchObject({ alreadyInMeeting: true });
 		expect(mocks.sessionFindFirst).toHaveBeenCalledWith(
 			expect.objectContaining({
 				where: expect.objectContaining({
@@ -977,6 +1548,50 @@ describe("Parlume session procedures", () => {
 		});
 	});
 
+	it("tells the enabler when an automatic join's bot could not start", async () => {
+		mocks.sessionFindFirst.mockResolvedValue(null);
+		mocks.startBot.mockRejectedValue(new ParlumeProviderError(400, null));
+
+		await expect(
+			startParlumeMeetingSession(
+				{
+					projectId: "project-1",
+					organizationId: "org-1",
+					userId: "user-1",
+					meetingUrl:
+						"https://teams.microsoft.com/l/meetup-join/example",
+					agentKind: "FABRIC_AGENT",
+					toolsReadOnly: true,
+					suggestionsEnabled: true,
+					suggestionAudience: "TEAM",
+					trigger: "AUTO",
+					linkedMeetingId: "lm-1",
+					occurrenceStart: new Date("2026-10-27T09:00:00.000Z"),
+				},
+				{},
+			),
+		).rejects.toMatchObject({ code: "BAD_GATEWAY" });
+		expect(mocks.notifyJoinFailure).toHaveBeenCalledOnce();
+		expect(mocks.notifyJoinFailure).toHaveBeenCalledWith("session-1");
+	});
+
+	it("leaves a manual invitation's failure to the page that shows it", async () => {
+		mocks.startBot.mockRejectedValue(new ParlumeProviderError(400, null));
+
+		await expect(
+			handlers.start({
+				input: {
+					projectId: "project-1",
+					agentKind: "FABRIC_AGENT",
+					meetingUrl:
+						"https://teams.microsoft.com/l/meetup-join/example",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({ code: "BAD_GATEWAY" });
+		expect(mocks.notifyJoinFailure).not.toHaveBeenCalled();
+	});
+
 	it("lists the built-in project Fabric Agent before custom agents", async () => {
 		const result = (await handlers.listAgents({
 			input: { projectId: "project-1", includeBuiltIn: true },
@@ -1057,7 +1672,7 @@ describe("Parlume session procedures", () => {
 				linkedMeetingId: "lm-1",
 				status: { in: ["PENDING", "JOINING", "ACTIVE", "LEAVING"] },
 			},
-			select: { id: true, status: true },
+			select: { id: true, status: true, projectId: true },
 		});
 		expect(mocks.sessionCreate).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -1070,11 +1685,16 @@ describe("Parlume session procedures", () => {
 		);
 	});
 
-	it("refuses a second bot while one is in the linked series' meeting", async () => {
+	it("hands a second invitation the series' session that is joining, without a second bot", async () => {
 		mocks.linkedFindFirst.mockResolvedValue({ id: "lm-1" });
 		mocks.sessionFindFirst.mockResolvedValue({
 			id: "session-0",
 			status: "JOINING",
+			projectId: "project-1",
+		});
+		mocks.sessionFindUniqueOrThrow.mockResolvedValue({
+			...session,
+			id: "session-0",
 		});
 
 		await expect(
@@ -1087,12 +1707,245 @@ describe("Parlume session procedures", () => {
 				},
 				context,
 			}),
-		).rejects.toMatchObject({
-			code: "CONFLICT",
-			message: "Parlume is already in this meeting.",
+		).resolves.toEqual({
+			session: { ...session, id: "session-0" },
+			alreadyInMeeting: true,
 		});
+		expect(mocks.sessionFindUniqueOrThrow).toHaveBeenCalledWith(
+			expect.objectContaining({ where: { id: "session-0" } }),
+		);
+		expect(mocks.sessionCreate).not.toHaveBeenCalled();
+		expect(mocks.armBridge).not.toHaveBeenCalled();
+		expect(mocks.startBot).not.toHaveBeenCalled();
+		expect(mocks.recordAudit).not.toHaveBeenCalled();
+	});
+
+	// A second invitation sent another bot into a meeting where Parlume was
+	// active. Each bot counted the other as a guest it could not confirm, and
+	// both left.
+	it("hands a second invitation the project's active session in the same meeting, however its link is spelled", async () => {
+		mocks.sessionFindMany.mockResolvedValue([
+			{
+				id: "session-0",
+				projectId: "project-1",
+				status: "ACTIVE",
+				lastChatTag: 3,
+				meetingUrl:
+					"https://teams.microsoft.com/l/meetup-join/19%3ameeting_example%40thread.v2/0",
+			},
+		]);
+
+		await expect(
+			handlers.start({
+				input: {
+					projectId: "project-1",
+					agentKind: "FABRIC_AGENT",
+					meetingUrl:
+						"https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/19:meeting_example@thread.v2/0?context=%7b%7d",
+				},
+				context,
+			}),
+		).resolves.toMatchObject({ alreadyInMeeting: true });
+		expect(mocks.sessionFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					organizationId: "org-1",
+					status: { in: ["PENDING", "JOINING", "ACTIVE", "LEAVING"] },
+					meetingUrl: { contains: "meeting_example" },
+				},
+			}),
+		);
 		expect(mocks.sessionCreate).not.toHaveBeenCalled();
 		expect(mocks.startBot).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		[
+			"leaving",
+			{ status: "LEAVING", projectId: "project-1" },
+			"Parlume is already in this meeting. Its session is leaving; invite Parlume again once it has left.",
+		],
+		[
+			"another project's",
+			{ status: "ACTIVE", projectId: "project-2" },
+			"Parlume is already in this meeting. It was invited from another project.",
+		],
+	])(
+		"refuses a second bot while a %s session is in the meeting",
+		async (_label, live, message) => {
+			mocks.sessionFindMany.mockResolvedValue([
+				{
+					id: "session-0",
+					lastChatTag: null,
+					meetingUrl:
+						"https://teams.microsoft.com/meet/1234567890123",
+					...live,
+				},
+			]);
+
+			await expect(
+				handlers.start({
+					input: {
+						projectId: "project-1",
+						agentKind: "FABRIC_AGENT",
+						meetingUrl:
+							"https://teams.microsoft.com/meet/1234567890123?p=example",
+					},
+					context,
+				}),
+			).rejects.toMatchObject({ code: "CONFLICT", message });
+			expect(mocks.sessionCreate).not.toHaveBeenCalled();
+			expect(mocks.sessionFindUniqueOrThrow).not.toHaveBeenCalled();
+			expect(mocks.startBot).not.toHaveBeenCalled();
+		},
+	);
+
+	it("stores the meeting's key, the same for every spelling of its link", async () => {
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl:
+					"https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/19:meeting_example@thread.v2/0?context=%7b%7d",
+			},
+			context,
+		});
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl:
+					"https://teams.microsoft.com/l/meetup-join/19%3ameeting_example%40thread.v2/0?context=%7b%7d",
+			},
+			context,
+		});
+
+		const keys = mocks.sessionCreate.mock.calls.map(
+			([query]) => query.data.meetingKey,
+		);
+		expect(keys).toEqual([
+			'["meeting","/l/meetup-join/19:meeting_example@thread.v2/0"]',
+			'["meeting","/l/meetup-join/19:meeting_example@thread.v2/0"]',
+		]);
+	});
+
+	it("stores a short link's key as its lower-cased join path", async () => {
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl:
+					"https://teams.microsoft.com/meet/1234567890123?p=example",
+			},
+			context,
+		});
+
+		expect(mocks.sessionCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					meetingKey:
+						"https://teams.microsoft.com/meet/1234567890123",
+				}),
+			}),
+		);
+	});
+
+	it("checks for a live session and creates its own under the meeting's lock", async () => {
+		const order: string[] = [];
+		mocks.executeRaw.mockImplementation(async () => {
+			order.push("lock");
+			return 1;
+		});
+		mocks.sessionFindMany.mockImplementation(async () => {
+			order.push("check");
+			return [];
+		});
+		mocks.sessionCreate.mockImplementation(async () => {
+			order.push("create");
+			return { id: "session-1" };
+		});
+
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl:
+					"https://teams.microsoft.com/meet/1234567890123?p=example",
+			},
+			context,
+		});
+
+		expect(order).toEqual(["lock", "check", "create"]);
+		expect(mocks.transaction).toHaveBeenCalledTimes(1);
+		const [strings, , key] = mocks.executeRaw.mock.calls[0] ?? [];
+		expect(String(strings)).toContain("pg_advisory_xact_lock");
+		expect(key).toBe(
+			"meeting:org-1:https://teams.microsoft.com/meet/1234567890123",
+		);
+	});
+
+	it("sends one bot for two invitations at once to one unlinked meeting, and hands both its session", async () => {
+		const rows: Array<{
+			id: string;
+			projectId: string;
+			status: string;
+			meetingUrl: string;
+		}> = [];
+		let held = Promise.resolve();
+		mocks.transaction.mockImplementation(
+			async (run: (tx: unknown) => Promise<unknown>) => {
+				// The advisory lock: one transaction at a time.
+				const previous = held;
+				let release = () => {};
+				held = new Promise<void>((resolve) => {
+					release = resolve;
+				});
+				await previous;
+				try {
+					return await run(db);
+				} finally {
+					release();
+				}
+			},
+		);
+		mocks.sessionFindMany.mockImplementation(async () => [...rows]);
+		type Create = { data: { projectId: string; meetingUrl: string } };
+		mocks.sessionCreate.mockImplementation(async (query: Create) => {
+			await Promise.resolve();
+			const id = `session-${rows.length + 1}`;
+			rows.push({
+				id,
+				projectId: query.data.projectId,
+				status: "PENDING",
+				meetingUrl: query.data.meetingUrl,
+			});
+			return { id };
+		});
+		const start = () =>
+			handlers.start({
+				input: {
+					projectId: "project-1",
+					agentKind: "FABRIC_AGENT",
+					meetingUrl:
+						"https://teams.microsoft.com/meet/1234567890123?p=example",
+				},
+				context,
+			});
+
+		const results = await Promise.all([start(), start()]);
+
+		expect(results).toHaveLength(2);
+		expect(results).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ alreadyInMeeting: false }),
+				expect.objectContaining({ alreadyInMeeting: true }),
+			]),
+		);
+		expect(mocks.sessionCreate).toHaveBeenCalledTimes(1);
+		expect(mocks.startBot).toHaveBeenCalledTimes(1);
+		expect(mocks.sessionFindUniqueOrThrow).toHaveBeenCalledWith(
+			expect.objectContaining({ where: { id: "session-1" } }),
+		);
 	});
 
 	it("invites to a meeting that is no linked series without a series check", async () => {
@@ -1186,20 +2039,28 @@ describe("Parlume session procedures", () => {
 					agentInstanceVersionId: "agent-version-2",
 					agentInstanceVersion: 2,
 					streamTokenDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+					callbackTokenDigest:
+						expect.stringMatching(/^[a-f0-9]{64}$/),
+					attendeeSource: "ORGANIZATION",
 					hardStopAt: expect.any(Date),
 				}),
 			}),
 		);
+		expect(mocks.chatTagStart).toHaveBeenCalledWith({
+			organizationId: "org-1",
+			meetingUrl: "https://teams.microsoft.com/l/meetup-join/example",
+		});
 		expect(mocks.armBridge).toHaveBeenCalledWith(
 			expect.objectContaining({
 				sessionId: "session-1",
 				hardStopAt: expect.any(Date),
+				chatTagStart: 4,
 			}),
 		);
 		expect(mocks.startBot).toHaveBeenCalledWith(
 			expect.objectContaining({
 				streamToken: expect.stringMatching(/^[A-Za-z0-9_-]+$/),
-				callbackSecret: expect.any(String),
+				callbackToken: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
 				hardStopAt: expect.any(Date),
 			}),
 		);
@@ -1207,6 +2068,58 @@ describe("Parlume session procedures", () => {
 			expect.objectContaining({
 				where: { id: "session-1", status: "PENDING" },
 				data: { providerBotId: "provider-bot-1", status: "JOINING" },
+			}),
+		);
+	});
+
+	it("gives each bot its own random webhook token and stores only its digest", async () => {
+		const input = {
+			projectId: "project-1",
+			agentInstanceSId: "agent-stable-1",
+			meetingUrl: "https://teams.microsoft.com/l/meetup-join/example",
+		};
+		await handlers.start({ input, context });
+		await handlers.start({ input, context });
+
+		const tokens = mocks.startBot.mock.calls.map(
+			([call]: [{ callbackToken: string }]) => call.callbackToken,
+		);
+		expect(tokens[0]).not.toBe(tokens[1]);
+		const stored = mocks.sessionCreate.mock.calls.map(
+			([call]: [{ data: { callbackTokenDigest: string } }]) =>
+				call.data.callbackTokenDigest,
+		);
+		expect(stored[0]).toBe(
+			createHash("sha256").update(tokens[0]).digest("hex"),
+		);
+		expect(JSON.stringify(mocks.sessionCreate.mock.calls)).not.toContain(
+			tokens[0],
+		);
+	});
+
+	it("still invites a bot whose Attendee project has no webhook secret", async () => {
+		mocks.attendee.mockResolvedValue({ ...attendee, webhookSecret: null });
+
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentInstanceSId: "agent-stable-1",
+				meetingUrl: "https://teams.microsoft.com/l/meetup-join/example",
+			},
+			context,
+		});
+
+		expect(mocks.sessionCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					callbackTokenDigest:
+						expect.stringMatching(/^[a-f0-9]{64}$/),
+				}),
+			}),
+		);
+		expect(mocks.startBot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				callbackToken: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
 			}),
 		);
 	});

@@ -274,6 +274,35 @@ describe("TimeEntryForm", () => {
 		);
 	});
 
+	it("names nothing about a likely duplicate the form does not list", async () => {
+		mockCreate.mockResolvedValueOnce({
+			status: "needs_confirmation",
+			warnings: [
+				{ code: "LIKELY_DUPLICATE", entryIds: ["entry-elsewhere"] },
+			],
+		});
+		renderForm([project], {
+			lockProjectAndItem: true,
+			knownEntries: [],
+			initialDraft: emptyDraft({
+				projectId: "project-a",
+				activity: "DEVELOPMENT",
+				story: { id: "story-1", identifier: "F-001", title: "Sign-in" },
+				workDate: "2026-11-11",
+				timezone: "Europe/Berlin",
+			}),
+		});
+
+		await userEvent.type(screen.getByLabelText("duration"), "5m{Enter}");
+
+		const question = await screen.findByRole("alert");
+		expect(question).toHaveTextContent("duplicateUnlisted");
+		expect(question).not.toHaveTextContent("F-001");
+		expect(
+			screen.getByRole("button", { name: "duplicateConfirm" }),
+		).toBeVisible();
+	});
+
 	it("saves nothing when the question is answered no", async () => {
 		mockCreate.mockResolvedValueOnce({
 			status: "needs_confirmation",
@@ -499,6 +528,33 @@ describe("TimeEntryForm note", () => {
 		await userEvent.click(option);
 
 		expect(screen.getByLabelText("note")).toHaveValue(long);
+	});
+
+	it("labels long notes so they stay apart", async () => {
+		mockRecentNotes.mockResolvedValue({
+			notes: [
+				"Requirements and project management",
+				"Requirements and project meetings",
+			],
+		});
+		renderForm();
+
+		const group = await screen.findByRole("group", { name: "recentNotes" });
+		const options = within(group).getAllByRole("button");
+		expect(options.map((option) => option.textContent)).toEqual([
+			"Requirements…management",
+			"Requirements…meetings",
+		]);
+		expect(options[1]).toHaveAttribute(
+			"title",
+			"Requirements and project meetings",
+		);
+
+		await userEvent.click(options[1]);
+
+		expect(screen.getByLabelText("note")).toHaveValue(
+			"Requirements and project meetings",
+		);
 	});
 
 	it("offers no recent notes when there are none, and the note can still be typed", async () => {

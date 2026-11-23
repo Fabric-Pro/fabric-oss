@@ -51,7 +51,7 @@ vi.mock("@repo/ai", () => ({
 	// Transcription resolves tenant-only; delegated patterns keep the
 	// system resolver.
 	getRAGProviderConfig: vi.fn().mockResolvedValue(hoisted.providerConfig),
-	getSystemRAGProviderConfig: vi
+	getRAGProviderConfigForModel: vi
 		.fn()
 		.mockResolvedValue(hoisted.providerConfig),
 	logModelUsageAsync: vi.fn(),

@@ -119,6 +119,7 @@ describe("Parlume session warm-up", () => {
 				projectId: "project",
 				conversationId: "session",
 				sourceRunType: "direct-chat",
+				surface: "parlume",
 			},
 			{ portal: { offer: false } },
 		);

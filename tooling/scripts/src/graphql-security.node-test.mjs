@@ -1,12 +1,22 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { installedConsumers } from "./installed-consumers.mjs";
+import {
+	addPackage,
+	assertRejectsMalformed,
+	entriesNamed,
+	isStableAtLeast,
+	mutableCopy,
+	readLockfile,
+	referencesTo,
+	requireLockfile,
+	semver,
+	validateLockfile,
+} from "./lockfile-shape.mjs";
 
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 const utilsConsumers = [
 	["@graphql-tools/executor", "2.1.0"],
 	["@graphql-tools/merge", "9.2.6"],
@@ -14,106 +24,134 @@ const utilsConsumers = [
 	["@graphql-yoga/plugin-defer-stream", "3.24.4"],
 	["graphql-yoga", "5.24.4"],
 ];
-const yaml = installedConsumers("@changesets/parse", "1.0.0")[0].require(
-	"yaml",
-);
-const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
-	"semver",
-);
+const utilsName = "@graphql-tools/utils";
 
 function verifyUtils(lockfile) {
+	requireLockfile(lockfile);
 	for (const section of ["packages", "snapshots"]) {
-		assert.ok(
-			lockfile[section] && typeof lockfile[section] === "object",
-			`Missing ${section}`,
-		);
-		const keys = Object.keys(lockfile[section]).filter((key) =>
-			key.startsWith("@graphql-tools/utils@"),
-		);
-		assert.ok(keys.length > 0, `Missing utils ${section}`);
-		for (const key of keys) {
+		const entries = entriesNamed(lockfile, section, utilsName);
+		assert.ok(entries.length > 0, `Missing utils ${section}`);
+		for (const { key, version } of entries) {
 			assert.ok(
-				semver.gte(
-					key.slice("@graphql-tools/utils@".length).split("(")[0],
-					"12.0.3",
-				),
+				isStableAtLeast(version, "12.0.3"),
 				`Vulnerable utils: ${key}`,
 			);
 		}
 	}
-	for (const [section, owners] of [
-		["importer", lockfile.importers],
-		["snapshot", lockfile.snapshots],
-	]) {
-		assert.ok(owners && typeof owners === "object", `Missing ${section}`);
-		for (const [owner, metadata] of Object.entries(owners)) {
-			for (const group of [
-				"dependencies",
-				"devDependencies",
-				"optionalDependencies",
-			]) {
-				for (const [name, dependency] of Object.entries(
-					metadata[group] ?? {},
-				)) {
-					const reference =
-						section === "importer"
-							? dependency.version
-							: dependency;
-					const alias = "@graphql-tools/utils@";
-					if (
-						name === "@graphql-tools/utils" ||
-						reference?.startsWith(alias) ||
-						dependency.specifier?.startsWith(`npm:${alias}`)
-					) {
-						const version = reference
-							?.replace(alias, "")
-							.split("(")[0];
-						assert.ok(
-							semver.valid(version) &&
-								semver.gte(version, "12.0.3"),
-							`Vulnerable utils reference: ${owner}`,
-						);
-					}
-				}
-			}
-		}
+	// Direct and aliased references alike: a reference named utils must
+	// resolve to utils itself, and an alias resolves through its target.
+	for (const reference of referencesTo(lockfile, utilsName)) {
+		assert.ok(
+			reference.target?.name === utilsName &&
+				isStableAtLeast(reference.target.version, "12.0.3"),
+			`Vulnerable utils reference: ${reference.owner}`,
+		);
 	}
 }
 
 test("all utils packages, snapshots and direct dependency groups require the supported fixed release", () => {
-	const lockfile = yaml.parse(
-		readFileSync(join(root, "pnpm-lock.yaml"), "utf8"),
-	);
+	const lockfile = readLockfile();
 	verifyUtils(lockfile);
+	assertRejectsMalformed(verifyUtils, lockfile);
+	for (const version of ["10.10.1", "12.0.0", "12.0.2", "12.1.1-rc.0"]) {
+		const bad = addPackage(
+			mutableCopy(lockfile),
+			`${utilsName}@${version}`,
+		);
+		assert.throws(
+			() => verifyUtils(validateLockfile(bad)),
+			/Vulnerable utils: /,
+			version,
+		);
+	}
 	for (const section of ["packages", "snapshots"]) {
-		for (const version of ["10.10.1", "12.0.0", "12.0.2"]) {
-			const bad = structuredClone(lockfile);
-			bad[section][`@graphql-tools/utils@${version}`] = {};
-			assert.throws(() => verifyUtils(bad), /Vulnerable utils/);
-		}
-		const bad = structuredClone(lockfile);
+		const bad = mutableCopy(lockfile);
 		delete bad[section];
-		assert.throws(() => verifyUtils(bad));
+		assert.throws(
+			() => verifyUtils(validateLockfile(bad)),
+			/could not check/,
+		);
 	}
 	for (const group of [
 		"dependencies",
 		"devDependencies",
 		"optionalDependencies",
 	]) {
-		for (const [name, version] of [
-			["@graphql-tools/utils", "10.10.1"],
-			["utils-alias", "@graphql-tools/utils@12.0.0"],
+		// Every registry reference names an existing snapshot, which the entry
+		// check already covers; the reference check adds `file:` copies and
+		// names that resolve to another package.
+		for (const [name, specifier, version, fixed, expected] of [
+			[
+				utilsName,
+				"file:vendor/utils",
+				"file:vendor/utils",
+				"12.0.3",
+				/Vulnerable utils reference/,
+			],
+			[
+				"utils-alias",
+				`npm:${utilsName}@^12.0.0`,
+				`${utilsName}@12.0.0`,
+				`${utilsName}@12.0.3`,
+				/Vulnerable utils: /,
+			],
+			[
+				utilsName,
+				"npm:example-utils@^12.0.0",
+				"example-utils@12.0.3",
+				"12.0.3",
+				/Vulnerable utils reference/,
+			],
 		]) {
-			const bad = structuredClone(lockfile);
+			const bad = mutableCopy(lockfile);
+			for (const key of [
+				`${utilsName}@12.0.0`,
+				`${utilsName}@12.0.3`,
+				"example-utils@12.0.3",
+			]) {
+				addPackage(bad, key);
+			}
+			delete bad.packages[`${utilsName}@12.0.0`];
+			delete bad.snapshots[`${utilsName}@12.0.0`];
+			if (name === "utils-alias") {
+				addPackage(bad, `${utilsName}@12.0.0`);
+			}
 			bad.importers["packages/example-consumer"] = {
-				[group]: { [name]: { version } },
+				[group]: { [name]: { specifier, version } },
 			};
-			assert.throws(() => verifyUtils(bad), /Vulnerable utils reference/);
-			bad.importers["packages/example-consumer"][group][name].version =
-				name === "utils-alias"
-					? "@graphql-tools/utils@12.0.3"
-					: "12.0.3";
-			assert.doesNotThrow(() => verifyUtils(bad));
+			assert.throws(
+				() => verifyUtils(validateLockfile(bad)),
+				expected,
+				`${name} ${version}`,
+			);
+			bad.importers["packages/example-consumer"][group][name] = {
+				specifier: "^12.0.0",
+				version: fixed,
+			};
+			if (name === "utils-alias") {
+				delete bad.packages[`${utilsName}@12.0.0`];
+				delete bad.snapshots[`${utilsName}@12.0.0`];
+				bad.importers["packages/example-consumer"][group][
+					name
+				].specifier = `npm:${utilsName}@^12.0.0`;
+			}
+			assert.doesNotThrow(() => verifyUtils(validateLockfile(bad)));
+			// An alias specifier whose version names another package, or a
+			// specifier the reader cannot read, is not skipped.
+			bad.importers["packages/example-consumer"][group][name] = {
+				specifier: `npm:${utilsName}@^12.0.0`,
+				version: "example-utils@12.0.3",
+			};
+			assert.throws(
+				() => verifyUtils(validateLockfile(bad)),
+				/could not check: .* does not match version example-utils@12\.0\.3/,
+			);
+			bad.importers["packages/example-consumer"][group][name].specifier =
+				12;
+			assert.throws(
+				() => verifyUtils(validateLockfile(bad)),
+				/could not check: .* specifier is not a non-empty string/,
+			);
 		}
 	}
 });

@@ -7,7 +7,6 @@ import {
 import { hasPermission, Permissions as ProjectPerms } from "@repo/permissions";
 import { z } from "zod";
 import { resolveEffectiveProjectPermissions } from "../../../../lib/effective-project-permissions";
-import { userHasProjectPermission } from "../../../../lib/project-permissions";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -106,24 +105,21 @@ export const getStoryProcedure = tenantProtectedProcedure
 				: null,
 		};
 
-		const canEdit = await userHasProjectPermission(
-			input.projectId,
-			user.id,
-			ProjectPerms.STORY_UPDATE,
-		);
-
-		// Tag controls: project-authoritative (ProjectMember role overrides org
-		// role), matching the tags.add/remove gates so the UI never shows a
-		// control the server would reject.
+		// Edit and tag controls: project-authoritative (ProjectMember role
+		// overrides org role), matching `requireProjectPermission` on the
+		// writes so the UI never shows a control the server would reject. An
+		// org-role-first check let a project viewer edit the spec and accept an
+		// AI draft whose save was then refused.
 		const effective = await resolveEffectiveProjectPermissions(
 			input.projectId,
 			user.id,
 		);
 		const effectivePerms = effective?.permissions ?? [];
-		const canAddTags = hasPermission(
+		const canEdit = hasPermission(
 			effectivePerms,
 			ProjectPerms.STORY_UPDATE,
 		);
+		const canAddTags = canEdit;
 		const canManageAllTags = hasPermission(
 			effectivePerms,
 			ProjectPerms.STORY_DELETE,

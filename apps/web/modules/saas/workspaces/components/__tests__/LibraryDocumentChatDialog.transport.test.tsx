@@ -477,6 +477,46 @@ describe("LibraryDocumentChatDialog transport", () => {
 		]);
 	});
 
+	it("shows an organization workspace's saved conversation on the runtime, as on the route", async () => {
+		m.flagOn = true;
+		fetchMock.mockImplementation(async () =>
+			Response.json({
+				messages: [
+					{
+						role: "user",
+						content: "Saved question",
+						timestamp: "2026-11-20T10:00:00.000Z",
+					},
+					{
+						role: "assistant",
+						content: "Saved answer",
+						timestamp: "2026-11-20T10:00:01.000Z",
+					},
+				],
+			}),
+		);
+		render(
+			<LibraryDocumentChatDialog
+				open
+				onOpenChange={() => undefined}
+				workspaceId="workspace-example-1"
+				workspaceName="Example library"
+				documentCount={2}
+				organizationId="org-example-1"
+			/>,
+		);
+
+		await waitFor(() =>
+			expect(screen.getByText("Saved answer")).toBeTruthy(),
+		);
+		expect(screen.getByText("Saved question")).toBeTruthy();
+		expect(fetchMock).toHaveBeenCalledWith(
+			"/api/workspaces/chat?workspaceId=workspace-example-1",
+			expect.anything(),
+		);
+		expect(m.runs).toHaveLength(0);
+	});
+
 	it("sends the conversation so far with a follow-up on the runtime", async () => {
 		m.flagOn = true;
 		m.respond = runtimeAnswer("It ships in May.");

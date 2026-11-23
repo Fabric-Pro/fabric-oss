@@ -245,6 +245,20 @@ describe("setQuestionAssignees", () => {
 		expect(mocks.setQuestionAssignees).not.toHaveBeenCalled();
 	});
 
+	it("looks the question up inside the feature and project the permission check named", async () => {
+		// A question id from another project of the same organization would
+		// pass the tenant filter alone; the project scope makes it not found.
+		await setQuestionAssigneesHandler({ input: assignInput(), context });
+
+		expect(mocks.getDecisionLogEntryById).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userStoryId: "story_1",
+				projectId: "proj_1",
+				id: ROOT,
+			}),
+		);
+	});
+
 	it("ignores an organization smuggled in via input", async () => {
 		// `hasProjectAccess` and `requireProjectPermission` both authorize on
 		// (projectId, userId) and never look at the org, so an input org would

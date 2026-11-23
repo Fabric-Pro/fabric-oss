@@ -50,6 +50,7 @@ import {
 	resolveActionLabel,
 	resourceIcon,
 } from "./action-catalog";
+import { auditActingFor, auditActorLabel } from "./actor-label";
 import { SeverityBadge } from "./SeverityBadge";
 import type { AuditLogFiltersState } from "./types";
 import { filtersStateToApi } from "./types";
@@ -301,6 +302,7 @@ export function AuditLogMetadataDrawer({
 	const ActionIcon = descriptor?.icon ?? null;
 	const ResourceIcon = row ? resourceIcon(row.resourceType) : null;
 	const isFailure = row?.outcome === "failure";
+	const actingFor = row ? auditActingFor(row) : null;
 
 	const actionLabel: string = descriptor
 		? resolveActionLabel(t as (key: string) => string, descriptor)
@@ -461,9 +463,19 @@ export function AuditLogMetadataDrawer({
 						>
 							<div className="flex flex-col gap-1">
 								<span>
-									{row.actorEmailSnapshot ??
-										t("settings.auditLog.badges.system")}
+									{auditActorLabel(
+										row,
+										t as (key: string) => string,
+									)}
 								</span>
+								{actingFor ? (
+									<span className="text-xs text-muted-foreground">
+										{t(
+											"settings.auditLog.badges.actingFor",
+											{ email: actingFor },
+										)}
+									</span>
+								) : null}
 								{row.impersonatedById ? (
 									<Badge
 										variant="outline"

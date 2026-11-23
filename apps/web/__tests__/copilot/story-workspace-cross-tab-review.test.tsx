@@ -62,6 +62,13 @@ function render(ui: Parameters<typeof rtlRender>[0]) {
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+/** What a `useMutation` hook was given, as far as these tests read it. */
+interface MutationHookOptions {
+	queryKey?: unknown[];
+	networkMode?: string;
+	onError?: (error: unknown, variables?: unknown, context?: unknown) => void;
+}
+
 // ---------------------------------------------------------------------------
 // Hoisted mocks
 // ---------------------------------------------------------------------------
@@ -69,6 +76,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
 	confirmDraft,
 	serializationFailure,
+	markedSerialization,
 	copilotStore,
 	queryStore,
 	serverStore,
@@ -80,10 +88,20 @@ const {
 	respondSpy,
 	mockUseHistoryEnabled,
 	recordOutcome,
+	recordedIn,
+	persistenceHook,
+	sidebarHeader,
+	historyDrawer,
 	stageEnhance,
 } = vi.hoisted(() => ({
 	confirmDraft: vi.fn(),
 	serializationFailure: { active: false },
+	/**
+	 * When set, the editor's text is serialized with a leading blank line
+	 * while it carries diff marks: the same document, written differently
+	 * with and without them, as the real serializer can do.
+	 */
+	markedSerialization: { differs: false },
 	/**
 	 * Stands in for the CopilotKit agent run. The mocked `useCopilotChat` /
 	 * `useCoAgent` read this during render, so mutating it and re-rendering
@@ -107,13 +125,17 @@ const {
 	 * server but its invalidation has not come back yet" expressible at all.
 	 *
 	 * `gate` holds the read open so a test can look at the world between the
-	 * click and the read coming back; `failure` makes the read throw.
+	 * click and the read coming back; `failure` makes the read throw (a
+	 * message, or the error itself, such as the `TypeError` an offline fetch
+	 * throws).
 	 */
 	serverStore: {
 		description: null as string | null,
+		acceptanceCriteria: null as string | null,
 		gate: null as Promise<void> | null,
-		failure: null as string | null,
+		failure: null as string | Error | null,
 		fetchCount: 0,
+		readOptions: null as unknown,
 	},
 	/**
 	 * Every `mutate()` / `mutateAsync()` the workspace fires, with the
@@ -130,6 +152,8 @@ const {
 				onSuccess?: (data: unknown) => void;
 				onError?: (error: unknown) => void;
 			};
+			/** The options of the `useMutation` hook the call went through. */
+			hook?: MutationHookOptions;
 			/**
 			 * Settles a `mutateAsync` call's promise. Absent for `mutate`.
 			 * Nothing settles it unless a test does (see `answerSave`).
@@ -139,10 +163,7 @@ const {
 				reject: (error: unknown) => void;
 			};
 		}>,
-		optionsByKey: {} as Record<
-			string,
-			{ onError?: (error: unknown) => void }
-		>,
+		optionsByKey: {} as Record<string, MutationHookOptions>,
 	},
 	/** Shared across every `useQueryClient()` call so assertions can see them. */
 	queryClientSpies: {
@@ -176,7 +197,40 @@ const {
 	 * What the chat records of each accept or reject (Fizzy #2946). An accept
 	 * is recorded once its save has answered, so a test answers that save.
 	 */
-	recordOutcome: vi.fn(() => Promise.resolve()),
+	recordOutcome: vi.fn((_options: unknown) => Promise.resolve()),
+	/** The conversation each of those records was written to. */
+	recordedIn: vi.fn((_conversationId: string | null) => undefined),
+	/**
+	 * The chat persistence hook's props, so a test can resolve the active
+	 * conversation the way a saved turn does.
+	 */
+	persistenceHook: {
+		current: null as {
+			onConversationIdResolved: (conversationId: string) => void;
+		} | null,
+	},
+	/**
+	 * The chat header's options, so a test can start a new conversation, and
+	 * how many header components the workspace made: each new one remounts.
+	 */
+	sidebarHeader: {
+		current: null as {
+			onNewConversation: () => unknown;
+			conversationId: string | null;
+		} | null,
+		created: 0,
+	},
+	/** The history drawer's fork callback, so a test can fork. */
+	historyDrawer: {
+		onForked: null as
+			| ((fork: {
+					forkedConversationId: string;
+					copiedMessageCount: number;
+					copiedMessages: { id?: unknown }[];
+					visibility: "SHARED" | "PRIVATE";
+			  }) => unknown)
+			| null,
+	},
 	/**
 	 * The stage Enhance flow, the only way to an accept that also moves the
 	 * stage: the prompt the server resolves for it, and the message that
@@ -234,7 +288,9 @@ vi.mock("@copilotkit/react-core", () => ({
 	useCopilotReadable: vi.fn(),
 }));
 
-const stampDiffOutcome = vi.hoisted(() => vi.fn());
+const stampDiffOutcome = vi.hoisted(() =>
+	vi.fn((): Promise<void> => Promise.resolve()),
+);
 vi.mock("@saas/projects/hooks/use-diff-outcome-stamp", () => ({
 	useDiffOutcomeStamp: () => stampDiffOutcome,
 }));
@@ -266,10 +322,18 @@ vi.mock(
 			...actual,
 			getEditorMarkdownForSave: (
 				...args: Parameters<typeof actual.getEditorMarkdownForSave>
-			) =>
-				serializationFailure.active
-					? null
-					: actual.getEditorMarkdownForSave(...args),
+			) => {
+				if (serializationFailure.active) {
+					return null;
+				}
+				const markdown = actual.getEditorMarkdownForSave(...args);
+				const marked = /diff-(insert|del)/.test(
+					args[0]?.getHTML() ?? "",
+				);
+				return markedSerialization.differs && marked && markdown
+					? `\n${markdown}`
+					: markdown;
+			},
 		};
 	},
 );
@@ -336,7 +400,12 @@ vi.mock("@saas/projects/hooks/useDocumentAssistantHistoryEnabled", () => ({
 // The chat's record of a resolution (Fizzy #2946). With no conversation in
 // this harness the real hook writes nothing, so the spy hides nothing.
 vi.mock("@saas/agents/copilot/useConfirmChangesOperationResult", () => ({
-	useConfirmChangesOperationResult: () => recordOutcome,
+	useConfirmChangesOperationResult:
+		({ conversationId }: { conversationId: string | null }) =>
+		(options: unknown) => {
+			recordedIn(conversationId);
+			return recordOutcome(options);
+		},
 }));
 
 // The real oRPC client, but for the one procedure the stage Enhance flow
@@ -365,15 +434,32 @@ vi.mock("@shared/lib/orpc-client", async () => {
 });
 
 vi.mock("@saas/projects/components/copilot/CopilotSidebarHeader", () => ({
-	createCopilotSidebarHeader: () => () => null,
+	createCopilotSidebarHeader: (options: {
+		onNewConversation: () => unknown;
+		conversationId: string | null;
+	}) => {
+		sidebarHeader.current = options;
+		sidebarHeader.created++;
+		return () => null;
+	},
 }));
 
 vi.mock("@saas/projects/components/copilot/CopilotHistoryDrawer", () => ({
-	CopilotHistoryDrawer: () => null,
+	CopilotHistoryDrawer: (props: {
+		onForked?: typeof historyDrawer.onForked;
+	}) => {
+		historyDrawer.onForked = props.onForked ?? null;
+		return null;
+	},
 }));
 
 vi.mock("@saas/projects/components/copilot/CopilotPersistenceHook", () => ({
-	CopilotPersistenceHook: () => null,
+	CopilotPersistenceHook: (props: {
+		onConversationIdResolved: (conversationId: string) => void;
+	}) => {
+		persistenceHook.current = props;
+		return null;
+	},
 }));
 
 // ---------------------------------------------------------------------------
@@ -468,22 +554,17 @@ vi.mock("@tanstack/react-query", async () => {
 	>("@tanstack/react-query");
 	return {
 		...actual,
-		useMutation: (options?: {
-			queryKey?: unknown[];
-			onError?: (error: unknown) => void;
-		}) => {
-			const key = Array.isArray(options?.queryKey)
-				? String(options.queryKey[0])
+		useMutation: (hook?: MutationHookOptions) => {
+			const key = Array.isArray(hook?.queryKey)
+				? String(hook.queryKey[0])
 				: null;
-			if (key) {
-				mutationStore.optionsByKey[key] = options as {
-					onError?: (error: unknown) => void;
-				};
+			if (key && hook) {
+				mutationStore.optionsByKey[key] = hook;
 			}
 			type CallOptions = (typeof mutationStore.calls)[number]["options"];
 			return {
 				mutate: (variables: unknown, options?: CallOptions) => {
-					mutationStore.calls.push({ key, variables, options });
+					mutationStore.calls.push({ key, variables, options, hook });
 				},
 				// Held until a test answers it, like a write still in flight.
 				mutateAsync: (variables: unknown, options?: CallOptions) =>
@@ -492,6 +573,7 @@ vi.mock("@tanstack/react-query", async () => {
 							key,
 							variables,
 							options,
+							hook,
 							answer: { resolve, reject },
 						});
 					}),
@@ -507,15 +589,24 @@ vi.mock("@tanstack/react-query", async () => {
 			...queryClientSpies,
 			// The fresh read every resolution takes before it splices. Answers
 			// from `serverStore`, NOT from the story prop — see that store.
-			fetchQuery: async () => {
+			fetchQuery: async (options: unknown) => {
 				serverStore.fetchCount++;
+				serverStore.readOptions = options;
 				if (serverStore.gate) {
 					await serverStore.gate;
+				}
+				if (serverStore.failure instanceof Error) {
+					throw serverStore.failure;
 				}
 				if (serverStore.failure) {
 					throw new Error(serverStore.failure);
 				}
-				return { story: { description: serverStore.description } };
+				return {
+					story: {
+						description: serverStore.description,
+						acceptanceCriteria: serverStore.acceptanceCriteria,
+					},
+				};
 			},
 		}),
 	};
@@ -528,8 +619,11 @@ vi.mock("next/navigation", () => ({
 	useSearchParams: () => new URLSearchParams(),
 }));
 
+// The key, and the reason a failed decision gives, so a test can tell
+// which reason the person was shown.
 vi.mock("next-intl", () => ({
-	useTranslations: () => (k: string) => k,
+	useTranslations: () => (k: string, values?: { reason?: unknown }) =>
+		values?.reason === undefined ? k : `${k} (${String(values.reason)})`,
 }));
 
 vi.mock("react-dom", async () => {
@@ -771,7 +865,7 @@ function bannerButton(name: string): HTMLElement {
 
 /**
  * Every spec body the workspace asked to persist, in order. Both writers of the
- * description column (the accept path's own `updateMutation.mutateAsync`, and
+ * description column (the accept path's `decisionSaveMutation.mutateAsync`, and
  * `handleSave`'s) send a `description` string; nothing else the workspace
  * mutates does.
  */
@@ -970,9 +1064,11 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 		copilotStore.nodeName = undefined;
 		queryStore.byPath = {};
 		serverStore.description = ORIGINAL_SPEC;
+		serverStore.acceptanceCriteria = null;
 		serverStore.gate = null;
 		serverStore.failure = null;
 		serverStore.fetchCount = 0;
+		serverStore.readOptions = null;
 		mutationStore.calls = [];
 		mutationStore.optionsByKey = {};
 		queryClientSpies.invalidateQueries.mockClear();
@@ -981,6 +1077,12 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 		vi.mocked(toast.warning).mockClear();
 		vi.mocked(toast.error).mockClear();
 		spliceFailure.message = null;
+		markedSerialization.differs = false;
+		persistenceHook.current = null;
+		sidebarHeader.current = null;
+		sidebarHeader.created = 0;
+		historyDrawer.onForked = null;
+		recordedIn.mockClear();
 		capturedAction.current = null;
 		capturedEditor.current = null;
 		respondSpy.mockClear();
@@ -1032,12 +1134,18 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 	);
 	it("records no verdict for the null-content machine decline", async () => {
 		confirmDraft.mockClear();
+		recordOutcome.mockClear();
+		stampDiffOutcome.mockClear();
 		await pendingReviewOnQuestionsTab();
 		serializationFailure.active = true;
 		try {
 			await click(bannerButton("pendingReview.approveAria"));
 			expect(respondSpy).toHaveBeenCalledWith({ accepted: false });
 			expect(confirmDraft).not.toHaveBeenCalled();
+			// A Confirm that applied nothing is not "Changes rejected.", in
+			// the chat or on the proposal's outcome chip.
+			expect(recordOutcome).not.toHaveBeenCalled();
+			expect(stampDiffOutcome).not.toHaveBeenCalled();
 		} finally {
 			serializationFailure.active = false;
 		}
@@ -1635,6 +1743,310 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 	});
 
 	/**
+	 * The thread lists messages in the order they were saved, and the
+	 * proposal's turn is saved only after its run ends. The stamp lands only
+	 * once that turn is saved, so a record written before it would sit above
+	 * the proposal it answers.
+	 */
+	it("records a reject only once its proposal is stamped", async () => {
+		recordOutcome.mockClear();
+		let stamped: () => void = () => undefined;
+		stampDiffOutcome.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					stamped = () => resolve();
+				}),
+		);
+		await pendingReviewOnQuestionsTab();
+
+		await click(bannerButton("pendingReview.rejectAria"));
+
+		expect(respondSpy).toHaveBeenCalledWith({ accepted: false });
+		expect(stampDiffOutcome).toHaveBeenCalledWith(
+			expect.objectContaining({ messageId: "proposal" }),
+			"rejected",
+		);
+		expect(recordOutcome).not.toHaveBeenCalled();
+
+		await act(async () => {
+			stamped();
+		});
+
+		expect(recordOutcome).toHaveBeenCalledTimes(1);
+		expect(recordOutcome).toHaveBeenCalledWith({ accepted: false });
+	});
+
+	it("records a reject in the conversation it was decided in", async () => {
+		mockUseHistoryEnabled.mockReturnValue(true);
+		let stamped: () => void = () => undefined;
+		stampDiffOutcome.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					stamped = () => resolve();
+				}),
+		);
+		await pendingReviewOnQuestionsTab();
+		await act(async () => {
+			persistenceHook.current?.onConversationIdResolved("thread-a");
+		});
+
+		await click(bannerButton("pendingReview.rejectAria"));
+		// A new chat, or another thread, before the proposal is stamped.
+		await act(async () => {
+			persistenceHook.current?.onConversationIdResolved("thread-b");
+		});
+		await act(async () => {
+			stamped();
+		});
+
+		expect(recordedIn).toHaveBeenCalledTimes(1);
+		expect(recordedIn).toHaveBeenCalledWith("thread-a");
+	});
+
+	/**
+	 * A new chat started while a reject waited for its fresh read switched
+	 * threads first. The new thread's connect raised the loading flag, the
+	 * draft's text was taken as the baseline, and the reject then put the
+	 * rejected sentence back as saved text.
+	 */
+	it("applies a reject before a new conversation started meanwhile", async () => {
+		mockUseHistoryEnabled.mockReturnValue(true);
+		vi.mocked(toast.success).mockClear();
+		const { rerender } = await pendingReviewOnQuestionsTab();
+		const releaseServerRead = gateServerRead();
+
+		await click(bannerButton("pendingReview.rejectAria"));
+		let newChat: Promise<unknown> = Promise.resolve();
+		await act(async () => {
+			newChat = Promise.resolve(
+				sidebarHeader.current?.onNewConversation(),
+			);
+		});
+
+		expect(respondSpy).not.toHaveBeenCalled();
+		expect(toast.success).not.toHaveBeenCalledWith(
+			"Started a new conversation",
+		);
+
+		await act(async () => {
+			releaseServerRead();
+			await newChat;
+		});
+
+		expect(respondSpy).toHaveBeenCalledWith({ accepted: false });
+		expect(toast.success).toHaveBeenCalledWith(
+			"Started a new conversation",
+		);
+
+		// The new thread's connect handshake.
+		copilotStore.isLoading = true;
+		await act(async () => {
+			rerender(workspace());
+		});
+		copilotStore.isLoading = false;
+		await act(async () => {
+			rerender(workspace());
+		});
+
+		expect(hasDiffMarks()).toBe(false);
+		expect(editorHtml()).toContain("once a day");
+		expect(editorHtml()).not.toContain("once an hour");
+	});
+
+	it("starts one new conversation for repeated clicks while a decision settles, keeping the header mounted", async () => {
+		mockUseHistoryEnabled.mockReturnValue(true);
+		vi.mocked(toast.success).mockClear();
+		await pendingReviewOnQuestionsTab();
+		const releaseServerRead = gateServerRead();
+
+		await click(bannerButton("pendingReview.rejectAria"));
+		const headersBefore = sidebarHeader.created;
+		const clicks: Promise<unknown>[] = [];
+		await act(async () => {
+			clicks.push(
+				Promise.resolve(sidebarHeader.current?.onNewConversation()),
+				Promise.resolve(sidebarHeader.current?.onNewConversation()),
+			);
+		});
+		await act(async () => {
+			clicks.push(
+				Promise.resolve(sidebarHeader.current?.onNewConversation()),
+			);
+		});
+		// A new header component is a remount, which drops the keyboard
+		// focus on the control just clicked.
+		expect(sidebarHeader.created).toBe(headersBefore);
+
+		await act(async () => {
+			releaseServerRead();
+			await Promise.all(clicks);
+		});
+
+		expect(
+			vi
+				.mocked(toast.success)
+				.mock.calls.filter(
+					([message]) => message === "Started a new conversation",
+				),
+		).toHaveLength(1);
+	});
+
+	it("switches to one fork, and starts no new conversation, while a fork waits for a decision", async () => {
+		mockUseHistoryEnabled.mockReturnValue(true);
+		vi.mocked(toast.success).mockClear();
+		await pendingReviewOnQuestionsTab();
+		const releaseServerRead = gateServerRead();
+		const fork = (forkedConversationId: string) => ({
+			forkedConversationId,
+			copiedMessageCount: 0,
+			copiedMessages: [],
+			visibility: "SHARED" as const,
+		});
+
+		await click(bannerButton("pendingReview.rejectAria"));
+		const requests: Promise<unknown>[] = [];
+		await act(async () => {
+			requests.push(
+				Promise.resolve(historyDrawer.onForked?.(fork("fork-1"))),
+				Promise.resolve(historyDrawer.onForked?.(fork("fork-2"))),
+				Promise.resolve(sidebarHeader.current?.onNewConversation()),
+			);
+		});
+
+		await act(async () => {
+			releaseServerRead();
+			await Promise.all(requests);
+		});
+
+		expect(sidebarHeader.current?.conversationId).toBe("fork-1");
+		expect(toast.success).not.toHaveBeenCalledWith(
+			"Started a new conversation",
+		);
+	});
+
+	/**
+	 * Offline, the fresh read was paused until the connection came back, and
+	 * "Applying your decision…" stayed up with no error; within the query's
+	 * stale time the cache answered it with no request at all. It is asked of
+	 * the server in any network state, so it fails at once and nothing is
+	 * applied or recorded.
+	 */
+	it("fails a decision at once when the fresh read cannot reach the server", async () => {
+		recordOutcome.mockClear();
+		await pendingReviewOnQuestionsTab();
+
+		serverStore.failure = new TypeError("Failed to fetch");
+		await click(bannerButton("pendingReview.approveAria"));
+
+		expect(serverStore.readOptions).toEqual(
+			expect.objectContaining({ networkMode: "always", staleTime: 0 }),
+		);
+		const banner = screen.getByTestId("cross-tab-review-banner");
+		expect(
+			within(banner).getByTestId("cross-tab-review-error"),
+		).toHaveTextContent(
+			/pendingReview\.resolveFailed .*Check your connection/,
+		);
+		expect(respondSpy).not.toHaveBeenCalled();
+		expect(stampDiffOutcome).not.toHaveBeenCalled();
+		expect(recordOutcome).not.toHaveBeenCalled();
+		expect(savedDescriptions()).toHaveLength(0);
+		expect(hasDiffMarks()).toBe(true);
+	});
+
+	it("gives a refused fresh read its own reason, not the connection advice", async () => {
+		await pendingReviewOnQuestionsTab();
+
+		serverStore.failure = Object.assign(
+			new Error("You do not have access to this feature."),
+			{ code: "FORBIDDEN" },
+		);
+		await click(bannerButton("pendingReview.approveAria"));
+
+		const error = within(
+			screen.getByTestId("cross-tab-review-banner"),
+		).getByTestId("cross-tab-review-error");
+		expect(error).toHaveTextContent(
+			"pendingReview.resolveFailed (You do not have access to this feature.)",
+		);
+		expect(error).not.toHaveTextContent(/connection/);
+		expect(savedDescriptions()).toHaveLength(0);
+		expect(hasDiffMarks()).toBe(true);
+	});
+
+	it("keeps an ordinary save's default network mode, so offline it waits for the connection", async () => {
+		await pendingReviewOnQuestionsTab();
+		serverStore.description = SERVER_SPEC_WITH_ANSWER;
+
+		await click(bannerButton("pendingReview.rejectAria"));
+
+		await waitFor(() => expect(lastSavedDescription()).toBeDefined());
+		const save = mutationStore.calls.find(
+			(call) =>
+				typeof (call.variables as { description?: unknown } | null)
+					?.description === "string",
+		);
+		expect(save?.answer).toBeUndefined();
+		expect(save?.hook?.networkMode).toBeUndefined();
+	});
+
+	it("saves a decision in any network state, and says only a save that reached no server to check the connection", async () => {
+		await pendingReviewOnQuestionsTab();
+		await click(bannerButton("pendingReview.approveAria"));
+
+		const save = mutationStore.calls.find(
+			(call) =>
+				call.answer !== undefined &&
+				typeof (call.variables as { description?: unknown } | null)
+					?.description === "string",
+		);
+		expect(save?.hook?.networkMode).toBe("always");
+
+		vi.mocked(toast.error).mockClear();
+		act(() => {
+			save?.hook?.onError?.(
+				new TypeError("Failed to fetch"),
+				{},
+				undefined,
+			);
+			save?.hook?.onError?.(
+				Object.assign(new Error("Missing permission"), {
+					code: "FORBIDDEN",
+				}),
+				{},
+				undefined,
+			);
+		});
+		expect(toast.error).toHaveBeenNthCalledWith(1, "Failed to save story", {
+			description:
+				"The server could not be reached. Check your connection and try again.",
+		});
+		expect(toast.error).toHaveBeenNthCalledWith(2, "Failed to save story", {
+			description: "Missing permission",
+		});
+	});
+
+	it("reads as saved once the approved text's save lands", async () => {
+		// The draft's text, read with its diff marks, differs from the
+		// editor's own serialization of the approved document.
+		markedSerialization.differs = true;
+		const { rerender } = await pendingReviewOnQuestionsTab();
+		await click(bannerButton("pendingReview.approveAria"));
+		await answerSave(heldAcceptSave(), { data: {} });
+
+		// An unsaved editor holds the server's later text back; a saved one
+		// takes it.
+		const later = `${AI_SPEC} Each file is named with the cycle date.`;
+		await act(async () => {
+			rerender(workspace({ description: later }));
+		});
+
+		expect(editorHtml()).toContain(
+			"Each file is named with the cycle date.",
+		);
+	});
+
+	/**
 	 * Fizzy #2946. Accepting recorded "Changes applied." in the chat the moment
 	 * the save was sent, and the record stood when the save was then refused.
 	 * It now waits for the save's answer and says what that answer was. The
@@ -1694,6 +2106,65 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 
 			await answerSave(save, { error: new Error("network down") });
 
+			expect(recordOutcome).toHaveBeenCalledTimes(1);
+			expect(recordOutcome).toHaveBeenCalledWith(FAILED);
+		});
+
+		const NO_ANSWER = Object.assign(
+			new Error("No answer within 30000 ms"),
+			{
+				name: "TimeoutError",
+			},
+		);
+		/** How many autosaves `answer` armed: each waits 10 s. */
+		async function autoSavesArmedBy(
+			answer: () => Promise<void>,
+		): Promise<number> {
+			const timers = vi.spyOn(globalThis, "setTimeout");
+			try {
+				await answer();
+				await waitFor(() => expect(recordOutcome).toHaveBeenCalled());
+				return timers.mock.calls.filter((call) => call[1] === 10000)
+					.length;
+			} finally {
+				timers.mockRestore();
+			}
+		}
+
+		it("records a save that got no answer but landed as saved, and does not send it again", async () => {
+			await pendingReviewOnQuestionsTab();
+			await click(bannerButton("pendingReview.approveAria"));
+			const save = heldAcceptSave();
+			const sent = save.variables as {
+				description: string | null;
+				acceptanceCriteria: string | null;
+			};
+			serverStore.description = sent.description;
+			serverStore.acceptanceCriteria = sent.acceptanceCriteria;
+			const reads = serverStore.fetchCount;
+			vi.mocked(toast.success).mockClear();
+
+			const armed = await autoSavesArmedBy(() =>
+				answerSave(save, { error: NO_ANSWER }),
+			);
+
+			expect(armed).toBe(0);
+			expect(recordOutcome).toHaveBeenCalledTimes(1);
+			expect(recordOutcome).toHaveBeenCalledWith(SAVED);
+			expect(serverStore.fetchCount).toBe(reads + 1);
+			expect(toast.success).toHaveBeenCalledWith("Story saved");
+		});
+
+		it("retries a save that got no answer and did not land", async () => {
+			await pendingReviewOnQuestionsTab();
+			await click(bannerButton("pendingReview.approveAria"));
+			const save = heldAcceptSave();
+
+			const armed = await autoSavesArmedBy(() =>
+				answerSave(save, { error: NO_ANSWER }),
+			);
+
+			expect(armed).toBe(1);
 			expect(recordOutcome).toHaveBeenCalledTimes(1);
 			expect(recordOutcome).toHaveBeenCalledWith(FAILED);
 		});

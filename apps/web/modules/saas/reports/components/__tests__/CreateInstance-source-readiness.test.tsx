@@ -1,5 +1,12 @@
 import type { ReportEvidenceConfig } from "@repo/database/prisma/queries/lib/report-evidence";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => {
@@ -402,6 +409,55 @@ describe.each(["form", "dialog"])("%s source readiness", (surface) => {
 		const [{ connections }] = m.mutate.mock.calls[0];
 		expect(connections).not.toHaveProperty("promptOverride");
 		expect(connections).not.toHaveProperty("promptOverrideSource");
+	});
+	it("keeps focus on Create report through the duplicate check and warning", async () => {
+		let answer: (value: unknown) => void = () => {};
+		m.findDuplicates.mockReturnValue(
+			new Promise((resolve) => {
+				answer = resolve;
+			}),
+		);
+		show([projectSource]);
+		const user = userEvent.setup();
+		const create = screen.getByRole("button", {
+			name: "Create report",
+			exact: true,
+		});
+
+		act(() => create.focus());
+		await user.keyboard("{Enter}");
+
+		// While it checks, the button refuses presses but keeps focus.
+		expect(create).toBeEnabled();
+		expect(create).toHaveAttribute("aria-disabled", "true");
+		expect(create).toHaveFocus();
+
+		await act(async () => {
+			answer({
+				duplicates: [
+					{
+						id: "existing-report",
+						name: "My Example delivery",
+						templateName: "Example delivery",
+						status: "ACTIVE",
+						isActive: true,
+						ownedByCaller: true,
+						createdAt: "2026-11-01T00:00:00.000Z",
+						lastRunAt: null,
+						sameTitle: true,
+						samePrompt: false,
+					},
+				],
+			});
+		});
+		await screen.findByRole("alertdialog");
+		await user.keyboard("{Escape}");
+
+		await waitFor(() =>
+			expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(),
+		);
+		await waitFor(() => expect(create).toHaveFocus());
+		expect(m.mutate).not.toHaveBeenCalled();
 	});
 	it("keeps mixed external project sources as a setup-required draft", () => {
 		show([projectSource, externalSource]);

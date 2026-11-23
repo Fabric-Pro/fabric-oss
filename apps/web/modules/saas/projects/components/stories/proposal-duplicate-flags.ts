@@ -43,6 +43,18 @@ export type ProposalDuplicateFlags = ReadonlyMap<
 
 export const NO_DUPLICATE_FLAGS: ProposalDuplicateFlags = new Map();
 
+/** One open proposal's flags, and the indexes of its items still being
+ * checked for duplicates. */
+export type ProposalDuplicateReview = {
+	flags: ProposalDuplicateFlags;
+	checking: ReadonlySet<number>;
+};
+
+export const NO_DUPLICATE_REVIEW: ProposalDuplicateReview = {
+	flags: NO_DUPLICATE_FLAGS,
+	checking: new Set(),
+};
+
 /** Similarity as a whole percentage, for display. */
 export function similarityPercent(similarity: number): number {
 	return Math.round(Math.min(1, Math.max(0, similarity)) * 100);
@@ -60,6 +72,26 @@ export function duplicateFlagsByIndex(
 			.filter((flag) => flag.matches.length > 0)
 			.map((flag) => [flag.changeIndex, flag.matches]),
 	);
+}
+
+type InboxItemRow = { proposalId: string; changeIndex: number };
+
+type InboxFlagRow = InboxItemRow & { matches: ProposalDuplicateMatch[] };
+
+/** One proposal's part of the inbox's duplicate check. */
+export function duplicateReviewOf(
+	answer: {
+		flags: readonly InboxFlagRow[];
+		checking: readonly InboxItemRow[];
+	},
+	proposalId: string,
+): ProposalDuplicateReview {
+	const own = <T extends InboxItemRow>(rows: readonly T[]) =>
+		rows.filter((row) => row.proposalId === proposalId);
+	return {
+		flags: duplicateFlagsByIndex(own(answer.flags)),
+		checking: new Set(own(answer.checking).map((row) => row.changeIndex)),
+	};
 }
 
 type FlaggableChange = {

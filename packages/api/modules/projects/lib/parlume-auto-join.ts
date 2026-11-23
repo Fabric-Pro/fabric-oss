@@ -1,7 +1,12 @@
 import { ORPCError } from "@orpc/server";
 import { db, isFeatureEnabled, isProjectReadOnly } from "@repo/database";
 import { assertProjectPermission, Permissions } from "../../../orpc/procedures";
+import {
+	hasParlumeExternalInvitees,
+	parlumeInternalInviteeEmails,
+} from "./parlume-guests";
 import { parlumeLog } from "./parlume-log";
+import { resolveParlumeGuestPolicy } from "./parlume-provider-settings";
 import {
 	getParlumeReadiness,
 	isParlumeReady,
@@ -27,6 +32,24 @@ export const PARLUME_AUTO_JOIN_PERMISSION_LOST =
  */
 export const PARLUME_AUTO_JOIN_READ_ONLY =
 	"Parlume did not join because this project is in Read-only mode. A project admin can turn Read-only mode off in the project settings.";
+
+/**
+ * Why an occurrence was not joined when the organization keeps Parlume to
+ * internal meetings and the invitation names an external guest.
+ */
+export const PARLUME_AUTO_JOIN_EXTERNAL_GUESTS =
+	"Parlume did not join because the invitation includes people outside your organization, and your organization keeps Parlume to internal meetings. An organization admin can change this in Settings → Meeting assistant.";
+
+/**
+ * How late after an occurrence's start Parlume still joins it. The planner
+ * plans no occurrence older than this; a join it planned in time can still
+ * arrive later, after a worker outage, a slow calendar read or retries.
+ */
+const PARLUME_AUTO_JOIN_LATE_CUTOFF_MS = 10 * 60_000;
+
+/** Why an occurrence was not joined when its join came after that cutoff. */
+export const PARLUME_AUTO_JOIN_LATE =
+	"Parlume did not join a meeting of this series because its join came more than 10 minutes after the meeting started.";
 
 /**
  * The first readiness item that is missing, as the reason an automatic join
@@ -58,7 +81,11 @@ export type ParlumeAutoJoinOutcome =
 				| "duplicate"
 				| "already_in_meeting";
 	  }
-	| { outcome: "skipped"; reason: "read_only"; message: string }
+	| {
+			outcome: "skipped";
+			reason: "read_only" | "external_guests" | "late";
+			message: string;
+	  }
 	| {
 			outcome: "refused";
 			reason: "permission_lost" | "not_ready" | "start_refused";
@@ -94,7 +121,12 @@ async function recordAutoJoinError(
  * both flags are on, the project is not in Read-only mode (a bot joining is a
  * write to a connected source), the person who turned it on can still invite
  * Parlume to the project, Parlume is ready, this occurrence has no session yet,
- * and no session of the series, manual or automatic, is in the meeting.
+ * no session of the series, manual or automatic, is in the meeting, where
+ * the organization keeps Parlume to internal meetings the invitation names
+ * nobody outside it, and the occurrence began no more than ten minutes ago.
+ * An invitation that names someone outside it starts a session that
+ * counts as having a guest from the start. The session keeps the addresses
+ * of the invitees from inside the organization, who may read its transcript.
  *
  * A decision about the meeting (skipped, refused, the bot could not start) is
  * returned, never thrown, so the scheduler does not retry it; a refusal or a
@@ -105,6 +137,10 @@ async function recordAutoJoinError(
 export async function runParlumeAutoJoin(input: {
 	linkedMeetingId: string;
 	occurrenceStart: Date;
+	/** The email domains of the occurrence's invitees, from the calendar. */
+	inviteeDomains: string[];
+	/** The addresses of its invitees from the enabler's domain. */
+	inviteeEmails: string[];
 }): Promise<ParlumeAutoJoinOutcome> {
 	const { linkedMeetingId, occurrenceStart } = input;
 	const series = await db.projectLinkedMeeting.findFirst({
@@ -119,6 +155,7 @@ export async function runParlumeAutoJoin(input: {
 			parlumeAutoJoinToolsReadOnly: true,
 			parlumeAutoJoinSuggestions: true,
 			parlumeAutoJoinSuggestionAudience: true,
+			parlumeAutoJoinUser: { select: { email: true } },
 			project: { select: { organizationId: true } },
 		},
 	});
@@ -210,8 +247,39 @@ export async function runParlumeAutoJoin(input: {
 		);
 	}
 
+	const externalInvitees = hasParlumeExternalInvitees({
+		inviteeDomains: input.inviteeDomains,
+		enablerEmail: series.parlumeAutoJoinUser?.email ?? null,
+	});
+	if (
+		externalInvitees &&
+		(await resolveParlumeGuestPolicy(organizationId)) === "INTERNAL_ONLY"
+	) {
+		await recordAutoJoinError(
+			linkedMeetingId,
+			PARLUME_AUTO_JOIN_EXTERNAL_GUESTS,
+		);
+		log("skipped", { reason: "external_guests", organizationId });
+		return {
+			outcome: "skipped",
+			reason: "external_guests",
+			message: PARLUME_AUTO_JOIN_EXTERNAL_GUESTS,
+		};
+	}
+
+	const lateMs = Date.now() - occurrenceStart.getTime();
+	if (lateMs > PARLUME_AUTO_JOIN_LATE_CUTOFF_MS) {
+		await recordAutoJoinError(linkedMeetingId, PARLUME_AUTO_JOIN_LATE);
+		log("skipped", { reason: "late", organizationId, lateMs });
+		return {
+			outcome: "skipped",
+			reason: "late",
+			message: PARLUME_AUTO_JOIN_LATE,
+		};
+	}
+
 	try {
-		const { session } = await startParlumeMeetingSession(
+		const { session, alreadyInMeeting } = await startParlumeMeetingSession(
 			{
 				projectId: series.projectId,
 				organizationId,
@@ -224,11 +292,24 @@ export async function runParlumeAutoJoin(input: {
 				trigger: "AUTO",
 				linkedMeetingId,
 				occurrenceStart,
+				externalInvitees,
+				inviteeEmails: parlumeInternalInviteeEmails({
+					inviteeEmails: input.inviteeEmails,
+					enablerEmail: series.parlumeAutoJoinUser?.email ?? null,
+				}),
 			},
 			// No person asked for this session; the audit row records it as a
 			// system action on behalf of the enabler.
 			{},
 		);
+		if (alreadyInMeeting) {
+			// Someone invited Parlume to this meeting since the check above.
+			log("skipped", {
+				reason: "already_in_meeting",
+				sessionId: session.id,
+			});
+			return { outcome: "skipped", reason: "already_in_meeting" };
+		}
 		await db.projectLinkedMeeting.updateMany({
 			where: { id: linkedMeetingId, parlumeAutoJoinError: { not: null } },
 			data: { parlumeAutoJoinError: null, parlumeAutoJoinErrorAt: null },
@@ -243,7 +324,7 @@ export async function runParlumeAutoJoin(input: {
 		if (!(error instanceof ORPCError)) {
 			throw error;
 		}
-		if (error.message === PARLUME_ALREADY_IN_MEETING) {
+		if (error.message.startsWith(PARLUME_ALREADY_IN_MEETING)) {
 			// Someone invited Parlume to this meeting since the check above.
 			log("skipped", { reason: "already_in_meeting" });
 			return { outcome: "skipped", reason: "already_in_meeting" };

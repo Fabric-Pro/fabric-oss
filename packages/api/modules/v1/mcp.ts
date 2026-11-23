@@ -549,7 +549,7 @@ export function registerMcpRoutes(
 		}
 
 		// A key never grants more than the app: the in-app Delete requires
-		// `MCP_DELETE`, so the key's owner must hold it now, in this
+		// `MCP_CONNECT`, so the key's owner must hold it now, in this
 		// organization. Checked after `requireScope` and unconditionally —
 		// `mcp:write` and a `*` key pass the scope check alike, and a demoted
 		// owner's key still carries the scope it was minted with. A separate
@@ -590,7 +590,7 @@ export function registerMcpRoutes(
 }
 
 /**
- * Null when the key's owner currently holds `MCP_DELETE` in the request's
+ * Null when the key's owner currently holds `MCP_CONNECT` in the request's
  * organization; otherwise why not. `resolveV1Context` always resolves an
  * organization on success (`helpers.ts`), so a missing one is refused rather
  * than read as personal context.
@@ -610,7 +610,7 @@ async function mcpDeletePermissionRefusal(ctx: {
 		!membership ||
 		!hasPermission(
 			resolveOrgPermissions(membership.role),
-			Permissions.MCP_DELETE,
+			Permissions.MCP_CONNECT,
 		)
 	) {
 		return "The key's owner does not have permission to delete MCP configs in this organization";

@@ -19,6 +19,17 @@ export type EffectiveProjectAccess = {
 	 * valid — an absent value reads as "not deleted".
 	 */
 	organizationDeleted?: boolean;
+	/**
+	 * Whether the caller can open the project ("Project reach" in
+	 * `CONCEPTS.md`): the same answer `hasProjectAccess` gives, and the same
+	 * field `resolveProjectAccess` in `@repo/database` carries. `false` for an
+	 * organization member with no active ProjectMember row on a project they did
+	 * not create: their organization role resolves permissions, but the project
+	 * list and page do not admit them. Always set by
+	 * `resolveEffectiveProjectPermissions`; optional for the same reason as
+	 * `organizationDeleted`, and an absent value reads as visible.
+	 */
+	isVisible?: boolean;
 };
 
 /**
@@ -109,6 +120,7 @@ export async function resolveEffectiveProjectPermissions(
 			source: "owner",
 			organizationId: null,
 			organizationDeleted: false,
+			isVisible: true,
 		};
 	}
 
@@ -125,6 +137,7 @@ export async function resolveEffectiveProjectPermissions(
 			source: "project-member",
 			organizationId: project.organizationId,
 			organizationDeleted,
+			isVisible: true,
 		};
 	}
 
@@ -137,6 +150,10 @@ export async function resolveEffectiveProjectPermissions(
 	// `PROJECT_MEMBERS_MANAGE` and create the first member row. Deleting it as
 	// "just a fallback" would make every organization project inert from
 	// birth.
+	//
+	// The bootstrap is the creator, so only the creator can open the project
+	// through this path. Any other organization member resolves permissions
+	// here but cannot open the project, and `isVisible` says so.
 	if (project.organizationId) {
 		const orgMember = await client.member.findFirst({
 			where: { organizationId: project.organizationId, userId },
@@ -148,6 +165,7 @@ export async function resolveEffectiveProjectPermissions(
 				source: "org",
 				organizationId: project.organizationId,
 				organizationDeleted,
+				isVisible: project.userId === userId,
 			};
 		}
 	}
@@ -157,5 +175,6 @@ export async function resolveEffectiveProjectPermissions(
 		source: "none",
 		organizationId: project.organizationId,
 		organizationDeleted,
+		isVisible: false,
 	};
 }

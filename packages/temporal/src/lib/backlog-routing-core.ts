@@ -469,6 +469,8 @@ export type EmptyRoutingCorpus = { kind: "empty" };
 export type ReadyRoutingCorpus = {
 	kind: "ready";
 	itemEmbeddings: number[][];
+	/** The embedding model of `itemEmbeddings`, as cached rows record it. */
+	model: string;
 	candidateVectors: CandidateStory[];
 	storyById: Map<string, CorpusStory>;
 	textByStoryId: Map<string, string>;
@@ -500,6 +502,10 @@ export interface LoadRoutingCorpusParams {
 	 * timeout, so an interactive caller with a request deadline passes this
 	 * through; the Temporal activity omits it. */
 	abortSignal?: AbortSignal;
+	/** Runs just before the embedding request, only when the call embeds
+	 * item texts or stale candidates; it refuses the call by throwing. An
+	 * interactive caller counts the call against its AI rate limit here. */
+	beforeEmbed?: () => Promise<void>;
 }
 
 /**
@@ -601,9 +607,16 @@ export async function loadRoutingCorpus(
 	const embedCandidates = staleCandidates.slice(0, maxStaleEmbeds);
 	const skippedStale = staleCandidates.length - embedCandidates.length;
 
+	const embedTexts = [
+		...itemTexts,
+		...embedCandidates.map((entry) => entry.text),
+	];
+	if (embedTexts.length > 0) {
+		await params.beforeEmbed?.();
+	}
 	const freshRows: CachedStoryEmbedding[] = [];
 	const { embeddings, model } = await generateEmbeddings(
-		[...itemTexts, ...embedCandidates.map((entry) => entry.text)],
+		embedTexts,
 		{ userId, organizationId, projectId, featureKey: "backlog-update" },
 		undefined,
 		abortSignal,
@@ -675,6 +688,7 @@ export async function loadRoutingCorpus(
 	return {
 		kind: "ready",
 		itemEmbeddings,
+		model,
 		candidateVectors,
 		storyById,
 		textByStoryId,

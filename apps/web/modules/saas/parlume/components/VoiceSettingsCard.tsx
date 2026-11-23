@@ -36,9 +36,9 @@ function hostResult(host: ParlumeRealtimeCheck): {
 }
 
 /**
- * Parlume's realtime voice runs on the organization's Azure AI Foundry
- * resource or OpenAI key, which live on the AI providers page. Only the Azure
- * deployment name is set here.
+ * Parlume answers in its standard voice unless a realtime deployment is named
+ * here; the realtime voice then runs on that deployment in the
+ * organization's Azure AI Foundry resource, set on the AI providers page.
  */
 export function VoiceSettingsCard({
 	organizationId,
@@ -89,7 +89,7 @@ export function VoiceSettingsCard({
 							{
 								ok: false,
 								message:
-									"No Azure AI Foundry resource or OpenAI key is configured for realtime voice.",
+									"Parlume uses its standard voice. Name a realtime deployment in your Azure AI Foundry resource to use the realtime voice.",
 							},
 						],
 			),
@@ -108,18 +108,20 @@ export function VoiceSettingsCard({
 	return (
 		<SettingsItem
 			title="Voice"
-			description="Parlume answers aloud with a realtime voice model on your organization's Azure AI Foundry resource or OpenAI key."
+			description="Parlume answers aloud in its standard voice. With a realtime deployment named here, it answers with a realtime voice model on your organization's Azure AI Foundry resource."
 		>
 			<div className="space-y-5">
 				<p className="text-sm text-muted-foreground">
-					The keys are set in{" "}
+					The Azure AI Foundry resource is set in{" "}
 					<Link
 						href={aiProvidersHref}
 						className="text-foreground underline underline-offset-4"
 					>
 						AI providers
 					</Link>
-					. Azure AI Foundry is tried first, then OpenAI.
+					. The realtime voice hears the meeting only from when
+					someone addresses Parlume to the end of its answer. An
+					OpenAI key is never used for meeting audio.
 				</p>
 
 				<div className="space-y-2">
@@ -130,7 +132,7 @@ export function VoiceSettingsCard({
 						id="parlume-realtime-deployment"
 						value={deployment}
 						onChange={(event) => setDeployment(event.target.value)}
-						placeholder={settings.defaults.realtimeDeployment}
+						placeholder={`For example, ${settings.defaults.realtimeDeployment}`}
 						disabled={readOnly || busy}
 						aria-describedby="parlume-realtime-deployment-hint"
 					/>
@@ -140,9 +142,8 @@ export function VoiceSettingsCard({
 					>
 						The name of the deployment in your Azure resource that
 						serves {settings.defaults.realtimeDeployment}. Empty
-						uses a deployment named{" "}
-						{settings.defaults.realtimeDeployment}. The deployment
-						must exist in Azure; Fabric cannot create it.
+						keeps Parlume on its standard voice. The deployment must
+						exist in Azure; Fabric cannot create it.
 					</p>
 				</div>
 

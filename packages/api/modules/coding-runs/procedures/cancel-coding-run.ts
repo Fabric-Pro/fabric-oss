@@ -15,6 +15,7 @@ import { ORPCError } from "@orpc/client";
 import {
 	canEditProject,
 	getCodingRun,
+	hasProjectAccess,
 	markCodingRunRecoveryRequired,
 	updateCodingRunStatus,
 } from "@repo/database";
@@ -55,7 +56,9 @@ export const cancelCodingRunProcedure = tenantProtectedProcedure
 		);
 
 		const run = await getCodingRun(input.id, user.id, organizationId);
-		if (!run) {
+		// The read side's rule (`publicCodingRuns`): a run on a project the
+		// caller cannot open is not found, whatever their organization role.
+		if (!run || !(await hasProjectAccess(run.projectId, user.id))) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Coding run not found",
 			});

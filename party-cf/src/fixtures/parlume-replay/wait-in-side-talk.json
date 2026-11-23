@@ -1,0 +1,143 @@
+{
+	"source": "Written by hand: Dev Example asks Parlume; while it answers, QA Example says \"wait\" to the room, and Dev Example answers \"hold on\". Neither names Parlume.",
+	"audio": [
+		{
+			"at": 0,
+			"seconds": 14
+		}
+	],
+	"speech": [
+		{
+			"at": 0.5,
+			"name": "Dev Example",
+			"id": "participant-1",
+			"speaking": true
+		},
+		{
+			"at": 2.5,
+			"name": "Dev Example",
+			"id": "participant-1",
+			"speaking": false
+		},
+		{
+			"at": 5,
+			"name": "QA Example",
+			"id": "participant-2",
+			"speaking": true
+		},
+		{
+			"at": 6.8,
+			"name": "QA Example",
+			"id": "participant-2",
+			"speaking": false
+		},
+		{
+			"at": 7.5,
+			"name": "Dev Example",
+			"id": "participant-1",
+			"speaking": true
+		},
+		{
+			"at": 8.3,
+			"name": "Dev Example",
+			"id": "participant-1",
+			"speaking": false
+		}
+	],
+	"flux": [
+		{
+			"at": 1.2,
+			"event": {
+				"type": "TurnInfo",
+				"event": "Update",
+				"turn_index": 0,
+				"audio_window_start": 0.5,
+				"audio_window_end": 1.1,
+				"transcript": "Hey Fabric"
+			}
+		},
+		{
+			"at": 2.6,
+			"event": {
+				"type": "TurnInfo",
+				"event": "EndOfTurn",
+				"turn_index": 0,
+				"audio_window_start": 0.5,
+				"audio_window_end": 2.4,
+				"transcript": "Hey Fabric, what is the plan for Friday?"
+			}
+		},
+		{
+			"at": 5.5,
+			"event": {
+				"type": "TurnInfo",
+				"event": "Update",
+				"turn_index": 1,
+				"audio_window_start": 5,
+				"audio_window_end": 5.4,
+				"transcript": "Wait"
+			}
+		},
+		{
+			"at": 6.2,
+			"event": {
+				"type": "TurnInfo",
+				"event": "Update",
+				"turn_index": 1,
+				"audio_window_start": 5,
+				"audio_window_end": 6.1,
+				"transcript": "Wait wait is that"
+			}
+		},
+		{
+			"at": 7,
+			"event": {
+				"type": "TurnInfo",
+				"event": "EndOfTurn",
+				"turn_index": 1,
+				"audio_window_start": 5,
+				"audio_window_end": 6.8,
+				"transcript": "Wait, wait, is that the old build?"
+			}
+		},
+		{
+			"at": 8,
+			"event": {
+				"type": "TurnInfo",
+				"event": "Update",
+				"turn_index": 2,
+				"audio_window_start": 7.5,
+				"audio_window_end": 7.9,
+				"transcript": "Hold on"
+			}
+		},
+		{
+			"at": 8.5,
+			"event": {
+				"type": "TurnInfo",
+				"event": "EndOfTurn",
+				"turn_index": 2,
+				"audio_window_start": 7.5,
+				"audio_window_end": 8.3,
+				"transcript": "Hold on."
+			}
+		}
+	],
+	"questions": [
+		{
+			"speaker": "Dev Example",
+			"contains": "Friday"
+		}
+	],
+	"parlume": [
+		{
+			"at": 3.5,
+			"sentences": [
+				"The plan for Friday is to ship the export fix.",
+				"The migration follows on Monday, once it has a review."
+			],
+			"seconds": 9
+		}
+	],
+	"stops": []
+}

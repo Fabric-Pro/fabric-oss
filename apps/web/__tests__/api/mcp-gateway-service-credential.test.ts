@@ -16,7 +16,7 @@
 
 import {
 	mintActingGrant,
-	mintParlumeActingGrantForTurn,
+	mintParlumeActingGrantForConfirmedAction,
 } from "@repo/api/lib/agent-service-auth";
 import { signToken } from "@repo/auth/lib/signed-token";
 import { fabricGatewayTool } from "@repo/temporal/fabric-gateway-tools";
@@ -598,6 +598,9 @@ const BASE_SCOPES = [
 	"mcp:read",
 ];
 
+/** What a grant that names a project starts from: the base set's reads. */
+const BASE_READ_SCOPES = BASE_SCOPES.filter((scope) => scope.endsWith(":read"));
+
 const PORTAL_SCOPES = [
 	"orgs:read",
 	"projects:read",
@@ -655,19 +658,25 @@ describe("MCP gateway — a project-limited acting grant", () => {
 		const { response, session } = await sessionFor(
 			serviceHeaders({
 				"x-fabric-acting-grant":
-					mintParlumeActingGrantForTurn({
+					mintParlumeActingGrantForConfirmedAction({
 						userId: USER_ID,
 						organizationId: ORG_A,
 						projectId: PROJECT_ID,
-						readOnly: false,
 					}) ?? "",
 			}),
 		);
 
 		expect(response.status).toBe(200);
 		expect(resolveProjectTarget).toHaveBeenCalledWith(USER_ID, PROJECT_ID);
+		// A confirmed change's grant also names the workflow and frame writes.
 		expect(session?.scopes).toEqual([
-			...new Set([...BASE_SCOPES, ...PORTAL_SCOPES]),
+			...new Set([
+				...BASE_READ_SCOPES,
+				...PORTAL_SCOPES,
+				"workflows:write",
+				"workflows:run",
+				"frames:write",
+			]),
 		]);
 		expect(session?.pinnedProjectId).toBe(PROJECT_ID);
 		expect(session?.projectId ?? null).toBeNull();
@@ -711,7 +720,7 @@ describe("MCP gateway — a project-limited acting grant", () => {
 			}),
 		);
 
-		expect(session?.scopes).toEqual([...BASE_SCOPES, "features:read"]);
+		expect(session?.scopes).toEqual([...BASE_READ_SCOPES, "features:read"]);
 	});
 
 	it("refuses a project the person cannot open", async () => {
@@ -763,11 +772,10 @@ describe("MCP gateway — a project-limited acting grant", () => {
 
 	it("refuses an expired meeting grant", async () => {
 		vi.useFakeTimers({ toFake: ["Date"] });
-		const grant = mintParlumeActingGrantForTurn({
+		const grant = mintParlumeActingGrantForConfirmedAction({
 			userId: USER_ID,
 			organizationId: ORG_A,
 			projectId: PROJECT_ID,
-			readOnly: false,
 		});
 		vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000);
 
@@ -787,11 +795,10 @@ describe("MCP gateway — a project-limited acting grant", () => {
 		const { response, json } = await sessionFor(
 			serviceHeaders({
 				"x-fabric-acting-grant":
-					mintParlumeActingGrantForTurn({
+					mintParlumeActingGrantForConfirmedAction({
 						userId: "someone-else",
 						organizationId: ORG_A,
 						projectId: PROJECT_ID,
-						readOnly: false,
 					}) ?? "",
 			}),
 		);
@@ -805,11 +812,10 @@ describe("MCP gateway — a project-limited acting grant", () => {
 			callTool("example_server__list_things"),
 			serviceHeaders({
 				"x-fabric-acting-grant":
-					mintParlumeActingGrantForTurn({
+					mintParlumeActingGrantForConfirmedAction({
 						userId: USER_ID,
 						organizationId: ORG_A,
 						projectId: PROJECT_ID,
-						readOnly: false,
 					}) ?? "",
 			}),
 		);

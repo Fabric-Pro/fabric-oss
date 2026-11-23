@@ -256,6 +256,7 @@ const defaults: ContextQualityEvaluationDependencies = {
 			!access ||
 			access.organizationId !== run.organizationId ||
 			access.organizationDeleted ||
+			access.isVisible === false ||
 			!access.permissions.includes(Permissions.PROJECT_UPDATE) ||
 			!access.permissions.includes(Permissions.CONTEXT_READ)
 		)

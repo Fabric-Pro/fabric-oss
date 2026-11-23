@@ -19,6 +19,7 @@ const {
 	mockGetProjectMemberRole,
 	mockUpdateCodingRunStatus,
 	mockHasPermission,
+	mockHasProjectAccess,
 	mockGetTemporalClient,
 	workflowGetHandle,
 	workflowSignal,
@@ -31,6 +32,7 @@ const {
 	const mockGetProjectMemberRole = vi.fn();
 	const mockUpdateCodingRunStatus = vi.fn();
 	const mockHasPermission = vi.fn();
+	const mockHasProjectAccess = vi.fn();
 	const mockGetTemporalClient = vi.fn();
 	const workflowSignal = vi.fn();
 	const workflowDescribe = vi.fn();
@@ -45,6 +47,7 @@ const {
 		mockGetProjectMemberRole,
 		mockUpdateCodingRunStatus,
 		mockHasPermission,
+		mockHasProjectAccess,
 		mockGetTemporalClient,
 		workflowGetHandle,
 		workflowSignal,
@@ -58,6 +61,7 @@ vi.mock("@repo/database", () => ({
 	getCodingRun: mockGetCodingRun,
 	getProjectMemberRole: mockGetProjectMemberRole,
 	canEditProject: mockHasPermission,
+	hasProjectAccess: mockHasProjectAccess,
 	updateCodingRunStatus: mockUpdateCodingRunStatus,
 	markCodingRunRecoveryRequired: recovery,
 }));
@@ -140,6 +144,7 @@ beforeEach(() => {
 	mockGetCodingRun.mockResolvedValue({ ...baseRun });
 	mockGetProjectMemberRole.mockResolvedValue("EDITOR");
 	mockHasPermission.mockReturnValue(true);
+	mockHasProjectAccess.mockResolvedValue(true);
 	mockUpdateCodingRunStatus.mockResolvedValue({});
 	mockGetTemporalClient.mockResolvedValue({
 		workflow: { getHandle: workflowGetHandle },
@@ -263,6 +268,18 @@ describe("cancelCodingRun — guards", () => {
 
 		await expectORPCError(callCancel(), "NOT_FOUND");
 		expect(workflowGetHandle).not.toHaveBeenCalled();
+	});
+
+	it("returns NOT_FOUND for a run on a project the caller cannot open, even when their organization role could edit it", async () => {
+		mockHasProjectAccess.mockResolvedValue(false);
+
+		await expectORPCError(callCancel(), "NOT_FOUND");
+		expect(mockHasProjectAccess).toHaveBeenCalledWith(
+			baseRun.projectId,
+			expect.any(String),
+		);
+		expect(workflowGetHandle).not.toHaveBeenCalled();
+		expect(mockUpdateCodingRunStatus).not.toHaveBeenCalled();
 	});
 });
 

@@ -1688,7 +1688,12 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 							<ProjectReports projectId={projectId} />
 						)}
 						{activeTab === "usage" && (
-							<ProjectUsage projectId={projectId} />
+							<ProjectUsage
+								projectId={projectId}
+								excludesParlumeCosts={
+									project?.canManageMembers === false
+								}
+							/>
 						)}
 						{activeTab === "problem-log" && (
 							<ProblemLogTab

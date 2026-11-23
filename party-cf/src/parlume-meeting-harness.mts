@@ -29,6 +29,7 @@ class FakeFlux {
 
 export type Bridge = {
 	onStart(): Promise<void>;
+	onAlarm(): Promise<void>;
 	onConnect(conn: unknown, ctx: { request: { url: string } }): Promise<void>;
 	onMessage(
 		conn: unknown,
@@ -41,10 +42,16 @@ export type Bridge = {
 export function meeting(
 	options: {
 		verify?: () => Promise<Response>;
+		/** Fabric's answer to the alarm's access check. */
+		verifyAccess?: () => Promise<Response>;
 		aura?: (text: string, index: number) => Response | Promise<Response>;
 		/** Holds Fabric's answer to a request until it resolves. */
 		fabricDelay?: (path: string) => Promise<void>;
 		suggestionsEnabled?: boolean;
+		/** Storage a bridge left behind when it restarted. */
+		data?: Map<string, unknown>;
+		/** Fabric mints a realtime session, whose socket is `realtime`. */
+		realtime?: boolean;
 	} = {},
 ) {
 	const auraCalls: Array<{ inputs: unknown; options: unknown }> = [];
@@ -54,8 +61,13 @@ export function meeting(
 		body: Record<string, unknown>;
 		at: number;
 	}> = [];
+	// The OpenAI Realtime socket: `turn` sends the bridge a server event.
+	const realtime = new FakeFlux();
 	const fetch = async (url: unknown, init: unknown) => {
 		const path = new URL(String(url)).pathname;
+		if (path.endsWith("/v1/realtime")) {
+			return { status: 101, webSocket: realtime };
+		}
 		const body = JSON.parse(String((init as RequestInit).body));
 		requests.push({ path, body, at: performance.now() });
 		await options.fabricDelay?.(path);
@@ -70,9 +82,19 @@ export function meeting(
 				})
 			);
 		}
+		if (path.endsWith("/verify-access") && options.verifyAccess) {
+			return options.verifyAccess();
+		}
+		if (path.endsWith("/realtime-session") && options.realtime) {
+			return Response.json({
+				clientSecret: "ek_meeting",
+				expiresAt: 1_900_000_000,
+				model: "gpt-realtime-2.1",
+			});
+		}
 		return Response.json({ accepted: true });
 	};
-	const data = new Map<string, unknown>();
+	const data = options.data ?? new Map<string, unknown>();
 	const alarms: number[] = [];
 	const storage = {
 		get: async (key: string) => data.get(key),
@@ -90,6 +112,10 @@ export function meeting(
 			alarms.push(at);
 		},
 		getAlarm: async () => alarms.at(-1) ?? null,
+		deleteAlarm: async () => {
+			alarms.length = 0;
+		},
+		deleteAll: async () => data.clear(),
 	};
 	const meetingOptions = options;
 	const flux = new FakeFlux();
@@ -98,7 +124,17 @@ export function meeting(
 		inputs: unknown;
 		options: unknown;
 	}> = [];
-	const { Parlume } = loadParlumeModule("./parlume.ts", fetch) as {
+	// The bridge logs `[Parlume] <event>` with its fields.
+	const logs: Array<{ message: string; meta: Record<string, unknown> }> = [];
+	const record = (message: string, meta: Record<string, unknown>) => {
+		logs.push({ message, meta: plain(meta) });
+	};
+	const { Parlume } = loadParlumeModule("./parlume.ts", fetch, {
+		info: record,
+		warn: record,
+		error: record,
+		log: record,
+	}) as {
 		Parlume: new (ctx: unknown, env: unknown) => Bridge;
 	};
 	const bridge = new Parlume(
@@ -138,6 +174,7 @@ export function meeting(
 		bridge,
 		bot,
 		flux,
+		realtime,
 		sent,
 		closed,
 		requests,
@@ -145,6 +182,7 @@ export function meeting(
 		auraCalls,
 		alarms,
 		data,
+		logs,
 	};
 }
 
@@ -194,10 +232,11 @@ export function control(
 	);
 }
 
+/** `generation` null sends none: the reply is for the generation now current. */
 export function say(
 	sentences: string[],
 	headers: Record<string, string> = {},
-	generation = "0",
+	generation: string | null = "0",
 ) {
 	return new Request(
 		"https://bridge.example.com/parties/parlume/session-1?action=say",
@@ -206,7 +245,9 @@ export function say(
 			headers: {
 				Authorization: "Bearer service-secret",
 				"content-type": "application/x-ndjson",
-				"x-parlume-voice-generation": generation,
+				...(generation === null
+					? {}
+					: { "x-parlume-voice-generation": generation }),
 				...headers,
 			},
 			body: sentences

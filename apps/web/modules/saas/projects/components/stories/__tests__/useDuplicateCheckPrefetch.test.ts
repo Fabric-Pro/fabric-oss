@@ -38,6 +38,7 @@ function deferred<T>() {
 }
 
 type TrackedCall = {
+	input: { verifyProposalMatches?: boolean };
 	options: { signal?: AbortSignal };
 	deferred: ReturnType<typeof deferred<CheckDuplicateResult>>;
 };
@@ -47,9 +48,12 @@ let calls: TrackedCall[] = [];
 function arrangeCheckDuplicate() {
 	calls = [];
 	mockCheckDuplicate.mockImplementation(
-		(_input: unknown, options: { signal?: AbortSignal }) => {
+		(
+			input: { verifyProposalMatches?: boolean },
+			options: { signal?: AbortSignal },
+		) => {
 			const d = deferred<CheckDuplicateResult>();
-			calls.push({ options, deferred: d });
+			calls.push({ input, options, deferred: d });
 			return d.promise;
 		},
 	);
@@ -232,5 +236,80 @@ describe("useDuplicateCheckPrefetch", () => {
 
 		result.current.getCheckRun(LONG_TEXT_A)();
 		expect(mockCheckDuplicate).toHaveBeenCalledTimes(2);
+	});
+
+	describe("Proposal Inbox verification", () => {
+		/** Types `text` and lets the debounced prefetch start. */
+		function typeAndPause(
+			result: ReturnType<typeof renderPrefetch>["result"],
+			text: string,
+		) {
+			act(() => {
+				result.current.onDescriptionChange(text);
+			});
+			act(() => {
+				vi.advanceTimersByTime(PREFETCH_DEBOUNCE_MS);
+			});
+		}
+
+		async function settle(call: TrackedCall, unverified: number) {
+			await act(async () => {
+				call.deferred.resolve({
+					...CREATE_RESULT,
+					unverifiedProposalMatches: unverified,
+				});
+				await call.deferred.promise;
+			});
+		}
+
+		it("a typing prefetch does not verify; the blur's final check does, superseding it", () => {
+			vi.useFakeTimers();
+			const { result } = renderPrefetch();
+
+			typeAndPause(result, LONG_TEXT_A);
+			act(() => {
+				result.current.onDescriptionBlur(LONG_TEXT_A);
+			});
+
+			const verifies = calls.map(
+				(call) => call.input.verifyProposalMatches,
+			);
+			expect(verifies).toEqual([false, true]);
+			expect(calls[0]?.options.signal?.aborted).toBe(true);
+		});
+
+		it("the final check reuses a typing prefetch that left nothing to verify", async () => {
+			vi.useFakeTimers();
+			const { result } = renderPrefetch();
+			typeAndPause(result, LONG_TEXT_A);
+			const [typing] = calls;
+			if (!typing) {
+				throw new Error("expected a typing prefetch");
+			}
+			await settle(typing, 0);
+
+			act(() => {
+				result.current.onDescriptionBlur(LONG_TEXT_A);
+			});
+			await result.current.getCheckRun(LONG_TEXT_A)();
+
+			expect(mockCheckDuplicate).toHaveBeenCalledTimes(1);
+		});
+
+		it("submit verifies afresh after a typing prefetch that left candidates unverified", async () => {
+			vi.useFakeTimers();
+			const { result } = renderPrefetch();
+			typeAndPause(result, LONG_TEXT_A);
+			const [typing] = calls;
+			if (!typing) {
+				throw new Error("expected a typing prefetch");
+			}
+			await settle(typing, 1);
+
+			result.current.getCheckRun(LONG_TEXT_A)();
+
+			expect(mockCheckDuplicate).toHaveBeenCalledTimes(2);
+			expect(calls[1]?.input.verifyProposalMatches).toBe(true);
+		});
 	});
 });

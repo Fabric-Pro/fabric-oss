@@ -4,7 +4,9 @@
  * proposed body preserves the existing item's structure.
  *
  * Verifies: merged result replaces description.to with from=true existing body;
- * safe-hold neutralizes the body diff and stamps bodyMergeFallback; unresolved /
+ * safe-hold keeps the existing body with the update's new detail appended
+ * unchanged (a neutral diff when it adds nothing) and stamps
+ * bodyMergeFallback; unresolved /
  * non-update / title-only changes are skipped; feature AC handling.
  */
 
@@ -100,7 +102,14 @@ describe("structurePreserveUpdates", () => {
 			acceptanceCriteria: undefined,
 			fallbackUsed: false,
 		});
-		const changes = [updateChange()];
+		const changes = [
+			updateChange({
+				description: {
+					from: "stale snapshot",
+					to: "## Root Cause\nnull ref",
+				},
+			}),
+		];
 		await structurePreserveUpdates({
 			changes,
 			projectId: "p1",
@@ -125,15 +134,50 @@ describe("structurePreserveUpdates", () => {
 		).toBeFalsy();
 	});
 
-	it("safe-holds: neutralizes the body diff and stamps bodyMergeFallback", async () => {
+	it("safe-holds: keeps the existing body, appends the update's new detail unchanged, and stamps bodyMergeFallback", async () => {
+		const existing =
+			"## Steps to Reproduce\n1. x\n## Original Description from User (Do Not Modify)\nbroken";
 		mocks.reanalyzeBodyByKind.mockResolvedValue({
-			description:
-				"## Steps to Reproduce\n1. x\n## Original Description from User (Do Not Modify)\nbroken",
+			description: existing,
 			acceptanceCriteria: undefined,
 			fallbackUsed: true,
 			fallbackReason: "destructive",
 		});
-		const changes = [updateChange()];
+		const changes = [
+			updateChange({
+				description: {
+					from: "stale snapshot",
+					to: "## Root Cause\nnull ref",
+				},
+			}),
+		];
+		await structurePreserveUpdates({
+			changes,
+			projectId: "p1",
+			userId: "u1",
+		});
+		const c = changes[0] as never as {
+			description: { from: string; to: string };
+			bodyMergeFallback?: boolean;
+		};
+		// The reviewer sees the update's detail; nothing is dropped.
+		expect(c.description.from).toBe(existing);
+		expect(c.description.to).toBe(`${existing}\n\n## Root Cause\nnull ref`);
+		expect(c.bodyMergeFallback).toBe(true);
+	});
+
+	it("safe-holds: neutralizes the body diff when the update adds nothing the ticket lacks", async () => {
+		mocks.reanalyzeBodyByKind.mockResolvedValue({
+			description: "unused",
+			acceptanceCriteria: undefined,
+			fallbackUsed: true,
+			fallbackReason: "destructive",
+		});
+		const changes = [
+			updateChange({
+				description: { from: "stale snapshot", to: "1. x\nbroken" },
+			}),
+		];
 		await structurePreserveUpdates({
 			changes,
 			projectId: "p1",
@@ -146,6 +190,114 @@ describe("structurePreserveUpdates", () => {
 		// to === from => apply will skip the description write (safe-hold)
 		expect(c.description.to).toBe(c.description.from);
 		expect(c.bodyMergeFallback).toBe(true);
+	});
+
+	it("holds a completed merge to the update: a figure it changed beyond the update stays as it was", async () => {
+		const limits = Array.from(
+			{ length: 3 },
+			(_, index) => `- Rule ${index + 1}: under 10,000 rows.`,
+		).join("\n");
+		mocks.findMany.mockResolvedValue([
+			{
+				id: "story-1",
+				kind: "BUG",
+				title: "Login fails",
+				identifier: "F-101",
+				description: `## Rules\n${limits}`,
+				acceptanceCriteria: "",
+			},
+		]);
+		mocks.reanalyzeBodyByKind.mockResolvedValue({
+			description: `## Rules\n${limits.replaceAll("10,000", "5,000")}\n- Exports are signed.`,
+			acceptanceCriteria: undefined,
+			fallbackUsed: false,
+		});
+		const changes = [
+			updateChange({
+				description: {
+					from: "stale snapshot",
+					to: "- Exports are signed.",
+				},
+			}),
+		];
+		await structurePreserveUpdates({
+			changes,
+			projectId: "p1",
+			userId: "u1",
+		});
+		const c = changes[0] as never as {
+			description: { to: string };
+			bodyMergeFallback?: boolean;
+		};
+		expect(c.description.to).toBe(
+			`## Rules\n${limits}\n- Exports are signed.`,
+		);
+		expect(c.bodyMergeFallback).toBeFalsy();
+	});
+
+	it("proposes a sentence of new detail changed inside a paragraph in place, not appended beside the old figure", async () => {
+		const paragraph = (limit: string) =>
+			`Add an Export CSV action for supervisors. Each export is limited to ${limit} rows, and the supervisor is notified when the export is truncated.`;
+		const existing = `### Overview\n\n${paragraph("10,000")}\n\n### Notes\n- Support: an export may be truncated at 10,000 rows.`;
+		mocks.findMany.mockResolvedValue([
+			{
+				id: "story-1",
+				kind: "FEATURE",
+				title: "Export CSV",
+				identifier: "F-124",
+				description: existing,
+				acceptanceCriteria: "",
+			},
+		]);
+		mocks.reanalyzeBodyByKind.mockResolvedValue({
+			description: existing.replaceAll("10,000", "5,000"),
+			acceptanceCriteria: undefined,
+			fallbackUsed: false,
+		});
+		const changes = [
+			updateChange({
+				description: {
+					from: "Each export is limited to 10,000 rows",
+					to: "Each export is limited to 5,000 rows",
+				},
+			}),
+		];
+		await structurePreserveUpdates({
+			changes,
+			projectId: "p1",
+			userId: "u1",
+		});
+		const c = changes[0] as never as {
+			description: { from: string; to: string };
+			bodyMergeFallback?: boolean;
+			structurePreserved?: boolean;
+		};
+		expect(c.description).toEqual({
+			from: existing,
+			to: existing.replace(paragraph("10,000"), paragraph("5,000")),
+		});
+		expect(c.bodyMergeFallback).toBeFalsy();
+		expect(c.structurePreserved).toBe(true);
+	});
+
+	it("neither merges nor safe-holds an update written as a whole version of the body", async () => {
+		const existing =
+			"## Steps to Reproduce\n1. x\n## Original Description from User (Do Not Modify)\nbroken";
+		const whole = `${existing}\n## Root Cause\nnull ref`;
+		const changes = [
+			updateChange({ description: { from: existing, to: whole } }),
+		];
+		await structurePreserveUpdates({
+			changes,
+			projectId: "p1",
+			userId: "u1",
+		});
+		expect(mocks.reanalyzeBodyByKind).not.toHaveBeenCalled();
+		expect(changes[0]).toMatchObject({ description: { to: whole } });
+		expect(
+			(changes[0] as never as { bodyMergeFallback?: boolean })
+				.bodyMergeFallback,
+		).toBeUndefined();
 	});
 
 	it("skips create changes and title-only updates (no reanalyze call)", async () => {
@@ -188,7 +340,10 @@ describe("structurePreserveUpdates", () => {
 		const changes = [
 			updateChange({
 				description: undefined,
-				acceptanceCriteria: { from: "old ac", to: "new ac" },
+				acceptanceCriteria: {
+					from: "old ac",
+					to: "GIVEN fixed WHEN retried THEN ok",
+				},
 			}),
 		];
 		await structurePreserveUpdates({
@@ -361,7 +516,9 @@ describe("merge time budget", () => {
 			return { description: "completed", fallbackUsed: false };
 		});
 		const changes: ChangeProposal["changes"] = [
-			updateChange(),
+			updateChange({
+				description: { from: "stale snapshot", to: "completed" },
+			}),
 			updateChange({ existingId: "missing" }),
 			updateChange(),
 		];

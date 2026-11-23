@@ -79,6 +79,7 @@ export const PLAN_POOL_BACKGROUND_JOB_TYPES: readonly AiJobKey[] = [
 	"batch-document-generation",
 	"project-setup",
 	"atlas-analysis",
+	"duplicate-detection",
 ];
 
 /**

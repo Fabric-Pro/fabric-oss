@@ -52,6 +52,10 @@ vi.mock("@repo/database", () => ({
 
 vi.mock("@repo/ai", () => ({
 	getRAGProviderConfig: vi.fn().mockResolvedValue({ apiKey: "example-key" }),
+	getEmbeddingRAGProviderConfig: vi.fn().mockResolvedValue({
+		provider: "OPENAI_DIRECT",
+		apiKey: "example-embedding-key",
+	}),
 	getAIEmbeddingModelWithMetadata: async (
 		context: Record<string, unknown>,
 	) => ({
@@ -302,3 +306,65 @@ it("attached-document retrieval owns its label under an enclosing scope", async 
 		callPurpose: "chat-document-retrieval-embedding",
 	});
 });
+
+it.each([
+	["workspace", "apiKey"],
+	["workspace", "federated"],
+	["attachment", "apiKey"],
+	["attachment", "federated"],
+])(
+	"embeds a %s query on the documents provider with an Anthropic %s default",
+	async (kind, authMode) => {
+		const { getRAGProviderConfig, getEmbeddingRAGProviderConfig } =
+			await import("@repo/ai");
+		vi.mocked(getRAGProviderConfig).mockResolvedValueOnce({
+			provider: "ANTHROPIC_DIRECT",
+			apiKey: authMode === "apiKey" ? "example-text-key" : "",
+			...(authMode === "federated" && { anthropicBearerSource: vi.fn() }),
+		} as never);
+		mocks.filterWorkspaceIdsForTenant.mockResolvedValue({
+			allowed: ["ws-a"],
+			dropped: [],
+		});
+		mocks.getEffectiveRagSettings.mockResolvedValue({
+			topK: 5,
+			similarityThreshold: 0.3,
+		});
+		mocks.generateEmbedding.mockResolvedValue({ embedding: [0.1] });
+		mocks.generateEmbedding.mockClear();
+		mocks.rows.mockClear();
+
+		const result =
+			kind === "workspace"
+				? await retrieveWorkspaceDocumentsActivity(
+						"query",
+						"example-user",
+						"example-org-a",
+						["ws-a"],
+					)
+				: await retrieveRagContextForDirectChatActivity(
+						"query",
+						"example-user",
+						"example-org-a",
+						"example-chat",
+						["doc-example"],
+					);
+		expect(result.chunkCount).toBe(0);
+		expect(getEmbeddingRAGProviderConfig).toHaveBeenCalledWith({
+			userId: "example-user",
+			organizationId: "example-org-a",
+		});
+		if (kind === "workspace") {
+			expect(mocks.generateEmbedding).toHaveBeenCalledTimes(1);
+			expect(mocks.generateEmbedding.mock.calls[0][2]).toMatchObject({
+				provider: "OPENAI_DIRECT",
+				apiKey: "example-embedding-key",
+			});
+		} else {
+			expect(mocks.rows).toHaveBeenCalledTimes(1);
+			expect(mocks.rows.mock.calls[0][0]).toMatchObject({
+				callPurpose: "chat-document-retrieval-embedding",
+			});
+		}
+	},
+);

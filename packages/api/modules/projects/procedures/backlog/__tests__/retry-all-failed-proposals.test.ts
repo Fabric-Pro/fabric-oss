@@ -30,6 +30,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		settleCreatesOnlyApply: vi.fn(),
 		getPendingProposalReview: vi.fn(),
 		getAppliedChangeIndexes: vi.fn(),
+		userStoryFindMany: vi.fn(),
 	};
 	return { handlers, mocks };
 });
@@ -40,6 +41,7 @@ vi.mock("@repo/database", () => ({
 	getAppliedChangeIndexes: mocks.getAppliedChangeIndexes,
 	db: {
 		project: { findFirst: mocks.projectFindFirst },
+		userStory: { findMany: mocks.userStoryFindMany },
 		pendingBacklogProposal: {
 			update: mocks.proposalUpdate,
 			updateMany: mocks.proposalUpdate,
@@ -191,6 +193,90 @@ describe("retryAllFailedProposalsProcedure — happy path", () => {
 			"p3",
 		]);
 		expect(result.results.every((r) => r.status === "queued")).toBe(true);
+	});
+});
+
+describe("retryAllFailedProposalsProcedure — update targets", () => {
+	it("returns a proposal to review, naming the item, when only invalid updates are left", async () => {
+		const row = {
+			...rowFor("p1"),
+			proposal: {
+				changes: [
+					{
+						type: "feature",
+						action: "update",
+						existingId: "c0000000000000000000000009",
+						existingIdentifier: "F-9",
+						title: { from: "Old title", to: "Enriched title" },
+						kindOverride: null,
+					},
+				],
+			},
+		};
+		mocks.listFailedProposals.mockResolvedValue([row]);
+		mocks.getPendingBacklogProposal.mockResolvedValue(row);
+		mocks.userStoryFindMany.mockResolvedValue([]);
+
+		const result = (await handlers.retryAll({
+			input: { projectId: "project-1", organizationId: "org-1" },
+			context: ctx,
+		})) as {
+			results: Array<{ status: string; message: string }>;
+		};
+
+		expect(result.results).toEqual([
+			expect.objectContaining({
+				status: "returned_to_review",
+				message: expect.stringContaining(
+					"“Enriched title” can't update F-9",
+				),
+			}),
+		]);
+		expect(mocks.returnFailedProposalToReview).toHaveBeenCalledWith("p1", {
+			applyWorkflowId: "wf-prev-p1",
+			applyReviewId: null,
+		});
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+	});
+
+	it("fails only the row whose target check fails, and retries the rest", async () => {
+		const updateRow = {
+			...rowFor("p1"),
+			proposal: {
+				changes: [
+					{
+						type: "feature",
+						action: "update",
+						existingId: "c0000000000000000000000009",
+						title: { from: "Old title", to: "Enriched title" },
+						kindOverride: null,
+					},
+				],
+			},
+		};
+		const rows = [updateRow, rowFor("p2")];
+		mocks.listFailedProposals.mockResolvedValue(rows);
+		mocks.getPendingBacklogProposal.mockImplementation((id: string) =>
+			rows.find((r) => r.id === id),
+		);
+		mocks.userStoryFindMany.mockRejectedValue(new Error("db down"));
+		const quiet = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+
+		const result = (await handlers.retryAll({
+			input: { projectId: "project-1", organizationId: "org-1" },
+			context: ctx,
+		})) as {
+			results: Array<{ proposalId: string; status: string }>;
+		};
+		quiet.mockRestore();
+
+		expect(result.results).toEqual([
+			expect.objectContaining({ proposalId: "p1", status: "error" }),
+			expect.objectContaining({ proposalId: "p2", status: "queued" }),
+		]);
+		expect(mocks.returnFailedProposalToReview).not.toHaveBeenCalled();
 	});
 });
 

@@ -73,7 +73,7 @@ This document defines the official technology stack for the Fabric Portal projec
 
 | Category | Technology | Version | Purpose |
 |----------|------------|---------|---------|
-| **Service Orchestration** | .NET Aspire | Latest | Local dev orchestration |
+| **Service Orchestration** | .NET Aspire | [17.0.0](../../../aspire/README.md#prerequisites) | Local dev orchestration |
 | **Monitoring** | Prometheus + Grafana | Latest | Metrics and dashboards |
 | **Tracing** | OpenTelemetry | Latest | Distributed tracing |
 

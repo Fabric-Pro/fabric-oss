@@ -321,6 +321,8 @@ function embeddingRoutingSnapshot(
 						encryptedApiKey: row.encryptedApiKey,
 						clientId: row.clientId,
 						encryptedClientSecret: row.encryptedClientSecret,
+						authMode: (row.config as { authMode?: unknown } | null)
+							?.authMode,
 						configApiKey: (
 							row.config as { apiKey?: unknown } | null
 						)?.apiKey,

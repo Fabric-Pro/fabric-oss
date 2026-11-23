@@ -22,6 +22,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { hasServicePrincipalCredentials } from "@repo/database/prisma/queries/provider-credential-presence";
 import {
 	createOAuthM2MProvider,
 	type DatabricksTokenProvider,
@@ -29,12 +30,18 @@ import {
 import { logger } from "@repo/logs";
 import { decryptApiKey } from "@repo/utils";
 
+export {
+	hasProviderCredentials,
+	hasServicePrincipalCredentials,
+} from "@repo/database/prisma/queries/provider-credential-presence";
+
 /**
  * The credential-bearing subset of a stored AI provider config. Mirrors the
  * fields `@repo/database`'s `AiProviderConfig` exposes, so callers can pass
  * their resolved config straight through.
  */
 export interface ProviderCredentialInput {
+	federatedOrganizationId?: string;
 	/** Provider enum value, e.g. "DATABRICKS". */
 	provider: string | null;
 	/** Encrypted static API key / PAT, when the row uses key auth. */
@@ -115,27 +122,6 @@ export function __databricksOAuthCacheSize(): number {
  */
 export function __databricksOAuthCacheKeys(): string[] {
 	return Array.from(oauthProviderCache.keys());
-}
-
-/** True when the config carries a usable service-principal credential pair. */
-export function hasServicePrincipalCredentials(
-	config: Pick<ProviderCredentialInput, "clientId" | "encryptedClientSecret">,
-): boolean {
-	return Boolean(config.clientId && config.encryptedClientSecret);
-}
-
-/**
- * True when the config carries ANY usable credential — a static key or a
- * service principal. Read paths use this in place of a bare `if (apiKey)`
- * check, which would otherwise treat an OAuth-only row as unconfigured.
- */
-export function hasProviderCredentials(
-	config: Pick<
-		ProviderCredentialInput,
-		"apiKey" | "clientId" | "encryptedClientSecret"
-	>,
-): boolean {
-	return Boolean(config.apiKey) || hasServicePrincipalCredentials(config);
 }
 
 /**
@@ -341,6 +327,11 @@ export async function resolveProviderApiKey(
 		lenientDecrypt?: boolean;
 	},
 ): Promise<string> {
+	if (config.federatedOrganizationId) {
+		throw new Error(
+			"This operation requires an API key and cannot use Anthropic federation.",
+		);
+	}
 	if (config.apiKey) {
 		return options?.lenientDecrypt
 			? decryptStoredKeyLeniently(config.apiKey)

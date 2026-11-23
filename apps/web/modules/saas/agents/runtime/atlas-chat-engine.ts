@@ -104,7 +104,12 @@ export class AtlasChatEngine extends InProcessEngine<
 		};
 		try {
 			await authorizeAtlasChat(
-				{ userId, organizationId },
+				{
+					userId,
+					organizationId,
+					activeOrganizationId:
+						audit.session?.activeOrganizationId ?? null,
+				},
 				props.projectId,
 			);
 			// After the project checks, so a caller with no tie to the project

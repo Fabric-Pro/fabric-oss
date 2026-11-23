@@ -66,6 +66,13 @@ vi.mock("../../../../organizations/lib/membership", () => ({
 	verifyOrganizationMembership: vi.fn(),
 }));
 
+const mockParlumeTranscriptAccess = vi.fn();
+vi.mock("../../../lib/parlume-transcript-access", () => ({
+	PARLUME_TRANSCRIPT_WITHHELD: "withheld message",
+	resolveParlumeTranscriptAccess: (...args: unknown[]) =>
+		mockParlumeTranscriptAccess(...args),
+}));
+
 // Stub the procedure base so we can call `.handler` directly.
 vi.mock("../../../../../orpc/procedures", () => {
 	const builder: Record<string, unknown> = {};
@@ -122,6 +129,57 @@ beforeEach(() => {
 		uploadedAt: new Date("2026-04-15T00:00:00Z"),
 		pathname: "stored",
 		url: "https://s3.test/stored",
+	});
+	mockParlumeTranscriptAccess.mockReset();
+	mockParlumeTranscriptAccess.mockResolvedValue(null);
+});
+
+describe("createContextDownloadUrl — Parlume meeting transcripts", () => {
+	const transcript = {
+		id: "ctx-parlume",
+		projectId: "proj-1",
+		type: "MEETING_TRANSCRIPT",
+		s3Path: null,
+		content: "Alex: what the meeting said",
+		sourceTitle: "Parlume meeting transcript",
+		metadata: { parlumeSessionId: "session-1" },
+		createdAt: new Date("2026-11-01T00:00:00Z"),
+	};
+
+	it("refuses a reader who was not in the meeting, and writes no file", async () => {
+		vi.mocked(getContextById).mockResolvedValueOnce(transcript as any);
+		mockParlumeTranscriptAccess.mockResolvedValueOnce("withheld");
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: { contextId: "ctx-parlume", projectId: "proj-1" },
+				context: personalContext,
+			}),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect(mockParlumeTranscriptAccess).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			userId: "user-1",
+			contextId: "ctx-parlume",
+		});
+		expect(mockUploadFile).not.toHaveBeenCalled();
+		expect(mockGetSignedUrl).not.toHaveBeenCalled();
+	});
+
+	it("lets the inviter or a project manager download it", async () => {
+		vi.mocked(getContextById).mockResolvedValueOnce(transcript as any);
+		mockParlumeTranscriptAccess.mockResolvedValueOnce("readable");
+		mockUploadFile.mockResolvedValueOnce(undefined);
+		mockGetSignedUrl.mockResolvedValueOnce("https://s3.test/signed-t");
+
+		const handler = await loadHandler();
+		const result = (await handler({
+			input: { contextId: "ctx-parlume", projectId: "proj-1" },
+			context: personalContext,
+		})) as { url: string };
+
+		expect(result.url).toBe("https://s3.test/signed-t");
+		expect(mockUploadFile).toHaveBeenCalledTimes(1);
 	});
 });
 

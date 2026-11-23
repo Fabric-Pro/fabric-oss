@@ -129,6 +129,9 @@ export interface VerifyTokenError {
  * Result of exchanging a token for an API key
  */
 export interface ExchangeResult {
+	credentialKind?: "bearer";
+	accessToken?: string;
+	credentialExpiresAt?: number;
 	/** Catalog metadata for the pinned model; null caps mean unknown. */
 	isReasoningModel?: boolean;
 	/** Resolved catalog identity for model-family capabilities. */

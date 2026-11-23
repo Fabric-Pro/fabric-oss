@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 	listDuplicates: vi.fn(),
 	listStates: vi.fn(),
 	findStories: vi.fn(),
+	listRestored: vi.fn(),
 }));
 
 vi.mock("../../../../../database/prisma/client", () => ({ db: {} }));
@@ -27,6 +28,7 @@ vi.mock("@repo/database", async () => {
 		listProposalApplications: mocks.listApplications,
 		listProposalDuplicateResolutions: mocks.listDuplicates,
 		listProposalItemStates: mocks.listStates,
+		listRestoredProposalItems: mocks.listRestored,
 		proposalRevision: changes.proposalRevision,
 		readRejectedChangeIndexes: itemState.readRejectedChangeIndexes,
 		readStoredProposalChanges: changes.readStoredProposalChanges,
@@ -65,6 +67,7 @@ beforeEach(() => {
 	mocks.listApplications.mockResolvedValue([]);
 	mocks.listDuplicates.mockResolvedValue([]);
 	mocks.findStories.mockResolvedValue([]);
+	mocks.listRestored.mockResolvedValue([]);
 });
 
 describe("summarizeProposalItems", () => {
@@ -228,9 +231,32 @@ describe("loadProposalItemOutcomes", () => {
 			remainingCount: 0,
 			proposalRevision: proposalRevision(detail.proposal),
 			targetChangedSinceProposalIndexes: [],
+			updateTargetBodies: [],
+			heldBackUpdateIndexes: [],
+			restoredItems: [],
 		});
 		expect(mocks.listApplications).toHaveBeenCalledWith("example-proposal");
 		expect(mocks.listDuplicates).toHaveBeenCalledWith("example-proposal");
+	});
+
+	it("returns the rejected items restored from the Rejected list", async () => {
+		const restored = [{ changeIndex: 1, storyId: "example-story" }];
+		mocks.listRestored.mockResolvedValue(restored);
+
+		const outcomes = await loadProposalItemOutcomes(detail);
+
+		expect(outcomes.restoredItems).toEqual(restored);
+		expect(mocks.listRestored).toHaveBeenCalledWith(detail);
+	});
+
+	it("looks for no restored item when none was moved to Rejected", async () => {
+		const outcomes = await loadProposalItemOutcomes({
+			...detail,
+			sourceMetadata: {},
+		});
+
+		expect(outcomes.restoredItems).toEqual([]);
+		expect(mocks.listRestored).not.toHaveBeenCalled();
 	});
 
 	it("flags the open update items whose ticket changed since analysis", async () => {
@@ -248,7 +274,7 @@ describe("loadProposalItemOutcomes", () => {
 				{ action: "update", title: { to: "No diff" }, existingId: "x" },
 			],
 		};
-		mocks.findStories.mockResolvedValue([
+		const stories = [
 			{
 				id: "story-edited",
 				description: "Edited after analysis",
@@ -264,7 +290,13 @@ describe("loadProposalItemOutcomes", () => {
 				description: "Edited after analysis",
 				acceptanceCriteria: null,
 			},
-		]);
+		];
+		// The bodies for the changed-ticket check; the held-back check reads
+		// tickets by reference and is covered on its own below.
+		mocks.findStories.mockImplementation(
+			async (query: { select: Record<string, boolean> }) =>
+				query.select.description ? stories : [],
+		);
 
 		const outcomes = await loadProposalItemOutcomes({
 			...detail,
@@ -282,10 +314,116 @@ describe("loadProposalItemOutcomes", () => {
 		});
 	});
 
+	it("returns the ticket bodies of the open updates whose body has no from", async () => {
+		const stories = [
+			{
+				id: "story-whole",
+				description: "Ticket body",
+				acceptanceCriteria: null,
+			},
+			{
+				id: "story-with-from",
+				description: "Original body",
+				acceptanceCriteria: "1. GIVEN a criterion",
+			},
+		];
+		mocks.findStories.mockImplementation(
+			async (query: { select: Record<string, boolean> }) =>
+				query.select.description ? stories : [],
+		);
+
+		const outcomes = await loadProposalItemOutcomes({
+			...detail,
+			sourceMetadata: {},
+			proposal: {
+				changes: [
+					{
+						action: "update",
+						title: { to: "Whole version" },
+						existingId: "story-whole",
+						description: { to: "Ticket body, changed" },
+					},
+					{
+						action: "update",
+						title: { to: "With from" },
+						existingId: "story-with-from",
+						description: {
+							from: "Original body",
+							to: "Original body and more",
+						},
+					},
+					{ action: "create", title: { to: "New" } },
+				],
+			},
+		});
+
+		expect(outcomes.updateTargetBodies).toEqual([
+			{
+				changeIndex: 0,
+				description: "Ticket body",
+				acceptanceCriteria: "",
+			},
+		]);
+		expect(outcomes.targetChangedSinceProposalIndexes).toEqual([]);
+		expect(mocks.findStories).toHaveBeenCalledWith({
+			where: {
+				id: { in: ["story-whole", "story-with-from"] },
+				projectId: "example-project",
+			},
+			select: { id: true, description: true, acceptanceCriteria: true },
+		});
+	});
+
 	it("does not read tickets when no open update carries a diff", async () => {
 		const outcomes = await loadProposalItemOutcomes(detail);
 
 		expect(outcomes.targetChangedSinceProposalIndexes).toEqual([]);
 		expect(mocks.findStories).not.toHaveBeenCalled();
+	});
+
+	it("lists the open updates an approval would hold back, by the approval's own rule", async () => {
+		// Any ticket of the project counts, whatever the board shows (an
+		// initiative, say); a ticket of another project or a deleted one
+		// does not.
+		const inProject = "cmexampleinitiative00000001";
+		const foreign = "cmexampleotherproject000001";
+		const update = (title: string, existingId: string) => ({
+			action: "update",
+			title: { from: title, to: title },
+			existingId,
+			existingIdentifier: title,
+		});
+		mocks.findStories.mockResolvedValue([
+			{
+				id: inProject,
+				identifier: "I-1",
+				title: "Initiative",
+				externalId: null,
+			},
+		]);
+
+		const outcomes = await loadProposalItemOutcomes({
+			...detail,
+			changeCount: 4,
+			sourceMetadata: { rejectedChangeIndexes: [3] },
+			proposal: {
+				changes: [
+					update("Initiative", inProject),
+					update("Elsewhere", foreign),
+					{ action: "create", title: { to: "New" } },
+					update("Rejected already", foreign),
+				],
+			},
+		});
+
+		expect(outcomes.heldBackUpdateIndexes).toEqual([1]);
+		expect(mocks.findStories).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					projectId: "example-project",
+					OR: [{ id: { in: [inProject, foreign] } }],
+				},
+			}),
+		);
 	});
 });

@@ -5,11 +5,12 @@ import {
 	type ParlumeRealtimeCredentials,
 	parseParlumeRealtimeCredentials,
 } from "./parlume-realtime";
-import {
-	type ParlumeRealtimeContext,
-	ParlumeRealtimeEngine,
-} from "./parlume-realtime-engine";
+import { ParlumeRealtimeEngine } from "./parlume-realtime-engine";
+import type { ParlumeRealtimeContext } from "./parlume-realtime-host";
 import { isRecord } from "./parlume-stream-auth";
+
+const VOICE_POST_SHOWN_WAIT_MS = 3_000;
+const VOICE_POST_SHOWN_POLL_MS = 200;
 
 /** What the realtime engine needs from the meeting's bridge. */
 export interface ParlumeRealtimeBridge {
@@ -20,7 +21,18 @@ export interface ParlumeRealtimeBridge {
 	segmentsSent(): Promise<void>;
 	outlet(): ParlumeAuraOutlet | null;
 	generation(): number;
-	chat: Pick<ParlumeChatChannel, "postFromVoice" | "recentMessages">;
+	/** The voice floor's gate; see `ParlumeVoiceFloor.maySpeak`. */
+	maySpeak(): boolean;
+	/** The meeting's last two minutes before its cap; see `parlumeCapClosing`. */
+	closing(): boolean;
+	/** Who Fabric rechecks before a job's turn; see `ParlumeGuests`. */
+	attendees(): string[];
+	/** The Fabric account of a confirmed participant; see `ParlumeGuests.userFor`. */
+	userFor(speakerKey: string | null): string | null;
+	chat: Pick<
+		ParlumeChatChannel,
+		"postFromVoice" | "recentMessages" | "shown"
+	>;
 	saveContext(context: ParlumeRealtimeContext): void;
 	/** The engine gave up; the meeting carries on with the classic engine. */
 	fallBack(engine: ParlumeRealtimeEngine, reason: string): void;
@@ -34,8 +46,8 @@ export interface ParlumeRealtimeBridge {
 /**
  * The realtime engine for one meeting, wired to Fabric: client secrets come
  * from `realtime-session`, `ask_fabric` runs as an ordinary meeting turn
- * whose result the worker posts back as `fabric-result`, and usage is
- * reported to `realtime-usage`.
+ * whose result the worker posts back as `fabric-result`, usage is reported
+ * to `realtime-usage`, and when a job's answer was heard to `realtime-spoken`.
  */
 export function createParlumeRealtimeEngine(
 	bridge: ParlumeRealtimeBridge,
@@ -58,6 +70,8 @@ export function createParlumeRealtimeEngine(
 		connect: openParlumeRealtimeSocket,
 		outlet: () => bridge.outlet(),
 		generation: () => bridge.generation(),
+		maySpeak: () => bridge.maySpeak(),
+		closing: () => bridge.closing(),
 		dispatchJob: async (job) => {
 			// The request's segments reach Fabric first, so the turn sees them.
 			await bridge.segmentsSent();
@@ -75,6 +89,10 @@ export function createParlumeRealtimeEngine(
 					replyChannel: "VOICE",
 					delivery: "realtime",
 					job: job.job,
+					attendees: bridge.attendees(),
+					// Fabric reads the job with this account's access, and
+					// looks nothing up when nobody confirmed asked.
+					requester: bridge.userFor(job.requesterKey),
 				},
 			);
 			const body: unknown = await response?.json().catch(() => null);
@@ -82,9 +100,20 @@ export function createParlumeRealtimeEngine(
 		},
 		postChat: async (text) => {
 			const sent = await bridge.chat.postFromVoice(text);
-			return sent.sent
-				? { posted: true, tag: sent.tag }
-				: { posted: false, reason: sent.reason };
+			if (!sent.sent) {
+				return { posted: false, reason: sent.reason };
+			}
+			// The chat usually shows a post within a second; the voice waits
+			// that long so what it says about the post is true.
+			const until = Date.now() + VOICE_POST_SHOWN_WAIT_MS;
+			let shown = await bridge.chat.shown(sent.tag);
+			while (!shown && Date.now() < until) {
+				await new Promise((resolve) =>
+					setTimeout(resolve, VOICE_POST_SHOWN_POLL_MS),
+				);
+				shown = await bridge.chat.shown(sent.tag);
+			}
+			return { posted: true, tag: sent.tag, shown };
 		},
 		readChat: () => bridge.chat.recentMessages(),
 		reportUsage: (usage) =>
@@ -93,6 +122,12 @@ export function createParlumeRealtimeEngine(
 				botId,
 				provider,
 				...usage,
+			}),
+		reportSpoken: (spoken) =>
+			void bridge.postToFabric("/api/internal/parlume/realtime-spoken", {
+				sessionId,
+				botId,
+				...spoken,
 			}),
 		saveContext: (context) => bridge.saveContext(context),
 		fallBack: (reason) => bridge.fallBack(engine, reason),

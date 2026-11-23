@@ -16,7 +16,7 @@ import {
 	runContextUpdate,
 } from "@repo/temporal";
 import { ACCEPTANCE_HEADING_RE } from "@repo/utils/clean-spec-content";
-import { stripInlineDecoration } from "@repo/utils/markdown-heading";
+import { findHeadingLine } from "@repo/utils/markdown-heading";
 import { z } from "zod";
 import {
 	Permissions,
@@ -78,36 +78,6 @@ function buildDocumentMarkdown(
  */
 const AC_HEADING_RE = /^##\s+Acceptance\s+Criteria\s*$/i;
 const DESCRIPTION_HEADING_RE = /^##\s+Description\s*$/i;
-
-/**
- * Find the first line whose decoration-stripped form matches `pattern`, and
- * return its offsets **into the original text**.
- *
- * Scanning the ORIGINAL lines while tracking a running offset is the whole
- * point: the normalized form of a line is shorter than the line (tags and
- * emphasis characters are deleted, runs of whitespace collapse), so an offset
- * taken from a normalized copy of the document does not map back onto the
- * original string. Callers slice the original with what this returns.
- *
- * `stripInlineDecoration`'s heading-forgery guard means a body line cannot be
- * promoted into heading shape here — `` `## Acceptance Criteria` `` comes back
- * untouched and fails the anchored pattern, so it can never move the boundary.
- */
-function findHeadingLine(
-	text: string,
-	pattern: RegExp,
-): { start: number; length: number } | null {
-	let start = 0;
-	for (const line of text.split("\n")) {
-		if (pattern.test(stripInlineDecoration(line))) {
-			return { start, length: line.length };
-		}
-		// +1 for the "\n" consumed by split. A trailing "\r" stays part of the
-		// line, so CRLF documents keep correct offsets.
-		start += line.length + 1;
-	}
-	return null;
-}
 
 /**
  * Remove the `## Description` header line (decorated or not) from a chunk of

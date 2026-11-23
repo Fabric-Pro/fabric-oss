@@ -5,6 +5,7 @@ import { useOrganizationContext } from "@saas/organizations/hooks/use-organizati
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+	RefinementDeclinedError,
 	type RefinementMessage,
 	refineOverRoute,
 	refineOverRuntime,
@@ -113,9 +114,14 @@ export function useWeaveRefinement({
 				if (transport === "runtime" && controller.signal.aborted) {
 					return;
 				}
-				toast.error(
-					`Refinement failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-				);
+				if (error instanceof RefinementDeclinedError) {
+					// The model would not refine it: not a failure.
+					toast.warning(`Request declined: ${error.message}`);
+				} else {
+					toast.error(
+						`Refinement failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+					);
+				}
 				// Remove the user message on failure
 				setMessages((prev) => prev.slice(0, -1));
 			} finally {

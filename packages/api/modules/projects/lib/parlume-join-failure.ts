@@ -1,5 +1,5 @@
 import type { ParlumeMeetingEndReason } from "@repo/database/prisma/generated/enums";
-import { PARLUME_LOBBY_WAIT_SECONDS } from "./parlume-attendee";
+import { PARLUME_LOBBY_WAIT_SECONDS } from "./parlume-lobby";
 
 /**
  * Why a provider-reported failure ended a session, in words the Parlume page

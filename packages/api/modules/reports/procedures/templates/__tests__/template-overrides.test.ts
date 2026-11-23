@@ -189,6 +189,8 @@ describe("reports.templates.overrides.set", () => {
 			"example-project",
 			"example-member",
 			"REPORT_READ",
+			undefined,
+			{ admitUnreachableOrganizationMember: true },
 		);
 		expect(mocks.setReportTemplateOverride).toHaveBeenCalledWith(
 			{

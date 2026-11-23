@@ -13,10 +13,17 @@
  * permission gate's org-role fallback admits an organization member who is
  * not on the project, who would otherwise write into its shared threads.
  * The input names no document, so the check reads the thread's own.
+ *
+ * The stamp is read and written under the conversation row lock
+ * (`lockConversationRow`). A Reject also saves the turn's tool result
+ * (`appendTurnForDocument`) and appends the "Changes rejected." operation
+ * result (`appendConversationMessage`), usually within a second; both
+ * rewrite the same `messages` column under the same lock, so none of the
+ * three overwrites another's change.
  */
 
 import { ORPCError } from "@orpc/server";
-import { db } from "@repo/database";
+import { db, lockConversationRow } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -41,6 +48,13 @@ interface StoredMessage {
 	id: string;
 	toolCalls?: StoredToolCall[];
 	[key: string]: unknown;
+}
+
+interface DiffOutcome {
+	messageId: string;
+	toolCallId: string;
+	outcome: "accepted" | "rejected";
+	at: string;
 }
 
 export const recordDiffOutcome = tenantProtectedProcedure
@@ -81,7 +95,7 @@ export const recordDiffOutcome = tenantProtectedProcedure
 				documentRefKind: true,
 				documentRefId: true,
 				conversation: {
-					select: { id: true, messages: true },
+					select: { id: true },
 				},
 			},
 		});
@@ -111,75 +125,100 @@ export const recordDiffOutcome = tenantProtectedProcedure
 			userId: user.id,
 		});
 
-		const messages = Array.isArray(join.conversation.messages)
-			? (join.conversation.messages as StoredMessage[])
-			: [];
-
-		let messageIndex = -1;
-		let toolCallIndex = -1;
-		for (let i = 0; i < messages.length; i++) {
-			const m = messages[i];
-			if (!m || typeof m !== "object" || m.id !== input.messageId) {
-				continue;
+		const conversationId = join.conversation.id;
+		await db.$transaction(async (tx) => {
+			if (!(await lockConversationRow(tx, conversationId))) {
+				throw new ORPCError("NOT_FOUND", {
+					message: "Conversation not found",
+				});
 			}
-			if (!Array.isArray(m.toolCalls)) {
-				break;
-			}
-			for (let j = 0; j < m.toolCalls.length; j++) {
-				const tc = m.toolCalls[j];
-				if (
-					tc &&
-					typeof tc === "object" &&
-					tc.id === input.toolCallId
-				) {
-					messageIndex = i;
-					toolCallIndex = j;
-					break;
-				}
-			}
-			if (messageIndex !== -1) {
-				break;
-			}
-		}
-
-		if (messageIndex === -1 || toolCallIndex === -1) {
-			throw new ORPCError("NOT_FOUND", {
-				message: "Tool call not found",
+			const conversation = await tx.agentConversation.findUnique({
+				where: { id: conversationId },
+				select: { messages: true },
 			});
-		}
-
-		const next = messages.map((m, i) => {
-			if (i !== messageIndex) {
-				return m;
-			}
-			const toolCalls = (m.toolCalls ?? []).map((tc, j) => {
-				if (j !== toolCallIndex) {
-					return tc;
-				}
-				return {
-					...tc,
-					acceptedAt:
-						input.outcome === "accepted"
-							? input.at
-							: (tc.acceptedAt ?? null),
-					rejectedAt:
-						input.outcome === "rejected"
-							? input.at
-							: (tc.rejectedAt ?? null),
-				};
+			const next = stampToolCall(conversation?.messages, {
+				messageId: input.messageId,
+				toolCallId: input.toolCallId,
+				outcome: input.outcome,
+				at: input.at,
 			});
-			return { ...m, toolCalls };
-		});
 
-		// We deliberately do NOT bump `documentAssistantConversation.updatedAt`
-		// here — recordDiffOutcome is a meta-event on an existing turn, not a
-		// new turn. Keeping the join's updatedAt stable means the History
-		// drawer's date-grouping ("Today / Yesterday / …") doesn't shuffle
-		// when a teammate clicks accept on a hours-old diff.
-		await db.agentConversation.update({
-			where: { id: join.conversation.id },
-			data: { messages: next as never },
+			// We deliberately do NOT bump `documentAssistantConversation.updatedAt`
+			// here — recordDiffOutcome is a meta-event on an existing turn, not a
+			// new turn. Keeping the join's updatedAt stable means the History
+			// drawer's date-grouping ("Today / Yesterday / …") doesn't shuffle
+			// when a teammate clicks accept on a hours-old diff.
+			await tx.agentConversation.update({
+				where: { id: conversationId },
+				data: { messages: next as never },
+			});
 		});
 
 		return { success: true as const };
 	});
+
+/**
+ * Returns the stored messages with the outcome stamped on the tool call
+ * (messageId, toolCallId); every other message and tool call is returned
+ * as it was. Throws NOT_FOUND when the turn holds no such tool call.
+ */
+function stampToolCall(
+	storedMessages: unknown,
+	input: DiffOutcome,
+): StoredMessage[] {
+	const messages = Array.isArray(storedMessages)
+		? (storedMessages as StoredMessage[])
+		: [];
+
+	let messageIndex = -1;
+	let toolCallIndex = -1;
+	for (let i = 0; i < messages.length; i++) {
+		const m = messages[i];
+		if (!m || typeof m !== "object" || m.id !== input.messageId) {
+			continue;
+		}
+		if (!Array.isArray(m.toolCalls)) {
+			break;
+		}
+		for (let j = 0; j < m.toolCalls.length; j++) {
+			const tc = m.toolCalls[j];
+			if (tc && typeof tc === "object" && tc.id === input.toolCallId) {
+				messageIndex = i;
+				toolCallIndex = j;
+				break;
+			}
+		}
+		if (messageIndex !== -1) {
+			break;
+		}
+	}
+
+	if (messageIndex === -1 || toolCallIndex === -1) {
+		throw new ORPCError("NOT_FOUND", {
+			message: "Tool call not found",
+		});
+	}
+
+	return messages.map((m, i) => {
+		if (i !== messageIndex) {
+			return m;
+		}
+		const toolCalls = (m.toolCalls ?? []).map((tc, j) => {
+			if (j !== toolCallIndex) {
+				return tc;
+			}
+			return {
+				...tc,
+				acceptedAt:
+					input.outcome === "accepted"
+						? input.at
+						: (tc.acceptedAt ?? null),
+				rejectedAt:
+					input.outcome === "rejected"
+						? input.at
+						: (tc.rejectedAt ?? null),
+			};
+		});
+		return { ...m, toolCalls };
+	});
+}

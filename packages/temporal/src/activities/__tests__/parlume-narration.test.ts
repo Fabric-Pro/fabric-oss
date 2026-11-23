@@ -13,9 +13,9 @@ const source = (originalName: string, configId = "builtin") => ({
 
 describe("the line spoken when a tool starts", () => {
 	it.each([
-		["fabric_create_story", "Creating that now."],
-		["create_ticket", "Creating that now."],
-		["fabric_create_workflow", "Creating that now."],
+		["fabric_create_story", "Preparing that change."],
+		["create_ticket", "Preparing that change."],
+		["fabric_create_workflow", "Preparing that change."],
 		["fabric_list_project_features", "Let me check."],
 		["search_slack_messages", "Let me check."],
 		["fabric_get_project_document", "Let me check."],
@@ -58,7 +58,7 @@ describe("narrating a tool while it runs", () => {
 		queue.end();
 		await speaker;
 
-		expect(spoken).toEqual(["Creating that now."]);
+		expect(spoken).toEqual(["Preparing that change."]);
 	});
 
 	it("speaks the fallback once per turn, not once per tool call", async () => {
@@ -166,7 +166,7 @@ describe("narrating a tool while it runs", () => {
 		expect(startedDuringSpeech).toBe(true);
 		expect(toolFinished).toBe(true);
 		expect(playbackFinished).toBe(false);
-		expect(spoken).toEqual(["Creating that now."]);
+		expect(spoken).toEqual(["Preparing that change."]);
 		finishPlayback();
 		queue.end();
 		await speaker;

@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/client";
-import { updateTask } from "@repo/database";
+import { updateTaskInStory } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -33,8 +33,15 @@ export const updateTaskProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input }) => {
-		try {
-			const task = await updateTask(input.taskId, {
+		// Scoped to the story and project the gate authorized: a task id from
+		// anywhere else is not found, and nothing is written.
+		const task = await updateTaskInStory(
+			{
+				taskId: input.taskId,
+				storyId: input.storyId,
+				projectId: input.projectId,
+			},
+			{
 				title: input.title,
 				description: input.description,
 				estimatedHours: input.estimatedHours,
@@ -43,11 +50,12 @@ export const updateTaskProcedure = tenantProtectedProcedure
 				repositoryOwner: input.repositoryOwner,
 				repositoryName: input.repositoryName,
 				targetBranch: input.targetBranch,
-			});
-			return { task };
-		} catch {
+			},
+		).catch(() => null);
+		if (!task) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Task not found",
 			});
 		}
+		return { task };
 	});

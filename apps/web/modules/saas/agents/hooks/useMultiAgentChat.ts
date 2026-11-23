@@ -150,6 +150,27 @@ export function useMultiAgentChat(options: {
 		[],
 	);
 
+	// A live turn belongs to one thread. Moving off it (another conversation,
+	// a new chat, or the open one deleted) stops following it and clears it.
+	// A turn that starts a new thread does so while no thread is open, so
+	// that move keeps it.
+	const shownThreadIdRef = useRef(options.conversationId);
+	useEffect(() => {
+		const previous = shownThreadIdRef.current;
+		shownThreadIdRef.current = options.conversationId;
+		const turn = turnRef.current;
+		if (
+			previous === null ||
+			!turn ||
+			turn.threadId === options.conversationId
+		) {
+			return;
+		}
+		turn.dispose();
+		turnRef.current = null;
+		setView(null);
+	}, [options.conversationId]);
+
 	// After a reload: follow the thread's multi-agent turn still running.
 	const latest = options.latest;
 	const latestRecord = latest?.multiAgent;

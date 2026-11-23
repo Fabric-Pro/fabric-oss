@@ -98,6 +98,9 @@ describe.skipIf(!configuredUrl)(
 				id text PRIMARY KEY, "parentContextId" text NOT NULL, "projectId" text NOT NULL,
 				"organizationId" text NOT NULL, content text NOT NULL, "bundleStartedAt" timestamptz NOT NULL
 			);
+			CREATE TEMP TABLE parlume_meeting_session (
+				id text PRIMARY KEY, "transcriptContextId" text
+			);
 		`);
 		});
 		afterAll(async () => {
@@ -105,7 +108,7 @@ describe.skipIf(!configuredUrl)(
 		});
 		beforeEach(async () => {
 			await client.query(
-				"TRUNCATE pg_temp.project_context, pg_temp.project_context_url_page, pg_temp.project_context_conversation_bundle",
+				"TRUNCATE pg_temp.project_context, pg_temp.project_context_url_page, pg_temp.project_context_conversation_bundle, pg_temp.parlume_meeting_session",
 			);
 			queryRaw.mockImplementation(
 				async (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -214,6 +217,21 @@ describe.skipIf(!configuredUrl)(
 			expect(
 				Buffer.byteLength(JSON.stringify(metadata), "utf8"),
 			).toBeLessThan(2048);
+		});
+
+		it("has no source for a Parlume meeting transcript", async () => {
+			await parent({
+				type: "MEETING_TRANSCRIPT",
+				content: "Alex: what the meeting said",
+			});
+			await client.query(
+				`INSERT INTO pg_temp.parlume_meeting_session (id, "transcriptContextId") VALUES ($1, $2)`,
+				["example-session", scope.sourceId],
+			);
+
+			await expect(
+				getContextQualitySourceMetadata(scope),
+			).resolves.toBeNull();
 		});
 
 		it("measures inline UTF-8 bytes exactly and returns no text above the ceiling", async () => {

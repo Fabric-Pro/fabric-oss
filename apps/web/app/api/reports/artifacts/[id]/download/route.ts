@@ -1,8 +1,14 @@
 import { auth } from "@repo/auth";
-import { getTemplateInstanceArtifact } from "@repo/database";
+import { getTemplateInstanceArtifactForMember } from "@repo/database";
 import { downloadFile } from "@repo/storage";
 import { type NextRequest, NextResponse } from "next/server";
 
+/**
+ * A report run's artifact, for the report's page to view or download. It is
+ * read in the report's own organization, not the session's active one, so a
+ * page left open keeps working after another tab switches workspace; the
+ * caller must still be a member there who may read the report.
+ */
 export async function GET(
 	request: NextRequest,
 	{ params }: { params: Promise<{ id: string }> },
@@ -17,16 +23,8 @@ export async function GET(
 		}
 
 		const { id } = await params;
-		const organizationId = session.session.activeOrganizationId;
-		if (!organizationId)
-			return NextResponse.json(
-				{ error: "Artifact not found" },
-				{ status: 404 },
-			);
-		const artifact = await getTemplateInstanceArtifact(id, {
-			userId: session.user.id,
-			organizationId,
-		});
+		const userId = session.user.id;
+		const artifact = await getTemplateInstanceArtifactForMember(id, userId);
 
 		if (!artifact) {
 			return NextResponse.json(
@@ -53,12 +51,7 @@ export async function GET(
 			const { data } = await downloadFile(artifact.s3Path, {
 				bucket: artifact.s3Bucket,
 			});
-			if (
-				!(await getTemplateInstanceArtifact(id, {
-					userId: session.user.id,
-					organizationId,
-				}))
-			) {
+			if (!(await getTemplateInstanceArtifactForMember(id, userId))) {
 				return NextResponse.json(
 					{ error: "Artifact not found" },
 					{ status: 404 },

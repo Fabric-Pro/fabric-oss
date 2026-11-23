@@ -383,16 +383,19 @@ export async function getOpenDecisionsForStories({
 export interface GetDecisionLogEntryByIdInput {
 	tenantFilter: MaturationTenantFilter;
 	userStoryId: string;
+	/** The feature's project, as the caller's permission check named it. */
+	projectId: string;
 	id: string;
 }
 
 /**
- * Load a single Decision Log entry by id, tenant- and feature-scoped.
- * Returns `null` on a miss / wrong tenant / soft-deleted.
+ * Load a single Decision Log entry by id, tenant-, feature- and project-scoped.
+ * Returns `null` on a miss / wrong tenant / another project / soft-deleted.
  */
 export async function getDecisionLogEntryById({
 	tenantFilter,
 	userStoryId,
+	projectId,
 	id,
 }: GetDecisionLogEntryByIdInput): Promise<DecisionLogEntry | null> {
 	return db.decisionLogEntry.findFirst({
@@ -400,6 +403,7 @@ export async function getDecisionLogEntryById({
 			...buildDecisionLogTenantWhere(tenantFilter),
 			id,
 			userStoryId,
+			story: { projectId },
 			deletedAt: null,
 		},
 	});
@@ -890,20 +894,27 @@ export async function markQuestionsPossiblyResolved({
 
 export interface SetQuestionStatusInput {
 	tenantFilter: MaturationTenantFilter;
+	/** The feature the question belongs to. */
+	userStoryId: string;
+	/** The feature's project, as the caller's permission check named it. */
+	projectId: string;
 	/** The question thread root id. */
 	rootId: string;
 	status: DecisionLogEntry["status"];
 }
 
 /**
- * Set the status of a single question thread root, tenant-scoped via `updateMany`.
- * Used to reactivate a `POSSIBLY_RESOLVED` question back to `OPEN` when a later
- * refresh re-emits it, and to back the manual "restore" action in the UI (demo
- * feedback #5). Writes a maturation surface only → no PM sync (§7.7). Returns the
- * affected count (0 = miss / wrong tenant).
+ * Set the status of a single question thread root, tenant-, feature- and
+ * project-scoped via `updateMany`. Used to reactivate a `POSSIBLY_RESOLVED`
+ * question back to `OPEN` when a later refresh re-emits it, and to back the
+ * manual "restore" action in the UI (demo feedback #5). Writes a maturation
+ * surface only → no PM sync (§7.7). Returns the affected count (0 = miss /
+ * wrong tenant / another feature or project).
  */
 export async function setQuestionStatus({
 	tenantFilter,
+	userStoryId,
+	projectId,
 	rootId,
 	status,
 }: SetQuestionStatusInput): Promise<number> {
@@ -911,6 +922,8 @@ export async function setQuestionStatus({
 		where: {
 			...buildDecisionLogTenantWhere(tenantFilter),
 			id: rootId,
+			userStoryId,
+			story: { projectId },
 			parentId: null,
 			deletedAt: null,
 		},

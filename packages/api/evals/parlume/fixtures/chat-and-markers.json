@@ -1,0 +1,158 @@
+{
+	"id": "chat-and-markers",
+	"title": "Docs site migration with chat lines and a pause",
+	"covers": [
+		"meeting chat lines, one of them assigning an action",
+		"Parlume's pause and resume markers in the transcript",
+		"a link to example.com in the chat",
+		"a question left open on purpose"
+	],
+	"segments": [
+		{
+			"id": 1,
+			"speaker": "Lee Example",
+			"text": "Let's settle the docs site migration today.",
+			"startMs": 0,
+			"endMs": 8000
+		},
+		{
+			"id": 2,
+			"speaker": "Morgan Example",
+			"text": "I posted the comparison in the chat.",
+			"startMs": 10000,
+			"endMs": 16000
+		},
+		{
+			"id": 3,
+			"speaker": "Morgan Example",
+			"source": "CHAT",
+			"text": "Comparison: https://docs.example.com/compare - the static export is cheaper and faster to build.",
+			"startMs": 17000,
+			"endMs": 17000
+		},
+		{
+			"id": 4,
+			"speaker": "Robin Example",
+			"text": "I read it. The static export looks right to me.",
+			"startMs": 20000,
+			"endMs": 28000
+		},
+		{
+			"id": 5,
+			"speaker": "Lee Example",
+			"text": "Then we go with the static export for the docs site.",
+			"startMs": 30000,
+			"endMs": 38000
+		},
+		{
+			"id": 6,
+			"speaker": null,
+			"source": "EVENT",
+			"text": "Listening paused by Lee Example.",
+			"startMs": 40000,
+			"endMs": 40000
+		},
+		{
+			"id": 7,
+			"speaker": null,
+			"source": "EVENT",
+			"text": "Listening resumed by Lee Example.",
+			"startMs": 160000,
+			"endMs": 160000
+		},
+		{
+			"id": 8,
+			"speaker": "Robin Example",
+			"text": "While we were paused I checked, the redirects work with the static export.",
+			"startMs": 162000,
+			"endMs": 170000
+		},
+		{
+			"id": 9,
+			"speaker": "Lee Example",
+			"source": "CHAT",
+			"text": "Robin please own the redirect map, due next Wednesday",
+			"startMs": 172000,
+			"endMs": 172000
+		},
+		{
+			"id": 10,
+			"speaker": "Robin Example",
+			"text": "Got it, I'll own the redirect map, next Wednesday.",
+			"startMs": 175000,
+			"endMs": 182000
+		},
+		{
+			"id": 11,
+			"speaker": "Morgan Example",
+			"text": "Should we keep the old search widget? Nobody has decided that.",
+			"startMs": 185000,
+			"endMs": 193000
+		},
+		{
+			"id": 12,
+			"speaker": "Lee Example",
+			"text": "Leave it open, we'll ask the support team first.",
+			"startMs": 195000,
+			"endMs": 202000
+		}
+	],
+	"truth": {
+		"decisions": [
+			{
+				"text": "Move the docs site to the static export.",
+				"keywords": ["static"],
+				"segments": [3, 4, 5]
+			}
+		],
+		"actionItems": [
+			{
+				"text": "Own the redirect map for the old docs URLs.",
+				"keywords": ["redirect"],
+				"segments": [9, 10],
+				"owner": "Robin Example",
+				"due": "next Wednesday"
+			},
+			{
+				"text": "Ask the support team about the old search widget.",
+				"keywords": ["support|widget"],
+				"segments": [12],
+				"owner": null,
+				"due": null
+			}
+		]
+	},
+	"suggestions": {
+		"passesAfter": [5, 12],
+		"workItems": [
+			{
+				"identifier": "DOC-31",
+				"title": "Migrate docs site to static export",
+				"status": "To do",
+				"priority": "HIGH",
+				"owner": "Morgan Example"
+			},
+			{
+				"identifier": "DOC-33",
+				"title": "Redirect map for old docs URLs",
+				"status": "To do",
+				"priority": "MEDIUM",
+				"owner": null
+			}
+		],
+		"agenda": null,
+		"previousQuestions": [],
+		"expected": [
+			{
+				"kind": "answer",
+				"text": "DOC-31 Migrate docs site to static export already exists and is owned by Morgan Example.",
+				"keywords": ["doc-31|migrate", "morgan|owner|owned"]
+			},
+			{
+				"kind": "answer",
+				"text": "DOC-33 Redirect map for old docs URLs is still unassigned in the backlog.",
+				"keywords": ["doc-33|redirect", "unassigned|assign|owner"]
+			}
+		]
+	}
+}

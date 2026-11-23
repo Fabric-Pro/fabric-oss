@@ -28,6 +28,7 @@ import { DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY } from "@repo/utils/direct-chat-mem
 import { LIVING_MEMORY_DECISIONS_PROMPT_AGENT_KEY } from "@repo/utils/living-memory-decisions-prompt";
 import { ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY } from "@repo/utils/orchestrator-memory-prompt";
 import { PAGE_ASK_PROMPT_AGENT_KEY } from "@repo/utils/page-ask-prompt";
+import { PARLUME_NOTES_PROMPT_AGENT_KEY } from "@repo/utils/parlume-notes-prompt";
 import { PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY } from "@repo/utils/parlume-realtime-voice-prompt";
 import { PARLUME_RECAP_PROMPT_AGENT_KEY } from "@repo/utils/parlume-recap-prompt";
 import { PARLUME_SUGGESTION_PROMPT_AGENT_KEY } from "@repo/utils/parlume-suggestion-prompt";
@@ -96,6 +97,7 @@ const KEY_CONSTANTS: Record<string, string> = {
 	PARLUME_SUGGESTION_PROMPT_AGENT_KEY,
 	PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY,
 	PARLUME_RECAP_PROMPT_AGENT_KEY,
+	PARLUME_NOTES_PROMPT_AGENT_KEY,
 	PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	PUBLISHING_REFINE_AGENT_KEY,

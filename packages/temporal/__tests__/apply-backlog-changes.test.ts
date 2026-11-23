@@ -108,6 +108,7 @@ import {
 	type ChangeProposal,
 } from "../src/activities/backlog-context/analyze-context";
 import { triggerDuplicateDetection } from "../src/lib/trigger-duplicate-detection";
+import { MISSING_UPDATE_TARGET_ERROR } from "../src/workflows/backlog-apply-outcome";
 
 // Use a minimal empty backlog so the activity skips the story fetch.
 // `user_story` is the only work-item table — the backlog is a flat list.
@@ -1358,6 +1359,103 @@ it("fails an update whose Fabric id loads no row with a specific reason", async 
 	expect(mocks.updateStory).not.toHaveBeenCalled();
 	expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
 	expect(result.updatedItems).toEqual([]);
+});
+
+describe("an update whose ticket is deleted while it writes", () => {
+	const id = "33333333-3333-4333-8333-333333333333";
+	const foreignKeyError = () =>
+		Object.assign(new Error("Foreign key constraint violated"), {
+			name: "PrismaClientKnownRequestError",
+			code: "P2003",
+		});
+	const applyUpdate = () =>
+		applyBacklogChanges({
+			projectId: "project-1",
+			userId: "user-1",
+			organizationId: "org-1",
+			approvedChanges: [
+				makeBugChange({
+					action: "update",
+					existingId: id,
+					existingIdentifier: "F-300",
+					title: { to: "Updated bug" },
+					structurePreserved: true,
+				}),
+			],
+			existingBacklog: {
+				stories: [
+					{
+						id,
+						identifier: "F-300",
+						title: "Existing bug",
+						description: "Original",
+						externalId: null,
+					},
+				],
+			},
+		});
+
+	it("fails with the missing-target reason, not a database error", async () => {
+		let deleted = false;
+		mocks.dbUserStoryFindFirst.mockImplementation(
+			async ({ where }: { where: { id?: string } }) =>
+				where.id === id && !deleted
+					? openStoryRow("F-300", "Existing bug", "BUG")
+					: null,
+		);
+		mocks.updateStory.mockImplementationOnce(async () => {
+			deleted = true;
+			throw foreignKeyError();
+		});
+
+		const result = await applyUpdate();
+
+		expect(result.errors).toEqual([
+			expect.objectContaining({ error: MISSING_UPDATE_TARGET_ERROR }),
+		]);
+		expect(result.updatedItems).toEqual([]);
+	});
+
+	it("fails with the missing-target reason when the guarded write found no row", async () => {
+		let deleted = false;
+		mocks.dbUserStoryFindFirst.mockImplementation(
+			async ({ where }: { where: { id?: string } }) =>
+				where.id === id && !deleted
+					? openStoryRow("F-300", "Existing bug", "BUG")
+					: null,
+		);
+		mocks.updateStory.mockImplementationOnce(async () => {
+			deleted = true;
+			throw Object.assign(
+				new Error(
+					"Feature was updated by another request. Please refresh and try again.",
+				),
+				{ name: "StoryVersionConflictError" },
+			);
+		});
+
+		const result = await applyUpdate();
+
+		expect(result.errors).toEqual([
+			expect.objectContaining({ error: MISSING_UPDATE_TARGET_ERROR }),
+		]);
+	});
+
+	it("keeps the database error when the ticket still exists", async () => {
+		mocks.dbUserStoryFindFirst.mockImplementation(
+			async ({ where }: { where: { id?: string } }) =>
+				where.id === id
+					? openStoryRow("F-300", "Existing bug", "BUG")
+					: null,
+		);
+		mocks.updateStory.mockRejectedValueOnce(foreignKeyError());
+
+		const result = await applyUpdate();
+
+		expect(result.errors).toEqual([
+			expect.objectContaining({ error: "database error P2003" }),
+		]);
+	});
 });
 
 it("continues ordinary updates after a create refusal", async () => {

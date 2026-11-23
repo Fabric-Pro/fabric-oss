@@ -30,6 +30,7 @@ import {
 	type StorySource,
 	type TrackSetBy,
 } from "../../client";
+import { deleteFinishedTurnsOfConversations } from "../conversation-turns";
 import { buildFabricStoryUrl, placeFabricBackLink } from "./fabric-url";
 import {
 	InitiativesDisabledError,
@@ -2416,8 +2417,10 @@ export async function deleteStory(storyId: string, projectId: string) {
 		});
 
 		if (attachments.length > 0) {
+			const conversationIds = attachments.map((a) => a.conversationId);
+			await deleteFinishedTurnsOfConversations(tx, conversationIds);
 			await tx.agentConversation.deleteMany({
-				where: { id: { in: attachments.map((a) => a.conversationId) } },
+				where: { id: { in: conversationIds } },
 			});
 		}
 
@@ -2506,23 +2509,43 @@ export async function createTask(data: {
 }
 
 /**
- * Update a task
+ * A task as a project-scoped request names it: `taskId`, but only while it
+ * belongs to `storyId` in `projectId`. The permission gate authorizes the
+ * project, never the task, so a task id from another story, project or
+ * organization must read as missing.
  */
-export async function updateTask(
-	taskId: string,
-	data: {
-		title?: string;
-		description?: string | null;
-		isCompleted?: boolean;
-		estimatedHours?: number | null;
-		externalId?: string | null;
-		// Repository context for code tasks
-		repositoryUrl?: string | null;
-		repositoryOwner?: string | null;
-		repositoryName?: string | null;
-		targetBranch?: string | null;
-	},
-) {
+interface StoryTaskScope {
+	taskId: string;
+	storyId: string;
+	projectId: string;
+}
+
+function storyTaskInScope(scope: StoryTaskScope) {
+	return {
+		id: scope.taskId,
+		storyId: scope.storyId,
+		story: { projectId: scope.projectId },
+	};
+}
+
+type UpdateTaskData = {
+	title?: string;
+	description?: string | null;
+	isCompleted?: boolean;
+	estimatedHours?: number | null;
+	externalId?: string | null;
+	// Repository context for code tasks
+	repositoryUrl?: string | null;
+	repositoryOwner?: string | null;
+	repositoryName?: string | null;
+	targetBranch?: string | null;
+};
+
+/**
+ * Update a task by id alone. For background callers that already hold a
+ * trusted task id; a request names its task through {@link updateTaskInStory}.
+ */
+export async function updateTask(taskId: string, data: UpdateTaskData) {
 	return await db.storyTask.update({
 		where: { id: taskId },
 		data,
@@ -2533,31 +2556,48 @@ export async function updateTask(
 }
 
 /**
- * Toggle task completion
+ * {@link updateTask} for a task in `scope`; `null`, with nothing written, when
+ * the task is not there.
  */
-export async function toggleTaskComplete(taskId: string) {
-	const task = await db.storyTask.findUnique({
-		where: { id: taskId },
-		select: { isCompleted: true },
+export async function updateTaskInStory(
+	scope: StoryTaskScope,
+	data: UpdateTaskData,
+) {
+	const task = await db.storyTask.findFirst({
+		where: storyTaskInScope(scope),
+		select: { id: true },
 	});
+	return task ? await updateTask(task.id, data) : null;
+}
 
+/**
+ * Toggle completion of a task in `scope`; `null`, with nothing written, when
+ * the task is not there.
+ */
+export async function toggleTaskComplete(scope: StoryTaskScope) {
+	const task = await db.storyTask.findFirst({
+		where: storyTaskInScope(scope),
+		select: { id: true, isCompleted: true },
+	});
 	if (!task) {
-		throw new Error("Task not found");
+		return null;
 	}
 
 	return await db.storyTask.update({
-		where: { id: taskId },
+		where: { id: task.id },
 		data: { isCompleted: !task.isCompleted },
 	});
 }
 
 /**
- * Delete a task
+ * Delete a task in `scope`. Returns whether one was deleted: `false` when the
+ * task is not there.
  */
-export async function deleteTask(taskId: string) {
-	return await db.storyTask.delete({
-		where: { id: taskId },
+export async function deleteTask(scope: StoryTaskScope): Promise<boolean> {
+	const { count } = await db.storyTask.deleteMany({
+		where: storyTaskInScope(scope),
 	});
+	return count > 0;
 }
 
 /**

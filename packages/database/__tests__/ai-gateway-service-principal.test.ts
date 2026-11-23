@@ -10,7 +10,7 @@
  * surfaced so the caller can resolve a token.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { orgFindFirst, userFindFirst } = vi.hoisted(() => ({
 	orgFindFirst: vi.fn(),
@@ -268,4 +268,80 @@ it("excludes a disabled organization Databricks config from provider-specific re
 	expect(result.provider).toBeNull();
 	expect(result.source).toBeNull();
 	expect(disabled.enabled).toBe(false);
+});
+
+describe("organization Anthropic federation", () => {
+	const row = {
+		...patRow,
+		organizationId: "example-record-org",
+		provider: "ANTHROPIC_DIRECT",
+		config: { authMode: "federated", apiKey: "example-legacy-key" },
+	};
+	const lookup = {
+		userId: "example-user",
+		organizationId: "example-request-org",
+	};
+
+	beforeEach(() => {
+		vi.stubEnv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_example");
+		vi.stubEnv(
+			"ANTHROPIC_ORGANIZATION_ID",
+			"00000000-0000-0000-0000-000000000000",
+		);
+		vi.stubEnv("ANTHROPIC_FEDERATION_AUDIENCE", "example-audience");
+		vi.stubEnv(
+			"ANTHROPIC_FEDERATION_ALLOWED_ORGANIZATION_IDS",
+			row.organizationId,
+		);
+		orgFindFirst.mockResolvedValue(row);
+		userFindFirst.mockResolvedValue(patRow);
+	});
+
+	afterEach(() => vi.unstubAllEnvs());
+
+	it("uses the loaded row's tenant and ignores an old API key", async () => {
+		await expect(getAiProviderApiKey(lookup)).resolves.toMatchObject({
+			provider: "ANTHROPIC_DIRECT",
+			federatedOrganizationId: row.organizationId,
+			apiKey: null,
+		});
+		expect(userFindFirst).not.toHaveBeenCalled();
+	});
+
+	it("refuses a revoked row even when the requesting organization and an old key could work", async () => {
+		vi.stubEnv(
+			"ANTHROPIC_FEDERATION_ALLOWED_ORGANIZATION_IDS",
+			lookup.organizationId,
+		);
+		await expect(getAiProviderApiKey(lookup)).rejects.toThrow(
+			"Anthropic federation is unavailable",
+		);
+		expect(userFindFirst).not.toHaveBeenCalled();
+	});
+	it("retains only the revoked default's identity for model routing", async () => {
+		vi.stubEnv("ANTHROPIC_FEDERATION_ALLOWED_ORGANIZATION_IDS", "");
+		const config = await getAiProviderApiKey({
+			...lookup,
+			retainUnavailableFederation: true,
+		});
+		expect(config).toMatchObject({
+			provider: "ANTHROPIC_DIRECT",
+			federatedOrganizationId: row.organizationId,
+			apiKey: null,
+		});
+		expect(userFindFirst).not.toHaveBeenCalled();
+	});
+
+	it.each([{ provider: "OPENAI_DIRECT" }, { organizationId: undefined }])(
+		"does not retain an invalid federated record (%o)",
+		async (invalid) => {
+			orgFindFirst.mockResolvedValue({ ...row, ...invalid });
+			await expect(
+				getAiProviderApiKey({
+					...lookup,
+					retainUnavailableFederation: true,
+				}),
+			).rejects.toThrow("Anthropic federation is unavailable");
+		},
+	);
 });

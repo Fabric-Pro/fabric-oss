@@ -25,6 +25,7 @@ import { chunkText } from "../chunking";
 import { generateEmbeddings } from "../embedding";
 import { generateSparseVector } from "../embedding/sparse";
 import type { RetrievedContext } from "./retrieval";
+import { withoutConfidentialTranscripts } from "./search-hits";
 import { searchSimilarProjectContexts } from "./store";
 import { applyContextSummary } from "./summary-injection";
 
@@ -678,6 +679,18 @@ export async function retrieveRelevantContextsForSpec(
 				}),
 			),
 		);
+		// A confidential series' transcript and every Parlume transcript stay
+		// out, as in the main retrieval path.
+		const retrievable = new Set(
+			(
+				await withoutConfidentialTranscripts(
+					searches.flatMap((result) =>
+						result.status === "fulfilled" ? result.value : [],
+					),
+					projectId,
+				)
+			).map((hit) => hit.contextId),
+		);
 
 		const rrfScores = new Map<string, number>();
 		// Track the best-scoring matched chunk text per contextId so the final
@@ -696,19 +709,21 @@ export async function retrieveRelevantContextsForSpec(
 				);
 				continue;
 			}
-			result.value.forEach((hit, rank) => {
-				const prev = rrfScores.get(hit.contextId) ?? 0;
-				rrfScores.set(hit.contextId, prev + 1 / (RRF_K + rank));
-				if (hit.content) {
-					const prevBest = bestChunkByContext.get(hit.contextId);
-					if (!prevBest || hit.score > prevBest.score) {
-						bestChunkByContext.set(hit.contextId, {
-							content: hit.content,
-							score: hit.score,
-						});
+			result.value
+				.filter((hit) => retrievable.has(hit.contextId))
+				.forEach((hit, rank) => {
+					const prev = rrfScores.get(hit.contextId) ?? 0;
+					rrfScores.set(hit.contextId, prev + 1 / (RRF_K + rank));
+					if (hit.content) {
+						const prevBest = bestChunkByContext.get(hit.contextId);
+						if (!prevBest || hit.score > prevBest.score) {
+							bestChunkByContext.set(hit.contextId, {
+								content: hit.content,
+								score: hit.score,
+							});
+						}
 					}
-				}
-			});
+				});
 		}
 
 		// Await the external branch before assembling results. Sources are

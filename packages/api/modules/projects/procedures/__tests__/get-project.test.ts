@@ -34,6 +34,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		getProjectById: vi.fn(),
 		getProjectRole: vi.fn(),
 		hasProjectAccess: vi.fn(),
+		canEditProject: vi.fn(),
 		projectFindUnique: vi.fn(),
 		projectMemberFindUnique: vi.fn(),
 		memberFindFirst: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock("@repo/database", () => ({
 	getProjectById: (...args: unknown[]) => mocks.getProjectById(...args),
 	getProjectRole: (...args: unknown[]) => mocks.getProjectRole(...args),
 	hasProjectAccess: (...args: unknown[]) => mocks.hasProjectAccess(...args),
+	canEditProject: (...args: unknown[]) => mocks.canEditProject(...args),
 	resolveAttachmentRetentionOverrides: (...args: unknown[]) =>
 		mocks.resolveAttachmentRetentionOverrides(...args),
 	isFeatureEnabled: (...args: unknown[]) => mocks.isFeatureEnabled(...args),
@@ -147,6 +149,7 @@ beforeEach(() => {
 	// `false` means a test that forgets to set it fails loudly instead of
 	// silently passing.
 	mocks.hasProjectAccess.mockResolvedValue(false);
+	mocks.canEditProject.mockResolvedValue(false);
 	// Total map with no override — the ordinary case for the capability tests
 	// above, which must not start failing because the retention read exists.
 	mocks.resolveAttachmentRetentionOverrides.mockResolvedValue(
@@ -447,6 +450,31 @@ describe("getProjectProcedure — canUpdateProject capability", () => {
 
 		expect(result.project.canUpdateProject).toBe(false);
 		expect(mocks.memberFindFirst).not.toHaveBeenCalled();
+	});
+});
+
+describe("getProjectProcedure — canEditDocuments capability", () => {
+	it("reports the document write check the collaboration room and the save enforce, whatever the project role", async () => {
+		mocks.getProjectRole.mockResolvedValue(null);
+		mocks.canEditProject.mockResolvedValue(true);
+
+		const allowed = await handler({
+			input: { id: PROJECT_ID, organizationId: ORG_ID },
+			context: ctx,
+		});
+
+		expect(allowed.project.canEditDocuments).toBe(true);
+		expect(mocks.canEditProject).toHaveBeenCalledWith(PROJECT_ID, USER_ID);
+
+		mocks.getProjectRole.mockResolvedValue("EDITOR");
+		mocks.canEditProject.mockResolvedValue(false);
+
+		const refused = await handler({
+			input: { id: PROJECT_ID, organizationId: ORG_ID },
+			context: ctx,
+		});
+
+		expect(refused.project.canEditDocuments).toBe(false);
 	});
 });
 

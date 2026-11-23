@@ -68,7 +68,7 @@ import { isMonitoringFeatureEnabled } from "./feature-flags";
  *   - trackException: node_modules/applicationinsights/out/src/shim/telemetryClient.d.ts:52
  *   - trackException's own `severity` field: node_modules/applicationinsights/
  *     out/src/declarations/contracts/telemetryTypes/exceptionTelemetry.d.ts:17-20
- *   - severity strings ("Warning"/"Error"/"Critical"):
+ *   - severity strings ("Information"/"Warning"/"Error"/"Critical"):
  *     node_modules/applicationinsights/out/src/declarations/generated/models/index.d.ts:296-302
  *     (`KnownSeverityLevel`, re-exported from the package root at out/src/index.d.ts:3)
  *   - `config.azureMonitorOpenTelemetryOptions` is how the shim's
@@ -128,7 +128,8 @@ type PackageRequire = (specifier: string) => unknown;
 
 type CustomTelemetryTransport = "disabled" | "direct" | "otel";
 
-export type LogSeverity = "warn" | "error" | "fatal";
+/** `@repo/logs`' `LogSinkLevel`; an info record arrives only if it opted in. */
+export type LogSeverity = "info" | "warn" | "error" | "fatal";
 
 type SamplingBucket = {
 	windowStart: number;
@@ -630,6 +631,7 @@ export function trackMetric(
 
 /** App Insights' own severity strings — see the citation on `TelemetryClient`. */
 const SEVERITY_BY_LOG_LEVEL: Record<LogSeverity, string> = {
+	info: "Information",
 	warn: "Warning",
 	error: "Error",
 	fatal: "Critical",
