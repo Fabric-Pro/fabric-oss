@@ -8,6 +8,9 @@ const m = vi.hoisted(() => ({
 	legacy: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
+	// The gateway project gates refuse an organization being deleted.
+	isOrganizationLive: async () => true,
+	resolveInheritedSourceGuidance: async () => new Map(),
 	getProjectAccessContext: m.access,
 	isProjectSoftDeleted: m.deleted,
 	listProjectContextSummaries: m.legacy,

@@ -26,6 +26,7 @@ import {
 	escapeLikeLiteral,
 	normalizeContextSourcePathPrefix,
 } from "./context-source-path";
+import { withInheritedSourceGuidance } from "./folder-guidance";
 import { LINKED_MEETING_SOURCE } from "./meeting-transcripts";
 import { createPendingVectorCleanup } from "./pending-vector-cleanup";
 import { getProjectRagSettings } from "./rag-settings";
@@ -428,11 +429,20 @@ export interface RetrievableContext {
 
 export async function getRetrievableContextById(
 	contextId: string,
+	options: {
+		/**
+		 * Fill a document-folder file's guidance from its folder (default).
+		 * A caller hydrating many ids passes false and resolves the whole
+		 * batch with one `withInheritedSourceGuidance` call instead.
+		 */
+		inheritFolderGuidance?: boolean;
+	} = {},
 ): Promise<RetrievableContext | null> {
 	const projectContext = await db.projectContext.findUnique({
 		where: { id: contextId },
 		select: {
 			id: true,
+			projectId: true,
 			type: true,
 			content: true,
 			createdAt: true,
@@ -447,7 +457,7 @@ export async function getRetrievableContextById(
 	});
 
 	if (projectContext) {
-		return {
+		const row: RetrievableContext = {
 			id: projectContext.id,
 			type: projectContext.type,
 			content: projectContext.content,
@@ -460,6 +470,14 @@ export async function getRetrievableContextById(
 			sourceType: projectContext.sourceType,
 			aiInstructions: projectContext.aiInstructions,
 		};
+		if (options.inheritFolderGuidance === false) {
+			return row;
+		}
+		const [withGuidance] = await withInheritedSourceGuidance({
+			projectId: projectContext.projectId,
+			rows: [row],
+		});
+		return withGuidance ?? row;
 	}
 
 	// Fallback: maybe it's a per-page URL chunk. Join the parent so we can

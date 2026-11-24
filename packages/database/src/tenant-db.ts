@@ -243,6 +243,8 @@ const USER_OWNED_TABLES = new Set([
 	"ProjectMeetingAgenda", // Pre-meeting agendas (#1901); RLS-registered user_owned like its siblings
 	"ProjectTranscriptFolder", // OneDrive transcript folders (#3507); user_owned like linked meetings
 	"ProjectTranscriptFolderFile", // Files seen in those folders (#3507)
+	"ProjectDocumentFolder", // OneDrive and SharePoint document folders (#2808); user_owned like transcript folders
+	"ProjectDocumentFolderFile", // Files seen in those folders (#2808)
 	"ParlumeMeetingSession", // Project-scoped Teams bot lifecycle
 	"ParlumeChannelPost",
 	"ParlumeWebhookReceipt", // Attendee deliveries a session handled, until its webhook token is revoked
@@ -442,6 +444,8 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectMeetingAgenda: "projectId",
 	ProjectTranscriptFolder: "projectId",
 	ProjectTranscriptFolderFile: "projectId",
+	ProjectDocumentFolder: "projectId",
+	ProjectDocumentFolderFile: "projectId",
 	ParlumeMeetingSession: "projectId",
 	ParlumeChannelPost: "projectId",
 	ParlumeWebhookReceipt: "projectId",

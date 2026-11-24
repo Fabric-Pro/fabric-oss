@@ -312,12 +312,24 @@ describe("no plan at all", () => {
 	});
 
 	it.each([
-		["CHATGPT_PLAN off", () => (db.flags.CHATGPT_PLAN = false)],
+		[
+			"CHATGPT_PLAN off",
+			() => {
+				db.flags.CHATGPT_PLAN = false;
+			},
+		],
 		[
 			"terms not acknowledged",
-			() => (db.policy.termsAcknowledgedAt = null),
+			() => {
+				db.policy.termsAcknowledgedAt = null;
+			},
 		],
-		["the pool lookup failing", () => (db.failPool = true)],
+		[
+			"the pool lookup failing",
+			() => {
+				db.failPool = true;
+			},
+		],
 	])("for a member without a plan when %s", async (_case, arrange) => {
 		arrange();
 		await expect(pickChatGptPlanSource(interactive)).resolves.toBeNull();
@@ -838,21 +850,21 @@ describe("interactivePlanModel", () => {
 				organizationId: "org_a",
 				taskType: "TOOL_CALLING",
 			}),
-		).resolves.toMatchObject({ model: "gpt-6.1-sol", source: "shared" });
+		).resolves.toMatchObject({ model: "gpt-6.2-sol", source: "shared" });
 	});
 
 	// Fizzy #2770 F13: what a chat may pick instead.
 	it("offers the models the serving plan lists, marking the default and the newest", async () => {
 		db.catalog = [
 			{
-				canonicalName: "gpt-6-astra",
-				slug: "gpt-6-astra",
-				displayName: "GPT-6 Astra (ChatGPT plan)",
+				canonicalName: "gpt-6.2-astra",
+				slug: "gpt-6.2-astra",
+				displayName: "GPT-6.2 Astra (ChatGPT plan)",
 			},
 			{
-				canonicalName: "gpt-6.1-sol",
-				slug: "gpt-6.1-sol",
-				displayName: "GPT-6.1 Sol (ChatGPT plan)",
+				canonicalName: "gpt-6.2-sol",
+				slug: "gpt-6.2-sol",
+				displayName: "GPT-6.2 Sol (ChatGPT plan)",
 			},
 			{
 				canonicalName: "gpt-5.6-luna",
@@ -861,8 +873,8 @@ describe("interactivePlanModel", () => {
 			},
 		];
 		db.served = [
-			{ slug: "gpt-6-astra", priority: 1 },
-			{ slug: "gpt-6.1-sol", priority: 2 },
+			{ slug: "gpt-6.2-astra", priority: 1 },
+			{ slug: "gpt-6.2-sol", priority: 2 },
 		];
 		const choice = await interactivePlanModel({
 			userId: "user_1",
@@ -871,12 +883,12 @@ describe("interactivePlanModel", () => {
 		});
 		expect(choice?.models).toEqual([
 			expect.objectContaining({
-				slug: "gpt-6-astra",
+				slug: "gpt-6.2-astra",
 				isDefault: false,
 				newest: true,
 			}),
 			expect.objectContaining({
-				slug: "gpt-6.1-sol",
+				slug: "gpt-6.2-sol",
 				isDefault: true,
 				newest: false,
 			}),
@@ -886,14 +898,14 @@ describe("interactivePlanModel", () => {
 	it("offers only the organization's model before the plan's list was read, and asks for it", async () => {
 		db.catalog = [
 			{
-				canonicalName: "gpt-6.1-sol",
-				slug: "gpt-6.1-sol",
-				displayName: "GPT-6.1 Sol (ChatGPT plan)",
+				canonicalName: "gpt-6.2-sol",
+				slug: "gpt-6.2-sol",
+				displayName: "GPT-6.2 Sol (ChatGPT plan)",
 			},
 			{
-				canonicalName: "gpt-6-astra",
-				slug: "gpt-6-astra",
-				displayName: "GPT-6 Astra (ChatGPT plan)",
+				canonicalName: "gpt-6.2-astra",
+				slug: "gpt-6.2-astra",
+				displayName: "GPT-6.2 Astra (ChatGPT plan)",
 			},
 		];
 		db.served = [];
@@ -903,7 +915,7 @@ describe("interactivePlanModel", () => {
 			taskType: "TOOL_CALLING",
 		});
 		expect(choice?.models.map((model) => model.slug)).toEqual([
-			"gpt-6.1-sol",
+			"gpt-6.2-sol",
 		]);
 		expect(refreshStale).toHaveBeenCalled();
 	});

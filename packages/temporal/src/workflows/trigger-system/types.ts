@@ -353,18 +353,6 @@ export function createTriggerEvent(
 	};
 }
 
-export function generateWebhookPath(): string {
-	return `hook_${Math.random().toString(36).slice(2, 15)}`;
-}
-
-export function generateWebhookSecret(): string {
-	return `whsec_${Math.random().toString(36).slice(2, 15)}${Math.random().toString(36).slice(2, 15)}`;
-}
-
-export function generateApiKey(): string {
-	return `fab_${Math.random().toString(36).slice(2, 15)}${Math.random().toString(36).slice(2, 15)}`;
-}
-
 export function generateEmailAddress(agentName: string): string {
 	const slug = agentName.toLowerCase().replace(/[^a-z0-9]/g, "-");
 	const suffix = Math.random().toString(36).slice(2, 8);

@@ -1480,7 +1480,7 @@ export function getEmbeddingModel(
  * OpenRouter and Cloudflare connections are refused here because their image
  * output protocols are not implemented by this OpenAI image helper.
  *
- * @param {string} modelName - The image model identifier (e.g., "dall-e-3", "openai/dall-e-3")
+ * @param {string} modelName - The image model identifier (e.g., "gpt-image-2.6-sunburst")
  * @param {object} context - Context for API key and provider routing
  * @param {string} context.apiKey - The API key for the provider
  * @param {string} context.provider - The provider type (e.g., "OPENAI_DIRECT", "VERCEL_GATEWAY")
@@ -1495,7 +1495,7 @@ export function getImageModel(
 		provider?: ProviderType | string;
 	},
 ) {
-	const model = modelName ?? "dall-e-3";
+	const model = modelName ?? "gpt-image-2.6-sunburst";
 
 	// Extract model name without provider prefix
 	const getModelWithoutPrefix = (modelStr: string): string => {

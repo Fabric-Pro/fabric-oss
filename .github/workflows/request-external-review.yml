@@ -18,13 +18,15 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   request-review:
     if: >-
       github.repository == 'Fabric-Pro/fabric-oss' &&
       github.event.pull_request.user.login != 'fabric-relay[bot]'
+    permissions:
+      contents: read
+      pull-requests: write
     # arm64: this job only runs `gh api` — architecture-neutral.
     runs-on: ubuntu-24.04-arm
     steps:

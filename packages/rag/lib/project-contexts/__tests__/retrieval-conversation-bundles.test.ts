@@ -17,6 +17,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
+	withInheritedSourceGuidance: async ({ rows }: { rows: unknown[] }) => rows,
 	db: {
 		project: {
 			findUnique: vi.fn().mockResolvedValue({ organizationId: null }),
@@ -257,7 +258,9 @@ describe("retrieveProjectContexts — captured conversation bundles", () => {
 			content: "content-of-ctx-prd",
 			filename: "ctx-prd.md",
 		});
-		expect(getRetrievableContextById).toHaveBeenCalledWith("ctx-prd");
+		expect(getRetrievableContextById).toHaveBeenCalledWith("ctx-prd", {
+			inheritFolderGuidance: false,
+		});
 		expect(getRetrievableConversationBundleById).not.toHaveBeenCalled();
 	});
 

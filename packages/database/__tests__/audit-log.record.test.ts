@@ -477,6 +477,25 @@ describe("audit taxonomy — closed action set", () => {
 		);
 	});
 
+	it.each([
+		"project.document_folder.connected",
+		"project.document_folder.reconnected",
+		"project.document_folder.updated",
+		"project.document_folder.removals_confirmed",
+		"project.document_folder.disconnected",
+	])("records %s as a known project action", async (action) => {
+		mocks.auditLogCreateMock.mockResolvedValue({ id: "audit-1" });
+		recordAudit({ ...baseInput, action });
+		await flush();
+
+		expect(AUDIT_ACTIONS).toContain(action);
+		expect(mocks.loggerWarnMock).not.toHaveBeenCalled();
+		const args = mocks.auditLogCreateMock.mock.calls[0]?.[0] as {
+			data: { action: string; category: string };
+		};
+		expect(args.data).toMatchObject({ action, category: "project" });
+	});
+
 	// Fizzy #2210. The primary generation failure is recorded here rather than on
 	// the document, because the document's error field renders verbatim to every
 	// project member. An action missing from this closed list is written as

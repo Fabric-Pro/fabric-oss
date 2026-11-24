@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	resolveProjectAccess: vi.fn(),
+	isOrganizationLive: vi.fn(),
 	getMemoryWriteTargetsView: vi.fn(),
 	getMemoryWriteView: vi.fn(),
 	getMemoryFolderFilesView: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
 
 vi.mock("@repo/database", () => ({
 	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
+	isOrganizationLive: mocks.isOrganizationLive,
 	resolveProjectAccess: mocks.resolveProjectAccess,
 	hasPermission: (permissions: string[], required: string) =>
 		permissions.includes(required),
@@ -100,6 +102,7 @@ beforeEach(() => {
 	for (const mock of Object.values(mocks)) {
 		mock.mockReset();
 	}
+	mocks.isOrganizationLive.mockResolvedValue(true);
 	mocks.resolveProjectAccess.mockResolvedValue({
 		organizationId: "org-1",
 		source: "project-member",
@@ -478,6 +481,20 @@ describe("project binding and the live permission", () => {
 		expect(payload(result).error).toBe(
 			"Project not found or access denied",
 		);
+	});
+
+	// A read through the shared write gate: the app refuses a project whose
+	// organization is being deleted, and so does this tool.
+	it("answers a project whose organization is being deleted as not found", async () => {
+		mocks.isOrganizationLive.mockResolvedValue(false);
+
+		const result = await call("fabric_memory_targets", {});
+
+		expect(payload(result).error).toBe(
+			"Project not found or access denied",
+		);
+		expect(mocks.isOrganizationLive).toHaveBeenCalledWith("org-1");
+		expect(mocks.getMemoryWriteTargetsView).not.toHaveBeenCalled();
 	});
 
 	it("keeps an organization-bound credential to its organization", async () => {

@@ -14,6 +14,18 @@
  *   `SubscriptionPlanExhaustedError` when none does.
  */
 
+import { metrics, trace } from "@opentelemetry/api";
+import {
+	AggregationTemporality,
+	InMemoryMetricExporter,
+	MeterProvider,
+	PeriodicExportingMetricReader,
+} from "@opentelemetry/sdk-metrics";
+import {
+	BasicTracerProvider,
+	InMemorySpanExporter,
+	SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
 import {
 	PlanSourceRotatedError,
 	SubscriptionPlanExhaustedError,
@@ -220,16 +232,28 @@ import { planSourceKey } from "../lib/chatgpt-plan/sources";
 import { __resetChatGptPlanWindowCache } from "../lib/chatgpt-plan/window-cache";
 import { getAIModelWithMetadata } from "../lib/dynamic-model-selector";
 
-function sse(events: object[]): Response {
-	return new Response(
-		events
-			.map(
-				(event, index) =>
-					`event: ${(event as { type: string }).type}\ndata: ${JSON.stringify({ ...event, sequence_number: index })}\n\n`,
-			)
-			.join(""),
-		{ status: 200, headers: { "content-type": "text/event-stream" } },
+function sse(events: object[], separateEvents = false): Response {
+	const chunks = events.map(
+		(event, index) =>
+			`event: ${(event as { type: string }).type}\ndata: ${JSON.stringify({ ...event, sequence_number: index })}\n\n`,
 	);
+	const encoder = new TextEncoder();
+	const body = separateEvents
+		? new ReadableStream<Uint8Array>({
+				pull(controller) {
+					const chunk = chunks.shift();
+					if (chunk === undefined) {
+						controller.close();
+					} else {
+						controller.enqueue(encoder.encode(chunk));
+					}
+				},
+			})
+		: chunks.join("");
+	return new Response(body, {
+		status: 200,
+		headers: { "content-type": "text/event-stream" },
+	});
 }
 
 const message = (text: string) => ({
@@ -291,24 +315,43 @@ const refusedSpent = () =>
 		headers: { "content-type": "application/json" },
 	});
 
-const spentMidReply = () =>
+const spentMidReply = () => failedMidReply(SPENT);
+
+const partialReply = () => [
+	{ type: "response.created", response: response([], "in_progress") },
+	{
+		type: "response.output_item.added",
+		output_index: 0,
+		item: { ...message(""), status: "in_progress", content: [] },
+	},
+	{
+		type: "response.output_text.delta",
+		item_id: "msg_1",
+		output_index: 0,
+		content_index: 0,
+		delta: "Half an",
+	},
+];
+
+const failedEvent = (
+	error: { code: string; message: string },
+	usage: unknown,
+) => ({
+	type: "response.failed",
+	response: { ...response([], "failed"), error, usage },
+});
+
+const failedMidReply = (
+	error: { code: string; message: string },
+	usage: unknown = response([]).usage,
+) => sse([...partialReply(), failedEvent(error, usage)]);
+
+const failedBeforeOutput = (error: { code: string; message: string }) =>
 	sse([
 		{ type: "response.created", response: response([], "in_progress") },
 		{
-			type: "response.output_item.added",
-			output_index: 0,
-			item: { ...message(""), status: "in_progress", content: [] },
-		},
-		{
-			type: "response.output_text.delta",
-			item_id: "msg_1",
-			output_index: 0,
-			content_index: 0,
-			delta: "Half an",
-		},
-		{
 			type: "response.failed",
-			response: { ...response([], "failed"), error: SPENT },
+			response: { ...response([], "failed"), error },
 		},
 	]);
 
@@ -317,7 +360,7 @@ const refusedModel = () =>
 		JSON.stringify({
 			error: {
 				message:
-					"The model 'gpt-6.1-sol' is not supported on this plan.",
+					"The model 'gpt-6.2-sol' is not supported on this plan.",
 				code: "model_not_found",
 			},
 		}),
@@ -460,6 +503,448 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+});
+
+describe("ChatGPT plan LLM telemetry", () => {
+	let exporter: InMemorySpanExporter;
+	let tracer: BasicTracerProvider;
+	let metricReader: PeriodicExportingMetricReader;
+	let meterProvider: MeterProvider;
+
+	beforeEach(() => {
+		trace.disable();
+		exporter = new InMemorySpanExporter();
+		tracer = new BasicTracerProvider({
+			spanProcessors: [new SimpleSpanProcessor(exporter)],
+		});
+		trace.setGlobalTracerProvider(tracer);
+		metricReader = new PeriodicExportingMetricReader({
+			exporter: new InMemoryMetricExporter(
+				AggregationTemporality.CUMULATIVE,
+			),
+			exportIntervalMillis: 60_000,
+		});
+		meterProvider = new MeterProvider({ readers: [metricReader] });
+		metrics.setGlobalMeterProvider(meterProvider);
+	});
+
+	afterEach(async () => {
+		await Promise.all([tracer.shutdown(), meterProvider.shutdown()]);
+		trace.disable();
+		metrics.disable();
+	});
+
+	const spans = () =>
+		exporter.getFinishedSpans().map((span) => span.attributes);
+	const attempt = (
+		model: string,
+		outcome: "success" | "error",
+		provider = "OPENAI_CHATGPT_PLAN",
+	) => ({
+		"gen_ai.system": provider,
+		"gen_ai.request.model": model,
+		"llm.outcome": outcome,
+		"gen_ai.usage.input_tokens": outcome === "success" ? 10 : 0,
+		"gen_ai.usage.output_tokens": outcome === "success" ? 5 : 0,
+	});
+	const failedPlanAttempt = {
+		...attempt("gpt-6.2-sol", "error"),
+		"error.type": expect.any(String),
+	};
+	const failedPlanAttemptWithUsage = {
+		...failedPlanAttempt,
+		"gen_ai.usage.input_tokens": 10,
+		"gen_ai.usage.output_tokens": 5,
+	};
+	const callsByMode = [
+		["generate", generateText],
+		["stream", streamText],
+	] as const;
+
+	async function metricPoints() {
+		const { resourceMetrics } = await metricReader.collect();
+		return (name: string) =>
+			resourceMetrics.scopeMetrics
+				.flatMap((scope) =>
+					scope.metrics
+						.filter((metric) => metric.descriptor.name === name)
+						.flatMap((metric) => metric.dataPoints),
+				)
+				.map(({ attributes, value }) => ({
+					attributes,
+					value: typeof value === "number" ? value : value.count,
+				}));
+	}
+
+	function modelLabels(model = "gpt-6.2-sol") {
+		return { provider: "OPENAI_CHATGPT_PLAN", model };
+	}
+
+	it.each(callsByMode)(
+		"records one plan invocation in %s mode",
+		async (_mode, run) => {
+			openai({ "org:acc_A": () => answered("Example answer") });
+			const { model } = await getAIModelWithMetadata(
+				{ taskType: "CHAT" },
+				ELIGIBLE,
+			);
+			const result = await run({ model, prompt: "Example prompt" });
+			expect(await result.text).toBe("Example answer");
+			expect(spans()).toEqual([attempt("gpt-6.2-sol", "success")]);
+			const points = await metricPoints();
+			expect(points("llm.request.duration")).toEqual([
+				{
+					attributes: { ...modelLabels(), operation: "chat" },
+					value: 1,
+				},
+			]);
+		},
+	);
+
+	it.each(callsByMode)(
+		"attributes fallback usage to the model that answered in %s mode",
+		async (_mode, run) => {
+			state.fallbackModel = "gpt-6-astra";
+			openai({
+				"org:acc_A": (model) =>
+					model === "gpt-6.2-sol"
+						? failedBeforeOutput({
+								code: "model_not_found",
+								message: "Example unavailable model",
+							})
+						: answered("Fallback answer"),
+			});
+			const { model } = await getAIModelWithMetadata(
+				{ taskType: "CHAT" },
+				ELIGIBLE,
+			);
+			const result = await run({ model, prompt: "Example prompt" });
+			expect(await result.text).toBe("Fallback answer");
+			expect(spans()).toEqual([
+				failedPlanAttemptWithUsage,
+				attempt("gpt-6-astra", "success"),
+			]);
+			const points = await metricPoints();
+			expect(points("llm.request.duration")).toEqual([
+				{
+					attributes: { ...modelLabels(), operation: "chat" },
+					value: 1,
+				},
+				{
+					attributes: {
+						...modelLabels("gpt-6-astra"),
+						operation: "chat",
+					},
+					value: 1,
+				},
+			]);
+			expect(points("llm.requests")).toEqual([
+				{
+					attributes: {
+						...modelLabels(),
+						operation: "chat",
+						status: "error",
+					},
+					value: 1,
+				},
+				{
+					attributes: {
+						...modelLabels("gpt-6-astra"),
+						operation: "chat",
+						status: "success",
+					},
+					value: 1,
+				},
+			]);
+			expect(points("llm.tokens")).toEqual([
+				{ attributes: { ...modelLabels(), type: "input" }, value: 10 },
+				{ attributes: { ...modelLabels(), type: "output" }, value: 5 },
+				{
+					attributes: {
+						...modelLabels("gpt-6-astra"),
+						type: "input",
+					},
+					value: 10,
+				},
+				{
+					attributes: {
+						...modelLabels("gpt-6-astra"),
+						type: "output",
+					},
+					value: 5,
+				},
+			]);
+		},
+	);
+
+	it("records no invocation for a fallback denied by its usage limit", async () => {
+		state.fallbackModel = "gpt-6-astra";
+		const calls = openai({ "org:acc_A": refusedModel });
+		const { model } = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		const denied = new Error("Example usage limit");
+		state.limits.mockImplementation(async ({ modelCanonicalName }) => {
+			if (modelCanonicalName === "gpt-6-astra") {
+				throw denied;
+			}
+		});
+		await expect(
+			generateText({ model, prompt: "Example prompt", maxRetries: 0 }),
+		).rejects.toBe(denied);
+		expect(calls).toEqual(["org:acc_A"]);
+		expect(spans()).toEqual([failedPlanAttempt]);
+	});
+
+	it.each([
+		["generate", "early SSE failure", () => failedBeforeOutput(SPENT)],
+		["generate", "late SSE failure", spentMidReply],
+		["stream", "early SSE failure", () => failedBeforeOutput(SPENT)],
+		["stream", "late SSE failure", spentMidReply],
+	] as const)(
+		"records %s usage for %s without exposing provider data",
+		async (mode, _timing, reply) => {
+			state.accounts = [account("acc_A")];
+			const calls = openai({ "org:acc_A": reply });
+			const { model } = await getAIModelWithMetadata(
+				{ taskType: "CHAT" },
+				ELIGIBLE,
+			);
+			const params = { model, prompt: "Example prompt", maxRetries: 0 };
+			if (mode === "generate") {
+				await expect(generateText(params)).rejects.toBeInstanceOf(
+					SubscriptionPlanExhaustedError,
+				);
+			} else {
+				const onError = vi.fn();
+				await streamText({ ...params, onError }).consumeStream();
+				expect(onError).toHaveBeenCalledWith({
+					error: expect.any(SubscriptionPlanExhaustedError),
+				});
+			}
+			expect(calls).toEqual(["org:acc_A"]);
+			expect(spans()).toEqual([failedPlanAttemptWithUsage]);
+			const [span] = exporter.getFinishedSpans();
+			expect(span.status).not.toHaveProperty("message");
+			expect(span.events).toEqual([]);
+			const points = await metricPoints();
+			const labels = modelLabels();
+			expect(points("llm.requests")).toEqual([
+				{
+					attributes: {
+						...labels,
+						operation: "chat",
+						status: "error",
+					},
+					value: 1,
+				},
+			]);
+			expect(points("llm.errors")).toEqual([
+				{
+					attributes: {
+						...labels,
+						operation: "chat",
+						error_type: expect.any(String),
+					},
+					value: 1,
+				},
+			]);
+			expect(points("llm.tokens")).toEqual([
+				{ attributes: { ...labels, type: "input" }, value: 10 },
+				{ attributes: { ...labels, type: "output" }, value: 5 },
+			]);
+			expect(points("llm.request.duration")).toEqual([
+				{
+					attributes: { ...labels, operation: "chat" },
+					value: 1,
+				},
+			]);
+		},
+	);
+
+	it("keeps a reported count even when the stream SDK rejects the other count", async () => {
+		const calls = openai({
+			"org:acc_A": () =>
+				failedMidReply(
+					{
+						code: "invalid_prompt",
+						message: "Example private failure",
+					},
+					{ input_tokens: 7, output_tokens: "5" },
+				),
+		});
+		const { model } = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		const onError = vi.fn();
+		const result = streamText({
+			model,
+			prompt: "Example prompt",
+			maxRetries: 0,
+			onError,
+		});
+		let output = "";
+		for await (const part of result.fullStream) {
+			if (part.type === "text-delta") {
+				output += part.text;
+			}
+		}
+		expect(output).toBe("Half an");
+		expect(onError).toHaveBeenCalledTimes(1);
+		expect(calls).toEqual(["org:acc_A"]);
+		expect(spans()).toEqual([
+			{ ...failedPlanAttempt, "gen_ai.usage.input_tokens": 7 },
+		]);
+		const points = await metricPoints();
+		expect(points("llm.request.duration")).toEqual([
+			{
+				attributes: { ...modelLabels(), operation: "chat" },
+				value: 1,
+			},
+		]);
+	});
+
+	it.each([
+		{
+			mode: "stream",
+			observed: [{ input_tokens: 7, output_tokens: 3 }],
+			input: 7,
+			output: 3,
+		},
+		{
+			mode: "stream",
+			observed: [
+				{ input_tokens: 7, output_tokens: 3 },
+				{ input_tokens: 0 },
+				{ output_tokens: 4 },
+				null,
+			],
+			input: 0,
+			output: 4,
+		},
+		{
+			mode: "generate",
+			observed: [{ input_tokens: 7 }, { output_tokens: 3 }, null],
+			input: 7,
+			output: 3,
+		},
+	])(
+		"records later failure usage in $mode mode ($input input, $output output)",
+		async ({ mode, observed, input, output }) => {
+			const error = {
+				code: "invalid_prompt",
+				message: "Example private failure",
+			};
+			const calls = openai({
+				"org:acc_A": () =>
+					sse(
+						[
+							...partialReply(),
+							{ type: "error", ...error, param: null },
+							...observed.map((usage) =>
+								failedEvent(error, usage),
+							),
+						],
+						true,
+					),
+			});
+			const { model } = await getAIModelWithMetadata(
+				{ taskType: "CHAT" },
+				ELIGIBLE,
+			);
+			const options = { model, prompt: "Example prompt", maxRetries: 0 };
+			if (mode === "stream") {
+				const onError = vi.fn();
+				const result = streamText({ ...options, onError });
+				expect(await result.text).toBe("Half an");
+				expect(onError).toHaveBeenCalled();
+			} else {
+				await expect(generateText(options)).rejects.toThrow(
+					error.message,
+				);
+			}
+			expect(calls).toEqual(["org:acc_A"]);
+			expect(spans()).toEqual([
+				{
+					...failedPlanAttempt,
+					"gen_ai.usage.input_tokens": input,
+					"gen_ai.usage.output_tokens": output,
+				},
+			]);
+			const points = await metricPoints();
+			expect(points("llm.requests")).toEqual([
+				{
+					attributes: {
+						...modelLabels(),
+						operation: "chat",
+						status: "error",
+					},
+					value: 1,
+				},
+			]);
+			expect(points("llm.tokens")).toEqual([
+				{
+					attributes: { ...modelLabels(), type: "input" },
+					value: input,
+				},
+				{
+					attributes: { ...modelLabels(), type: "output" },
+					value: output,
+				},
+			]);
+		},
+	);
+
+	it("records rotation as one refused and one successful attempt", async () => {
+		openai({
+			"org:acc_A": () => failedBeforeOutput(SPENT),
+			"org:acc_B": () => answered("Next plan"),
+		});
+		const { model } = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		await expect(
+			generateText({ model, prompt: "Example prompt" }),
+		).resolves.toMatchObject({ text: "Next plan" });
+		expect(spans()).toEqual([
+			failedPlanAttemptWithUsage,
+			attempt("gpt-6.2-sol", "success"),
+		]);
+	});
+
+	it.each(callsByMode)(
+		"records an API billing transfer once under the API provider in %s mode",
+		async (mode, run) => {
+			state.accounts = [account("acc_A")];
+			state.apiFallbackInteractive = "AUTO";
+			state.orgHasLlm = true;
+			const calls = openai({
+				"org:acc_A": () =>
+					Response.json(
+						{ ...response([]), error: SPENT },
+						{ status: 429 },
+					),
+				"example-org-key": () =>
+					mode === "generate"
+						? Response.json(response([message("API answer")]))
+						: answered("API answer"),
+			});
+			const { model } = await getAIModelWithMetadata(
+				{ taskType: "CHAT" },
+				ELIGIBLE,
+			);
+			const result = await run({ model, prompt: "Example prompt" });
+			expect(await result.text).toBe("API answer");
+			expect(calls).toEqual(["org:acc_A", "example-org-key"]);
+			expect(spans()).toEqual([
+				failedPlanAttemptWithUsage,
+				attempt("gpt-api-model", "success", "OPENAI_DIRECT"),
+			]);
+		},
+	);
 });
 
 describe("rotation before any output", () => {
@@ -977,7 +1462,7 @@ describe("the plan's fallback model (Fizzy #3026)", () => {
 		}).catch((caught: unknown) => caught);
 
 		expect(error).toBe(limitReached);
-		expect(models).toEqual(["gpt-6.1-sol"]);
+		expect(models).toEqual(["gpt-6.2-sol"]);
 		expect(calls).toEqual(["org:acc_A"]);
 		expect(state.limits).toHaveBeenLastCalledWith(
 			expect.objectContaining({
@@ -993,7 +1478,7 @@ describe("the plan's fallback model (Fizzy #3026)", () => {
 		let primaryRefused = true;
 		openai({
 			"org:acc_A": (model) =>
-				model === "gpt-6.1-sol" && primaryRefused
+				model === "gpt-6.2-sol" && primaryRefused
 					? refusedModel()
 					: answered(`From ${model}`),
 		});
@@ -1007,11 +1492,11 @@ describe("the plan's fallback model (Fizzy #3026)", () => {
 		primaryRefused = false;
 		await expect(
 			generateText({ model: resolved.model, prompt: "second" }),
-		).resolves.toMatchObject({ text: "From gpt-6.1-sol" });
+		).resolves.toMatchObject({ text: "From gpt-6.2-sol" });
 
 		expect(servedRows().map((row) => row.modelCanonicalName)).toEqual([
 			"gpt-6-astra",
-			"gpt-6.1-sol",
+			"gpt-6.2-sol",
 		]);
 	});
 });
@@ -1381,7 +1866,7 @@ it("records the fallback model that serves a forced model refresh", async () => 
 		ELIGIBLE,
 	);
 	await generateText({ model: next.model, prompt: "Example", maxRetries: 0 });
-	expect(models).toEqual(["gpt-6.1-sol", "gpt-6.1-sol", "gpt-6-astra"]);
+	expect(models).toEqual(["gpt-6.2-sol", "gpt-6.2-sol", "gpt-6-astra"]);
 	expect(next.metadata.answerSnapshot).toMatchObject({
 		modelString: "gpt-6-astra",
 		reResolved: true,
@@ -1392,8 +1877,8 @@ it("records the fallback model that serves a forced model refresh", async () => 
 		maxRetries: 0,
 	});
 	expect(models).toEqual([
-		"gpt-6.1-sol",
-		"gpt-6.1-sol",
+		"gpt-6.2-sol",
+		"gpt-6.2-sol",
 		"gpt-6-astra",
 		"gpt-6-astra",
 	]);

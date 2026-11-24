@@ -9,6 +9,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({ rows: vi.fn(), search: vi.fn(async () => []) }));
 vi.mock("@repo/database", () => ({
+	withInheritedSourceGuidance: async ({ rows }: { rows: unknown[] }) => rows,
 	logAiUsageAsync: h.rows,
 	findConfidentialTranscriptContextIds: async () => new Set<string>(),
 	fetchCredentialsByIdInTenant: vi.fn(),

@@ -12,6 +12,7 @@
 		"build": "tsdown",
 		"dev": "tsdown --watch",
 		"clean": "rm -rf dist",
+		"test": "node --import tsx --test src/access-control/__tests__/approval-handler.test.ts",
 		"type-check": "tsgo --noEmit"
 	},
 	"dependencies": {

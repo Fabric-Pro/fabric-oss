@@ -45,6 +45,8 @@ vi.mock("@repo/database", () => ({
 		permissions.includes(permission),
 	Permissions: { INSTRUCTION_READ: "instruction:read" },
 	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
+	// The gateway project gates refuse an organization being deleted.
+	isOrganizationLive: async () => true,
 	getProjectAccessContext: m.getProjectAccessContext,
 	getPublishedInstructionSnapshot: m.getPublishedInstructionSnapshot,
 	getInstructionSummariesForProjects: m.getInstructionSummariesForProjects,

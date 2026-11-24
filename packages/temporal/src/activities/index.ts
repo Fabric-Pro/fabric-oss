@@ -787,6 +787,23 @@ export {
 	markUploadedTranscriptFailed,
 	startUploadedTranscriptPipelines,
 } from "./meeting-transcript-upload";
+// OneDrive and SharePoint document folders (#2808)
+export {
+	type ConfirmDocumentFolderCandidatesOutput,
+	confirmDocumentFolderCandidates,
+	type DocumentFolderDeletion,
+	type DocumentFolderSyncState,
+	finishDocumentFolderContextDeletion,
+	type ImportDocumentFolderFileOutput,
+	importDocumentFolderFile,
+	listDocumentFolderDeletions,
+	listDocumentFolderImports,
+	listDocumentFoldersToSync,
+	markDocumentFolderFileDownloadFailed,
+	type ReadDocumentFolderOutput,
+	readDocumentFolder,
+	recordDocumentFolderFileProcessing,
+} from "./document-folder-sync";
 // OneDrive transcript folders (#3507)
 export {
 	type ImportTranscriptFolderFileOutput,

@@ -577,13 +577,13 @@ it("resource-metrics-blip requires all proof clauses and event recheck", () => {
 it("rollout-update-canceled requires the app's next successful update and event recheck", () => {
 	const q = buildErrorGroupQuery(SCOPE);
 	expect(q).toContain(
-		'let _proof8_0 = _systemLogs\n| where _reason in ("ContainerAppReady")\n| where isnotempty(_app)\n| project _app, okAt = TimeGenerated;\nlet _noise8_0 = _systemLogs\n| where _reason in ("ResourceUpdateFailed", "ContainerAppFailure") and _log endswith "context canceled"\n| where isnotempty(_app)\n| distinct _app, failAt = TimeGenerated\n| join kind=inner (_proof8_0) on _app\n| where failAt < okAt and okAt <= failAt + 2m\n| distinct _app, failAt;\nlet _noise8 = union _noise8_0\n| distinct _app, failAt;',
+		'let _proof8_0 = _systemLogs\n| where _reason in ("ContainerAppReady")\n| where isnotempty(_app)\n| project _app, okAt = TimeGenerated;\nlet _noise8_0 = _systemLogs\n| where _reason in ("ResourceUpdateFailed", "RevisionFailure", "ContainerAppFailure") and _log endswith "context canceled"\n| where isnotempty(_app)\n| distinct _app, failAt = TimeGenerated\n| join kind=inner (_proof8_0) on _app\n| where failAt < okAt and okAt <= failAt + 2m\n| distinct _app, failAt;\nlet _noise8 = union _noise8_0\n| distinct _app, failAt;',
 	);
 	expect(q).toContain(
 		"| join kind=leftouter (_noise8 | extend _proven8 = true) on _app, $left.TimeGenerated == $right.failAt",
 	);
 	expect(q).toContain(
-		'| extend _rule8 = coalesce(_proven8, false) and _reason in ("ResourceUpdateFailed", "ContainerAppFailure") and _log endswith "context canceled"',
+		'| extend _rule8 = coalesce(_proven8, false) and _reason in ("ResourceUpdateFailed", "RevisionFailure", "ContainerAppFailure") and _log endswith "context canceled"',
 	);
 });
 

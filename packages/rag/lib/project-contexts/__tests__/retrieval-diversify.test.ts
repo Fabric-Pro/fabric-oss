@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // candidate-pool / dedup / cap logic. Relative mock paths are resolved to the
 // same modules retrieval.ts imports (Vitest matches by resolved module id).
 vi.mock("@repo/database", () => ({
+	withInheritedSourceGuidance: async ({ rows }: { rows: unknown[] }) => rows,
 	db: {
 		project: {
 			findUnique: vi.fn().mockResolvedValue({ organizationId: "org1" }),

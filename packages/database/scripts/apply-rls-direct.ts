@@ -443,6 +443,8 @@ async function applyRLS() {
 			{ name: "project_meeting_transcript", policy: "user_owned" }, // Synced meeting transcripts
 			{ name: "project_transcript_folder", policy: "user_owned" }, // OneDrive transcript folders (#3507)
 			{ name: "project_transcript_folder_file", policy: "user_owned" }, // Files seen in those folders (#3507)
+			{ name: "project_document_folder", policy: "user_owned" }, // OneDrive and SharePoint document folders (#2808)
+			{ name: "project_document_folder_file", policy: "user_owned" }, // Files seen in those folders (#2808)
 			{ name: "project_meeting_action_item", policy: "user_owned" }, // Action items extracted from meeting transcripts
 			{ name: "todo_item", policy: "user_owned" }, // #2340 consolidated To Do list rows
 			{ name: "time_entry", policy: "user_owned" }, // Members' logged time; authorship is narrowed by userId in queries

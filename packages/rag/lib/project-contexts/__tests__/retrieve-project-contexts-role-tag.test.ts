@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
+	withInheritedSourceGuidance: async ({ rows }: { rows: unknown[] }) => rows,
 	db: {
 		project: {
 			findUnique: vi.fn().mockResolvedValue({ organizationId: "org-1" }),

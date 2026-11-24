@@ -968,6 +968,44 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"A deleted meeting was rebuilt from its archive inside the 7-day recovery window and its transcripts re-embedded, so the content answers questions again. `metadata.transcriptsRestored` carries how much came back and `metadata.archiveId` which archive was consumed. It comes back with syncing stopped: resuming is a separate, deliberate act. Action items, agendas and the links from meeting action items to work items are NOT restored — the work items themselves were never affected, but a restored meeting no longer shows as their source.",
 	},
 	{
+		key: "project.document_folder.connected",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.document_folder.connected",
+		description:
+			"A OneDrive or SharePoint folder was connected to a project as a document folder, so its files are imported as project context and kept in step with the source. The row names the folder and the reader whose Microsoft connection reads it; the folder's description is never recorded.",
+	},
+	{
+		key: "project.document_folder.reconnected",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.document_folder.reconnected",
+		description:
+			"A connected document folder was connected again, making the person who did it the folder's reader. `metadata.previousReaderId` and `metadata.readerId` show whose Microsoft connection reads the folder before and after, because the reader decides which SharePoint files are visible to the import.",
+	},
+	{
+		key: "project.document_folder.updated",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.document_folder.updated",
+		description:
+			"A document folder's description was changed. The description is shown to the AI as guidance for every file from the folder; the row records that it changed, never the text itself.",
+	},
+	{
+		key: "project.document_folder.removals_confirmed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.document_folder.removals_confirmed",
+		description:
+			"An editor confirmed removals that a document folder had held because many files disappeared from it in one read. `metadata.heldRemovalCount` carries how many files were waiting; those still missing are removed from project context.",
+	},
+	{
+		key: "project.document_folder.disconnected",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.document_folder.disconnected",
+		description:
+			"A document folder was disconnected. Fabric stops reading it, keeps every file already imported as ordinary project context, and no longer applies the folder's description to them.",
+	},
+	{
 		key: "project.meeting.sync_stopped",
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.project.meeting.sync_stopped",

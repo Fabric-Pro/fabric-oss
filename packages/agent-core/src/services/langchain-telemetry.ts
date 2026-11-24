@@ -1,5 +1,6 @@
 import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { LLMResult } from "@langchain/core/outputs";
+import { chatGptPlanFailedUsageFromError } from "@repo/agent-types/chatgpt-plan-fetch";
 import {
 	type LLMInvocation,
 	llmInstrumentation,
@@ -106,7 +107,12 @@ class FabricLLMTelemetryCallback extends BaseCallbackHandler {
 			if (isCancellation(error)) {
 				invocation.cancel();
 			} else {
-				invocation.fail(error);
+				invocation.fail(
+					error,
+					this.context.provider === "OPENAI_CHATGPT_PLAN"
+						? chatGptPlanFailedUsageFromError(error)
+						: undefined,
+				);
 			}
 		} catch {
 			// Telemetry callbacks must never change model behavior.

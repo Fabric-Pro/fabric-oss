@@ -11,6 +11,7 @@
  * 4. Execute tool on approval or return rejection
  */
 
+import { randomUUID } from "node:crypto";
 import { Redis } from "@upstash/redis";
 import type { McpSession } from "../session/types";
 import type { ApprovalRequest, ToolAnnotations } from "./types";
@@ -30,7 +31,7 @@ export class ApprovalHandler {
 	}
 
 	private generateApprovalId(): string {
-		return `apr_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+		return `apr_${Date.now()}_${randomUUID()}`;
 	}
 
 	/**

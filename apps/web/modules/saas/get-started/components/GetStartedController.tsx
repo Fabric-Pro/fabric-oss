@@ -187,6 +187,8 @@ export function GetStartedController() {
 	const credentialManagerEnabled = useFeatureFlag("CREDENTIAL_MANAGER");
 	// The report suite replaces the sidebar Reports page with the project tab.
 	const reportSuiteEnabled = useFeatureFlag("REPORT_SUITE_V2");
+	// Document folders add a source to what the Add Context step says.
+	const cloudDriveFoldersEnabled = useFeatureFlag("CLOUD_DRIVE_FOLDERS");
 	const gsGates: GsRuntimeGates = useMemo(
 		() => ({
 			publishingSuite: tabGates.publishingSuiteEnabled,
@@ -196,6 +198,7 @@ export function GetStartedController() {
 			parlumeMeetings: parlumeMeetingsEnabled,
 			credentialManager: credentialManagerEnabled,
 			reportSuite: reportSuiteEnabled,
+			cloudDriveFolders: cloudDriveFoldersEnabled,
 		}),
 		[
 			tabGates,
@@ -205,6 +208,7 @@ export function GetStartedController() {
 			parlumeMeetingsEnabled,
 			credentialManagerEnabled,
 			reportSuiteEnabled,
+			cloudDriveFoldersEnabled,
 		],
 	);
 	// A tour step / drawer entry pointing at a project tab this viewer can't

@@ -120,4 +120,34 @@ describe("POST /api/internal/project-context-search", () => {
 			expect.objectContaining({ projectId: PROJECT_ID, userId: USER_ID }),
 		);
 	});
+
+	it("returns the guidance retrieval resolved, including a document folder's description", async () => {
+		// Retrieval fills a folder file's guidance from its folder; the route
+		// passes it through to the agent unchanged.
+		retrieveProjectContexts.mockResolvedValue([
+			{
+				id: "file-1",
+				type: "DOCUMENT",
+				content: "Case study body",
+				score: 0.8,
+				filename: "case-study.docx",
+				aiInstructions: "Signed case studies",
+			},
+		]);
+		const { POST } = await import(
+			"../../../app/api/internal/project-context-search/route"
+		);
+
+		const response = await callRoute(POST, body);
+
+		expect((await response.json()).contexts).toEqual([
+			{
+				type: "DOCUMENT",
+				source: "case-study.docx",
+				relevance: 0.8,
+				content: "Case study body",
+				aiInstructions: "Signed case studies",
+			},
+		]);
+	});
 });

@@ -41,6 +41,7 @@ export function PageTourButton({
 	const parlumeMeetingsEnabled = useFeatureFlag("PARLUME_MEETINGS");
 	const credentialManagerEnabled = useFeatureFlag("CREDENTIAL_MANAGER");
 	const reportSuiteEnabled = useFeatureFlag("REPORT_SUITE_V2");
+	const cloudDriveFoldersEnabled = useFeatureFlag("CLOUD_DRIVE_FOLDERS");
 	if (
 		!GET_STARTED_ENABLED ||
 		!pageForTab(pageId, {
@@ -51,6 +52,7 @@ export function PageTourButton({
 			parlumeMeetings: parlumeMeetingsEnabled,
 			credentialManager: credentialManagerEnabled,
 			reportSuite: reportSuiteEnabled,
+			cloudDriveFolders: cloudDriveFoldersEnabled,
 		})
 	) {
 		return null;

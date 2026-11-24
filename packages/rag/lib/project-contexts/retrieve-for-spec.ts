@@ -18,6 +18,7 @@ import {
 	fetchCredentialsByIdInTenant,
 	getRetrievableContextById,
 	loadProjectDatabricksKnowledgeBinding,
+	withInheritedSourceGuidance,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { isProjectDatabricksKnowledgeEnabled } from "@repo/utils/feature-flag";
@@ -779,8 +780,22 @@ export async function retrieveRelevantContextsForSpec(
 			// chunks resolve. Per-page chunks are embedded with their own
 			// `ProjectContextUrlPage.id` as the Qdrant `contextId`; the helper
 			// falls back to that table when the id isn't a `ProjectContext`.
-			const fetched = await Promise.all(
-				rankedContextIds.map((id) => getRetrievableContextById(id)),
+			// A document-folder file without guidance of its own takes its
+			// folder's description, resolved once for the whole batch.
+			const hydratedRows = await Promise.all(
+				rankedContextIds.map((id) =>
+					getRetrievableContextById(id, {
+						inheritFolderGuidance: false,
+					}),
+				),
+			);
+			const withGuidance = await withInheritedSourceGuidance({
+				projectId,
+				rows: hydratedRows.filter((row) => row !== null),
+			});
+			let nextWithGuidance = 0;
+			const fetched = hydratedRows.map((row) =>
+				row ? (withGuidance[nextWithGuidance++] ?? row) : null,
 			);
 
 			// Every eligible candidate, in rank order — not just the first `topK`.

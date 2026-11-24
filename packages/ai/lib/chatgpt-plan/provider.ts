@@ -1,6 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createOpenAI } from "@ai-sdk/openai";
 import {
 	CHATGPT_PLAN_ORIGIN,
+	type ChatGptPlanFailedUsage,
 	createChatGptPlanFetch,
 	redactChatGptPlanHeaders,
 	SubscriptionPlanExhaustedError,
@@ -17,6 +19,7 @@ import {
 	type LanguageModelMiddleware,
 	wrapLanguageModel,
 } from "ai";
+import { createLLMTelemetryMiddleware } from "../llm-telemetry-middleware";
 import {
 	createRequestObservationMiddleware,
 	hasActiveRequestObservation,
@@ -53,6 +56,10 @@ import {
 import { refreshChatGptPlanServedModelsInBackground } from "./served-models";
 import { type PlanSourceRef, planSourceLogFields } from "./sources";
 import { createChatGptPlanStructuredOutputMiddleware } from "./structured-output";
+
+const failedReplyObserver = new AsyncLocalStorage<
+	(usage: Readonly<ChatGptPlanFailedUsage>) => void
+>();
 
 /**
  * Rules the SDK must see before it builds the request:
@@ -361,11 +368,20 @@ export function createChatGptPlanModel({
 		waitUntil(write);
 		onUsageReport?.(write);
 	};
+	// Instrument each plan attempt so a fallback uses its own model label.
 	const physicalModel = (id: string) =>
 		wrapPhysicalModel(
 			wrapLanguageModel({
 				model: provider.responses(id),
-				middleware: createRequestObservationMiddleware(),
+				middleware: [
+					createLLMTelemetryMiddleware({
+						provider: "OPENAI_CHATGPT_PLAN",
+						model: id,
+						captureFailedReply: (observe, call) =>
+							failedReplyObserver.run(observe, call),
+					}),
+					createRequestObservationMiddleware(),
+				],
 			}) as unknown as PlanResponsesModel,
 		);
 	const provider = createOpenAI({
@@ -378,6 +394,9 @@ export function createChatGptPlanModel({
 			onUnauthorized: async (failedToken) =>
 				used(await tokens.refresh(failedToken)),
 			onResponseHeaders,
+			// Keep the same observation when the SDK reads the body outside
+			// the context in which it sent the request.
+			getFailedReplyObserver: () => failedReplyObserver.getStore(),
 			// Inside an Advisor chat turn (the ambient dispatch guard), every
 			// physical send is checked at the fetch itself, synchronously:
 			// the token lookup and, after a 401, the token refresh are awaited

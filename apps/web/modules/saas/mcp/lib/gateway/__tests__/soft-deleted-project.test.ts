@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	isProjectSoftDeleted: vi.fn(),
+	isOrganizationLive: vi.fn(),
 	getProjectAccessContext: vi.fn(),
 	resolveProjectAccess: vi.fn(),
 	getStoryById: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
 vi.mock("@repo/database", () => ({
 	db: {},
 	isProjectSoftDeleted: mocks.isProjectSoftDeleted,
+	isOrganizationLive: mocks.isOrganizationLive,
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	resolveProjectAccess: mocks.resolveProjectAccess,
 	getStoryById: mocks.getStoryById,
@@ -64,6 +66,7 @@ function error(result: { content: Array<{ text: string }> }): string {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.isProjectSoftDeleted.mockResolvedValue(false);
+	mocks.isOrganizationLive.mockResolvedValue(true);
 	mocks.getProjectAccessContext.mockResolvedValue({
 		organizationId: "org-1",
 	});
@@ -114,5 +117,84 @@ describe("a trashed project on the organization-wide URL", () => {
 
 		expect(error(result)).toBe("Feature not found");
 		expect(mocks.isProjectSoftDeleted).toHaveBeenCalledWith("project-1");
+	});
+});
+
+/**
+ * A project whose organization is in its deletion window is gone too, as the
+ * app's project gate (`assertProjectPermission`) refuses it. The MCP route
+ * checks only the session's organization, and a guest's session sits in
+ * another, live one.
+ */
+describe("a project whose organization is being deleted", () => {
+	function guestOnProjectInDeletedOrganization() {
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org-2",
+		});
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: "org-2",
+			source: "project-member",
+			isVisible: true,
+			permissions: ["project:update"],
+		});
+		mocks.isOrganizationLive.mockImplementation(
+			async (organizationId: string) => organizationId !== "org-2",
+		);
+	}
+
+	it("is refused to a guest's read as if it did not exist", async () => {
+		guestOnProjectInDeletedOrganization();
+
+		const result = await executePlatformTool(
+			"fabric_get_feature",
+			{ projectId: "project-1", featureId: "feature-1" },
+			session,
+		);
+
+		expect(error(result)).toBe(NOT_FOUND);
+		expect(mocks.isOrganizationLive).toHaveBeenCalledWith("org-2");
+		expect(mocks.getStoryById).not.toHaveBeenCalled();
+	});
+
+	it("is refused to a guest's write as if it did not exist", async () => {
+		guestOnProjectInDeletedOrganization();
+
+		const result = await executePlatformTool(
+			"fabric_update_feature_status",
+			{ projectId: "project-1", featureId: "feature-1", statusId: "s-1" },
+			session,
+		);
+
+		expect(error(result)).toBe(NOT_FOUND);
+		expect(mocks.moveStory).not.toHaveBeenCalled();
+	});
+
+	// The credential binding answers first, so an organization key learns
+	// nothing about whether another organization is being deleted.
+	it("is never asked about for an organization key of another organization", async () => {
+		guestOnProjectInDeletedOrganization();
+
+		const result = await executePlatformTool(
+			"fabric_get_feature",
+			{ projectId: "project-1", featureId: "feature-1" },
+			{ ...session, credential: "organization-key" },
+		);
+
+		expect(error(result)).toBe(NOT_FOUND);
+		expect(mocks.isOrganizationLive).not.toHaveBeenCalled();
+	});
+
+	it("is not asked about for a project with no organization", async () => {
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: null,
+		});
+
+		await executePlatformTool(
+			"fabric_get_feature",
+			{ projectId: "project-1", featureId: "feature-1" },
+			session,
+		);
+
+		expect(mocks.isOrganizationLive).not.toHaveBeenCalled();
 	});
 });

@@ -1,5 +1,14 @@
 # @fabricorg/integrations-github
 
+## 0.1.20
+
+### Patch Changes
+
+- 706772d: The CLI, SDK, MCP SDK and integration packages now ship READMEs covering installation, authentication and their public interfaces.
+- Updated dependencies [706772d]
+  - @fabricorg/sdk@0.8.5
+  - @fabricorg/integrations-runtime@0.1.4
+
 ## 0.1.19
 
 ### Patch Changes

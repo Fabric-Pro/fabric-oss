@@ -94,6 +94,7 @@ describe("get-started drawer — account settings in organization context", () =
 					parlumeMeetings: false,
 					credentialManager: false,
 					reportSuite: false,
+					cloudDriveFolders: false,
 				}}
 			/>,
 		);
@@ -119,6 +120,7 @@ describe("get-started drawer — account settings in organization context", () =
 					parlumeMeetings: false,
 					credentialManager: false,
 					reportSuite: false,
+					cloudDriveFolders: false,
 				}}
 			/>,
 		);
@@ -144,6 +146,7 @@ describe("get-started drawer — account settings in organization context", () =
 					parlumeMeetings: false,
 					credentialManager: false,
 					reportSuite: false,
+					cloudDriveFolders: false,
 				}}
 			/>,
 		);
@@ -187,6 +190,7 @@ describe("get-started drawer — account settings in organization context", () =
 					parlumeMeetings: false,
 					credentialManager: false,
 					reportSuite: false,
+					cloudDriveFolders: false,
 				}}
 			/>,
 		);
@@ -207,6 +211,7 @@ describe("get-started drawer — account settings in organization context", () =
 					parlumeMeetings: false,
 					credentialManager: false,
 					reportSuite: false,
+					cloudDriveFolders: false,
 				}}
 			/>,
 		);

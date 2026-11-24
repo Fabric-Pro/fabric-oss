@@ -20,6 +20,7 @@ describe("new connection task templates", () => {
 		"ANTHROPIC_DIRECT",
 		"VERCEL_GATEWAY",
 		"OPENAI_DIRECT",
+		"OPENAI_CHATGPT_PLAN",
 		"DATABRICKS",
 		"XAI",
 	] as const) {
@@ -33,10 +34,11 @@ describe("new connection task templates", () => {
 			`${provider}/%s has an active suitable model and provider mapping`,
 			(taskType) => {
 				const expected =
-					provider === "OPENAI_DIRECT"
+					provider === "OPENAI_DIRECT" ||
+					provider === "OPENAI_CHATGPT_PLAN"
 						? taskType === "SIMPLE"
 							? "gpt-6.1-terra"
-							: "gpt-6.1-sol"
+							: "gpt-6.2-sol"
 						: provider === "XAI"
 							? "grok-4-1-fast"
 							: taskType === "SIMPLE"
@@ -69,11 +71,13 @@ describe("new connection task templates", () => {
 		["GROQ", "COMPLEX", "llama-3-3-70b"],
 		["CEREBRAS", "SIMPLE", "llama-3-1-8b"],
 		["DATABRICKS", "SIMPLE", "llama-3-3-70b"],
-		["OPENAI_DIRECT", "IMAGE", "dall-e-3"],
+		["OPENAI_DIRECT", "IMAGE", "gpt-image-2.6-sunburst"],
 		["VERCEL_GATEWAY", "IMAGE", "gemini-nano-banana-2.1"],
 		["OPENAI_DIRECT", "EMBEDDING", "text-embedding-3-small"],
 		["VERCEL_GATEWAY", "DECISION", "gpt-6-luna-decisions"],
 		["GROQ", "AUDIO", "whisper-1"],
+		["OPENAI_DIRECT", "AUDIO", "whisper-1"],
+		["VERCEL_GATEWAY", "AUDIO", "whisper-1"],
 	])("retains %s/%s", (provider, taskType, expected) => {
 		expect(
 			TASK_DEFAULTS.find(

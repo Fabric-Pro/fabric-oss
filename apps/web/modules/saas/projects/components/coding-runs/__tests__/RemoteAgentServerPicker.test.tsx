@@ -3,12 +3,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	generateServerSecret,
 	getLoopbackHostMismatchUrl,
 	RemoteAgentServerPicker,
 	resolvePersonalLoopbackUrl,
 } from "../RemoteAgentServerPicker";
 
 const f = vi.hoisted(() => ({
+	toastError: vi.fn(),
 	connect: vi.fn(),
 	disconnect: vi.fn(),
 }));
@@ -22,6 +24,10 @@ vi.mock("@shared/lib/orpc-client", () => ({
 			},
 		},
 	},
+}));
+
+vi.mock("sonner", () => ({
+	toast: { error: f.toastError },
 }));
 
 vi.mock("next-intl", () => ({
@@ -61,6 +67,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+	vi.restoreAllMocks();
 });
 
 it.each([true, false])(
@@ -210,4 +217,52 @@ describe("RemoteAgentServerPicker", () => {
 			),
 		);
 	});
+});
+
+const secureRandomError =
+	"Cannot generate a server secret because secure randomness is unavailable. Enter a server secret manually.";
+
+describe("generateServerSecret", () => {
+	it("encodes 24 bytes from Web Crypto as 48 lowercase hex digits", () => {
+		const getRandomValues = vi.fn((bytes: Uint8Array) => bytes.fill(0x0a));
+		vi.stubGlobal("crypto", { getRandomValues });
+
+		expect(generateServerSecret()).toBe(`fab_srv_${"0a".repeat(24)}`);
+		expect(getRandomValues).toHaveBeenCalledExactlyOnceWith(
+			expect.any(Uint8Array),
+		);
+	});
+
+	it.each([
+		["missing crypto", undefined],
+		["missing getRandomValues", {}],
+		["non-callable getRandomValues", { getRandomValues: true }],
+	])("throws without using Math.random for %s", (_, crypto) => {
+		vi.stubGlobal("crypto", crypto);
+		const random = vi.spyOn(Math, "random");
+
+		expect.soft(generateServerSecret).toThrow(new Error(secureRandomError));
+		expect(random).not.toHaveBeenCalled();
+	});
+});
+
+it.each([
+	/Personal Fabric Agents Remote Server/i,
+	/Organization Fabric Agents Remote Server/i,
+	"Generate token",
+	"Copy setup command",
+])("surfaces a generation failure from %s", (name) => {
+	vi.stubGlobal("crypto", {});
+	const writeText = vi.fn();
+	vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+	renderPicker();
+
+	fireEvent.click(screen.getByRole("button", { name }));
+
+	expect(f.toastError).toHaveBeenCalledExactlyOnceWith(secureRandomError);
+	expect(writeText).not.toHaveBeenCalled();
+	const connect = screen.getByRole("button", { name: "Verify and connect" });
+	expect(connect).toBeDisabled();
+	fireEvent.click(connect);
+	expect(f.connect).not.toHaveBeenCalled();
 });

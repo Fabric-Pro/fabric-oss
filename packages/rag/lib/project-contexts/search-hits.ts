@@ -3,6 +3,7 @@ import {
 	findConfidentialTranscriptContextIds,
 	getRetrievableContextById,
 	getRetrievableConversationBundleById,
+	withInheritedSourceGuidance,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
@@ -80,6 +81,8 @@ export async function withoutConfidentialTranscripts(
 
 /**
  * Resolve distinct hits in relevance order through context, URL-page and bundle bodies.
+ * A document-folder file without guidance of its own takes its folder's description,
+ * resolved once for the whole batch.
  * Individual lookups preserve the main retrieval path. Activity batch lookups retain
  * their existing query scope; task retrieval also checks URL pages against that scope.
  * Callers normalize legacy chunk ids before calling when their contract requires it.
@@ -154,7 +157,11 @@ export async function hydrateProjectContextHits(options: {
 				missingIds = pages.map((page) => page.id);
 			}
 			const pages = await Promise.all(
-				missingIds.map((id) => getRetrievableContextById(id)),
+				missingIds.map((id) =>
+					getRetrievableContextById(id, {
+						inheritFolderGuidance: false,
+					}),
+				),
 			);
 			pages.forEach((page, i) => {
 				if (page) {
@@ -163,7 +170,7 @@ export async function hydrateProjectContextHits(options: {
 			});
 		}
 	}
-	return Promise.all(
+	const hydrated = await Promise.all(
 		hits.map(async (hit) => ({
 			hit,
 			context: hit.conversationBundleId
@@ -173,8 +180,22 @@ export async function hydrateProjectContextHits(options: {
 						tenant: { userId, organizationId },
 					})
 				: lookup === "individual"
-					? await getRetrievableContextById(hit.contextId)
+					? await getRetrievableContextById(hit.contextId, {
+							inheritFolderGuidance: false,
+						})
 					: (rowsById.get(hit.contextId) ?? null),
 		})),
 	);
+	const rows = hydrated.flatMap(({ hit, context }) =>
+		context && !hit.conversationBundleId ? [context] : [],
+	);
+	const withGuidance = new Map(
+		(await withInheritedSourceGuidance({ projectId, rows })).map(
+			(row, i) => [rows[i], row],
+		),
+	);
+	return hydrated.map(({ hit, context }) => ({
+		hit,
+		context: context ? (withGuidance.get(context) ?? context) : null,
+	}));
 }

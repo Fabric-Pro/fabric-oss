@@ -1,0 +1,46 @@
+name: OpenSSF Scorecard
+
+# Publish Scorecard results for the public repository and upload SARIF to code
+# scanning. The job is skipped in the private staging repository.
+#
+# Run on master pushes, weekly and by manual dispatch. Pull request runs can
+# post code-scanning review threads, whose required resolution can block the
+# publication bot, as described in codeql.yml.
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: '0 10 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scorecard:
+    if: github.repository == 'Fabric-Pro/fabric-oss'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # The default token is sufficient for Scorecard; classic branch
+      # protection details may require an administrative PAT, which is omitted.
+      - uses: ossf/scorecard-action@23f22cd43608bae7a1f1fa2603d7314dee9538a5 # v2.6.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+          fail_on_publish_error: true
+
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        if: always()
+        with:
+          sarif_file: results.sarif

@@ -865,6 +865,42 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"info",
 		"project",
 	),
+	"project.document_folder.connected": D(
+		"project.document_folder.connected",
+		"Document folder connected",
+		FolderPlus,
+		"info",
+		"project",
+	),
+	"project.document_folder.reconnected": D(
+		"project.document_folder.reconnected",
+		"Document folder reconnected",
+		PlugZap,
+		"info",
+		"project",
+	),
+	"project.document_folder.updated": D(
+		"project.document_folder.updated",
+		"Document folder description changed",
+		FolderPen,
+		"info",
+		"project",
+	),
+	"project.document_folder.removals_confirmed": D(
+		"project.document_folder.removals_confirmed",
+		"Held document folder removals confirmed",
+		Eraser,
+		// Warning, not info: confirming removes many files' context at once.
+		"warning",
+		"project",
+	),
+	"project.document_folder.disconnected": D(
+		"project.document_folder.disconnected",
+		"Document folder disconnected",
+		FolderMinus,
+		"info",
+		"project",
+	),
 	"project.context_source.scan_stopped": D(
 		"project.context_source.scan_stopped",
 		"Channel or chat scanning stopped or resumed",

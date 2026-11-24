@@ -48,6 +48,7 @@ vi.mock("@repo/database", () => ({
 		storyTask: { findFirst: mocks.storyTaskFindFirst },
 	},
 	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
+	isOrganizationLive: vi.fn().mockResolvedValue(true),
 	resolveProjectAccess: mocks.resolveProjectAccess,
 	hasPermission: mocks.hasPermission,
 	Permissions: {
@@ -73,6 +74,12 @@ vi.mock("@repo/database", () => ({
 
 vi.mock("@repo/api/modules/projects/lib/upsert-synced-context", () => ({
 	upsertSyncedContext: mocks.upsertSyncedContext,
+}));
+
+// fabric_update_project records an audit row on its allowed path; the row's
+// content is pinned in update-project-host-organization.test.ts.
+vi.mock("@repo/api/lib/audit", () => ({
+	recordAuditFromRequest: vi.fn(),
 }));
 
 import { executePlatformTool } from "../platform-tools";
@@ -611,6 +618,7 @@ describe("an organization key stays inside its own organization on writes", () =
 				"proj-1",
 				"user-1",
 				{ name: "Renamed Project" },
+				"org-b",
 			);
 		});
 

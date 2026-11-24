@@ -1501,6 +1501,13 @@
 						"restored": "Meeting wiederhergestellt",
 						"sync_stopped": "Meeting-Synchronisierung gestoppt oder fortgesetzt"
 					},
+					"document_folder": {
+						"connected": "Dokumentordner verbunden",
+						"reconnected": "Dokumentordner erneut verbunden",
+						"updated": "Beschreibung eines Dokumentordners geändert",
+						"removals_confirmed": "Zurückgehaltene Entfernungen eines Dokumentordners bestätigt",
+						"disconnected": "Dokumentordner getrennt"
+					},
 					"parlume": {
 						"action_confirmed": "Parlume-Änderung bestätigt",
 						"action_dismissed": "Parlume-Änderung verworfen",

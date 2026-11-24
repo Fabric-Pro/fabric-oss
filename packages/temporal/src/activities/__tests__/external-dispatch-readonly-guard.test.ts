@@ -56,6 +56,10 @@ const ALLOWLIST: ReadonlyMap<string, string> = new Map([
 		"OneDrive READS only (list_drive_children / download_drive_item) — copies files into Fabric, never writes to OneDrive (#3507)",
 	],
 	[
+		"packages/temporal/src/activities/document-folder-sync.ts",
+		"OneDrive and SharePoint READS only (get_drive_item / list_drive_tree / lookup_drive_items / download_drive_item) — copies files into Fabric, never writes to the drive (#2808)",
+	],
+	[
 		"packages/temporal/src/activities/meeting-transcript-sync.ts",
 		"Teams transcript READS only (list meetings / get transcript content)",
 	],

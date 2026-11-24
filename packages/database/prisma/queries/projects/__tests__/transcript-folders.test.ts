@@ -21,6 +21,8 @@ const db = vi.hoisted(() => ({
 	transaction: vi.fn(),
 	txContextCreate: vi.fn(),
 	txFileUpdate: vi.fn(),
+	executeRaw: vi.fn(),
+	documentFolderFindMany: vi.fn(),
 }));
 
 vi.mock("../../../client", () => ({
@@ -41,6 +43,7 @@ vi.mock("../../../client", () => ({
 	},
 }));
 
+import { FolderConnectRefusedError } from "../document-folders";
 import {
 	connectTranscriptFolders,
 	createFolderFileContext,
@@ -54,13 +57,19 @@ beforeEach(() => {
 	db.transaction.mockImplementation(async (ops: unknown) =>
 		typeof ops === "function"
 			? ops({
+					$executeRaw: db.executeRaw,
 					projectContext: { create: db.txContextCreate },
+					projectTranscriptFolder: { upsert: db.folderUpsert },
 					projectTranscriptFolderFile: { update: db.txFileUpdate },
+					projectDocumentFolder: {
+						findMany: db.documentFolderFindMany,
+					},
 				})
 			: Promise.all(ops as Promise<unknown>[]),
 	);
 	db.folderUpsert.mockImplementation(async () => ({ id: "folder-1" }));
 	db.fileUpdateMany.mockResolvedValue({ count: 0 });
+	db.documentFolderFindMany.mockResolvedValue([]);
 });
 
 describe("connectTranscriptFolders", () => {
@@ -107,6 +116,66 @@ describe("connectTranscriptFolders", () => {
 			},
 			data: { status: "PENDING", reason: null },
 		});
+	});
+});
+
+describe("connectTranscriptFolders refusing document folders", () => {
+	const documentFolder = {
+		driveId: "drive-1",
+		itemId: "item-docs",
+		name: "Case studies",
+		drivePath: "/Sales/Case studies",
+	};
+
+	async function refusal(promise: Promise<unknown>) {
+		const error = await promise.catch((e: unknown) => e);
+		expect(error).toBeInstanceOf(FolderConnectRefusedError);
+		expect(db.folderUpsert).not.toHaveBeenCalled();
+		return error as FolderConnectRefusedError;
+	}
+
+	it("refuses a folder that is a connected document folder, naming it", async () => {
+		db.documentFolderFindMany.mockResolvedValue([documentFolder]);
+
+		const error = await refusal(
+			connectTranscriptFolders({
+				projectId: "project-1",
+				userId: "user-1",
+				folders: [
+					{
+						driveId: "drive-1",
+						itemId: "item-docs",
+						name: "Case studies",
+					},
+				],
+			}),
+		);
+		expect(error.reason).toBe("SAME_AS_DOCUMENT_FOLDER");
+		expect(error.existingFolderName).toBe("Case studies");
+		expect(db.documentFolderFindMany.mock.calls[0]?.[0].where).toEqual({
+			projectId: "project-1",
+			disconnectedAt: null,
+		});
+	});
+
+	it("refuses a folder holding a connected document folder when its path is given", async () => {
+		db.documentFolderFindMany.mockResolvedValue([documentFolder]);
+
+		const error = await refusal(
+			connectTranscriptFolders({
+				projectId: "project-1",
+				userId: "user-1",
+				folders: [
+					{
+						driveId: "drive-1",
+						itemId: "item-sales",
+						name: "Sales",
+						drivePath: "/Sales",
+					},
+				],
+			}),
+		);
+		expect(error.reason).toBe("OVERLAPS_DOCUMENT_FOLDER");
 	});
 });
 

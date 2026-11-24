@@ -9,24 +9,8 @@ import { refreshChatGptPlanServedModelsInBackground } from "./served-models";
 import { chatGptPlanServedSlugs } from "./served-slugs";
 import type { PlanSourceRef } from "./sources";
 
-/**
- * Which ChatGPT plan model serves which kind of Fabric work (Fizzy #2939,
- * #2770).
- *
- * The plan's model catalog (`GET /v1/models` on the plan route, probed
- * 2026-10-06) lists gpt-6-astra "frontier intelligence for the most demanding
- * work", gpt-5.6-sol "older generation workhorse", gpt-5.6-terra "older
- * balanced model for straightforward work" and gpt-5.6-luna "older fast and
- * efficient"; plans now also serve the GPT-6 family. GPT-6.1 Sol serves
- * Fabric's work and GPT-6.1 Terra the light tasks: both use less of the
- * plan's window than Astra (defaults set 2026-10-08; Terra replaced GPT-6
- * Luna for light tasks 2026-10-28). Which model a call retries on when the plan
- * does not serve the chosen one is the organization's choice (Fizzy #2770
- * F10), Astra by default.
- */
-
-/** The model every plan account serves. */
-export const CHATGPT_PLAN_HEAVY_MODEL = "gpt-6-astra";
+/** Default fallback for demanding work on a ChatGPT plan. */
+export const CHATGPT_PLAN_HEAVY_MODEL = "gpt-6.2-astra";
 
 /**
  * The plan does not serve the model the work asked for, and no fallback could
@@ -69,11 +53,11 @@ export const CHATGPT_PLAN_TASK_DEFAULTS: Record<
 	ChatGptPlanTaskType,
 	ChatGptPlanModelChoice
 > = {
-	COMPLEX: { model: "gpt-6.1-sol" },
-	REASONING: { model: "gpt-6.1-sol" },
-	TOOL_CALLING: { model: "gpt-6.1-sol" },
-	CHAT: { model: "gpt-6.1-sol" },
-	EVAL: { model: "gpt-6.1-sol" },
+	COMPLEX: { model: "gpt-6.2-sol" },
+	REASONING: { model: "gpt-6.2-sol" },
+	TOOL_CALLING: { model: "gpt-6.2-sol" },
+	CHAT: { model: "gpt-6.2-sol" },
+	EVAL: { model: "gpt-6.2-sol" },
 	SIMPLE: { model: "gpt-6.1-terra" },
 };
 
@@ -93,12 +77,14 @@ export const CHATGPT_PLAN_API_PRICE_REFERENCE: Record<string, string> = {
 	// high side rather than Astra's far higher price.
 	"gpt-5.6-terra": "gpt-6-sol",
 	"gpt-5.6-luna": "gpt-6-luna",
+	"gpt-6.2-astra": "gpt-6.2-astra",
+	"gpt-6.2-sol": "gpt-6.2-sol",
 };
 
 /**
  * The API model a plan model is priced as: the table above, else the known
  * plan model of the same family (a model the plan lists before the catalog
- * knows it, like `gpt-6.1-sol`), else Sol.
+ * knows it, like `gpt-6.1-luna`), else Sol.
  */
 export function chatGptPlanApiPriceReference(planModel: string): string {
 	const known = CHATGPT_PLAN_API_PRICE_REFERENCE[planModel];

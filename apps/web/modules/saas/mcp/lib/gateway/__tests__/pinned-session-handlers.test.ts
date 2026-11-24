@@ -26,6 +26,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	// The gateway project gates refuse an organization being deleted.
+	isOrganizationLive: async () => true,
 	findConfidentialTranscriptContextIds: async () => new Set(),
 	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	getProjectAccessContext: mocks.getProjectAccessContext,

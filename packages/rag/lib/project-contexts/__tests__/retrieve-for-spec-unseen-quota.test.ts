@@ -43,6 +43,7 @@ vi.mock("@repo/ai", () => ({
 	getEmbeddingRAGProviderConfig: getProviderConfigMock,
 }));
 vi.mock("@repo/database", () => ({
+	withInheritedSourceGuidance: async ({ rows }: { rows: unknown[] }) => rows,
 	findConfidentialTranscriptContextIds: async () => new Set<string>(),
 	getRetrievableContextById: getContextMock,
 	loadProjectDatabricksKnowledgeBinding: loadBindingMock,

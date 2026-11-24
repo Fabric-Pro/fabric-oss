@@ -760,6 +760,18 @@ export const ProjectTranscriptFolderFileScalarFieldEnumSchema = z.enum(['id', 'f
 
 export type ProjectTranscriptFolderFileScalarFieldEnum = z.infer<typeof ProjectTranscriptFolderFileScalarFieldEnumSchema>;
 
+// File: ProjectDocumentFolderScalarFieldEnum.schema.ts
+
+export const ProjectDocumentFolderScalarFieldEnumSchema = z.enum(['id', 'projectId', 'provider', 'driveId', 'itemId', 'name', 'webUrl', 'drivePath', 'siteId', 'siteName', 'libraryName', 'description', 'connectedAt', 'disconnectedAt', 'readerEpoch', 'lastPassId', 'readStartedAt', 'lastReadAt', 'lastListingComplete', 'pausedRemovalsCode', 'heldRemovalCount', 'problemCode', 'nextReadAfter', 'discoveredAt', 'userId', 'organizationId'])
+
+export type ProjectDocumentFolderScalarFieldEnum = z.infer<typeof ProjectDocumentFolderScalarFieldEnumSchema>;
+
+// File: ProjectDocumentFolderFileScalarFieldEnum.schema.ts
+
+export const ProjectDocumentFolderFileScalarFieldEnumSchema = z.enum(['id', 'folderId', 'projectId', 'driveItemId', 'name', 'relativePath', 'size', 'sourceModifiedAt', 'status', 'skipCode', 'failureCode', 'contextId', 'storageKey', 'importedVersion', 'latestVersion', 'latestVersionSeenCount', 'excludedVersion', 'missCount', 'removalHeldAt', 'lastSeenAt', 'retiredAt', 'savedSourceType', 'savedAiInstructions', 'createdAt', 'updatedAt', 'userId', 'organizationId'])
+
+export type ProjectDocumentFolderFileScalarFieldEnum = z.infer<typeof ProjectDocumentFolderFileScalarFieldEnumSchema>;
+
 // File: TimeEntryScalarFieldEnum.schema.ts
 
 export const TimeEntryScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'projectId', 'userId', 'userNameSnapshot', 'workDate', 'timezone', 'durationMinutes', 'startAt', 'stopAt', 'activity', 'billable', 'description', 'storyId', 'storyIdentifier', 'storyTitle', 'startStopRequired', 'sourceSuggestionId', 'createdAt', 'updatedAt'])
@@ -7620,6 +7632,75 @@ export const ProjectTranscriptFolderFileSchema = z.object({
 });
 
 export type ProjectTranscriptFolderFileType = z.infer<typeof ProjectTranscriptFolderFileSchema>;
+
+
+// File: ProjectDocumentFolder.schema.ts
+
+export const ProjectDocumentFolderSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  provider: z.string(),
+  driveId: z.string(),
+  itemId: z.string(),
+  name: z.string(),
+  webUrl: z.string().nullish(),
+  drivePath: z.string().nullish(),
+  siteId: z.string().nullish(),
+  siteName: z.string().nullish(),
+  libraryName: z.string().nullish(),
+  description: z.string().nullish(),
+  connectedAt: z.date(),
+  disconnectedAt: z.date().nullish(),
+  readerEpoch: z.number().int(),
+  lastPassId: z.string().nullish(),
+  readStartedAt: z.date().nullish(),
+  lastReadAt: z.date().nullish(),
+  lastListingComplete: z.boolean(),
+  pausedRemovalsCode: z.string().nullish(),
+  heldRemovalCount: z.number().int().nullish(),
+  problemCode: z.string().nullish(),
+  nextReadAfter: z.date().nullish(),
+  discoveredAt: z.date().nullish(),
+  userId: z.string(),
+  organizationId: z.string(),
+});
+
+export type ProjectDocumentFolderType = z.infer<typeof ProjectDocumentFolderSchema>;
+
+
+// File: ProjectDocumentFolderFile.schema.ts
+
+export const ProjectDocumentFolderFileSchema = z.object({
+  id: z.string(),
+  folderId: z.string(),
+  projectId: z.string(),
+  driveItemId: z.string(),
+  name: z.string(),
+  relativePath: z.string(),
+  size: z.bigint().nullish(),
+  sourceModifiedAt: z.date().nullish(),
+  status: z.string().default("PENDING"),
+  skipCode: z.string().nullish(),
+  failureCode: z.string().nullish(),
+  contextId: z.string().nullish(),
+  storageKey: z.string().nullish(),
+  importedVersion: z.string().nullish(),
+  latestVersion: z.string().nullish(),
+  latestVersionSeenCount: z.number().int(),
+  excludedVersion: z.string().nullish(),
+  missCount: z.number().int(),
+  removalHeldAt: z.date().nullish(),
+  lastSeenAt: z.date().nullish(),
+  retiredAt: z.date().nullish(),
+  savedSourceType: z.string().nullish(),
+  savedAiInstructions: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+  userId: z.string(),
+  organizationId: z.string(),
+});
+
+export type ProjectDocumentFolderFileType = z.infer<typeof ProjectDocumentFolderFileSchema>;
 
 
 // File: TimeEntry.schema.ts

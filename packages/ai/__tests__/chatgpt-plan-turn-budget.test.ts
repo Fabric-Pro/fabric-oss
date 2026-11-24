@@ -271,7 +271,7 @@ const refusedModel = () =>
 		JSON.stringify({
 			error: {
 				message:
-					"The model 'gpt-6.1-sol' is not supported on this plan.",
+					"The model 'gpt-6.2-sol' is not supported on this plan.",
 				code: "model_not_found",
 			},
 		}),
@@ -486,8 +486,8 @@ describe("a plan account rotation inside a ledgered chat turn", () => {
 
 		expect(result.text).toBe("From B");
 		expect(sends).toEqual([
-			"org:acc_A:gpt-6.1-sol",
-			"org:acc_B:gpt-6.1-sol",
+			"org:acc_A:gpt-6.2-sol",
+			"org:acc_B:gpt-6.2-sol",
 		]);
 		expect(events).toEqual([
 			"reserve:attempt-1",
@@ -545,7 +545,7 @@ describe("a plan account rotation inside a ledgered chat turn", () => {
 		);
 
 		expect(outcome).toBeInstanceOf(BudgetDenied);
-		expect(sends).toEqual(["org:acc_A:gpt-6.1-sol"]);
+		expect(sends).toEqual(["org:acc_A:gpt-6.2-sol"]);
 		expect(events).toEqual([
 			"reserve:attempt-1",
 			"unknown:attempt-1",
@@ -572,7 +572,7 @@ describe("the plan's fallback model inside a ledgered chat turn", () => {
 
 		expect(result.text).toBe("From the fallback");
 		expect(sends).toEqual([
-			"org:acc_A:gpt-6.1-sol",
+			"org:acc_A:gpt-6.2-sol",
 			"org:acc_A:gpt-6-astra",
 		]);
 		expect(events).toEqual([
@@ -602,7 +602,7 @@ describe("the plan's fallback model inside a ledgered chat turn", () => {
 		);
 
 		expect(outcome).toBeInstanceOf(BudgetDenied);
-		expect(sends).toEqual(["org:acc_A:gpt-6.1-sol"]);
+		expect(sends).toEqual(["org:acc_A:gpt-6.2-sol"]);
 		expect(events).toEqual([
 			"reserve:attempt-1",
 			"unknown:attempt-1",
@@ -673,8 +673,8 @@ describe("a sized request on the plan inside a ledgered chat turn", () => {
 
 		expect(text).toBe("From B");
 		expect(sends).toEqual([
-			"org:acc_A:gpt-6.1-sol",
-			"org:acc_B:gpt-6.1-sol",
+			"org:acc_A:gpt-6.2-sol",
+			"org:acc_B:gpt-6.2-sol",
 		]);
 		expect(asked).toEqual([1, 2]);
 		expect(requests.map((r) => r.requestedOutputTokens)).toEqual([
@@ -722,7 +722,7 @@ describe("a sized request on the plan inside a ledgered chat turn", () => {
 
 		expect(result.text).toBe("From the fallback");
 		expect(sends).toEqual([
-			"org:acc_A:gpt-6.1-sol",
+			"org:acc_A:gpt-6.2-sol",
 			"org:acc_A:gpt-6-astra",
 		]);
 		expect(asked).toEqual([1, 2]);
@@ -752,7 +752,7 @@ describe("a sized request on the plan inside a ledgered chat turn", () => {
 		);
 
 		expect(outcome).toBe(refusal);
-		expect(sends).toEqual(["org:acc_A:gpt-6.1-sol"]);
+		expect(sends).toEqual(["org:acc_A:gpt-6.2-sol"]);
 		expect(events).toEqual(["reserve:attempt-1", "unknown:attempt-1"]);
 	});
 });
@@ -931,8 +931,8 @@ describe("a 401 refresh-and-resend inside a ledgered chat turn", () => {
 
 		expect(result.text).toBe("After refresh");
 		expect(sends).toEqual([
-			"org:acc_A:gpt-6.1-sol",
-			"org:acc_A:gpt-6.1-sol",
+			"org:acc_A:gpt-6.2-sol",
+			"org:acc_A:gpt-6.2-sol",
 		]);
 		// One reservation for the one billed send (a 401 consumes nothing);
 		// the resend is checked again after the refresh, before it goes out.
@@ -961,7 +961,7 @@ describe("a 401 refresh-and-resend inside a ledgered chat turn", () => {
 		);
 
 		expect(outcome).toBeInstanceOf(TurnStopped);
-		expect(sends).toEqual(["org:acc_A:gpt-6.1-sol"]);
+		expect(sends).toEqual(["org:acc_A:gpt-6.2-sol"]);
 		// The resend's dispatch check refuses it. No second reservation; the
 		// one attempt stays charged.
 		expect(events).toEqual([
@@ -998,6 +998,6 @@ describe("a 401 refresh-and-resend inside a ledgered chat turn", () => {
 		);
 
 		expect(outcome).toBeInstanceOf(TurnStopped);
-		expect(sends).toEqual(["org:acc_A:gpt-6.1-sol"]);
+		expect(sends).toEqual(["org:acc_A:gpt-6.2-sol"]);
 	});
 });

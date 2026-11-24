@@ -90,15 +90,15 @@ export function getLoopbackHostMismatchUrl(
 		: parsed.href;
 }
 
-function generateServerSecret(): string {
-	const bytes = new Uint8Array(24);
-	if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-		crypto.getRandomValues(bytes);
-	} else {
-		for (let i = 0; i < bytes.length; i++) {
-			bytes[i] = Math.floor(Math.random() * 256);
-		}
+export function generateServerSecret(): string {
+	if (typeof globalThis.crypto?.getRandomValues !== "function") {
+		throw new Error(
+			"Cannot generate a server secret because secure randomness is unavailable. Enter a server secret manually.",
+		);
 	}
+
+	const bytes = new Uint8Array(24);
+	globalThis.crypto.getRandomValues(bytes);
 	return `fab_srv_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
@@ -202,6 +202,20 @@ export function RemoteAgentServerPicker({
 		},
 	});
 
+	const populateGeneratedSecret = (): string | undefined => {
+		try {
+			const generatedSecret = generateServerSecret();
+			setSecret(generatedSecret);
+			return generatedSecret;
+		} catch (error) {
+			toast.error(
+				error instanceof Error
+					? error.message
+					: "Failed to generate a server secret",
+			);
+		}
+	};
+
 	const applyLocalPreset = () => {
 		if (!name.trim()) {
 			setName("Personal Fabric Agents Remote Server");
@@ -213,7 +227,7 @@ export function RemoteAgentServerPicker({
 		setUrl(resolvePersonalLoopbackUrl(currentHostname));
 		setScope("PRIVATE");
 		if (secret.length < 32) {
-			setSecret(generateServerSecret());
+			populateGeneratedSecret();
 		}
 	};
 
@@ -228,7 +242,7 @@ export function RemoteAgentServerPicker({
 			setScope("TEAM");
 		}
 		if (secret.length < 32) {
-			setSecret(generateServerSecret());
+			populateGeneratedSecret();
 		}
 	};
 
@@ -596,9 +610,7 @@ export function RemoteAgentServerPicker({
 								</Label>
 								<button
 									type="button"
-									onClick={() =>
-										setSecret(generateServerSecret())
-									}
+									onClick={populateGeneratedSecret}
 									className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
 								>
 									<KeyRoundIcon className="size-3" />
@@ -655,12 +667,14 @@ export function RemoteAgentServerPicker({
 								size="sm"
 								className="h-6 gap-1 px-2 text-[11px]"
 								onClick={async () => {
+									const tokenToUse =
+										secret.length >= 32
+											? secret
+											: populateGeneratedSecret();
+									if (!tokenToUse) {
+										return;
+									}
 									try {
-										let tokenToUse = secret;
-										if (tokenToUse.length < 32) {
-											tokenToUse = generateServerSecret();
-											setSecret(tokenToUse);
-										}
 										const cmd =
 											scope === "TEAM"
 												? `docker run -d --name fabric-agents-server -p 9100:9100 -e FABRIC_SERVER_TOKEN="${tokenToUse}" ghcr.io/fabric-pro/fabric-agent-server:latest`

@@ -158,6 +158,34 @@ describe("AI SDK LLM telemetry middleware", () => {
 		);
 	});
 
+	it("records usage from a finish chunk that is the stream's only error signal", async () => {
+		const source = new ReadableStream({
+			start(controller) {
+				controller.enqueue({
+					type: "finish",
+					finishReason: { unified: "error" },
+					usage: { inputTokens: 8, outputTokens: 3 },
+				});
+				controller.close();
+			},
+		});
+		const result = await middleware().wrapStream({
+			doStream: vi.fn().mockResolvedValue({ stream: source }),
+		});
+		for await (const _chunk of result.stream) {
+			// Drain the provider stream.
+		}
+		expect(
+			exporter.getFinishedSpans().map((span) => span.attributes),
+		).toEqual([
+			expect.objectContaining({
+				"llm.outcome": "error",
+				"gen_ai.usage.input_tokens": 8,
+				"gen_ai.usage.output_tokens": 3,
+			}),
+		]);
+	});
+
 	it("returns the provider result if telemetry cannot acquire its stream", async () => {
 		const source = new ReadableStream({
 			start(controller) {

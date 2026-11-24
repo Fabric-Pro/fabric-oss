@@ -23,6 +23,7 @@ const OFF: GsRuntimeGates = {
 	parlumeMeetings: false,
 	credentialManager: false,
 	reportSuite: false,
+	cloudDriveFolders: false,
 };
 const ON: GsRuntimeGates = {
 	publishingSuite: true,
@@ -32,6 +33,7 @@ const ON: GsRuntimeGates = {
 	parlumeMeetings: false,
 	credentialManager: false,
 	reportSuite: false,
+	cloudDriveFolders: false,
 };
 
 describe("Get Started — Publishing Suite runtime gate", () => {

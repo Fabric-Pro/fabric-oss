@@ -44,6 +44,7 @@ const mocks = vi.hoisted(() => ({
 	emitContextChange: vi.fn(),
 	upsertSyncedContext: vi.fn(),
 	findConfidentialTranscriptContextIds: vi.fn(),
+	resolveInheritedSourceGuidance: vi.fn(),
 }));
 
 // The body reader is shared with the chat engines and runs for real here; only
@@ -66,9 +67,11 @@ vi.mock("@repo/database", async () => ({
 	findConfidentialTranscriptContextIds:
 		mocks.findConfidentialTranscriptContextIds,
 	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
+	isOrganizationLive: vi.fn().mockResolvedValue(true),
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	listProjectContextSummaries: mocks.listProjectContextSummaries,
 	getContextById: mocks.getContextById,
+	resolveInheritedSourceGuidance: mocks.resolveInheritedSourceGuidance,
 	getCrawledUrlSourceMarkdown: mocks.getCrawledUrlSourceMarkdown,
 	readProjectContextBodyPage: (
 		await vi.importActual<
@@ -199,6 +202,7 @@ function metadataRow(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.findConfidentialTranscriptContextIds.mockResolvedValue(new Set());
+	mocks.resolveInheritedSourceGuidance.mockResolvedValue(new Map());
 	mocks.getProjectAccessContext.mockResolvedValue({
 		organizationId: "org-1",
 	});
@@ -1061,6 +1065,128 @@ describe("the editable fields are readable, so a caller can fill 'expected'", ()
 			aiInstructions: "Use as the source of truth.",
 			metadataUpdatedAt: "2026-09-20T08:00:00.000Z",
 			metadataUpdatedByUserId: "user-2",
+		});
+	});
+});
+
+describe("a document-folder file's inherited guidance is reported apart from its own", () => {
+	const folderFile = {
+		metadata: { provider: "sharepoint-documents" },
+		sourceType: null,
+		aiInstructions: null,
+	};
+
+	it("returns the folder's description in its own field from the single read", async () => {
+		mocks.getContextById.mockResolvedValue(transcriptRow(folderFile));
+		mocks.resolveInheritedSourceGuidance.mockResolvedValue(
+			new Map([["ctx-1", "Signed case studies"]]),
+		);
+
+		const body = payload(
+			await executePlatformTool(
+				"fabric_get_project_context",
+				{ contextId: "ctx-1" },
+				session,
+			),
+		);
+
+		expect(body).toMatchObject({
+			aiInstructions: null,
+			inheritedSourceGuidance: "Signed case studies",
+		});
+		expect(mocks.resolveInheritedSourceGuidance).toHaveBeenCalledTimes(1);
+		expect(
+			mocks.resolveInheritedSourceGuidance.mock.calls[0][0].projectId,
+		).toBe("proj-1");
+	});
+
+	it("returns it from the list, one lookup for the page", async () => {
+		const summary = {
+			type: "DOCUMENT",
+			sourceTitle: "case-study.docx",
+			originalFilename: "case-study.docx",
+			mimeType: null,
+			fileSize: null,
+			sourceUrl: null,
+			extractionStatus: "COMPLETED",
+			urlScope: null,
+			metadataUpdatedAt: null,
+			metadataUpdatedByUserId: null,
+			createdAt: new Date("2026-08-01T09:00:00Z"),
+			updatedAt: new Date("2026-08-01T09:00:00Z"),
+			hasStoredFile: true,
+			hasContent: true,
+		};
+		mocks.listProjectContextSummaries.mockResolvedValue({
+			contexts: [
+				{ ...summary, ...folderFile, id: "ctx-1" },
+				{
+					...summary,
+					...folderFile,
+					id: "ctx-2",
+					aiInstructions: "Only the 2026 pricing applies",
+				},
+			],
+			total: 2,
+			hasMore: false,
+			excludedCodeContexts: 0,
+		});
+		mocks.resolveInheritedSourceGuidance.mockResolvedValue(
+			new Map([["ctx-1", "Signed case studies"]]),
+		);
+
+		const body = payload(
+			await executePlatformTool(
+				"fabric_list_project_contexts",
+				{ projectId: "proj-1" },
+				session,
+			),
+		);
+
+		expect(
+			body.contexts.map(
+				(ctx: {
+					aiInstructions: string | null;
+					inheritedSourceGuidance: string | null;
+				}) => [ctx.aiInstructions, ctx.inheritedSourceGuidance],
+			),
+		).toEqual([
+			[null, "Signed case studies"],
+			["Only the 2026 pricing applies", null],
+		]);
+		expect(mocks.resolveInheritedSourceGuidance).toHaveBeenCalledTimes(1);
+	});
+
+	it("lets the read's own values serve as an update's 'expected'", async () => {
+		mocks.getContextById.mockResolvedValue(transcriptRow(folderFile));
+		mocks.resolveInheritedSourceGuidance.mockResolvedValue(
+			new Map([["ctx-1", "Signed case studies"]]),
+		);
+		const read = payload(
+			await executePlatformTool(
+				"fabric_get_project_context",
+				{ contextId: "ctx-1" },
+				session,
+			),
+		);
+
+		const result = await executePlatformTool(
+			"fabric_update_project_context",
+			{
+				contextId: "ctx-1",
+				projectId: "proj-1",
+				sourceType: "Case study",
+				expected: {
+					sourceType: read.sourceType,
+					aiInstructions: read.aiInstructions,
+				},
+			},
+			session,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(mocks.updateContextMetadata.mock.calls[0][4]).toEqual({
+			expected: { sourceType: null, aiInstructions: null },
 		});
 	});
 });

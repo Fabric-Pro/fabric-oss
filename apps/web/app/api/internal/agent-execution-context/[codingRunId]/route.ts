@@ -10,7 +10,7 @@
  */
 
 import { createHash, timingSafeEqual } from "node:crypto";
-import { db, resolveModel } from "@repo/database";
+import { db, resolveModel, withInheritedSourceGuidance } from "@repo/database";
 import { DEFAULT_FABRIC_AI_MODEL } from "@repo/database/prisma/ai-model-catalog";
 import { contextMetaHeader } from "@repo/rag";
 import { type NextRequest, NextResponse } from "next/server";
@@ -190,8 +190,10 @@ export async function GET(
 				},
 			},
 			select: {
+				id: true,
 				content: true,
 				type: true,
+				metadata: true,
 				sourceTitle: true,
 				sourceType: true,
 				aiInstructions: true,
@@ -212,16 +214,26 @@ export async function GET(
 			return { ctx, score };
 		});
 
-		scored
+		const selected = scored
 			.filter(({ score }) => score > 0)
 			.sort((a, b) => b.score - a.score)
 			.slice(0, 5)
-			.forEach(({ ctx }) => {
-				ragSnippets.push({
-					text: `${contextMetaHeader(ctx)}${ctx.content.slice(0, 1500)}`,
-					source: ctx.sourceTitle ?? ctx.type,
-				});
+			.map(({ ctx }) => ctx);
+		// A document-folder file without guidance of its own takes its
+		// folder's description.
+		const withGuidance = await withInheritedSourceGuidance({
+			projectId: project.id,
+			rows: selected,
+		});
+		for (const ctx of withGuidance) {
+			ragSnippets.push({
+				text: `${contextMetaHeader({
+					sourceType: ctx.sourceType,
+					aiInstructions: ctx.aiInstructions,
+				})}${ctx.content.slice(0, 1500)}`,
+				source: ctx.sourceTitle ?? ctx.type,
 			});
+		}
 	}
 
 	// Resolve AI model from user/org settings, falling back to Claude Sonnet.

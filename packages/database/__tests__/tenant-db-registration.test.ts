@@ -576,3 +576,38 @@ describe("Living Memory decision extraction tenant registration", () => {
 		expect(model).toMatch(/^\s*@@unique\(\[contextId, contentHash\]\)/m);
 	});
 });
+
+/**
+ * Document folders and the files seen in them carry `organizationId`, `userId`
+ * and `projectId`; unregistered, they fail OPEN on the tenant path. Their
+ * organization is required, so no row can fall to the personal arm.
+ */
+describe("Document folder tables are registered on the tenant path", () => {
+	it.each([
+		["ProjectDocumentFolder", "project_document_folder"],
+		["ProjectDocumentFolderFile", "project_document_folder_file"],
+	])("%s is user-owned and project-scoped", (model, table) => {
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).toContain(model);
+		expect(
+			setMembers(tenantDb, "const ORG_ONLY_TABLES = new Set(["),
+		).not.toContain(model);
+		expect(tenantDb).toMatch(new RegExp(`\\b${model}: "projectId",`));
+		expect(rls).toContain(`{ name: "${table}", policy: "user_owned" }`);
+	});
+
+	it.each([
+		["ProjectDocumentFolder", "project_document_folder"],
+		["ProjectDocumentFolderFile", "project_document_folder_file"],
+	])("%s requires an organization", (model, table) => {
+		const body = schema.slice(schema.indexOf(`model ${model} {`));
+		const definition = body.slice(0, body.indexOf("\n}"));
+
+		expect(definition).toContain(`@@map("${table}")`);
+		expect(definition).toMatch(/^\s*organizationId\s+String\s*$/m);
+		expect(definition).toMatch(
+			/^\s*organization\s+Organization\s+@relation/m,
+		);
+	});
+});

@@ -294,6 +294,15 @@ export const AUDIT_ACTIONS = [
 	"project.meeting.sync_stopped",
 	"project.meeting.deleted",
 	"project.meeting.restored",
+	// Document folder lifecycle (#2808). A connected folder feeds a project's
+	// context with its reader's Microsoft access, and a confirmed removal
+	// deletes context in bulk, so who connected, changed the reader, rewrote
+	// the guidance, released held removals or disconnected needs a record.
+	"project.document_folder.connected",
+	"project.document_folder.reconnected",
+	"project.document_folder.updated",
+	"project.document_folder.removals_confirmed",
+	"project.document_folder.disconnected",
 	"project.parlume.session_started",
 	"project.parlume.action_confirmed",
 	// The confirmed change ran: Parlume, as an agent acting for the member

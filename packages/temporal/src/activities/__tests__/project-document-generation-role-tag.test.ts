@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	withInheritedSourceGuidance: async ({ rows }: { rows: unknown[] }) => rows,
 	db: {
 		projectContext: {
 			findMany: (...args: unknown[]) => mocks.dbContextFindMany(...args),

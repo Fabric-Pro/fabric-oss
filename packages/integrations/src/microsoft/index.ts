@@ -32,7 +32,17 @@ import {
 import sharp from "sharp";
 import type { PendingAttachmentRef } from "../shared/attachment-types";
 import { TEAMS_TOOL_LIMITS } from "./config/limits";
-import { downloadDriveItem, listDriveFolderChildren } from "./drive-folder";
+import {
+	type DriveReadProgress,
+	downloadDriveItem,
+	getDriveItemDetails,
+	listDriveFolderChildren,
+	listDriveFolderTree,
+	listFollowedSharePointSites,
+	listSharePointSiteDrives,
+	lookupDriveItemsInFolder,
+	searchSharePointSites,
+} from "./drive-folder";
 import { extractHostedContentRefsFromHtml } from "./hosted-content";
 import { executeParlumeChannelOperation } from "./parlume-channel";
 import { assertParlumeChannelSendAccess } from "./parlume-channel-access";
@@ -51,7 +61,17 @@ export {
 	isMicrosoftAccessDeniedError,
 	isMicrosoftNotConnectedError,
 } from "./connection-errors";
-export type { DriveFolderItem, DriveItemDownload } from "./drive-folder";
+export {
+	type DriveFolderItem,
+	type DriveItemDetailsResult,
+	type DriveItemDownload,
+	type DriveItemPlacement,
+	type DriveTreeListing,
+	driveItemPath,
+	type SharePointDriveList,
+	type SharePointSite,
+	type SharePointSiteList,
+} from "./drive-folder";
 // Re-export the chat-thread image-attachments helpers from the Microsoft barrel
 // so downstream packages can `import { downloadTeamsHostedContent } from
 // "@repo/integrations/microsoft"` without reaching into the file directly.
@@ -722,8 +742,13 @@ export async function executeMicrosoftTeamsTool(
 	organizationId?: string,
 	integrationId?: string,
 	// Set only by code, never from a tool call's arguments: agents pass their
-	// arguments through, and invitee addresses must not reach them.
-	options: { inviteeEmailDomain?: string } = {},
+	// arguments through, and invitee addresses must not reach them. A folder
+	// read's activity heartbeats from `onProgress`, called after every Graph
+	// request of a tree read or an item lookup.
+	options: {
+		inviteeEmailDomain?: string;
+		onProgress?: (progress: DriveReadProgress) => void;
+	} = {},
 ): Promise<unknown> {
 	// Recheck access when a workflow pins a shared connection; refresh updates that row only.
 	const integration = integrationId
@@ -888,7 +913,10 @@ export async function executeMicrosoftTeamsTool(
 			}
 			return microsoftFetch(requestUrl, {
 				...options,
-				redirect: "error",
+				// A followed redirect would carry the bearer token to another
+				// host. "manual" hands the redirect back unfollowed (a file's
+				// /content download reads it); anything else refuses it.
+				redirect: options.redirect === "manual" ? "manual" : "error",
 				headers: {
 					Authorization: `Bearer ${token}`,
 					"Content-Type": "application/json",
@@ -2907,6 +2935,96 @@ export async function executeMicrosoftTeamsTool(
 				driveId,
 				itemId,
 				maxBytes,
+			});
+		}
+
+		// ========== OneDrive and SharePoint document folders ==========
+		// Reads only, and not advertised to the assistant either: they serve
+		// the document-folder picker and sync. See ./drive-folder.ts.
+
+		case "list_drive_tree": {
+			const driveId = args.driveId as string;
+			const itemId = args.itemId as string;
+			if (!driveId || !itemId) {
+				throw new Error(
+					"driveId and itemId are required for list_drive_tree.",
+				);
+			}
+			return await listDriveFolderTree({
+				graphFetch: graphRequest,
+				graphBaseUrl,
+				driveId,
+				itemId,
+				onProgress: options.onProgress,
+			});
+		}
+
+		case "get_drive_item": {
+			const driveId = args.driveId as string;
+			const itemId = args.itemId as string;
+			if (!driveId || !itemId) {
+				throw new Error(
+					"driveId and itemId are required for get_drive_item.",
+				);
+			}
+			return await getDriveItemDetails({
+				graphFetch: graphRequest,
+				graphBaseUrl,
+				driveId,
+				itemId,
+			});
+		}
+
+		case "lookup_drive_items": {
+			const driveId = args.driveId as string;
+			const folderItemId = args.folderItemId as string;
+			const itemIds = args.itemIds;
+			if (
+				!driveId ||
+				!folderItemId ||
+				!Array.isArray(itemIds) ||
+				!itemIds.every((id) => typeof id === "string" && id)
+			) {
+				throw new Error(
+					"driveId, folderItemId and itemIds are required for lookup_drive_items.",
+				);
+			}
+			return await lookupDriveItemsInFolder({
+				graphFetch: graphRequest,
+				graphBaseUrl,
+				driveId,
+				folderItemId,
+				itemIds,
+				onProgress: options.onProgress,
+			});
+		}
+
+		case "search_sharepoint_sites": {
+			return await searchSharePointSites({
+				graphFetch: graphRequest,
+				graphBaseUrl,
+				query: typeof args.query === "string" ? args.query : "",
+			});
+		}
+
+		case "list_followed_sharepoint_sites": {
+			return await listFollowedSharePointSites({
+				graphFetch: graphRequest,
+				graphBaseUrl,
+			});
+		}
+
+		case "list_sharepoint_site_drives": {
+			const siteId = args.siteId as string;
+			if (!siteId) {
+				throw new Error(
+					"siteId is required for list_sharepoint_site_drives.",
+				);
+			}
+			return await listSharePointSiteDrives({
+				graphFetch: graphRequest,
+				graphBaseUrl,
+				siteId,
 			});
 		}
 

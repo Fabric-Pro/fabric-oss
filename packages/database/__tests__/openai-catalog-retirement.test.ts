@@ -8,6 +8,8 @@ import {
 } from "../prisma/ai-model-catalog";
 
 const replacements: Record<string, string> = {
+	"dall-e-3": "gpt-image-2.6-sunburst",
+	"gpt-image-2": "gpt-image-2.6-sunburst",
 	"gpt-4o": "gpt-5.5",
 	"gpt-4o-mini": "gpt-5.5",
 	"gpt-5-nano": "gpt-5.5",
@@ -39,7 +41,7 @@ describe("OpenAI catalog retirement", () => {
 				providerModelId: "openai/gpt-6.1-sol",
 			},
 			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6.1-sol" },
-			// ChatGPT plans serve it too, and it is their default (Fizzy #2770).
+			{ provider: "AZURE_AI_FOUNDRY", providerModelId: "gpt-6.1-sol" },
 			{ provider: "OPENAI_CHATGPT_PLAN", providerModelId: "gpt-6.1-sol" },
 		]);
 		for (const id of ["gpt-6.1-sol", "openai/gpt-6.1-sol"]) {
@@ -49,6 +51,72 @@ describe("OpenAI catalog retirement", () => {
 				toolCalling: true,
 			});
 		}
+	});
+
+	it.each([
+		["gpt-6.2-astra", 8, 40],
+		["gpt-6.2-sol", 2, 10],
+	] as const)(
+		"catalogs %s with published limits, prices and routes",
+		(id, input, output) => {
+			const model = MODELS.find((m) => m.canonicalName === id);
+			expect(model).toMatchObject({
+				contextWindow: 1050000,
+				maxOutputTokens: 128000,
+				inputCostPer1M: input,
+				outputCostPer1M: output,
+			});
+			expect(model?.providerMappings).toEqual([
+				{ provider: "OPENAI_DIRECT", providerModelId: id },
+				{ provider: "VERCEL_GATEWAY", providerModelId: `openai/${id}` },
+				{ provider: "OPENROUTER", providerModelId: `openai/${id}` },
+				{ provider: "AZURE_AI_FOUNDRY", providerModelId: id },
+				{ provider: "OPENAI_CHATGPT_PLAN", providerModelId: id },
+			]);
+			for (const slug of [id, `openai/${id}`]) {
+				expect(getModelCapabilitiesFromCatalog(slug)).toMatchObject({
+					vision: true,
+					reasoning: true,
+					toolCalling: true,
+				});
+			}
+		},
+	);
+
+	it("maps GPT-6.1 Terra to Azure AI Foundry", () => {
+		expect(
+			MODELS.find((m) => m.canonicalName === "gpt-6.1-terra")
+				?.providerMappings,
+		).toContainEqual({
+			provider: "AZURE_AI_FOUNDRY",
+			providerModelId: "gpt-6.1-terra",
+		});
+	});
+
+	it("keeps Whisper active across providers and catalogs GPT-Transcribe", () => {
+		const transcribe = MODELS.find(
+			(m) => m.canonicalName === "gpt-transcribe",
+		);
+		expect(transcribe?.capabilities).toEqual(["AUDIO"]);
+		expect(transcribe?.deprecation).toBeUndefined();
+		expect(transcribe?.providerMappings).toEqual([
+			{ provider: "OPENAI_DIRECT", providerModelId: "gpt-transcribe" },
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/gpt-transcribe",
+			},
+		]);
+		const whisper = MODELS.find((m) => m.canonicalName === "whisper-1");
+		expect(whisper?.capabilities).toEqual(["AUDIO"]);
+		expect(whisper?.deprecation).toBeUndefined();
+		expect(whisper?.providerMappings).toEqual([
+			{ provider: "OPENAI_DIRECT", providerModelId: "whisper-1" },
+			{ provider: "VERCEL_GATEWAY", providerModelId: "openai/whisper-1" },
+			{ provider: "GROQ", providerModelId: "whisper-large-v3" },
+		]);
+		expect(
+			MODELS.find((m) => m.canonicalName === "whisper-large-v3"),
+		).toBeUndefined();
 	});
 
 	it.each(Object.entries(replacements))(
@@ -82,8 +150,8 @@ describe("OpenAI catalog retirement", () => {
 				"gpt-oss-120b",
 				"gpt-oss-20b",
 				"text-embedding-3-small",
-				"dall-e-3",
-				"whisper-1",
+				"gpt-image-2.6-sunburst",
+				"gpt-transcribe",
 			]),
 		);
 		for (const model of retained) {

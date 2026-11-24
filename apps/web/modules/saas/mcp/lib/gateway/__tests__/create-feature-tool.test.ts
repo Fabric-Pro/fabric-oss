@@ -49,6 +49,8 @@ vi.mock("@repo/database", () => {
 		}
 	}
 	return {
+		// The gateway project gates refuse an organization being deleted.
+		isOrganizationLive: async () => true,
 		db: {
 			project: {
 				findUnique: mocks.projectFindUnique,

@@ -43,6 +43,8 @@ const OPENAI_DIRECT_OFFICIAL_MODELS = new Set([
 	// GPT-5 series
 	"gpt-5.5",
 	"gpt-6-astra",
+	"gpt-6.2-astra",
+	"gpt-6.2-sol",
 	"gpt-6-sol",
 	"gpt-6.1-sol",
 	"gpt-6.1-terra",
@@ -80,6 +82,7 @@ const OPENAI_DIRECT_OFFICIAL_MODELS = new Set([
 
 	// Audio
 	"whisper-1",
+	"gpt-transcribe",
 	"tts-1",
 	"tts-1-hd",
 
@@ -214,6 +217,8 @@ const VERCEL_GATEWAY_OFFICIAL_MODELS = new Set([
 	// OpenAI models (from Vercel dashboard)
 	"openai/gpt-5.5",
 	"openai/gpt-6-astra",
+	"openai/gpt-6.2-astra",
+	"openai/gpt-6.2-sol",
 	"openai/gpt-6-sol",
 	"openai/gpt-6.1-sol",
 	"openai/gpt-6.1-terra",
@@ -240,6 +245,7 @@ const VERCEL_GATEWAY_OFFICIAL_MODELS = new Set([
 	"openai/text-embedding-3-large",
 	"openai/text-embedding-ada-002",
 	"openai/whisper-1",
+	"openai/gpt-transcribe",
 	"openai/dall-e-3",
 	"openai/gpt-image-2",
 	"openai/gpt-image-2.6-sunburst",
@@ -303,6 +309,8 @@ const OPENROUTER_OFFICIAL_MODELS = new Set([
 	// OpenAI
 	"openai/gpt-5.5",
 	"openai/gpt-6-astra",
+	"openai/gpt-6.2-astra",
+	"openai/gpt-6.2-sol",
 	"openai/gpt-6-sol",
 	"openai/gpt-6.1-sol",
 	"openai/gpt-6.1-terra",
@@ -534,6 +542,10 @@ const GOOGLE_VERTEX_AI_OFFICIAL_MODELS = new Set([
 const AZURE_AI_FOUNDRY_OFFICIAL_MODELS = new Set([
 	"gpt-5.5",
 	"gpt-6-astra",
+	"gpt-6.2-astra",
+	"gpt-6.2-sol",
+	"gpt-6.1-sol",
+	"gpt-6.1-terra",
 	"gpt-6-sol",
 	"gpt-6-luna",
 	"gpt-5.4",
@@ -634,6 +646,8 @@ const OFFICIAL_MODELS_BY_PROVIDER: Record<AIProvider, Set<string>> = {
 	// A member's own ChatGPT plan: the models its own catalog lists (Fizzy #2939)
 	OPENAI_CHATGPT_PLAN: new Set([
 		"gpt-6-astra",
+		"gpt-6.2-astra",
+		"gpt-6.2-sol",
 		"gpt-5.6-sol",
 		"gpt-5.6-terra",
 		"gpt-5.6-luna",

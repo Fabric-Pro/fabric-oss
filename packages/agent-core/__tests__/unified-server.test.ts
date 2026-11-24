@@ -4087,3 +4087,25 @@ it.each(["/runs/stream", "/"])(
 		}
 	},
 );
+
+it("generates an unpredictable ID for a new stored thread", async () => {
+	const app = createTestApp([]);
+	const headers = {
+		"Content-Type": "application/json",
+		"X-Forwarded-For": "192.0.2.96",
+	};
+	const metadata = { label: "example-thread" };
+	const response = await app.request("/threads", {
+		method: "POST",
+		headers,
+		body: JSON.stringify({ metadata }),
+	});
+
+	expect(response.status).toBe(200);
+	const { thread_id } = await response.json();
+	expect(thread_id).toMatch(/^thread_\d+_[0-9a-f]{32}$/);
+
+	const stored = await app.request(`/threads/${thread_id}`, { headers });
+	expect(stored.status).toBe(200);
+	expect(await stored.json()).toMatchObject({ thread_id, metadata });
+});

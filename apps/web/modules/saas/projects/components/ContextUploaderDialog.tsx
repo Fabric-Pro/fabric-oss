@@ -38,6 +38,7 @@ import {
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import {
+	CloudIcon,
 	FileIcon,
 	LinkIcon,
 	LoaderIcon,
@@ -47,10 +48,11 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { isConfluenceMcpConfig } from "../lib/confluence-mcp-config";
 import { DOCUMENT_TAG_OPTIONS } from "../lib/document-tag-options";
 import { ConfluenceResourceBrowser } from "./ConfluenceResourceBrowser";
+import { ConnectDocumentFolderDialog } from "./document-folders/ConnectDocumentFolderDialog";
 import { GoogleDocsSelectorDialog } from "./GoogleDocsSelectorDialog";
 import { IntegrationPageBrowser } from "./IntegrationPageBrowser";
 import { NotionResourceBrowser } from "./NotionResourceBrowser";
@@ -150,6 +152,7 @@ const allTabs = [
 	{ id: "notion", label: "Notion", icon: NotionIcon },
 	{ id: "confluence", label: "Confluence", icon: ConfluenceIcon },
 	{ id: "google-docs", label: "Google Docs", icon: GoogleDriveIcon },
+	{ id: "cloud-drive", label: "OneDrive / SharePoint", icon: CloudIcon },
 ] as const;
 
 type TabId = (typeof allTabs)[number]["id"];
@@ -164,19 +167,32 @@ export function ContextUploaderDialog({
 	const t = useTranslations("tooltips.contextSources");
 	const queryClient = useQueryClient();
 
+	// OneDrive and SharePoint document folders (Fizzy #2808), per
+	// organization. Not offered in the project wizard: a draft project has no
+	// Context tab yet to follow the folders' reads on.
+	const cloudDriveFolders =
+		useFeatureFlag("CLOUD_DRIVE_FOLDERS") && surface === "post-creation";
+
 	// Visible tab set — drop the Google Docs tab when its kill-switch is off.
 	// Computed each render so a flag flip (env-driven, build-time today) is
 	// picked up without further plumbing.
 	const tabs = useMemo(
 		() =>
-			isMonitoringFeatureEnabled("feature-google-docs-context")
-				? allTabs
-				: allTabs.filter((tab) => tab.id !== "google-docs"),
-		[],
+			allTabs.filter(
+				(tab) =>
+					(tab.id !== "google-docs" ||
+						isMonitoringFeatureEnabled(
+							"feature-google-docs-context",
+						)) &&
+					(tab.id !== "cloud-drive" || cloudDriveFolders),
+			),
+		[cloudDriveFolders],
 	);
 
 	const [activeTab, setActiveTab] = useState<TabId>("file");
 	const [googleDocsDialogOpen, setGoogleDocsDialogOpen] = useState(false);
+	const [cloudDrivePickerOpen, setCloudDrivePickerOpen] = useState(false);
+	const cloudDriveTrigger = useRef<HTMLButtonElement>(null);
 
 	// "Tag as Document" — project-only. Applies to every queued file (per
 	// spec §7.1 — multi-file is "drop a batch", not a per-file editor), and
@@ -778,6 +794,42 @@ export function ContextUploaderDialog({
 						</div>
 					)}
 
+					{/* OneDrive / SharePoint tab — opens the folder picker */}
+					{activeTab === "cloud-drive" && cloudDriveFolders && (
+						<div
+							className="flex flex-col items-center justify-center py-8 motion-safe:animate-stagger"
+							role="tabpanel"
+							id="context-tabpanel-cloud-drive"
+							aria-labelledby="context-tab-cloud-drive"
+						>
+							<div className="mb-4 rounded-lg border border-border bg-card p-4 text-primary">
+								<CloudIcon
+									aria-hidden="true"
+									className="size-8"
+								/>
+							</div>
+							<h3 className="mb-2 font-medium text-foreground">
+								OneDrive and SharePoint folders
+							</h3>
+							<p className="mb-6 max-w-sm text-center text-muted-foreground text-sm">
+								Connect folders from your OneDrive or
+								SharePoint. Their files are imported as project
+								context and kept in step with each folder.
+							</p>
+							<Button
+								ref={cloudDriveTrigger}
+								onClick={() => setCloudDrivePickerOpen(true)}
+								className="gap-2"
+							>
+								<CloudIcon
+									aria-hidden="true"
+									className="size-4"
+								/>
+								Choose folders
+							</Button>
+						</div>
+					)}
+
 					{/* Notion tab */}
 					{activeTab === "notion" && (
 						<div
@@ -1071,6 +1123,19 @@ export function ContextUploaderDialog({
 					onOpenChange(false);
 				}}
 			/>
+
+			{/* OneDrive / SharePoint folder picker. Mounted only while open,
+			    so the closed dialog reads nothing. */}
+			{cloudDriveFolders && cloudDrivePickerOpen && (
+				<ConnectDocumentFolderDialog
+					projectId={projectId}
+					organizationId={organizationId ?? null}
+					open
+					onOpenChange={setCloudDrivePickerOpen}
+					returnFocusTo={cloudDriveTrigger}
+					onConnected={() => onOpenChange(false)}
+				/>
+			)}
 
 			{/* Notion resource browser dialog */}
 			<NotionResourceBrowser

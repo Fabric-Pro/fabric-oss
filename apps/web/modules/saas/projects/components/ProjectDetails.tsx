@@ -155,6 +155,16 @@ const ContextMeetingPlaceholders = dynamic(
 	{ loading: () => null, ssr: false },
 );
 
+// Fizzy #2808. Renders nothing while the feature is off for the project's
+// organization, or while no document folder is connected.
+const DocumentFolderList = dynamic(
+	() =>
+		import("./document-folders/DocumentFolderList").then(
+			(m) => m.DocumentFolderList,
+		),
+	{ loading: () => null, ssr: false },
+);
+
 const DiagramsList = dynamic(
 	() => import("./DiagramsList").then((m) => m.DiagramsList),
 	{ loading: () => <TabContentSkeleton />, ssr: false },
@@ -535,6 +545,10 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 	// remembered and the default applied in an effect below. A stored tab or a
 	// deep link is the user's choice and is never overridden.
 	const initialTabSourceRef = useRef<"default" | "stored">("default");
+	// Reported by the Document folders section, for the context list's delete
+	// note (#2808).
+	const [connectedDocumentFolderIds, setConnectedDocumentFolderIds] =
+		useState<readonly string[]>([]);
 	// Raw selection (sessionStorage / deep links may name any known tab); see
 	// `activeTab` further down for the viewer-resolved value.
 	const [connectRepositoryOpen, setConnectRepositoryOpen] = useState(false);
@@ -1642,6 +1656,18 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 										projectId={projectId}
 										organizationId={organizationId ?? null}
 									/>
+								}
+								documentFolders={
+									<DocumentFolderList
+										projectId={projectId}
+										organizationId={organizationId ?? null}
+										onConnectedFolderIdsChange={
+											setConnectedDocumentFolderIds
+										}
+									/>
+								}
+								connectedDocumentFolderIds={
+									connectedDocumentFolderIds
 								}
 							/>
 						)}

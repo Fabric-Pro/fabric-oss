@@ -449,6 +449,15 @@ export const FEATURE_FLAG_REGISTRY = {
 		orgScopable: true,
 		note: "Gates the suite's user interface, and on the server: applying an organization's and a project's defaults to a new report, including ones already stored; saving to a template and publishing a template; one-click generation, sample reports and AI parameter suggestions; the checks that refuse a run before it starts; and an organization admin's reach to projects they hold no row on. Off, an organization creates reports as it did before. The report permission checks (system and public templates limited to platform admins; report changes limited to the owner, organization admins and owners, platform admins and project editors) apply with the flag off too, and so do the improvements to how a report's worker gathers its data, which reach every organization. Reports created on a project while it was on stay attached to that project when it is turned off, and keep the prompts and values they copied from its defaults.",
 	},
+	CLOUD_DRIVE_FOLDERS: {
+		label: "Cloud drive document folders",
+		description:
+			"Lets a project editor connect OneDrive and SharePoint folders, each with a description, whose files Fabric imports as project context and keeps in step with the drive.",
+		envVar: "FABRIC_FEATURE_CLOUD_DRIVE_FOLDERS",
+		default: false,
+		orgScopable: true,
+		note: "Fizzy #2808. One gate for the document folder entry points and their Get Started copy, the document folder procedures (which answer NOT_FOUND while it is off) and the document folder sync. Enable an organization only after the Temporal worker that registers documentFolderSyncWorkflow is live. Off, the sync's listing activity reports that nothing is due, so the workflow waits rather than ends, and turning it back on resumes reads; connected folders and imported files are kept. Transcript folders are unaffected. Resolve it in API code and activities, never in workflow code.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;

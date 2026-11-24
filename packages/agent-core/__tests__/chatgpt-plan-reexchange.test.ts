@@ -8,8 +8,22 @@
  */
 
 import { HumanMessage } from "@langchain/core/messages";
+import { trace } from "@opentelemetry/api";
+import {
+	BasicTracerProvider,
+	InMemorySpanExporter,
+	SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
 import { getCachedKey, setCachedKey } from "@repo/ai-token";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	onTestFinished,
+	vi,
+} from "vitest";
 import {
 	__resetChatGptPlanExchanges,
 	rememberChatGptPlanExchange,
@@ -141,6 +155,16 @@ afterEach(() => {
 
 describe("plan model — a spent plan", () => {
 	it("asks once for another plan's token, skipping the spent one, and sends the call again", async () => {
+		trace.disable();
+		const exporter = new InMemorySpanExporter();
+		const tracer = new BasicTracerProvider({
+			spanProcessors: [new SimpleSpanProcessor(exporter)],
+		});
+		trace.setGlobalTracerProvider(tracer);
+		onTestFinished(async () => {
+			await tracer.shutdown();
+			trace.disable();
+		});
 		const { openaiCalls, exchangeBodies } = simulate(
 			{ "token-A": spent, "token-B": () => answered("From B") },
 			() => exchanged("token-B", "org:acc-B"),
@@ -150,6 +174,17 @@ describe("plan model — a spent plan", () => {
 		expect(reply.text).toBe("From B");
 		expect(openaiCalls).toEqual(["token-A", "token-B"]);
 		expect(exchangeBodies).toEqual([{ excludeSources: ["org:acc-A"] }]);
+		expect(
+			exporter.getFinishedSpans().map((span) => span.attributes),
+		).toEqual([
+			{
+				"gen_ai.system": "OPENAI_CHATGPT_PLAN",
+				"gen_ai.request.model": "gpt-6-astra",
+				"gen_ai.usage.input_tokens": 3,
+				"gen_ai.usage.output_tokens": 2,
+				"llm.outcome": "success",
+			},
+		]);
 	});
 
 	it("reports the spent plan to Fabric before asking for another (D1)", async () => {

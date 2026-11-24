@@ -37,8 +37,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	resolveInheritedSourceGuidance: async () => new Map(),
 	findConfidentialTranscriptContextIds: async () => new Set(),
 	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
+	isOrganizationLive: vi.fn().mockResolvedValue(true),
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	getProjectSummaryById: mocks.getProjectSummaryById,
 	getInstructionSummariesForProjects:
