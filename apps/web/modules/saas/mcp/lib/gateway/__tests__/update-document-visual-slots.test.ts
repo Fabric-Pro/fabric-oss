@@ -53,6 +53,7 @@ vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
 
 vi.mock("@repo/database", () => ({
 	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
+	isOrganizationLive: vi.fn().mockResolvedValue(true),
 	resolveProjectAccess: mocks.resolveProjectAccess,
 	hasPermission: mocks.hasPermission,
 	Permissions: {

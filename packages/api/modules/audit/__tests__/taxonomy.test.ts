@@ -387,7 +387,12 @@ describe("audit.taxonomy handler", () => {
 		// + 2 project.parlume.{suggestion_spoken, suggestion_dismissed} (a
 		// member had Parlume say a suggestion in the meeting, or dismissed
 		// one, from the Parlume page; ids only, never the suggestion) = 283.
-		expect(result.actions).toHaveLength(283);
+		// + 5 project.document_folder.{connected, reconnected, updated,
+		// removals_confirmed, disconnected} (a OneDrive or SharePoint folder
+		// connected as a project document folder, its reader changed, its
+		// description edited, held removals confirmed, or the folder
+		// disconnected; ids and counts only, never the description) = 288.
+		expect(result.actions).toHaveLength(288);
 		expect(result.actions).toContain(
 			"project.meeting_digest.confidentiality_changed",
 		);

@@ -1,5 +1,11 @@
 # @fabricorg/integrations-runtime
 
+## 0.1.4
+
+### Patch Changes
+
+- 706772d: The CLI, SDK, MCP SDK and integration packages now ship READMEs covering installation, authentication and their public interfaces.
+
 ## 0.1.3
 
 ### Patch Changes

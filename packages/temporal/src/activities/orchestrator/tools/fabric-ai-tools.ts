@@ -1359,7 +1359,7 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 					model: {
 						type: "string",
 						description:
-							"Transcription model (whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe)",
+							"Transcription model (gpt-transcribe, whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe)",
 						default: "whisper-1",
 					},
 					split: {

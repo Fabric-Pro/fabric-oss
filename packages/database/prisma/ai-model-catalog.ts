@@ -365,6 +365,43 @@ export const MODELS: ModelSeedData[] = [
 		],
 	},
 	{
+		canonicalName: "gpt-6.2-astra",
+		displayName: "GPT-6.2 Astra",
+		description:
+			"OpenAI's most capable GPT-6 model for frontier reasoning, agentic coding, and long-horizon work",
+		family: "gpt",
+		vendor: "OpenAI",
+		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
+		// Maximum input: 922,000 tokens. OpenAI tool calling requires the Responses API.
+		contextWindow: 1050000,
+		maxOutputTokens: 128000,
+		speedTier: "QUALITY",
+		qualityTier: "PREMIUM",
+		// Cached input: $0.40/1M. Vercel cache writes: $10/1M.
+		inputCostPer1M: 8,
+		outputCostPer1M: 40,
+		suitableForTasks: [
+			"REASONING",
+			"COMPLEX",
+			"CHAT",
+			"TOOL_CALLING",
+			"EVAL",
+		],
+		providerMappings: [
+			{ provider: "OPENAI_DIRECT", providerModelId: "gpt-6.2-astra" },
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/gpt-6.2-astra",
+			},
+			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6.2-astra" },
+			{ provider: "AZURE_AI_FOUNDRY", providerModelId: "gpt-6.2-astra" },
+			{
+				provider: "OPENAI_CHATGPT_PLAN",
+				providerModelId: "gpt-6.2-astra",
+			},
+		],
+	},
+	{
 		canonicalName: "gpt-6-astra",
 		displayName: "GPT-6 Astra",
 		description:
@@ -493,6 +530,40 @@ export const MODELS: ModelSeedData[] = [
 		],
 	},
 	{
+		canonicalName: "gpt-6.2-sol",
+		displayName: "GPT-6.2 Sol",
+		description:
+			"OpenAI's production GPT-6.2 model for agents, coding, and multi-step reasoning at mid-tier cost",
+		family: "gpt",
+		vendor: "OpenAI",
+		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
+		// Maximum input: 922,000 tokens. OpenAI tool calling requires the Responses API.
+		contextWindow: 1050000,
+		maxOutputTokens: 128000,
+		speedTier: "BALANCED",
+		qualityTier: "PREMIUM",
+		// Cached input: $0.10/1M. Vercel cache writes: $2.50/1M.
+		inputCostPer1M: 2,
+		outputCostPer1M: 10,
+		suitableForTasks: [
+			"COMPLEX",
+			"CHAT",
+			"TOOL_CALLING",
+			"REASONING",
+			"EVAL",
+		],
+		providerMappings: [
+			{ provider: "OPENAI_DIRECT", providerModelId: "gpt-6.2-sol" },
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/gpt-6.2-sol",
+			},
+			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6.2-sol" },
+			{ provider: "AZURE_AI_FOUNDRY", providerModelId: "gpt-6.2-sol" },
+			{ provider: "OPENAI_CHATGPT_PLAN", providerModelId: "gpt-6.2-sol" },
+		],
+	},
+	{
 		canonicalName: "gpt-6.1-sol",
 		displayName: "GPT-6.1 Sol",
 		description:
@@ -520,6 +591,7 @@ export const MODELS: ModelSeedData[] = [
 				providerModelId: "openai/gpt-6.1-sol",
 			},
 			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6.1-sol" },
+			{ provider: "AZURE_AI_FOUNDRY", providerModelId: "gpt-6.1-sol" },
 			// Also served by ChatGPT plans (Fizzy #2770); plan pickers label it.
 			{ provider: "OPENAI_CHATGPT_PLAN", providerModelId: "gpt-6.1-sol" },
 		],
@@ -546,6 +618,7 @@ export const MODELS: ModelSeedData[] = [
 				providerModelId: "openai/gpt-6.1-terra",
 			},
 			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6.1-terra" },
+			{ provider: "AZURE_AI_FOUNDRY", providerModelId: "gpt-6.1-terra" },
 			// Also served by ChatGPT plans (Fizzy #2770); plan pickers label it.
 			{
 				provider: "OPENAI_CHATGPT_PLAN",
@@ -2565,6 +2638,7 @@ export const MODELS: ModelSeedData[] = [
 		speedTier: "BALANCED",
 		qualityTier: "PREMIUM",
 		suitableForTasks: ["IMAGE"],
+		deprecation: { replacedBy: "gpt-image-2.6-sunburst" },
 		providerMappings: [
 			{ provider: "OPENAI_DIRECT", providerModelId: "dall-e-3" },
 			{ provider: "VERCEL_GATEWAY", providerModelId: "openai/dall-e-3" },
@@ -2584,6 +2658,7 @@ export const MODELS: ModelSeedData[] = [
 		inputCostPer1M: 5,
 		outputCostPer1M: 30,
 		suitableForTasks: ["IMAGE"],
+		deprecation: { replacedBy: "gpt-image-2.6-sunburst" },
 		providerMappings: [
 			{ provider: "OPENAI_DIRECT", providerModelId: "gpt-image-2" },
 			{
@@ -2744,6 +2819,27 @@ export const MODELS: ModelSeedData[] = [
 			{ provider: "GROQ", providerModelId: "whisper-large-v3" },
 		],
 	},
+	{
+		canonicalName: "gpt-transcribe",
+		displayName: "GPT-Transcribe",
+		description:
+			"OpenAI's speech-to-text model for recorded audio and streamed transcripts",
+		family: "gpt-transcribe",
+		vendor: "OpenAI",
+		capabilities: ["AUDIO"],
+		contextWindow: 0,
+		speedTier: "BALANCED",
+		qualityTier: "STANDARD",
+		// OpenAI bills by duration ($0.0045/minute).
+		suitableForTasks: ["AUDIO"],
+		providerMappings: [
+			{ provider: "OPENAI_DIRECT", providerModelId: "gpt-transcribe" },
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/gpt-transcribe",
+			},
+		],
+	},
 ];
 
 // ============================================================================
@@ -2799,10 +2895,10 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	...createTaskDefaults("COMPLEX", "MEDIUM", {
 		// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 		// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
-		OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
+		OPENAI_CHATGPT_PLAN: "gpt-6.2-sol",
 		DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
 		VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
-		OPENAI_DIRECT: "gpt-6.1-sol",
+		OPENAI_DIRECT: "gpt-6.2-sol",
 		ANTHROPIC_DIRECT: DEFAULT_FABRIC_AI_MODEL,
 		GROQ: "llama-3-3-70b",
 		DEEPSEEK: "deepseek-chat",
@@ -2822,9 +2918,9 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	...createTaskDefaults("REASONING", "MEDIUM", {
 		// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 		// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
-		OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
+		OPENAI_CHATGPT_PLAN: "gpt-6.2-sol",
 		VERCEL_GATEWAY: "claude-opus-5-5",
-		OPENAI_DIRECT: "gpt-6.1-sol",
+		OPENAI_DIRECT: "gpt-6.2-sol",
 		ANTHROPIC_DIRECT: "claude-opus-5-5",
 		GROQ: "deepseek-r1",
 		DEEPSEEK: "deepseek-r1",
@@ -2842,10 +2938,10 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	...createTaskDefaults("CHAT", "MEDIUM", {
 		// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 		// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
-		OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
+		OPENAI_CHATGPT_PLAN: "gpt-6.2-sol",
 		DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
 		VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
-		OPENAI_DIRECT: "gpt-6.1-sol",
+		OPENAI_DIRECT: "gpt-6.2-sol",
 		ANTHROPIC_DIRECT: DEFAULT_FABRIC_AI_MODEL,
 		GROQ: "llama-3-3-70b",
 		DEEPSEEK: "deepseek-chat",
@@ -2868,10 +2964,10 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 		{
 			// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 			// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
-			OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
+			OPENAI_CHATGPT_PLAN: "gpt-6.2-sol",
 			DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
 			VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
-			OPENAI_DIRECT: "gpt-6.1-sol",
+			OPENAI_DIRECT: "gpt-6.2-sol",
 			ANTHROPIC_DIRECT: DEFAULT_FABRIC_AI_MODEL,
 			GROQ: "gpt-oss-120b",
 			DEEPSEEK: "deepseek-chat",
@@ -2901,7 +2997,7 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	// ============================================================================
 	...createTaskDefaults("IMAGE", "MEDIUM", {
 		VERCEL_GATEWAY: "gemini-nano-banana-2.1",
-		OPENAI_DIRECT: "dall-e-3",
+		OPENAI_DIRECT: "gpt-image-2.6-sunburst",
 	}),
 
 	// ============================================================================
@@ -2919,9 +3015,9 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	...createTaskDefaults("EVAL", "MEDIUM", {
 		// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 		// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
-		OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
+		OPENAI_CHATGPT_PLAN: "gpt-6.2-sol",
 		VERCEL_GATEWAY: "claude-sonnet-5-5",
-		OPENAI_DIRECT: "gpt-6.1-sol",
+		OPENAI_DIRECT: "gpt-6.2-sol",
 		ANTHROPIC_DIRECT: "claude-sonnet-5-5",
 		GROQ: "llama-3-3-70b",
 		DEEPSEEK: "deepseek-chat",

@@ -40,7 +40,7 @@ Available node types with their required configuration fields:
 2. ai-generate-text
    - Generate text using AI
    - config fields:
-     - aiModel: "gpt-4o" | "gpt-4o-mini" | "claude-3-5-sonnet-latest" | "claude-3-5-haiku-latest" (required)
+     - aiModel: "gpt-6.2-sol" | "gpt-6-luna" | "claude-sonnet-5-5" | "claude-haiku-5-5" (required)
      - aiPrompt: The prompt text, can reference other nodes with {{NodeLabel.field}} (required)
      - systemPrompt: Optional system instructions
    - outputs: { text: string }
@@ -48,7 +48,7 @@ Available node types with their required configuration fields:
 3. ai-generate-image
    - Generate images using AI
    - config fields:
-     - imageModel: "openai/dall-e-3" | "fal/flux-pro" | "fal/flux-dev" (required)
+     - imageModel: "openai/gpt-image-2.6-sunburst" | "fal/flux-pro" | "fal/flux-dev" (required)
      - imagePrompt: Image generation prompt (required)
      - imageSize: "1024x1024" | "1792x1024" | "1024x1792"
    - outputs: { imageUrl: string, revisedPrompt: string }

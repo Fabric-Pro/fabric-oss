@@ -323,7 +323,7 @@ export type ChatGptPlanOrgPolicyValues = Pick<
 >;
 
 /** The plan model a call retries on when the plan does not serve the chosen one. */
-export const DEFAULT_CHATGPT_PLAN_FALLBACK_MODEL = "gpt-6-astra";
+export const DEFAULT_CHATGPT_PLAN_FALLBACK_MODEL = "gpt-6.2-astra";
 
 /** What an organization with no policy row gets: nothing acknowledged, so nothing pooled. */
 export const DEFAULT_CHATGPT_PLAN_ORG_POLICY: ChatGptPlanOrgPolicyValues = {
@@ -417,7 +417,14 @@ export async function updateChatGptPlanOrgPolicy(params: {
 	const before = await getChatGptPlanOrgPolicy(organizationId);
 	const after = await db.chatGptPlanOrgPolicy.upsert({
 		where: { organizationId },
-		create: { organizationId, ...patch },
+		create: {
+			organizationId,
+			...patch,
+			fallbackModel:
+				patch.fallbackModel === undefined
+					? DEFAULT_CHATGPT_PLAN_FALLBACK_MODEL
+					: patch.fallbackModel,
+		},
 		update: patch,
 		select: POLICY_SELECT,
 	});
@@ -436,7 +443,11 @@ export async function acknowledgeChatGptPlanOrgTerms(params: {
 	};
 	const policy = await db.chatGptPlanOrgPolicy.upsert({
 		where: { organizationId: params.organizationId },
-		create: { organizationId: params.organizationId, ...acknowledged },
+		create: {
+			organizationId: params.organizationId,
+			fallbackModel: DEFAULT_CHATGPT_PLAN_FALLBACK_MODEL,
+			...acknowledged,
+		},
 		update: acknowledged,
 		select: POLICY_SELECT,
 	});

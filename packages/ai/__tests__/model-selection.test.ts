@@ -723,13 +723,13 @@ describe("getImageModel", () => {
 	);
 	it("should route through gateway when VERCEL_GATEWAY provider specified", async () => {
 		const { getImageModel } = await getModelFunctions();
-		const model = getImageModel("dall-e-3", {
+		const model = getImageModel("gpt-image-2.6-sunburst", {
 			apiKey: TEST_KEYS.VERCEL_GATEWAY,
 			provider: "VERCEL_GATEWAY",
 		});
 
 		expect(model).toBeDefined();
-		expect(model.type).toBe("image");
+		expect(model.modelId).toBe("gpt-image-2.6-sunburst");
 	});
 
 	it("should use OpenAI directly when OPENAI_DIRECT provider specified", async () => {
@@ -740,7 +740,7 @@ describe("getImageModel", () => {
 		});
 
 		expect(model).toBeDefined();
-		expect(model.type).toBe("image");
+		expect(model).toMatchObject({ type: "image" });
 	});
 
 	it("should strip provider prefix from model name", async () => {
@@ -765,15 +765,21 @@ describe("getImageModel", () => {
 		}).toThrow("Unsupported image model");
 	});
 
-	it("should use dall-e-3 as default", async () => {
-		const { getImageModel } = await getModelFunctions();
-		const model = getImageModel(undefined, {
-			apiKey: TEST_KEYS.OPENAI_DIRECT,
-		});
+	it.each([
+		[TEST_KEYS.OPENAI_DIRECT, "gpt-image-2.6-sunburst"],
+		[TEST_KEYS.VERCEL_GATEWAY, "gpt-image-2.6-sunburst"],
+	])(
+		"should use GPT Image 2.6 Sunburst as default (%s)",
+		async (apiKey, modelId) => {
+			const { getImageModel } = await getModelFunctions();
+			const model = getImageModel(undefined, {
+				apiKey,
+			});
 
-		expect(model).toBeDefined();
-		expect(model.modelId).toBe("dall-e-3");
-	});
+			expect(model).toBeDefined();
+			expect(model.modelId).toBe(modelId);
+		},
+	);
 });
 
 // =============================================================================

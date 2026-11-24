@@ -102,6 +102,36 @@ const DROPPED_HEADERS = new Set([
 
 type JsonObject = Record<string, unknown>;
 
+export interface ChatGptPlanFailedUsage {
+	inputTokens?: number;
+	outputTokens?: number;
+}
+
+type FailedReplyObserver = (usage: Readonly<ChatGptPlanFailedUsage>) => void;
+
+// The OpenAI client keeps the original Headers object on its HTTP errors.
+// Keep the counts out of the headers and body themselves.
+const failedUsageByErrorOrHeaders = new WeakMap<
+	object,
+	ChatGptPlanFailedUsage
+>();
+
+function responseUsage(usage: unknown): ChatGptPlanFailedUsage {
+	const counts = usage as JsonObject | null | undefined;
+	return {
+		inputTokens: finiteTokenCount(counts?.input_tokens),
+		outputTokens: finiteTokenCount(counts?.output_tokens),
+	};
+}
+
+function updateFailedUsage(
+	totals: ChatGptPlanFailedUsage,
+	observation: ChatGptPlanFailedUsage,
+) {
+	totals.inputTokens = observation.inputTokens ?? totals.inputTokens;
+	totals.outputTokens = observation.outputTokens ?? totals.outputTokens;
+}
+
 export function transformResponsesBody(body: JsonObject): JsonObject {
 	const next: JsonObject = { ...body, stream: true, store: false };
 	for (const field of CHATGPT_PLAN_FORBIDDEN_FIELDS) {
@@ -195,6 +225,7 @@ function planResetAt(
 function failureResponse(
 	error: JsonObject,
 	upstream: Headers | undefined,
+	usage: ChatGptPlanFailedUsage,
 ): Response {
 	const code = String(error.code ?? "response_failed");
 	const status =
@@ -204,7 +235,7 @@ function failureResponse(
 		code === CHATGPT_PLAN_EXHAUSTED_CODE
 			? planResetAt(error, upstream)
 			: null;
-	return jsonResponse(
+	const response = jsonResponse(
 		{
 			error: {
 				code,
@@ -217,13 +248,18 @@ function failureResponse(
 		upstream,
 		code === CHATGPT_PLAN_EXHAUSTED_CODE ? 429 : undefined,
 	);
+	failedUsageByErrorOrHeaders.set(response.headers, usage);
+	return response;
 }
 
-function eventError(event: JsonObject): JsonObject {
+function eventFailure(event: JsonObject) {
 	const payload = event.response as JsonObject | undefined;
-	return (
-		((payload?.error ?? event.error ?? event) as JsonObject | null) ?? {}
-	);
+	return {
+		error:
+			((payload?.error ?? event.error ?? event) as JsonObject | null) ??
+			{},
+		usage: responseUsage(payload?.usage),
+	};
 }
 
 function parseSseBlock(block: string): JsonObject | null {
@@ -261,11 +297,22 @@ function* parseSseEvents(text: string): Generator<JsonObject> {
  */
 export async function aggregateResponsesStream(
 	response: Response,
+	onFailedReply?: FailedReplyObserver,
 ): Promise<Response> {
 	const text = await response.text();
 	const doneItems: unknown[] = [];
+	let failure: ReturnType<typeof eventFailure> | undefined;
 	for (const event of parseSseEvents(text)) {
 		const type = event.type;
+		if (type === "response.failed" || type === "error") {
+			const { error, usage } = eventFailure(event);
+			failure ??= { error, usage: {} };
+			updateFailedUsage(failure.usage, usage);
+			continue;
+		}
+		if (failure) {
+			continue;
+		}
 		if (type === "response.output_item.done") {
 			doneItems.push(event.item);
 		}
@@ -277,9 +324,10 @@ export async function aggregateResponsesStream(
 			}
 			return jsonResponse(payload, 200, response.headers);
 		}
-		if (type === "response.failed" || type === "error") {
-			return failureResponse(eventError(event), response.headers);
-		}
+	}
+	if (failure) {
+		onFailedReply?.(failure.usage);
+		return failureResponse(failure.error, response.headers, failure.usage);
 	}
 	return jsonResponse(
 		{
@@ -301,10 +349,13 @@ const encoder = new TextEncoder();
  * a failure before any output becomes one non-retryable HTTP error (the SDK
  * would map it to a retryable 500 and send the request again), and a stream
  * that closes without a terminal event ends with an explicit error event
- * instead of looking like a normal finish.
+ * instead of looking like a normal finish. Clients that ignore a failed
+ * response event can opt into receiving a readable stream error after output.
  */
 export async function guardResponsesStream(
 	response: Response,
+	throwOnFailedStream = false,
+	onFailedReply?: FailedReplyObserver,
 ): Promise<Response> {
 	const body = response.body;
 	if (!body) {
@@ -315,20 +366,42 @@ export async function guardResponsesStream(
 	const buffered: Uint8Array[] = [];
 	let pending = "";
 	let started = false;
-	let terminal = false;
+	let terminal: "finished" | "failed" | undefined;
+	const failedUsage: ChatGptPlanFailedUsage = {};
+	let streamFailure: ChatGptPlanStreamError | undefined;
 
 	const inspect = (event: JsonObject): Response | null => {
 		const type = String(event.type ?? "");
-		if (
+		if (type === "response.failed" || type === "error") {
+			const { error, usage } = eventFailure(event);
+			if (terminal !== "finished") {
+				terminal = "failed";
+				updateFailedUsage(failedUsage, usage);
+				onFailedReply?.(failedUsage);
+			}
+			if (!started) {
+				return failureResponse(error, response.headers, failedUsage);
+			}
+			if (
+				type === "response.failed" &&
+				throwOnFailedStream &&
+				!streamFailure
+			) {
+				streamFailure = new ChatGptPlanStreamError(
+					terminal === "failed" ? failedUsage : usage,
+					error.code === CHATGPT_PLAN_EXHAUSTED_CODE
+						? new SubscriptionPlanExhaustedError(
+								"ChatGPT plan usage limit reached",
+								planResetAt(error, response.headers),
+							)
+						: undefined,
+				);
+			}
+		} else if (
 			type === "response.completed" ||
-			type === "response.incomplete" ||
-			type === "response.failed" ||
-			type === "error"
+			type === "response.incomplete"
 		) {
-			terminal = true;
-		}
-		if (!started && (type === "response.failed" || type === "error")) {
-			return failureResponse(eventError(event), response.headers);
+			terminal ??= "finished";
 		}
 		if (!PRE_OUTPUT_EVENTS.has(type)) {
 			started = true;
@@ -370,6 +443,12 @@ export async function guardResponsesStream(
 			}
 		},
 		async pull(controller) {
+			// Deliver previously queued bytes before failing the consumer's next read.
+			if (streamFailure) {
+				controller.error(streamFailure);
+				await reader.cancel().catch(() => {});
+				return;
+			}
 			const { done, value } = await reader.read();
 			if (!done) {
 				scan(decoder.decode(value, { stream: true }));
@@ -378,6 +457,10 @@ export async function guardResponsesStream(
 			}
 			if (pending) {
 				scan("\n\n");
+			}
+			if (streamFailure) {
+				controller.error(streamFailure);
+				return;
 			}
 			if (!terminal) {
 				controller.enqueue(
@@ -405,11 +488,19 @@ export async function guardResponsesStream(
 	});
 }
 
-async function remapErrorResponse(response: Response): Promise<Response> {
+async function remapErrorResponse(
+	response: Response,
+	onFailedReply?: FailedReplyObserver,
+): Promise<Response> {
 	let text = await response.text();
 	let code: string | undefined;
+	let usage: ChatGptPlanFailedUsage = {};
 	try {
-		const parsed = JSON.parse(text) as { error?: JsonObject };
+		const parsed = JSON.parse(text) as {
+			error?: JsonObject;
+			usage?: unknown;
+		};
+		usage = responseUsage(parsed.usage);
 		code =
 			typeof parsed.error?.code === "string"
 				? parsed.error.code
@@ -429,15 +520,18 @@ async function remapErrorResponse(response: Response): Promise<Response> {
 	} catch {}
 	const status = code ? NON_RETRYABLE_STATUS[code] : undefined;
 	const headers = new Headers(response.headers);
+	onFailedReply?.(usage);
 	headers.delete("content-length");
 	headers.delete("content-encoding");
 	if (status !== undefined) {
 		headers.set("x-chatgpt-plan-original-status", String(response.status));
 	}
-	return new Response(text, {
+	const remapped = new Response(text, {
 		status: status ?? response.status,
 		headers,
 	});
+	failedUsageByErrorOrHeaders.set(remapped.headers, usage);
+	return remapped;
 }
 
 // Header names whose values may identify the account or authenticate as it.
@@ -495,6 +589,10 @@ export interface ChatGptPlanFetchOptions {
 	 * OpenAI said.
 	 */
 	onExhausted?: (refusal: { resetAt: Date | null }) => Promise<string | null>;
+	/** Fail after delivering partial output for clients that ignore `response.failed`. */
+	throwOnFailedStream?: boolean;
+	/** Captures an observer for the failure and its accumulated counts before SDK reads. */
+	getFailedReplyObserver?: () => FailedReplyObserver | undefined;
 	/**
 	 * The caller's stop check, run synchronously immediately before EVERY
 	 * physical send this fetch makes — the first, the resend after a 401 and
@@ -547,6 +645,8 @@ export function createChatGptPlanFetch({
 	onUnauthorized,
 	onResponseHeaders,
 	onExhausted,
+	throwOnFailedStream,
+	getFailedReplyObserver,
 	beforeSend,
 	beforeResend,
 	baseFetch = fetch,
@@ -554,6 +654,7 @@ export function createChatGptPlanFetch({
 	const key = sessionKey?.trim();
 	let sessionIdPromise: Promise<string> | undefined;
 	return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+		const onFailedReply = getFailedReplyObserver?.();
 		sessionIdPromise ??= key
 			? chatGptPlanSessionId(key)
 			: Promise.resolve(globalThis.crypto.randomUUID());
@@ -615,11 +716,15 @@ export function createChatGptPlanFetch({
 				return response;
 			}
 			if (!response.ok) {
-				return remapErrorResponse(response);
+				return remapErrorResponse(response, onFailedReply);
 			}
 			return original.stream === true
-				? guardResponsesStream(response)
-				: aggregateResponsesStream(response);
+				? guardResponsesStream(
+						response,
+						throwOnFailedStream,
+						onFailedReply,
+					)
+				: aggregateResponsesStream(response, onFailedReply);
 		};
 
 		const first = await attempt(await getAccessToken());
@@ -636,6 +741,53 @@ export function createChatGptPlanFetch({
 		await beforeResend?.();
 		return attempt(next);
 	}) as typeof fetch;
+}
+
+function finiteTokenCount(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0
+		? value
+		: undefined;
+}
+
+class ChatGptPlanStreamError extends Error {
+	constructor(
+		usage: ChatGptPlanFailedUsage,
+		cause?: SubscriptionPlanExhaustedError,
+	) {
+		super(
+			cause?.message ??
+				"The ChatGPT plan reply ended with a provider error.",
+			{ cause },
+		);
+		this.name = "ChatGptPlanStreamError";
+		failedUsageByErrorOrHeaders.set(this, usage);
+	}
+}
+
+/** Reads numeric usage from a stream error or the OpenAI client's HTTP error. */
+export function chatGptPlanFailedUsageFromError(
+	error: unknown,
+): ChatGptPlanFailedUsage | undefined {
+	let current = error;
+	for (
+		let depth = 0;
+		depth < 4 && current && typeof current === "object";
+		depth++
+	) {
+		const { headers, cause } = current as {
+			headers?: Headers;
+			cause?: unknown;
+		};
+		const usage =
+			failedUsageByErrorOrHeaders.get(current) ??
+			(headers && failedUsageByErrorOrHeaders.get(headers));
+		if (usage) {
+			return usage;
+		}
+		// LangChain retains the OpenAI error as the cause of context overflow.
+		current = cause;
+	}
+	return undefined;
 }
 
 /**

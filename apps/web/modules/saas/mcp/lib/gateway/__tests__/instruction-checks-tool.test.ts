@@ -39,6 +39,8 @@ const m = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	// The gateway project gates refuse an organization being deleted.
+	isOrganizationLive: async () => true,
 	hasPermission: (permissions: readonly string[], permission: string) =>
 		permissions.includes(permission),
 	Permissions: { INSTRUCTION_READ: "instruction:read" },

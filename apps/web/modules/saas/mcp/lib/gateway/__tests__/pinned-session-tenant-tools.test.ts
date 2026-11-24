@@ -33,6 +33,8 @@ vi.mock("@repo/api/lib/effective-project-permissions", () => ({
 	resolveEffectiveProjectPermissions: async () => ({ permissions: [] }),
 }));
 vi.mock("@repo/database", () => ({
+	// The gateway project gates refuse an organization being deleted.
+	isOrganizationLive: async () => true,
 	db: {
 		member: { findMany: mocks.memberFindMany },
 		user: { update: mocks.userUpdate },

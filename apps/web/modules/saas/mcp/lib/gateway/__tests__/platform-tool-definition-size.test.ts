@@ -81,6 +81,9 @@ import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 // coding tool in one set's repository must know before the call that it can
 // narrow the list to that set.
 // The work-item kind on create (FEATURE/INITIATIVE) and INITIATIVE on the list filter add 69.
+// The project context list and read name `inheritedSourceGuidance` (Fizzy
+// #2808), 128 each: an agent updating a file's instructions must know before
+// the call that the folder's guidance is not the row's own `expected` value.
 const CONTEXT_QUALITY_BUDGETS: Readonly<Record<string, number>> = {
 	fabric_inspect_context_quality_source: 501,
 	fabric_evaluate_context_quality: 1_969,
@@ -105,7 +108,8 @@ const TOTAL_BUDGET =
 	189 +
 	1_492 +
 	81 +
-	69;
+	69 +
+	256;
 // The complete bounded sprint config makes configure-story-review the largest
 // pre-call schema at 2,334 characters. Other tools retain the original cap below.
 const PER_TOOL_BUDGET = 2_190;

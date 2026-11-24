@@ -46,6 +46,8 @@ vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	// The gateway project gates refuse an organization being deleted.
+	isOrganizationLive: async () => true,
 	db: {
 		member: { findMany: mocks.memberFindMany },
 		user: { update: mocks.userUpdate },

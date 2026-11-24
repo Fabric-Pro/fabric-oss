@@ -16,6 +16,8 @@
  */
 
 import { createHash } from "node:crypto";
+// Leaf module: zod and constants, no database.
+import { INPUT_BOUNDS } from "@repo/api/lib/zod-bounds";
 // The audit row for a context metadata edit, shared with the oRPC procedure
 // that makes the same edit so the two surfaces write identical rows. Also a
 // pure leaf: its only `@repo/database` import is type-only.
@@ -315,7 +317,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_update_project",
 		description:
-			"Updates a project's name, description or status; omitted fields are unchanged.",
+			"Updates a project's name or description; omitted fields are unchanged.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -325,10 +327,6 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				name: { type: "string" },
 				description: {
 					type: "string",
-				},
-				status: {
-					type: "string",
-					enum: ["ACTIVE", "ARCHIVED", "COMPLETED"],
 				},
 			},
 			required: ["projectId"],
@@ -851,7 +849,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_project_contexts",
 		description:
-			"Lists Context summaries (no bodies): uploads/transcripts/crawls/notes/integrations; read via fabric_get_project_context (authored docs: fabric_list_documents). Linked Workspace docs: fabric_list_project_workspace_documents/fabric_read_project_workspace_document. Code index excluded by default. format=manifest returns revisions and read refs.",
+			"Lists Context summaries (no bodies): uploads/transcripts/crawls/notes/integrations; read via fabric_get_project_context (authored docs: fabric_list_documents). Linked Workspace docs: fabric_list_project_workspace_documents/fabric_read_project_workspace_document. Code index excluded by default. format=manifest returns revisions and read refs. inheritedSourceGuidance is read-only guidance inherited from the file's connected document folder; never pass it as `expected`.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -911,7 +909,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_project_context",
 		description:
-			"Reads Context transcript/upload text/crawl/note/captured Teams or Slack. If truncated, continue offset=nextOffset. Upload originalFile.url expires. contentAvailable=false: read unavailableReason; empty body need not mean empty source.",
+			"Reads Context transcript/upload text/crawl/note/captured Teams or Slack. If truncated, continue offset=nextOffset. Upload originalFile.url expires. contentAvailable=false: read unavailableReason; empty body need not mean empty source. inheritedSourceGuidance is read-only guidance inherited from the file's connected document folder; never pass it as `expected`.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -2246,6 +2244,9 @@ async function handleCreateProject(
 	});
 }
 
+/** The project name bound of the app's own update procedure. */
+const PROJECT_NAME_MAX_LENGTH = 255;
+
 async function handleUpdateProject(
 	args: Record<string, unknown>,
 	session: GatewaySession,
@@ -2257,33 +2258,126 @@ async function handleUpdateProject(
 		return errorResult("projectId is required");
 	}
 
+	// The tool once advertised `status` and never applied it. A client still
+	// sending it, or sending nothing this tool changes, gets told so rather
+	// than a success for a change that did not happen.
+	if (args.status !== undefined) {
+		return errorResult(
+			"fabric_update_project does not change a project's status; change it in the Fabric app",
+		);
+	}
+	if (args.name === undefined && args.description === undefined) {
+		return errorResult(
+			"Nothing to update: pass name, description, or both",
+		);
+	}
+
+	// The bounds the app's own project update enforces
+	// (`packages/api/modules/projects/procedures/update-project.ts`), so a key
+	// cannot store a name or description the browser would refuse. A blank
+	// name is refused as the project title editor and the v1 REST route
+	// (`packages/api/modules/v1/projects.ts`) refuse it; the value is stored
+	// as sent, as the app stores it.
+	const { name, description } = args;
+	if (
+		name !== undefined &&
+		(typeof name !== "string" ||
+			name.trim().length === 0 ||
+			name.length > PROJECT_NAME_MAX_LENGTH)
+	) {
+		return errorResult(
+			`name must be a non-empty string of at most ${PROJECT_NAME_MAX_LENGTH} characters`,
+		);
+	}
+	if (
+		description !== undefined &&
+		(typeof description !== "string" ||
+			description.length > INPUT_BOUNDS.description)
+	) {
+		return errorResult(
+			`description must be a string of at most ${INPUT_BOUNDS.description} characters`,
+		);
+	}
+
 	// The shared write resolver, so this write gets the same PROJECT_UPDATE
 	// check, discovery boundary and organization-key binding as every other
-	// project write here.
-	const access = await resolveGatewayProjectWriteAccess(
+	// project write here. The write is tenant-filtered, so it needs the
+	// project's HOSTING organization: without it `updateProject` filters on
+	// `organizationId: null` and matches no organization project at all.
+	const access = await resolveGatewayProjectWriteAccessWithHost(
 		projectId,
 		session,
 		"PROJECT_UPDATE",
 	);
-	if (access === "not-found") {
+	if (access.status === "not-found") {
 		return errorResult("Project not found or access denied");
 	}
-	if (access === "forbidden") {
+	if (access.status === "forbidden") {
 		return errorResult("No edit permission for this project");
 	}
+	// A project with no hosting organization is the fail-closed arm, which
+	// the app's update refuses too (`requireProjectOrganization`).
+	const hostOrganizationId = access.organizationId;
+	if (!hostOrganizationId) {
+		return errorResult("Project not found or access denied");
+	}
 
-	const updated = await updateProject(projectId, session.userId, {
-		...(args.name ? { name: args.name as string } : {}),
-		...(args.description !== undefined
-			? { description: args.description as string }
-			: {}),
-	});
+	const data = {
+		...(name !== undefined ? { name } : {}),
+		...(description !== undefined ? { description } : {}),
+	};
+	const updated = await updateProject(
+		projectId,
+		session.userId,
+		data,
+		hostOrganizationId,
+	);
+
+	// Audit row, the same action the app's update writes. See
+	// {@link gatewayAuditRequest} for why a synthetic request context is safe here;
+	// `recordAuditFromRequest` never throws. The description text stays out of
+	// the row: only which fields changed.
+	await recordProjectUpdatedAudit(
+		session,
+		hostOrganizationId,
+		updated,
+		Object.keys(data),
+	);
 
 	return jsonResult({
 		id: updated.id,
 		name: updated.name,
 		message: `Project "${updated.name}" updated successfully`,
 	});
+}
+
+async function recordProjectUpdatedAudit(
+	session: GatewaySession,
+	organizationId: string,
+	project: { id: string; name: string },
+	changedFields: string[],
+): Promise<void> {
+	try {
+		const { recordAuditFromRequest } = await import("@repo/api/lib/audit");
+		recordAuditFromRequest(gatewayAuditRequest(session), {
+			action: "project.updated",
+			category: "project",
+			actor: parlumeAuditActor(session),
+			organizationId,
+			projectId: project.id,
+			resource: {
+				type: "project",
+				id: project.id,
+				name: project.name,
+			},
+			metadata: { changedFields, via: "mcp-gateway" },
+		});
+	} catch (error) {
+		console.warn("[MCP Gateway] project.updated audit failed:", {
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
+	}
 }
 
 // ─── Feature (Story) Handlers ───────────────────────────────────────────────
@@ -2457,7 +2551,33 @@ async function resolveGatewayProjectReadAccess(
 	if (await isProjectSoftDeleted(projectId)) {
 		return null;
 	}
+	if (!(await hostOrganizationIsLive(access.organizationId))) {
+		return null;
+	}
 	return access;
+}
+
+/**
+ * Whether a project's hosting organization is outside its deletion window.
+ * The app's project gate refuses a project whose organization is being
+ * deleted, for reads and writes alike (`assertProjectPermission` in
+ * `packages/api/orpc/middleware/require-permission.ts`), and so does every
+ * gateway project gate. The MCP route checks only that the SESSION's
+ * organization is live, and a guest's session sits in another, live one.
+ *
+ * Asked only after the credential binding, so an organization key never
+ * learns anything about another organization from it. A project with no
+ * hosting organization has none to be deleted; each caller has its own
+ * fail-closed arm for that case.
+ */
+async function hostOrganizationIsLive(
+	organizationId: string | null,
+): Promise<boolean> {
+	if (!organizationId) {
+		return true;
+	}
+	const { isOrganizationLive } = await import("@repo/database");
+	return isOrganizationLive(organizationId);
 }
 
 /**
@@ -2483,7 +2603,8 @@ async function resolveGatewayReportProjectAccess(
 		session.userId,
 	);
 	return administered &&
-		credentialMayReachHost(session, administered.organizationId)
+		credentialMayReachHost(session, administered.organizationId) &&
+		(await hostOrganizationIsLive(administered.organizationId))
 		? administered
 		: null;
 }
@@ -2582,6 +2703,10 @@ type GatewayWritePermission =
  * that filter — {@link credentialMayReachHost}, the rule every project-scoped
  * tool applies. It runs before the permission check, so an `org_` key learns
  * nothing about another organization's project from a forbidden refusal.
+ *
+ * A hosting organization in its deletion window counts as gone
+ * ({@link hostOrganizationIsLive}), checked before the permission so the
+ * answer is not found, never forbidden.
  */
 async function resolveGatewayProjectWriteAccessWithHost(
 	projectId: string,
@@ -2609,6 +2734,9 @@ async function resolveGatewayProjectWriteAccessWithHost(
 		return { status: "not-found" };
 	}
 	if (await isProjectSoftDeleted(projectId)) {
+		return { status: "not-found" };
+	}
+	if (!(await hostOrganizationIsLive(access.organizationId))) {
 		return { status: "not-found" };
 	}
 	if (
@@ -3384,6 +3512,27 @@ async function startDeferredDraft(
 	});
 }
 
+/**
+ * The request context a gateway write records its audit row under. No HTTP
+ * request is in scope at this layer, so ip / user-agent / request-id resolve
+ * to null rather than being invented, and the session id is the MCP gateway
+ * session's, not a Better Auth session id: it is the correlation handle that
+ * actually exists on this path.
+ */
+function gatewayAuditRequest(session: GatewaySession) {
+	return {
+		user: {
+			id: session.userId,
+			email: session.email,
+			name: session.userName,
+		},
+		session: {
+			id: session.sessionId,
+			activeOrganizationId: session.organizationId,
+		},
+	};
+}
+
 function announceStoryCreated(params: {
 	session: GatewaySession;
 	projectId: string;
@@ -3424,50 +3573,33 @@ function announceStoryCreated(params: {
 
 	// Audit row, mirroring createStoryProcedure. `recordAuditFromRequest`
 	// is documented as callable from any shape-compatible context and
-	// swallows its own failures, so a synthetic context is safe here. There
-	// is no HTTP request in scope at this layer, so ip / user-agent /
-	// request-id resolve to null rather than being invented.
+	// swallows its own failures, so the synthetic context of
+	// {@link gatewayAuditRequest} is safe here.
 	import("@repo/api/lib/audit")
 		.then(({ recordAuditFromRequest }) => {
-			recordAuditFromRequest(
-				{
-					user: {
-						id: session.userId,
-						email: session.email,
-						name: session.userName,
-					},
-					// The MCP gateway session id, not a Better Auth session
-					// id — it is the correlation handle that actually exists
-					// on this path.
-					session: {
-						id: session.sessionId,
-						activeOrganizationId: session.organizationId,
-					},
+			recordAuditFromRequest(gatewayAuditRequest(session), {
+				action: "story.created",
+				category: "story",
+				actor: parlumeAuditActor(session),
+				organizationId: session.organizationId,
+				projectId,
+				resource: {
+					type: "story",
+					id: story.id,
+					name: story.title ?? null,
 				},
-				{
-					action: "story.created",
-					category: "story",
-					actor: parlumeAuditActor(session),
-					organizationId: session.organizationId,
-					projectId,
-					resource: {
-						type: "story",
-						id: story.id,
-						name: story.title ?? null,
-					},
-					metadata: {
-						kind: story.kind,
-						statusId: story.statusId,
-						aiDrafted,
-						via,
-						// This helper runs ONLY for an actual insert, so a
-						// row it describes is by construction not a dedup
-						// hit.
-						deduplicated: false,
-						...metadataExtras,
-					},
+				metadata: {
+					kind: story.kind,
+					statusId: story.statusId,
+					aiDrafted,
+					via,
+					// This helper runs ONLY for an actual insert, so a
+					// row it describes is by construction not a dedup
+					// hit.
+					deduplicated: false,
+					...metadataExtras,
 				},
-			);
+			});
 		})
 		.catch((error) => {
 			console.warn("[MCP Gateway] story.created audit failed:", {
@@ -4647,7 +4779,8 @@ async function handleListProjectContexts(
 			code: "INVALID_INPUT",
 		});
 
-	const { listProjectContextSummaries } = await import("@repo/database");
+	const { listProjectContextSummaries, resolveInheritedSourceGuidance } =
+		await import("@repo/database");
 
 	const projectId = args.projectId as string;
 	if (!projectId) {
@@ -4666,6 +4799,10 @@ async function handleListProjectContexts(
 		includeCodeContexts: args.includeCodeContexts === true,
 		limit: Math.min((args.limit as number) ?? 50, 200),
 		offset: (args.offset as number) ?? 0,
+	});
+	const inheritedGuidance = await resolveInheritedSourceGuidance({
+		projectId,
+		rows: result.contexts,
 	});
 
 	return jsonResult({
@@ -4691,6 +4828,9 @@ async function handleListProjectContexts(
 			// edited them: pass these two back as its 'expected'.
 			sourceType: ctx.sourceType,
 			aiInstructions: ctx.aiInstructions,
+			// What the model reads in place of an empty aiInstructions: the
+			// connected document folder's description. Not an 'expected' value.
+			inheritedSourceGuidance: inheritedGuidance.get(ctx.id) ?? null,
 			metadataUpdatedAt: ctx.metadataUpdatedAt,
 			metadataUpdatedByUserId: ctx.metadataUpdatedByUserId,
 			// A synced file's key and version (fabric_upsert_project_context):
@@ -4718,6 +4858,7 @@ async function handleGetProjectContext(
 		findConfidentialTranscriptContextIds,
 		getContextById,
 		readProjectContextBodyPage,
+		resolveInheritedSourceGuidance,
 	} = await import("@repo/database");
 
 	const contextId = args.contextId as string;
@@ -4796,6 +4937,10 @@ async function handleGetProjectContext(
 	);
 
 	const originalFile = await resolveOriginalFileLink(ctx);
+	const inheritedGuidance = await resolveInheritedSourceGuidance({
+		projectId: ctx.projectId,
+		rows: [ctx],
+	});
 
 	return jsonResult({
 		id: ctx.id,
@@ -4812,6 +4957,9 @@ async function handleGetProjectContext(
 		// edited them: pass these two back as its 'expected'.
 		sourceType: ctx.sourceType,
 		aiInstructions: ctx.aiInstructions,
+		// What the model reads in place of an empty aiInstructions: the
+		// connected document folder's description. Not an 'expected' value.
+		inheritedSourceGuidance: inheritedGuidance.get(ctx.id) ?? null,
 		metadataUpdatedAt: ctx.metadataUpdatedAt,
 		metadataUpdatedByUserId: ctx.metadataUpdatedByUserId,
 		// A synced file's key and version (fabric_upsert_project_context):
@@ -5029,38 +5177,25 @@ async function handleUpdateProjectContext(
 	const ctx = result.context;
 	if (result.status === "updated") {
 		// Audit row, the same one the procedure writes — see
-		// `announceStoryCreated` for why a synthetic request context is safe
+		// {@link gatewayAuditRequest} for why a synthetic request context is safe
 		// here. `recordAuditFromRequest` never throws and runs the shared
 		// sensitive-key redactor before insert.
 		try {
 			const { recordAuditFromRequest } = await import(
 				"@repo/api/lib/audit"
 			);
-			recordAuditFromRequest(
-				{
-					user: {
-						id: session.userId,
-						email: session.email,
-						name: session.userName,
-					},
-					session: {
-						id: session.sessionId,
-						activeOrganizationId: session.organizationId,
-					},
-				},
-				{
-					...buildContextMetadataAuditEvent({
-						organizationId: hostOrganizationId,
-						projectId,
-						context: ctx,
-						before: result.before,
-						after: result.after,
-						changed: result.changed,
-						via: "mcp-gateway",
-					}),
-					actor: parlumeAuditActor(session),
-				},
-			);
+			recordAuditFromRequest(gatewayAuditRequest(session), {
+				...buildContextMetadataAuditEvent({
+					organizationId: hostOrganizationId,
+					projectId,
+					context: ctx,
+					before: result.before,
+					after: result.after,
+					changed: result.changed,
+					via: "mcp-gateway",
+				}),
+				actor: parlumeAuditActor(session),
+			});
 		} catch (error) {
 			console.warn(
 				"[MCP Gateway] project_context metadata audit failed:",
@@ -5227,20 +5362,7 @@ async function handleUpsertProjectContext(
 			userId: session.userId,
 			organizationId: access.organizationId,
 			via: "mcp-gateway",
-			// The same synthetic context `announceStoryCreated` builds: no HTTP
-			// request is in scope here, so ip / user-agent / request-id resolve
-			// to null rather than being invented.
-			request: {
-				user: {
-					id: session.userId,
-					email: session.email,
-					name: session.userName,
-				},
-				session: {
-					id: session.sessionId,
-					activeOrganizationId: session.organizationId,
-				},
-			},
+			request: gatewayAuditRequest(session),
 		});
 	} catch (error) {
 		// A Living Memory repository sync's refusal (Living Memory design
@@ -7017,21 +7139,7 @@ async function handleProposeProjectInstructionChange(
 			// a scope of its own that no MCP tool asks for: an agent must not
 			// be able to reach it by naming a mode in its arguments.
 			mode: "proposal",
-			// The same synthetic context `announceStoryCreated` builds: there
-			// is no HTTP request in scope at this layer, so ip / user-agent /
-			// request-id resolve to null rather than being invented, and the
-			// session id is the gateway's own correlation handle.
-			audit: {
-				user: {
-					id: session.userId,
-					email: session.email,
-					name: session.userName,
-				},
-				session: {
-					id: session.sessionId,
-					activeOrganizationId: session.organizationId,
-				},
-			},
+			audit: gatewayAuditRequest(session),
 			via: "mcp-gateway",
 		});
 		return jsonResult({
@@ -7188,17 +7296,7 @@ async function handleChangeInstructions(
 			changes: parsed.changes,
 			mode: "commit",
 			message: summary,
-			audit: {
-				user: {
-					id: session.userId,
-					email: session.email,
-					name: session.userName,
-				},
-				session: {
-					id: session.sessionId,
-					activeOrganizationId: session.organizationId,
-				},
-			},
+			audit: gatewayAuditRequest(session),
 			via: "mcp-gateway",
 		});
 		return jsonResult({
@@ -7457,20 +7555,7 @@ async function handleAddInstructionLesson(
 			// this tool at all, the same as the proposal tool: this surface
 			// proposes, full stop.
 			mode: "proposal",
-			// The same synthetic context `announceStoryCreated` and the
-			// proposal tool above build: there is no HTTP request in scope at
-			// this layer.
-			audit: {
-				user: {
-					id: session.userId,
-					email: session.email,
-					name: session.userName,
-				},
-				session: {
-					id: session.sessionId,
-					activeOrganizationId: session.organizationId,
-				},
-			},
+			audit: gatewayAuditRequest(session),
 			via: "mcp-gateway",
 		});
 		return jsonResult({

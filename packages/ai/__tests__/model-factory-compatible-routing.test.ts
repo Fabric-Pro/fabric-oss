@@ -282,7 +282,7 @@ describe.each(["OPENROUTER", "CLOUDFLARE_AI"])(
 		);
 		it("accepts the Vercel key for the OpenAI-compatible image helper", () => {
 			expect(() =>
-				getImageModel("openai/dall-e-3", {
+				getImageModel("openai/gpt-image-2.6-sunburst", {
 					provider,
 					apiKey: "vck_example_key",
 				}),

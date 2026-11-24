@@ -293,6 +293,7 @@ describe("getChatGptPlanOrgPolicy", () => {
 			apiFallbackInteractive: "ASK",
 			apiFallbackBackground: "NEVER",
 			termsAcknowledgedAt: null,
+			fallbackModel: "gpt-6.2-astra",
 		});
 	});
 
@@ -317,6 +318,53 @@ describe("getCachedChatGptPlanOrgPolicy", () => {
 		mocks.policyFindUnique.mockReset();
 		mocks.policyUpsert.mockReset();
 	});
+
+	it("creates a policy with the current fallback when acknowledging terms", async () => {
+		mocks.policyUpsert.mockResolvedValue(policy("gpt-6.2-astra"));
+		await acknowledgeChatGptPlanOrgTerms({
+			organizationId: "org_a",
+			userId: "owner_a",
+		});
+		expect(mocks.policyUpsert).toHaveBeenCalledWith(
+			expect.objectContaining({
+				create: expect.objectContaining({
+					fallbackModel: "gpt-6.2-astra",
+				}),
+				update: expect.not.objectContaining({
+					fallbackModel: expect.anything(),
+				}),
+			}),
+		);
+	});
+
+	it.each([
+		{ patch: { fallbackModel: undefined }, expected: "gpt-6.2-astra" },
+		{ patch: { fallbackModel: null }, expected: null },
+		{
+			patch: { fallbackModel: "gpt-6.1-terra" },
+			expected: "gpt-6.1-terra",
+		},
+	])(
+		"stores fallback $expected on policy creation",
+		async ({ patch, expected }) => {
+			mocks.policyFindUnique.mockResolvedValue(null);
+			mocks.policyUpsert.mockResolvedValue(
+				DEFAULT_CHATGPT_PLAN_ORG_POLICY,
+			);
+			await updateChatGptPlanOrgPolicy({
+				organizationId: "org_a",
+				patch,
+			});
+			expect(mocks.policyUpsert).toHaveBeenCalledWith(
+				expect.objectContaining({
+					create: expect.objectContaining({
+						fallbackModel: expected,
+					}),
+					update: patch,
+				}),
+			);
+		},
+	);
 
 	it("reuses an organization's policy for 30 s, per organization", async () => {
 		mocks.policyFindUnique.mockResolvedValue(policy("gpt-6-astra"));

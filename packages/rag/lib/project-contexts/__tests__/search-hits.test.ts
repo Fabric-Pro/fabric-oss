@@ -6,6 +6,7 @@ const h = vi.hoisted(() => ({
 	context: vi.fn(),
 	bundle: vi.fn(),
 	confidential: vi.fn(),
+	folderGuidance: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
 	db: {
@@ -15,6 +16,7 @@ vi.mock("@repo/database", () => ({
 	findConfidentialTranscriptContextIds: h.confidential,
 	getRetrievableContextById: h.context,
 	getRetrievableConversationBundleById: h.bundle,
+	withInheritedSourceGuidance: h.folderGuidance,
 }));
 vi.mock("../store", () => ({
 	searchSimilarProjectContexts: vi.fn(async () => []),
@@ -91,8 +93,25 @@ const records = [
 	},
 ];
 
+/** Model the database helper: folder files without guidance take their folder's. */
+const folderDescriptions = new Map<string, string>();
+const optOut = { inheritFolderGuidance: false };
+
 beforeEach(() => {
 	vi.clearAllMocks();
+	folderDescriptions.clear();
+	h.folderGuidance.mockImplementation(
+		async ({
+			rows,
+		}: {
+			rows: Array<{ id: string; aiInstructions?: string | null }>;
+		}) =>
+			rows.map((row) =>
+				!row.aiInstructions && folderDescriptions.has(row.id)
+					? { ...row, aiInstructions: folderDescriptions.get(row.id) }
+					: row,
+			),
+	);
 	h.rows.mockResolvedValue([]);
 	h.context.mockImplementation(async (id) => ({
 		id,
@@ -154,7 +173,7 @@ describe("project-scoped URL-page hydration", () => {
 		expect(
 			result.flatMap(({ context }) => (context ? [context.id] : [])),
 		).toEqual(["own-page"]);
-		expect(h.context.mock.calls).toEqual([["own-page"]]);
+		expect(h.context.mock.calls).toEqual([["own-page", optOut]]);
 		expect(h.pages.mock.calls[0][0].where).toEqual({
 			id: { in: ["own-page", "foreign-org", "foreign-project"] },
 			parentContext: {
@@ -180,7 +199,7 @@ describe("project-scoped URL-page hydration", () => {
 		expect(
 			result.flatMap(({ context }) => (context ? [context.id] : [])),
 		).toEqual(["personal-page"]);
-		expect(h.context.mock.calls).toEqual([["personal-page"]]);
+		expect(h.context.mock.calls).toEqual([["personal-page", optOut]]);
 		expect(h.pages.mock.calls[0][0].where.parentContext.project).toEqual({
 			id: tenant.projectId,
 			userId: tenant.userId,
@@ -201,6 +220,98 @@ describe("project-scoped URL-page hydration", () => {
 				organizationId: tenant.organizationId,
 			},
 		});
+	});
+});
+
+describe("folder guidance", () => {
+	const folderFile = (id: string, aiInstructions: string | null = null) => ({
+		id,
+		content: `body of ${id}`,
+		type: "DOCUMENT",
+		metadata: { provider: "onedrive-documents" },
+		aiInstructions,
+	});
+
+	it("gives a batch-hydrated folder file its folder's description in one lookup", async () => {
+		folderDescriptions.set("file-1", "Signed case studies");
+		h.rows.mockResolvedValue([
+			folderFile("file-1"),
+			folderFile("file-2", "Only the 2026 pricing applies"),
+		]);
+
+		const result = await hydrateProjectContextHits({
+			...tenant,
+			lookup: "batch",
+			hits: [hit("file-1"), hit("file-2")],
+		});
+
+		expect(result.map(({ context }) => context?.aiInstructions)).toEqual([
+			"Signed case studies",
+			"Only the 2026 pricing applies",
+		]);
+		expect(h.folderGuidance).toHaveBeenCalledTimes(1);
+		expect(h.folderGuidance.mock.calls[0][0].projectId).toBe(
+			tenant.projectId,
+		);
+	});
+
+	it("resolves individually hydrated hits as one batch, not per id", async () => {
+		folderDescriptions.set("file-1", "Signed case studies");
+		h.context.mockImplementation(async (id: string) => folderFile(id));
+
+		const result = await hydrateProjectContextHits({
+			...tenant,
+			hits: [hit("file-1"), hit("file-2")],
+		});
+
+		expect(result.map(({ context }) => context?.aiInstructions)).toEqual([
+			"Signed case studies",
+			null,
+		]);
+		expect(h.context.mock.calls).toEqual([
+			["file-1", optOut],
+			["file-2", optOut],
+		]);
+		expect(h.folderGuidance).toHaveBeenCalledTimes(1);
+	});
+
+	it("reads the folder's current description on every hydration", async () => {
+		h.context.mockImplementation(async (id: string) => folderFile(id));
+		const read = async () =>
+			(
+				await hydrateProjectContextHits({
+					...tenant,
+					hits: [hit("file-1")],
+				})
+			)[0]?.context?.aiInstructions;
+
+		folderDescriptions.set("file-1", "Draft case studies");
+		expect(await read()).toBe("Draft case studies");
+		folderDescriptions.set("file-1", "Signed case studies");
+		expect(await read()).toBe("Signed case studies");
+		// Disconnected: the folder no longer lends its description.
+		folderDescriptions.delete("file-1");
+		expect(await read()).toBeNull();
+	});
+
+	it("leaves captured bundles out of the folder lookup", async () => {
+		h.bundle.mockResolvedValue({
+			id: "example-bundle",
+			content: "Captured messages",
+			type: "INTEGRATION",
+		});
+
+		await hydrateProjectContextHits({
+			...tenant,
+			hits: [
+				{
+					...hit("bundle-hit"),
+					conversationBundleId: "example-bundle",
+				},
+			],
+		});
+
+		expect(h.folderGuidance.mock.calls[0][0].rows).toEqual([]);
 	});
 });
 

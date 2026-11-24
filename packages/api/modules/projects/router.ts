@@ -181,6 +181,17 @@ import {
 	markContractCompleteProcedure,
 	startDiscoveryProcedure,
 } from "./procedures/discovery";
+// OneDrive and SharePoint document folders (Fizzy #2808)
+import {
+	browseDocumentFoldersProcedure,
+	confirmDocumentFolderRemovalsProcedure,
+	connectDocumentFoldersProcedure,
+	disconnectDocumentFolderProcedure,
+	listDocumentFoldersProcedure,
+	reconnectDocumentFolderProcedure,
+	syncDocumentFoldersNowProcedure,
+	updateDocumentFolderDescriptionProcedure,
+} from "./procedures/document-folders";
 import { applyDocumentAutoRefreshProposalProcedure } from "./procedures/documents/apply-auto-refresh-proposal";
 import { batchGenerateDocumentsProcedure } from "./procedures/documents/batch-generate";
 import { createMediaUploadUrlProcedure } from "./procedures/documents/create-media-upload-url";
@@ -1326,6 +1337,19 @@ export const projectsRouter = {
 		connectFolders: connectTranscriptFoldersProcedure,
 		listFolders: listTranscriptFoldersProcedure,
 		disconnectFolder: disconnectTranscriptFolderProcedure,
+	},
+
+	// OneDrive and SharePoint document folders (Fizzy #2808). Gated by
+	// CLOUD_DRIVE_FOLDERS for the project's organization; NOT_FOUND when off.
+	documentFolders: {
+		browse: browseDocumentFoldersProcedure,
+		connect: connectDocumentFoldersProcedure,
+		reconnect: reconnectDocumentFolderProcedure,
+		list: listDocumentFoldersProcedure,
+		updateDescription: updateDocumentFolderDescriptionProcedure,
+		syncNow: syncDocumentFoldersNowProcedure,
+		confirmRemovals: confirmDocumentFolderRemovalsProcedure,
+		disconnect: disconnectDocumentFolderProcedure,
 	},
 
 	// AI-recommended item lifecycle (Fizzy #2211). Gated by

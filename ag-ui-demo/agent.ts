@@ -68,7 +68,10 @@ async function chatNode(
     `;
 
 	// Define the model
-	const model = new ChatOpenAI({ model: "gpt-4o" });
+	const model = new ChatOpenAI({
+		model: "gpt-6.2-sol",
+		useResponsesApi: true,
+	});
 
 	// Define config for the model with emit_intermediate_state to stream tool calls to frontend
 	if (!config) {

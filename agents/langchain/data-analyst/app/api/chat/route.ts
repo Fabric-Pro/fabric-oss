@@ -109,8 +109,8 @@ function getCompatibleModel(framework: string, requestedModel: string): string {
 	if (framework === "openai-agents") {
 		// OpenAI Agents SDK only supports OpenAI models
 		if (provider === "openai") return requestedModel;
-		// Fallback to GPT-4o if non-OpenAI model requested
-		return "openai/gpt-4o";
+		// Fall back to GPT-6.2 Sol if a non-OpenAI model was requested
+		return "openai/gpt-6.2-sol";
 	}
 
 	if (framework === "claude-agents") {

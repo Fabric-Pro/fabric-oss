@@ -34,7 +34,9 @@ export async function handleLangchainFramework(
 		llm = new ChatOpenAI({
 			apiKey: process.env.OPENAI_API_KEY,
 			modelName,
-			temperature: 0,
+			...(modelName.startsWith("gpt-6")
+				? { useResponsesApi: true }
+				: { temperature: 0 }),
 		});
 	} else if (provider === "anthropic") {
 		const directModelName = getAnthropicModelName(model);

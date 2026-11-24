@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({ confidential: vi.fn() }));
 
 vi.mock("@repo/database", () => ({
+	withInheritedSourceGuidance: async ({ rows }: { rows: unknown[] }) => rows,
 	db: {
 		project: {
 			findUnique: vi.fn().mockResolvedValue({ organizationId: "org1" }),

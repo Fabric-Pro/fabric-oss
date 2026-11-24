@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
-	DEFAULT_CHATGPT_PLAN_FALLBACK_MODEL: "gpt-6-astra",
+	DEFAULT_CHATGPT_PLAN_FALLBACK_MODEL: "gpt-6.2-astra",
 	getUserModelPreference: mocks.userPreference,
 	getModelForTask: mocks.modelForTask,
 	getChatGptPlanOrgPolicy: mocks.policy,
@@ -101,25 +101,26 @@ describe("plan model defaults", () => {
 		);
 	});
 
-	// Fizzy #2770 (DSU 2026-10-07): Sol for Fabric's work, GPT-6.1 Terra for
-	// light tasks (in place of Luna since 2026-10-28), each at its own
-	// default reasoning level; Astra only as the fallback for a model a plan
-	// refuses.
-	it("give GPT-6.1 Sol to every task but SIMPLE, which gets GPT-6.1 Terra, with no reasoning override", () => {
+	it("give GPT-6.2 Sol to every task but SIMPLE, which gets GPT-6.1 Terra, with no reasoning override", () => {
 		expect(CHATGPT_PLAN_TASK_DEFAULTS).toEqual({
-			COMPLEX: { model: "gpt-6.1-sol" },
-			REASONING: { model: "gpt-6.1-sol" },
-			TOOL_CALLING: { model: "gpt-6.1-sol" },
-			CHAT: { model: "gpt-6.1-sol" },
-			EVAL: { model: "gpt-6.1-sol" },
+			COMPLEX: { model: "gpt-6.2-sol" },
+			REASONING: { model: "gpt-6.2-sol" },
+			TOOL_CALLING: { model: "gpt-6.2-sol" },
+			CHAT: { model: "gpt-6.2-sol" },
+			EVAL: { model: "gpt-6.2-sol" },
 			SIMPLE: { model: "gpt-6.1-terra" },
 		});
+		expect(CHATGPT_PLAN_HEAVY_MODEL).toBe("gpt-6.2-astra");
 		expect(Object.values(CHATGPT_PLAN_TASK_DEFAULTS)).not.toContainEqual(
 			expect.objectContaining({ model: CHATGPT_PLAN_HEAVY_MODEL }),
 		);
 	});
 
 	it("price every plan model as a catalog API model", () => {
+		expect(chatGptPlanApiPriceReference("gpt-6.2-astra")).toBe(
+			"gpt-6.2-astra",
+		);
+		expect(chatGptPlanApiPriceReference("gpt-6.2-sol")).toBe("gpt-6.2-sol");
 		expect(chatGptPlanApiPriceReference("gpt-6-astra")).toBe("gpt-6-astra");
 		expect(chatGptPlanApiPriceReference("gpt-5.6-luna")).toBe("gpt-6-luna");
 		expect(chatGptPlanApiPriceReference("gpt-5.6-sol")).toBe("gpt-6-sol");
@@ -267,11 +268,11 @@ describe("resolveChatGptPlanModel against the plan's model list", () => {
 
 	it("keeps the chosen model while the plan lists it, or before it was ever checked", async () => {
 		expect((await resolveChatGptPlanModel(params)).model).toBe(
-			"gpt-6.1-sol",
+			"gpt-6.2-sol",
 		);
-		served("gpt-6.1-sol", "gpt-6-astra");
+		served("gpt-6.2-sol", "gpt-6-astra");
 		expect((await resolveChatGptPlanModel(params)).model).toBe(
-			"gpt-6.1-sol",
+			"gpt-6.2-sol",
 		);
 	});
 
@@ -287,7 +288,7 @@ describe("resolveChatGptPlanModel against the plan's model list", () => {
 		served("gpt-5.6-luna");
 		mocks.policy.mockResolvedValue({ fallbackModel: null });
 		await expect(resolveChatGptPlanModel(params)).rejects.toThrow(
-			new ChatGptPlanModelNotServedError("gpt-6.1-sol"),
+			new ChatGptPlanModelNotServedError("gpt-6.2-sol"),
 		);
 		mocks.policy.mockResolvedValue({ fallbackModel: "gpt-6-astra" });
 		await expect(resolveChatGptPlanModel(params)).rejects.toBeInstanceOf(
@@ -334,14 +335,14 @@ describe("a chat's own model choice on the plan", () => {
 		);
 
 	it("runs the chosen model when the serving plan serves it", async () => {
-		served("gpt-6.1-sol", "gpt-6-astra");
+		served("gpt-6.2-sol", "gpt-6-astra");
 		await expect(
 			resolveChatGptPlanModel({ ...params, override: "gpt-6-astra" }),
 		).resolves.toMatchObject({ model: "gpt-6-astra", pick: "gpt-6-astra" });
 	});
 
 	it("maps a catalog name to the plan's slug", async () => {
-		served("gpt-6.1-sol", "gpt-7-nova");
+		served("gpt-6.2-sol", "gpt-7-nova");
 		mocks.planSlugFor.mockResolvedValueOnce("gpt-7-nova");
 		await expect(
 			resolveChatGptPlanModel({
@@ -359,28 +360,28 @@ describe("a chat's own model choice on the plan", () => {
 	});
 
 	it("ignores a choice the plan does not serve, an unknown one, or one never checked", async () => {
-		served("gpt-6.1-sol");
+		served("gpt-6.2-sol");
 		const ignored = await resolveChatGptPlanModel({
 			...params,
 			override: "gpt-6-astra",
 		});
-		expect(ignored).toMatchObject({ model: "gpt-6.1-sol" });
+		expect(ignored).toMatchObject({ model: "gpt-6.2-sol" });
 		expect(ignored).not.toHaveProperty("pick");
 		await expect(
 			resolveChatGptPlanModel({ ...params, override: "claude-sonnet-5" }),
-		).resolves.toMatchObject({ model: "gpt-6.1-sol" });
+		).resolves.toMatchObject({ model: "gpt-6.2-sol" });
 		__resetChatGptPlanServedModelProbes();
 		mocks.served.mockResolvedValue([]);
 		await expect(
 			resolveChatGptPlanModel({ ...params, override: "gpt-6-astra" }),
-		).resolves.toMatchObject({ model: "gpt-6.1-sol" });
+		).resolves.toMatchObject({ model: "gpt-6.2-sol" });
 	});
 
 	it("keeps the task's reasoning effort on the chat's model", async () => {
-		served("gpt-6.1-sol", "gpt-6-astra");
+		served("gpt-6.2-sol", "gpt-6-astra");
 		const original = CHATGPT_PLAN_TASK_DEFAULTS.TOOL_CALLING;
 		CHATGPT_PLAN_TASK_DEFAULTS.TOOL_CALLING = {
-			model: "gpt-6.1-sol",
+			model: "gpt-6.2-sol",
 			reasoningEffort: "high",
 		};
 		try {
@@ -396,11 +397,11 @@ describe("a chat's own model choice on the plan", () => {
 	});
 
 	it("never fails because of a stale choice", async () => {
-		served("gpt-6.1-sol");
+		served("gpt-6.2-sol");
 		mocks.planSlugFor.mockRejectedValueOnce(new Error("database down"));
 		await expect(
 			resolveChatGptPlanModel({ ...params, override: "gpt-6-astra" }),
-		).resolves.toMatchObject({ model: "gpt-6.1-sol" });
+		).resolves.toMatchObject({ model: "gpt-6.2-sol" });
 	});
 });
 

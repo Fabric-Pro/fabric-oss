@@ -31,6 +31,7 @@ const OFF: GsRuntimeGates = {
 	parlumeMeetings: false,
 	credentialManager: false,
 	reportSuite: false,
+	cloudDriveFolders: false,
 };
 const ON: GsRuntimeGates = { ...OFF, glossyEdition: true };
 
@@ -90,6 +91,7 @@ describe("Get Started — Glossy edition page-tour component", () => {
 			parlumeMeetings: true,
 			credentialManager: false,
 			reportSuite: false,
+			cloudDriveFolders: true,
 		};
 		expect(componentIds(everyOtherGateOn)).not.toContain(
 			"documents-glossy",

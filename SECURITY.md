@@ -8,7 +8,11 @@ If you discover a security vulnerability in Fabric AI, please report it responsi
 
 ### How to Report
 
-Email: **support@fabric.pro**
+Use either private channel:
+
+- **GitHub private vulnerability reporting:** open a draft advisory at
+  <https://github.com/Fabric-Pro/fabric-oss/security/advisories/new>
+- **Email:** **support@fabric.pro**
 
 Include:
 - Description of the vulnerability
@@ -68,13 +72,19 @@ The following are out of scope:
 - Issues in third-party dependencies (report to the upstream project)
 - Issues requiring physical access to infrastructure
 
+## Publication and Scorecard
+
+Internal changes land through pull requests on a protected private staging branch, where the required checks run. A release pipeline then publishes each approved batch of those changes to the public repository as one commit, after publication scans pass. Those public commits are authored by a publication bot, so the public history does not show the pull request or any review behind an individual internal change. Public contributions are reviewed as described in [CONTRIBUTING.md](./CONTRIBUTING.md#how-your-pull-request-lands). The repository also publishes an [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/Fabric-Pro/fabric-oss).
+
 ## Code Scanning
 
 The public repository runs CodeQL (`security-extended` suite) on every push to `master` and weekly, from [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml). It deliberately does not run on pull requests: PR annotations post as review threads that the conversation-resolution rule on `master` would make the relay unable to squash. Alerts land in the Security tab, where they are visible only to people with write access, and are triaged there. The Semgrep step in `security.yml`'s single `security` job remains the PR-time SAST gate for both repositories.
 
+OpenSSF Scorecard results are a second source of alerts in the same tab, uploaded by [`.github/workflows/scorecard.yml`](./.github/workflows/scorecard.yml) on pushes to `master` and weekly; for the same reason it has no pull-request trigger. A Scorecard alert describes a repository practice, not a data flow, so the source-and-sink rule below does not apply to it: it is either fixed or dismissed with a reason that names the check and why the result is accepted. A result that follows from the publication flow described above, such as Code-Review, is dismissed as *won't fix* with a reference to that section.
+
 ### Triage policy
 
-Every alert is either fixed or dismissed in the alert itself with a reason that names the data source and the sink — never a bare "false positive". These are the standing rules. The first set was written when the initial baseline (250 alerts) from GitHub's default-setup scan was triaged; that scan ran only the default suite, so the workflow's first `security-extended` upload raised a second baseline (126 alerts, mostly in medium-precision families the default suite omits), triaged the same day under the rules added for those families:
+Every CodeQL alert is either fixed or dismissed in the alert itself with a reason that names the data source and the sink — never a bare "false positive". These are the standing rules. The first set was written when the initial baseline (250 alerts) from GitHub's default-setup scan was triaged; that scan ran only the default suite, so the workflow's first `security-extended` upload raised a second baseline (126 alerts, mostly in medium-precision families the default suite omits), triaged the same day under the rules added for those families:
 
 - **`js/request-forgery`** — fixed wherever the *host* of an outbound request can be influenced by a caller. A caller-influenced path segment on a host that is a literal, comes from a stored, validated integration configuration, or is validated at request time against an allow-list derived from the provider's own account metadata is dismissed as a false positive, naming the fixed host or the allow-list and where it comes from. A path-only pattern that decides whether to attach a credential (attachment fetchers) is fixed by pinning scheme and hostname, because the same predicate also gates where the secret is sent.
 - **`js/polynomial-redos`, `js/redos`** — fixed when the regex runs over unbounded input a caller can author directly: request bodies and parameters, user documents or chat text, uploads, third-party integration payloads, fetched web content. Dismissed as *won't fix* when the input is developer-authored (prompt templates, config, model identifiers, repository paths), length-bounded before matching — the dismissal names the schema or slice and establishes that it bounds *every* path into the regex, since a bound on one caller of an exported helper is not enough — or model output, which is bounded by the model's maximum output tokens and cannot be shaped precisely by a caller. Client-only code, where the cost falls on the caller's own browser tab, is also *won't fix*.
@@ -96,7 +106,7 @@ Every alert is either fixed or dismissed in the alert itself with a reason that 
 - **`js/identity-replacement`** — fixed outside tests: a replacement that maps its match to itself does nothing, so the intended replacement is restored or the call removed.
 - Test files are dismissed as *used in tests*.
 
-The alert's `dismissed_comment` field is capped at 280 characters by GitHub, so a dismissal is one dense sentence naming source and sink followed by `Policy: SECURITY.md § Code Scanning, <rule>.`; longer reasoning belongs in the fixing PR, not the alert.
+The alert's `dismissed_comment` field is capped at 280 characters by GitHub, so a CodeQL dismissal is one dense sentence naming source and sink followed by `Policy: SECURITY.md § Code Scanning, <rule>.`, and a Scorecard dismissal is one sentence naming the check and the reason followed by `Policy: SECURITY.md § Publication and Scorecard.` or `§ Code Scanning.`; longer reasoning belongs in the fixing PR, not the alert.
 
 A dismissal describes the code as it is. When a dismissed sink later gains an untrusted input, the alert is reopened and fixed rather than left under the old reason.
 

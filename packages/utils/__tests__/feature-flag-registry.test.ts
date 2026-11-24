@@ -1520,3 +1520,38 @@ describe("Decision Replay override-only resolution", () => {
 		},
 	);
 });
+
+describe("CLOUD_DRIVE_FOLDERS (#2808)", () => {
+	// Default OFF and per organization: one gate for the document folder UI,
+	// procedures and sync, enabled for an organization once the worker that
+	// runs the sync is live.
+	it("is registered off by default, on its own env var, and org-scopable", () => {
+		expect(isFeatureFlagKey("CLOUD_DRIVE_FOLDERS")).toBe(true);
+		expect(FEATURE_FLAG_REGISTRY.CLOUD_DRIVE_FOLDERS).toMatchObject({
+			envVar: "FABRIC_FEATURE_CLOUD_DRIVE_FOLDERS",
+			default: false,
+			orgScopable: true,
+		});
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("CLOUD_DRIVE_FOLDERS");
+	});
+
+	it("carries the worker-first rollout rule in its note", () => {
+		expect(FEATURE_FLAG_REGISTRY.CLOUD_DRIVE_FOLDERS.note).toContain(
+			"Enable an organization only after the Temporal worker that registers documentFolderSyncWorkflow is live.",
+		);
+	});
+
+	it("lets one organization be enabled while the deployment stays off", () => {
+		expect(resolveFlag("CLOUD_DRIVE_FOLDERS", {}, {})).toEqual({
+			enabled: false,
+			source: "default",
+		});
+		expect(
+			resolveFlag(
+				"CLOUD_DRIVE_FOLDERS",
+				{ org: true, global: false },
+				{},
+			),
+		).toEqual({ enabled: true, source: "org-override" });
+	});
+});

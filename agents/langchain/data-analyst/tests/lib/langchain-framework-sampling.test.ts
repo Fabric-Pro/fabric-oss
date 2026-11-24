@@ -95,3 +95,16 @@ it.each(["opus", "sonnet", "haiku"])(
 		});
 	},
 );
+
+it.each(["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-terra", "gpt-6-luna"])(
+	"sends OpenAI tools through Responses for %s",
+	async (model) => {
+		vi.stubEnv("OPENAI_API_KEY", "test-key");
+		await run(`openai/${model}`);
+		expect(captured.llm).toMatchObject({ useResponsesApi: true });
+		expect(captured.llm?.invocationParams({})).toMatchObject({
+			model,
+			temperature: undefined,
+		});
+	},
+);

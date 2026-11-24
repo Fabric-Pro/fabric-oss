@@ -196,6 +196,11 @@ const VISIBILITY_GATES = [
 	"hasGatewayProjectAccess",
 	"resolveGatewayProjectReadAccess",
 	"resolveGatewayWorkspaceReadAccess",
+	// `resolveGatewayProjectReadAccess` under an instruction-specific refusal.
+	// The two instruction proposal tools passed this check only through the
+	// `session.organizationId` in their inline audit context until that
+	// context moved into `gatewayAuditRequest`.
+	"resolveInstructionProjectAccess",
 	"tenantFilter(",
 	"session.organizationId",
 	// Opens a page as the caller, in the caller's organization: a caller who

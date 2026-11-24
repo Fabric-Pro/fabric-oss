@@ -9,27 +9,52 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({
-	projectFindUnique: vi.fn(),
-	connectFolders: vi.fn(),
-	disconnectFolder: vi.fn(),
-	listFolders: vi.fn(),
-	executeTool: vi.fn(),
-	signalWithStart: vi.fn(),
-	ownConnection: vi.fn(),
-	recordRead: vi.fn(),
-}));
+const mocks = vi.hoisted(() => {
+	class FolderConnectRefusedError extends Error {
+		constructor(
+			readonly reason: string,
+			readonly folderName: string,
+			readonly existingFolderName: string | null,
+		) {
+			super(reason);
+		}
+	}
+	return {
+		FolderConnectRefusedError,
+		projectFindUnique: vi.fn(),
+		documentFolderCount: vi.fn(),
+		connectFolders: vi.fn(),
+		disconnectFolder: vi.fn(),
+		listFolders: vi.fn(),
+		executeTool: vi.fn(),
+		signalWithStart: vi.fn(),
+		ownConnection: vi.fn(),
+		recordRead: vi.fn(),
+	};
+});
 
 vi.mock("@repo/database", () => ({
 	connectTranscriptFolders: mocks.connectFolders,
-	db: { project: { findUnique: mocks.projectFindUnique } },
+	db: {
+		project: { findUnique: mocks.projectFindUnique },
+		projectDocumentFolder: { count: mocks.documentFolderCount },
+	},
 	disconnectTranscriptFolder: mocks.disconnectFolder,
+	DOCUMENT_FOLDER_MAX_PER_PROJECT: 20,
+	FolderConnectRefusedError: mocks.FolderConnectRefusedError,
 	listTranscriptFolders: mocks.listFolders,
 	recordTranscriptFolderRead: mocks.recordRead,
 	resolveOwnWorkflowIntegrationForProvider: mocks.ownConnection,
 }));
 
-vi.mock("@repo/integrations/microsoft", () => ({
+// The real path helper, from its own file: the whole Microsoft module would
+// also load AI setup that the database mock above does not provide.
+vi.mock("@repo/integrations/microsoft", async () => ({
+	driveItemPath: (
+		await vi.importActual<
+			typeof import("../../../../../../integrations/src/microsoft/drive-folder")
+		>("../../../../../../integrations/src/microsoft/drive-folder")
+	).driveItemPath,
 	executeMicrosoftTeamsTool: mocks.executeTool,
 	isMicrosoftNotConnectedError: (message: string) =>
 		message.includes("Microsoft not connected"),
@@ -118,6 +143,7 @@ beforeEach(() => {
 	mocks.executeTool.mockResolvedValue({ items: [], truncated: false });
 	mocks.ownConnection.mockResolvedValue({ id: "conn-1" });
 	mocks.recordRead.mockResolvedValue(undefined);
+	mocks.documentFolderCount.mockResolvedValue(0);
 });
 
 describe("browseFolders", () => {
@@ -277,6 +303,153 @@ describe("connectFolders", () => {
 			}),
 		).rejects.toMatchObject({ code: "BAD_REQUEST" });
 		expect(mocks.connectFolders).not.toHaveBeenCalled();
+	});
+});
+
+describe("connectFolders beside document folders", () => {
+	it("refuses a folder connected as a document folder, naming it", async () => {
+		mocks.connectFolders.mockRejectedValue(
+			new mocks.FolderConnectRefusedError(
+				"SAME_AS_DOCUMENT_FOLDER",
+				"Transcripts",
+				"Sales",
+			),
+		);
+
+		const refused = connect({
+			input: { projectId: "project-1", folders: [FOLDER] },
+			context: CONTEXT,
+		});
+
+		await expect(refused).rejects.toMatchObject({
+			code: "CONFLICT",
+			data: {
+				code: "SAME_AS_DOCUMENT_FOLDER",
+				existingFolderName: "Sales",
+			},
+		});
+		await expect(refused).rejects.toThrow(/"Sales"/);
+		expect(mocks.signalWithStart).not.toHaveBeenCalled();
+	});
+
+	it("passes each folder's drive path from Graph while document folders are connected", async () => {
+		mocks.documentFolderCount.mockResolvedValue(1);
+		mocks.executeTool.mockImplementation(async (method: string) =>
+			method === "get_drive_item"
+				? {
+						status: "ok",
+						item: {
+							id: "folder-1",
+							name: "Transcripts",
+							driveId: "drive-1",
+							driveType: "business",
+							provider: "onedrive",
+							isFolder: true,
+							webUrl: null,
+							parentPath: "/Sales",
+						},
+					}
+				: { items: [], truncated: false },
+		);
+		mocks.connectFolders.mockRejectedValue(
+			new mocks.FolderConnectRefusedError(
+				"OVERLAPS_DOCUMENT_FOLDER",
+				"Transcripts",
+				"Sales",
+			),
+		);
+
+		await expect(
+			connect({
+				input: { projectId: "project-1", folders: [FOLDER] },
+				context: CONTEXT,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			data: { code: "OVERLAPS_DOCUMENT_FOLDER" },
+		});
+		expect(mocks.documentFolderCount).toHaveBeenCalledWith({
+			where: { projectId: "project-1", disconnectedAt: null },
+		});
+		expect(mocks.connectFolders).toHaveBeenCalledWith(
+			expect.objectContaining({
+				folders: [{ ...FOLDER, drivePath: "/Sales/Transcripts" }],
+			}),
+		);
+	});
+
+	it("still connects, without a path, a folder whose lookup finds nothing", async () => {
+		mocks.documentFolderCount.mockResolvedValue(1);
+		mocks.executeTool.mockImplementation(async (method: string) =>
+			method === "get_drive_item"
+				? { status: "failed", httpStatus: 404, retryAfterSeconds: null }
+				: { items: [], truncated: false },
+		);
+
+		expect(
+			await connect({
+				input: { projectId: "project-1", folders: [FOLDER] },
+				context: CONTEXT,
+			}),
+		).toEqual({ connected: 1, importStarted: true });
+		expect(mocks.connectFolders).toHaveBeenCalledWith(
+			expect.objectContaining({ folders: [FOLDER] }),
+		);
+	});
+
+	it.each([
+		[
+			"answers with an error",
+			async () => ({
+				status: "failed",
+				httpStatus: 503,
+				retryAfterSeconds: null,
+			}),
+		],
+		[
+			"throws",
+			async () => {
+				throw new Error("socket hang up at graph.example.com");
+			},
+		],
+	])(
+		"refuses the connect when a folder's path lookup %s, so the overlap check is not skipped",
+		async (_case, lookup) => {
+			mocks.documentFolderCount.mockResolvedValue(1);
+			mocks.executeTool.mockImplementation(async (method: string) =>
+				method === "get_drive_item"
+					? lookup()
+					: { items: [], truncated: false },
+			);
+
+			const refused = connect({
+				input: { projectId: "project-1", folders: [FOLDER] },
+				context: CONTEXT,
+			});
+
+			await expect(refused).rejects.toMatchObject({
+				code: "BAD_GATEWAY",
+				message:
+					"Microsoft could not be reached. Try again in a moment.",
+			});
+			expect(mocks.connectFolders).not.toHaveBeenCalled();
+			expect(mocks.signalWithStart).not.toHaveBeenCalled();
+		},
+	);
+
+	it("reads no paths when no document folder is connected", async () => {
+		await connect({
+			input: { projectId: "project-1", folders: [FOLDER] },
+			context: CONTEXT,
+		});
+
+		expect(mocks.executeTool).not.toHaveBeenCalledWith(
+			"get_drive_item",
+			expect.anything(),
+			expect.anything(),
+			expect.anything(),
+			expect.anything(),
+		);
 	});
 });
 

@@ -1,9 +1,22 @@
-import { llmInstrumentation } from "@repo/observability/llm";
+import {
+	type LLMTokenUsage,
+	llmInstrumentation,
+} from "@repo/observability/llm";
 import type { LanguageModelMiddleware } from "ai";
 
 interface LLMTelemetryContext {
 	provider: string;
 	model: string;
+	/** Observes provider failure before SDK conversion, with all counts seen so far. */
+	captureFailedReply?: <T>(
+		observe: (usage: Readonly<LLMTokenUsage>) => void,
+		call: () => PromiseLike<T>,
+	) => PromiseLike<T>;
+}
+
+interface FailedReply {
+	failed: boolean;
+	usage?: Readonly<LLMTokenUsage>;
 }
 
 interface TokenUsageSource {
@@ -34,9 +47,11 @@ function usageOf(value: unknown) {
 function instrumentStream<T extends { type: string }>(
 	stream: ReadableStream<T>,
 	invocation: ReturnType<typeof llmInstrumentation.startInvocation>,
+	reply: FailedReply,
 ): ReadableStream<T> {
 	const reader = stream.getReader();
 	let terminal = false;
+	let failure: { error?: unknown } | undefined;
 
 	return new ReadableStream({
 		async pull(controller) {
@@ -45,25 +60,43 @@ function instrumentStream<T extends { type: string }>(
 				if (result.done) {
 					if (!terminal) {
 						terminal = true;
-						invocation.fail();
+						invocation.fail(failure?.error, reply.usage);
 					}
 					controller.close();
 					return;
 				}
 
 				const chunk = result.value;
-				if (!terminal && chunk.type === "finish") {
+				if (!terminal && chunk.type === "error") {
+					// Some providers report a failed reply's usage on the finish chunk.
+					failure ??= chunk as { error?: unknown };
+				} else if (!terminal && chunk.type === "finish") {
 					terminal = true;
-					invocation.succeed(usageOf(chunk));
-				} else if (!terminal && chunk.type === "error") {
-					terminal = true;
-					invocation.fail((chunk as { error?: unknown }).error);
+					const { finishReason } = chunk as {
+						finishReason?: { unified: string };
+					};
+					const usage = usageOf(chunk);
+					if (
+						failure ||
+						reply.failed ||
+						finishReason?.unified === "error"
+					) {
+						invocation.fail(failure?.error, {
+							inputTokens:
+								reply.usage?.inputTokens ?? usage?.inputTokens,
+							outputTokens:
+								reply.usage?.outputTokens ??
+								usage?.outputTokens,
+						});
+					} else {
+						invocation.succeed(usage);
+					}
 				}
 				controller.enqueue(chunk);
 			} catch (error) {
 				if (!terminal) {
 					terminal = true;
-					invocation.fail(error);
+					invocation.fail(failure?.error ?? error, reply.usage);
 				}
 				controller.error(error);
 			}
@@ -71,7 +104,11 @@ function instrumentStream<T extends { type: string }>(
 		async cancel(reason) {
 			if (!terminal) {
 				terminal = true;
-				invocation.cancel();
+				if (failure || reply.failed) {
+					invocation.fail(failure?.error, reply.usage);
+				} else {
+					invocation.cancel();
+				}
 			}
 			await reader.cancel(reason);
 		},
@@ -85,32 +122,40 @@ function instrumentStream<T extends { type: string }>(
 export function createLLMTelemetryMiddleware(
 	context: LLMTelemetryContext,
 ): LanguageModelMiddleware {
+	const { captureFailedReply = (_observe, call) => call() } = context;
+	const capture = <T>(reply: FailedReply, call: () => PromiseLike<T>) =>
+		captureFailedReply((usage) => {
+			reply.failed = true;
+			reply.usage = usage;
+		}, call);
 	return {
 		specificationVersion: "v4",
 		wrapGenerate: async ({ doGenerate }) => {
 			const invocation = llmInstrumentation.startInvocation(context);
+			const reply: FailedReply = { failed: false };
 			try {
-				const result = await doGenerate();
+				const result = await capture(reply, doGenerate);
 				invocation.succeed(usageOf(result));
 				return result;
 			} catch (error) {
-				invocation.fail(error);
+				invocation.fail(error, reply.usage);
 				throw error;
 			}
 		},
 		wrapStream: async ({ doStream }) => {
 			const invocation = llmInstrumentation.startInvocation(context);
+			const reply: FailedReply = { failed: false };
 			let result: Awaited<ReturnType<typeof doStream>>;
 			try {
-				result = await doStream();
+				result = await capture(reply, doStream);
 			} catch (error) {
-				invocation.fail(error);
+				invocation.fail(error, reply.usage);
 				throw error;
 			}
 			try {
 				return {
 					...result,
-					stream: instrumentStream(result.stream, invocation),
+					stream: instrumentStream(result.stream, invocation, reply),
 				};
 			} catch {
 				invocation.cancel();

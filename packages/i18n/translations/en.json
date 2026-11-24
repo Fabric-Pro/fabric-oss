@@ -1854,6 +1854,13 @@
 						"restored": "Meeting restored",
 						"sync_stopped": "Meeting syncing stopped or resumed"
 					},
+					"document_folder": {
+						"connected": "Document folder connected",
+						"reconnected": "Document folder reconnected",
+						"updated": "Document folder description changed",
+						"removals_confirmed": "Held document folder removals confirmed",
+						"disconnected": "Document folder disconnected"
+					},
 					"parlume": {
 						"action_confirmed": "Parlume change confirmed",
 						"action_dismissed": "Parlume change dismissed",
@@ -4014,6 +4021,10 @@
 					"save": "Verify and save destination",
 					"saving": "Verifying destination…"
 				}
+			},
+			"documentFolderSource": {
+				"onedrive": "OneDrive · folder",
+				"sharepoint": "SharePoint · folder"
 			},
 			"contextRetry": {
 				"action": "Retry",
@@ -10568,6 +10579,10 @@
 			"deleteContext": {
 				"label": "Remove this context item from the project.",
 				"warning": "Warning: this runs immediately with no confirm dialog and cannot be undone. The original source is not changed."
+			},
+			"deleteContextFolderNote": {
+				"onedrive": "It won't be imported again until the file changes in OneDrive.",
+				"sharepoint": "It won't be imported again until the file changes in SharePoint."
 			},
 			"browseFiles": "Open your system file picker to choose a file to upload.",
 			"removeSelectedFile": "Remove this file from the upload queue. Nothing is uploaded until you submit.",

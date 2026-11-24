@@ -12,6 +12,13 @@
  */
 
 import { db, type Prisma } from "../../client";
+import {
+	FOLDER_CONNECT_TRANSACTION,
+	FolderConnectRefusedError,
+	foldersOverlap,
+	lockProjectFolderConnects,
+	sameItem,
+} from "./document-folders";
 
 export const TRANSCRIPT_FOLDER_FILE_STATUS = {
 	PENDING: "PENDING",
@@ -36,6 +43,11 @@ export interface TranscriptFolderSelection {
 	itemId: string;
 	name: string;
 	webUrl?: string | null;
+	/**
+	 * The folder's path in its drive, from Graph. With it, a folder that holds
+	 * or lies in a connected document folder is refused too.
+	 */
+	drivePath?: string | null;
 }
 
 /**
@@ -54,37 +66,79 @@ export async function connectTranscriptFolders(params: {
 	organizationId?: string;
 	folders: TranscriptFolderSelection[];
 }) {
-	const connected = await db.$transaction(
-		params.folders.map((folder) =>
-			db.projectTranscriptFolder.upsert({
-				where: {
-					projectId_driveId_itemId: {
+	const connected = await db.$transaction(async (tx) => {
+		// Under the lock document-folder connects take, so a document folder
+		// cannot be connected over this one at the same moment.
+		await lockProjectFolderConnects(tx, params.projectId);
+		const documentFolders = await tx.projectDocumentFolder.findMany({
+			where: { projectId: params.projectId, disconnectedAt: null },
+			select: {
+				driveId: true,
+				itemId: true,
+				name: true,
+				drivePath: true,
+			},
+		});
+		for (const folder of params.folders) {
+			for (const documentFolder of documentFolders) {
+				if (sameItem(documentFolder, folder)) {
+					throw new FolderConnectRefusedError(
+						"SAME_AS_DOCUMENT_FOLDER",
+						folder.name,
+						documentFolder.name,
+					);
+				}
+				if (
+					foldersOverlap(
+						{
+							driveId: folder.driveId,
+							drivePath: folder.drivePath ?? null,
+						},
+						documentFolder,
+					)
+				) {
+					throw new FolderConnectRefusedError(
+						"OVERLAPS_DOCUMENT_FOLDER",
+						folder.name,
+						documentFolder.name,
+					);
+				}
+			}
+		}
+		const saved = [];
+		for (const folder of params.folders) {
+			saved.push(
+				await tx.projectTranscriptFolder.upsert({
+					where: {
+						projectId_driveId_itemId: {
+							projectId: params.projectId,
+							driveId: folder.driveId,
+							itemId: folder.itemId,
+						},
+					},
+					create: {
 						projectId: params.projectId,
 						driveId: folder.driveId,
 						itemId: folder.itemId,
+						name: folder.name,
+						webUrl: folder.webUrl ?? null,
+						userId: params.userId,
+						organizationId: params.organizationId,
 					},
-				},
-				create: {
-					projectId: params.projectId,
-					driveId: folder.driveId,
-					itemId: folder.itemId,
-					name: folder.name,
-					webUrl: folder.webUrl ?? null,
-					userId: params.userId,
-					organizationId: params.organizationId,
-				},
-				update: {
-					name: folder.name,
-					webUrl: folder.webUrl ?? null,
-					userId: params.userId,
-					disconnectedAt: null,
-					lastSyncError: null,
-					discoveredAt: null,
-				},
-				select: { id: true },
-			}),
-		),
-	);
+					update: {
+						name: folder.name,
+						webUrl: folder.webUrl ?? null,
+						userId: params.userId,
+						disconnectedAt: null,
+						lastSyncError: null,
+						discoveredAt: null,
+					},
+					select: { id: true },
+				}),
+			);
+		}
+		return saved;
+	}, FOLDER_CONNECT_TRANSACTION);
 	await db.projectTranscriptFolderFile.updateMany({
 		where: {
 			folderId: { in: connected.map((folder) => folder.id) },

@@ -1376,7 +1376,7 @@ function isAzureResponsesApiModel(model: string): boolean {
  * @param options - Model creation options
  * @returns A LangChain BaseChatModel instance
  */
-function createUninstrumentedProviderModel(
+function buildProviderModel(
 	config: RuntimeProviderConfig,
 	options: ModelOptions = {},
 ): BaseChatModel {
@@ -2041,6 +2041,13 @@ function createChatGptPlanChatModel(
 	return new ChatOpenAI({
 		model,
 		apiKey: "chatgpt-plan",
+		// bindTools builds a new ChatOpenAI from these constructor options.
+		callbacks: [
+			createLangChainTelemetryCallback({
+				provider: "OPENAI_CHATGPT_PLAN",
+				model,
+			}),
+		],
 		useResponsesApi: true,
 		zdrEnabled: true,
 		maxRetries: DEFAULT_MAX_RETRIES,
@@ -2048,6 +2055,8 @@ function createChatGptPlanChatModel(
 			baseURL: `${CHATGPT_PLAN_ORIGIN}/v1`,
 			fetch: createChatGptPlanFetch({
 				sessionKey,
+				// LangChain's chunk converter ignores a failed Responses event.
+				throwOnFailedStream: true,
 				getAccessToken: async () => accessToken,
 				onExhausted: async ({ resetAt }) => {
 					// Every process stops sending this plan work until it
@@ -2072,17 +2081,19 @@ export function createProviderModel(
 	config: RuntimeProviderConfig,
 	options: ModelOptions = {},
 ): BaseChatModel {
-	const model = createUninstrumentedProviderModel(config, options);
+	const model = buildProviderModel(config, options);
 	recordServedModel(model, {
 		provider: config.provider,
 		model: config.model,
 	});
-	model.callbacks = [
-		createLangChainTelemetryCallback({
-			provider: config.provider ?? "unknown",
-			model: config.model,
-		}),
-	];
+	if (config.provider !== "OPENAI_CHATGPT_PLAN") {
+		model.callbacks = [
+			createLangChainTelemetryCallback({
+				provider: config.provider ?? "unknown",
+				model: config.model,
+			}),
+		];
+	}
 	return model;
 }
 

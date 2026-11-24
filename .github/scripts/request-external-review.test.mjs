@@ -168,8 +168,11 @@ test("keeps the privileged workflow free of checkout and PR interpolation", () =
 	);
 	assert.doesNotMatch(workflow, /uses:/);
 	assert.doesNotMatch(runBlock, /\$\{\{ github\.event/);
+	// The workflow default is read-only; only the job that requests the review
+	// holds the write permission.
+	assert.match(workflow, /\npermissions:\n {2}contents: read\n\njobs:/);
 	assert.match(
 		workflow,
-		/permissions:\n {2}contents: read\n {2}pull-requests: write/,
+		/\n {4}permissions:\n {6}contents: read\n {6}pull-requests: write\n/,
 	);
 });

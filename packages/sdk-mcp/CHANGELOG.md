@@ -1,5 +1,13 @@
 # @fabricorg/sdk-mcp
 
+## 0.2.6
+
+### Patch Changes
+
+- 706772d: The CLI, SDK, MCP SDK and integration packages now ship READMEs covering installation, authentication and their public interfaces.
+- Updated dependencies [706772d]
+  - @fabricorg/sdk@0.8.5
+
 ## 0.2.5
 
 ### Patch Changes

@@ -21,6 +21,7 @@ const OFF: GsRuntimeGates = {
 	parlumeMeetings: false,
 	credentialManager: false,
 	reportSuite: false,
+	cloudDriveFolders: false,
 };
 const ON: GsRuntimeGates = { ...OFF, reportSuite: true };
 

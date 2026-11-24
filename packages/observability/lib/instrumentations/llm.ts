@@ -155,8 +155,8 @@ export interface LLMSuccessDetails {
 export interface LLMInvocation {
 	/** Finish the invocation successfully. Duplicate terminal signals are ignored. */
 	succeed(usage?: LLMTokenUsage, details?: LLMSuccessDetails): void;
-	/** Finish the invocation as failed without recording the error message or stack. */
-	fail(error?: unknown): void;
+	/** Finish with any reported usage. The error message and stack are excluded. */
+	fail(error?: unknown, usage?: LLMTokenUsage): void;
 	/** Finish an invocation whose streaming consumer cancelled it. */
 	cancel(): void;
 }
@@ -345,7 +345,7 @@ function startInvocation(options: LLMInvocationOptions): LLMInvocation {
 		return {
 			succeed: (usage, details) =>
 				finish("success", usage, undefined, details),
-			fail: (error) => finish("error", undefined, error),
+			fail: (error, usage) => finish("error", usage, error),
 			cancel: () => finish("cancelled"),
 		};
 	} catch {

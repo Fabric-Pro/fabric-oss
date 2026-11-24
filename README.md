@@ -1,6 +1,14 @@
 # Fabric Portal
 
-A production-ready SaaS platform with multi-tenant architecture, AI agent orchestration, and durable workflow execution.
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Fabric-Pro/fabric-oss/badge)](https://scorecard.dev/viewer/?uri=github.com/Fabric-Pro/fabric-oss) [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/17084/badge)](https://www.bestpractices.dev/projects/17084)
+
+Fabric is an AI-powered software delivery (SDLC) platform for software teams.
+It keeps an organization's projects, feature specifications, documents and
+connected codebases in one workspace, and uses AI agents and durable workflows
+to help teams plan, specify, build and ship software.
+
+Under the hood it is a multi-tenant SaaS platform with AI agent orchestration
+and durable workflow execution.
 
 ## Architecture
 

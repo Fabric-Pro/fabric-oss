@@ -6,13 +6,19 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { confidentialMock, generateEmbeddingsMock, searchMock, getContextMock } =
-	vi.hoisted(() => ({
-		confidentialMock: vi.fn(),
-		generateEmbeddingsMock: vi.fn(),
-		searchMock: vi.fn(),
-		getContextMock: vi.fn(),
-	}));
+const {
+	confidentialMock,
+	generateEmbeddingsMock,
+	searchMock,
+	getContextMock,
+	folderGuidanceMock,
+} = vi.hoisted(() => ({
+	confidentialMock: vi.fn(),
+	generateEmbeddingsMock: vi.fn(),
+	searchMock: vi.fn(),
+	getContextMock: vi.fn(),
+	folderGuidanceMock: vi.fn(),
+}));
 
 vi.mock("@repo/ai", () => ({
 	getEmbeddingRAGProviderConfig: vi.fn(async () => ({ provider: "openai" })),
@@ -22,6 +28,7 @@ vi.mock("@repo/database", () => ({
 	getRetrievableContextById: getContextMock,
 	loadProjectDatabricksKnowledgeBinding: vi.fn(),
 	fetchCredentialsByIdInTenant: vi.fn(),
+	withInheritedSourceGuidance: folderGuidanceMock,
 }));
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -76,6 +83,9 @@ beforeEach(() => {
 	confidentialMock.mockResolvedValue(
 		new Set(["ctx-parlume-transcript", "ctx-secret-transcript"]),
 	);
+	folderGuidanceMock.mockImplementation(
+		async ({ rows }: { rows: Array<{ id: string }> }) => rows,
+	);
 });
 
 describe("retrieveRelevantContextsForSpec and confidential transcripts", () => {
@@ -109,5 +119,43 @@ describe("retrieveRelevantContextsForSpec and confidential transcripts", () => {
 		expect(getContextMock).not.toHaveBeenCalledWith(
 			"ctx-secret-transcript",
 		);
+	});
+});
+
+describe("retrieveRelevantContextsForSpec and document-folder guidance", () => {
+	it("gives a folder file its folder's description, resolved once for the whole batch", async () => {
+		folderGuidanceMock.mockImplementation(
+			async ({
+				rows,
+			}: {
+				rows: Array<{ id: string; aiInstructions?: string | null }>;
+			}) =>
+				rows.map((row) =>
+					row.id === "ctx-prd"
+						? { ...row, aiInstructions: "Signed case studies" }
+						: row,
+				),
+		);
+
+		const results = await retrieveRelevantContextsForSpec({
+			projectId: "proj_1",
+			userId: "user_1",
+			organizationId: "org_1",
+			specMarkdown: "# PRD\n\nThe rollout plan.",
+			baselineDate: new Date("2026-01-01T00:00:00Z"),
+			topK: 5,
+		});
+
+		expect(
+			results.find((result) => result.id === "ctx-prd")?.aiInstructions,
+		).toBe("Signed case studies");
+		expect(
+			results.find((result) => result.id === "ctx-notes")?.aiInstructions,
+		).toBeUndefined();
+		expect(folderGuidanceMock).toHaveBeenCalledTimes(1);
+		expect(folderGuidanceMock.mock.calls[0]?.[0].projectId).toBe("proj_1");
+		for (const call of getContextMock.mock.calls) {
+			expect(call[1]).toEqual({ inheritFolderGuidance: false });
+		}
 	});
 });

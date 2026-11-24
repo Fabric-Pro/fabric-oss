@@ -28,6 +28,8 @@ vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
 		.mockResolvedValue({ availability: "UPLOAD", readState: "DIRECT" }),
 }));
 vi.mock("@repo/database", () => ({
+	// The gateway project gates refuse an organization being deleted.
+	isOrganizationLive: async () => true,
 	db: { userStory: { findFirst: mocks.findFirst } },
 	isOrganizationMember: mocks.isOrganizationMember,
 	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),

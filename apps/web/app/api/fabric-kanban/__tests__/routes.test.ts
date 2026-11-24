@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	// The gateway project gates refuse an organization being deleted.
+	isOrganizationLive: async () => true,
 	db: {
 		organizationApiKey: {
 			findFirst: mocks.organizationKeyFind,

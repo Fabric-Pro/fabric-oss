@@ -347,6 +347,8 @@ describe("the catalog seed", () => {
 		);
 		for (const slug of [
 			"gpt-6.1-sol",
+			"gpt-6.2-sol",
+			"gpt-6.2-astra",
 			"gpt-6.1-terra",
 			"gpt-6-sol",
 			"gpt-6-luna",
@@ -364,10 +366,11 @@ describe("the catalog seed", () => {
 		);
 		expect(planDefaults).toMatchObject({
 			SIMPLE: "gpt-6.1-terra",
-			COMPLEX: "gpt-6.1-sol",
-			REASONING: "gpt-6.1-sol",
-			TOOL_CALLING: "gpt-6.1-sol",
-			CHAT: "gpt-6.1-sol",
+			COMPLEX: "gpt-6.2-sol",
+			REASONING: "gpt-6.2-sol",
+			TOOL_CALLING: "gpt-6.2-sol",
+			CHAT: "gpt-6.2-sol",
+			EVAL: "gpt-6.2-sol",
 		});
 	});
 
@@ -488,7 +491,7 @@ describe("setChatGptPlanOrgFallbackModel", () => {
 				organizationId: "org_a",
 				slug: "gpt-5.6-sol",
 			}),
-		).resolves.toEqual({ saved: true, before: "gpt-6-astra" });
+		).resolves.toEqual({ saved: true, before: "gpt-6.2-astra" });
 		expect(store.policy).toMatchObject({ fallbackModel: "gpt-5.6-sol" });
 	});
 

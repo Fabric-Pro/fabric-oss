@@ -7,6 +7,7 @@ const h = vi.hoisted(() => ({
 	pages: vi.fn(),
 	context: vi.fn(),
 	sparse: vi.fn(),
+	folderGuidance: vi.fn(),
 }));
 vi.mock("@repo/rag/lib/project-contexts/client", () => ({
 	qdrantClient: { query: h.query, search: h.search },
@@ -28,6 +29,7 @@ vi.mock("@repo/database", () => ({
 	findConfidentialTranscriptContextIds: async () => new Set<string>(),
 	getRetrievableContextById: h.context,
 	getRetrievableConversationBundleById: vi.fn(),
+	withInheritedSourceGuidance: h.folderGuidance,
 	getProjectRagSettings: async () => ({
 		topK: 7,
 		similarityThreshold: 0.67,
@@ -94,6 +96,9 @@ beforeEach(async () => {
 	h.rows.mockResolvedValue([]);
 	h.pages.mockResolvedValue([{ id: page.id }]);
 	h.context.mockResolvedValue(page);
+	h.folderGuidance.mockImplementation(
+		async ({ rows }: { rows: unknown[] }) => rows,
+	);
 });
 
 for (const operation of [
@@ -127,7 +132,9 @@ for (const operation of [
 
 		it("hydrates a URL-page hit into the activity result", async () => {
 			expect(await operation.call()).toEqual([page.content]);
-			expect(h.context).toHaveBeenCalledWith(page.id);
+			expect(h.context).toHaveBeenCalledWith(page.id, {
+				inheritFolderGuidance: false,
+			});
 		});
 
 		it("uses dense search and still returns context when sparse encoding fails", async () => {
@@ -178,4 +185,44 @@ it("passes the configured document semantic threshold to the dense prefetch", as
 	expect(query.prefetch[0].score_threshold).toBe(0.67);
 	expect(query.prefetch[1]).not.toHaveProperty("score_threshold");
 	expect(query).not.toHaveProperty("score_threshold");
+});
+
+it("heads a document-folder file with its folder's description as source guidance", async () => {
+	const file = {
+		id: "example-file",
+		type: "DOCUMENT",
+		content: "Case study body",
+		metadata: { provider: "sharepoint-documents" },
+		sourceTitle: "case-study.docx",
+		aiInstructions: null,
+	};
+	h.query.mockResolvedValue({
+		points: [
+			{
+				...point,
+				payload: {
+					...point.payload,
+					contextId: file.id,
+					type: "DOCUMENT",
+				},
+			},
+		],
+	});
+	h.rows.mockResolvedValue([file]);
+	h.pages.mockResolvedValue([]);
+	// The database helper answers for the connected folder's file ledger.
+	h.folderGuidance.mockImplementation(
+		async ({ rows }: { rows: Array<{ id: string }> }) =>
+			rows.map((row) =>
+				row.id === file.id
+					? { ...row, aiInstructions: "Signed case studies" }
+					: row,
+			),
+	);
+
+	expect(await documentContexts({ ...tenant, documentType: "PRD" })).toEqual([
+		"[Source guidance: Signed case studies]\nCase study body",
+	]);
+	expect(h.folderGuidance).toHaveBeenCalledTimes(1);
+	expect(h.folderGuidance.mock.calls[0][0].projectId).toBe(tenant.projectId);
 });

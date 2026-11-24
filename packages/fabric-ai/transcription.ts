@@ -15,7 +15,7 @@
  * - full: transcribes as hybrid; audio never runs on Fabric's own keys
  *
  * Supported providers and models:
- * - OpenAI: whisper-1, gpt-4o-transcribe, gpt-4o-mini-transcribe
+ * - OpenAI: gpt-transcribe, whisper-1, gpt-4o-transcribe, gpt-4o-mini-transcribe
  * - Groq: whisper-large-v3-turbo, whisper-large-v3
  */
 
@@ -55,6 +55,7 @@ export const MAX_AUDIO_FILE_SIZE = 25 * 1024 * 1024;
 /** Allowed transcription models by provider */
 export const TRANSCRIPTION_MODELS = {
 	openai: [
+		"gpt-transcribe",
 		"whisper-1",
 		"gpt-4o-transcribe",
 		"gpt-4o-mini-transcribe",
@@ -394,7 +395,13 @@ async function transcribeHybrid(
 				finalModelName as GroqTranscriptionModel,
 			);
 		} else {
-			// OpenAI (default)
+			// The installed SDK sends the legacy language field and verbose_json
+			// together. GPT-Transcribe expects language hints in languages[].
+			if (finalModelName === "gpt-transcribe" && language) {
+				throw new Error(
+					"GPT-Transcribe cannot use a language hint through this SDK. Omit the hint or select Whisper.",
+				);
+			}
 			const openai = createOpenAI({
 				apiKey,
 				// Don't use gateway baseURL for transcription since it doesn't support it

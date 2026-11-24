@@ -1152,7 +1152,7 @@ export function createUnifiedServer(
 		const body = await c.req.json().catch(() => ({}));
 		const threadId =
 			body.thread_id ||
-			`thread_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+			`thread_${Date.now()}_${randomBytes(16).toString("hex")}`;
 		const thread = {
 			thread_id: threadId,
 			created_at: new Date().toISOString(),

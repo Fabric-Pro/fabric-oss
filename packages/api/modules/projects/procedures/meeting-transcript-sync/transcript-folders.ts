@@ -9,6 +9,7 @@ import {
 } from "@repo/database";
 import {
 	type DriveFolderItem,
+	type DriveItemDetailsResult,
 	executeMicrosoftTeamsTool,
 	isMicrosoftNotConnectedError,
 } from "@repo/integrations/microsoft";
@@ -26,6 +27,10 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	folderConnectRefusal,
+	folderDrivePath,
+} from "../../lib/folder-connect-refusal";
 
 /**
  * OneDrive transcript folders (Fizzy #3507).
@@ -38,6 +43,13 @@ import {
 
 const MICROSOFT_NOT_CONNECTED =
 	"Connect your Microsoft account in Settings → Integrations to choose OneDrive folders.";
+
+/** A folder's path could not be looked up now; Graph's text stays out. */
+function pathLookupFailed() {
+	return new ORPCError("BAD_GATEWAY", {
+		message: "Microsoft could not be reached. Try again in a moment.",
+	});
+}
 
 /**
  * The project, from its own row: the tenant never comes from the input. Each
@@ -242,12 +254,65 @@ export const connectTranscriptFoldersProcedure = tenantProtectedProcedure
 			}
 		}
 
-		const connected = await connectTranscriptFolders({
-			projectId: input.projectId,
-			userId: context.user.id,
-			organizationId,
-			folders: input.folders,
+		// Beside connected document folders, each folder's drive path lets the
+		// connect refuse one that holds or lies inside one of them. A lookup
+		// that finds nothing connects without a path, so only the same folder
+		// is refused; one that fails otherwise refuses the connect, to be
+		// tried again, rather than skip the overlap check.
+		const documentFolders = await db.projectDocumentFolder.count({
+			where: { projectId: input.projectId, disconnectedAt: null },
 		});
+		const folders =
+			documentFolders === 0
+				? input.folders
+				: await Promise.all(
+						input.folders.map(async (folder) => {
+							const found = (await executeMicrosoftTeamsTool(
+								"get_drive_item",
+								{
+									driveId: folder.driveId,
+									itemId: folder.itemId,
+								},
+								context.user.id,
+								organizationId,
+								connectionId,
+							).catch((error: unknown) => {
+								logger.warn(
+									"[TranscriptFolders] Folder path lookup failed",
+									{
+										projectId: input.projectId,
+										errorName:
+											error instanceof Error
+												? error.name
+												: typeof error,
+									},
+								);
+								throw pathLookupFailed();
+							})) as DriveItemDetailsResult;
+							if (found.status === "ok") {
+								return {
+									...folder,
+									drivePath: folderDrivePath(found.item),
+								};
+							}
+							if (found.httpStatus === 404) {
+								return folder;
+							}
+							throw pathLookupFailed();
+						}),
+					);
+
+		let connected: Awaited<ReturnType<typeof connectTranscriptFolders>>;
+		try {
+			connected = await connectTranscriptFolders({
+				projectId: input.projectId,
+				userId: context.user.id,
+				organizationId,
+				folders,
+			});
+		} catch (error) {
+			throw folderConnectRefusal(error);
+		}
 
 		try {
 			await wakeFolderSync(input.projectId);

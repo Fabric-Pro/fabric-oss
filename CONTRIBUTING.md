@@ -156,6 +156,13 @@ This repo ships Claude Code PreToolUse hooks that enforce destructive-command, s
 
 ### Testing
 
+Pull requests that add functionality must include automated tests for it, and
+bug fixes must include a regression test that fails without the fix. Reviewers
+check this before merging. When automated tests genuinely cannot cover the
+behavior, describe the local smoke test in the pull request template instead.
+See the [testing standards](fabric/standards/testing/test-writing.md) for what
+to test and where tests live.
+
 ```bash
 pnpm --filter web test          # Unit tests (Vitest)
 pnpm --filter web e2e           # E2E tests (Playwright)

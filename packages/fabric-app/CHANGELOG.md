@@ -1,5 +1,17 @@
 # fabric-app
 
+## 1.16.49
+
+### Patch Changes
+
+- 706772d: Record ChatGPT plan telemetry for each AI SDK model attempt and for LangChain calls with bound tools, including reported token usage when generation or streaming fails.
+- 706772d: Project editors can now connect OneDrive and SharePoint folders, each with a description, on a project's Context tab: Fabric imports the supported files in them and their subfolders as project context, keeps them in step with each folder, and gives the model a folder's description as the source guidance of its files.
+- 706772d: The `fabric_update_project` MCP tool now updates the name and description of projects that belong to an organization, applies the same limits as the app, records the change in the audit log, and refuses a status change or an empty update instead of reporting a success that changed nothing. MCP project tools also refuse to read or change a project whose organization is being deleted, as the app does.
+- 706772d: Meeting transcripts in connected OneDrive transcript folders now download and import instead of failing with "Microsoft Graph returned no usable download link", and files in OneDrive and SharePoint document folders download the same way.
+- 706772d: Fabric now offers GPT-6.2 Astra and Sol, defaults to GPT-6.2 Sol for standard OpenAI chat and reasoning, uses GPT Image 2.6 Sunburst as the OpenAI image default in place of DALL-E 3, and allows GPT-Transcribe to be selected for transcription.
+- 706772d: The recurring-error scan no longer proposes bugs for Container Apps revision updates canceled during a rollout when the same app reports a successful update within two minutes.
+- 706772d: Automatic generation of remote agent server secrets now requires cryptographically secure browser randomness and displays a clear error when generation fails.
+
 ## 1.16.48
 
 ### Patch Changes

@@ -19,6 +19,7 @@ vi.mock("../prisma/client", () => ({
 	db: {
 		projectContext: { findUnique: vi.fn(), findFirst: vi.fn() },
 		projectContextUrlPage: { findUnique: vi.fn() },
+		projectDocumentFolderFile: { findMany: vi.fn() },
 	},
 }));
 
@@ -31,6 +32,23 @@ const mockProjectContextFindUnique = db.projectContext.findUnique as ReturnType<
 const mockUrlPageFindUnique = db.projectContextUrlPage.findUnique as ReturnType<
 	typeof vi.fn
 >;
+const mockFolderFileFindMany = db.projectDocumentFolderFile
+	.findMany as ReturnType<typeof vi.fn>;
+
+const folderFileRow = (aiInstructions: string | null) => ({
+	id: "file-1",
+	projectId: "project-1",
+	type: "DOCUMENT",
+	content: "case study body",
+	createdAt: new Date("2026-11-01"),
+	metadata: { provider: "sharepoint-documents" },
+	originalFilename: "case-study.docx",
+	sourceUrl: null,
+	sourceTitle: "case-study.docx",
+	sourcePath: null,
+	sourceType: null,
+	aiInstructions,
+});
 
 describe("getRetrievableContextById", () => {
 	beforeEach(() => {
@@ -147,5 +165,53 @@ describe("getRetrievableContextById", () => {
 		const result = await getRetrievableContextById("ghost-id");
 
 		expect(result).toBeNull();
+	});
+
+	describe("a file imported from a document folder", () => {
+		it("takes its connected folder's description when it has no guidance of its own", async () => {
+			mockProjectContextFindUnique.mockResolvedValueOnce(
+				folderFileRow(null),
+			);
+			mockFolderFileFindMany.mockResolvedValueOnce([
+				{
+					contextId: "file-1",
+					folder: { description: "Signed case studies" },
+				},
+			]);
+
+			const result = await getRetrievableContextById("file-1");
+
+			expect(result?.aiInstructions).toBe("Signed case studies");
+			expect(result).not.toHaveProperty("projectId");
+			expect(
+				mockFolderFileFindMany.mock.calls[0]?.[0].where.projectId,
+			).toBe("project-1");
+		});
+
+		it("keeps its own guidance without looking the folder up", async () => {
+			mockProjectContextFindUnique.mockResolvedValueOnce(
+				folderFileRow("Only the 2026 pricing applies"),
+			);
+
+			const result = await getRetrievableContextById("file-1");
+
+			expect(result?.aiInstructions).toBe(
+				"Only the 2026 pricing applies",
+			);
+			expect(mockFolderFileFindMany).not.toHaveBeenCalled();
+		});
+
+		it("leaves the lookup to a caller that resolves a whole batch", async () => {
+			mockProjectContextFindUnique.mockResolvedValueOnce(
+				folderFileRow(null),
+			);
+
+			const result = await getRetrievableContextById("file-1", {
+				inheritFolderGuidance: false,
+			});
+
+			expect(result?.aiInstructions).toBeNull();
+			expect(mockFolderFileFindMany).not.toHaveBeenCalled();
+		});
 	});
 });

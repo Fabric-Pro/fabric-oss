@@ -329,14 +329,18 @@ export const PLATFORM_NOISE_RULES: readonly PlatformNoiseRule[] = [
 	},
 	// During a rollout the environment's controller abandons an update that a
 	// newer reconcile of the same app supersedes, and logs the abandoned call
-	// as canceled: a deployment update (ResourceUpdateFailed) or an app
-	// setting such as authConfig, managed identity or custom domain
-	// (ContainerAppFailure). Only a cancellation followed by the app's next
+	// as canceled: a deployment update (ResourceUpdateFailed), a revision
+	// update (RevisionFailure), or an app setting such as authConfig, managed
+	// identity or custom domain (ContainerAppFailure). Only a cancellation followed by the app's next
 	// successful update is set aside; any other failure, or a cancellation the
 	// app does not recover from, stays reported.
 	{
 		id: "rollout-update-canceled",
-		failureReasons: ["ResourceUpdateFailed", "ContainerAppFailure"],
+		failureReasons: [
+			"ResourceUpdateFailed",
+			"RevisionFailure",
+			"ContainerAppFailure",
+		],
 		log: { operator: "endswith", value: "context canceled" },
 		key: "app",
 		proofs: [

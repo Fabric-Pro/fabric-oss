@@ -251,6 +251,11 @@ export {
 	projectDocumentEmbeddingSweepWorkflow,
 } from "./document-embedding-sweep";
 export * from "./document-eval";
+export {
+	type DocumentFolderSyncWorkflowInput,
+	documentFolderSyncWorkflow,
+	syncDocumentFoldersNowSignal,
+} from "./document-folder-sync";
 export * from "./document-generation-child";
 // Document Generation Watchdog workflow (cron — fails documents left GENERATING
 // by a dispatch whose workflow never started)
@@ -818,7 +823,6 @@ export {
 // Synced context deletion workflow (compare-and-set delete behind
 // `fabric context push --prune`, Fizzy #2636)
 export { syncedContextDeletionWorkflow } from "./synced-context-deletion";
-
 // Teams Channel Monitor workflow (scheduled polling of linked Teams channels for backlog proposals)
 export {
 	cancelTeamsChannelMonitorSignal,

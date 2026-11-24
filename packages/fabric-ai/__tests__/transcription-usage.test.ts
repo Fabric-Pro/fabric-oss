@@ -50,7 +50,7 @@ import {
 	AUDIO_PROVIDER_REQUIRED,
 } from "@repo/ai";
 import { transcribe } from "ai";
-import { transcribeAudio } from "../transcription";
+import { TRANSCRIPTION_MODELS, transcribeAudio } from "../transcription";
 
 const AUDIO = Buffer.from("fake-audio-bytes");
 
@@ -61,6 +61,57 @@ describe("transcribeAudio — usage marker (Fizzy #1894)", () => {
 		getRAGProviderConfig.mockReset().mockResolvedValue(TENANT_PROVIDER);
 		getSystemRAGProviderConfig.mockReset();
 	});
+
+	it("accepts explicit GPT-Transcribe without legacy language options", async () => {
+		expect(TRANSCRIPTION_MODELS.openai).toContain("gpt-transcribe");
+		vi.mocked(transcribe).mockResolvedValue({ text: "hello" } as never);
+		const result = await transcribeAudio(AUDIO, "meeting.mp3", {
+			model: "gpt-transcribe",
+			userContext: {
+				userId: "user-example",
+				organizationId: "org-example",
+			},
+		});
+		expect(result).toMatchObject({
+			success: true,
+			metadata: { model: "openai_direct/gpt-transcribe" },
+		});
+		expect(transcribe).toHaveBeenCalledWith(
+			expect.objectContaining({
+				model: expect.objectContaining({ modelId: "gpt-transcribe" }),
+				providerOptions: undefined,
+			}),
+		);
+	});
+
+	it.each(["gpt-transcribe", "whisper-1"] as const)(
+		"handles the legacy language option for %s",
+		async (model) => {
+			vi.mocked(transcribe).mockResolvedValue({ text: "hello" } as never);
+			const result = await transcribeAudio(AUDIO, "meeting.mp3", {
+				model,
+				language: "en",
+				userContext: {
+					userId: "user-example",
+					organizationId: "org-example",
+				},
+			});
+			if (model === "gpt-transcribe") {
+				expect(result).toMatchObject({
+					success: false,
+					error: expect.stringContaining("language hint"),
+				});
+				expect(transcribe).not.toHaveBeenCalled();
+			} else {
+				expect(result.success).toBe(true);
+				expect(transcribe).toHaveBeenCalledWith(
+					expect.objectContaining({
+						providerOptions: { openai: { language: "en" } },
+					}),
+				);
+			}
+		},
+	);
 
 	it.each([true, false])(
 		"retains the Workspace origin on transcription success=%s",

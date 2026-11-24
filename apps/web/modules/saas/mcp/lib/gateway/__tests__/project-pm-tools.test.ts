@@ -1,9 +1,9 @@
 import { AzureDevOpsProjectReadError } from "@repo/connectors";
-import { readProjectPmTool } from "@repo/temporal/project-pm-service";
 import {
 	ASKS_ONCE,
 	TAINTING_TOOLS,
 } from "@repo/temporal/fabric-page-tool-definitions";
+import { readProjectPmTool } from "@repo/temporal/project-pm-service";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -23,6 +23,8 @@ vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
 	getDirectRepositoryState: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
+	// The gateway project gates refuse an organization being deleted.
+	isOrganizationLive: async () => true,
 	getProjectAccessContext: mocks.access,
 	isProjectSoftDeleted: mocks.deleted,
 }));

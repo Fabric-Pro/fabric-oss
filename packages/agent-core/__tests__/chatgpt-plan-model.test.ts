@@ -11,8 +11,17 @@
 
 import { HumanMessage } from "@langchain/core/messages";
 import { ChatOpenAI } from "@langchain/openai";
-import { chatGptPlanSessionId } from "@repo/agent-types/chatgpt-plan-fetch";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { metrics, trace } from "@opentelemetry/api";
+import {
+	BasicTracerProvider,
+	InMemorySpanExporter,
+	SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
+import {
+	chatGptPlanSessionId,
+	toSubscriptionPlanExhaustedError,
+} from "@repo/agent-types/chatgpt-plan-fetch";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isRetryableError } from "../src/retry";
 import {
 	createProviderModel,
@@ -28,7 +37,10 @@ const PLAN_CONFIG = {
 	baseUrl: "https://gateway.example.com/v1",
 };
 
-function completedStream(text: string): Response {
+function completedStream(
+	text: string,
+	failure?: { timing: "early" | "late"; code: string },
+): Response {
 	const response = {
 		id: "resp_1",
 		object: "response",
@@ -54,11 +66,36 @@ function completedStream(text: string): Response {
 	};
 	const events = [
 		{ type: "response.created", response: { ...response, output: [] } },
+		{
+			type: "response.output_text.delta",
+			item_id: "msg_1",
+			output_index: 0,
+			content_index: 0,
+			delta: text,
+		},
 		{ type: "response.output_item.done", item: response.output[0] },
-		{ type: "response.completed", response },
+		failure
+			? {
+					type: "response.failed",
+					response: {
+						...response,
+						status: "failed",
+						error: {
+							code: failure.code,
+							message: "Example private failure",
+						},
+					},
+				}
+			: { type: "response.completed", response },
 	];
 	return new Response(
 		events
+			.filter(
+				(event) =>
+					failure?.timing !== "early" ||
+					event.type === "response.created" ||
+					event.type === "response.failed",
+			)
 			.map(
 				(event) =>
 					`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
@@ -99,6 +136,245 @@ describe("createProviderModel — OPENAI_CHATGPT_PLAN", () => {
 		expect(body.stream).toBe(true);
 		expect(body).not.toHaveProperty("temperature");
 		expect(body).not.toHaveProperty("max_output_tokens");
+	});
+});
+
+describe("LangChain ChatGPT plan telemetry", () => {
+	let exporter: InMemorySpanExporter;
+	let tracer: BasicTracerProvider;
+	const recordDuration = vi.fn();
+	const durationLabels = {
+		provider: PLAN_CONFIG.provider,
+		model: PLAN_CONFIG.model,
+		operation: "chat",
+	};
+
+	beforeEach(() => {
+		trace.disable();
+		exporter = new InMemorySpanExporter();
+		tracer = new BasicTracerProvider({
+			spanProcessors: [new SimpleSpanProcessor(exporter)],
+		});
+		trace.setGlobalTracerProvider(tracer);
+		const meter = metrics.getMeter("test");
+		vi.spyOn(meter, "createHistogram").mockReturnValue({
+			record: recordDuration,
+		});
+		vi.spyOn(metrics, "getMeter").mockReturnValue(meter);
+		recordDuration.mockClear();
+	});
+
+	afterEach(async () => {
+		await tracer.shutdown();
+		trace.disable();
+		vi.restoreAllMocks();
+	});
+
+	it.each(["invoke", "stream", "tool-bound invoke"] as const)(
+		"records usage once through %s",
+		async (mode) => {
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => completedStream("Example answer")),
+			);
+			const model = createProviderModel(PLAN_CONFIG);
+			const messages = [new HumanMessage("Example prompt")];
+			if (mode === "tool-bound invoke") {
+				const bound = (model as ChatOpenAI).bindTools([]);
+				expect((await bound.invoke(messages)).text).toBe(
+					"Example answer",
+				);
+			} else if (mode === "invoke") {
+				expect((await model.invoke(messages)).text).toBe(
+					"Example answer",
+				);
+			} else {
+				let text = "";
+				for await (const chunk of await model.stream(messages)) {
+					text += chunk.text;
+				}
+				expect(text).toBe("Example answer");
+			}
+			const spans = exporter.getFinishedSpans();
+			expect(spans.map((span) => span.attributes)).toEqual([
+				{
+					"gen_ai.system": PLAN_CONFIG.provider,
+					"gen_ai.request.model": PLAN_CONFIG.model,
+					"gen_ai.usage.input_tokens": 3,
+					"gen_ai.usage.output_tokens": 2,
+					"llm.outcome": "success",
+				},
+			]);
+			expect(recordDuration.mock.calls).toEqual([
+				[expect.any(Number), durationLabels],
+			]);
+		},
+	);
+
+	it.each([
+		["invoke", "early"],
+		["invoke", "late"],
+		["stream", "early"],
+	] as const)(
+		"records %s usage when the SSE failure is %s",
+		async (mode, timing) => {
+			const fetchSpy = vi.fn(async () =>
+				completedStream("Example private output", {
+					timing,
+					code: "invalid_prompt",
+				}),
+			);
+			vi.stubGlobal("fetch", fetchSpy);
+			const model = createProviderModel(PLAN_CONFIG);
+			const messages = [new HumanMessage("Example private prompt")];
+			if (mode === "invoke") {
+				await expect(model.invoke(messages)).rejects.toThrow(
+					"Example private failure",
+				);
+			} else {
+				await expect(async () => {
+					for await (const _chunk of await model.stream(messages)) {
+						// Drain the stream to observe its failure.
+					}
+				}).rejects.toThrow("Example private failure");
+			}
+			const spans = exporter.getFinishedSpans();
+			expect(spans.map((span) => span.attributes)).toEqual([
+				{
+					"gen_ai.system": PLAN_CONFIG.provider,
+					"gen_ai.request.model": PLAN_CONFIG.model,
+					"gen_ai.usage.input_tokens": 3,
+					"gen_ai.usage.output_tokens": 2,
+					"llm.outcome": "error",
+					"error.type": expect.any(String),
+				},
+			]);
+			expect(spans[0].status).not.toHaveProperty("message");
+			expect(spans[0].events).toEqual([]);
+			expect(fetchSpy).toHaveBeenCalledTimes(1);
+			expect(recordDuration.mock.calls).toEqual([
+				[expect.any(Number), durationLabels],
+			]);
+		},
+	);
+
+	it.each([
+		[undefined, 0],
+		[{ input_tokens: 4, output_tokens: "2" }, 4],
+	] as const)(
+		"reads only numeric usage from an HTTP error (%j)",
+		async (usage, expectedInput) => {
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () =>
+					Response.json(
+						{ error: { message: "Example private error" }, usage },
+						{ status: 400 },
+					),
+				),
+			);
+			const model = createProviderModel(PLAN_CONFIG);
+			await expect(
+				model.invoke([new HumanMessage("Example prompt")]),
+			).rejects.toThrow("Example private error");
+			expect(
+				exporter.getFinishedSpans().map((span) => span.attributes),
+			).toEqual([
+				{
+					"gen_ai.system": PLAN_CONFIG.provider,
+					"gen_ai.request.model": PLAN_CONFIG.model,
+					"gen_ai.usage.input_tokens": expectedInput,
+					"gen_ai.usage.output_tokens": 0,
+					"llm.outcome": "error",
+					"error.type": expect.any(String),
+				},
+			]);
+			expect(recordDuration.mock.calls).toEqual([
+				[expect.any(Number), durationLabels],
+			]);
+		},
+	);
+
+	it("keeps usage when LangChain wraps an HTTP failure as context overflow", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () =>
+				Response.json(
+					{
+						error: {
+							code: "context_length_exceeded",
+							message:
+								"Example private input exceeds the context window",
+						},
+						usage: { input_tokens: 7, output_tokens: 0 },
+					},
+					{ status: 400 },
+				),
+			),
+		);
+		const model = createProviderModel(PLAN_CONFIG);
+		await expect(
+			model.invoke([new HumanMessage("Example prompt")]),
+		).rejects.toMatchObject({ name: "ContextOverflowError" });
+		expect(
+			exporter.getFinishedSpans().map((span) => span.attributes),
+		).toEqual([
+			expect.objectContaining({
+				"llm.outcome": "error",
+				"gen_ai.usage.input_tokens": 7,
+				"gen_ai.usage.output_tokens": 0,
+				"error.type": "ContextOverflowError",
+			}),
+		]);
+		expect(recordDuration.mock.calls).toEqual([
+			[expect.any(Number), durationLabels],
+		]);
+	});
+
+	it("records reported tokens and failure after delivering partial output", async () => {
+		const fetchSpy = vi.fn(async () =>
+			completedStream("Example partial answer", {
+				timing: "late",
+				code: "subscription_sharing_usage_limit_exceeded",
+			}),
+		);
+		vi.stubGlobal("fetch", fetchSpy);
+		const model = (
+			createProviderModel(PLAN_CONFIG) as ChatOpenAI
+		).bindTools([]);
+		let text = "";
+		let error: unknown;
+		try {
+			for await (const chunk of await model.stream([
+				new HumanMessage("Example prompt"),
+			])) {
+				text += chunk.text;
+			}
+		} catch (caught) {
+			error = caught;
+		}
+		expect(text).toBe("Example partial answer");
+		expect(
+			exporter.getFinishedSpans().map((span) => span.attributes),
+		).toEqual([
+			{
+				"gen_ai.system": PLAN_CONFIG.provider,
+				"gen_ai.request.model": PLAN_CONFIG.model,
+				"gen_ai.usage.input_tokens": 3,
+				"gen_ai.usage.output_tokens": 2,
+				"llm.outcome": "error",
+				"error.type": expect.any(String),
+			},
+		]);
+		expect(error).toBeInstanceOf(Error);
+		expect(toSubscriptionPlanExhaustedError(error)).toMatchObject({
+			message: "ChatGPT plan usage limit reached",
+		});
+		expect(isRetryableError(error)).toBe(false);
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(recordDuration.mock.calls).toEqual([
+			[expect.any(Number), durationLabels],
+		]);
 	});
 });
 

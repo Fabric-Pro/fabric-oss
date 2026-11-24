@@ -357,6 +357,8 @@ model User {
   meetingTranscripts     ProjectMeetingTranscript[]
   transcriptFolders      ProjectTranscriptFolder[]
   transcriptFolderFiles  ProjectTranscriptFolderFile[]
+  documentFolders        ProjectDocumentFolder[]
+  documentFolderFiles    ProjectDocumentFolderFile[]
   parlumeMeetingSessions ParlumeMeetingSession[]
   parlumeMeetingSegments ParlumeMeetingSegment[]
   parlumeMeetingTurns    ParlumeMeetingTurn[]
@@ -1107,6 +1109,8 @@ model Organization {
   meetingTranscripts     ProjectMeetingTranscript[]
   transcriptFolders      ProjectTranscriptFolder[]
   transcriptFolderFiles  ProjectTranscriptFolderFile[]
+  documentFolders        ProjectDocumentFolder[]
+  documentFolderFiles    ProjectDocumentFolderFile[]
   parlumeMeetingSessions ParlumeMeetingSession[]
   parlumeMeetingSegments ParlumeMeetingSegment[]
   parlumeMeetingTurns    ParlumeMeetingTurn[]
@@ -2793,6 +2797,8 @@ model Project {
   meetingTranscripts     ProjectMeetingTranscript[]
   transcriptFolders      ProjectTranscriptFolder[]
   transcriptFolderFiles  ProjectTranscriptFolderFile[]
+  documentFolders        ProjectDocumentFolder[]
+  documentFolderFiles    ProjectDocumentFolderFile[]
   meetingAgendas         ProjectMeetingAgenda[]
   meetingActionItemLinks MeetingActionItemLink[]
   parlumeMeetingSessions ParlumeMeetingSession[]
@@ -6824,6 +6830,136 @@ model ProjectTranscriptFolderFile {
   @@index([projectId, status])
   @@index([userId])
   @@map("project_transcript_folder_file")
+}
+
+/// A OneDrive or SharePoint folder whose files a project imports as ordinary
+/// project context (Fizzy #2808). Read with the Microsoft connection of its
+/// reader, the person who last connected it. Subfolders count. Kept apart from
+/// transcript folders, whose sync must never read these rows.
+model ProjectDocumentFolder {
+  id                  String    @id @default(cuid())
+  projectId           String
+  /// onedrive | sharepoint
+  provider            String
+  driveId             String
+  itemId              String
+  name                String
+  webUrl              String?
+  /// The folder's path in its drive, refreshed by every read.
+  drivePath           String?
+  /// SharePoint only: the site and document library holding the folder.
+  siteId              String?
+  siteName            String?
+  libraryName         String?
+  /// Source guidance for every file imported from the folder. Stored without
+  /// control characters or line breaks.
+  description         String?
+  connectedAt         DateTime  @default(now())
+  /// Set = no further reads; imported files stay as ordinary context.
+  disconnectedAt      DateTime?
+  /// Raised on every reconnect. A read applies its results only while the
+  /// value it started with is still current.
+  readerEpoch         Int       @default(0)
+  /// The last read pass whose results were applied, so a retried activity
+  /// cannot apply one pass twice.
+  lastPassId          String?
+  /// Set while a read runs; cleared when the pass ends, failed or not.
+  readStartedAt       DateTime?
+  lastReadAt          DateTime?
+  /// Whether the last listing covered the whole folder tree.
+  lastListingComplete Boolean   @default(false)
+  /// Why the last read removed nothing: TOO_LARGE | THROTTLED | PARTIAL_READ |
+  /// MASS_REMOVAL. PARTIAL_READ = Graph refused part of the tree for a reason
+  /// other than throttling.
+  pausedRemovalsCode  String?
+  /// With MASS_REMOVAL: how many files wait for an editor to confirm removal.
+  heldRemovalCount    Int?
+  /// Why the folder cannot be read: RECONNECT | NO_ACCESS | FOLDER_GONE |
+  /// SYNC_START_FAILED (the sync could not be started or woken)
+  problemCode         String?
+  /// No read before this time; set from a throttling response's Retry-After.
+  nextReadAfter       DateTime?
+  /// Null until a read has listed the whole tree, so counts before then are
+  /// only what has been found so far.
+  discoveredAt        DateTime?
+  userId              String
+  organizationId      String
+
+  project      Project                     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user         User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  files        ProjectDocumentFolderFile[]
+
+  @@unique([projectId, driveId, itemId])
+  @@index([projectId])
+  @@index([userId])
+  @@map("project_document_folder")
+}
+
+/// One file seen in a connected document folder, and what became of it. The
+/// drive item id survives a rename or a move within the drive, and the unique
+/// key keeps a second read, a reconnect or a retry from importing a file twice.
+model ProjectDocumentFolderFile {
+  id                     String    @id @default(cuid())
+  folderId               String
+  projectId              String
+  driveItemId            String
+  name                   String
+  /// Path below the connected folder, refreshed by every read.
+  relativePath           String
+  /// Bytes. BigInt because drive files can exceed the 32-bit range.
+  size                   BigInt?
+  /// Last-modified time at the source.
+  sourceModifiedAt       DateTime?
+  /// PENDING | IMPORTING | IMPORTED | SKIPPED | FAILED | EXCLUDED | REFRESHING
+  /// EXCLUDED = its context was removed in Fabric; it returns only on a new
+  /// version. A retired file is one with `retiredAt` set, whatever its status.
+  status                 String    @default("PENDING")
+  /// Why the file was skipped: UNSUPPORTED | TOO_BIG | CAP_REACHED
+  skipCode               String?
+  /// Why the last import failed: DOWNLOAD_FAILED | PROCESSING_FAILED
+  failureCode            String?
+  /// The project context imported from the file. Not a relation: it must
+  /// outlive that row until the context's deletion has been confirmed.
+  contextId              String?
+  /// Where the imported copy is stored.
+  storageKey             String?
+  /// Content versions: quickXorHash when present, otherwise size plus
+  /// last-modified time.
+  importedVersion        String?
+  latestVersion          String?
+  /// Consecutive reads that listed the file at `latestVersion`.
+  latestVersionSeenCount Int       @default(0)
+  /// The version whose context was removed in Fabric.
+  excludedVersion        String?
+  /// Consecutive complete listings that did not contain the file.
+  missCount              Int       @default(0)
+  /// Set when a mass-removal hold covers this file; cleared when the file is
+  /// seen again or retired.
+  removalHeldAt          DateTime?
+  lastSeenAt             DateTime?
+  /// Set = the file left the folder; its context is removed, then `contextId`
+  /// is cleared.
+  retiredAt              DateTime?
+  /// The context's own source type and guidance, saved before it is removed
+  /// so a later import of the file restores them.
+  savedSourceType        String?
+  savedAiInstructions    String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  userId                 String
+  organizationId         String
+
+  folder       ProjectDocumentFolder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  project      Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user         User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([folderId, driveItemId])
+  @@index([contextId])
+  @@index([projectId, status])
+  @@index([userId])
+  @@map("project_document_folder_file")
 }
 
 /// How a project is billed. Time entries are recorded either way; the model

@@ -137,6 +137,7 @@ import {
 import { ContextSummaryPanel } from "./ContextSummaryPanel";
 import { ContextUploaderDialog } from "./ContextUploaderDialog";
 import { DownloadAllContextsButton } from "./DownloadAllContextsButton";
+import { documentFolderProvenance } from "./document-folders/use-document-folders";
 import { getOrpcCode } from "./field-mapping/orpc-error";
 import {
 	LinkContextManagePanel,
@@ -510,6 +511,17 @@ type Props = {
 	meetingActions?: React.ReactNode;
 	/** Linked meetings still waiting for their first transcript (Fizzy #3507). */
 	meetingPlaceholders?: React.ReactNode;
+	/**
+	 * The connected OneDrive and SharePoint document folders (Fizzy #2808),
+	 * shown above the list. Absent where the feature is off.
+	 */
+	documentFolders?: React.ReactNode;
+	/**
+	 * Ids of the document folders still connected, as that section reports
+	 * them. A file from one of them gets the delete note; a file whose folder
+	 * was disconnected is ordinary context and does not.
+	 */
+	connectedDocumentFolderIds?: readonly string[];
 };
 
 const contextTypeConfig: Record<
@@ -991,6 +1003,8 @@ export function ProjectContextsList({
 	onConnectRepository,
 	meetingActions,
 	meetingPlaceholders,
+	documentFolders,
+	connectedDocumentFolderIds,
 }: Props) {
 	const { organizationId, organizationSlug } = useOrganizationContext();
 	const [uploaderOpen, setUploaderOpen] = useState(false);
@@ -1016,6 +1030,9 @@ export function ProjectContextsList({
 	const tScope = useTranslations("projects.contexts.scopeIntake");
 	const tDuplicates = useTranslations("projects.contexts.duplicates");
 	const tLivingMemory = useTranslations("projects.contexts.livingMemory");
+	const tFolderSource = useTranslations(
+		"projects.contexts.documentFolderSource",
+	);
 	// Prefix for the Living Memory heading and folder-panel ids; folder slugs
 	// are lossy, so they never form an id.
 	const livingMemoryId = useId();
@@ -2200,6 +2217,27 @@ export function ProjectContextsList({
 			</Badge>
 		) : null;
 
+	// A file imported from a document folder that is still connected is left
+	// out of the folder's sync once deleted, until it changes at the source
+	// (#2808), so its delete warning says so.
+	const deleteCopyFor = (contextMetadata: unknown) => {
+		const copy = t.raw("deleteContext") as {
+			label: string;
+			warning: string;
+		};
+		const source = documentFolderProvenance(contextMetadata);
+		const folderId = (contextMetadata as { folderId?: unknown } | null)
+			?.folderId;
+		return source &&
+			typeof folderId === "string" &&
+			connectedDocumentFolderIds?.includes(folderId)
+			? {
+					...copy,
+					warning: `${copy.warning} ${t(`deleteContextFolderNote.${source}`)}`,
+				}
+			: copy;
+	};
+
 	// One card in the flat "other contexts" grid, and the same card inside a
 	// Living Memory folder (Fizzy #2620). `synced` is set only for a synced
 	// knowledge file: its label is then the file name, and the full path
@@ -2271,6 +2309,8 @@ export function ProjectContextsList({
 				source?: string;
 			}) || {};
 		const isIntegration = context.type === "INTEGRATION";
+		// Imported from a connected OneDrive or SharePoint folder (#2808).
+		const folderSource = documentFolderProvenance(context.metadata);
 
 		// Not every INTEGRATION context means the same thing.
 		// Google Docs run extraction and Notion pages run embedding; both
@@ -2399,6 +2439,18 @@ export function ProjectContextsList({
 											{tLivingMemory(
 												"repositorySync.repositoryBadge",
 											)}
+										</Badge>
+									)}
+									{folderSource && (
+										<Badge
+											variant="outline"
+											className="shrink-0 gap-1 border-primary/30 text-primary text-xs"
+										>
+											<FolderSyncIcon
+												className="size-3"
+												aria-hidden="true"
+											/>
+											{tFolderSource(folderSource)}
 										</Badge>
 									)}
 								</div>
@@ -2590,12 +2642,9 @@ export function ProjectContextsList({
 									)}
 									{!context.repositorySyncId ? (
 										<DestructiveTooltip
-											copy={
-												t.raw("deleteContext") as {
-													label: string;
-													warning: string;
-												}
-											}
+											copy={deleteCopyFor(
+												context.metadata,
+											)}
 										>
 											<DropdownMenuItem
 												className="text-destructive focus:text-destructive"
@@ -2901,6 +2950,7 @@ export function ProjectContextsList({
 			/>
 
 			{meetingPlaceholders}
+			{documentFolders}
 			<ContextSummaryPanel projectId={projectId} />
 			<ProjectWorkspaceDocuments
 				projectId={projectId}
