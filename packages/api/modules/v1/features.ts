@@ -250,6 +250,9 @@ export function registerFeatureRoutes(
 			} catch {
 				return c.json(badRequest("Invalid JSON body"), 400);
 			}
+			if (body === null) {
+				return c.json(badRequest("Invalid JSON body"), 400);
+			}
 
 			const title = body.title?.trim();
 			if (!title) {
@@ -383,6 +386,9 @@ export function registerFeatureRoutes(
 			try {
 				body = await c.req.json();
 			} catch {
+				return c.json(badRequest("Invalid JSON body"), 400);
+			}
+			if (body === null) {
 				return c.json(badRequest("Invalid JSON body"), 400);
 			}
 

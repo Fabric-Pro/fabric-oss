@@ -75,7 +75,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 					`/${locale.language}/docs/${page.slugs.join("/")}`,
 					baseUrl,
 				).href,
-				lastModified: new Date(),
+				lastModified: staticLastModified,
 			})),
 		),
 	];

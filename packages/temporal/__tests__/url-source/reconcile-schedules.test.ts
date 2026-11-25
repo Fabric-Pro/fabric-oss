@@ -72,6 +72,37 @@ describe("reconcileUrlSourceSchedules — worker", () => {
 		};
 	}
 
+	it.each([
+		null,
+		{
+			urlRefreshMode: "WEEKLY",
+			urlScheduleId: "url-source-schedule-reconcile",
+		},
+	])(
+		"ignores the reconcile trigger regardless of a matching row: %s",
+		async (row) => {
+			const deleteSchedule = vi.fn();
+			const fetchContext = vi.fn().mockResolvedValue(row);
+			const onRetainedSchedule = vi.fn();
+			const result = await reconcileUrlSourceSchedules({
+				listSchedules: makeSchedules(["url-source-schedule-reconcile"]),
+				deleteSchedule,
+				fetchContext,
+				onRetainedSchedule,
+				dryRun: false,
+			});
+
+			expect(result).toEqual({
+				scanned: 0,
+				orphansDeleted: 0,
+				dryRun: false,
+			});
+			expect(fetchContext).not.toHaveBeenCalled();
+			expect(deleteSchedule).not.toHaveBeenCalled();
+			expect(onRetainedSchedule).not.toHaveBeenCalled();
+		},
+	);
+
 	it("deletes orphan schedules and keeps healthy ones", async () => {
 		const fetchContext = vi.fn(async (contextId: string) => {
 			if (contextId === "ctx-healthy") {

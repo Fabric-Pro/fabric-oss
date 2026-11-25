@@ -3,6 +3,7 @@ import { verifyKanbanLaunchToken } from "@repo/api/modules/kanban/procedures/cre
 import {
 	canUpdateProjectStory,
 	db,
+	isOrganizationLive,
 	isOrganizationMember,
 	resolveProjectAccess,
 } from "@repo/database";
@@ -167,7 +168,8 @@ async function openKanbanProject(
 	const access = await resolveProjectAccess(project.id, auth.userId);
 	if (
 		!access?.isVisible ||
-		access.organizationId !== project.organizationId
+		access.organizationId !== project.organizationId ||
+		!(await isOrganizationLive(access.organizationId))
 	) {
 		return null;
 	}

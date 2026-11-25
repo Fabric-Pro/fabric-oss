@@ -68,6 +68,7 @@ beforeEach(() => {
 	process.env.AGENT_SERVICE_SECRET = SECRET;
 	h.codingRun.mockResolvedValue({
 		id: "run-1",
+		project: { organization: { deletedAt: null } },
 		provider: "example",
 		userId: "user-1",
 		organizationId: "org-1",
@@ -86,6 +87,7 @@ beforeEach(() => {
 		},
 	});
 	h.documents.mockResolvedValue([]);
+	h.contexts.mockResolvedValue([]);
 	h.folderGuidance.mockImplementation(
 		async ({
 			rows,
@@ -101,6 +103,33 @@ beforeEach(() => {
 });
 
 describe("GET /api/internal/agent-execution-context/[codingRunId]", () => {
+	it("refuses a deleted project organization before loading execution context", async () => {
+		h.codingRun.mockResolvedValueOnce({
+			id: "run-1",
+			project: { organization: { deletedAt: new Date() } },
+		});
+		expect((await call()).status).toBe(403);
+		expect(h.documents).not.toHaveBeenCalled();
+		expect(h.contexts).not.toHaveBeenCalled();
+	});
+
+	it("refuses a deleted story project organization before loading its context", async () => {
+		h.codingRun.mockResolvedValueOnce({
+			id: "run-1",
+			project: { organization: { deletedAt: null } },
+			story: {
+				tasks: [],
+				project: {
+					id: "example-project",
+					organization: { deletedAt: new Date() },
+				},
+			},
+		});
+		expect((await call()).status).toBe(403);
+		expect(h.documents).not.toHaveBeenCalled();
+		expect(h.contexts).not.toHaveBeenCalled();
+	});
+
 	it("heads a document-folder snippet with its folder's description, and keeps a file's own guidance", async () => {
 		h.contexts.mockResolvedValue([
 			row("folder-file", { provider: "onedrive-documents" }, null),

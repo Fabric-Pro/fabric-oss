@@ -19,6 +19,8 @@ export const DOCUMENT_FOLDER_SKIP_CODE = {
 	UNSUPPORTED: "UNSUPPORTED",
 	TOO_BIG: "TOO_BIG",
 	CAP_REACHED: "CAP_REACHED",
+	/** The drive refuses to hand the file over (Google: `canDownload: false`). */
+	NOT_DOWNLOADABLE: "NOT_DOWNLOADABLE",
 } as const;
 
 export type DocumentFolderSkipCode =
@@ -53,12 +55,13 @@ export const DOCUMENT_FOLDER_PROBLEM_CODE = {
 export type DocumentFolderProblemCode =
 	(typeof DOCUMENT_FOLDER_PROBLEM_CODE)[keyof typeof DOCUMENT_FOLDER_PROBLEM_CODE];
 
-export type DocumentFolderProvider = "onedrive" | "sharepoint";
+export type DocumentFolderProvider = "onedrive" | "sharepoint" | "googledrive";
 
 /** `metadata.provider` of a context imported from a document folder. */
 export const DOCUMENT_FOLDER_CONTEXT_PROVIDER = {
 	onedrive: "onedrive-documents",
 	sharepoint: "sharepoint-documents",
+	googledrive: "googledrive-documents",
 } as const satisfies Record<DocumentFolderProvider, string>;
 
 export const DOCUMENT_FOLDER_CONTEXT_PROVIDERS: readonly string[] =

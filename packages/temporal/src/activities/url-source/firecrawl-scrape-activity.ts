@@ -8,9 +8,8 @@
  * the worker registration don't need to change — a minimal diff per spec.
  *
  * Input shape change:
- *   - Old: `{ url, apiKey }` (Firecrawl baked in).
- *   - New: `{ url, providerName, apiKey }`. `providerName` defaults to
- *     `firecrawl` so legacy callers that haven't been migrated still work.
+ *   URL source runs pass a source reference. Previously scheduled activity
+ *   inputs can still carry a legacy credential.
  *
  * Owns the typed-error → ApplicationFailure mapping the workflow body
  * pattern-matches on. The retry envelope is:
@@ -42,27 +41,23 @@ import { filterInPrefixLinks } from "../../lib/in-prefix-links";
 import { activityLogger } from "../lib/activity-logger";
 import { createScraperByName } from "../lib/get-web-scraper";
 import { extractMarkdownLinkDestinations } from "../lib/markdown-links";
-import type {
-	WebScrapeError,
-	WebScrapePage,
-	WebScraperProviderName,
-} from "../lib/web-scraper";
+import type { WebScrapeError, WebScrapePage } from "../lib/web-scraper";
+import {
+	callUrlScraper,
+	redactScraperMessage,
+	redactScraperPage,
+	redactScraperText,
+	resolveActivityScraperCredential,
+	type UrlScraperActivityReference,
+} from "./lib/scraper-credential";
 import {
 	type UnsupportedContent,
 	unsupportedContentOutcome,
 } from "./lib/unsupported-content";
 
-export interface FirecrawlScrapeActivityInput {
+export interface FirecrawlScrapeActivityInput
+	extends UrlScraperActivityReference {
 	url: string;
-	apiKey: string;
-	/** Optional — defaults to `firecrawl` for back-compat with un-migrated callers. */
-	providerName?: WebScraperProviderName;
-	/**
-	 * The provider row's stored endpoint. Optional; only Cloudflare reads it
-	 * (its account ID lives there). Absent for every other provider and for
-	 * inputs recorded before the field existed.
-	 */
-	providerEndpoint?: string;
 	/**
 	 * Return the page's followable links as `discoveredLinks`. Sent only by
 	 * the path-prefix crawl's link-following loop; without it the result has
@@ -213,16 +208,20 @@ export async function firecrawlScrapeActivity(
 ): Promise<FirecrawlScrapeActivityOutput> {
 	const {
 		url,
-		apiKey,
 		providerName = "firecrawl",
-		providerEndpoint,
 		discoverLinks,
 		reportUnsupportedContent,
 	} = input;
 
-	activityLogger.info("URL scrape activity start", { url, providerName });
+	const { apiKey, endpoint } = await resolveActivityScraperCredential(input);
+	const safeUrl = redactScraperText(url, apiKey);
 
-	const scraper = createScraperByName(providerName, apiKey, providerEndpoint);
+	activityLogger.info("URL scrape activity start", {
+		url: safeUrl,
+		providerName,
+	});
+
+	const scraper = createScraperByName(providerName, apiKey, endpoint);
 	if (!scraper && providerName === "cloudflare") {
 		// The account endpoint is missing or malformed: retrying cannot fix it,
 		// re-saving the provider can.
@@ -239,29 +238,35 @@ export async function firecrawlScrapeActivity(
 		);
 	}
 
-	const result = await scraper.scrapeUrl(url);
+	const result = await callUrlScraper(apiKey, () => scraper.scrapeUrl(url));
 
 	if (!result.success) {
+		const error = {
+			...result.error,
+			message: redactScraperMessage(result.error.message, apiKey),
+		};
 		if (
 			reportUnsupportedContent === true &&
-			result.error.code === "UNSUPPORTED_CONTENT_TYPE"
+			error.code === "UNSUPPORTED_CONTENT_TYPE"
 		) {
 			return {
-				pageUrl: url,
+				pageUrl: safeUrl,
 				pageTitle: null,
 				markdown: "",
-				unsupported: unsupportedContentOutcome(url, result.error),
+				unsupported: unsupportedContentOutcome(safeUrl, error),
 			};
 		}
 		activityLogger.warn("URL scrape failed", {
-			url,
+			url: safeUrl,
 			providerName,
-			code: result.error.code,
-			message: result.error.message,
-			statusCode: result.error.statusCode,
+			code: error.code,
+			message: error.message,
+			statusCode: error.statusCode,
 		});
-		asActivityFailure(result.error);
+		asActivityFailure(error);
 	}
+
+	const page = redactScraperPage(result.data, apiKey);
 
 	// Room for links left under the result size cap once the page itself
 	// and an empty field are counted. None left means no field at all.
@@ -269,28 +274,33 @@ export async function firecrawlScrapeActivity(
 		discoverLinks === undefined
 			? -1
 			: MAX_RESULT_BYTES_WITH_LINKS -
-				Buffer.byteLength(JSON.stringify(result.data)) -
+				Buffer.byteLength(JSON.stringify(page)) -
 				EMPTY_LINKS_FIELD_BYTES;
 	const discoveredLinks =
 		discoverLinks === undefined || headroom < 0
 			? undefined
 			: discoverFollowableLinks(
-					result.data.markdown,
+					page.markdown,
 					url,
-					result.data.pageUrl,
+					page.pageUrl,
 					discoverLinks,
 					Math.min(MAX_DISCOVERED_LINKS_BYTES, headroom),
 				);
 
 	activityLogger.info("URL scrape activity success", {
-		url,
+		url: safeUrl,
 		providerName,
-		pageUrl: result.data.pageUrl,
-		markdownLength: result.data.markdown.length,
+		pageUrl: page.pageUrl,
+		markdownLength: page.markdown.length,
 		discoveredLinkCount: discoveredLinks?.length,
 	});
 
 	return discoveredLinks === undefined
-		? result.data
-		: { ...result.data, discoveredLinks };
+		? page
+		: {
+				...page,
+				discoveredLinks: discoveredLinks.map((link) =>
+					redactScraperText(link, apiKey),
+				),
+			};
 }

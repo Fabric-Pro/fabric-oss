@@ -58,9 +58,7 @@ interface SearchProviderRow {
 
 /**
  * Build a `WebScraper` adapter from a known provider name + decrypted key.
- * Exported so activities can rebuild the adapter from their input without
- * re-running the DB query (the workflow passes `providerName` + `apiKey`
- * through the activity input).
+ * URL crawl activities call this after resolving the source credential.
  *
  * `endpoint` is the provider row's stored endpoint. Only Cloudflare reads it:
  * its account ID lives there, and without a valid account endpoint no

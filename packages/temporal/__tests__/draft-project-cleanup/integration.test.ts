@@ -38,7 +38,7 @@
  *      matrix already exercising the bundled workflow code against real
  *      dev histories (§6.5 + Group 5.4), the extra runtime is dead weight.
  *   3. The replay-validation matrix at
- *      `.github/workflows/temporal-replay-validation.yml` is the real
+ *      `.github/workflows/temporal-replay-pr-check.yml` runs the real
  *      determinism gate; this test pins the activity-call shape + the
  *      schedule-retry semantics that the replay matrix can't observe
  *      (because individual cron fires are independent workflow executions
@@ -452,11 +452,9 @@ describe("draftProjectCleanupWorkflow — integration", () => {
 // 13.3 — Replay determinism
 // ---------------------------------------------------------------------------
 //
-// The replay-determinism matrix lives at
-//   .github/workflows/temporal-replay-validation.yml
-// and was wired to pick up `draftProjectCleanupWorkflow` in Group 5.4 of this
-// spec (the workflow type is automatically discovered because it's exported
-// from `packages/temporal/src/workflows/index.ts`).
+// The snapshot producer in `.github/workflows/temporal-replay-validation.yml`
+// can pick up `draftProjectCleanupWorkflow` when its history is in the fetch
+// window. The replay test loads the workflow from the workflows barrel.
 //
 // Local replay run (MANUAL — requires a running Temporal namespace with a
 // captured `draftProjectCleanupWorkflow` history fixture):
@@ -472,12 +470,9 @@ describe("draftProjectCleanupWorkflow — integration", () => {
 //        pnpm --filter @repo/temporal test:replay
 //      → asserts the workflow body replays without non-determinism.
 //
-// CI counterpart (AUTOMATED — runs on every PR that touches
-// `packages/temporal/src/**`):
-//   - `.github/workflows/temporal-replay-validation.yml` fetches dev
-//     histories (including `draftProjectCleanupWorkflow` once it's fired in
-//     dev) and runs the same replay command above against the PR's bundled
-//     workflow code.
+// CI counterpart for eligible private PRs that touch `packages/temporal/src/**`:
+// `.github/workflows/temporal-replay-pr-check.yml` restores dev histories from
+// the producer's snapshot and replays the PR's bundled workflow code.
 //
 // This file does NOT execute the replay step inline because:
 //   1. Replay requires real Temporal history JSON — there's no synthetic
@@ -507,20 +502,22 @@ describe("draftProjectCleanupWorkflow — replay determinism", () => {
 		expect(typeof mod.draftProjectCleanupWorkflow).toBe("function");
 	});
 
-	it("CI replay-validation matrix watches packages/temporal/src/** (so workflow code changes trigger the replay job)", async () => {
+	it("the trusted policy and PR replay check both watch packages/temporal/src/**", async () => {
 		const { readFile } = await import("node:fs/promises");
-		const path = (await import("node:path")).join(
-			__dirname,
-			"../../../../.github/workflows/temporal-replay-validation.yml",
+		const { join } = await import("node:path");
+		const workflows = join(__dirname, "../../../../.github/workflows");
+		const trusted = await readFile(
+			join(workflows, "temporal-replay-validation.yml"),
+			"utf8",
 		);
-		const yaml = await readFile(path, "utf8");
-		// The `paths-filter` step must include the temporal src/ tree.
-		// Without this, a workflow-code change to draft-project-cleanup.ts
-		// would NOT trigger the replay matrix and the PR could land a
-		// non-deterministic workflow body undetected.
-		expect(yaml).toMatch(/packages\/temporal\/src\/\*\*/);
-		// The aggregate status check must remain wired so branch protection
-		// keeps enforcing the gate.
-		expect(yaml).toMatch(/replay-validation/);
+		const companion = await readFile(
+			join(workflows, "temporal-replay-pr-check.yml"),
+			"utf8",
+		);
+
+		expect(trusted).toMatch(/packages\/temporal\/src\/\*\*/);
+		expect(trusted).toMatch(/--raw-field context=replay-validation/);
+		expect(companion).toMatch(/packages\/temporal\/src\/\*\*/);
+		expect(companion).toMatch(/^ {4}name: replay-validation$/m);
 	});
 });

@@ -23,6 +23,7 @@ vi.mock("@repo/database", () => ({
 	getModelByCanonicalName: mocks.getModelByCanonicalName,
 	getCanonicalNameForProviderModelId:
 		mocks.getCanonicalNameForProviderModelId,
+	isOrganizationLive: async () => true,
 	getProjectAccessContext: vi.fn(async () => ({
 		organizationId: "org-1",
 	})),

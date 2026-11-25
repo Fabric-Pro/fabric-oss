@@ -23,6 +23,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
 	PROJECT_EMBEDDING_TASK_QUEUE,
 	PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
+	URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
 } from "../../src/task-queues";
 
 let env: TestWorkflowEnvironment;
@@ -166,7 +167,8 @@ async function run(
 	replayed: Promise<void>;
 }> {
 	const calls: Call[] = [];
-	const activities = makeActivities(variant, calls);
+	const { firecrawlMapActivity, firecrawlScrapeActivity, ...activities } =
+		makeActivities(variant, calls);
 	const taskQueue = `example-unsupported-${sequence++}`;
 	const workflowId = `${taskQueue}-workflow`;
 	const workflowWorker = await Worker.create({
@@ -185,6 +187,15 @@ async function run(
 		activities,
 	});
 
+	const scraperWorker = await Worker.create({
+		connection: env.nativeConnection,
+		taskQueue: URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
+		activities: {
+			firecrawlMapActivity,
+			firecrawlScrapeActivity,
+		},
+	});
+
 	let result: PromiseSettledResult<unknown> = {
 		status: "rejected",
 		reason: new Error("not run"),
@@ -194,23 +205,25 @@ async function run(
 			ReturnType<typeof env.client.workflow.getHandle>["fetchHistory"]
 		>
 	> | null = null;
-	await operations.runUntil(
-		embeddings.runUntil(
-			workflowWorker.runUntil(async () => {
-				const handle = await env.client.workflow.start(
-					"urlSourceCrawlWorkflow",
-					{ taskQueue, workflowId, args: [input] },
-				);
-				try {
-					result = {
-						status: "fulfilled",
-						value: await handle.result(),
-					};
-				} catch (reason) {
-					result = { status: "rejected", reason };
-				}
-				history = await handle.fetchHistory();
-			}),
+	await scraperWorker.runUntil(() =>
+		operations.runUntil(
+			embeddings.runUntil(
+				workflowWorker.runUntil(async () => {
+					const handle = await env.client.workflow.start(
+						"urlSourceCrawlWorkflow",
+						{ taskQueue, workflowId, args: [input] },
+					);
+					try {
+						result = {
+							status: "fulfilled",
+							value: await handle.result(),
+						};
+					} catch (reason) {
+						result = { status: "rejected", reason };
+					}
+					history = await handle.fetchHistory();
+				}),
+			),
 		),
 	);
 	if (!history) {
@@ -233,7 +246,8 @@ const base = {
 	projectId: "example-project",
 	userId: "example-user",
 	organizationId: "example-org",
-	apiKey: "example-key",
+	apiKey: "fc-test-not-a-real-key",
+	providerEndpoint: "example-legacy-endpoint",
 };
 
 describe("urlSourceCrawlWorkflow with an unsupported content type", () => {
@@ -245,6 +259,17 @@ describe("urlSourceCrawlWorkflow with an unsupported content type", () => {
 			maxPages: 3,
 		};
 		const current = await run("outcome", input);
+		for (const [name, args] of current.calls) {
+			if (!name.startsWith("firecrawl")) {
+				continue;
+			}
+			expect(args).toMatchObject({
+				contextId: base.contextId,
+				organizationId: base.organizationId,
+			});
+			expect(args).not.toHaveProperty("apiKey");
+			expect(args).not.toHaveProperty("providerEndpoint");
+		}
 		const legacy = await run("failure", input);
 
 		expect(current.result).toEqual({

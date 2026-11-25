@@ -11,8 +11,8 @@
  * `mode: 'retry-single-page'` and `retryPageUrl` set. The workflow's
  * retry branch:
  *   1. Calls `firecrawlScrapeActivity(retryPageUrl, ...)` with the same
- *      scrapeOptions as the parent's crawl (the activity is provider-
- *      agnostic — it dispatches on the `providerName` + apiKey it is given).
+ *      scrapeOptions as the parent's crawl. The activity dispatches on
+ *      the selected `providerName`.
  *   2. Calls `upsertUrlPageActivity` in `manual-resync` semantics so
  *      content + extractionStatus are overwritten even on hash match.
  *   3. Calls `embedUrlPageActivity` to re-embed the page into Qdrant.
@@ -131,10 +131,9 @@ export const resyncUrlPageProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Pre-flight the scraper — same resolver as `resyncUrlSource`, so the
-		// UI's notice card renders identically. We resolve the key here (not
-		// in the workflow) because the worker sandbox can't reach the
-		// credential store and the activity needs a literal key.
+		// Pre-flight with the same resolver as resyncUrlSource. The API passes
+		// the key only while URL_CRAWL_OMIT_SCRAPER_KEY is off. With the switch
+		// on, the worker resolves the current credential itself.
 		//
 		// One page needs only a provider that can scrape, whatever the
 		// parent's scope: a path-prefix parent crawled with Firecrawl can have

@@ -45,12 +45,10 @@ export const INSTRUCTION_SYNC_ACTIVITY_TASK_QUEUE = "fabric-worker" as const;
 export const GLOSSY_EDITION_TASK_QUEUE = "glossy-edition" as const;
 
 /**
- * Company context ingestion (Fizzy #2719): the file-processing, embedding,
- * deletion and crawl workflows, their activities and schedules, when the
- * owner is a company source. Only workers that know company context poll it,
- * so a worker without that change can never pick up a company job and run it
- * down the project path; during a rollback company jobs wait here instead of
- * failing.
+ * Company context ingestion (Fizzy #2719): workflow and schedule starts,
+ * file processing, deletion, and crawl storage and status activities use
+ * this queue. Reference-based scrape, map and crawl calls use the dedicated
+ * company scraper queue.
  */
 export const COMPANY_CONTEXT_TASK_QUEUE = "company-context" as const;
 
@@ -63,6 +61,20 @@ export const COMPANY_CONTEXT_TASK_QUEUE = "company-context" as const;
  * retain their historical queue and must finish on its existing poller.
  */
 export const PROJECT_EMBEDDING_TASK_QUEUE = "project-embeddings" as const;
+
+/**
+ * Reference-based project URL scrape, map and crawl tasks. Updated workers
+ * also poll the original queues to drain activities already scheduled there.
+ */
+export const URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE =
+	"url-source-scraper" as const;
+
+/** Connector sync activities that load configuration or call providers. */
+export const CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE = "connector-sync" as const;
+
+/** Reference-based company URL scraping has its own activity slots. */
+export const COMPANY_URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE =
+	"company-url-source-scraper" as const;
 
 /**
  * Interactive document generation, including tracking and dependency probes.

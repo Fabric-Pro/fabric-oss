@@ -9,7 +9,7 @@ import {
 	folderRelation,
 } from "../use-document-folders";
 
-type Place = "onedrive" | "sharepoint";
+type Place = "onedrive" | "sharepoint" | "googledrive";
 
 export interface Site {
 	siteId: string;
@@ -20,6 +20,7 @@ export interface Site {
 export type Crumb =
 	| { kind: "places" }
 	| { kind: "sharepoint" }
+	| { kind: "sharedDrives" }
 	| { kind: "site"; site: Site }
 	| {
 			kind: "folder";
@@ -33,6 +34,13 @@ export type Crumb =
 			path: string;
 			site?: Site;
 			libraryName?: string;
+			/** Google Drive: My Drive, or the shared drive's name. */
+			driveName?: string;
+			/**
+			 * Google Drive: the ids of the folders above this one, its drive's
+			 * root included. Unset for Microsoft, whose folders compare by path.
+			 */
+			ancestorIds?: string[];
 	  };
 
 export type FolderCrumb = Extract<Crumb, { kind: "folder" }>;
@@ -46,6 +54,9 @@ export interface Chosen {
 	place: Place;
 	site?: Site;
 	libraryName?: string;
+	driveName?: string;
+	/** Google Drive: the ids of the folders above it, as on its crumb. */
+	ancestorIds?: string[];
 	description: string;
 }
 
@@ -64,6 +75,8 @@ export function crumbId(crumb: Crumb): string {
 			return "places";
 		case "sharepoint":
 			return "sharepoint";
+		case "sharedDrives":
+			return "shared-drives";
 		case "site":
 			return `site:${crumb.site.siteId}`;
 		case "folder":
@@ -79,6 +92,8 @@ export function crumbLabel(crumb: Crumb): string {
 			return "Places";
 		case "sharepoint":
 			return "SharePoint";
+		case "sharedDrives":
+			return "Shared drives";
 		case "site":
 			return crumb.site.siteName;
 		case "folder":
@@ -92,6 +107,8 @@ export function levelTitle(crumb: Crumb): string {
 			return "Choose where to look";
 		case "sharepoint":
 			return "SharePoint sites";
+		case "sharedDrives":
+			return "Shared drives";
 		case "site":
 			return `Document libraries in ${crumb.site.siteName}`;
 		case "folder":
@@ -105,25 +122,91 @@ export function childPath(parent: string, name: string): string {
 
 export function chosenPlace(chosen: Chosen): string {
 	const path = chosen.path === "/" ? [] : [chosen.path];
-	return chosen.place === "onedrive"
-		? ["My OneDrive", ...path].join(" · ")
-		: ["SharePoint", chosen.site?.siteName, chosen.libraryName, ...path]
+	switch (chosen.place) {
+		case "onedrive":
+			return ["My OneDrive", ...path].join(" · ");
+		case "googledrive":
+			return ["Google Drive", chosen.driveName, ...path]
 				.filter(Boolean)
 				.join(" · ");
+		case "sharepoint":
+			return [
+				"SharePoint",
+				chosen.site?.siteName,
+				chosen.libraryName,
+				...path,
+			]
+				.filter(Boolean)
+				.join(" · ");
+	}
+}
+
+type Relation = "same" | "inside" | "contains" | null;
+
+/**
+ * How a Google Drive folder sits against another, by id: Drive allows sibling
+ * folders with the same name, so a name path cannot tell them apart. The
+ * same id, the other's id among its ancestors (inside), or its id among the
+ * other's (contains). Ids are unique across Google Drive.
+ */
+function googleRelation(
+	folder: { itemId: string; ancestorIds: readonly string[] },
+	other: { itemId: string; ancestorIds: readonly string[] },
+): Relation {
+	if (folder.itemId === other.itemId) {
+		return "same";
+	}
+	if (folder.ancestorIds.includes(other.itemId)) {
+		return "inside";
+	}
+	if (other.ancestorIds.includes(folder.itemId)) {
+		return "contains";
+	}
+	return null;
 }
 
 /**
  * Why a folder cannot be chosen: it is, or lies inside, or holds a connected
- * folder, or a folder already chosen. Null when it can be.
+ * folder, or a folder already chosen. Null when it can be. A Google Drive
+ * folder, which carries its ancestor ids, is compared with Google Drive
+ * folders by id; any other by path.
  */
 export function blockedBy(
-	candidate: { key: string; driveId: string; path: string },
+	candidate: {
+		key: string;
+		driveId: string;
+		itemId: string;
+		path: string;
+		ancestorIds?: readonly string[];
+	},
 	chosen: Map<string, Chosen>,
 	connected: EditorDocumentFolder[],
 ): string | null {
 	const at = { driveId: candidate.driveId, drivePath: candidate.path };
+	const google = candidate.ancestorIds
+		? { itemId: candidate.itemId, ancestorIds: candidate.ancestorIds }
+		: null;
+	const relationTo = (other: {
+		provider: string;
+		driveId: string;
+		itemId: string;
+		drivePath: string | null;
+		ancestorIds?: readonly string[];
+	}): Relation => {
+		if (google) {
+			return other.provider === "googledrive"
+				? googleRelation(google, {
+						itemId: other.itemId,
+						ancestorIds: other.ancestorIds ?? [],
+					})
+				: null;
+		}
+		return other.provider === "googledrive"
+			? null
+			: folderRelation(at, other);
+	};
 	for (const folder of connected) {
-		switch (folderRelation(at, folder)) {
+		switch (relationTo(folder)) {
 			case "same":
 				return "Already connected to this project.";
 			case "inside":
@@ -137,9 +220,12 @@ export function blockedBy(
 			continue;
 		}
 		switch (
-			folderRelation(at, {
+			relationTo({
+				provider: other.place,
 				driveId: other.driveId,
+				itemId: other.itemId,
 				drivePath: other.path,
+				ancestorIds: other.ancestorIds,
 			})
 		) {
 			case "same":

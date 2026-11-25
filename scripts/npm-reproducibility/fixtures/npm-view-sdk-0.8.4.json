@@ -1,0 +1,7 @@
+{
+	"name": "@fabricorg/sdk",
+	"version": "0.8.4",
+	"dist": {
+		"integrity": "sha512-wVjndxEaRPWT6Zo4kwPyivFG6DUPlB5Irlx4l4hz8eeBWodjeKWsSJRygw6nT2wgCprTOiAPmgHzRtYBuO8u8Q=="
+	}
+}

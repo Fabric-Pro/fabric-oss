@@ -153,6 +153,9 @@ export function registerWorkflowRoutes(
 			} catch {
 				return c.json(badRequest("Invalid JSON body"), 400);
 			}
+			if (body === null) {
+				return c.json(badRequest("Invalid JSON body"), 400);
+			}
 
 			const workflow = await getWorkflowById(
 				c.req.param("id")!,

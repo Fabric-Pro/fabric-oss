@@ -154,7 +154,7 @@ The App secrets are referenced twice in `release.yml`: in the auto-tag chain abo
 
 ### Branch cutover (complete)
 
-`master` is now the upstream canonical branch; `main` has been archived. `.changeset/config.json`'s `baseBranch`, every GitHub Actions workflow's trigger filter (`release.yml`, `changeset-check.yml`, `deploy-azure-container-apps.yml`, `unit-tests.yml`, `security.yml`, `temporal-replay-validation.yml`), and the GitLab CI job gates in `ci/gitlab/*.yml` (`$CI_COMMIT_BRANCH == "master"`) all reference `master` only.
+`master` is now the upstream canonical branch; `main` has been archived. `.changeset/config.json`'s `baseBranch`, the upstream GitHub Actions workflow filters, and the GitLab CI job gates in `ci/gitlab/*.yml` use `master` as the upstream branch. PR validation workflows can also target `staging`.
 
 Workflow `run:` steps resolve the base branch dynamically (`github.base_ref` exposed as `BASE_REF`) so no shell-level hard-coding was needed — `unit-tests.yml` uses `--filter="...[origin/${BASE_REF}]"` and `security.yml` uses `git rev-parse "origin/$BASE_REF"`. If you add a new workflow that diffs against a branch, follow the same pattern; never hard-code `origin/main`.
 
@@ -169,6 +169,22 @@ A quick way to check nothing was missed: `grep -rn "main" .github/workflows/ .ch
 | `workflow_dispatch` | input-selected | Full build of every component, regardless of diff. Manual fallback. |
 
 The prod path is gated by the **GitHub Environment `Production`** — configure required reviewers and a deployment tag protection rule for `v*.*.*` in repo Settings → Environments.
+
+### Temporal replay snapshots
+
+The `snapshot_histories` job in [Temporal Replay Validation](../.github/workflows/temporal-replay-validation.yml)
+fetches recent dev histories on the private staging branch. It encrypts the
+histories and metadata with the repository's `REPLAY_SNAPSHOT_KEY` Actions
+secret and uploads the ciphertext as a workflow artifact. GitHub automatically
+deletes the artifact after two days. The trusted PR jobs publish the policy
+status. The [PR replay check](../.github/workflows/temporal-replay-pr-check.yml)
+selects the newest artifact from a trusted staging producer, decrypts it on a
+GitHub-hosted runner, and requires histories fetched within 24 hours.
+
+If there is no usable snapshot or its metadata is stale, run **Temporal Replay
+Validation** manually on `staging` in the private staging repository, then
+re-run the PR check. Dispatches on other refs or repositories skip the snapshot
+job.
 
 ### Build-once-promote model
 

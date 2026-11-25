@@ -27,9 +27,13 @@ import { describe, expect, it } from "vitest";
 const activitiesRoot = resolve(__dirname, "..");
 const repoRoot = resolve(activitiesRoot, "../../../..");
 
-/** Importing any of these means the module can reach an external service. */
+/**
+ * Importing any of these means the module can reach an external service. The
+ * document-folder drive adapters are typed reads rather than a tool
+ * dispatcher, so their import specifier stands for them.
+ */
 const EXTERNAL_DISPATCH_RE =
-	/executeGitHubTool|executeMicrosoftTeamsTool|getCachedMcpClientForConfig|createMcpClient\b/;
+	/executeGitHubTool|executeMicrosoftTeamsTool|getCachedMcpClientForConfig|createMcpClient\b|@repo\/integrations\/document-folders/;
 
 /** The module consults the read-only gate somewhere. */
 const GATE_REF_RE = /guardToolWriteForReadOnly|isProjectReadOnly|callMcpTool/;
@@ -57,7 +61,7 @@ const ALLOWLIST: ReadonlyMap<string, string> = new Map([
 	],
 	[
 		"packages/temporal/src/activities/document-folder-sync.ts",
-		"OneDrive and SharePoint READS only (get_drive_item / list_drive_tree / lookup_drive_items / download_drive_item) — copies files into Fabric, never writes to the drive (#2808)",
+		"OneDrive, SharePoint and Google Drive READS only, through the document-folder drive adapters (Graph get_drive_item / list_drive_tree / lookup_drive_items / download_drive_item; Drive files.get / files.list / files.export) — copies files into Fabric, never writes to the drive (#2808)",
 	],
 	[
 		"packages/temporal/src/activities/meeting-transcript-sync.ts",
@@ -171,6 +175,21 @@ describe("worker external-dispatch read-only gate guard", () => {
 		}
 
 		expect(offenders.length).toBe(0);
+	});
+
+	it("counts an import of the document-folder drive adapters as external dispatch", () => {
+		// A new activity importing the adapters is held to the rule above.
+		expect(
+			EXTERNAL_DISPATCH_RE.test(
+				'import { documentFolderDriveAdapter } from "@repo/integrations/document-folders";',
+			),
+		).toBe(true);
+		// The folder sync reads through the adapters, and stays in view.
+		const sync = readFileSync(
+			resolve(activitiesRoot, "document-folder-sync.ts"),
+			"utf-8",
+		);
+		expect(EXTERNAL_DISPATCH_RE.test(sync)).toBe(true);
 	});
 
 	it("allowlist entries still exist and still lack gate refs (no stale excuses)", () => {

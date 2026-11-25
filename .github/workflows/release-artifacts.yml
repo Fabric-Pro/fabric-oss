@@ -84,6 +84,8 @@ jobs:
       # that `main` still names the SOURCE entry point: a deployer unpacking
       # this tarball points it at the bundled entry (or re-bundles from an
       # extracted source tree) rather than assuming the path resolves as-is.
+      # Drop Wrangler's timestamped README and normalize archive metadata so
+      # rebuilding the same commit produces the same archive digest.
       - name: Build collab worker bundle
         working-directory: party-cf
         run: |
@@ -92,7 +94,9 @@ jobs:
           pnpm --filter fabric-collab-prod type-check
           npx wrangler deploy --env="" --dry-run --outdir=dist
           cp wrangler.toml dist/wrangler.toml
-          tar -czf ../collab-worker.tgz -C dist .
+          rm -f dist/README.md
+          epoch=$(git log -1 --format=%ct)
+          tar --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner --format=gnu -cf - -C dist . | gzip -n -9 > ../collab-worker.tgz
           sha256sum ../collab-worker.tgz | cut -d' ' -f1 > ../collab-worker.sha256
 
       # Over the tarball, not over the directory: the digest that ends up in

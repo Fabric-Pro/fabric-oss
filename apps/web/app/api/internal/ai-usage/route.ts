@@ -10,6 +10,7 @@ import {
 	getChatGptPlanOrgAccount,
 	getModelByCanonicalName,
 	getProjectAccessContext,
+	isOrganizationLive,
 	logAiUsage,
 	recordAiOutputProvenance,
 } from "@repo/database";
@@ -135,7 +136,9 @@ export async function POST(request: Request) {
 			if (
 				accessContext &&
 				(accessContext.organizationId ?? null) ===
-					(verified.claims.org ?? null)
+					(verified.claims.org ?? null) &&
+				(!accessContext.organizationId ||
+					(await isOrganizationLive(accessContext.organizationId)))
 			) {
 				verifiedProjectId = body.projectId;
 			} else {

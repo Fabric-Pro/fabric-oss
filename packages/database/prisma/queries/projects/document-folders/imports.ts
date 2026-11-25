@@ -247,11 +247,14 @@ export type DocumentFolderFileOutcome =
 			outcome: "FAILED";
 			failureCode: DocumentFolderFailureCode;
 	  }
-	/** Found unsupported, or over the byte cap mid-download: before a context. */
+	/**
+	 * Found unsupported, over the byte cap mid-download, or refused by the
+	 * drive: before a context.
+	 */
 	| {
 			contextId: null;
 			outcome: "SKIPPED";
-			skipCode: "TOO_BIG" | "UNSUPPORTED";
+			skipCode: "TOO_BIG" | "UNSUPPORTED" | "NOT_DOWNLOADABLE";
 	  };
 
 /**

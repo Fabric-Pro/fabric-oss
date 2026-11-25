@@ -46,6 +46,11 @@ export interface DocumentFolderViewerItem {
 export interface DocumentFolderEditorItem extends DocumentFolderViewerItem {
 	driveId: string;
 	itemId: string;
+	/**
+	 * The ids of the folders above this one, up to its drive's root, where
+	 * they decide overlap (Google Drive); empty for OneDrive and SharePoint.
+	 */
+	ancestorIds: string[];
 	siteId: string | null;
 	webUrl: string | null;
 	readerUserId: string;
@@ -102,6 +107,7 @@ export async function listDocumentFolders(params: {
 				? {
 						driveId: true,
 						itemId: true,
+						ancestorIds: true,
 						siteId: true,
 						webUrl: true,
 						userId: true,
@@ -196,6 +202,7 @@ export async function listDocumentFolders(params: {
 		const full = folder as typeof folder & {
 			driveId: string;
 			itemId: string;
+			ancestorIds: string[];
 			siteId: string | null;
 			webUrl: string | null;
 			userId: string;
@@ -205,6 +212,7 @@ export async function listDocumentFolders(params: {
 			...viewerItem,
 			driveId: full.driveId,
 			itemId: full.itemId,
+			ancestorIds: full.ancestorIds,
 			siteId: full.siteId,
 			webUrl: full.webUrl,
 			readerUserId: full.userId,

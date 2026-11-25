@@ -25,10 +25,14 @@ vi.mock("@repo/database", async () => {
 	const { normalizeBacklogTitle } = await vi.importActual<
 		typeof import("../../database/utils")
 	>("../../database/utils");
+	const { tenantWhere } = await vi.importActual<
+		typeof import("../../database/src/tenant-filter")
+	>("../../database/src/tenant-filter");
 	return {
 		db: { project: { findUnique: mocks.projectFindUnique } },
 		createRoadmapRecommendationBatchOnce: mocks.createBatchOnce,
 		normalizeBacklogTitle,
+		tenantWhere,
 	};
 });
 

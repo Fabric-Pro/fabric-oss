@@ -2,9 +2,9 @@
 
 /**
  * The levels of the document-folder picker (Fizzy #2808): places, SharePoint
- * sites, a site's libraries, and a folder's subfolders as a tree that works
- * from the keyboard. Each level reads with the caller's own Microsoft
- * connection.
+ * sites, a site's libraries, Google shared drives, and a folder's subfolders
+ * as a tree that works from the keyboard. Each level reads with the caller's
+ * own Microsoft or Google Drive connection.
  */
 
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -18,11 +18,16 @@ import {
 	ChevronRightIcon,
 	CloudIcon,
 	FolderIcon,
+	HardDriveIcon,
 	Loader2Icon,
+	UsersIcon,
 } from "lucide-react";
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import {
+	connectAccount,
+	type DocumentFolderSource,
 	type EditorDocumentFolder,
+	googleDriveConnectNeeded,
 	isMicrosoftNotConnected,
 	messageOf,
 } from "../use-document-folders";
@@ -40,22 +45,55 @@ import {
 const NOT_CONNECTED =
 	"Connect your Microsoft account in Settings → Integrations to choose OneDrive or SharePoint folders.";
 
+type Scope = { projectId: string; organizationId: string | null };
+
 function useBrowse(
-	scope: { projectId: string; organizationId: string | null },
+	scope: Scope,
 	level:
 		| { kind: "roots" }
 		| { kind: "sites"; search: string }
 		| { kind: "drives"; siteId: string }
 		| { kind: "folders"; driveId?: string; itemId?: string },
-	enabled = true,
+	{
+		enabled = true,
+		source = "microsoft",
+	}: { enabled?: boolean; source?: DocumentFolderSource } = {},
 ) {
 	return useQuery({
 		...orpc.projects.documentFolders.browse.queryOptions({
-			input: { ...scope, level },
+			// A Microsoft browse sends no provider, as before Google Drive.
+			input: {
+				...scope,
+				...(source === "googledrive" ? { provider: source } : {}),
+				level,
+			},
 		}),
 		enabled,
 		retry: false,
 	});
+}
+
+type BrowseData = ReturnType<typeof useBrowse>["data"];
+
+/** The SharePoint part of the Microsoft top level, once it has loaded. */
+function sharePointOf(data: BrowseData) {
+	return data?.level === "roots" && data.provider !== "googledrive"
+		? data.sharePoint
+		: null;
+}
+
+/** The Google Drive places: My Drive and the shared drives. */
+function useGooglePlaces(scope: Scope) {
+	const roots = useBrowse(
+		scope,
+		{ kind: "roots" },
+		{ source: "googledrive" },
+	);
+	const places =
+		roots.data?.level === "roots" && roots.data.provider === "googledrive"
+			? roots.data
+			: null;
+	return { roots, places };
 }
 
 function LevelError({ error, fallback }: { error: unknown; fallback: string }) {
@@ -68,6 +106,92 @@ function LevelError({ error, fallback }: { error: unknown; fallback: string }) {
 				? NOT_CONNECTED
 				: messageOf(error, fallback)}
 		</p>
+	);
+}
+
+/**
+ * A Google Drive level that could not be read, with the way on: connect
+ * Google Drive, reconnect it to grant folder access, or try again. Connecting
+ * runs the Settings → Integrations flow in a popup, then reads again.
+ */
+function GoogleLevelError({
+	error,
+	organizationId,
+	fallback,
+	onRetry,
+}: {
+	error: unknown;
+	organizationId: string | null;
+	fallback: string;
+	onRetry: () => void;
+}) {
+	const needed = googleDriveConnectNeeded(error);
+	const [connecting, setConnecting] = useState(false);
+	const [connectError, setConnectError] = useState<string | null>(null);
+	// Aborted when the level goes away, so a popup still open neither reads
+	// again nor sets state on a screen that is gone.
+	const mounted = useRef<AbortController | null>(null);
+	useEffect(() => {
+		const controller = new AbortController();
+		mounted.current = controller;
+		return () => controller.abort();
+	}, []);
+
+	const connect = async () => {
+		const signal = mounted.current?.signal;
+		setConnecting(true);
+		setConnectError(null);
+		try {
+			await connectAccount("GOOGLE_DRIVE", organizationId, signal);
+			if (!signal?.aborted) {
+				onRetry();
+			}
+		} catch (connectFailure) {
+			if (!signal?.aborted) {
+				setConnectError(
+					messageOf(
+						connectFailure,
+						"Google Drive could not be connected.",
+					),
+				);
+			}
+		} finally {
+			if (!signal?.aborted) {
+				setConnecting(false);
+			}
+		}
+	};
+
+	return (
+		<div className="space-y-2">
+			<p
+				role="alert"
+				className="rounded-md border border-destructive/30 px-3 py-2 text-destructive text-sm"
+			>
+				{connectError ??
+					(needed === "connect"
+						? "Connect your Google Drive account to choose folders."
+						: needed === "reconnect"
+							? "Reconnect Google to grant folder access. Fabric needs to read your Drive folders."
+							: messageOf(error, fallback))}
+			</p>
+			{needed ? (
+				<Button
+					variant="outline"
+					size="sm"
+					onClick={connect}
+					loading={connecting}
+				>
+					{needed === "connect"
+						? "Connect Google"
+						: "Reconnect Google"}
+				</Button>
+			) : (
+				<Button variant="outline" size="sm" onClick={onRetry}>
+					Retry
+				</Button>
+			)}
+		</div>
 	);
 }
 
@@ -122,8 +246,7 @@ export function PlacesLevel({
 	onOpen: (crumb: Crumb) => void;
 }) {
 	const roots = useBrowse(scope, { kind: "roots" });
-	const sharePoint =
-		roots.data?.level === "roots" ? roots.data.sharePoint : null;
+	const sharePoint = sharePointOf(roots.data);
 
 	return (
 		<div className="space-y-2">
@@ -165,6 +288,111 @@ export function PlacesLevel({
 	);
 }
 
+/** My Drive's root, or a shared drive's, as the folder level it opens. */
+function googleDriveCrumb(place: { driveId: string; name: string }): Crumb {
+	return {
+		kind: "folder",
+		place: "googledrive",
+		driveId: place.driveId,
+		// A drive's root folder has the drive's id.
+		itemId: place.driveId,
+		name: place.name,
+		path: "/",
+		driveName: place.name,
+		ancestorIds: [],
+	};
+}
+
+export function GooglePlacesLevel({
+	scope,
+	onOpen,
+}: {
+	scope: Scope;
+	onOpen: (crumb: Crumb) => void;
+}) {
+	const { roots, places } = useGooglePlaces(scope);
+	if (roots.isLoading) {
+		return <Loading>Reading Google Drive…</Loading>;
+	}
+	if (roots.error) {
+		return (
+			<GoogleLevelError
+				error={roots.error}
+				organizationId={scope.organizationId}
+				fallback="Google Drive could not be reached. Try again in a moment."
+				onRetry={() => void roots.refetch()}
+			/>
+		);
+	}
+	if (!places) {
+		return null;
+	}
+	return (
+		<ul className="divide-y rounded-lg border">
+			<OpenRow
+				icon={HardDriveIcon}
+				label="My Drive"
+				onOpen={() =>
+					onOpen(
+						googleDriveCrumb({
+							driveId: places.myDrive.driveId,
+							name: places.myDrive.name,
+						}),
+					)
+				}
+			/>
+			<OpenRow
+				icon={UsersIcon}
+				label="Shared drives"
+				onOpen={() => onOpen({ kind: "sharedDrives" })}
+			/>
+		</ul>
+	);
+}
+
+export function SharedDrivesLevel({
+	scope,
+	onOpen,
+}: {
+	scope: Scope;
+	onOpen: (crumb: Crumb) => void;
+}) {
+	const { roots, places } = useGooglePlaces(scope);
+	if (roots.isLoading) {
+		return <Loading>Reading your shared drives…</Loading>;
+	}
+	if (roots.error) {
+		return (
+			<GoogleLevelError
+				error={roots.error}
+				organizationId={scope.organizationId}
+				fallback="Your shared drives could not be read. Try again in a moment."
+				onRetry={() => void roots.refetch()}
+			/>
+		);
+	}
+	const drives = places?.sharedDrives ?? [];
+	if (drives.length === 0) {
+		return (
+			<p className="text-muted-foreground text-sm">
+				You are not a member of any shared drive.
+			</p>
+		);
+	}
+	return (
+		<ul className="divide-y rounded-lg border">
+			{drives.map((drive) => (
+				<OpenRow
+					key={drive.driveId}
+					icon={UsersIcon}
+					label={drive.name}
+					onOpen={() => onOpen(googleDriveCrumb(drive))}
+				/>
+			))}
+		</ul>
+	);
+}
+
 function SiteList({
 	sites,
 	onOpenSite,
@@ -202,10 +430,9 @@ export function SharePointLevel({
 	const results = useBrowse(
 		scope,
 		{ kind: "sites", search: search ?? "" },
-		search !== null,
+		{ enabled: search !== null },
 	);
-	const followed =
-		roots.data?.level === "roots" ? roots.data.sharePoint : null;
+	const followed = sharePointOf(roots.data);
 	const found =
 		results.data?.level === "sites" && results.data.status === "available"
 			? results.data.sites
@@ -357,7 +584,8 @@ function FolderTreeItem({
 	onOpen,
 	onKeyDown,
 }: {
-	folder: { name: string; childCount: number };
+	/** Google Drive does not count a folder's children. */
+	folder: { name: string; childCount?: number };
 	checked: boolean;
 	blocked: string | null;
 	active: boolean;
@@ -370,6 +598,11 @@ function FolderTreeItem({
 	const metaId = useId();
 	const reasonId = useId();
 	const self = useRef<HTMLDivElement | null>(null);
+	const hasCount = folder.childCount !== undefined;
+	const describedBy =
+		[hasCount ? metaId : null, blocked ? reasonId : null]
+			.filter(Boolean)
+			.join(" ") || undefined;
 	// Mouse clicks on the parts below leave focus on the row, where the
 	// keyboard handling lives.
 	const keepFocus = (event: { preventDefault: () => void }) => {
@@ -387,7 +620,7 @@ function FolderTreeItem({
 			aria-label={folder.name}
 			aria-checked={checked}
 			aria-disabled={blocked ? true : undefined}
-			aria-describedby={blocked ? `${metaId} ${reasonId}` : metaId}
+			aria-describedby={describedBy}
 			tabIndex={active ? 0 : -1}
 			onFocus={onFocus}
 			onKeyDown={onKeyDown}
@@ -414,15 +647,22 @@ function FolderTreeItem({
 					className="size-4 shrink-0 text-muted-foreground"
 				/>
 				<span className="truncate">{folder.name}</span>
-				<span
-					id={metaId}
-					className="ml-auto shrink-0 text-muted-foreground text-xs"
-				>
-					{folder.childCount} item{folder.childCount === 1 ? "" : "s"}
-				</span>
+				{hasCount && (
+					<span
+						id={metaId}
+						className="ml-auto shrink-0 text-muted-foreground text-xs"
+					>
+						{folder.childCount} item
+						{folder.childCount === 1 ? "" : "s"}
+					</span>
+				)}
 				<ChevronRightIcon
 					aria-hidden="true"
-					className="size-4 shrink-0 text-muted-foreground"
+					className={
+						hasCount
+							? "size-4 shrink-0 text-muted-foreground"
+							: "ml-auto size-4 shrink-0 text-muted-foreground"
+					}
 				/>
 			</button>
 			{blocked && (
@@ -467,13 +707,32 @@ export function FolderLevel({
 	const currentReasonId = useId();
 	const [active, setActive] = useState(0);
 	const items = useRef<Array<HTMLDivElement | null>>([]);
-	const listing = useBrowse(scope, {
-		kind: "folders",
-		...(crumb.driveId ? { driveId: crumb.driveId } : {}),
-		...(crumb.itemId ? { itemId: crumb.itemId } : {}),
-	});
+	const google = crumb.place === "googledrive";
+	const listing = useBrowse(
+		scope,
+		{
+			kind: "folders",
+			...(crumb.driveId ? { driveId: crumb.driveId } : {}),
+			...(crumb.itemId ? { itemId: crumb.itemId } : {}),
+		},
+		{ source: google ? "googledrive" : "microsoft" },
+	);
 	const data = listing.data?.level === "folders" ? listing.data : null;
 	const folders = data?.folders ?? [];
+	// A Google Drive folder's drive name and the folders above it.
+	const googleExtras = (ancestorIds: string[]) =>
+		google
+			? {
+					...(crumb.driveName ? { driveName: crumb.driveName } : {}),
+					ancestorIds,
+				}
+			: {};
+	// A Google Drive folder below this one has this folder above it too.
+	const childGoogle = googleExtras([
+		...(crumb.ancestorIds ?? []),
+		...(crumb.itemId ? [crumb.itemId] : []),
+	]);
+	const currentGoogle = googleExtras(crumb.ancestorIds ?? []);
 
 	const asChosen = (folder: {
 		driveId: string;
@@ -488,6 +747,7 @@ export function FolderLevel({
 		place: crumb.place,
 		...(crumb.site ? { site: crumb.site } : {}),
 		...(crumb.libraryName ? { libraryName: crumb.libraryName } : {}),
+		...childGoogle,
 	});
 
 	// My OneDrive's root has no drive id to connect it by, so only a folder
@@ -507,6 +767,7 @@ export function FolderLevel({
 				...(crumb.libraryName
 					? { libraryName: crumb.libraryName }
 					: {}),
+				...currentGoogle,
 			}
 		: null;
 	const currentBlocked = current
@@ -551,6 +812,7 @@ export function FolderLevel({
 			path: childPath(crumb.path, folder.name),
 			...(crumb.site ? { site: crumb.site } : {}),
 			...(crumb.libraryName ? { libraryName: crumb.libraryName } : {}),
+			...childGoogle,
 		});
 
 	const toggleChild = (folder: (typeof folders)[number]) => {
@@ -602,10 +864,22 @@ export function FolderLevel({
 	if (listing.isLoading) {
 		return (
 			<Loading>
-				{crumb.place === "onedrive"
-					? "Reading OneDrive…"
-					: "Reading SharePoint…"}
+				{google
+					? "Reading Google Drive…"
+					: crumb.place === "onedrive"
+						? "Reading OneDrive…"
+						: "Reading SharePoint…"}
 			</Loading>
+		);
+	}
+	if (listing.error && google) {
+		return (
+			<GoogleLevelError
+				error={listing.error}
+				organizationId={scope.organizationId}
+				fallback="This folder could not be read."
+				onRetry={() => void listing.refetch()}
+			/>
 		);
 	}
 	if (listing.error) {
@@ -636,9 +910,11 @@ export function FolderLevel({
 							}
 						/>
 						<Label htmlFor={currentId}>
-							{crumb.path === "/"
-								? `Use the whole ${crumb.name} library`
-								: `Use ${crumb.name}`}
+							{crumb.path !== "/"
+								? `Use ${crumb.name}`
+								: google
+									? `Use all of ${crumb.name}`
+									: `Use the whole ${crumb.name} library`}
 						</Label>
 					</div>
 					<p

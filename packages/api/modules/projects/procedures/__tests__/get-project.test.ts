@@ -4,10 +4,8 @@
  * Fizzy #1767): `canManageMembers` capability.
  *
  * `canPublish` must be derived via the SAME authoritative resolver
- * (`resolveEffectiveProjectPermissions` + `hasPermission`) that
- * `requireProjectPermission` uses for mutation authorization — NOT the
- * org-first `userHasProjectPermission` used for `canEditSettings` — so the
- * UI never shows a control the server would reject.
+ * that `requireProjectPermission` uses for mutation authorization.
+ * `canEditSettings` also follows that gate.
  *
  * `canManageMembers` must be definitionally identical to the write gate in
  * `setForProjectMember` (Stage 1): `hasProjectAccess(...) &&
@@ -38,7 +36,6 @@ const { handlers, mocks } = vi.hoisted(() => {
 		projectFindUnique: vi.fn(),
 		projectMemberFindUnique: vi.fn(),
 		memberFindFirst: vi.fn(),
-		userHasProjectPermission: vi.fn(),
 		resolveAttachmentRetentionOverrides: vi.fn(),
 		isFeatureEnabled: vi.fn(),
 		isRoadmapRecommendationProviderAvailable: vi.fn(),
@@ -61,14 +58,6 @@ vi.mock("@repo/database", () => ({
 		projectMember: { findUnique: mocks.projectMemberFindUnique },
 		member: { findFirst: mocks.memberFindFirst },
 	},
-}));
-
-// canEditSettings is out of scope for this task — stub it directly rather
-// than re-deriving it, so failures here can't be masked by (or blamed on)
-// the unrelated org-first resolver.
-vi.mock("../../../../lib/project-permissions", () => ({
-	userHasProjectPermission: (...args: unknown[]) =>
-		mocks.userHasProjectPermission(...args),
 }));
 
 vi.mock("../../lib/roadmap-recommendations/availability", () => ({
@@ -94,7 +83,7 @@ vi.mock("../../lib/pm-story-sync-job", () => ({
 // (real resolver) and "@repo/permissions" (real hasPermission + role
 // tables) — both run for real against the mocked DB layer above.
 
-vi.mock("../../../../orpc/procedures", () => {
+vi.mock("../../../../orpc/procedures", async () => {
 	const chainable: Record<string, unknown> = {};
 	Object.assign(chainable, {
 		use: () => chainable,
@@ -107,6 +96,9 @@ vi.mock("../../../../orpc/procedures", () => {
 		},
 	});
 	return {
+		userHasProjectPermission: (
+			await import("../../../../lib/project-permission-decision")
+		).userHasProjectPermission,
 		tenantProtectedProcedure: chainable,
 		requireProjectPermission: () => () => chainable,
 		resolveOrganizationId: (
@@ -144,7 +136,6 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.getProjectById.mockResolvedValue({ id: PROJECT_ID, name: "Project" });
 	mocks.getProjectRole.mockResolvedValue("EDITOR");
-	mocks.userHasProjectPermission.mockResolvedValue(false);
 	// Per-test override for the canManageMembers cases below; defaulting to
 	// `false` means a test that forgets to set it fails loudly instead of
 	// silently passing.
@@ -159,6 +150,32 @@ beforeEach(() => {
 	mocks.isRoadmapRecommendationProviderAvailable.mockResolvedValue(false);
 	mocks.findActivePmStorySync.mockResolvedValue(null);
 });
+
+it.each([
+	["VIEWER", false],
+	["PROJECT_ADMIN", true],
+])(
+	"uses the active %s project role for an organization admin's settings controls",
+	async (role, allowed) => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: PROJECT_ID,
+			organizationId: ORG_ID,
+			userId: USER_ID,
+			organization: { deletedAt: null },
+		});
+		mocks.projectMemberFindUnique.mockResolvedValue({
+			role,
+			acceptedAt: new Date(),
+			expiresAt: null,
+		});
+		mocks.memberFindFirst.mockResolvedValue({ role: "admin" });
+		const result = await handler({
+			input: { id: PROJECT_ID, organizationId: ORG_ID },
+			context: ctx,
+		});
+		expect(result.project.canEditSettings).toBe(allowed);
+	},
+);
 
 describe("getProjectProcedure — canPublish capability", () => {
 	it("an org Member granted PUBLISHING_TOPIC_CREATE via org role, with NO ProjectMember row, gets canPublish: true", async () => {

@@ -137,8 +137,8 @@ export function createExternalApiRoutes() {
 					fileId: string;
 					mimeType: string;
 					name?: string;
-				}>;
-			};
+				} | null>;
+			} | null;
 			try {
 				body = await c.req.json();
 			} catch {
@@ -146,7 +146,7 @@ export function createExternalApiRoutes() {
 			}
 
 			if (
-				!body.input ||
+				!body?.input ||
 				typeof body.input !== "object" ||
 				Array.isArray(body.input)
 			) {
@@ -183,7 +183,7 @@ export function createExternalApiRoutes() {
 				}
 				imageRefs = [];
 				for (const img of body.images) {
-					if (!img.fileId || !img.mimeType) {
+					if (!img?.fileId || !img.mimeType) {
 						return c.json(
 							{
 								error: "Each image must have fileId and mimeType",

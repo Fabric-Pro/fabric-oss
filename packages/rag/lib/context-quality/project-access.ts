@@ -41,8 +41,8 @@ export type EffectiveProjectAccess = {
  *   B. otherwise, fall back to the caller's org role on the project's host org
  *
  * Returns `null` when the project does not exist. This is the shared resolver
- * the middleware and `tags.remove` both use — do NOT reintroduce the org-first
- * `userHasProjectPermission` for authoritative project decisions.
+ * the middleware and `tags.remove` both use. Use the resolver-backed
+ * `userHasProjectPermission` for a boolean project permission decision.
  *
  * ## Two duplicates live in @repo/database — change them WITH this one
  *

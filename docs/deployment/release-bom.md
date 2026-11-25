@@ -255,6 +255,8 @@ gh attestation verify release-manifest.json \
 }
 ```
 
+`release.generatedAt` records the source commit’s committer timestamp in UTC.
+
 Every component carries `component`, `type` and `producedBy`. Four shapes:
 
 **`oci-image`** — the migration runner and the 13 rolled-out container images, all built and

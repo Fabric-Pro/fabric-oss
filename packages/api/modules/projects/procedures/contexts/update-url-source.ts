@@ -7,10 +7,9 @@
  * Schedule lifecycle (DAILY / WEEKLY / MONTHLY): when the cadence flips
  * into, out of, or between scheduled modes we route through the
  * `updateUrlSourceSchedule` helper which wraps `ScheduleClient` from
- * `packages/temporal/src/schedules/url-source-schedule.ts`. Switching INTO
- * a scheduled mode requires a scraper key — the activity sandbox can't reach
- * the credential store at fire-time, so the schedule's args embed the
- * decrypted key together with the provider name and endpoint it belongs to.
+ * `packages/temporal/src/schedules/url-source-schedule.ts`. Schedule args
+ * carry the key only while URL_CRAWL_OMIT_SCRAPER_KEY is off. With the switch
+ * on, the worker resolves the current credential itself.
  * The provider is the one `processLink` would choose (the first enabled
  * scrape-capable one, or crawl-capable for a path prefix), resolved by
  * `resolveUrlSourceProvider`. None configured surfaces as the typed

@@ -8,7 +8,8 @@ const { verifyUserApiKeyMock, logErrorMock } = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	db: {},
 	createUserApiKey: vi.fn(),
-	hasOrganizationTie: vi.fn(),
+	hasOrganizationTie: vi.fn().mockResolvedValue(true),
+	canUseOrganizationAiChat: vi.fn().mockResolvedValue(true),
 }));
 vi.mock("@repo/logs", () => ({ logger: { error: logErrorMock } }));
 vi.mock("@repo/ai/model-selector", () => {
@@ -40,6 +41,7 @@ describe("POST /openrouter/chat/completions — model selector fails to load", (
 			headers: {
 				Authorization: "Bearer fab_test_key",
 				"content-type": "application/json",
+				"x-fabriccode-organizationid": "example-org",
 			},
 			body: JSON.stringify({
 				model: "fabric/auto",

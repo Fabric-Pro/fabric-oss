@@ -13,6 +13,7 @@ import {
 	createRoadmapRecommendationBatchOnce,
 	db,
 	normalizeBacklogTitle,
+	tenantWhere,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
@@ -72,7 +73,24 @@ export async function gatherRoadmapRecommendationContext(
 ): Promise<GatherRoadmapRecommendationContextOutput> {
 	const { projectId, userId, organizationId } = input;
 
-	const [rag, snapshot, project] = await Promise.all([
+	const project = await db.project.findUnique({
+		where: { id: projectId, ...tenantWhere(userId, organizationId) },
+		select: { description: true },
+	});
+	if (!project) {
+		return {
+			fetchedContext: {},
+			existingBacklog: { stories: [] },
+			stats: {
+				ragChunkCount: 0,
+				roadmapItemCount: 0,
+				descriptionChars: 0,
+			},
+			insufficient: true,
+		};
+	}
+
+	const [rag, snapshot] = await Promise.all([
 		retrieveProjectRagContext({
 			projectId,
 			query: RAG_QUERY,
@@ -81,13 +99,9 @@ export async function gatherRoadmapRecommendationContext(
 			topK: 20,
 		}),
 		fetchBacklogSnapshot({ projectId }),
-		db.project.findUnique({
-			where: { id: projectId },
-			select: { description: true },
-		}),
 	]);
 
-	const description = project?.description?.trim() ?? "";
+	const description = project.description?.trim() ?? "";
 	const stats: RoadmapRecommendationStats = {
 		ragChunkCount: rag.chunkCount,
 		roadmapItemCount: snapshot.orphanStories.length,

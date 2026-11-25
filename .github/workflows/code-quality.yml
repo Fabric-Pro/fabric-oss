@@ -116,6 +116,8 @@ jobs:
           node --test .github/actions/oss-snapshot/*manifest.test.mjs
           node --test .github/scripts/staging/promotion-*.test.mjs .github/scripts/staging/public-relay-changeset.test.mjs
           node --test .github/scripts/auto-merge/eligible.test.mjs
+          node --test .github/scripts/temporal-replay/*.test.mjs
+          node --test scripts/npm-reproducibility/*.test.mjs
 
       - name: Agent guidance
         run: pnpm guidance:check

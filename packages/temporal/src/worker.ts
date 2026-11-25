@@ -44,6 +44,8 @@ import { PUBLISHING_RECONCILE_TASK_QUEUE } from "./schedules";
 import {
 	AGUI_RUN_TASK_QUEUE,
 	COMPANY_CONTEXT_TASK_QUEUE,
+	COMPANY_URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
+	CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE,
 	CONTEXT_QUALITY_TASK_QUEUE,
 	GLOSSY_EDITION_TASK_QUEUE,
 	ORCHESTRATOR_TASK_QUEUE,
@@ -51,6 +53,7 @@ import {
 	PROJECT_EMBEDDING_TASK_QUEUE,
 	PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 	PROPOSAL_EXPORT_TASK_QUEUE,
+	URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
 } from "./task-queues";
 import {
 	getTelemetryInterceptors,
@@ -141,6 +144,8 @@ export const ACTIVITY_SLOTS = {
 	// through three slots. Eight added slots add four pool connections.
 	projectDocumentGeneration: 5,
 	projectEmbedding: 3,
+	urlSourceScraper: 3,
+	connectorSync: 3,
 	// Original project-operation capacity, independent of indexing and generation.
 	// The all-queue pool grows from 49 to 51 connections; the usual
 	// general process (excluding CPU queues) grows from 46 to 49.
@@ -161,6 +166,7 @@ export const ACTIVITY_SLOTS = {
 	// so three slots drain a batch of uploads steadily. Through the
 	// half-the-slots rule this adds two connections.
 	companyContext: 3,
+	companyUrlSourceScraper: 3,
 	// Proposal export to PDF and Word (Fizzy #2946). Each export holds one
 	// headless Chromium for its whole run (about 180 MiB for a 40-page
 	// document, measured), so the slots are the number of browsers this
@@ -278,6 +284,16 @@ const TASK_QUEUE_WORKERS: readonly TaskQueueWorkerOptions[] = [
 		maxConcurrentWorkflowTaskExecutions: 5,
 	},
 	{
+		taskQueue: URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
+		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.urlSourceScraper,
+		activitiesOnly: true,
+	},
+	{
+		taskQueue: CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE,
+		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.connectorSync,
+		activitiesOnly: true,
+	},
+	{
 		taskQueue: CONTEXT_QUALITY_TASK_QUEUE,
 		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.contextQuality,
 		maxConcurrentWorkflowTaskExecutions: 2,
@@ -331,6 +347,12 @@ const TASK_QUEUE_WORKERS: readonly TaskQueueWorkerOptions[] = [
 		taskQueue: COMPANY_CONTEXT_TASK_QUEUE,
 		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.companyContext,
 		maxConcurrentWorkflowTaskExecutions: 5,
+	},
+	{
+		taskQueue: COMPANY_URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
+		maxConcurrentActivityTaskExecutions:
+			ACTIVITY_SLOTS.companyUrlSourceScraper,
+		activitiesOnly: true,
 	},
 	// Coding-instructions snapshot validation gets its OWN queue, for the
 	// same reason Living Documents did.
@@ -853,7 +875,7 @@ function setupShutdownHandlers() {
 		// Close metrics HTTP server so the loopback port releases.
 		if (metricsServer) {
 			await new Promise<void>((resolve) =>
-				metricsServer!.close(() => resolve()),
+				metricsServer?.close(() => resolve()),
 			);
 			metricsServer = null;
 		}

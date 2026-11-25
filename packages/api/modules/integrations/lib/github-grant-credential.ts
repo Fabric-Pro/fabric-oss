@@ -52,7 +52,7 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 export async function saveGitHubGrantAsCredential(input: {
-	/** From the verified OAuth state, never from client input. */
+	/** Organization authorized for the OAuth grant. */
 	organizationId: string | null | undefined;
 	user: { id: string; email?: string | null; name?: string | null };
 	tokenResponse: GitHubTokenResponse;

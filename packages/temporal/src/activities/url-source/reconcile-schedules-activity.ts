@@ -26,9 +26,16 @@
  * still wants that schedule, so it is kept.
  */
 
+import { randomUUID } from "node:crypto";
 import { Context } from "@temporalio/activity";
-import type { ScheduleSummary } from "@temporalio/client";
+import {
+	isGrpcServiceError,
+	type ScheduleClient,
+	type ScheduleSummary,
+} from "@temporalio/client";
+import { defaultPayloadConverter } from "@temporalio/common";
 import { getScheduleClient } from "../../client";
+import { URL_SOURCE_RECONCILE_SCHEDULE_ID } from "../../schedules";
 import {
 	deleteUrlSourceSchedule,
 	parseContextIdFromScheduleId,
@@ -146,6 +153,85 @@ export function classifyScheduleOrphan(args: {
 	return null;
 }
 
+type StripOutcome = "stripped" | "unchanged" | "skipped" | "failed";
+
+async function stripScheduleScraperCredential(
+	client: ScheduleClient,
+	scheduleId: string,
+): Promise<StripOutcome> {
+	const { namespace, identity } = client.options;
+	try {
+		const { schedule, conflictToken } =
+			await client.workflowService.describeSchedule({
+				namespace,
+				scheduleId,
+			});
+		if (!conflictToken?.length) {
+			return "skipped";
+		}
+
+		const start = schedule?.action?.startWorkflow;
+		const payloads = start?.input?.payloads;
+		const first = payloads?.[0];
+		if (!start?.input || !payloads || !first) {
+			return "unchanged";
+		}
+
+		// getScheduleClient uses the SDK's default converter without codecs.
+		const args: unknown = defaultPayloadConverter.fromPayload(first);
+		if (
+			!args ||
+			typeof args !== "object" ||
+			(!Object.hasOwn(args, "apiKey") &&
+				!Object.hasOwn(args, "providerEndpoint"))
+		) {
+			return "unchanged";
+		}
+
+		const {
+			apiKey: _key,
+			providerEndpoint: _endpoint,
+			...reference
+		} = args as Record<string, unknown>;
+		// Keep the raw schedule and later payloads intact. ScheduleHandle.update
+		// does not send the conflict token in this SDK version.
+		await client.workflowService.updateSchedule({
+			namespace,
+			scheduleId,
+			schedule: {
+				...schedule,
+				action: {
+					...schedule?.action,
+					startWorkflow: {
+						...start,
+						input: {
+							...start.input,
+							payloads: [
+								defaultPayloadConverter.toPayload(reference),
+								...payloads.slice(1),
+							],
+						},
+					},
+				},
+			},
+			conflictToken,
+			identity,
+			requestId: randomUUID(),
+		});
+		return "stripped";
+	} catch (error) {
+		if (
+			isGrpcServiceError(error) &&
+			(error.code === 5 || error.code === 9)
+		) {
+			// NOT_FOUND or FAILED_PRECONDITION (stale conflict token).
+			return "skipped";
+		}
+		// A service error can include request data. Report counts only.
+		return "failed";
+	}
+}
+
 /**
  * Internal worker — extracted so tests can call it with a fake schedule
  * list + fake context fetcher without spinning up `@temporalio/client`.
@@ -154,6 +240,7 @@ export async function reconcileUrlSourceSchedules(args: {
 	listSchedules: () => AsyncIterable<ScheduleSummary>;
 	deleteSchedule: (scheduleId: string) => Promise<void>;
 	fetchContext: ProjectContextFetcher;
+	onRetainedSchedule?: (scheduleId: string) => Promise<void>;
 	dryRun: boolean;
 	heartbeat?: (details?: unknown) => void;
 }): Promise<ReconcileUrlSourceSchedulesActivityOutput> {
@@ -161,6 +248,9 @@ export async function reconcileUrlSourceSchedules(args: {
 	let orphansDeleted = 0;
 
 	for await (const summary of args.listSchedules()) {
+		if (summary.scheduleId === URL_SOURCE_RECONCILE_SCHEDULE_ID) {
+			continue;
+		}
 		if (!summary.scheduleId.startsWith(SCHEDULE_ID_PREFIX)) {
 			continue;
 		}
@@ -178,6 +268,7 @@ export async function reconcileUrlSourceSchedules(args: {
 			row,
 		});
 		if (!reason) {
+			await args.onRetainedSchedule?.(summary.scheduleId);
 			continue;
 		}
 
@@ -202,6 +293,14 @@ export async function reconcileUrlSourceSchedulesActivity(
 	});
 
 	const scheduleClient = await getScheduleClient();
+	const stripEnabled =
+		!input.dryRun && process.env.URL_SCHEDULE_STRIP_SCRAPER_KEY === "true";
+	const stripCounts: Record<StripOutcome, number> = {
+		stripped: 0,
+		unchanged: 0,
+		skipped: 0,
+		failed: 0,
+	};
 
 	const result = await reconcileUrlSourceSchedules({
 		listSchedules: () =>
@@ -215,6 +314,15 @@ export async function reconcileUrlSourceSchedulesActivity(
 			await deleteUrlSourceSchedule({ scheduleId }, scheduleClient);
 		},
 		fetchContext: fetchUrlSourceScheduleRow,
+		onRetainedSchedule: stripEnabled
+			? async (scheduleId) => {
+					const outcome = await stripScheduleScraperCredential(
+						scheduleClient,
+						scheduleId,
+					);
+					stripCounts[outcome]++;
+				}
+			: undefined,
 		dryRun: input.dryRun,
 		heartbeat: (details) => {
 			try {
@@ -229,6 +337,7 @@ export async function reconcileUrlSourceSchedulesActivity(
 		scanned: result.scanned,
 		orphansDeleted: result.orphansDeleted,
 		dryRun: result.dryRun,
+		...(stripEnabled ? { scraperCredentialStrip: stripCounts } : {}),
 	});
 	return result;
 }

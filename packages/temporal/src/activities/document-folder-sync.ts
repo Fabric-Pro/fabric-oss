@@ -1,8 +1,10 @@
 /**
- * Keeping OneDrive and SharePoint document folders in step with the drive
- * (Fizzy #2808). Run by `documentFolderSyncWorkflow`, one project at a time.
+ * Keeping OneDrive, SharePoint and Google Drive document folders in step with
+ * the drive (Fizzy #2808). Run by `documentFolderSyncWorkflow`, one project at
+ * a time. Each folder is read through the drive adapter of its stored
+ * provider; what a read's result means for the folder does not depend on it.
  *
- * A folder is read only with its reader's own Microsoft connection, and every
+ * A folder is read only with its reader's own drive connection, and every
  * read, confirmation and import first checks again that the project still
  * has an organization, that it is the folder's, that the feature is on for
  * it, and that the reader may still add context to the project. The
@@ -10,7 +12,7 @@
  *
  * What a read cannot settle removes nothing: a failed, refused, truncated or
  * throttled read records why on the folder, and a removal candidate whose
- * lookup did not answer stays where it is. Graph error text is never stored
+ * lookup did not answer stays where it is. Drive error text is never stored
  * or logged; download addresses and folder descriptions never are either.
  *
  * Every activity is safe to repeat: the queries they call are conditional on
@@ -42,19 +44,16 @@ import {
 	reconcileDocumentFolderListing,
 	recordDocumentFolderFileOutcome,
 	recordDocumentFolderLookupsThrottled,
-	resolveOwnWorkflowIntegrationForProvider,
 	startDocumentFolderRead,
 	tombstoneDocumentFolderFiles,
 } from "@repo/database";
 import {
-	type DriveItemDetailsResult,
-	type DriveItemDownload,
+	type DocumentFolderConnection,
+	type DocumentFolderDownload,
+	type DocumentFolderDriveAdapter,
 	type DriveItemPlacement,
-	type DriveTreeListing,
-	driveItemPath,
-	executeMicrosoftTeamsTool,
-	isMicrosoftNotConnectedError,
-} from "@repo/integrations/microsoft";
+	documentFolderDriveAdapter,
+} from "@repo/integrations/document-folders";
 import { logger } from "@repo/logs";
 import { deleteProjectContext } from "@repo/rag";
 import { deleteFile, uploadFile } from "@repo/storage";
@@ -67,7 +66,7 @@ import { heartbeat } from "@temporalio/activity";
 
 const LOG = "[DocumentFolder]";
 
-/** Wait after a throttled Graph answer that named no time of its own. */
+/** Wait after a throttled drive answer that named no time of its own. */
 const DEFAULT_THROTTLE_WAIT_SECONDS = 5 * 60;
 
 /** The most any file type may be: the bound on a download before it is typed. */
@@ -105,7 +104,7 @@ function rootFailure(failure: {
 	if (isThrottled(failure.httpStatus)) {
 		return { nextReadAfter: throttledUntil(failure.retryAfterSeconds) };
 	}
-	// Anything else is Graph's own trouble: nothing to show, try next pass.
+	// Anything else is the drive's own trouble: nothing to show, try next pass.
 	return {};
 }
 
@@ -116,7 +115,11 @@ interface FolderReader {
 }
 
 type ReaderCheck =
-	| { ok: true; organizationId: string; connectionId: string }
+	| {
+			ok: true;
+			organizationId: string;
+			connection: DocumentFolderConnection;
+	  }
 	/** Refused; a null problem is the feature being off, which shows nothing. */
 	| { ok: false; problemCode: DocumentFolderProblemCode | null };
 
@@ -154,7 +157,10 @@ async function enabledOrganizationOf(
  * confirmation and import, not only at connect: access can be lost at any
  * time, and nothing private is read or stored for someone who lost it.
  */
-async function checkReader(folder: FolderReader): Promise<ReaderCheck> {
+async function checkReader(
+	folder: FolderReader,
+	adapter: DocumentFolderDriveAdapter,
+): Promise<ReaderCheck> {
 	const organizationId = await projectOrganizationId(folder.projectId);
 	if (!organizationId || organizationId !== folder.organizationId) {
 		return {
@@ -171,20 +177,20 @@ async function checkReader(folder: FolderReader): Promise<ReaderCheck> {
 			problemCode: DOCUMENT_FOLDER_PROBLEM_CODE.NO_ACCESS,
 		};
 	}
-	// The reader's own connection only: the tool would otherwise fall back to
-	// one shared with the organization, and read the folder as someone else.
-	const own = await resolveOwnWorkflowIntegrationForProvider(
-		"MICROSOFT_GRAPH",
-		folder.userId,
+	// The reader's own connection only, never one shared with the
+	// organization. One the drive cannot read folders with, such as a Google
+	// grant without `drive.readonly`, needs connecting again too.
+	const own = await adapter.resolveOwnConnection({
+		userId: folder.userId,
 		organizationId,
-	);
-	if (!own) {
+	});
+	if (own.status !== "connected") {
 		return {
 			ok: false,
 			problemCode: DOCUMENT_FOLDER_PROBLEM_CODE.RECONNECT,
 		};
 	}
-	return { ok: true, organizationId, connectionId: own.id };
+	return { ok: true, organizationId, connection: own.connection };
 }
 
 function heartbeatProgress(progress: { requests: number; items: number }) {
@@ -236,7 +242,7 @@ export interface ReadDocumentFolderOutput {
 	complete: boolean;
 	/** Files missing from two complete listings, to look up by id. */
 	candidates: Array<{ fileId: string; driveItemId: string }>;
-	/** ISO time the folder may be read again, when Graph throttled it. */
+	/** ISO time the folder may be read again, when the drive throttled it. */
 	nextReadAfter: string | null;
 }
 
@@ -264,41 +270,26 @@ export async function readDocumentFolder(input: {
 	}
 	let problemCode: DocumentFolderProblemCode | undefined;
 	let nextReadAfter: Date | undefined;
+	let adapter: DocumentFolderDriveAdapter | undefined;
 	try {
-		const check = await checkReader(folder);
+		adapter = documentFolderDriveAdapter(folder.provider);
+		const check = await checkReader(folder, adapter);
 		if (!check.ok) {
 			problemCode = check.problemCode ?? undefined;
 			return nothingRead();
 		}
-		const call = (
-			method: string,
-			args: Record<string, unknown>,
-			withProgress = false,
-		) =>
-			executeMicrosoftTeamsTool(
-				method,
-				args,
-				folder.userId,
-				check.organizationId,
-				check.connectionId,
-				withProgress ? { onProgress: heartbeatProgress } : {},
-			);
+		const drive = { driveId: folder.driveId, itemId: folder.itemId };
 
 		heartbeat("reading folder root");
-		const root = (await call("get_drive_item", {
-			driveId: folder.driveId,
-			itemId: folder.itemId,
-		})) as DriveItemDetailsResult;
+		const root = await adapter.getItemDetails(check.connection, drive);
 		if (root.status === "failed") {
 			({ problemCode, nextReadAfter } = rootFailure(root));
 			return nothingRead(nextReadAfter);
 		}
 
-		const listing = (await call(
-			"list_drive_tree",
-			{ driveId: folder.driveId, itemId: folder.itemId },
-			true,
-		)) as DriveTreeListing;
+		const listing = await adapter.listFolderTree(check.connection, drive, {
+			onProgress: heartbeatProgress,
+		});
 		if (listing.status === "root_failed") {
 			({ problemCode, nextReadAfter } = rootFailure(listing));
 			return nothingRead(nextReadAfter);
@@ -312,6 +303,7 @@ export async function readDocumentFolder(input: {
 			mimeType: file.mimeType,
 			lastModified: file.lastModified,
 			contentVersion: file.contentVersion,
+			...(file.notDownloadable ? { notDownloadable: true as const } : {}),
 		}));
 		const common = {
 			folderId: folder.id,
@@ -326,7 +318,12 @@ export async function readDocumentFolder(input: {
 						: root.item.name,
 				webUrl: root.item.webUrl,
 				// The folder's own path in its drive, from its parent's.
-				drivePath: driveItemPath(root.item) ?? folder.drivePath,
+				drivePath: root.item.drivePath ?? folder.drivePath,
+				// Absent where the path decides overlap, or the walk was cut
+				// short; the stored ids are then kept.
+				...(root.item.ancestorIds
+					? { ancestorIds: root.item.ancestorIds }
+					: {}),
 			},
 			files,
 		};
@@ -341,8 +338,9 @@ export async function readDocumentFolder(input: {
 		} else {
 			// A partial listing records what it found and removes nothing;
 			// only a later complete read resumes removals. A page refused by
-			// throttling waits for Graph's time; one refused for any other
-			// reason is a partial read, tried again on the next pass.
+			// throttling waits for the drive's time; one refused for any other
+			// reason, or a search the drive did not finish, is a partial read,
+			// tried again on the next pass.
 			const throttledPage =
 				listing.reason === "page_failed" &&
 				isThrottled(listing.httpStatus);
@@ -376,7 +374,7 @@ export async function readDocumentFolder(input: {
 			nextReadAfter: nextReadAfter?.toISOString() ?? null,
 		};
 	} catch (error) {
-		if (isMicrosoftNotConnectedError(errorMessage(error))) {
+		if (adapter?.isNotConnectedError(errorMessage(error))) {
 			problemCode = DOCUMENT_FOLDER_PROBLEM_CODE.RECONNECT;
 			return nothingRead(nextReadAfter);
 		}
@@ -427,6 +425,7 @@ export async function confirmDocumentFolderCandidates(input: {
 		select: {
 			id: true,
 			projectId: true,
+			provider: true,
 			driveId: true,
 			itemId: true,
 			userId: true,
@@ -441,27 +440,25 @@ export async function confirmDocumentFolderCandidates(input: {
 	let goneFileIds: string[] = [];
 	let presentFileIds: string[] = [];
 	if (input.candidates.length > 0) {
-		const check = await checkReader(folder);
+		const adapter = documentFolderDriveAdapter(folder.provider);
+		const check = await checkReader(folder, adapter);
 		if (!check.ok) {
 			return { status: "skipped" };
 		}
 		let lookup: { items: DriveItemPlacement[] };
 		try {
 			heartbeat("looking up candidates");
-			lookup = (await executeMicrosoftTeamsTool(
-				"lookup_drive_items",
+			lookup = await adapter.lookupItemsInFolder(
+				check.connection,
 				{
 					driveId: folder.driveId,
 					folderItemId: folder.itemId,
 					itemIds: input.candidates.map((c) => c.driveItemId),
 				},
-				folder.userId,
-				check.organizationId,
-				check.connectionId,
 				{ onProgress: heartbeatProgress },
-			)) as { items: DriveItemPlacement[] };
+			);
 		} catch (error) {
-			if (isMicrosoftNotConnectedError(errorMessage(error))) {
+			if (adapter.isNotConnectedError(errorMessage(error))) {
 				return { status: "skipped" };
 			}
 			throw error;
@@ -706,11 +703,15 @@ export async function importDocumentFolderFile(input: {
 		return { outcome: "waiting" };
 	}
 
-	const check = await checkReader({
-		projectId: file.projectId,
-		userId: file.folder.userId,
-		organizationId: file.folder.organizationId,
-	});
+	const adapter = documentFolderDriveAdapter(file.folder.provider);
+	const check = await checkReader(
+		{
+			projectId: file.projectId,
+			userId: file.folder.userId,
+			organizationId: file.folder.organizationId,
+		},
+		adapter,
+	);
 	if (!check.ok) {
 		// The next read records why; recording it here would also clear the
 		// folder's next-read-after time.
@@ -749,23 +750,17 @@ export async function importDocumentFolderFile(input: {
 	}
 
 	heartbeat("downloading file");
-	let download: DriveItemDownload;
+	let download: DocumentFolderDownload;
 	try {
-		download = (await executeMicrosoftTeamsTool(
-			"download_drive_item",
-			{
-				driveId: file.folder.driveId,
-				itemId: file.driveItemId,
-				// The type, and so the type's own limit, is known only once
-				// Graph's file type comes back with the download.
-				maxBytes: LARGEST_UPLOAD_BYTES,
-			},
-			file.folder.userId,
-			check.organizationId,
-			check.connectionId,
-		)) as DriveItemDownload;
+		download = await adapter.downloadFile(check.connection, {
+			driveId: file.folder.driveId,
+			itemId: file.driveItemId,
+			// The type, and so the type's own limit, is known only once the
+			// drive's file type comes back with the download.
+			maxBytes: LARGEST_UPLOAD_BYTES,
+		});
 	} catch (error) {
-		if (isMicrosoftNotConnectedError(errorMessage(error))) {
+		if (adapter.isNotConnectedError(errorMessage(error))) {
 			// The file is fine; the connection is not. The claim stays and
 			// is taken again after a reconnect.
 			return { outcome: "waiting" };
@@ -787,6 +782,17 @@ export async function importDocumentFolderFile(input: {
 		});
 		return { outcome: "done" };
 	}
+	if (download.status === "not_downloadable") {
+		// Its owner blocked downloads, or Google flagged it: only a new
+		// version is looked at again.
+		await recordDocumentFolderFileOutcome({
+			fileId: file.id,
+			contextId: null,
+			outcome: "SKIPPED",
+			skipCode: DOCUMENT_FOLDER_SKIP_CODE.NOT_DOWNLOADABLE,
+		});
+		return { outcome: "done" };
+	}
 	if (download.status === "gone") {
 		// Deleted since the listing; the next complete reads retire it.
 		await recordDocumentFolderFileOutcome({
@@ -798,7 +804,7 @@ export async function importDocumentFolderFile(input: {
 		return { outcome: "done" };
 	}
 
-	// Typed from the name and Graph's file type, as the listing typed it, so
+	// Typed from the name and the drive's file type, as the listing typed it, so
 	// a file the listing found supported is not refused here by name alone.
 	const mimeType = resolveContextUploadMime(
 		download.mimeType ?? "",

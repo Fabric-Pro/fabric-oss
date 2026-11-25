@@ -762,7 +762,7 @@ export type ProjectTranscriptFolderFileScalarFieldEnum = z.infer<typeof ProjectT
 
 // File: ProjectDocumentFolderScalarFieldEnum.schema.ts
 
-export const ProjectDocumentFolderScalarFieldEnumSchema = z.enum(['id', 'projectId', 'provider', 'driveId', 'itemId', 'name', 'webUrl', 'drivePath', 'siteId', 'siteName', 'libraryName', 'description', 'connectedAt', 'disconnectedAt', 'readerEpoch', 'lastPassId', 'readStartedAt', 'lastReadAt', 'lastListingComplete', 'pausedRemovalsCode', 'heldRemovalCount', 'problemCode', 'nextReadAfter', 'discoveredAt', 'userId', 'organizationId'])
+export const ProjectDocumentFolderScalarFieldEnumSchema = z.enum(['id', 'projectId', 'provider', 'driveId', 'itemId', 'name', 'webUrl', 'drivePath', 'ancestorIds', 'siteId', 'siteName', 'libraryName', 'description', 'connectedAt', 'disconnectedAt', 'readerEpoch', 'lastPassId', 'readStartedAt', 'lastReadAt', 'lastListingComplete', 'pausedRemovalsCode', 'heldRemovalCount', 'problemCode', 'nextReadAfter', 'discoveredAt', 'userId', 'organizationId'])
 
 export type ProjectDocumentFolderScalarFieldEnum = z.infer<typeof ProjectDocumentFolderScalarFieldEnumSchema>;
 
@@ -7645,6 +7645,7 @@ export const ProjectDocumentFolderSchema = z.object({
   name: z.string(),
   webUrl: z.string().nullish(),
   drivePath: z.string().nullish(),
+  ancestorIds: z.array(z.string()),
   siteId: z.string().nullish(),
   siteName: z.string().nullish(),
   libraryName: z.string().nullish(),

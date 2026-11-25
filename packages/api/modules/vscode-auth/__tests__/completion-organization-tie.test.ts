@@ -1,29 +1,24 @@
-/**
- * The Fabric Code completion route only runs in an organization the key's
- * user has a tie to.
- *
- * `POST /openrouter/chat/completions` authenticates with a `fab_` user API
- * key, which identifies a user and nothing else. The organization comes from
- * the `x-fabriccode-organizationid` header, and it selects whose AI provider
- * (and provider key) runs the completion. A header naming an organization the
- * user has no tie to is refused with 403 before any model is resolved. A
- * request without the header keeps its existing behaviour: this API-key path
- * has no session and so no active organization to fall back to.
- */
+/** Completion requests require an organization and its live AI chat permission. */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { verifyUserApiKeyMock, hasOrganizationTieMock, getAIModelMock } =
-	vi.hoisted(() => ({
-		verifyUserApiKeyMock: vi.fn(),
-		hasOrganizationTieMock: vi.fn(),
-		getAIModelMock: vi.fn(),
-	}));
+const {
+	verifyUserApiKeyMock,
+	hasOrganizationTieMock,
+	canUseOrganizationAiChatMock,
+	getAIModelMock,
+} = vi.hoisted(() => ({
+	verifyUserApiKeyMock: vi.fn(),
+	hasOrganizationTieMock: vi.fn(),
+	canUseOrganizationAiChatMock: vi.fn(),
+	getAIModelMock: vi.fn(),
+}));
 
 vi.mock("@repo/database", () => ({
 	db: {},
 	createUserApiKey: vi.fn(),
 	hasOrganizationTie: hasOrganizationTieMock,
+	canUseOrganizationAiChat: canUseOrganizationAiChatMock,
 }));
 vi.mock("@repo/ai/model-selector", () => ({
 	getAIModelWithMetadata: getAIModelMock,
@@ -74,6 +69,7 @@ beforeEach(() => {
 		async (_userId: string, organizationId: string) =>
 			organizationId === TIED_ORG,
 	);
+	canUseOrganizationAiChatMock.mockResolvedValue(true);
 	getAIModelMock.mockResolvedValue({
 		model: { id: "stub-model" },
 		metadata: { modelString: "stub-model" },
@@ -104,14 +100,18 @@ describe("POST /openrouter/chat/completions — organization header", () => {
 		);
 	});
 
-	it("keeps the no-header behaviour: no tie check, no organization", async () => {
-		const res = await postCompletion();
-
-		expect(res.status).toBe(200);
-		expect(hasOrganizationTieMock).not.toHaveBeenCalled();
-		expect(getAIModelMock).toHaveBeenCalledWith(
-			{ taskType: "CHAT", complexity: "medium" },
-			{ userId: USER_ID, organizationId: undefined },
-		);
-	});
+	it.each([
+		["missing", undefined],
+		["empty", ""],
+	])(
+		"rejects a %s organization header before model resolution",
+		async (_label, header) => {
+			const res = await postCompletion(header);
+			expect(res.status).toBe(400);
+			expect((await res.json()).message).toMatch(
+				/update.*VS Code extension/i,
+			);
+			expect(getAIModelMock).not.toHaveBeenCalled();
+		},
+	);
 });

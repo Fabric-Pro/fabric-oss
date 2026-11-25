@@ -33,6 +33,8 @@ function reasonFor(file: AttentionFile, provider: string): string {
 			return "Larger than the upload limit for its type.";
 		case "CAP_REACHED":
 			return "Outside the 500 most recently modified files.";
+		case "NOT_DOWNLOADABLE":
+			return "Its owner does not allow downloading it.";
 	}
 	switch (file.failureCode) {
 		case "DOWNLOAD_FAILED":

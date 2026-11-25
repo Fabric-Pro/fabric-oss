@@ -27,6 +27,9 @@ node_modules
 
 # testing
 coverage
+!/tooling/scripts/src/coverage/
+/tooling/scripts/src/coverage/*
+!/tooling/scripts/src/coverage/*.mjs
 
 # next.js
 .next/

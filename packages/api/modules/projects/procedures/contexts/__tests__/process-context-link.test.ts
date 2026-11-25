@@ -10,7 +10,7 @@
  *   - XOR isolation: cross-tenant project access → FORBIDDEN.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockGetEnabledOrgProviders,
@@ -185,7 +185,10 @@ function providerRow(overrides: {
 const CONFIGURED_FIRECRAWL_ROWS = [providerRow({ providerName: "firecrawl" })];
 const CONFIGURED_JINA_ONLY_ROWS = [providerRow({ providerName: "jina" })];
 
+afterEach(() => vi.unstubAllEnvs());
+
 beforeEach(() => {
+	vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", undefined);
 	vi.clearAllMocks();
 	mockHasProjectAccess.mockResolvedValue(true);
 	mockCreateLinkContext.mockResolvedValue({
@@ -704,53 +707,60 @@ describe("processContextLink — Cloudflare Browser Rendering", () => {
 		}),
 	];
 
-	it("treats a Cloudflare row as scrape-capable and passes its endpoint to the workflow and schedule", async () => {
-		mockGetEnabledOrgProviders.mockResolvedValue(CLOUDFLARE_ROWS);
-		mockDecryptApiKey.mockReturnValue("decrypted-cf-token");
-		mockCreateLinkContext.mockResolvedValue({ id: "ctx-cf" });
-		mockCreateUrlSourceSchedule.mockResolvedValue({
-			scheduleId: "url-source-ctx-cf",
-		});
+	it.each([undefined, "true"])(
+		"forwards Cloudflare fields to the crawl and schedule (switch %s)",
+		async (setting) => {
+			vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", setting);
+			mockGetEnabledOrgProviders.mockResolvedValue(CLOUDFLARE_ROWS);
+			mockDecryptApiKey.mockReturnValue("decrypted-cf-token");
+			mockCreateLinkContext.mockResolvedValue({ id: "ctx-cf" });
+			mockCreateUrlSourceSchedule.mockResolvedValue({
+				scheduleId: "url-source-ctx-cf",
+			});
 
-		const handler = await loadHandler();
-		await handler({
-			input: {
-				projectId: "proj-1",
-				organizationId: "org-1",
-				url: "https://example.com/app",
-				scope: "SINGLE_PAGE",
-				refreshMode: "DAILY",
-			},
-			context: orgCtx,
-		});
+			const handler = await loadHandler();
+			await handler({
+				input: {
+					projectId: "proj-1",
+					organizationId: "org-1",
+					url: "https://example.com/app",
+					scope: "SINGLE_PAGE",
+					refreshMode: "DAILY",
+				},
+				context: orgCtx,
+			});
 
-		expect(mockCreateLinkContext).toHaveBeenCalledWith(
-			expect.objectContaining({
-				metadata: expect.objectContaining({
-					scraperProvider: "cloudflare",
-				}),
-			}),
-		);
-		expect(mockTemporalWorkflowStart).toHaveBeenCalledWith(
-			"urlSourceCrawlWorkflow",
-			expect.objectContaining({
-				args: [
-					expect.objectContaining({
-						providerName: "cloudflare",
-						providerEndpoint: CLOUDFLARE_ENDPOINT,
-						apiKey: "decrypted-cf-token",
+			expect(mockCreateLinkContext).toHaveBeenCalledWith(
+				expect.objectContaining({
+					metadata: expect.objectContaining({
+						scraperProvider: "cloudflare",
 					}),
-				],
-			}),
-		);
-		expect(mockCreateUrlSourceSchedule).toHaveBeenCalledWith(
-			expect.objectContaining({
-				providerName: "cloudflare",
-				providerEndpoint: CLOUDFLARE_ENDPOINT,
-			}),
-			expect.anything(),
-		);
-	});
+				}),
+			);
+			expect(mockTemporalWorkflowStart.mock.calls[0]?.[0]).toBe(
+				"urlSourceCrawlWorkflow",
+			);
+			for (const args of [
+				mockTemporalWorkflowStart.mock.calls[0]?.[1]?.args?.[0],
+				mockCreateUrlSourceSchedule.mock.calls[0]?.[0],
+			]) {
+				expect(args).toHaveProperty("providerName", "cloudflare");
+				if (setting === "true") {
+					expect(args).not.toHaveProperty("apiKey");
+					expect(args).not.toHaveProperty("providerEndpoint");
+				} else {
+					expect(args).toHaveProperty("apiKey", "decrypted-cf-token");
+					expect(args).toHaveProperty(
+						"providerEndpoint",
+						CLOUDFLARE_ENDPOINT,
+					);
+				}
+			}
+			if (setting === "true") {
+				expect(mockDecryptApiKey).not.toHaveBeenCalled();
+			}
+		},
+	);
 
 	it("accepts PATH_PREFIX when Cloudflare is the only provider (links are followed by the workflow)", async () => {
 		mockGetEnabledOrgProviders.mockResolvedValue(CLOUDFLARE_ROWS);

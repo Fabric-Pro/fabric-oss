@@ -65,7 +65,7 @@ vi.mock("@repo/utils", () => ({
 	decryptApiKey: mockDecryptApiKey,
 }));
 
-vi.mock("../../../../integrations/lib/google-drive-token", () => ({
+vi.mock("@repo/integrations/google", () => ({
 	getGoogleDriveAccessToken: mockGetGoogleDriveAccessToken,
 	GoogleDriveNotConnectedError,
 	GoogleDriveTokenExpiredError,

@@ -177,7 +177,16 @@ describe("POST /api/internal/code-search", () => {
 			expect(h.freshToken).toHaveBeenCalledTimes(1);
 		});
 
-		it("an organization member with no project role, through the organization role", async () => {
+		it("an organization creator with no project role, through the organization role", async () => {
+			h.projectFindUnique.mockResolvedValue({
+				id: PROJECT_ID,
+				userId: USER_ID,
+				organizationId: ORG_ID,
+				repositoryUrl: "https://github.com/example-org/example-repo",
+				repositoryOwner: "example-org",
+				repositoryName: "example-repo",
+				defaultBranch: "main",
+			});
 			h.projectMemberFindUnique.mockResolvedValue(null);
 
 			const response = await POST(request());
@@ -188,6 +197,19 @@ describe("POST /api/internal/code-search", () => {
 	});
 
 	describe("refuses a caller whose role does not grant repository read", () => {
+		it("refuses an organization member without project reach", async () => {
+			h.projectMemberFindUnique.mockResolvedValue(null);
+			await expectRepositoryReadRefused(await POST(request()));
+		});
+
+		it("refuses a deleted organization before resolving a credential", async () => {
+			h.projectFindUnique.mockResolvedValue({
+				organizationId: ORG_ID,
+				organization: { deletedAt: new Date() },
+			});
+			await expectRepositoryReadRefused(await POST(request()));
+		});
+
 		it("a Viewer member, though the organization role would grant it", async () => {
 			h.projectMemberFindUnique.mockResolvedValue(projectRole("VIEWER"));
 

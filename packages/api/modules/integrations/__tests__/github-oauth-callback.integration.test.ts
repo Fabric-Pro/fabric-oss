@@ -61,6 +61,13 @@ vi.mock("@repo/database", async (importOriginal) => {
 	};
 });
 
+vi.mock("../../../lib/project-permission-decision", () => ({
+	getProjectPermissionDecision: vi.fn().mockResolvedValue({
+		allowed: true,
+		organizationId: "org_1",
+	}),
+}));
+
 vi.mock("@repo/permissions", () => ({
 	hasPermission: vi.fn().mockReturnValue(true),
 	Permissions: {},

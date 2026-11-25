@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	verifyAIToken: vi.fn(),
 	getProjectAccessContext: vi.fn(),
+	isOrganizationLive: vi.fn(),
 	getAccessibleFrameById: vi.fn(),
 	logAiUsage: vi.fn(),
 }));
@@ -15,6 +16,7 @@ vi.mock("@repo/database", () => ({
 	getModelByCanonicalName: vi.fn(async () => null),
 	getCanonicalNameForProviderModelId: vi.fn(async () => null),
 	getProjectAccessContext: mocks.getProjectAccessContext,
+	isOrganizationLive: mocks.isOrganizationLive,
 	getAccessibleFrameById: mocks.getAccessibleFrameById,
 	logAiUsage: mocks.logAiUsage,
 	getChatGptPlanOrgAccount: vi.fn(),
@@ -49,6 +51,7 @@ beforeEach(() => {
 		valid: true,
 		claims: { sub: "user-example", org: "org-example" },
 	});
+	mocks.isOrganizationLive.mockResolvedValue(true);
 	mocks.getProjectAccessContext.mockResolvedValue({
 		organizationId: "org-example",
 	});
@@ -111,6 +114,30 @@ describe("delegated workspace usage origin", () => {
 			expect(mocks.logAiUsage).not.toHaveBeenCalled();
 		},
 	);
+
+	it("refuses frame attribution to a project in a deleted organization", async () => {
+		mocks.isOrganizationLive.mockResolvedValue(false);
+		expect(
+			(
+				await usage({
+					frameId: "frame-example",
+					projectId: "project-example",
+				})
+			).status,
+		).toBe(403);
+		expect(mocks.getAccessibleFrameById).not.toHaveBeenCalled();
+		expect(mocks.logAiUsage).not.toHaveBeenCalled();
+	});
+
+	it("drops the deleted host project from unframed usage attribution", async () => {
+		mocks.isOrganizationLive.mockResolvedValue(false);
+		expect((await usage({ projectId: "project-example" })).status).toBe(
+			200,
+		);
+		expect(mocks.logAiUsage).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: undefined }),
+		);
+	});
 
 	it("rejects a frame when its claimed project is inaccessible", async () => {
 		mocks.getProjectAccessContext.mockResolvedValue(null);

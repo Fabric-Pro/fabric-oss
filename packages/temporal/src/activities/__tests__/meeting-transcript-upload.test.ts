@@ -413,6 +413,7 @@ describe("ingestUploadedTranscript", () => {
 		expect(mocks.transcriptFindFirst.mock.calls[0]?.[0].where).toEqual({
 			projectId: "project-1",
 			contextId: "context-1",
+			organizationId: INPUT.organizationId,
 		});
 	});
 
@@ -439,6 +440,7 @@ describe("ingestUploadedTranscript", () => {
 			const result = await ingestUploadedTranscript(INPUT);
 
 			expect(result.outcome).toBe("rejected");
+			expect(mocks.updateStatus).not.toHaveBeenCalled();
 			expect(mocks.downloadFile).not.toHaveBeenCalled();
 		});
 
@@ -454,6 +456,56 @@ describe("ingestUploadedTranscript", () => {
 		});
 	});
 
+	it.each([
+		{
+			label: "its organization",
+			project: { organizationId: INPUT.organizationId },
+			allowed: true,
+		},
+		{
+			label: "a foreign organization",
+			project: { organizationId: "example-other-org" },
+			allowed: false,
+		},
+		{ label: "a missing project", project: null, allowed: false },
+		{
+			label: "a missing project and no organization",
+			project: null,
+			allowed: false,
+			noOrg: true,
+		},
+	])(
+		"replays a completed upload only for $label",
+		async ({ project, allowed, noOrg }) => {
+			mocks.projectFindUnique.mockResolvedValue(project);
+			mocks.contextFindFirst.mockResolvedValue(
+				storedContext({ extractionStatus: "COMPLETED" }),
+			);
+			mocks.transcriptFindFirst.mockResolvedValue({
+				id: "example-transcript",
+			});
+
+			await expect(
+				ingestUploadedTranscript({
+					...INPUT,
+					organizationId: noOrg ? undefined : INPUT.organizationId,
+				}),
+			).resolves.toEqual(
+				allowed
+					? {
+							outcome: "ingested",
+							transcriptRecordId: "example-transcript",
+						}
+					: { outcome: "rejected" },
+			);
+			expect(mocks.transcriptFindFirst).toHaveBeenCalledTimes(
+				Number(allowed),
+			);
+			expect(mocks.updateStatus).not.toHaveBeenCalled();
+			expect(mocks.downloadFile).not.toHaveBeenCalled();
+		},
+	);
+
 	it("only touches a transcript context of this project", async () => {
 		mocks.contextFindFirst.mockResolvedValue(null);
 
@@ -464,7 +516,21 @@ describe("ingestUploadedTranscript", () => {
 		expect(mocks.contextFindFirst.mock.calls[0]?.[0].where).toEqual({
 			id: "context-1",
 			projectId: "project-1",
+			organizationId: INPUT.organizationId,
 			type: "MEETING_TRANSCRIPT",
+		});
+	});
+
+	it("skips a completed transcript that still belongs to a previous organization", async () => {
+		mocks.contextFindFirst.mockResolvedValue(
+			storedContext({ extractionStatus: "COMPLETED" }),
+		);
+		mocks.transcriptFindFirst.mockImplementation(async ({ where }) =>
+			where.organizationId ? null : { id: "example-old-transcript" },
+		);
+		await expect(ingestUploadedTranscript(INPUT)).resolves.toEqual({
+			outcome: "ingested",
+			transcriptRecordId: undefined,
 		});
 	});
 
@@ -526,6 +592,52 @@ describe("startUploadedTranscriptPipelines", () => {
 
 		expect(mocks.startPipelines).not.toHaveBeenCalled();
 	});
+
+	it.each([
+		{ label: "foreign", project: { organizationId: "example-other-org" } },
+		{ label: "missing", project: null },
+		{
+			label: "missing with no input organization",
+			project: null,
+			noOrg: true,
+		},
+	])(
+		"does not load or relay a transcript from a $label project",
+		async ({ project, noOrg }) => {
+			mocks.projectFindUnique.mockResolvedValue(project);
+			await startUploadedTranscriptPipelines({
+				...INPUT,
+				organizationId: noOrg ? undefined : INPUT.organizationId,
+				transcriptRecordId: "example-transcript",
+			});
+			expect(mocks.transcriptFindFirst).not.toHaveBeenCalled();
+			expect(mocks.contextFindFirst).not.toHaveBeenCalled();
+			expect(mocks.startPipelines).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["transcript", "context"])(
+		"does not start pipelines when a stored %s belongs to the previous organization",
+		async (source) => {
+			const find =
+				source === "transcript"
+					? mocks.transcriptFindFirst
+					: mocks.contextFindFirst;
+			find.mockImplementation(async ({ where }) =>
+				where.organizationId
+					? null
+					: {
+							id: "example-previous-source",
+							content: "Example previous source",
+						},
+			);
+			await startUploadedTranscriptPipelines({
+				...INPUT,
+				transcriptRecordId: "example-transcript",
+			});
+			expect(mocks.startPipelines).not.toHaveBeenCalled();
+		},
+	);
 });
 
 describe("markUploadedTranscriptFailed", () => {

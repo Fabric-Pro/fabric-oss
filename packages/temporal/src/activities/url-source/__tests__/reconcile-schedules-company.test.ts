@@ -15,12 +15,15 @@
  * stubbed.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { defaultPayloadConverter } from "@temporalio/common";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
 	projectContextFindUnique: vi.fn(),
 	companyContextSourceFindUnique: vi.fn(),
 	list: vi.fn(),
+	describeSchedule: vi.fn(),
+	updateSchedule: vi.fn(),
 	handleDelete: vi.fn(),
 	getHandle: vi.fn(),
 }));
@@ -35,6 +38,11 @@ vi.mock("@repo/database/prisma/client", () => ({
 vi.mock("../../../client", () => ({
 	getScheduleClient: vi.fn(async () => ({
 		list: m.list,
+		options: { namespace: "example-namespace", identity: "example-worker" },
+		workflowService: {
+			describeSchedule: m.describeSchedule,
+			updateSchedule: m.updateSchedule,
+		},
 		getHandle: m.getHandle,
 	})),
 }));
@@ -43,6 +51,7 @@ vi.mock("../../lib/activity-logger", () => ({
 	activityLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+import { activityLogger } from "../../lib/activity-logger";
 import {
 	fetchUrlSourceScheduleRow,
 	reconcileUrlSourceSchedules,
@@ -82,6 +91,8 @@ function listing(ids: string[]) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	m.describeSchedule.mockReset();
+	m.updateSchedule.mockReset().mockResolvedValue(undefined);
 	m.handleDelete.mockResolvedValue(undefined);
 	m.getHandle.mockImplementation(() => ({ delete: m.handleDelete }));
 });
@@ -257,5 +268,160 @@ describe("reconcileUrlSourceSchedules with company sources", () => {
 
 		expect(result).toEqual({ scanned: 1, orphansDeleted: 1, dryRun: true });
 		expect(m.handleDelete).not.toHaveBeenCalled();
+	});
+});
+
+describe("legacy scraper credential stripping", () => {
+	const id = scheduleId("example-context");
+	const args = {
+		contextId: "example-context",
+		apiKey: "fc-test-not-a-real-key",
+		providerEndpoint: "example-account",
+	};
+	const token = Uint8Array.of(1, 2);
+	const payload = (value: unknown) =>
+		defaultPayloadConverter.toPayload(value);
+
+	function seedSchedule(firstArg: object = args) {
+		const schedule = {
+			spec: { cronString: ["0 0 * * *"] },
+			state: { paused: true, notes: "example", limitedActions: true },
+			policies: { pauseOnFailure: true },
+			action: {
+				startWorkflow: {
+					workflowType: { name: "urlSourceCrawlWorkflow" },
+					input: {
+						payloads: [
+							payload(firstArg),
+							payload("example extra arg"),
+						],
+					},
+				},
+			},
+		};
+		seed({
+			projects: {
+				"example-context": {
+					urlRefreshMode: "WEEKLY",
+					urlScheduleId: id,
+				},
+			},
+		});
+		m.list.mockImplementation(listing([id]));
+		m.describeSchedule.mockResolvedValue({
+			schedule,
+			conflictToken: token,
+		});
+		return schedule;
+	}
+
+	afterEach(() => vi.unstubAllEnvs());
+
+	it("updates only the first argument with the describe conflict token and is idempotent", async () => {
+		vi.stubEnv("URL_SCHEDULE_STRIP_SCRAPER_KEY", "true");
+		const schedule = seedSchedule();
+		m.updateSchedule.mockImplementation(async ({ schedule }) => {
+			m.describeSchedule.mockResolvedValue({
+				schedule,
+				conflictToken: token,
+			});
+		});
+
+		await reconcileUrlSourceSchedulesActivity({ dryRun: false });
+		expect(m.updateSchedule).toHaveBeenCalledWith(
+			expect.objectContaining({
+				namespace: "example-namespace",
+				scheduleId: id,
+				conflictToken: token,
+				schedule: {
+					...schedule,
+					action: {
+						startWorkflow: {
+							...schedule.action.startWorkflow,
+							input: {
+								payloads: [
+									payload({ contextId: args.contextId }),
+									payload("example extra arg"),
+								],
+							},
+						},
+					},
+				},
+			}),
+		);
+		await reconcileUrlSourceSchedulesActivity({ dryRun: false });
+		expect(m.updateSchedule).toHaveBeenCalledTimes(1);
+	});
+
+	it.each(["apiKey", "providerEndpoint"] as const)(
+		"strips a legacy schedule when %s is the only credential field",
+		async (field) => {
+			vi.stubEnv("URL_SCHEDULE_STRIP_SCRAPER_KEY", "true");
+			seedSchedule({ contextId: args.contextId, [field]: args[field] });
+			await reconcileUrlSourceSchedulesActivity({ dryRun: false });
+			expect(m.updateSchedule).toHaveBeenCalledTimes(1);
+			const request = m.updateSchedule.mock.calls[0][0];
+			expect(
+				defaultPayloadConverter.fromPayload(
+					request.schedule.action.startWorkflow.input.payloads[0],
+				),
+			).toEqual({ contextId: args.contextId });
+		},
+	);
+
+	it.each([5, 9])(
+		"continues to the next schedule when the write returns gRPC status %s",
+		async (code) => {
+			vi.stubEnv("URL_SCHEDULE_STRIP_SCRAPER_KEY", "true");
+			seedSchedule();
+			m.list.mockImplementation(listing([id, id]));
+			m.updateSchedule.mockRejectedValueOnce(
+				Object.assign(new Error("schedule changed"), {
+					code,
+					details: "",
+					metadata: {},
+				}),
+			);
+			await reconcileUrlSourceSchedulesActivity({ dryRun: false });
+			expect(m.updateSchedule).toHaveBeenCalledTimes(2);
+			expect(activityLogger.info).toHaveBeenCalledWith(
+				"[ReconcileUrlSourceSchedules] done",
+				expect.objectContaining({
+					scraperCredentialStrip: {
+						stripped: 1,
+						unchanged: 0,
+						skipped: 1,
+						failed: 0,
+					},
+				}),
+			);
+		},
+	);
+
+	it.each([
+		[undefined, false],
+		["false", false],
+		["true", true],
+	] as const)(
+		"does not describe for env=%s and dryRun=%s",
+		async (env, dryRun) => {
+			vi.stubEnv("URL_SCHEDULE_STRIP_SCRAPER_KEY", env);
+			seedSchedule();
+			await reconcileUrlSourceSchedulesActivity({ dryRun });
+			expect(m.describeSchedule).not.toHaveBeenCalled();
+			expect(m.updateSchedule).not.toHaveBeenCalled();
+		},
+	);
+
+	it("does not write a schedule without a conflict token", async () => {
+		vi.stubEnv("URL_SCHEDULE_STRIP_SCRAPER_KEY", "true");
+		const schedule = seedSchedule();
+		m.describeSchedule.mockResolvedValue({
+			schedule,
+			conflictToken: new Uint8Array(),
+		});
+		await reconcileUrlSourceSchedulesActivity({ dryRun: false });
+		expect(m.describeSchedule).toHaveBeenCalled();
+		expect(m.updateSchedule).not.toHaveBeenCalled();
 	});
 });

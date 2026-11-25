@@ -30,18 +30,23 @@ import {
 	supportsCrawl,
 	type WebScrapeError,
 	type WebScrapePage,
-	type WebScraperProviderName,
 } from "../lib/web-scraper";
+import {
+	callUrlScraper,
+	redactScraperMessage,
+	redactScraperPage,
+	redactScraperText,
+	resolveActivityScraperCredential,
+	type UrlScraperActivityReference,
+} from "./lib/scraper-credential";
 import {
 	type UnsupportedContent,
 	unsupportedContentOutcome,
 } from "./lib/unsupported-content";
 
-export interface FirecrawlCrawlActivityInput {
+export interface FirecrawlCrawlActivityInput
+	extends UrlScraperActivityReference {
 	url: string;
-	apiKey: string;
-	/** Optional — defaults to `firecrawl` for back-compat. */
-	providerName?: WebScraperProviderName;
 	includePaths?: string[];
 	excludePaths?: string[];
 	limit?: number;
@@ -94,7 +99,6 @@ export async function firecrawlCrawlActivity(
 ): Promise<FirecrawlCrawlActivityOutput> {
 	const {
 		url,
-		apiKey,
 		providerName = "firecrawl",
 		includePaths,
 		excludePaths,
@@ -103,10 +107,12 @@ export async function firecrawlCrawlActivity(
 		reportUnsupportedContent,
 	} = input;
 
+	const { apiKey } = await resolveActivityScraperCredential(input);
+	const safeUrl = redactScraperText(url, apiKey);
+
 	activityLogger.info("URL crawl activity start", {
-		url,
+		url: safeUrl,
 		providerName,
-		includePaths,
 		limit,
 		sitemap,
 	});
@@ -128,6 +134,8 @@ export async function firecrawlCrawlActivity(
 		);
 	}
 
+	const crawlSite = scraper.crawlSite.bind(scraper);
+
 	// Heartbeat every 15s so the 30s heartbeatTimeout declared by the
 	// workflow's proxyActivities config has headroom during the polling
 	// loop in `crawlSite`.
@@ -140,40 +148,46 @@ export async function firecrawlCrawlActivity(
 	}, 15_000);
 
 	try {
-		const result = await scraper.crawlSite(url, {
-			...(includePaths !== undefined ? { includePaths } : {}),
-			...(excludePaths !== undefined ? { excludePaths } : {}),
-			...(limit !== undefined ? { limit } : {}),
-			...(sitemap !== undefined ? { sitemap } : {}),
-		});
+		const result = await callUrlScraper(apiKey, () =>
+			crawlSite(url, {
+				...(includePaths !== undefined ? { includePaths } : {}),
+				...(excludePaths !== undefined ? { excludePaths } : {}),
+				...(limit !== undefined ? { limit } : {}),
+				...(sitemap !== undefined ? { sitemap } : {}),
+			}),
+		);
 
 		if (!result.success) {
+			const error = {
+				...result.error,
+				message: redactScraperMessage(result.error.message, apiKey),
+			};
 			if (
 				reportUnsupportedContent === true &&
-				result.error.code === "UNSUPPORTED_CONTENT_TYPE"
+				error.code === "UNSUPPORTED_CONTENT_TYPE"
 			) {
 				return {
 					pages: [],
-					unsupported: unsupportedContentOutcome(url, result.error),
+					unsupported: unsupportedContentOutcome(safeUrl, error),
 				};
 			}
 			activityLogger.warn("URL crawl failed", {
-				url,
+				url: safeUrl,
 				providerName,
-				code: result.error.code,
-				message: result.error.message,
-				statusCode: result.error.statusCode,
+				code: error.code,
+				message: error.message,
+				statusCode: error.statusCode,
 			});
-			asActivityFailure(result.error);
+			asActivityFailure(error);
 		}
 
 		activityLogger.info("URL crawl activity success", {
-			url,
+			url: safeUrl,
 			providerName,
 			pageCount: result.data.length,
 		});
 
-		return result.data;
+		return result.data.map((page) => redactScraperPage(page, apiKey));
 	} finally {
 		clearInterval(heartbeatInterval);
 	}

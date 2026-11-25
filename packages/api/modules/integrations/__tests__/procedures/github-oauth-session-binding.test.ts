@@ -6,7 +6,7 @@
  */
 
 import { ORPCError } from "@orpc/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockExchangeCodeForToken,
@@ -39,10 +39,36 @@ const {
 	};
 });
 
+const projectMocks = vi.hoisted(() => {
+	const repository = {
+		findFirst: vi.fn(),
+		create: vi.fn(),
+		update: vi.fn(),
+	};
+	return {
+		project: vi.fn(),
+		member: vi.fn(),
+		orgMember: vi.fn(),
+		repository,
+		probe: vi.fn(),
+		branch: vi.fn(),
+		activity: vi.fn(),
+		index: vi.fn(),
+	};
+});
+
+const saveGitHubGrant = vi.hoisted(() => vi.fn());
+vi.mock("../../lib/github-grant-credential", () => ({
+	saveGitHubGrantAsCredential: saveGitHubGrant,
+}));
+
 vi.mock("@repo/connectors", () => ({
-	integrationStatusForRepoAccess: vi.fn(),
-	resolveDefaultBranch: vi.fn(),
-	verifyRepositoryAccess: vi.fn(),
+	integrationStatusForRepoAccess: () => ({
+		status: "ACTIVE",
+		lastError: null,
+	}),
+	resolveDefaultBranch: projectMocks.branch,
+	verifyRepositoryAccess: projectMocks.probe,
 }));
 
 vi.mock("@repo/database", async (importOriginal) => {
@@ -53,21 +79,20 @@ vi.mock("@repo/database", async (importOriginal) => {
 	return {
 		...actual,
 		db: {
+			project: { findUnique: projectMocks.project },
+			projectMember: { findUnique: projectMocks.member },
+			member: { findFirst: projectMocks.orgMember },
 			workflowIntegration: {
 				findFirst: mockWorkflowIntegrationFindFirst,
 				create: mockWorkflowIntegrationCreate,
 				update: mockWorkflowIntegrationUpdate,
 			},
 			dataConnection: { updateMany: mockDataConnectionUpdateMany },
-			projectRepositoryIntegration: {
-				findFirst: vi.fn(),
-				create: vi.fn(),
-				update: vi.fn(),
-			},
+			projectRepositoryIntegration: projectMocks.repository,
 		},
-		createProjectRepoIntegration: vi.fn(),
+		createProjectRepoIntegration: projectMocks.repository.create,
 		getOrganizationMembership: mockGetOrganizationMembership,
-		logRepoIntegrationActivity: vi.fn(),
+		logRepoIntegrationActivity: projectMocks.activity,
 		syncLegacyProjectRepoOnConnect: vi.fn(),
 	};
 });
@@ -84,12 +109,8 @@ vi.mock("@repo/utils", () => ({
 	encryptApiKey: (v: string) => `enc_${v}`,
 }));
 
-vi.mock("../../../../lib/project-permissions", () => ({
-	userHasProjectPermission: vi.fn(),
-}));
-
 vi.mock("../../../projects/lib/code-indexing-trigger", () => ({
-	startCodeIndexingForProject: vi.fn(),
+	startCodeIndexingForProject: projectMocks.index,
 }));
 
 // No Redis in this suite: the store falls back to its in-memory map.
@@ -222,6 +243,27 @@ function mintOrganizationlessState() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	projectMocks.project.mockReset().mockResolvedValue({
+		id: "proj-1",
+		organizationId: "org-1",
+		userId: "example-owner",
+		organization: { deletedAt: null },
+	});
+	projectMocks.member.mockReset().mockResolvedValue({
+		role: "PROJECT_ADMIN",
+		acceptedAt: new Date(),
+		expiresAt: null,
+	});
+	projectMocks.orgMember.mockReset().mockResolvedValue({ role: "admin" });
+	projectMocks.repository.findFirst.mockResolvedValue(null);
+	projectMocks.repository.create.mockResolvedValue({
+		id: "example-integration",
+	});
+	projectMocks.probe.mockResolvedValue({ outcome: "accessible" });
+	projectMocks.branch.mockReset().mockResolvedValue("main");
+	projectMocks.index.mockResolvedValue(undefined);
+	saveGitHubGrant.mockResolvedValue("example-credential");
+
 	__resetInMemoryOAuthStateStoreForTests();
 	memberOf({ "org-1": "member" });
 	mockExchangeCodeForToken.mockResolvedValue({
@@ -639,6 +681,222 @@ describe("integrations.github.start — project-target repository identity (Fizz
 			});
 
 			expect(mockGetGitHubOAuthUrl).not.toHaveBeenCalled();
+		},
+	);
+});
+
+describe("GitHub project OAuth authorization", () => {
+	const context = contextFor("user-1", "org-1");
+	const target = {
+		targetType: "project" as const,
+		projectId: "proj-1",
+		repositoryOwner: "example-owner",
+		repositoryName: "example-repo",
+	};
+
+	function complete(
+		state = encodeOAuthState({
+			...target,
+			userId: "user-1",
+			organizationId: "org-1",
+			provider: "github",
+			redirectUri: REDIRECT_URI,
+		}),
+	) {
+		return callback.handler({
+			input: { code: "example-code", state },
+			context,
+		});
+	}
+
+	function expectNoCredentialWrite() {
+		expect(saveGitHubGrant).not.toHaveBeenCalled();
+		expect(projectMocks.repository.create).not.toHaveBeenCalled();
+		expect(projectMocks.repository.update).not.toHaveBeenCalled();
+	}
+
+	beforeEach(() => {
+		mockResolveOrganizationIdForCaller.mockResolvedValue("org-1");
+		vi.stubEnv("RBAC_DRY_RUN", "true");
+	});
+
+	afterEach(() => vi.unstubAllEnvs());
+
+	it.each([
+		[
+			"project id",
+			{ projectId: undefined },
+			"Missing project integration fields",
+		],
+		[
+			"repository owner",
+			{ repositoryOwner: undefined },
+			"Missing project integration fields",
+		],
+		[
+			"repository name",
+			{ repositoryName: undefined },
+			"Missing project integration fields",
+		],
+		[
+			"provider host",
+			{ repositoryUrl: "https://example.com/example-owner/example-repo" },
+			"repositories are supported",
+		],
+	])(
+		"validates the %s before exchanging a project code",
+		async (_, fields, message) => {
+			const state = encodeOAuthState({
+				...target,
+				...fields,
+				userId: "user-1",
+				organizationId: "org-1",
+				provider: "github",
+				redirectUri: REDIRECT_URI,
+			});
+			await expect(complete(state)).resolves.toMatchObject({
+				success: false,
+				message: expect.stringContaining(message),
+			});
+			expect(mockExchangeCodeForToken).not.toHaveBeenCalled();
+			expectNoCredentialWrite();
+		},
+	);
+
+	it.each(["lower project role", "organization mismatch"])(
+		"refuses start for %s before minting a provider URL",
+		async (reason) => {
+			if (reason === "lower project role") {
+				projectMocks.member.mockResolvedValue({
+					role: "VIEWER",
+					acceptedAt: new Date(),
+					expiresAt: null,
+				});
+			} else {
+				projectMocks.project.mockResolvedValue({
+					organizationId: "example-other-org",
+				});
+			}
+			await expect(
+				startProjectTarget.handler({
+					input: {
+						...target,
+						organizationId: "org-1",
+						redirectUri: REDIRECT_URI,
+					},
+					context,
+				}),
+			).rejects.toMatchObject({ code: "FORBIDDEN" });
+			expect(mockGetGitHubOAuthUrl).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["lower project role", "organization mismatch"])(
+		"refuses callback for %s before exchange or credential storage",
+		async (reason) => {
+			if (reason === "lower project role") {
+				projectMocks.member.mockResolvedValue({
+					role: "VIEWER",
+					acceptedAt: new Date(),
+					expiresAt: null,
+				});
+			} else {
+				projectMocks.project.mockResolvedValue({
+					organizationId: "example-other-org",
+				});
+			}
+			await expect(complete()).resolves.toMatchObject({
+				success: false,
+				message: expect.stringContaining("permission"),
+			});
+			expect(mockExchangeCodeForToken).not.toHaveBeenCalled();
+			expectNoCredentialWrite();
+		},
+	);
+
+	it.each(["permission revoked", "organization changed"])(
+		"refuses the write when %s during provider calls",
+		async (reason) => {
+			projectMocks.branch.mockImplementationOnce(async () => {
+				if (reason === "permission revoked") {
+					projectMocks.member.mockResolvedValue({
+						role: "VIEWER",
+						acceptedAt: new Date(),
+						expiresAt: null,
+					});
+				} else {
+					projectMocks.project.mockResolvedValue({
+						organizationId: "example-other-org",
+					});
+				}
+				return "main";
+			});
+			await expect(complete()).resolves.toMatchObject({ success: false });
+			expect(mockExchangeCodeForToken).toHaveBeenCalledOnce();
+			expect(projectMocks.branch).toHaveBeenCalledOnce();
+			expectNoCredentialWrite();
+			expect(projectMocks.index).not.toHaveBeenCalled();
+			expect(projectMocks.activity).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses the integration write when permission changes during grant storage", async () => {
+		saveGitHubGrant.mockImplementationOnce(async () => {
+			projectMocks.member.mockResolvedValue({
+				role: "VIEWER",
+				acceptedAt: new Date(),
+				expiresAt: null,
+			});
+			return "example-credential";
+		});
+		await expect(complete()).resolves.toMatchObject({ success: false });
+		expect(saveGitHubGrant).toHaveBeenCalledOnce();
+		expect(projectMocks.repository.create).not.toHaveBeenCalled();
+		expect(projectMocks.repository.update).not.toHaveBeenCalled();
+		expect(projectMocks.index).not.toHaveBeenCalled();
+		expect(projectMocks.activity).not.toHaveBeenCalled();
+	});
+
+	it.each(["project admin member", "organization admin creator"])(
+		"connects the project for a %s",
+		async (role) => {
+			if (role === "organization admin creator") {
+				projectMocks.project.mockResolvedValue({
+					id: "proj-1",
+					organizationId: "org-1",
+					userId: "user-1",
+					organization: { deletedAt: null },
+				});
+				projectMocks.member.mockResolvedValue(null);
+				memberOf({ "org-1": "admin" });
+			}
+			mockGetGitHubOAuthUrl.mockReturnValue(
+				"https://example.com/authorize",
+			);
+			await expect(
+				startProjectTarget.handler({
+					input: {
+						...target,
+						organizationId: "org-1",
+						redirectUri: REDIRECT_URI,
+					},
+					context,
+				}),
+			).resolves.toEqual({
+				authorizationUrl: "https://example.com/authorize",
+			});
+			await expect(complete()).resolves.toMatchObject({ success: true });
+			expect(projectMocks.repository.create).toHaveBeenCalledOnce();
+			expect(projectMocks.project).toHaveBeenCalledTimes(4);
+			expect(projectMocks.index).toHaveBeenCalledWith(
+				expect.objectContaining({ organizationId: "org-1" }),
+			);
+			expect(projectMocks.activity).toHaveBeenCalledWith(
+				expect.objectContaining({ organizationId: "org-1" }),
+			);
+			expect(saveGitHubGrant).toHaveBeenCalledWith(
+				expect.objectContaining({ organizationId: "org-1" }),
+			);
 		},
 	);
 });

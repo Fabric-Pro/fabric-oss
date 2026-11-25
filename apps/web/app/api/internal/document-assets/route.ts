@@ -106,6 +106,9 @@ export async function POST(req: Request) {
 				id: true,
 				userId: true,
 				organizationId: true,
+				project: {
+					select: { organization: { select: { deletedAt: true } } },
+				},
 			},
 		});
 
@@ -128,6 +131,13 @@ export async function POST(req: Request) {
 		if (!tokenOwnsDoc) {
 			return NextResponse.json(
 				{ error: "Document does not belong to this tenant" },
+				{ status: 403 },
+			);
+		}
+
+		if (doc.project.organization?.deletedAt) {
+			return NextResponse.json(
+				{ error: "You do not have access to this project" },
 				{ status: 403 },
 			);
 		}

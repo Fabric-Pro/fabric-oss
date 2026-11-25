@@ -7,12 +7,17 @@
  * - AI model defaults
  * - OpenRouter-compatible proxy (models + chat completions)
  *
- * All endpoints except device auth initiation require:
+ * Profile, model defaults, and OpenRouter endpoints require:
  *   Authorization: Bearer fab_<prefix>_<secret>
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { createUserApiKey, db, hasOrganizationTie } from "@repo/database";
+import {
+	canUseOrganizationAiChat,
+	createUserApiKey,
+	db,
+	hasOrganizationTie,
+} from "@repo/database";
 import { logger } from "@repo/logs";
 import type { streamText } from "ai";
 import { Hono } from "hono";
@@ -293,6 +298,16 @@ export function createVscodeAuthRoutes() {
 			return c.json({ error: "Unauthorized" }, 401);
 		}
 
+		if (!(await hasOrganizationTie(userId, c.req.param("orgId")))) {
+			return c.json(
+				{
+					error: "Forbidden",
+					message: "You are not a member of this organization",
+				},
+				403,
+			);
+		}
+
 		return c.json({
 			defaultModel: "fabric/auto",
 			defaultFreeModel: "fabric/fast",
@@ -405,24 +420,32 @@ export function createVscodeAuthRoutes() {
 		}
 
 		const userId = authedUserId;
-		const organizationId = orgHeader || undefined;
+		if (!orgHeader) {
+			return c.json(
+				{
+					error: "Bad Request",
+					message:
+						"Update the Fabric VS Code extension to send the organization header.",
+				},
+				400,
+			);
+		}
+		const organizationId = orgHeader;
 
-		// The header picks whose AI provider (and provider key) runs this
-		// completion, and the key identifies only a user. Honour a named
-		// organization only when that user has a tie to it — membership or an
-		// accepted project-guest invitation, the rule
-		// `resolveRequestedOrganization` applies to session routes. With no
-		// header there is no session here to supply an active organization, so
-		// that request keeps resolving without one.
-		if (
-			organizationId &&
-			!(await hasOrganizationTie(userId, organizationId))
-		) {
+		// The organization selects the provider; check the creator's tie and
+		// current AI chat permission independently of the key's write scope.
+		if (!(await hasOrganizationTie(userId, organizationId))) {
 			return c.json(
 				{
 					error: "Forbidden",
 					message: "You are not a member of this organization",
 				},
+				403,
+			);
+		}
+		if (!(await canUseOrganizationAiChat(userId, organizationId))) {
+			return c.json(
+				{ error: "Forbidden", message: "Missing permission: ai:chat" },
 				403,
 			);
 		}
@@ -441,6 +464,9 @@ export function createVscodeAuthRoutes() {
 		try {
 			body = await c.req.json();
 		} catch {
+			return c.json({ error: "Invalid JSON body" }, 400);
+		}
+		if (body === null) {
 			return c.json({ error: "Invalid JSON body" }, 400);
 		}
 

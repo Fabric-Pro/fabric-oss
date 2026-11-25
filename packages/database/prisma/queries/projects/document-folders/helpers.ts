@@ -71,17 +71,41 @@ function pathSegments(path: string | null): string[] | null {
 		.filter((segment) => segment.length > 0);
 }
 
+/** A folder as the overlap check sees it. */
+interface OverlapCandidate {
+	driveId: string;
+	drivePath: string | null;
+	itemId?: string;
+	/** Google Drive only; empty or absent = no ancestry recorded. */
+	ancestorIds?: readonly string[];
+}
+
 /**
- * Whether two folders are the same, or one lies inside the other, judged by
- * their paths in one drive. Drive paths are case-insensitive, and compared by
- * segment so `/Sales` does not contain `/Sales 2`. Unknown paths never overlap.
+ * Whether two folders are the same, or one lies inside the other, in one
+ * drive. When both record their ancestor ids (Google Drive, which allows
+ * sibling folders with the same name), the ids decide: the same id, or one
+ * folder's id among the other's ancestors. Otherwise their paths decide.
+ * Drive paths are case-insensitive, and compared by segment so `/Sales` does
+ * not contain `/Sales 2`. Unknown paths never overlap.
  */
 export function foldersOverlap(
-	a: { driveId: string; drivePath: string | null },
-	b: { driveId: string; drivePath: string | null },
+	a: OverlapCandidate,
+	b: OverlapCandidate,
 ): boolean {
 	if (a.driveId !== b.driveId) {
 		return false;
+	}
+	if (
+		a.itemId !== undefined &&
+		b.itemId !== undefined &&
+		a.ancestorIds?.length &&
+		b.ancestorIds?.length
+	) {
+		return (
+			a.itemId === b.itemId ||
+			a.ancestorIds.includes(b.itemId) ||
+			b.ancestorIds.includes(a.itemId)
+		);
 	}
 	const left = pathSegments(a.drivePath);
 	const right = pathSegments(b.drivePath);

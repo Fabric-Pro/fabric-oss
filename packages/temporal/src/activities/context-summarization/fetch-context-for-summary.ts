@@ -1,4 +1,4 @@
-import { db, type SummaryTenancy } from "@repo/database";
+import { db, type SummaryTenancy, tenantWhere } from "@repo/database";
 
 export interface FetchContextForSummaryResult {
 	projectName: string;
@@ -17,7 +17,13 @@ export async function fetchContextForSummaryActivity(input: {
 	snapshotThrough: string;
 }): Promise<FetchContextForSummaryResult> {
 	const project = await db.project.findUnique({
-		where: { id: input.projectId },
+		where: {
+			id: input.projectId,
+			...tenantWhere(
+				input.tenancy.userId ?? "",
+				input.tenancy.organizationId,
+			),
+		},
 		select: { name: true },
 	});
 	return { projectName: project?.name ?? "Untitled project" };

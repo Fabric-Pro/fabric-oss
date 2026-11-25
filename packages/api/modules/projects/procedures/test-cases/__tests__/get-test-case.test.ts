@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@repo/database", () => ({
-	getTestCase: vi.fn(),
+const db = vi.hoisted(() => ({
+	project: { findUnique: vi.fn() },
+	projectMember: { findUnique: vi.fn() },
+	member: { findFirst: vi.fn() },
 }));
-vi.mock("../../../../../lib/project-permissions", () => ({
-	userHasProjectPermission: vi.fn(),
-}));
-vi.mock("../../../../../orpc/procedures", () => {
+vi.mock("@repo/database", () => ({ getTestCase: vi.fn(), db }));
+vi.mock("../../../../../orpc/procedures", async () => {
 	const chain: Record<string, unknown> = {};
 	for (const m of ["use", "route", "input", "output"]) {
 		chain[m] = () => chain;
@@ -16,6 +16,9 @@ vi.mock("../../../../../orpc/procedures", () => {
 		__permission: chain.__permission,
 	});
 	return {
+		userHasProjectPermission: (
+			await import("../../../../../lib/project-permission-decision")
+		).userHasProjectPermission,
 		tenantProtectedProcedure: chain,
 		requireProjectPermission: (p: string) => {
 			chain.__permission = p;
@@ -30,7 +33,6 @@ vi.mock("../../../../../orpc/procedures", () => {
 });
 
 import { getTestCase } from "@repo/database";
-import { userHasProjectPermission } from "../../../../../lib/project-permissions";
 import { getTestCaseProcedure } from "../get-test-case";
 
 const handler = (getTestCaseProcedure as unknown as { handler: Function })
@@ -60,26 +62,45 @@ describe("getTestCaseProcedure", () => {
 		await expect(handler({ input, context: ctx })).rejects.toMatchObject({
 			code: "NOT_FOUND",
 		});
-		expect(userHasProjectPermission).not.toHaveBeenCalled();
+		expect(db.project.findUnique).not.toHaveBeenCalled();
 	});
 
-	it("returns the case plus the caller's canEdit flag", async () => {
-		vi.mocked(getTestCase).mockResolvedValue({
-			id: "tc1",
-			identifier: "TC-001",
-		} as never);
-		vi.mocked(userHasProjectPermission).mockResolvedValue(true as never);
+	it.each([
+		["VIEWER", false],
+		["PROJECT_ADMIN", true],
+	])(
+		"returns the case with canEdit based on the organization admin's %s project role",
+		async (role, canEdit) => {
+			vi.mocked(getTestCase).mockResolvedValue({
+				id: "tc1",
+				identifier: "TC-001",
+			} as never);
+			db.project.findUnique.mockResolvedValue({
+				id: "p1",
+				userId: "u1",
+				organizationId: "example-org",
+				organization: { deletedAt: null },
+			});
+			db.member.findFirst.mockResolvedValue({ role: "admin" });
+			db.projectMember.findUnique.mockResolvedValue({
+				role,
+				acceptedAt: new Date(),
+				expiresAt: null,
+			});
 
-		const res = await handler({ input, context: ctx });
+			const res = await handler({ input, context: ctx });
 
-		expect(res).toEqual({
-			testCase: { id: "tc1", identifier: "TC-001" },
-			canEdit: true,
-		});
-		expect(userHasProjectPermission).toHaveBeenCalledWith(
-			"p1",
-			"u1",
-			"test-case:update",
-		);
-	});
+			expect(res).toEqual({
+				testCase: { id: "tc1", identifier: "TC-001" },
+				canEdit,
+			});
+			expect(db.projectMember.findUnique).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: {
+						projectId_userId: { projectId: "p1", userId: "u1" },
+					},
+				}),
+			);
+		},
+	);
 });

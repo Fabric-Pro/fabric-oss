@@ -7891,7 +7891,17 @@ async function handleListChats(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { db } = await import("@repo/database");
+	const { canUseOrganizationAiChat, db } = await import("@repo/database");
+
+	if (
+		!session.organizationId ||
+		!(await canUseOrganizationAiChat(
+			session.userId,
+			session.organizationId,
+		))
+	) {
+		return errorResult("No permission to read chats in this organization");
+	}
 
 	const filter = tenantFilter(session);
 	const limit = Math.min((args.limit as number) ?? 20, 50);

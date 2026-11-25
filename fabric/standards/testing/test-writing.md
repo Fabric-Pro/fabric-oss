@@ -596,6 +596,19 @@ test("creates and runs workflow", async ({ page }) => {
 });
 ```
 
+## Statement coverage
+
+Add tests that execute and assert on new or changed source code in a PR. Cover
+negative cases in authorization and tenant paths. Assertion-free tests are
+unacceptable. Delete dead code instead of adding tests for it.
+
+A PR should not lower its package's statement coverage. The
+[Statement Coverage workflow](../../../.github/workflows/coverage.yml) is
+report-only and does not run on ordinary PRs, so measure it yourself: run
+`node tooling/scripts/src/coverage/coverage.mjs local <package-dir>` on the
+base branch and on your branch, compare the two figures, and state them in the
+PR description.
+
 ## Coverage Configuration
 
 ```typescript

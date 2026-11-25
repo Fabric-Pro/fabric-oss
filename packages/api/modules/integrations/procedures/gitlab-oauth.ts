@@ -14,7 +14,6 @@ import {
 } from "@repo/connectors";
 import {
 	db,
-	getProjectMemberRole,
 	logRepoIntegrationActivity,
 	syncLegacyProjectRepoOnConnect,
 } from "@repo/database";
@@ -31,11 +30,6 @@ import {
 	patchGitLabConnectionSettings,
 	readGitLabPersonalConnection,
 } from "@repo/integrations/gitlab";
-import {
-	hasPermission,
-	Permissions as Perms,
-	resolveProjectPermissions,
-} from "@repo/permissions";
 import { triggerMcpToolIngestion } from "@repo/temporal";
 import { encryptApiKey } from "@repo/utils";
 import { z } from "zod";
@@ -75,7 +69,9 @@ import {
 	persistGitLabToken,
 } from "../lib/gitlab-token";
 import {
+	assertOAuthProjectBinding,
 	assertOAuthStateBoundToCaller,
+	authorizeOAuthProjectTarget,
 	consumeOAuthStateOnce,
 } from "../lib/oauth-callback-guard";
 import {
@@ -331,6 +327,11 @@ export const gitlabOAuthProcedures = {
 							"Missing project integration fields (projectId, repositoryOwner, or repositoryName)",
 					});
 				}
+				await assertOAuthProjectBinding({
+					projectId: input.projectId,
+					userId,
+					organizationId,
+				});
 				projectRepositoryUrl = resolved.url;
 				projectRepositoryOwner = resolved.owner;
 				projectRepositoryName = resolved.name;
@@ -465,6 +466,11 @@ export const gitlabOAuthProcedures = {
 			};
 
 			try {
+				const projectTarget =
+					state.targetType === "project"
+						? await authorizeOAuthProjectTarget(state, "GitLab")
+						: null;
+
 				// Read the connection generation BEFORE the exchange: a
 				// disconnect or another connect that lands while GitLab answers
 				// must not be overwritten by this callback's write. Project
@@ -497,56 +503,12 @@ export const gitlabOAuthProcedures = {
 				);
 
 				// Route credentials based on targetType in the OAuth state.
-				if (state.targetType === "project") {
-					// Fail explicitly if required project fields are missing
-					if (
-						!state.projectId ||
-						!state.repositoryOwner ||
-						!state.repositoryName
-					) {
-						return {
-							success: false,
-							message:
-								"Missing project integration fields (projectId, repositoryOwner, or repositoryName)",
-						};
-					}
-
-					// Defense in depth for states minted before the START-path
-					// host pin: the callback's later API calls carry a live token,
-					// so the stored URL must still be gitlab.com.
-					if (
-						state.repositoryUrl &&
-						new URL(state.repositoryUrl).hostname.toLowerCase() !==
-							"gitlab.com"
-					) {
-						return {
-							success: false,
-							message:
-								"Only gitlab.com repositories are supported for GitLab connections",
-						};
-					}
-
-					// Mirror the gate on `repository-integrations/connect.ts` so
-					// PROJECT_ADMIN+ (who initiated the OAuth flow) can complete it.
-					const role = await getProjectMemberRole(
-						state.projectId,
-						state.userId,
-					);
-					const granted = resolveProjectPermissions(role);
-					if (!hasPermission(granted, Perms.PROJECT_SETTINGS_EDIT)) {
-						return {
-							success: false,
-							message:
-								"You don't have permission to configure repository integrations for this project",
-						};
-					}
-
+				if (projectTarget) {
 					const { connectedStatus, personalConnectionRequiredForPm } =
 						await handleProjectTargetCallback({
 							state: {
+								...projectTarget,
 								userId: state.userId,
-								organizationId: state.organizationId ?? null,
-								projectId: state.projectId,
 								// Passed through as-is — `handleProjectTargetCallback`
 								// (via `resolveProjectRepositoryIdentity`) builds its
 								// own fallback candidate when this is absent, using
@@ -556,8 +518,6 @@ export const gitlabOAuthProcedures = {
 								// `repositoryName` (owner "group/subgroup", name
 								// "group/subgroup/repo").
 								repositoryUrl: state.repositoryUrl,
-								repositoryOwner: state.repositoryOwner,
-								repositoryName: state.repositoryName,
 								defaultBranch: state.defaultBranch,
 								roleTag: state.roleTag,
 								targetType: "project",
@@ -568,7 +528,7 @@ export const gitlabOAuthProcedures = {
 
 					// AC1's "told at connect time" — same composition as the
 					// GitHub callback.
-					const repoSlug = `${state.repositoryOwner}/${state.repositoryName}`;
+					const repoSlug = `${projectTarget.repositoryOwner}/${projectTarget.repositoryName}`;
 					const repoMessage =
 						connectedStatus === "REPO_UNAVAILABLE"
 							? `Connected ${repoSlug} — but Fabric cannot read it. Install the provider app on the repository, or connect it with a personal access token from its row menu.`
@@ -1353,7 +1313,7 @@ export const gitlabOAuthProcedures = {
 export async function handleProjectTargetCallback(args: {
 	state: {
 		userId: string;
-		organizationId?: string | null;
+		organizationId: string;
 		projectId: string;
 		/**
 		 * Optional: when absent, `resolveProjectRepositoryIdentity` below
@@ -1514,64 +1474,72 @@ export async function handleProjectTargetCallback(args: {
 	// one and leave the legacy row untouched — it may still be referenced
 	// elsewhere, so this is not the place to delete it silently.
 	const legacyRepositoryName = `${repositoryOwner}/${repositoryName}`;
-	const integration = await db.$transaction(async (tx) => {
-		const [canonicalRow, legacyRow] = await Promise.all([
-			tx.projectRepositoryIntegration.findFirst({
-				where: {
-					projectId: state.projectId,
-					provider: "GITLAB",
-					repositoryOwner,
-					repositoryName,
-				},
-			}),
-			tx.projectRepositoryIntegration.findFirst({
-				where: {
-					projectId: state.projectId,
-					provider: "GITLAB",
-					repositoryOwner,
-					repositoryName: legacyRepositoryName,
-				},
-			}),
-		]);
+	const { integration, organizationId } = await db.$transaction(
+		async (tx) => {
+			const [canonicalRow, legacyRow] = await Promise.all([
+				tx.projectRepositoryIntegration.findFirst({
+					where: {
+						projectId: state.projectId,
+						provider: "GITLAB",
+						repositoryOwner,
+						repositoryName,
+					},
+				}),
+				tx.projectRepositoryIntegration.findFirst({
+					where: {
+						projectId: state.projectId,
+						provider: "GITLAB",
+						repositoryOwner,
+						repositoryName: legacyRepositoryName,
+					},
+				}),
+			]);
 
-		if (canonicalRow) {
-			if (legacyRow) {
-				console.warn(
-					`[gitlab-oauth] Both a canonical (id=${canonicalRow.id}) and a legacy-named (id=${legacyRow.id}, repositoryName="${legacyRepositoryName}") ProjectRepositoryIntegration row exist for project ${state.projectId} (${repositoryOwner}/${repositoryName}). Updated the canonical row; the legacy row was left untouched and needs manual review.`,
-				);
+			const organizationId = await assertOAuthProjectBinding(state, tx);
+			if (canonicalRow) {
+				if (legacyRow) {
+					console.warn(
+						`[gitlab-oauth] Both a canonical (id=${canonicalRow.id}) and a legacy-named (id=${legacyRow.id}, repositoryName="${legacyRepositoryName}") ProjectRepositoryIntegration row exist for project ${state.projectId} (${repositoryOwner}/${repositoryName}). Updated the canonical row; the legacy row was left untouched and needs manual review.`,
+					);
+				}
+				const integration =
+					await tx.projectRepositoryIntegration.update({
+						where: { id: canonicalRow.id },
+						data: credentialFields,
+					});
+				return { integration, organizationId };
 			}
-			return tx.projectRepositoryIntegration.update({
-				where: { id: canonicalRow.id },
-				data: credentialFields,
-			});
-		}
 
-		if (legacyRow) {
-			return tx.projectRepositoryIntegration.update({
-				where: { id: legacyRow.id },
+			if (legacyRow) {
+				const integration =
+					await tx.projectRepositoryIntegration.update({
+						where: { id: legacyRow.id },
+						data: {
+							repositoryUrl,
+							repositoryOwner,
+							repositoryName,
+							...credentialFields,
+						},
+					});
+				return { integration, organizationId };
+			}
+
+			const integration = await tx.projectRepositoryIntegration.create({
 				data: {
+					projectId: state.projectId,
+					provider: "GITLAB",
 					repositoryUrl,
 					repositoryOwner,
 					repositoryName,
+					defaultBranch: resolvedBranch,
+					roleTag: state.roleTag ?? null,
+					configuredByUserId: state.userId,
 					...credentialFields,
 				},
 			});
-		}
-
-		return tx.projectRepositoryIntegration.create({
-			data: {
-				projectId: state.projectId,
-				provider: "GITLAB",
-				repositoryUrl,
-				repositoryOwner,
-				repositoryName,
-				defaultBranch: resolvedBranch,
-				roleTag: state.roleTag ?? null,
-				configuredByUserId: state.userId,
-				...credentialFields,
-			},
-		});
-	});
+			return { integration, organizationId };
+		},
+	);
 
 	await syncLegacyProjectRepoOnConnect(
 		state.projectId,
@@ -1586,7 +1554,7 @@ export async function handleProjectTargetCallback(args: {
 	await startCodeIndexingForProject({
 		projectId: state.projectId,
 		userId: state.userId,
-		organizationId: state.organizationId ?? null,
+		organizationId,
 		repositoryIntegrationId: integration.id,
 	}).catch((error) => {
 		console.error(
@@ -1600,7 +1568,7 @@ export async function handleProjectTargetCallback(args: {
 		userId: state.userId,
 		userName: gitlabUser.username,
 		// Not a Prisma where-clause — activity logger accepts optional string.
-		organizationId: state.organizationId ?? undefined,
+		organizationId,
 		activityType: "repo_integration_configured",
 		repositoryName: `${repositoryOwner}/${repositoryName}`,
 		metadata: {
@@ -1619,7 +1587,7 @@ export async function handleProjectTargetCallback(args: {
 	try {
 		pm = await enableGitLabPMForProject({
 			userId: state.userId,
-			organizationId: state.organizationId ?? null,
+			organizationId,
 			projectId: state.projectId,
 			repositoryOwner,
 			repositoryName,

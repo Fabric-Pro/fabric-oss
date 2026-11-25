@@ -3,12 +3,69 @@
  * Used for web search, deep research, video search, etc.
  */
 
+import { decryptApiKey } from "@repo/utils";
 import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { db } from "../client";
 
 // ============================================================================
 // Organization Search Provider Queries
 // ============================================================================
+
+type UrlSourceScraperCredential =
+	| { status: "resolved"; apiKey: string; endpoint: string | null }
+	| {
+			status:
+				| "source-not-authorized"
+				| "provider-unavailable"
+				| "credential-unreadable";
+	  };
+
+/** Resolve a URL source's current scraper credential for worker-side use. */
+export async function resolveUrlSourceScraperCredential({
+	contextId,
+	organizationId,
+	providerName,
+	company,
+}: {
+	contextId: string;
+	organizationId: string | null | undefined;
+	providerName: string;
+	company?: boolean;
+}): Promise<UrlSourceScraperCredential> {
+	if (!organizationId) {
+		return { status: "source-not-authorized" };
+	}
+
+	const source = company
+		? await db.companyContextSource.findFirst({
+				where: { id: contextId, organizationId },
+				select: { id: true },
+			})
+		: await db.projectContext.findFirst({
+				where: { id: contextId, project: { organizationId } },
+				select: { id: true },
+			});
+	if (!source) {
+		return { status: "source-not-authorized" };
+	}
+
+	const provider = await db.organizationSearchProvider.findFirst({
+		where: { organizationId, providerName, enabled: true },
+		select: { encryptedApiKey: true, endpoint: true },
+	});
+	if (!provider?.encryptedApiKey) {
+		return { status: "provider-unavailable" };
+	}
+
+	try {
+		const apiKey = decryptApiKey(provider.encryptedApiKey);
+		return apiKey
+			? { status: "resolved", apiKey, endpoint: provider.endpoint }
+			: { status: "credential-unreadable" };
+	} catch {
+		return { status: "credential-unreadable" };
+	}
+}
 
 /**
  * Get all search providers for an organization

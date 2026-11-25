@@ -62,6 +62,9 @@ export function registerKnowledgeRoutes(
 		} catch {
 			return c.json(badRequest("Invalid JSON body"), 400);
 		}
+		if (body === null) {
+			return c.json(badRequest("Invalid JSON body"), 400);
+		}
 
 		if (!body.query || typeof body.query !== "string") {
 			return c.json(badRequest("query is required"), 400);

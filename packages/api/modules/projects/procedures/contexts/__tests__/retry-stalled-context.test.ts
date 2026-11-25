@@ -13,7 +13,7 @@
  *     any enabled scrape-capable provider, with its endpoint — from the
  *     organization's providers, or the user's own with no organization.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockHasProjectAccess,
@@ -175,7 +175,10 @@ const linkRow = (overrides: Record<string, unknown> = {}) =>
 		...overrides,
 	});
 
+afterEach(() => vi.unstubAllEnvs());
+
 beforeEach(() => {
+	vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", undefined);
 	vi.clearAllMocks();
 	mockHasProjectAccess.mockResolvedValue(true);
 	mockGetContextById.mockResolvedValue(row());
@@ -385,23 +388,38 @@ describe("retryStalled — dispatch", () => {
 		expect(options.args[0]).not.toHaveProperty("providerEndpoint");
 	});
 
-	it("passes the Cloudflare account endpoint along with the provider", async () => {
-		mockGetContextById.mockResolvedValue(
-			linkRow({ urlScope: "SINGLE_PAGE" }),
-		);
-		mockGetEnabledOrgProviders.mockResolvedValue([
-			providerRow("cloudflare", { endpoint: "account-123" }),
-		]);
-		const handler = await loadHandler();
+	it.each([undefined, "true"])(
+		"forwards Cloudflare fields to the stalled crawl retry (switch %s)",
+		async (setting) => {
+			vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", setting);
+			mockGetContextById.mockResolvedValue(
+				linkRow({ urlScope: "SINGLE_PAGE" }),
+			);
+			mockGetEnabledOrgProviders.mockResolvedValue([
+				providerRow("cloudflare", { endpoint: "account-123" }),
+			]);
+			const handler = await loadHandler();
 
-		await handler({ input, context: orgCtx });
+			await handler({ input, context: orgCtx });
 
-		const [, options] = mockTemporalWorkflowStart.mock.calls[0];
-		expect(options.args[0]).toMatchObject({
-			providerName: "cloudflare",
-			providerEndpoint: "account-123",
-		});
-	});
+			expect(mockTemporalWorkflowStart.mock.calls[0]?.[0]).toBe(
+				"urlSourceCrawlWorkflow",
+			);
+			const args =
+				mockTemporalWorkflowStart.mock.calls[0]?.[1]?.args?.[0];
+			expect(args).toHaveProperty("providerName", "cloudflare");
+			if (setting === "true") {
+				expect(args).not.toHaveProperty("apiKey");
+				expect(args).not.toHaveProperty("providerEndpoint");
+			} else {
+				expect(args).toHaveProperty("apiKey", "decrypted-fc-key");
+				expect(args).toHaveProperty("providerEndpoint", "account-123");
+			}
+			if (setting === "true") {
+				expect(mockDecryptApiKey).not.toHaveBeenCalled();
+			}
+		},
+	);
 
 	it("refuses a path-prefix link retry when only a scrape-only provider is enabled", async () => {
 		mockGetContextById.mockResolvedValue(

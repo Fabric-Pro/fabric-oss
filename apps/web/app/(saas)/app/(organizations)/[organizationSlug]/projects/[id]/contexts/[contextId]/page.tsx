@@ -2,28 +2,29 @@
  * Project Context content-viewer page (organization context).
  *
  * Server component: resolves session + params + the active organization from
- * the slug, fetches the context row via the tenant-XOR-safe `getContextById`
- * (tenant XOR + projectId IDOR guard enforced inside the helper), then branches
+ * the slug, checks project reach, fetches the project-scoped context row, then branches
  * on `row.type`:
  *  - LINK              → `UrlSourcePageView` (re-fetched via `getUrlSourceContext`).
  *  - MEETING_TRANSCRIPT → `MeetingTranscriptPageView` (read-only transcript reader).
  *  - anything else      → redirect back to the project's contexts list.
  *
- * If the org slug doesn't resolve, or the row is missing / cross-tenant /
- * cross-project (resolves to `null`), we redirect back to a safe upstream
- * location. See spec 2026-06-23-meeting-transcript-viewer §5.3.
+ * Missing project reach or a context outside the project returns not found.
  */
 
 import {
 	parlumeTranscriptNotice,
 	resolveParlumeTranscriptAccess,
 } from "@repo/api/modules/projects/lib/parlume-transcript-access";
-import { getContextById, getUrlSourceContext } from "@repo/database";
+import {
+	getContextById,
+	getUrlSourceContext,
+	hasProjectAccess,
+} from "@repo/database";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { MeetingTranscriptPageView } from "@saas/projects/components/MeetingTranscriptPageView";
 import { UrlSourcePageView } from "@saas/projects/components/UrlSourcePageView";
 import { TopRightControls } from "@saas/shared/components/TopRightControls";
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
 type Props = {
 	params: Promise<{
@@ -56,15 +57,17 @@ export default async function OrganizationContextViewerPage({
 	const backTab = back === "meeting-digest" ? "meeting-digest" : "context";
 	const backHref = `/app/${organizationSlug}/projects/${projectId}?tab=${backTab}`;
 
-	// Resolve the row via the tenant-XOR-safe getter to determine its type.
-	// Cross-tenant / cross-project / missing rows resolve to null → redirect.
+	if (!(await hasProjectAccess(projectId, session.user.id))) {
+		notFound();
+	}
+
 	const context = await getContextById(contextId, projectId, {
 		userId: session.user.id,
 		organizationId: organization.id,
 	});
 
-	if (!context) {
-		redirect(backHref);
+	if (!context || context.projectId !== projectId) {
+		notFound();
 	}
 
 	if (context.type === "MEETING_TRANSCRIPT") {
@@ -127,7 +130,11 @@ export default async function OrganizationContextViewerPage({
 		organizationId: organization.id,
 	});
 
-	if (!row || row.type !== "LINK" || !row.sourceUrl) {
+	if (!row) {
+		notFound();
+	}
+
+	if (row.type !== "LINK" || !row.sourceUrl) {
 		redirect(backHref);
 	}
 

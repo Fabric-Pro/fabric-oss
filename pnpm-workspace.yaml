@@ -187,8 +187,6 @@ overrides:
   "minimatch@^3.0.0": "^3.1.4"
   "minimatch@^9.0.0": "11.0.1"
   "minimatch@^10.0.0": "11.0.1"
-  "@mastra/core@1.0.4>@ai-sdk/provider-utils-v5": "npm:@ai-sdk/provider-utils@3.0.36"
-  "@mastra/core@1.0.4>@ai-sdk/provider-utils-v6": "npm:@ai-sdk/provider-utils@4.0.51"
   "@azure/monitor-opentelemetry@1.20.1>@azure/identity": "^4.14.1"
   "applicationinsights@3.17.0>@azure/identity": "^4.14.1"
   # GHSA-x8rm-f576-gq67: the PhoneNumber ReDoS affects graphql-scalars

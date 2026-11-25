@@ -13,6 +13,7 @@ vi.mock("@repo/ai-token", () => ({
 vi.mock("@repo/database", () => ({
 	logAiUsage: mocks.logAiUsage,
 	recordAiOutputProvenance: mocks.recordAiOutputProvenance,
+	isOrganizationLive: async () => true,
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	getCanonicalNameForProviderModelId: async () => "example-canonical-model",
 	getModelByCanonicalName: vi.fn(),

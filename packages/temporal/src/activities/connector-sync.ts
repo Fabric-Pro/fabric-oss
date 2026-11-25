@@ -17,7 +17,6 @@ import {
 	type DataConnectionProvider,
 	type DataConnectionStatus,
 	db,
-	getConnectionWithCredentials,
 	getDataConnectionSyncMetadata,
 	getSyncedResourceByExternalId,
 	type Prisma,
@@ -36,9 +35,14 @@ import {
 	generateEmbeddings as generateTextEmbeddings,
 	storeWorkspaceChunksBatch,
 } from "@repo/rag";
-import { decryptApiKey } from "@repo/utils";
 import { ApplicationFailure } from "@temporalio/activity";
 import type { SyncCursor } from "../workflows/connector-sync/types";
+import {
+	type ConnectorSyncConnectionRef,
+	type ResolvedConnectorSyncConnection,
+	resolveConnectorSyncConnection,
+} from "./connector-sync/lib/connection-credential";
+import { callConnectorProvider } from "./connector-sync/lib/provider-call";
 import {
 	discoverBitbucketResources as discoverCollabBitbucketResources,
 	discoverGitHubResources as discoverCollabGitHubResources,
@@ -100,6 +104,7 @@ import {
 	testS3Connection as testKnowledgeS3Connection,
 	testTeamsConnection as testKnowledgeTeamsConnection,
 } from "./connector-sync/providers/knowledge";
+import type { ConnectorCredentials } from "./connector-sync/providers/types";
 import {
 	discoverBigQueryResources,
 	discoverSnowflakeResources,
@@ -136,12 +141,8 @@ export interface ConnectorConfig {
 	provider: string;
 	name: string;
 	status: DataConnectionStatus;
-	credentials: {
-		accessToken?: string | null;
-		refreshToken?: string | null;
-		apiKey?: string;
-		[key: string]: unknown;
-	};
+	/** Kept empty for callers using the legacy activity result shape. */
+	credentials: Record<string, never>;
 	providerConfig: Record<string, unknown>;
 	syncConfig: {
 		incrementalSyncIntervalMinutes?: number;
@@ -405,7 +406,7 @@ function slugifyFilename(input: string): string {
 }
 
 async function _discoverSalesforceResources(input: {
-	credentials: ConnectorConfig["credentials"];
+	credentials: ConnectorCredentials;
 	providerConfig: Record<string, unknown>;
 }): Promise<Resource[]> {
 	const domain =
@@ -468,7 +469,7 @@ async function _discoverSalesforceResources(input: {
 }
 
 async function _discoverHubSpotResources(input: {
-	credentials: ConnectorConfig["credentials"];
+	credentials: ConnectorCredentials;
 	providerConfig: Record<string, unknown>;
 }): Promise<Resource[]> {
 	const token =
@@ -540,7 +541,7 @@ async function _discoverHubSpotResources(input: {
 async function _fetchSalesforceResourceDocuments(input: {
 	connectorId: string;
 	resource: Resource;
-	credentials: ConnectorConfig["credentials"];
+	credentials: ConnectorCredentials;
 }): Promise<{ documents: Document[]; newCursor?: SyncCursor }> {
 	const domain =
 		typeof input.credentials.domain === "string"
@@ -631,7 +632,7 @@ async function _fetchSalesforceResourceDocuments(input: {
 async function _fetchHubSpotResourceDocuments(input: {
 	connectorId: string;
 	resource: Resource;
-	credentials: ConnectorConfig["credentials"];
+	credentials: ConnectorCredentials;
 }): Promise<{ documents: Document[]; newCursor?: SyncCursor }> {
 	const token =
 		typeof input.credentials.apiKey === "string"
@@ -717,14 +718,6 @@ export async function loadConnectorConfig(input: {
 	userId: string;
 	organizationId?: string;
 }): Promise<ConnectorConfig | null> {
-	// The connection's metadata first, with no credential column selected.
-	// A GitLab Data Connection holds no credential: each GitLab activity
-	// resolves the acting person's own GitLab connection itself
-	// (`resolveGitLabSyncCredential`). So for GitLab nothing token-bearing is
-	// selected, decrypted or returned — not a legacy token column, not the
-	// inline `credentials` JSON, not a saved DataConnectionCredential — and
-	// this activity's result, which is recorded in workflow history, carries
-	// none.
 	const metadata = await getDataConnectionSyncMetadata({
 		id: input.connectorId,
 		userId: input.userId,
@@ -735,197 +728,128 @@ export async function loadConnectorConfig(input: {
 		return null;
 	}
 
-	if (metadata.provider === "GITLAB") {
-		return {
-			id: metadata.id,
-			provider: metadata.provider,
-			name: metadata.name,
-			status: metadata.status,
-			credentials: {},
-			providerConfig:
-				(metadata.config as Record<string, unknown> | null) || {},
-			syncConfig: {
-				incrementalSyncIntervalMinutes: 60, // Default 1 hour
-			},
-			lastSyncAt: metadata.lastSyncAt,
-		};
-	}
-
-	const connection = await getConnectionWithCredentials({
-		id: input.connectorId,
-		userId: input.userId,
-		organizationId: input.organizationId,
-	});
-
-	if (!connection) {
-		return null;
-	}
-
-	const config = connection.config as Record<string, unknown> | null;
-
-	// Parse credentials from the encrypted JSON field
-	const inlineCredentials = connection.credentials as Record<
-		string,
-		unknown
-	> | null;
-	let reusableCredentialPayload: Record<string, unknown> | null = null;
-	if (connection.credential?.encryptedPayload) {
-		try {
-			reusableCredentialPayload = JSON.parse(
-				decryptApiKey(connection.credential.encryptedPayload),
-			) as Record<string, unknown>;
-		} catch (error) {
-			throw new Error(
-				`Failed to load saved credentials for connector ${connection.id}: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
-		}
-	}
-
 	return {
-		id: connection.id,
-		provider: connection.provider,
-		name: connection.name,
-		status: connection.status,
-		credentials: {
-			accessToken: connection.accessToken,
-			refreshToken: connection.refreshToken,
-			...(reusableCredentialPayload || {}),
-			...(inlineCredentials || {}),
-		},
-		providerConfig: config || {},
+		id: metadata.id,
+		provider: metadata.provider,
+		name: metadata.name,
+		status: metadata.status,
+		credentials: {},
+		providerConfig:
+			(metadata.config as Record<string, unknown> | null) ?? {},
 		syncConfig: {
 			incrementalSyncIntervalMinutes: 60, // Default 1 hour
 		},
-		lastSyncAt: connection.lastSyncAt,
+		lastSyncAt: metadata.lastSyncAt,
 	};
 }
 
-export async function testConnection(input: {
-	connectorId: string;
-	provider: string;
-	credentials: ConnectorConfig["credentials"];
-	/** The person who started the sync (GitLab acts with their connection). */
-	userId?: string;
-	organizationId?: string;
-	/** The connection's config (GitLab: its configured address). */
-	providerConfig?: Record<string, unknown>;
-}): Promise<boolean> {
-	// GitLab, outside the catch-all below: a missing connection or a refused
-	// address is thrown with its reason, not folded into `false`.
-	if (input.provider === "GITLAB") {
+export async function testConnection(
+	input: ConnectorSyncConnectionRef,
+): Promise<boolean> {
+	const { provider, providerConfig, credentials } =
+		await resolveConnectorSyncConnection(input);
+	if (provider === "GITLAB") {
 		return testGitLabConnection({
 			actor: {
 				userId: input.userId,
 				organizationId: input.organizationId,
 			},
-			providerConfig: input.providerConfig,
+			providerConfig,
 		});
 	}
-	// Test connection based on provider
-	// This is a stub - actual implementation would call provider APIs
+	return callConnectorProvider(credentials, () =>
+		testProviderConnection(provider, credentials),
+	);
+}
+
+function testProviderConnection(
+	provider: DataConnectionProvider,
+	credentials: ConnectorCredentials,
+): boolean | Promise<boolean> {
 	try {
-		switch (
-			input.provider as
-				| DataConnectionProvider
-				| "BITBUCKET"
-				| "S3"
-				| "GOOGLE_STORAGE"
-				| "R2"
-				| "DROPBOX"
-				| "AIRTABLE"
-				| "CODA"
-				| "GITBOOK"
-				| "TEAMS"
-				| "ASANA"
-				| "CLICKUP"
-		) {
+		switch (provider) {
 			case "GOOGLE_DRIVE":
-				return testKnowledgeGoogleDriveConnection(input.credentials);
+				return testKnowledgeGoogleDriveConnection(credentials);
 
 			case "S3":
-				return testKnowledgeS3Connection(input.credentials);
+				return testKnowledgeS3Connection(credentials);
 			case "GOOGLE_STORAGE":
-				return testKnowledgeGoogleStorageConnection(input.credentials);
+				return testKnowledgeGoogleStorageConnection(credentials);
 			case "R2":
-				return testKnowledgeR2Connection(input.credentials);
+				return testKnowledgeR2Connection(credentials);
 
 			case "AIRTABLE":
-				return testKnowledgeAirtableConnection(input.credentials);
+				return testKnowledgeAirtableConnection(credentials);
 
 			case "DROPBOX":
-				return !!(
-					input.credentials.accessToken ?? input.credentials.apiKey
-				);
+				return !!(credentials.accessToken ?? credentials.apiKey);
 
 			case "CODA":
-				return !!(
-					input.credentials.accessToken ?? input.credentials.apiKey
-				);
+				return !!(credentials.accessToken ?? credentials.apiKey);
 
 			case "GITBOOK":
-				return !!(
-					input.credentials.accessToken ?? input.credentials.apiKey
-				);
+				return !!(credentials.accessToken ?? credentials.apiKey);
 			case "TEAMS":
-				return testKnowledgeTeamsConnection(input.credentials);
+				return testKnowledgeTeamsConnection(credentials);
 
 			case "NOTION":
-				return testKnowledgeNotionConnection(input.credentials);
+				return testKnowledgeNotionConnection(credentials);
 
 			case "CONFLUENCE":
-				return testKnowledgeConfluenceConnection(input.credentials);
+				return testKnowledgeConfluenceConnection(credentials);
 
 			case "JIRA":
-				return testJiraConnection(input.credentials);
+				return testJiraConnection(credentials);
 
 			case "SLACK":
-				return testSlackConnection(input.credentials);
+				return testSlackConnection(credentials);
 
 			case "GITHUB":
 				// Test GitHub API access
-				return !!input.credentials.accessToken;
+				return !!credentials.accessToken;
 
 			case "BITBUCKET":
-				return testBitbucketConnection(input.credentials);
+				return testBitbucketConnection(credentials);
 
 			case "LINEAR":
-				return testLinearConnection(input.credentials);
+				return testLinearConnection(credentials);
 			case "ASANA":
-				return testAsanaConnection(input.credentials);
+				return testAsanaConnection(credentials);
 			case "CLICKUP":
-				return testClickUpConnection(input.credentials);
+				return testClickUpConnection(credentials);
 
 			case "MICROSOFT_365":
-				return testKnowledgeMicrosoftConnection(input.credentials);
+				return testKnowledgeMicrosoftConnection(credentials);
 
 			case "SNOWFLAKE":
-				return testSnowflakeConnection(input.credentials);
+				return testSnowflakeConnection(credentials);
 
 			case "BIGQUERY":
-				return testBigQueryConnection(input.credentials);
+				return testBigQueryConnection(credentials);
 
 			case "INTERCOM":
-				return testIntercomConnection(input.credentials);
+				return testIntercomConnection(credentials);
 
 			case "GONG":
 				// Test SaaS API access
-				return !!input.credentials.accessToken;
+				return !!credentials.accessToken;
 
 			case "ZENDESK":
-				return testZendeskConnection(input.credentials);
+				return testZendeskConnection(credentials);
 
 			case "SALESFORCE":
-				return testSalesforceConnection(input.credentials);
+				return testSalesforceConnection(credentials);
 
 			case "HUBSPOT":
-				return testHubSpotConnection(input.credentials);
+				return testHubSpotConnection(credentials);
 
 			default:
 				return false;
 		}
-	} catch {
+	} catch (error) {
+		if (error instanceof ApplicationFailure) {
+			throw error;
+		}
 		return false;
 	}
 }
@@ -1023,41 +947,31 @@ export async function updateSyncJobActivity(input: {
 // Discovery Activities
 // =============================================================================
 
-export async function discoverResources(_input: {
-	connectorId: string;
-	provider: string;
-	providerConfig: Record<string, unknown>;
-	credentials: ConnectorConfig["credentials"];
-	/** The person who started the sync (GitLab acts with their connection). */
-	userId?: string;
-	organizationId?: string;
-}): Promise<Resource[]> {
-	switch (
-		_input.provider as
-			| DataConnectionProvider
-			| "BITBUCKET"
-			| "S3"
-			| "GOOGLE_STORAGE"
-			| "R2"
-			| "DROPBOX"
-			| "AIRTABLE"
-			| "CODA"
-			| "GITBOOK"
-			| "TEAMS"
-			| "ASANA"
-			| "CLICKUP"
-	) {
+export async function discoverResources(
+	input: ConnectorSyncConnectionRef,
+): Promise<Resource[]> {
+	const connection = await resolveConnectorSyncConnection(input);
+	if (connection.provider === "GITLAB") {
+		return discoverCollabGitLabResources({
+			actor: {
+				userId: input.userId,
+				organizationId: input.organizationId,
+			},
+			providerConfig: connection.providerConfig,
+		});
+	}
+	return callConnectorProvider(connection.credentials, () =>
+		discoverProviderResources(connection),
+	);
+}
+
+function discoverProviderResources(
+	_input: ResolvedConnectorSyncConnection,
+): Promise<Resource[]> | Resource[] {
+	switch (_input.provider) {
 		case "GITHUB":
 			return discoverCollabGitHubResources({
 				credentials: _input.credentials,
-				providerConfig: _input.providerConfig,
-			});
-		case "GITLAB":
-			return discoverCollabGitLabResources({
-				actor: {
-					userId: _input.userId,
-					organizationId: _input.organizationId,
-				},
 				providerConfig: _input.providerConfig,
 			});
 		case "BITBUCKET":
@@ -1194,50 +1108,56 @@ export async function discoverResources(_input: {
 // Fetch Activities
 // =============================================================================
 
-export async function fetchResourceDocuments(_input: {
-	connectorId: string;
-	provider: string;
+type FetchResourceDocumentsInput = ConnectorSyncConnectionRef & {
 	resource: Resource;
-	credentials: ConnectorConfig["credentials"];
-	providerConfig?: Record<string, unknown>;
 	syncType: "full" | "incremental" | "gc";
 	cursor?: SyncCursor;
 	batchSize: number;
-	/** The person who started the sync (GitLab acts with their connection). */
-	userId?: string;
-	organizationId?: string;
-}): Promise<{ documents: Document[]; newCursor?: SyncCursor }> {
-	switch (
-		_input.provider as
-			| DataConnectionProvider
-			| "BITBUCKET"
-			| "S3"
-			| "GOOGLE_STORAGE"
-			| "R2"
-			| "DROPBOX"
-			| "AIRTABLE"
-			| "CODA"
-			| "GITBOOK"
-			| "TEAMS"
-			| "ASANA"
-			| "CLICKUP"
-	) {
+};
+
+export async function fetchResourceDocuments(
+	input: FetchResourceDocumentsInput,
+): Promise<{ documents: Document[]; newCursor?: SyncCursor }> {
+	const connection = await resolveConnectorSyncConnection(input);
+	if (connection.provider === "GITLAB") {
+		return fetchCollabGitLabResourceDocuments({
+			resource: input.resource,
+			actor: {
+				userId: input.userId,
+				organizationId: input.organizationId,
+			},
+			providerConfig: connection.providerConfig,
+			cursor: input.cursor,
+			batchSize: input.batchSize,
+			syncType: input.syncType,
+		});
+	}
+	return callConnectorProvider(connection.credentials, () =>
+		fetchProviderDocuments({
+			...connection,
+			connectorId: input.connectorId,
+			resource: input.resource,
+			syncType: input.syncType,
+			cursor: input.cursor,
+			batchSize: input.batchSize,
+		}),
+	);
+}
+
+function fetchProviderDocuments(
+	_input: Pick<
+		FetchResourceDocumentsInput,
+		"connectorId" | "resource" | "syncType" | "cursor" | "batchSize"
+	> &
+		ResolvedConnectorSyncConnection,
+):
+	| Promise<{ documents: Document[]; newCursor?: SyncCursor }>
+	| { documents: Document[] } {
+	switch (_input.provider) {
 		case "GITHUB":
 			return fetchCollabGitHubResourceDocuments({
 				resource: _input.resource,
 				credentials: _input.credentials,
-				providerConfig: _input.providerConfig,
-				cursor: _input.cursor,
-				batchSize: _input.batchSize,
-				syncType: _input.syncType,
-			});
-		case "GITLAB":
-			return fetchCollabGitLabResourceDocuments({
-				resource: _input.resource,
-				actor: {
-					userId: _input.userId,
-					organizationId: _input.organizationId,
-				},
 				providerConfig: _input.providerConfig,
 				cursor: _input.cursor,
 				batchSize: _input.batchSize,
@@ -1726,7 +1646,7 @@ export async function saveSyncCursor(input: {
 export async function garbageCollect(_input: {
 	connectorId: string;
 	provider: string;
-	credentials: ConnectorConfig["credentials"];
+	credentials?: ConnectorCredentials;
 	userId: string;
 	organizationId?: string;
 }): Promise<{ deleted: number; vectorsDeleted: number }> {

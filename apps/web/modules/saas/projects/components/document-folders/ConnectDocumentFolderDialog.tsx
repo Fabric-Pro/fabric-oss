@@ -1,12 +1,14 @@
 "use client";
 
 /**
- * Choosing OneDrive and SharePoint folders whose files a project imports as
- * context (Fizzy #2808).
+ * Choosing OneDrive, SharePoint or Google Drive folders whose files a project
+ * imports as context (Fizzy #2808).
  *
- * Browsed with the caller's own Microsoft connection, which also reads the
- * folders from then on: My OneDrive, or SharePoint through followed sites and
- * site search, then a site's document libraries, then their folders. Folders
+ * Browsed with the caller's own Microsoft or Google Drive connection, which
+ * also reads the folders from then on. Microsoft: My OneDrive, or SharePoint
+ * through followed sites and site search, then a site's document libraries,
+ * then their folders. Google Drive: My Drive or a shared drive, then their
+ * folders, whose overlap is judged by folder id. Folders
  * from any place are chosen together, each with an optional description. A
  * folder inside or holding one already chosen or connected cannot be chosen,
  * and says why. The disclosure is on screen before the button that connects.
@@ -50,7 +52,9 @@ import {
 import { toast } from "sonner";
 import {
 	FolderLevel,
+	GooglePlacesLevel,
 	PlacesLevel,
+	SharedDrivesLevel,
 	SharePointLevel,
 	SiteLevel,
 } from "./folder-picker/FolderPicker";
@@ -68,12 +72,18 @@ import {
 	DESCRIPTION_MAX,
 	DOCUMENT_FOLDER_IMPORT_LIMIT,
 	DOCUMENT_FOLDER_READ_DEPTH,
+	type DocumentFolderSource,
 	isEditorFolder,
 	messageOf,
 	useDocumentFolders,
 } from "./use-document-folders";
 
 const DISCLOSURE = `Fabric reads each folder and its subfolders down to ${DOCUMENT_FOLDER_READ_DEPTH} levels, and imports the ${DOCUMENT_FOLDER_IMPORT_LIMIT} most recently modified supported files (${CONTEXT_UPLOAD_FORMAT_LABELS.join(", ")}). Imported files become visible to everyone with access to this project, whatever their access in OneDrive or SharePoint.`;
+
+/** Google's export of a native file stops at 10 MB, whatever its type's limit. */
+const GOOGLE_EXPORT_LIMIT_MB = 10;
+
+const GOOGLE_DISCLOSURE = `Fabric reads each folder and its subfolders down to ${DOCUMENT_FOLDER_READ_DEPTH} levels, and imports the ${DOCUMENT_FOLDER_IMPORT_LIMIT} most recently modified supported files (${CONTEXT_UPLOAD_FORMAT_LABELS.join(", ")}). Google Docs, Sheets and Slides are exported as DOCX, XLSX and PDF, up to ${GOOGLE_EXPORT_LIMIT_MB} MB each; shortcuts are not followed. Imported files become visible to everyone with access to this project, whatever their access in Google Drive.`;
 
 function ChosenRow({
 	chosen,
@@ -144,9 +154,12 @@ export function ConnectDocumentFolderDialog({
 	onOpenChange,
 	onConnected,
 	returnFocusTo,
+	provider = "microsoft",
 }: {
 	projectId: string;
 	organizationId: string | null;
+	/** Which drives to browse. Microsoft (OneDrive and SharePoint) by default. */
+	provider?: DocumentFolderSource;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 	onConnected?: () => void;
@@ -167,6 +180,7 @@ export function ConnectDocumentFolderDialog({
 	const { folders } = useDocumentFolders(scope);
 	const connected = folders.filter(isEditorFolder);
 	const crumb = trail[trail.length - 1] ?? PLACES;
+	const google = provider === "googledrive";
 
 	useEffect(() => {
 		if (focusTarget === "heading") {
@@ -246,6 +260,8 @@ export function ConnectDocumentFolderDialog({
 		try {
 			const result = await orpcClient.projects.documentFolders.connect({
 				...scope,
+				// A Microsoft connect sends no provider, as before Google Drive.
+				...(google ? { provider } : {}),
 				folders: entries.map((entry) => {
 					const description = entry.description.trim();
 					return {
@@ -322,7 +338,9 @@ export function ConnectDocumentFolderDialog({
 			>
 				<DialogHeader>
 					<DialogTitle>
-						Connect OneDrive or SharePoint folders
+						{google
+							? "Connect Google Drive folders"
+							: "Connect OneDrive or SharePoint folders"}
 					</DialogTitle>
 					<DialogDescription>
 						Choose folders whose files become project context.
@@ -368,8 +386,20 @@ export function ConnectDocumentFolderDialog({
 					>
 						{levelTitle(crumb)}
 					</h3>
-					{crumb.kind === "places" && (
-						<PlacesLevel
+					{crumb.kind === "places" &&
+						(google ? (
+							<GooglePlacesLevel
+								scope={scope}
+								onOpen={(next) => arriveAt([...trail, next])}
+							/>
+						) : (
+							<PlacesLevel
+								scope={scope}
+								onOpen={(next) => arriveAt([...trail, next])}
+							/>
+						))}
+					{crumb.kind === "sharedDrives" && (
+						<SharedDrivesLevel
 							scope={scope}
 							onOpen={(next) => arriveAt([...trail, next])}
 						/>
@@ -449,7 +479,7 @@ export function ConnectDocumentFolderDialog({
 				</output>
 
 				<p className="rounded-md border bg-muted/50 px-3 py-2 text-sm">
-					{DISCLOSURE}
+					{google ? GOOGLE_DISCLOSURE : DISCLOSURE}
 				</p>
 
 				{refusal && (

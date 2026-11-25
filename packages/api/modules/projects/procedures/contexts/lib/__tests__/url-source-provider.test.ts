@@ -3,7 +3,7 @@
  * scraper for a URL source, shared by `processLink`, its four follow-up
  * procedures and the company-context crawls.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockGetEnabledOrgProviders,
@@ -50,7 +50,10 @@ function providerRow(
 	};
 }
 
+afterEach(() => vi.unstubAllEnvs());
+
 beforeEach(() => {
+	vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", undefined);
 	vi.clearAllMocks();
 	mockDecryptApiKey.mockImplementation((v: string) => `dec:${v}`);
 	mockGetEnabledOrgProviders.mockResolvedValue([]);
@@ -58,6 +61,54 @@ beforeEach(() => {
 });
 
 describe("resolveUrlSourceProvider", () => {
+	it.each([undefined, "1", "TRUE", "false"])(
+		"only omits the credential for the exact value true (received %s)",
+		async (setting) => {
+			vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", setting);
+			mockGetEnabledOrgProviders.mockResolvedValue([
+				providerRow("cloudflare", { endpoint: "account-123" }),
+			]);
+			const params = {
+				organizationId: "org-1",
+				userId: "user-1",
+				scope: "SINGLE_PAGE" as const,
+			};
+			const legacyProvider = await resolveUrlSourceProvider(params);
+			expect(legacyProvider).toEqual({
+				providerName: "cloudflare",
+				apiKey: "dec:enc-cloudflare",
+				providerEndpoint: "account-123",
+			});
+			expect(mockDecryptApiKey).toHaveBeenCalledExactlyOnceWith(
+				"enc-cloudflare",
+			);
+			mockDecryptApiKey.mockClear();
+
+			vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", "true");
+			const workerProvider = await resolveUrlSourceProvider(params);
+			expect(workerProvider).toStrictEqual({
+				providerName: "cloudflare",
+			});
+			expect(mockDecryptApiKey).not.toHaveBeenCalled();
+			expect(providerWorkflowArgs(legacyProvider)).toEqual(
+				legacyProvider,
+			);
+
+			vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", undefined);
+			expect(providerWorkflowArgs(workerProvider)).toStrictEqual(
+				workerProvider,
+			);
+		},
+	);
+
+	it("omits an endpoint when the resolved provider has no key", () => {
+		const args = providerWorkflowArgs({
+			providerName: "cloudflare",
+			providerEndpoint: "account-123",
+		});
+		expect(args).toStrictEqual({ providerName: "cloudflare" });
+	});
+
 	it("returns the first scrape-capable provider with its decrypted key", async () => {
 		mockGetEnabledOrgProviders.mockResolvedValue([
 			providerRow("parallel"),
@@ -188,45 +239,57 @@ describe("resolveUrlSourceProvider", () => {
 		expect(mockGetEnabledUserProviders).not.toHaveBeenCalled();
 	});
 
-	it("throws SCRAPE_PROVIDER_NOT_CONFIGURED, naming the sources and the settings page", async () => {
-		mockOrgFindUnique.mockResolvedValue({ slug: "example-org" });
+	it.each([undefined, "true"])(
+		"throws SCRAPE_PROVIDER_NOT_CONFIGURED, naming the sources and the settings page (switch %s)",
+		async (setting) => {
+			vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", setting);
+			mockOrgFindUnique.mockResolvedValue({ slug: "example-org" });
 
-		await expect(
-			resolveUrlSourceProvider({
-				organizationId: "org-1",
-				userId: "user-1",
-				scope: "SINGLE_PAGE",
-				sourceNoun: "Website sources",
-			}),
-		).rejects.toMatchObject({
-			code: "BAD_REQUEST",
-			message: expect.stringMatching(
-				/^Website sources need a search provider/,
-			),
-			data: {
-				code: "SCRAPE_PROVIDER_NOT_CONFIGURED",
-				settingsPath: "/app/example-org/settings/search-providers",
-			},
-		});
-	});
+			await expect(
+				resolveUrlSourceProvider({
+					organizationId: "org-1",
+					userId: "user-1",
+					scope: "SINGLE_PAGE",
+					sourceNoun: "Website sources",
+				}),
+			).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+				message: expect.stringMatching(
+					/^Website sources need a search provider/,
+				),
+				data: {
+					code: "SCRAPE_PROVIDER_NOT_CONFIGURED",
+					settingsPath: "/app/example-org/settings/search-providers",
+				},
+			});
+			expect(mockDecryptApiKey).not.toHaveBeenCalled();
+		},
+	);
 
-	it("throws CRAWL_PROVIDER_NOT_CONFIGURED for a path prefix with only scrape-only providers", async () => {
-		mockGetEnabledUserProviders.mockResolvedValue([providerRow("tavily")]);
+	it.each([undefined, "true"])(
+		"throws CRAWL_PROVIDER_NOT_CONFIGURED for a path prefix with only scrape-only providers (switch %s)",
+		async (setting) => {
+			vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", setting);
+			mockGetEnabledUserProviders.mockResolvedValue([
+				providerRow("tavily"),
+			]);
 
-		await expect(
-			resolveUrlSourceProvider({
-				organizationId: null,
-				userId: "user-1",
-				scope: "PATH_PREFIX",
-			}),
-		).rejects.toMatchObject({
-			code: "BAD_REQUEST",
-			data: {
-				code: "CRAWL_PROVIDER_NOT_CONFIGURED",
-				settingsPath: "/app/settings/search-providers",
-			},
-		});
-	});
+			await expect(
+				resolveUrlSourceProvider({
+					organizationId: null,
+					userId: "user-1",
+					scope: "PATH_PREFIX",
+				}),
+			).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+				data: {
+					code: "CRAWL_PROVIDER_NOT_CONFIGURED",
+					settingsPath: "/app/settings/search-providers",
+				},
+			});
+			expect(mockDecryptApiKey).not.toHaveBeenCalled();
+		},
+	);
 
 	it("names both crawl providers in the CRAWL_PROVIDER_NOT_CONFIGURED message", async () => {
 		mockGetEnabledOrgProviders.mockResolvedValue([providerRow("jina")]);

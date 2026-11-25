@@ -16,7 +16,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@repo/database", () => ({
 	setAiUsageRecorder: vi.fn(),
 	createDocumentChunks: vi.fn(),
-	db: {},
+	db: { dataConnection: { findFirst: vi.fn() } },
+	isOrganizationMember: vi.fn().mockResolvedValue(true),
 	getConnectionWithCredentials: vi.fn(),
 	getDataConnectionSyncMetadata: vi.fn(),
 	getSyncedResourceByExternalId: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock("@repo/integrations/gitlab", async () => ({
 }));
 
 import {
+	db,
 	getConnectionWithCredentials,
 	getDataConnectionSyncMetadata,
 } from "@repo/database";
@@ -62,10 +64,10 @@ import {
 import { decryptApiKey } from "@repo/utils";
 import { ApplicationFailure } from "@temporalio/common";
 import {
-	discoverResources,
-	fetchResourceDocuments,
+	discoverResources as discoverSyncResources,
+	fetchResourceDocuments as fetchSyncDocuments,
 	loadConnectorConfig,
-	testConnection,
+	testConnection as testSyncConnection,
 } from "../src/activities/connector-sync";
 import {
 	GITLAB_SYNC_ACCESS_DENIED,
@@ -76,6 +78,35 @@ import {
 } from "../src/workflows/connector-sync/types";
 
 const ACTOR = { userId: "user-1", organizationId: "org-1" };
+
+// Connection addresses and discovery options come from the authorized row.
+function gitLabRow(input: Parameters<typeof testSyncConnection>[0]) {
+	vi.mocked(getDataConnectionSyncMetadata).mockResolvedValueOnce({
+		id: input.connectorId,
+		provider: "GITLAB",
+		name: "GitLab",
+		status: "CONNECTED",
+		config: (input.providerConfig ?? {}) as never,
+		lastSyncAt: null,
+	});
+}
+
+function testConnection(input: Parameters<typeof testSyncConnection>[0]) {
+	gitLabRow(input);
+	return testSyncConnection(input);
+}
+
+function discoverResources(input: Parameters<typeof discoverSyncResources>[0]) {
+	gitLabRow(input);
+	return discoverSyncResources(input);
+}
+
+function fetchResourceDocuments(
+	input: Parameters<typeof fetchSyncDocuments>[0],
+) {
+	gitLabRow(input);
+	return fetchSyncDocuments(input);
+}
 
 function connected(
 	origin: string,
@@ -121,6 +152,7 @@ async function failureOf(promise: Promise<unknown>): Promise<unknown> {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.mocked(getDataConnectionSyncMetadata).mockReset();
 	global.fetch = vi.fn();
 });
 
@@ -188,10 +220,11 @@ describe("loadConnectorConfig — GitLab", () => {
 		}
 		// The credential-bearing read is not made, and nothing is decrypted.
 		expect(getConnectionWithCredentials).not.toHaveBeenCalled();
+		expect(db.dataConnection.findFirst).not.toHaveBeenCalled();
 		expect(decryptApiKey).not.toHaveBeenCalled();
 	});
 
-	it("still merges stored credentials for other providers", async () => {
+	it("reads only metadata for other providers too", async () => {
 		vi.mocked(getDataConnectionSyncMetadata).mockResolvedValueOnce({
 			id: "conn-gh",
 			provider: "GITHUB",
@@ -222,10 +255,10 @@ describe("loadConnectorConfig — GitLab", () => {
 			...ACTOR,
 		});
 
-		expect(result?.credentials).toMatchObject({
-			accessToken: "gh-access",
-			apiKey: "gh-inline",
-		});
+		expect(result?.credentials).toEqual({});
+		expect(getConnectionWithCredentials).not.toHaveBeenCalled();
+		expect(db.dataConnection.findFirst).not.toHaveBeenCalled();
+		expect(decryptApiKey).not.toHaveBeenCalled();
 	});
 });
 
@@ -248,7 +281,7 @@ describe("GitLab activities act with the acting person's own connection", () => 
 			{ userId: "user-1", organizationId: "org-1" },
 			{ anyOrigin: true, mode: "strict" },
 		);
-		const [url, init] = vi.mocked(global.fetch).mock.calls[0]!;
+		const [url, init] = vi.mocked(global.fetch).mock.calls[0] ?? [];
 		expect(url).toBe("https://gitlab.com/api/v4/user");
 		expect((init?.headers as Record<string, string>).Authorization).toBe(
 			"Bearer live-token",
@@ -490,7 +523,7 @@ describe("GitLab requests go only to the credential's instance", () => {
 			...ACTOR,
 		});
 
-		expect(String(vi.mocked(global.fetch).mock.calls[0]![0])).toMatch(
+		expect(String(vi.mocked(global.fetch).mock.calls[0]?.[0])).toMatch(
 			/^https:\/\/gitlab\.example\.com\/api\/v4\/projects\?/,
 		);
 		expect(resources[0]?.metadata).toMatchObject({

@@ -1,13 +1,13 @@
 # Document Folders
 
-How a project editor connects OneDrive and SharePoint folders whose files Fabric imports as project context, how each read keeps them in step with the drive, who sees what, and how to roll the feature out.
+How a project editor connects OneDrive, SharePoint and Google Drive folders whose files Fabric imports as project context, how each read keeps them in step with the drive, who sees what, and how to roll the feature out.
 
 - **Audience**: Developers extending document folders or project context ingestion; operators enabling the feature for an organization
 - **Owner**: Projects / Platform team
 
 ## What it is
 
-A project editor (`PROJECT_UPDATE` on the project, with their own Microsoft connection) picks folders from their own OneDrive and from SharePoint document libraries on the project's **Context** tab, and may give each a description of up to 500 characters. Fabric imports the supported files in each folder and its subfolders as ordinary project context, re-reads the folders every 30 minutes and on demand, and follows the drive: new files are imported, renamed and moved files keep their context, edited files are imported again, and files that leave the folder are removed from context. The folder's description reaches the model as the source guidance of its files. The terms are defined in [CONCEPTS.md](../../CONCEPTS.md): Document folder, Format vocabulary.
+A project editor (`PROJECT_UPDATE` on the project, with their own Microsoft or Google Drive connection) picks folders from their own OneDrive, from SharePoint document libraries, or from Google Drive (My Drive and shared drives) on the project's **Context** tab, and may give each a description of up to 500 characters. Fabric imports the supported files in each folder and its subfolders as ordinary project context, re-reads the folders every 30 minutes and on demand, and follows the drive: new files are imported, renamed and moved files keep their context, edited files are imported again, and files that leave the folder are removed from context. The folder's description reaches the model as the source guidance of its files. The terms are defined in [CONCEPTS.md](../../CONCEPTS.md): Document folder, Format vocabulary.
 
 The SharePoint side of the picker finds sites by search and by the sites the person follows, then lists each site's document libraries, then their folders. When `/sites` answers with any 4xx, as it does for a personal Microsoft account, the picker says SharePoint is not available for the account. Files shared with the person from other drives are not browsable.
 
@@ -26,7 +26,7 @@ A transcript folder connect is refused the same way when it overlaps a document 
 | Tables | `ProjectDocumentFolder`, `ProjectDocumentFolderFile` in `packages/database/prisma/schema.prisma` |
 | Queries | `packages/database/prisma/queries/projects/document-folders/` (connect, list, reconciliation, removals, imports, read lifecycle) |
 | Guidance inheritance | `packages/database/prisma/queries/projects/folder-guidance.ts` |
-| Graph helpers | `packages/integrations/src/microsoft/drive-folder.ts` (tree listing, lookup by id, download, SharePoint discovery) |
+| Drive adapters | `packages/integrations/src/document-folders/` picks the adapter by the folder's `provider`; Graph helpers in `packages/integrations/src/microsoft/drive-folder.ts`, Drive API v3 helpers in `packages/integrations/src/google/drive-folder.ts`, the Google token helper in `packages/integrations/src/google/token.ts` |
 | API | `projects.documentFolders.*` in `packages/api/modules/projects/procedures/document-folders/`; the flag gate in `packages/api/modules/projects/lib/cloud-drive-folders-feature.ts`; refusal messages in `packages/api/modules/projects/lib/folder-connect-refusal.ts` |
 | Sync | `packages/temporal/src/workflows/document-folder-sync.ts`, `packages/temporal/src/activities/document-folder-sync.ts` |
 | Context tab | `apps/web/modules/saas/projects/components/document-folders/` (picker, folder cards, file list) |
@@ -35,7 +35,7 @@ A transcript folder connect is refused the same way when it overlaps a document 
 
 Both tables carry a NOT NULL `organizationId`, use the `user_owned` RLS policy like transcript folders, and are registered with the tenant extension by `projectId`. Every procedure loads the project row, refuses an input organization that is not the project's, and answers NOT_FOUND while the flag is off for the project's organization. Listing takes `PROJECT_READ`; every other procedure takes `PROJECT_UPDATE`.
 
-A folder is read only with its **reader's** own Microsoft connection, never one shared with the organization. The reader is the person who last connected or reconnected it. Before every read, removal lookup and import, the sync checks again that the project has an organization, that it is the folder's, that the flag is on for it, and that the reader may still add context to the project. The organization always comes from the project row; the one in the workflow input is only a hint. Microsoft scopes stay read-only: the connection already holds `Files.Read.All` and `Sites.Read.All`, so connecting needs no new consent.
+A folder is read only with its **reader's** own Microsoft or Google Drive connection, never one shared with the organization. The reader is the person who last connected or reconnected it. Before every read, removal lookup and import, the sync checks again that the project has an organization, that it is the folder's, that the flag is on for it, and that the reader may still add context to the project. The organization always comes from the project row; the one in the workflow input is only a hint. Microsoft scopes stay read-only: the connection already holds `Files.Read.All` and `Sites.Read.All`, so connecting needs no new consent.
 
 Connecting, reconnecting, editing the description, confirming held removals and disconnecting each write an audit row (`project.document_folder.*`). The description's text never goes into the audit row.
 
@@ -98,7 +98,7 @@ A problem shows on the folder and never counts as a listing, so it removes nothi
 
 | Code | Cause |
 |---|---|
-| `RECONNECT` | The reader's Microsoft connection is gone, or Graph answered 401. |
+| `RECONNECT` | The reader's Microsoft or Google Drive connection is gone or expired, Graph or Drive answered 401, or a Google grant lacks `drive.readonly`. |
 | `NO_ACCESS` | Graph answered 403 on the folder, the reader can no longer add context to the project, or the project's organization is not the folder's. |
 | `FOLDER_GONE` | Graph answered 404 on the folder itself. |
 | `SYNC_START_FAILED` | Connecting or reconnecting could not start the sync, so no pass may be coming. Sync now or Reconnect starts it. |
@@ -131,6 +131,20 @@ The description lives only on the folder row, stored as one line without control
 
 The readers that apply it are `getRetrievableContextById`, semantic search hydration (`packages/rag/lib/project-contexts/search-hits.ts`), spec retrieval (`retrieve-for-spec.ts`), the internal agent execution context route, and the MCP project context tools, which report it as `inheritedSourceGuidance` beside the row's own value.
 
+## Google Drive
+
+Google Drive folders follow every rule above. Only the way the drive is read differs.
+
+- **Connection.** The reader's own `GOOGLE_DRIVE` workflow integration, the one the Google Docs tab uses. Its OAuth already asks for `drive.readonly`, so connecting needs no new consent. A connection whose stored grant lacks `drive.readonly` would list folders as empty, so it is refused up front: the picker asks to reconnect Google (`GOOGLE_DRIVE_RECONNECT_REQUIRED`) and a connected folder shows `RECONNECT`.
+- **Places.** My Drive and the shared drives the reader belongs to. Folders shared with the reader ("Shared with me") are not offered, and shortcuts inside a folder are neither followed nor listed. A My Drive folder's drive id is the connecting reader's My Drive root id; a shared drive's is the drive id.
+- **Native files.** Google Docs, Sheets and Slides are exported as DOCX, XLSX and PDF and typed as those formats. Google refuses an export over 10 MB, which is skipped as too big. Forms, Sites and other Google types without an export are not listed.
+- **Versions.** A binary file's version is its `md5Checksum`, so a rename does not import it again. A native file has no checksum and uses Drive's `version`, which also moves on some metadata changes; the seen-twice rule bounds that to one extra import.
+- **Not downloadable.** A file whose owner blocked downloading, or that Google flagged, is skipped with `NOT_DOWNLOADABLE` and tried again only on a new version.
+- **Overlap.** Drive allows two sibling folders with the same name, so two Google folders in one drive overlap by ids, not paths: each folder stores its ancestor ids (`ancestorIds`), refreshed by every read, and the connect check compares them inside the same lock. Microsoft folders keep an empty list and the path check.
+- **Removal lookup.** A file missing from two complete listings is looked up with `files.get` and its parents walked towards the folder. Gone means a 404 or `trashed`; outside means the walk reached a drive root, a parent the reader cannot see, another drive, or more than 5 levels without meeting the folder. A 403, 429 or 5xx removes nothing.
+- **Reconnect.** Any editor who can open the folder in Google Drive may reconnect it; the stored drive and item ids stay. One who cannot is refused before anything changes (`GOOGLE_DRIVE_FOLDER_UNREADABLE`). A reader who cannot open the folder's parents keeps the stored path and ancestor ids.
+- **Errors.** Google reports rate limits as a 403 with a reason as well as a 429; both read as throttling, a daily limit with an hour's wait. Other 403s mean no access. The access token is only ever sent to `www.googleapis.com`; a download redirect is followed by hand without it.
+
 ## Microsoft Graph notes
 
 - **Delta is not used.** On OneDrive for Business, `delta` works on a drive's root only, not on a folder inside it. Microsoft does not document how items moved out of a folder appear in a folder's delta, and the delta link arrives only on the last page, which conflicts with the scan cap. Each read therefore lists the tree with `/children` (200 items a page), and removal rests on complete listings plus a lookup by id.
@@ -148,3 +162,5 @@ The feature is behind one org-scopable flag, `CLOUD_DRIVE_FOLDERS` (`FABRIC_FEAT
 1. The migration and RLS run before any pod rolls. The flag does not make this optional: the transcript-folder connect reads the document-folder table whatever the flag says.
 2. Roll out the web deployment and the Temporal worker, and wait until a worker that registers `documentFolderSyncWorkflow` is live.
 3. Only then enable `CLOUD_DRIVE_FOLDERS` for an organization through the admin organization override (`admin.featureFlags.setForOrg`), so the web tier and the worker read the same value.
+
+The Temporal worker refreshes Google access tokens itself, so it needs `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in its environment, as it has `MICROSOFT_GRAPH_CLIENT_ID` and `MICROSOFT_GRAPH_CLIENT_SECRET`. Without them a Google folder turns to `RECONNECT` about an hour after the last time someone used the picker. The Google OAuth client must also be published (not in Testing), or its refresh tokens expire after seven days.

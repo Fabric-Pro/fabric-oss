@@ -1,13 +1,4 @@
-/**
- * `POST /api/internal/project-context-search` used to call `hasProjectAccess`
- * and then re-fetch the same `Project` row a second time (`db.project.findUnique`)
- * just to read `organizationId` for the tenant-XOR check. `getProjectAccessContext`
- * now resolves both in one query, so this route no longer imports `db` at all.
- *
- * These tests pin the two responses that must survive the consolidation
- * unchanged — the 403 for no access and the 403 for a tenant-XOR mismatch —
- * and confirm the route resolves access with a single call.
- */
+/** Project context search binds one permission decision to the token's organization. */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -22,10 +13,10 @@ vi.mock("@repo/ai-token", () => ({
 	verifyAIToken: (token: string) => verifyAIToken(token),
 }));
 
-const getProjectAccessContext = vi.fn();
-vi.mock("@repo/database", () => ({
-	getProjectAccessContext: (projectId: string, userId: string) =>
-		getProjectAccessContext(projectId, userId),
+const getProjectPermissionDecision = vi.fn();
+vi.mock("@repo/api/lib/project-permission-decision", () => ({
+	getProjectPermissionDecision: (input: unknown) =>
+		getProjectPermissionDecision(input),
 }));
 
 const retrieveProjectContexts = vi.fn();
@@ -64,7 +55,10 @@ describe("POST /api/internal/project-context-search", () => {
 			valid: true,
 			claims: { sub: USER_ID, org: ORG_ID },
 		});
-		getProjectAccessContext.mockResolvedValue({ organizationId: ORG_ID });
+		getProjectPermissionDecision.mockResolvedValue({
+			allowed: true,
+			organizationId: ORG_ID,
+		});
 		retrieveProjectContexts.mockResolvedValue([]);
 		formatContextsForPrompt.mockReturnValue("");
 	});
@@ -72,7 +66,10 @@ describe("POST /api/internal/project-context-search", () => {
 	const body = { projectId: PROJECT_ID, query: "deploy status" };
 
 	it("403s a valid token for a user without access to the project", async () => {
-		getProjectAccessContext.mockResolvedValue(null);
+		getProjectPermissionDecision.mockResolvedValue({
+			allowed: false,
+			organizationId: ORG_ID,
+		});
 		const { POST } = await import(
 			"../../../app/api/internal/project-context-search/route"
 		);
@@ -87,7 +84,8 @@ describe("POST /api/internal/project-context-search", () => {
 	});
 
 	it("403s a valid token whose org does not match the project's org (tenant mismatch)", async () => {
-		getProjectAccessContext.mockResolvedValue({
+		getProjectPermissionDecision.mockResolvedValue({
+			allowed: true,
 			organizationId: "org-other",
 		});
 		const { POST } = await import(
@@ -111,11 +109,12 @@ describe("POST /api/internal/project-context-search", () => {
 		const response = await callRoute(POST, body);
 
 		expect(response.status).toBe(200);
-		expect(getProjectAccessContext).toHaveBeenCalledTimes(1);
-		expect(getProjectAccessContext).toHaveBeenCalledWith(
-			PROJECT_ID,
-			USER_ID,
-		);
+		expect(getProjectPermissionDecision).toHaveBeenCalledTimes(1);
+		expect(getProjectPermissionDecision).toHaveBeenCalledWith({
+			projectId: PROJECT_ID,
+			userId: USER_ID,
+			permission: "context:read",
+		});
 		expect(retrieveProjectContexts).toHaveBeenCalledWith(
 			expect.objectContaining({ projectId: PROJECT_ID, userId: USER_ID }),
 		);

@@ -124,9 +124,6 @@ vi.mock("@repo/temporal", () => ({
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
-vi.mock("../../../../lib/project-permissions", () => ({
-	userHasProjectPermission: vi.fn(),
-}));
 vi.mock("../../../../lib/redis-client", () => ({ getRedisClient: () => null }));
 vi.mock("../../../../lib/mcp-registry-cache", () => ({
 	invalidateSystemServersCache: vi.fn(),

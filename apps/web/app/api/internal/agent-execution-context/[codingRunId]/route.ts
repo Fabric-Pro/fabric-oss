@@ -59,6 +59,9 @@ export async function GET(
 	const codingRun = await db.codingRun.findUnique({
 		where: { id: codingRunId },
 		include: {
+			project: {
+				select: { organization: { select: { deletedAt: true } } },
+			},
 			story: {
 				include: {
 					tasks: {
@@ -76,6 +79,7 @@ export async function GET(
 							repositoryName: true,
 							defaultBranch: true,
 							organizationId: true,
+							organization: { select: { deletedAt: true } },
 						},
 					},
 				},
@@ -92,6 +96,16 @@ export async function GET(
 
 	const story = codingRun.story;
 	const project = story?.project ?? null;
+
+	if (
+		codingRun.project.organization?.deletedAt ||
+		project?.organization?.deletedAt
+	) {
+		return NextResponse.json(
+			{ error: "You do not have access to this project" },
+			{ status: 403 },
+		);
+	}
 
 	// The focused task is the one linked via storyTaskId (if any)
 	const focusedTask =

@@ -20,7 +20,6 @@ import {
 import { getGitHubToken } from "@repo/integrations";
 import { encryptApiKey } from "@repo/utils";
 import { z } from "zod";
-import { userHasProjectPermission } from "../../../lib/project-permissions";
 import {
 	Permissions,
 	protectedProcedure,
@@ -43,7 +42,9 @@ import {
 	listGitHubBranches,
 } from "../lib/github-oauth";
 import {
+	assertOAuthProjectBinding,
 	assertOAuthStateBoundToCaller,
+	authorizeOAuthProjectTarget,
 	consumeOAuthStateOnce,
 } from "../lib/oauth-callback-guard";
 import { assertOAuthStartOrganization } from "../lib/oauth-start-organization";
@@ -199,6 +200,11 @@ export const githubOAuthProcedures = {
 							"Missing project integration fields (projectId, repositoryOwner, or repositoryName)",
 					});
 				}
+				await assertOAuthProjectBinding({
+					projectId: input.projectId,
+					userId,
+					organizationId,
+				});
 				projectRepositoryUrl = resolved.url;
 				projectRepositoryOwner = resolved.owner;
 				projectRepositoryName = resolved.name;
@@ -312,6 +318,11 @@ export const githubOAuthProcedures = {
 			}
 
 			try {
+				const projectTarget =
+					state.targetType === "project"
+						? await authorizeOAuthProjectTarget(state, "GitHub")
+						: null;
+
 				// Exchange code for access token
 				// Use the same redirectUri that was used in the initial request (stored in state)
 				const redirectUri =
@@ -329,11 +340,10 @@ export const githubOAuthProcedures = {
 					tokenResponse.access_token,
 				);
 
-				// While the credential manager is on, the grant is also saved as
-				// the member's credential in the state's (verified) organization.
-				const saveGrant = () =>
+				// Save the member's grant in the organization authorized for the flow.
+				const saveGrant = (organizationId: string) =>
 					saveGitHubGrantAsCredential({
-						organizationId: state.organizationId ?? null,
+						organizationId,
 						user: context.user,
 						tokenResponse,
 						githubUser,
@@ -346,80 +356,26 @@ export const githubOAuthProcedures = {
 				// have two callbacks, (2) the OAuth state already carries all the routing
 				// information (targetType, projectId), and (3) the token exchange logic is
 				// identical regardless of where the credentials are stored.
-				if (state.targetType === "project") {
-					// Fail explicitly if required project fields are missing
-					if (
-						!state.projectId ||
-						!state.repositoryOwner ||
-						!state.repositoryName
-					) {
-						return {
-							success: false,
-							message:
-								"Missing project integration fields (projectId, repositoryOwner, or repositoryName)",
-						};
-					}
-
-					// Defense in depth for states minted before the START-path
-					// host pin: the stored URL drives authenticated worker-side
-					// git clones, so it must name github.com — mirroring the
-					// GitLab callback's pin.
-					if (
-						state.repositoryUrl &&
-						new URL(state.repositoryUrl).hostname.toLowerCase() !==
-							"github.com"
-					) {
-						return {
-							success: false,
-							message:
-								"Only github.com repositories are supported for GitHub connections",
-						};
-					}
-
-					// Verify the user has permission to edit project settings.
-					// Mirrors the `requireProjectPermission(PROJECT_SETTINGS_EDIT)`
-					// middleware used by the connect/disconnect procedures — see
-					// `packages/api/lib/project-permissions.ts`. Unlike a
-					// `ProjectMember`-only check, this also honors the org-role
-					// matrix (org owner/admin without an explicit ProjectMember
-					// row).
-					const allowed = await userHasProjectPermission(
-						state.projectId,
-						state.userId,
-						Permissions.PROJECT_SETTINGS_EDIT,
-					);
-					if (!allowed) {
-						return {
-							success: false,
-							message:
-								"You don't have permission to configure repository integrations for this project",
-						};
-					}
-
-					const credentialId = await saveGrant();
-
+				if (projectTarget) {
 					const { connectedStatus } =
 						await handleProjectTargetCallback({
 							state: {
+								...projectTarget,
 								userId: state.userId,
-								organizationId: state.organizationId ?? null,
-								projectId: state.projectId,
 								repositoryUrl: state.repositoryUrl,
-								repositoryOwner: state.repositoryOwner,
-								repositoryName: state.repositoryName,
 								defaultBranch: state.defaultBranch,
 								roleTag: state.roleTag,
 								targetType: "project",
 							},
 							tokenResponse,
 							githubUser,
-							credentialId,
+							saveGrant,
 						});
 
 					// AC1's "told at connect time": the popup and toast carry the
 					// verdict, not just the success — the badge only appears once
 					// the invalidated list query resolves.
-					const repoSlug = `${state.repositoryOwner}/${state.repositoryName}`;
+					const repoSlug = `${projectTarget.repositoryOwner}/${projectTarget.repositoryName}`;
 					const message =
 						connectedStatus === "REPO_UNAVAILABLE"
 							? `Connected ${repoSlug} — but Fabric cannot read it. Install the GitHub App on the repository, or connect it with a personal access token from its row menu.`
@@ -437,7 +393,7 @@ export const githubOAuthProcedures = {
 				// User-level integration: store in WorkflowIntegration (existing
 				// behavior). It has no credential reference yet, so the saved
 				// credential is not linked from it.
-				await saveGrant();
+				await saveGrant(state.organizationId);
 
 				const credentials = JSON.stringify({
 					access_token: tokenResponse.access_token,
@@ -920,7 +876,7 @@ export const githubOAuthProcedures = {
 export async function handleProjectTargetCallback(args: {
 	state: {
 		userId: string;
-		organizationId?: string | null;
+		organizationId: string;
 		projectId: string;
 		repositoryUrl?: string;
 		repositoryOwner: string;
@@ -931,12 +887,8 @@ export async function handleProjectTargetCallback(args: {
 	};
 	tokenResponse: GitHubTokenResponse;
 	githubUser: GitHubUser;
-	/**
-	 * The credential this grant was saved as (`saveGitHubGrantAsCredential`).
-	 * `undefined` leaves the row's binding untouched (credential manager off);
-	 * `null` clears it so the fresh legacy tokens are read.
-	 */
-	credentialId?: SavedGrant;
+	/** Save the project grant after rechecking the binding. */
+	saveGrant?: (organizationId: string) => Promise<SavedGrant>;
 }): Promise<{
 	connectedStatus: "ACTIVE" | "TOKEN_EXPIRED" | "REPO_UNAVAILABLE";
 }> {
@@ -1016,11 +968,6 @@ export async function handleProjectTargetCallback(args: {
 		// A re-authenticated credential must start with a full retirement
 		// budget: a stale count would let one failed sweep retire this row.
 		probeFailCount: 0,
-		// ADR-026 expand phase: reference the saved credential and keep
-		// dual-writing the token columns above.
-		...(args.credentialId !== undefined
-			? { credentialId: args.credentialId }
-			: {}),
 	};
 
 	// Upsert: update if integration already exists (e.g. re-auth), otherwise create
@@ -1044,12 +991,22 @@ export async function handleProjectTargetCallback(args: {
 		repo: repositoryName,
 	});
 
+	// The grant and its repository link use separate stores. Recheck the
+	// project binding before the grant, then again before linking it.
+	const credentialId = args.saveGrant
+		? await args.saveGrant(await assertOAuthProjectBinding(state))
+		: undefined;
+	// ADR-026 expand phase: reference the saved credential alongside the legacy tokens.
+	const credentialBinding =
+		credentialId === undefined ? {} : { credentialId };
+	const organizationId = await assertOAuthProjectBinding(state);
+
 	let integrationId: string;
 
 	if (existing) {
 		await db.projectRepositoryIntegration.update({
 			where: { id: existing.id },
-			data: integrationData,
+			data: { ...integrationData, ...credentialBinding },
 		});
 		integrationId = existing.id;
 	} else {
@@ -1070,9 +1027,7 @@ export async function handleProjectTargetCallback(args: {
 			status: integrationData.status,
 			lastError: integrationData.lastError,
 			configuredByUserId: state.userId,
-			...(args.credentialId !== undefined
-				? { credentialId: args.credentialId }
-				: {}),
+			...credentialBinding,
 		});
 		integrationId = created.id;
 	}
@@ -1090,7 +1045,7 @@ export async function handleProjectTargetCallback(args: {
 	await startCodeIndexingForProject({
 		projectId: state.projectId,
 		userId: state.userId,
-		organizationId: state.organizationId ?? null,
+		organizationId,
 		repositoryIntegrationId: integrationId,
 	}).catch((error) => {
 		console.error(
@@ -1103,7 +1058,7 @@ export async function handleProjectTargetCallback(args: {
 		projectId: state.projectId,
 		userId: state.userId,
 		userName: githubUser.login,
-		organizationId: state.organizationId ?? null,
+		organizationId,
 		activityType: "repo_integration_configured",
 		repositoryName: `${repositoryOwner}/${repositoryName}`,
 		metadata: {

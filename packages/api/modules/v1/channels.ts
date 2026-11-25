@@ -122,6 +122,9 @@ export function registerChannelRoutes(
 			} catch {
 				return c.json(badRequest("Invalid JSON body"), 400);
 			}
+			if (body === null) {
+				return c.json(badRequest("Invalid JSON body"), 400);
+			}
 			if (!body.channelId || !body.text) {
 				return c.json(
 					badRequest("channelId and text are required"),

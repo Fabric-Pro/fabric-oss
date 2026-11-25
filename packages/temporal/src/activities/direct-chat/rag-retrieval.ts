@@ -105,6 +105,7 @@ export async function retrieveRagContextForDirectChatActivity(
 				where: {
 					id: { in: documentIds },
 					userId,
+					organizationId: organizationId ?? null,
 				},
 				select: {
 					id: true,
@@ -227,6 +228,7 @@ export async function retrieveRagContextForDirectChatActivity(
 				where: {
 					id: { in: documentIds },
 					userId,
+					organizationId: organizationId ?? null,
 					status: "READY",
 				},
 				select: { filename: true },

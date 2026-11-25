@@ -33,6 +33,7 @@ import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
 import {
 	getProjectAccessContext,
+	isOrganizationLive,
 	incrementOrganizationSearchProviderUsage,
 	isProjectSoftDeleted,
 } from "@repo/database";
@@ -232,7 +233,12 @@ export async function POST(req: Request): Promise<Response> {
 			getProjectAccessContext(request.projectId, userId),
 			isProjectSoftDeleted(request.projectId),
 		]);
-		if (!access || access.organizationId !== organizationId || inTrash) {
+		if (
+			!access ||
+			access.organizationId !== organizationId ||
+			inTrash ||
+			!(await isOrganizationLive(access.organizationId))
+		) {
 			return fail(
 				403,
 				"PROJECT_ACCESS_DENIED",

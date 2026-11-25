@@ -5,14 +5,14 @@
  * Populate fixtures with:
  *   pnpm --filter @repo/temporal fetch:replay-histories
  *
- * Fixtures live under __tests__/__fixtures__/histories/<WorkflowType>/ and
+ * Fetched fixtures live under __tests__/__fixtures__/histories/<WorkflowType>/ and
  * are gitignored (they may contain tenant data). The test skips when no
- * fixtures are present, so the main test suite remains green in clean checkouts.
+ * fetched fixtures are present. Synthetic workflow fixtures run separately.
  */
 
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { Worker } from "@temporalio/worker";
+import { bundleWorkflowCode, Worker } from "@temporalio/worker";
 import { describe, expect, it } from "vitest";
 import { loadHistoriesForType } from "../scripts/replay-fixtures";
 import { buildWorkflowBundleOptions } from "../src/lib/workflow-bundle-options";
@@ -86,6 +86,84 @@ const INTENTIONAL_REWRITE_SKIP = new Set<string>([
  */
 const REQUIRE_FIXTURES = process.env.REPLAY_REQUIRE_FIXTURES === "1";
 
+function buildReplayBundle() {
+	const options = buildWorkflowBundleOptions(WORKFLOWS_PATH);
+	return bundleWorkflowCode({
+		...options,
+		// initTelemetry does not run in tests. Include the interceptor the
+		// worker adds during startup so replay uses the production stack.
+		workflowInterceptorModules: [
+			...new Set([
+				...(options.workflowInterceptorModules ?? []),
+				OTEL_WORKFLOW_INTERCEPTOR_MODULE,
+			]),
+		],
+	});
+}
+
+let replayBundle: ReturnType<typeof buildReplayBundle> | undefined;
+
+async function replay(
+	workflowType: string,
+	histories: Awaited<ReturnType<typeof loadHistoriesForType>>,
+) {
+	replayBundle ??= buildReplayBundle();
+	const results = await Worker.runReplayHistories(
+		{
+			workflowBundle: await replayBundle,
+			// A replay worker never invokes a sink unless it opted in
+			// with callDuringReplay, and this one has not — but the
+			// worker checks that a sink is registered before it checks
+			// that, and logs an error per span otherwise. Register the
+			// shape production registers so the replay log stays clean.
+			sinks: {
+				exporter: { export: { fn: () => undefined } },
+			},
+		},
+		histories,
+	);
+
+	const failures: Array<{ workflowId: string; error: string }> = [];
+	for await (const result of results) {
+		if (result.error) {
+			failures.push({
+				workflowId: result.workflowId,
+				error: result.error.message ?? String(result.error),
+			});
+		}
+	}
+
+	if (failures.length > 0) {
+		const detail = failures
+			.map((f) => `  - ${f.workflowId}: ${f.error}`)
+			.join("\n");
+		expect.fail(
+			`${failures.length} / ${histories.length} ${workflowType} histories failed to replay:\n${detail}`,
+		);
+	}
+}
+
+it("replays a synthetic URL crawl recorded before credential references", async () => {
+	const workflowType = "urlSourceCrawlWorkflow";
+	const histories = await loadHistoriesForType(
+		join(__dirname, "__fixtures__", "url-source-synthetic-histories"),
+		workflowType,
+		true,
+	);
+	await replay(workflowType, histories);
+}, 120_000);
+
+it("replays a synthetic connector sync recorded before worker-side credential resolution", async () => {
+	const workflowType = "connectorSyncWorkflow";
+	const histories = await loadHistoriesForType(
+		join(__dirname, "__fixtures__", "connector-sync-synthetic-histories"),
+		workflowType,
+		true,
+	);
+	expect(histories).toHaveLength(1);
+	await replay(workflowType, histories);
+}, 120_000);
+
 describe("Replay validation", () => {
 	const typeDirs = listTypeDirs();
 
@@ -130,61 +208,7 @@ describe("Replay validation", () => {
 				return;
 			}
 
-			const results = await Worker.runReplayHistories(
-				{
-					workflowsPath: WORKFLOWS_PATH,
-					// Replay the same interceptor stack production runs.
-					// This path builds its own bundle from workflowsPath, so
-					// unlike the worker (which uses a prebuilt bundle) it does
-					// honour interceptors.workflowModules. Without this the
-					// gate would replay workflows that never see the
-					// interceptors, and so could not catch a determinism
-					// problem one of them introduced.
-					//
-					// The OpenTelemetry module is added explicitly: the bundle
-					// options only carry it once initTelemetry() has run, which
-					// never happens in a test, while every production worker
-					// has it. The Set is because the union is a no-op when
-					// telemetry is initialised (Fizzy #2401).
-					interceptors: {
-						workflowModules: [
-							...new Set([
-								...(buildWorkflowBundleOptions(WORKFLOWS_PATH)
-									.workflowInterceptorModules ?? []),
-								OTEL_WORKFLOW_INTERCEPTOR_MODULE,
-							]),
-						],
-					},
-					// A replay worker never invokes a sink unless it opted in
-					// with callDuringReplay, and this one has not — but the
-					// worker checks that a sink is registered before it checks
-					// that, and logs an error per span otherwise. Register the
-					// shape production registers so the replay log stays clean.
-					sinks: {
-						exporter: { export: { fn: () => undefined } },
-					},
-				},
-				histories,
-			);
-
-			const failures: Array<{ workflowId: string; error: string }> = [];
-			for await (const result of results) {
-				if (result.error) {
-					failures.push({
-						workflowId: result.workflowId,
-						error: result.error.message ?? String(result.error),
-					});
-				}
-			}
-
-			if (failures.length > 0) {
-				const detail = failures
-					.map((f) => `  - ${f.workflowId}: ${f.error}`)
-					.join("\n");
-				expect.fail(
-					`${failures.length} / ${histories.length} ${workflowType} histories failed to replay:\n${detail}`,
-				);
-			}
+			await replay(workflowType, histories);
 		}, 120_000);
 	}
 });

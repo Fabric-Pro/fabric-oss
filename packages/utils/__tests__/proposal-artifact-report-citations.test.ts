@@ -472,7 +472,10 @@ describe("parse time of reports the check passes", () => {
 		(_label, text) => {
 			expect(text.length).toBeLessThanOrEqual(REPORT_TEXT_MAX_CODE_UNITS);
 			expect(reportTextNeedsPlainText(text)).toBe(false);
-			expect(parseMs(text)).toBeLessThan(1_000);
+			// Instrumentation inflates wall time. Unit Tests keeps the 1 s budget.
+			const parseBudgetMs =
+				process.env.FABRIC_COVERAGE_RUN === "1" ? 5_000 : 1_000;
+			expect(parseMs(text)).toBeLessThan(parseBudgetMs);
 		},
 		20_000,
 	);

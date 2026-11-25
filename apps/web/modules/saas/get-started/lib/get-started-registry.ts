@@ -152,7 +152,7 @@ export type GsRuntimeGates = {
 	reportSuite: boolean;
 	/**
 	 * `CLOUD_DRIVE_FOLDERS`, resolved for the viewer's organization (Fizzy
-	 * #2808). Hides nothing: it adds OneDrive and SharePoint folders to what
+	 * #2808). Hides nothing: it adds OneDrive, SharePoint and Google Drive folders to what
 	 * the Add Context component says (`gatedCopy`).
 	 */
 	cloudDriveFolders: boolean;
@@ -1085,7 +1085,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				gatedCopy: {
 					runtimeGate: "cloudDriveFolders",
 					title: "This is the AI's memory",
-					body: "Not just file uploads — pull from Teams, Slack, Notion, Confluence and Google Docs, connect OneDrive and SharePoint folders that stay in step as files change (each with a description the AI reads as guidance), or point the Link tab at a docs site and crawl the whole thing (up to 500 pages) on a refresh cadence. Everything here is what the AI retrieves and cites.",
+					body: "Not just file uploads — pull from Teams, Slack, Notion, Confluence and Google Docs, connect OneDrive and SharePoint folders or Google Drive folders that stay in step as files change (each with a description the AI reads as guidance), or point the Link tab at a docs site and crawl the whole thing (up to 500 pages) on a refresh cadence. Everything here is what the AI retrieves and cites.",
 				},
 			},
 			{

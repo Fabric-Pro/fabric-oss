@@ -16,12 +16,12 @@ import {
 } from "@repo/utils/attachment";
 import { z } from "zod";
 import { resolveEffectiveProjectPermissions } from "../../../lib/effective-project-permissions";
-import { userHasProjectPermission } from "../../../lib/project-permissions";
 import {
 	Permissions,
 	requireProjectPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
+	userHasProjectPermission,
 } from "../../../orpc/procedures";
 import { userHasProjectPermissionStrict } from "../lib/governance";
 import { findActivePmStorySync } from "../lib/pm-story-sync-job";
@@ -83,22 +83,14 @@ export const getProjectProcedure = tenantProtectedProcedure
 		// Get user's role in the project for authorization checks
 		const userRole = await getProjectRole(input.id, user.id);
 
-		// Capability flags resolved via the permission matrix so the UI
-		// reflects org-level permissions too (e.g. org admins without an
-		// explicit ProjectMember row). These supersede raw role-string
-		// comparisons in the client — see `userHasProjectPermission`.
-		const canEditSettings = await userHasProjectPermission(
-			input.id,
-			user.id,
-			Permissions.PROJECT_SETTINGS_EDIT,
-		);
+		// Match the project settings mutation gate when showing edit controls.
+		const canEditSettings = await userHasProjectPermission({
+			projectId: input.id,
+			userId: user.id,
+			permission: Permissions.PROJECT_SETTINGS_EDIT,
+		});
 
-		// Publishing Suite & Update capabilities: derived via the SAME authoritative
-		// resolver `requireProjectPermission` uses (project-authoritative —
-		// an active ProjectMember row overrides the org role), NOT the
-		// org-first `userHasProjectPermission` above. This keeps the UI
-		// capability and the mutation's authorization in agreement — see
-		// resolve-effective-project-permissions.ts.
+		// Publishing Suite & Update capabilities use the authoritative project resolver.
 		// `hasProjectAccess` (used by canManageMembers below) is independent of
 		// the permission resolver, so run both in parallel — getProject is a hot
 		// read path hit on every project load.

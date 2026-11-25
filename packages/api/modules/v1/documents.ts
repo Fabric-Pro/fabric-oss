@@ -321,6 +321,9 @@ export function registerDocumentRoutes(
 			} catch {
 				return c.json(badRequest("Invalid JSON body"), 400);
 			}
+			if (body === null) {
+				return c.json(badRequest("Invalid JSON body"), 400);
+			}
 
 			if (!isDocumentType(body.type)) {
 				return c.json(
@@ -469,6 +472,9 @@ export function registerDocumentRoutes(
 		try {
 			body = await c.req.json();
 		} catch {
+			return c.json(badRequest("Invalid JSON body"), 400);
+		}
+		if (body === null) {
 			return c.json(badRequest("Invalid JSON body"), 400);
 		}
 

@@ -4,7 +4,9 @@ import { POST } from "../route";
 
 const h = vi.hoisted(() => ({
 	token: vi.fn(),
-	access: vi.fn(),
+	project: vi.fn(),
+	projectMember: vi.fn(),
+	organizationMember: vi.fn(),
 	source: vi.fn(),
 	page: vi.fn(),
 	retrieve: vi.fn(),
@@ -17,7 +19,11 @@ vi.mock("@repo/ai-token", () => ({
 }));
 vi.mock("@repo/database", () => ({
 	findConfidentialTranscriptContextIds: h.confidential,
-	getProjectAccessContext: h.access,
+	db: {
+		project: { findUnique: h.project },
+		projectMember: { findUnique: h.projectMember },
+		member: { findFirst: h.organizationMember },
+	},
 	getContextById: h.source,
 	readProjectContextBodyPage: h.page,
 }));
@@ -48,7 +54,18 @@ beforeEach(() => {
 		valid: true,
 		claims: { sub: "example-user", org: "example-org" },
 	});
-	h.access.mockResolvedValue({ organizationId: "example-org" });
+	h.project.mockResolvedValue({
+		id: "example-project",
+		userId: "example-owner",
+		organizationId: "example-org",
+		organization: { deletedAt: null },
+	});
+	h.projectMember.mockResolvedValue({
+		role: "VIEWER",
+		acceptedAt: new Date(),
+		expiresAt: null,
+	});
+	h.organizationMember.mockResolvedValue(null);
 	h.source.mockResolvedValue({
 		id: "example-source",
 		projectId: "example-project",
@@ -85,14 +102,29 @@ it("rejects an invalid token", async () => {
 	expect((await POST(request())).status).toBe(401);
 });
 it("rejects no project access", async () => {
-	h.access.mockResolvedValue(null);
+	h.projectMember.mockResolvedValue(null);
 	expect((await POST(request())).status).toBe(403);
 });
 it("rejects a different token organization", async () => {
-	h.access.mockResolvedValue({ organizationId: "other-org" });
+	h.project.mockResolvedValue({ organizationId: "other-org" });
 	expect((await POST(request())).status).toBe(403);
 	expect(h.source).not.toHaveBeenCalled();
 });
+it.each([
+	["reading", POST],
+	["searching", search],
+])(
+	"refuses a deleted hosting organization before %s project sources",
+	async (_, handle) => {
+		h.project.mockResolvedValue({
+			organizationId: "example-org",
+			organization: { deletedAt: new Date() },
+		});
+		expect((await handle(request())).status).toBe(403);
+		expect(h.source).not.toHaveBeenCalled();
+		expect(h.retrieve).not.toHaveBeenCalled();
+	},
+);
 it("hides a source belonging to another project", async () => {
 	h.source.mockResolvedValue({ projectId: "other-project" });
 	expect((await POST(request())).status).toBe(404);
@@ -114,7 +146,16 @@ it("pages with trusted identity and ignores body userId", async () => {
 		truncated: true,
 		contentAvailable: true,
 	});
-	expect(h.access).toHaveBeenCalledWith("example-project", "example-user");
+	expect(h.projectMember).toHaveBeenCalledWith(
+		expect.objectContaining({
+			where: {
+				projectId_userId: {
+					projectId: "example-project",
+					userId: "example-user",
+				},
+			},
+		}),
+	);
 	expect(h.page).toHaveBeenCalledWith(
 		expect.anything(),
 		{ userId: "example-user", organizationId: "example-org" },

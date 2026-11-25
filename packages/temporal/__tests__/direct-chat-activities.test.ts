@@ -73,7 +73,7 @@ import {
 	generateMemoryContext,
 	getDetailedMcpToolInfo,
 } from "@repo/agent-core/backend";
-import { db } from "@repo/database";
+import { db, type Prisma } from "@repo/database";
 import { formatContextForLLM, retrieveContext } from "@repo/rag";
 import {
 	collectMcpToolsActivity,
@@ -166,6 +166,102 @@ describe("Direct Chat Activities", () => {
 	});
 
 	describe("retrieveRagContextForDirectChatActivity", () => {
+		const findDocuments = db.chatDocument.findMany as ReturnType<
+			typeof vi.fn
+		>;
+
+		it.each([
+			{
+				label: "same-tenant",
+				row: { organizationId: "example-org", status: "READY" },
+				seesName: true,
+			},
+			{
+				label: "foreign",
+				row: { organizationId: "example-other-org", status: "READY" },
+				seesName: false,
+			},
+			{ label: "missing", row: null, seesName: false },
+		])(
+			"includes only $label attached-document names in the fallback",
+			async ({ row, seesName }) => {
+				findDocuments.mockImplementation(
+					async ({
+						where,
+					}: {
+						where?: Prisma.ChatDocumentWhereInput;
+					} = {}) => {
+						if (
+							!row ||
+							(where?.organizationId &&
+								where.organizationId !== row.organizationId)
+						) {
+							return [];
+						}
+						return [
+							{
+								...row,
+								id: "example-document",
+								filename: "example-file.pdf",
+							},
+						];
+					},
+				);
+				try {
+					const result =
+						await retrieveRagContextForDirectChatActivity(
+							"Example query",
+							"example-user",
+							"example-org",
+							"example-chat",
+							["example-document"],
+						);
+					expect(result.context.includes("example-file.pdf")).toBe(
+						seesName,
+					);
+				} finally {
+					findDocuments.mockReset().mockResolvedValue([]);
+				}
+			},
+		);
+
+		it("only polls statuses for attached documents belonging to the chat tenant", async () => {
+			findDocuments.mockImplementation(
+				async ({
+					where,
+				}: {
+					where?: Prisma.ChatDocumentWhereInput;
+				} = {}) =>
+					where?.organizationId === "example-org"
+						? []
+						: [
+								{
+									id: "example-document",
+									filename: "example-foreign-file.pdf",
+									status: "PENDING",
+								},
+							],
+			);
+			vi.useFakeTimers();
+			try {
+				const result = retrieveRagContextForDirectChatActivity(
+					"Example query",
+					"example-user",
+					"example-org",
+					"example-chat",
+					["example-document"],
+				);
+				await vi.runAllTimersAsync();
+				await expect(result).resolves.toEqual({
+					context: "",
+					chunkCount: 0,
+				});
+			} finally {
+				vi.useRealTimers();
+				findDocuments.mockReset().mockResolvedValue([]);
+			}
+		});
+
 		it("should return empty context when no document IDs provided", async () => {
 			const result = await retrieveRagContextForDirectChatActivity(
 				"What is in my document?",

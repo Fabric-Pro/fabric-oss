@@ -811,6 +811,7 @@ jobs:
 
       - name: Assemble release-manifest.json
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MANIFEST_FILE: ${{ env.MANIFEST_FILE }}
           SCHEMA_VERSION: ${{ env.MANIFEST_SCHEMA_VERSION }}
           REPO: ${{ github.repository }}
@@ -836,12 +837,20 @@ jobs:
             bom-parts/npm.json \
             bom-parts/platform.json)
 
+          # generatedAt records the source commit's time.
+          COMMIT_TIME=$(gh api "repos/$REPO/commits/$SHA" --jq '.commit.committer.date // empty')
+          if [[ -z "$COMMIT_TIME" ]]; then
+            echo "::error::Source commit $SHA has no committer date."
+            exit 1
+          fi
+          GENERATED_AT=$(date -u -d "$COMMIT_TIME" +%Y-%m-%dT%H:%M:%SZ)
+
           jq -n \
             --arg schema "$SCHEMA_VERSION" \
             --arg tag "$TAG" \
             --arg sha "$SHA" \
             --arg repo "$REPO" \
-            --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg generatedAt "$GENERATED_AT" \
             --arg workflowRef "$WORKFLOW_REF" \
             --arg runUrl "$SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
             --arg runId "$GITHUB_RUN_ID" \

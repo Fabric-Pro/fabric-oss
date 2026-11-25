@@ -41,17 +41,20 @@
 import { ApplicationFailure } from "@temporalio/activity";
 import { activityLogger } from "../lib/activity-logger";
 import { mapSiteUrls } from "../lib/firecrawl-client";
-import type { WebScraperProviderName } from "../lib/web-scraper";
+import {
+	callUrlScraper,
+	redactScraperMessage,
+	redactScraperText,
+	resolveActivityScraperCredential,
+	type UrlScraperActivityReference,
+} from "./lib/scraper-credential";
 import {
 	type UnsupportedContent,
 	unsupportedContentOutcome,
 } from "./lib/unsupported-content";
 
-export interface FirecrawlMapActivityInput {
+export interface FirecrawlMapActivityInput extends UrlScraperActivityReference {
 	url: string;
-	apiKey: string;
-	/** Optional — defaults to `firecrawl`. `firecrawl` maps via /v1/map; `cloudflare` returns no URLs. */
-	providerName?: WebScraperProviderName;
 	includePaths?: string[];
 	excludePaths?: string[];
 	limit?: number;
@@ -102,7 +105,6 @@ export async function firecrawlMapActivity(
 ): Promise<FirecrawlMapActivityOutput> {
 	const {
 		url,
-		apiKey,
 		providerName = "firecrawl",
 		includePaths,
 		excludePaths,
@@ -110,7 +112,14 @@ export async function firecrawlMapActivity(
 		reportUnsupportedContent,
 	} = input;
 
-	activityLogger.info("URL map activity start", { url, providerName, limit });
+	const { apiKey } = await resolveActivityScraperCredential(input);
+	const safeUrl = redactScraperText(url, apiKey);
+
+	activityLogger.info("URL map activity start", {
+		url: safeUrl,
+		providerName,
+		limit,
+	});
 
 	// This integration lists no pages for Cloudflare Browser Rendering (it
 	// does not use Cloudflare's /links or /crawl). Return an empty list: the
@@ -122,7 +131,7 @@ export async function firecrawlMapActivity(
 	if (providerName === "cloudflare") {
 		activityLogger.info(
 			"URL map skipped for cloudflare: pages are discovered by following links",
-			{ url, providerName },
+			{ url: safeUrl, providerName },
 		);
 		return { urls: [] };
 	}
@@ -136,36 +145,42 @@ export async function firecrawlMapActivity(
 		);
 	}
 
-	const result = await mapSiteUrls(url, {
-		apiKey,
-		...(includePaths !== undefined ? { includePaths } : {}),
-		...(excludePaths !== undefined ? { excludePaths } : {}),
-		...(limit !== undefined ? { limit } : {}),
-	});
+	const result = await callUrlScraper(apiKey, () =>
+		mapSiteUrls(url, {
+			apiKey,
+			...(includePaths !== undefined ? { includePaths } : {}),
+			...(excludePaths !== undefined ? { excludePaths } : {}),
+			...(limit !== undefined ? { limit } : {}),
+		}),
+	);
 
 	if (!result.success) {
+		const error = {
+			...result.error,
+			message: redactScraperMessage(result.error.message, apiKey),
+		};
 		if (
 			reportUnsupportedContent === true &&
-			result.error.code === "UNSUPPORTED_CONTENT_TYPE"
+			error.code === "UNSUPPORTED_CONTENT_TYPE"
 		) {
 			return {
 				urls: [],
-				unsupported: unsupportedContentOutcome(url, result.error),
+				unsupported: unsupportedContentOutcome(safeUrl, error),
 			};
 		}
 		activityLogger.warn("URL map failed", {
-			url,
-			code: result.error.code,
-			message: result.error.message,
-			statusCode: result.error.statusCode,
+			url: safeUrl,
+			code: error.code,
+			message: error.message,
+			statusCode: error.statusCode,
 		});
-		asActivityFailure(result.error);
+		asActivityFailure(error);
 	}
 
 	activityLogger.info("URL map activity success", {
-		url,
+		url: safeUrl,
 		urlCount: result.data.length,
 	});
 
-	return { urls: result.data };
+	return { urls: result.data.map((url) => redactScraperText(url, apiKey)) };
 }

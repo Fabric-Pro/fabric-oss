@@ -1,4 +1,3 @@
-import { execSync } from "node:child_process";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -6,6 +5,7 @@ import { withContentCollections } from "@content-collections/next";
 import { withMicrofrontends } from "@vercel/microfrontends/next/config";
 import type { NextConfig } from "next";
 import nextIntlPlugin from "next-intl/plugin";
+import { createBuildId, resolveCommitSha } from "./lib/build-id";
 import { cliManifestEnv } from "./lib/cli-manifest-env";
 import { buildLocaleBeforeFilesRewrites } from "./lib/locale-rewrite";
 import { isMicrofrontendsBuild } from "./lib/microfrontends-build";
@@ -303,29 +303,10 @@ assertPrismaExcludeGlobsMatchLayout();
  * resolvable, in which case the version watcher stays inert.
  */
 function resolveAppVersion(): string {
-	const explicit = process.env.NEXT_PUBLIC_APP_VERSION?.trim();
-	if (explicit) {
-		return explicit;
-	}
-	const vercelSha = process.env.VERCEL_GIT_COMMIT_SHA?.trim();
-	if (vercelSha) {
-		return vercelSha;
-	}
-	try {
-		const sha = execSync("git rev-parse HEAD", {
-			stdio: ["ignore", "pipe", "ignore"],
-		})
-			.toString()
-			.trim();
-		if (sha) {
-			return sha;
-		}
-	} catch {
-		// No git available (e.g. some container builds) — fall through to dev.
-	}
-	return "dev";
+	return process.env.NEXT_PUBLIC_APP_VERSION?.trim() || commitSha || "dev";
 }
 
+const commitSha = resolveCommitSha();
 const appVersion = resolveAppVersion();
 
 /**
@@ -350,6 +331,8 @@ function resolveDevTunnelHost(): string | undefined {
 const devTunnelHost = resolveDevTunnelHost();
 
 const nextConfig: NextConfig = {
+	// Turbo cache replays intentionally keep the cached build’s ID.
+	generateBuildId: () => createBuildId(commitSha),
 	allowedDevOrigins: devTunnelHost ? [devTunnelHost] : undefined,
 
 	// Expose the resolved build version to the client bundle and the

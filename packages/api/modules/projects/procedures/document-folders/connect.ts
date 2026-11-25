@@ -7,6 +7,10 @@ import {
 	db,
 	type TranscriptFolderDrivePath,
 } from "@repo/database";
+import {
+	browseGoogleDrivePlaces,
+	type DocumentFolderConnection,
+} from "@repo/integrations/document-folders";
 import type {
 	DriveItemDetailsResult,
 	SharePointDriveList,
@@ -28,12 +32,18 @@ import {
 	callGraph,
 	folderNotFound,
 	folderResource,
+	folderSourceInput,
 	type GraphCaller,
+	googleDrive,
+	googleDriveNotConnected,
+	googleDriveReader,
+	googleDriveUnreachable,
 	graphCaller,
 	graphUnreachable,
 	loadEnabledProject,
 	microsoftNotConnected,
 	projectInput,
+	readGoogleDrive,
 	readGraph,
 	recordSyncNotStarted,
 	wakeDocumentFolderSync,
@@ -52,6 +62,16 @@ interface FolderChoice {
 }
 
 type FolderPlace = Omit<DocumentFolderSelection, "description">;
+
+/** A place with the chosen description; left out, the stored one stays. */
+function withDescription(
+	place: FolderPlace,
+	choice: { description?: string | null },
+): DocumentFolderSelection {
+	return choice.description === undefined
+		? place
+		: { ...place, description: choice.description };
+}
 
 /**
  * The SharePoint site's name, from Graph: the picker's name is searched for,
@@ -176,6 +196,94 @@ async function placeOf(
 }
 
 /**
+ * The name a Google Drive folder at its drive's root is stored under: the
+ * name of the place the picker showed, My Drive or the shared drive, when
+ * Google lists it; otherwise the item's own name. Only a label, so a read
+ * that fails keeps the item's own name.
+ */
+async function googleRootName(
+	reader: DocumentFolderConnection,
+	item: { id: string; name: string },
+): Promise<string> {
+	try {
+		const places = await browseGoogleDrivePlaces(reader);
+		if (places.myDrive.id === item.id) {
+			return places.myDrive.name;
+		}
+		return (
+			places.sharedDrives.find((drive) => drive.id === item.id)?.name ??
+			item.name
+		);
+	} catch {
+		return item.name;
+	}
+}
+
+/**
+ * Where a chosen Google Drive folder is, read as the caller: which proves
+ * they can open it now, as the sync will. Its ids, name, path and web
+ * address come from Google. `driveId` is a shared drive's id, or the
+ * caller's own My Drive root id.
+ *
+ * Its path and ancestor ids, which the overlap check compares, are Google's
+ * when the caller can read up to the drive's root. When they cannot, such as
+ * a second editor reconnecting someone else's folder, the stored ones stay:
+ * a walk cut short gives neither.
+ */
+async function googlePlaceOf(
+	reader: DocumentFolderConnection,
+	choice: { driveId: string; itemId: string },
+	stored?: { drivePath: string | null; ancestorIds: string[] },
+): Promise<FolderPlace> {
+	const found = await readGoogleDrive("folder details", () =>
+		googleDrive().getItemDetails(reader, {
+			driveId: choice.driveId,
+			itemId: choice.itemId,
+		}),
+	);
+	if (found.status === "failed") {
+		if (found.httpStatus === 401) {
+			throw googleDriveNotConnected();
+		}
+		if (found.httpStatus === 429 || found.httpStatus >= 500) {
+			throw googleDriveUnreachable();
+		}
+		throw new ORPCError("BAD_REQUEST", {
+			message:
+				"You cannot open this folder in Google Drive. It may have been moved or deleted, or it is no longer shared with you.",
+			data: {
+				code: "GOOGLE_DRIVE_FOLDER_UNREADABLE",
+				driveId: choice.driveId,
+				itemId: choice.itemId,
+			},
+		});
+	}
+	const item = found.item;
+	if (!item.isFolder) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: "Only folders can be connected.",
+			data: { driveId: choice.driveId, itemId: choice.itemId },
+		});
+	}
+	// The drive's root is its own drive; a folder whose parents the caller
+	// cannot see has no path, and is not the root.
+	const root = item.id === item.driveId;
+	const keepStored = stored !== undefined && item.ancestorIds === undefined;
+	return {
+		provider: "googledrive",
+		driveId: item.driveId,
+		itemId: item.id,
+		webUrl: item.webUrl,
+		drivePath: root ? "/" : keepStored ? stored.drivePath : item.drivePath,
+		ancestorIds: keepStored ? stored.ancestorIds : (item.ancestorIds ?? []),
+		name: root ? await googleRootName(reader, item) : item.name,
+		siteId: null,
+		siteName: null,
+		libraryName: null,
+	};
+}
+
+/**
  * The drive paths of the project's connected transcript folders in the given
  * drives, which only Graph knows, so the overlap refusal can compare them. A
  * transcript folder gone from its drive overlaps nothing; one that cannot be
@@ -211,33 +319,43 @@ async function transcriptFolderPaths(
 	return paths;
 }
 
+/** The transcript folder paths in the drives of folders read from Graph. */
+function microsoftTranscriptPaths(
+	caller: GraphCaller,
+	projectId: string,
+	folders: DocumentFolderSelection[],
+): Promise<TranscriptFolderDrivePath[]> {
+	const driveIds = [...new Set(folders.map((folder) => folder.driveId))];
+	return transcriptFolderPaths(caller, projectId, driveIds);
+}
+
 interface ConnectRequest {
 	project: { id: string; organizationId: string };
-	caller: GraphCaller;
+	/** Who reads the folders from now on: the caller. */
+	readerId: string;
 	folders: DocumentFolderSelection[];
+	/**
+	 * The paths of connected transcript folders in the folders' drives.
+	 * Empty for Google Drive: transcript folders are OneDrive only.
+	 */
+	transcriptPaths: TranscriptFolderDrivePath[];
 	context: Parameters<typeof recordAuditFromRequest>[0];
 }
 
 /**
- * Connect, or reconnect, folders whose places were read from Graph: refused
- * by name when they overlap another connected folder, then one audit row per
- * folder and a wake for the project's sync. A sync that cannot be started
- * shows on the folders, which are connected all the same.
+ * Connect, or reconnect, folders whose places were read from their drive:
+ * refused by name when they overlap another connected folder, then one
+ * audit row per folder and a wake for the project's sync. A sync that cannot
+ * be started shows on the folders, which are connected all the same.
  */
 async function connectAndWake(request: ConnectRequest) {
-	const { project, caller, folders, context } = request;
-	const driveIds = [...new Set(folders.map((folder) => folder.driveId))];
-	const transcriptPaths = await transcriptFolderPaths(
-		caller,
-		project.id,
-		driveIds,
-	);
+	const { project, readerId, folders, transcriptPaths, context } = request;
 
 	let connected: Awaited<ReturnType<typeof connectDocumentFolders>>;
 	try {
 		connected = await connectDocumentFolders({
 			projectId: project.id,
-			userId: caller.userId,
+			userId: readerId,
 			organizationId: project.organizationId,
 			folders,
 			transcriptFolderPaths: transcriptPaths,
@@ -267,7 +385,7 @@ async function connectAndWake(request: ConnectRequest) {
 				? {
 						provider,
 						previousReaderId: result.previousUserId,
-						readerId: caller.userId,
+						readerId,
 					}
 				: {
 						provider,
@@ -289,12 +407,14 @@ export const connectDocumentFoldersProcedure = tenantProtectedProcedure
 		method: "POST",
 		path: "/projects/{projectId}/document-folders/connect",
 		tags: TAGS,
-		summary: "Connect OneDrive or SharePoint document folders",
+		summary:
+			"Connect OneDrive, SharePoint or Google Drive document folders",
 		description:
-			"Connects folders to a project, each with an optional description. Their supported files, subfolders included, are imported as project context and kept in step with the drive, read with the caller's Microsoft connection. A folder that is, holds or lies inside another connected folder is refused.",
+			"Connects folders to a project, each with an optional description. Their supported files, subfolders included, are imported as project context and kept in step with the drive, read with the caller's own Microsoft (the default) or Google Drive connection. A folder that is, holds or lies inside another connected folder is refused.",
 	})
 	.input(
 		projectInput.extend({
+			provider: folderSourceInput,
 			folders: z
 				.array(
 					z.object({
@@ -317,24 +437,38 @@ export const connectDocumentFoldersProcedure = tenantProtectedProcedure
 	.handler(async ({ input, context }) => {
 		const project = await loadEnabledProject(input.projectId);
 		assertInputOrgMatchesProject(input.organizationId, project);
-		const caller = await graphCaller(
-			context.user.id,
-			project.organizationId,
-		);
 		const folders: DocumentFolderSelection[] = [];
-		for (const choice of input.folders) {
-			const place = await placeOf(caller, choice);
-			folders.push(
-				choice.description === undefined
-					? place
-					: { ...place, description: choice.description },
+		let transcriptPaths: TranscriptFolderDrivePath[] = [];
+		if (input.provider === "googledrive") {
+			const reader = await googleDriveReader(
+				context.user.id,
+				project.organizationId,
+			);
+			for (const choice of input.folders) {
+				const place = await googlePlaceOf(reader, choice);
+				folders.push(withDescription(place, choice));
+			}
+		} else {
+			const caller = await graphCaller(
+				context.user.id,
+				project.organizationId,
+			);
+			for (const choice of input.folders) {
+				const place = await placeOf(caller, choice);
+				folders.push(withDescription(place, choice));
+			}
+			transcriptPaths = await microsoftTranscriptPaths(
+				caller,
+				project.id,
+				folders,
 			);
 		}
 
 		const { connected, importStarted } = await connectAndWake({
 			project,
-			caller,
+			readerId: context.user.id,
 			folders,
+			transcriptPaths,
 			context,
 		});
 		return {
@@ -355,7 +489,7 @@ export const reconnectDocumentFolderProcedure = tenantProtectedProcedure
 		tags: TAGS,
 		summary: "Reconnect a document folder",
 		description:
-			"Makes the caller the folder's reader: it is read with their Microsoft connection from then on, and its imported files become theirs. Its description stays.",
+			"Makes the caller the folder's reader: it is read with their own Microsoft or Google Drive connection from then on, and its imported files become theirs. Its description stays. A Google Drive folder the caller cannot open is refused, and its reader stays.",
 	})
 	.input(projectInput.extend({ folderId: z.string().min(1) }))
 	.handler(async ({ input, context }) => {
@@ -368,25 +502,45 @@ export const reconnectDocumentFolderProcedure = tenantProtectedProcedure
 				disconnectedAt: null,
 			},
 			select: {
+				provider: true,
 				driveId: true,
 				itemId: true,
 				siteId: true,
 				siteName: true,
+				drivePath: true,
+				ancestorIds: true,
 			},
 		});
 		if (!stored) {
 			throw folderNotFound();
 		}
-		const caller = await graphCaller(
-			context.user.id,
-			project.organizationId,
-		);
-		const place = await placeOf(caller, stored);
 
-		const { connected, importStarted } = await connectAndWake({
-			project,
-			caller,
-			folders: [
+		let folders: DocumentFolderSelection[];
+		let transcriptPaths: TranscriptFolderDrivePath[] = [];
+		if (stored.provider === "googledrive") {
+			const reader = await googleDriveReader(
+				context.user.id,
+				project.organizationId,
+			);
+			// Refused here when the caller cannot open the folder, before
+			// the reader changes.
+			const place = await googlePlaceOf(reader, stored, stored);
+			folders = [
+				{
+					...place,
+					// The stored identity: a second editor's My Drive root id
+					// is not the folder's drive.
+					driveId: stored.driveId,
+					itemId: stored.itemId,
+				},
+			];
+		} else {
+			const caller = await graphCaller(
+				context.user.id,
+				project.organizationId,
+			);
+			const place = await placeOf(caller, stored);
+			folders = [
 				{
 					...place,
 					// The row being reconnected, however Graph spells its ids
@@ -396,7 +550,19 @@ export const reconnectDocumentFolderProcedure = tenantProtectedProcedure
 					// A site name Graph no longer confirms keeps the stored one.
 					siteName: place.siteName ?? stored.siteName,
 				},
-			],
+			];
+			transcriptPaths = await microsoftTranscriptPaths(
+				caller,
+				project.id,
+				folders,
+			);
+		}
+
+		const { connected, importStarted } = await connectAndWake({
+			project,
+			readerId: context.user.id,
+			folders,
+			transcriptPaths,
 			context,
 		});
 		return {

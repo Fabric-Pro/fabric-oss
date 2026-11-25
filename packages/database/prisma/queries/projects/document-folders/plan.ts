@@ -14,7 +14,26 @@ import {
 } from "./constants";
 import { classifyDocumentFolderFile } from "./helpers";
 
-/** One file in a listing, as the Graph tree read reports it. */
+/**
+ * What a listed file is: one the drive will not hand over is skipped as not
+ * downloadable, like a file too big, until a new version is listed.
+ * Otherwise the upload vocabulary decides.
+ */
+function classifyListedFile(
+	file: DocumentFolderListedFile,
+):
+	| { status: "PENDING"; skipCode: null }
+	| { status: "SKIPPED"; skipCode: DocumentFolderSkipCode } {
+	if (file.notDownloadable) {
+		return {
+			status: "SKIPPED",
+			skipCode: DOCUMENT_FOLDER_SKIP_CODE.NOT_DOWNLOADABLE,
+		};
+	}
+	return classifyDocumentFolderFile(file);
+}
+
+/** One file in a listing, as a drive's tree read reports it. */
 export interface DocumentFolderListedFile {
 	driveItemId: string;
 	name: string;
@@ -26,6 +45,11 @@ export interface DocumentFolderListedFile {
 	lastModified: string | null;
 	/** `quickXorHash:<hash>`, or `size:<n>|modified:<iso>` without a hash. */
 	contentVersion: string;
+	/**
+	 * The drive will not hand the file over (Google: `canDownload: false`),
+	 * so it is skipped without a download. Absent for a file it will.
+	 */
+	notDownloadable?: true;
 }
 
 /** A ledger row as reconciliation reads it. */
@@ -199,7 +223,7 @@ export function planDocumentFolderReconcile(params: {
 		const existing = byItem.get(file.driveItemId);
 
 		if (!existing) {
-			const classified = classifyDocumentFolderFile(file);
+			const classified = classifyListedFile(file);
 			const insert: DocumentFolderReconcilePlan["inserts"][number] = {
 				driveItemId: file.driveItemId,
 				name: file.name,
@@ -281,7 +305,7 @@ export function planDocumentFolderReconcile(params: {
 			version !== row.importedVersion && seen >= READS_BEFORE_REFRESH;
 
 		const toClassified = () => {
-			const classified = classifyDocumentFolderFile(file);
+			const classified = classifyListedFile(file);
 			status = classified.status;
 			skipCode = classified.skipCode;
 			entering = classified.status === S.PENDING;

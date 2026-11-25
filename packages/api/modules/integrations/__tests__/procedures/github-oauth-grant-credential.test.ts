@@ -155,8 +155,11 @@ vi.mock("@repo/utils", () => ({
 	decryptApiKey: (v: string) => v.replace(/^enc_/, ""),
 }));
 
-vi.mock("../../../../lib/project-permissions", () => ({
-	userHasProjectPermission: vi.fn().mockResolvedValue(true),
+vi.mock("../../../../lib/project-permission-decision", () => ({
+	getProjectPermissionDecision: vi.fn().mockResolvedValue({
+		allowed: true,
+		organizationId: "org-1",
+	}),
 }));
 
 vi.mock("../../../projects/lib/code-indexing-trigger", () => ({

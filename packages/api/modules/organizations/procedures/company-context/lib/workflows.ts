@@ -33,6 +33,7 @@ import {
 } from "@repo/temporal";
 import { withCorrelationMemo } from "../../../../../lib/temporal-correlation";
 import {
+	providerWorkflowArgs,
 	resolveUrlSourceProvider,
 	type UrlSourceProvider,
 } from "../../../../projects/procedures/contexts/lib/url-source-provider";
@@ -222,7 +223,7 @@ export async function startCompanyContextDeletion(params: {
 // Website crawls
 // ============================================================================
 
-/** The scraper a crawl runs with, its decrypted key and its stored endpoint. */
+/** The selected company scraper and any fields to forward to the worker. */
 export type CompanyCrawlProvider = UrlSourceProvider;
 
 /**
@@ -301,11 +302,7 @@ export async function startCompanyUrlCrawl(params: {
 						maxPages: source.urlMaxPages ?? DEFAULT_MAX_PAGES,
 						userId,
 						organizationId,
-						apiKey: provider.apiKey,
-						providerName: provider.providerName,
-						...(provider.providerEndpoint
-							? { providerEndpoint: provider.providerEndpoint }
-							: {}),
+						...providerWorkflowArgs(provider),
 						urlRefreshMode: source.urlRefreshMode ?? undefined,
 						parentSourceTitle: source.sourceTitle ?? null,
 						mode,
@@ -452,11 +449,7 @@ export async function scheduleCompanyUrlRefresh(params: {
 				maxPages: source.urlMaxPages ?? DEFAULT_MAX_PAGES,
 				userId,
 				organizationId,
-				apiKey: provider.apiKey,
-				providerName: provider.providerName,
-				...(provider.providerEndpoint
-					? { providerEndpoint: provider.providerEndpoint }
-					: {}),
+				...providerWorkflowArgs(provider),
 				refreshMode: source.urlRefreshMode,
 				parentSourceTitle: source.sourceTitle ?? null,
 				owner: companyOwner(organizationId),

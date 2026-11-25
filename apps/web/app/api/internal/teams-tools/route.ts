@@ -12,6 +12,7 @@ import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
 import {
 	db,
 	getProjectAccessContext,
+	isOrganizationLive,
 	type ProjectContextType,
 } from "@repo/database";
 import { executeMicrosoftTeamsTool } from "@repo/integrations/microsoft";
@@ -141,6 +142,16 @@ export async function POST(req: Request) {
 		if ((accessContext.organizationId ?? undefined) !== organizationId) {
 			return NextResponse.json(
 				{ error: "Tenant context mismatch" },
+				{ status: 403 },
+			);
+		}
+
+		if (
+			accessContext.organizationId &&
+			!(await isOrganizationLive(accessContext.organizationId))
+		) {
+			return NextResponse.json(
+				{ error: "You do not have access to this project" },
 				{ status: 403 },
 			);
 		}

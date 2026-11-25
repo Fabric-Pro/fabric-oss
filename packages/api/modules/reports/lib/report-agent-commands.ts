@@ -41,7 +41,6 @@ import {
 	reportAiTaskKey,
 } from "@repo/temporal/report-ai-tasks";
 import { redactMessage } from "@repo/temporal/report-diagnostics";
-import { userHasProjectPermission } from "../../../orpc/procedures";
 import {
 	canCreateProjectReport,
 	canEditReportInstance,
@@ -118,14 +117,7 @@ export async function listProjectReportsForAgent(
 		actor,
 		Permissions.REPORT_READ,
 	);
-	if (
-		!(await userHasProjectPermission({
-			userId: actor.userId,
-			projectId: input.projectId,
-			permission: Permissions.REPORT_READ,
-		})) ||
-		!(await canReachProjectReports(input.projectId, caller))
-	) {
+	if (!(await canReachProjectReports(input.projectId, caller))) {
 		throw new ReportGenerationError(
 			"NOT_FOUND",
 			"Project not found or access denied",
@@ -202,14 +194,11 @@ export async function listReportTemplatesForAgent(
 	actor: ReportAgentActor,
 	input: { projectId: string; search?: string; limit?: number },
 ) {
-	await assertAgentMayReachReports(actor, Permissions.REPORT_READ);
-	if (
-		!(await userHasProjectPermission({
-			userId: actor.userId,
-			projectId: input.projectId,
-			permission: Permissions.REPORT_READ,
-		}))
-	) {
+	const caller = await assertAgentMayReachReports(
+		actor,
+		Permissions.REPORT_READ,
+	);
+	if (!(await canReachProjectReports(input.projectId, caller))) {
 		throw new ReportGenerationError(
 			"NOT_FOUND",
 			"Project not found or access denied",
@@ -299,14 +288,7 @@ export async function createProjectReportForAgent(
 			"Send a prompt saying what the report should cover, a templateId from fabric_list_report_templates, or both.",
 		);
 	}
-	if (
-		!(await mayReachProject(input.projectId)) ||
-		!(await userHasProjectPermission({
-			userId: actor.userId,
-			projectId: input.projectId,
-			permission: Permissions.REPORT_READ,
-		}))
-	) {
+	if (!(await mayReachProject(input.projectId))) {
 		throw new ReportGenerationError(
 			"NOT_FOUND",
 			"Project not found or access denied",
@@ -626,11 +608,7 @@ export async function getReportContentForAgent(
 	);
 	if (
 		instance.projectId &&
-		!(await userHasProjectPermission({
-			userId: actor.userId,
-			projectId: instance.projectId,
-			permission: Permissions.REPORT_READ,
-		}))
+		!(await canReachProjectReports(instance.projectId, caller))
 	) {
 		throw new ReportGenerationError("NOT_FOUND", REPORT_NOT_FOUND_MESSAGE);
 	}

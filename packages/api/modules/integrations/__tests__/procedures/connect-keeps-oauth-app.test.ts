@@ -126,10 +126,6 @@ vi.mock("@repo/utils", async (importOriginal) => ({
 	hashApiKey: (v: string) => `hash_${v}`,
 }));
 
-vi.mock("../../../../lib/project-permissions", () => ({
-	userHasProjectPermission: vi.fn(),
-}));
-
 vi.mock("../../../../lib/redis-client", () => ({
 	getRedisClient: () => null,
 }));

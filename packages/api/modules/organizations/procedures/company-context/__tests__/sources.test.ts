@@ -8,7 +8,7 @@
  * worker that would run it down the project path.
  */
 import { logger } from "@repo/logs";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () =>
 	(await import("./support/harness")).databaseModule(),
@@ -124,7 +124,10 @@ function expectCompanyStart(n: number, workflowType: string) {
 	return start.options;
 }
 
+afterEach(() => vi.unstubAllEnvs());
+
 beforeEach(() => {
+	vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", undefined);
 	resetDefaults();
 });
 
@@ -2500,6 +2503,70 @@ describe("refresh schedules", () => {
 		expect(mocks.createUrlSourceSchedule).not.toHaveBeenCalled();
 		expect(scheduleIdWrites()).toEqual([]);
 	});
+
+	it.each([undefined, "true"])(
+		"uses the configured Cloudflare provider for company starts and schedules (switch %s)",
+		async (setting) => {
+			vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", setting);
+			const endpoint =
+				"https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef";
+			mocks.getEnabledOrganizationSearchProviders.mockResolvedValue([
+				{
+					providerName: "cloudflare",
+					encryptedApiKey: "encrypted",
+					endpoint,
+					enabled: true,
+					isDefault: true,
+					priority: 0,
+					createdAt: new Date("2026-01-01"),
+				},
+			]);
+
+			await call(
+				processCompanyContextLinkProcedure,
+				{
+					organizationId: ORG,
+					url: "https://example.com/docs",
+					refreshMode: "DAILY",
+				},
+				"u_admin",
+			);
+			storeSources([dailyWebsite()]);
+			await call(
+				resyncCompanyContextUrlSourceProcedure,
+				{ organizationId: ORG, sourceId: "src_link" },
+				"u_admin",
+			);
+			await call(
+				reprocessCompanyContextProcedure,
+				{ organizationId: ORG, sourceId: "src_link" },
+				"u_admin",
+			);
+
+			expect(mocks.workflowStart).toHaveBeenCalledTimes(3);
+			expect(mocks.createUrlSourceSchedule).toHaveBeenCalledTimes(2);
+
+			const workflowArgs = [0, 1, 2].map(
+				(i) => expectCompanyStart(i, "urlSourceCrawlWorkflow").args[0],
+			);
+			const scheduleArgs = mocks.createUrlSourceSchedule.mock.calls.map(
+				([args]) => args,
+			);
+			for (const args of [...workflowArgs, ...scheduleArgs]) {
+				expect(args).toHaveProperty("providerName", "cloudflare");
+				if (setting === "true") {
+					expect(args).not.toHaveProperty("apiKey");
+					expect(args).not.toHaveProperty("providerEndpoint");
+				} else {
+					expect(args).toHaveProperty("apiKey", "fc-test-key");
+					expect(args).toHaveProperty("providerEndpoint", endpoint);
+				}
+			}
+			if (setting === "true") {
+				expect(mocks.decryptApiKey).not.toHaveBeenCalled();
+			}
+		},
+	);
 
 	it("re-sync creates the missing schedule of a scheduled website, recording its id first", async () => {
 		storeSources([dailyWebsite()]);

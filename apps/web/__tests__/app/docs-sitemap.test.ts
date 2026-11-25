@@ -1,6 +1,9 @@
+// @vitest-environment node
+
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/utils", () => ({ getBaseUrl: () => "https://example.com" }));
+vi.mock("content-collections", () => ({ allLegalPages: [] }));
 vi.mock("../../app/docs-source", () => ({
 	docsSource: {
 		getLanguages: () => [{ language: "en" }, { language: "de" }],
@@ -38,4 +41,19 @@ describe("docs sitemap (/docs-sitemap.xml)", () => {
 			/<loc>https:\/\/example\.com\/(blog|partners|compare|en)?<\/loc>/,
 		);
 	});
+});
+
+vi.mock("@marketing/blog/utils/lib/posts", () => ({
+	getAllPosts: async () => [],
+}));
+
+it("gives docs pages the fixed last-modified date in the main sitemap", async () => {
+	const { default: sitemap } = await import("../../app/sitemap");
+	const entries = await sitemap();
+	expect(
+		entries.find(
+			({ url }) =>
+				url === "https://example.com/en/docs/features/libraries",
+		)?.lastModified,
+	).toEqual(new Date("2026-03-01"));
 });

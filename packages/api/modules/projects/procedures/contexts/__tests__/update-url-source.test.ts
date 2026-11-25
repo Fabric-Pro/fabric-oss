@@ -6,9 +6,8 @@
  *   - Cadence change DAILY → WEEKLY routes through `updateUrlSourceSchedule`
  *     and persists the returned `scheduleId`.
  *   - Switching INTO a scheduled mode resolves the scraper like `processLink`
- *     does and hands the schedule its `providerName` (+ `providerEndpoint`)
- *     alongside the key — any enabled scrape-capable provider, from the
- *     organization's or the user's own providers, never both.
+ *     does. The schedule gets the provider name and, in legacy mode, the key
+ *     and any endpoint. The resolver uses the organization or user provider list.
  *   - Switching INTO a scheduled mode with no usable provider → BAD_REQUEST
  *     with `SCRAPE_PROVIDER_NOT_CONFIGURED` / `CRAWL_PROVIDER_NOT_CONFIGURED`.
  *   - Switching OUT of a scheduled mode to ONCE → schedule deleted,
@@ -16,7 +15,7 @@
  *   - NOT_FOUND when contextId is for a different tenant (XOR).
  *   - BAD_REQUEST when target is not a LINK row.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockHasProjectAccess,
@@ -155,7 +154,10 @@ function providerRow(
 
 const SCHEDULED = new Set(["DAILY", "WEEKLY", "MONTHLY"]);
 
+afterEach(() => vi.unstubAllEnvs());
+
 beforeEach(() => {
+	vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", undefined);
 	vi.clearAllMocks();
 	mockHasProjectAccess.mockResolvedValue(true);
 	mockGetScheduleClient.mockResolvedValue({}); // unused — helper is mocked
@@ -545,23 +547,32 @@ describe("updateUrlSource — cadence change schedule lifecycle", () => {
 		expect(args).not.toHaveProperty("providerEndpoint");
 	});
 
-	it("ONCE → DAILY passes the Cloudflare account endpoint to the schedule", async () => {
-		mockOnceSource();
-		mockGetEnabledUserProviders.mockResolvedValue([
-			providerRow("cloudflare", { endpoint: "account-123" }),
-		]);
+	it.each([undefined, "true"])(
+		"forwards Cloudflare fields when switching from ONCE to DAILY (switch %s)",
+		async (setting) => {
+			vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", setting);
+			mockOnceSource();
+			mockGetEnabledUserProviders.mockResolvedValue([
+				providerRow("cloudflare", { endpoint: "account-123" }),
+			]);
 
-		const handler = await loadHandler();
-		await handler({ input: dailyInput, context: personalCtx });
+			const handler = await loadHandler();
+			await handler({ input: dailyInput, context: personalCtx });
 
-		expect(mockUpdateUrlSourceSchedule).toHaveBeenCalledWith(
-			expect.objectContaining({
-				providerName: "cloudflare",
-				providerEndpoint: "account-123",
-			}),
-			expect.anything(),
-		);
-	});
+			const args = mockUpdateUrlSourceSchedule.mock.calls[0]?.[0];
+			expect(args).toHaveProperty("providerName", "cloudflare");
+			if (setting === "true") {
+				expect(args).not.toHaveProperty("apiKey");
+				expect(args).not.toHaveProperty("providerEndpoint");
+			} else {
+				expect(args).toHaveProperty("apiKey", "decrypted-fc-key");
+				expect(args).toHaveProperty("providerEndpoint", "account-123");
+			}
+			if (setting === "true") {
+				expect(mockDecryptApiKey).not.toHaveBeenCalled();
+			}
+		},
+	);
 
 	it("resolves the scraper for the scope the schedule will run with", async () => {
 		mockOnceSource();
