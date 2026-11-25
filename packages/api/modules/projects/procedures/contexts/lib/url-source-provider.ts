@@ -1,14 +1,9 @@
 /**
- * The scraper a URL source runs with, chosen the same way everywhere.
+ * Shared scraper selection for project and company URL crawls.
  *
- * Adding a link (`processLink`), re-syncing it, retrying a stalled one,
- * retrying one child page, editing its schedule, and every company-context
- * website crawl all need a literal scraper key, because the worker cannot reach
- * the credential store. They used to resolve it separately, and four of them
- * looked only for Firecrawl — so a tenant with Jina, Tavily, Exa or Cloudflare
- * could add a source but never re-sync it, and a tenant with both was silently
- * moved to Firecrawl. This module is the one place that decides, so the
- * procedures cannot drift apart again.
+ * The API passes the scraper key and any endpoint to the worker only while
+ * URL_CRAWL_OMIT_SCRAPER_KEY is off. With the switch on, the worker resolves
+ * the current credential itself.
  *
  * Picker order mirrors `getWebScraperForTenant` in
  * `packages/temporal/src/activities/lib/get-web-scraper.ts`: the first enabled
@@ -35,7 +30,7 @@ import { decryptApiKey } from "@repo/utils";
  * the API package doesn't reach across into a workflow-side type. Kept in
  * lockstep via the test in `__tests__/process-context-link.test.ts`.
  */
-export type UrlSourceProviderName =
+type UrlSourceProviderName =
 	| "firecrawl"
 	| "jina"
 	| "tavily"
@@ -73,7 +68,7 @@ export function isScrapeCapableUrlSourceProvider(
 interface SearchProviderRow {
 	providerName: string;
 	encryptedApiKey: string | null;
-	/** Cloudflare's account endpoint; carried to the workflow as `providerEndpoint`. */
+	/** Cloudflare's account endpoint, forwarded as `providerEndpoint` with the key. */
 	endpoint?: string | null;
 	enabled: boolean;
 	isDefault: boolean;
@@ -141,24 +136,26 @@ function pickEnabledProvider(
 	return null;
 }
 
-/** The scraper a crawl runs with, its decrypted key and its stored endpoint. */
+/** The selected scraper and, when forwarded, its key and stored endpoint. */
 export interface UrlSourceProvider {
 	providerName: UrlSourceProviderName;
-	apiKey: string;
+	apiKey?: string;
 	/** The row's stored endpoint; Cloudflare keeps its account ID here. */
 	providerEndpoint?: string;
 }
 
-/**
- * The workflow / schedule fields a resolved provider contributes. Spread this
- * next to nothing else: it carries `apiKey`, `providerName` and, only when the
- * row has one, `providerEndpoint`.
- */
-export function providerWorkflowArgs(provider: UrlSourceProvider): {
-	apiKey: string;
-	providerName: UrlSourceProviderName;
-	providerEndpoint?: string;
-} {
+function isUrlCrawlScraperKeyOmitted(): boolean {
+	return process.env.URL_CRAWL_OMIT_SCRAPER_KEY === "true";
+}
+
+/** The workflow and schedule fields contributed by the resolved scraper. */
+export function providerWorkflowArgs(
+	provider: UrlSourceProvider,
+): UrlSourceProvider {
+	if (provider.apiKey === undefined) {
+		return { providerName: provider.providerName };
+	}
+
 	return {
 		apiKey: provider.apiKey,
 		providerName: provider.providerName,
@@ -235,6 +232,10 @@ export async function resolveUrlSourceProvider(params: {
 	}
 
 	const providerName = chosen.providerName as UrlSourceProviderName;
+	if (isUrlCrawlScraperKeyOmitted()) {
+		return { providerName };
+	}
+
 	try {
 		return {
 			providerName,

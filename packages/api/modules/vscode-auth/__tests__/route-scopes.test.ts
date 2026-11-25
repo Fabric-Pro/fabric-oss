@@ -42,6 +42,7 @@ vi.mock("@repo/database", () => ({
 		member: { findMany: vi.fn().mockResolvedValue([]) },
 	},
 	createUserApiKey: vi.fn(),
+	hasOrganizationTie: vi.fn().mockResolvedValue(true),
 }));
 vi.mock("@repo/ai/model-selector", () => ({
 	getAIModelWithMetadata: vi.fn(),

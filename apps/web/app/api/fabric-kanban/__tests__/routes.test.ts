@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
 	userFindUnique: vi.fn(),
 	canUpdateProjectStory: vi.fn(),
 	isOrganizationMember: vi.fn(),
+	isOrganizationLive: vi.fn(),
 	resolveProjectAccess: vi.fn(),
 	resolveUserOrganization: vi.fn(),
 	verifyLaunchToken: vi.fn(),
@@ -21,7 +22,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({
 	// The gateway project gates refuse an organization being deleted.
-	isOrganizationLive: async () => true,
+	isOrganizationLive: mocks.isOrganizationLive,
 	db: {
 		organizationApiKey: {
 			findFirst: mocks.organizationKeyFind,
@@ -280,6 +281,7 @@ beforeEach(() => {
 	});
 	mocks.canUpdateProjectStory.mockResolvedValue(true);
 	mocks.isOrganizationMember.mockResolvedValue(true);
+	mocks.isOrganizationLive.mockResolvedValue(true);
 	mocks.resolveProjectAccess.mockResolvedValue({
 		organizationId: organizationKey.organizationId,
 		isVisible: true,
@@ -988,3 +990,25 @@ describe("GET /api/fabric-kanban/me", () => {
 		});
 	});
 });
+
+describe.each(scopeCases.filter(({ name }) => !name.endsWith("/me")))(
+	"$name host liveness",
+	({ invoke, requiredScope }) => {
+		it("accepts a live project organization", async () => {
+			useOrganizationKeyScopes([requiredScope]);
+			expect((await invoke()).status).toBe(200);
+		});
+
+		it("refuses a deleted project organization before returning or changing queue data", async () => {
+			useOrganizationKeyScopes([requiredScope]);
+			mocks.isOrganizationLive.mockResolvedValue(false);
+			expect((await invoke()).status).toBe(
+				requiredScope === "kanban:read" ? 404 : 403,
+			);
+			expect(mocks.isOrganizationLive).toHaveBeenCalledWith(
+				organizationKey.organizationId,
+			);
+			expect(mocks.queueUpdateMany).not.toHaveBeenCalled();
+		});
+	},
+);

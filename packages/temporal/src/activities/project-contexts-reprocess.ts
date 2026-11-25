@@ -7,6 +7,7 @@
 
 import { getSystemEmbeddingRAGProviderConfig } from "@repo/ai";
 import { db } from "@repo/database/prisma/client";
+import { tenantWhere } from "@repo/database/src/tenant-filter";
 import { reembedProjectContext as ragReembed } from "@repo/rag";
 import { deleteOrphanProjectContextPoints } from "@repo/rag/lib/project-contexts/store";
 import { embeddingFailure } from "./lib/embedding-provider-failure";
@@ -59,13 +60,16 @@ export async function fetchProjectContextsForReprocess(params: {
 	userId: string;
 	organizationId?: string;
 }): Promise<ProjectContextForReprocess[]> {
-	const { projectId } = params;
+	const { projectId, userId, organizationId } = params;
+	const tenant = tenantWhere(userId, organizationId);
 
 	// Filter out INTEGRATION type contexts - they don't have content to embed
 	// (they provide live tool access via Teams/Slack search, not indexed content)
 	const contexts = await db.projectContext.findMany({
 		where: {
 			projectId,
+			...tenant,
+			project: tenant,
 			type: { not: "INTEGRATION" },
 		},
 		select: {

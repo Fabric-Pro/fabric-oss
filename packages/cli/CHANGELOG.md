@@ -1,5 +1,11 @@
 # @fabricorg/cli
 
+## 0.9.7
+
+### Patch Changes
+
+- bf2b743: Rebuilding the same commit now produces the same collaboration worker archive and the same web app build ID and sitemap dates, the published CLI package no longer includes a TypeScript build-info file, and a scheduled job rebuilds the published npm packages and checks them against the registry.
+
 ## 0.9.6
 
 ### Patch Changes

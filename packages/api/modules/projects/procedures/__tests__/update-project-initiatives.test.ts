@@ -52,11 +52,6 @@ vi.mock("../../../../lib/effective-project-permissions", () => ({
 		mockResolveAccess(...a),
 }));
 
-vi.mock("../../../../lib/project-permissions", () => ({
-	userHasProjectPermission: vi.fn().mockResolvedValue(true),
-	userHasProjectPermissionStrict: vi.fn().mockResolvedValue(true),
-}));
-
 vi.mock("../../lib/governance", async (importOriginal) => {
 	const actual =
 		await importOriginal<typeof import("../../lib/governance")>();
@@ -85,6 +80,7 @@ vi.mock("../../../../orpc/procedures", () => {
 	builder.handler = (fn: unknown) => ({ handler: fn });
 	return {
 		tenantProtectedProcedure: builder,
+		userHasProjectPermission: vi.fn().mockResolvedValue(true),
 		resolveOrganizationId: (o: string | null | undefined) => o ?? null,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requireProjectPermission: () => (c: unknown) => c,

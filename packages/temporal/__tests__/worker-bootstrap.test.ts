@@ -153,6 +153,20 @@ describe("worker bootstrap", () => {
 		expect(process.exit).not.toHaveBeenCalled();
 	});
 
+	it.each(["url-source-scraper", "company-url-source-scraper"])(
+		"polls a dedicated activity queue for credential-reference URL scraping on %s",
+		(taskQueue) => {
+			const scraper = mocks.create.mock.calls.find(
+				([options]) => options.taskQueue === taskQueue,
+			);
+			expect(scraper?.[0]).toMatchObject({
+				maxConcurrentActivityTaskExecutions: 3,
+				activities: mocks.create.mock.calls[0][0].activities,
+			});
+			expect(scraper?.[0]).not.toHaveProperty("workflowBundle");
+		},
+	);
+
 	it("creates a worker polling glossy-edition with the Glossy activity slots", () => {
 		const glossy = mocks.create.mock.calls.find(
 			([options]) => options.taskQueue === "glossy-edition",
@@ -227,8 +241,22 @@ describe("worker bootstrap", () => {
 		}
 	});
 
+	it("polls connector sync with three activity slots and no workflow bundle", () => {
+		const connector = mocks.create.mock.calls.find(
+			([options]) => options.taskQueue === "connector-sync",
+		);
+		expect(connector?.[0]).toMatchObject({
+			maxConcurrentActivityTaskExecutions: 3,
+			activities: mocks.create.mock.calls[0][0].activities,
+		});
+		expect(connector?.[0]).not.toHaveProperty("workflowBundle");
+	});
+
 	it("gives every queue a workflow bundle except the activity-only ones", () => {
 		const activityOnly = [
+			"connector-sync",
+			"url-source-scraper",
+			"company-url-source-scraper",
 			"project-document-generation",
 			"project-operations",
 		];
@@ -311,18 +339,18 @@ describe("activity slots and the database pool", () => {
 	});
 
 	it("sizes the pool at half the slots that can touch the database, rounded up", () => {
-		expect(total()).toBe(116);
+		expect(total()).toBe(125);
 		// The assistant-run slots never open a database connection, so they
 		// add no pool connections.
 		const databaseSlots = total() - worker.ACTIVITY_SLOTS.aguiRuns;
-		expect(databaseSlots).toBe(106);
+		expect(databaseSlots).toBe(115);
 		expect(
 			worker.databaseSlotTotal(worker.selectTaskQueueWorkers({})),
 		).toBe(databaseSlots);
 		expect(process.env.DATABASE_POOL_MAX).toBe(
 			String(Math.ceil(databaseSlots / 2)),
 		);
-		expect(process.env.DATABASE_POOL_MAX).toBe("53");
+		expect(process.env.DATABASE_POOL_MAX).toBe("58");
 	});
 
 	it("gives every slot entry to exactly one created worker", () => {
@@ -340,7 +368,7 @@ describe("task queue selection (Fizzy #2730)", () => {
 		Object.values(worker.ACTIVITY_SLOTS).reduce((sum, n) => sum + n, 0);
 
 	it("polls every queue when no selection is set", () => {
-		expect(createdQueues()).toHaveLength(22);
+		expect(createdQueues()).toHaveLength(25);
 		expect(
 			worker.selectTaskQueueWorkers({}).map((queue) => queue.taskQueue),
 		).toEqual(createdQueues());
@@ -354,6 +382,7 @@ describe("task queue selection (Fizzy #2730)", () => {
 			.selectTaskQueueWorkers({ WORKER_EXCLUDED_TASK_QUEUES: HEAVY })
 			.map((queue) => queue.taskQueue);
 		expect(heavy).toEqual(["code-indexing", "atlas"]);
+		expect(general).toContain("connector-sync");
 		expect(general).not.toContain("atlas");
 		expect(general).not.toContain("code-indexing");
 		expect([...heavy, ...general].sort()).toEqual(

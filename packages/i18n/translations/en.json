@@ -4024,7 +4024,8 @@
 			},
 			"documentFolderSource": {
 				"onedrive": "OneDrive · folder",
-				"sharepoint": "SharePoint · folder"
+				"sharepoint": "SharePoint · folder",
+				"googledrive": "Google Drive · folder"
 			},
 			"contextRetry": {
 				"action": "Retry",
@@ -10582,7 +10583,8 @@
 			},
 			"deleteContextFolderNote": {
 				"onedrive": "It won't be imported again until the file changes in OneDrive.",
-				"sharepoint": "It won't be imported again until the file changes in SharePoint."
+				"sharepoint": "It won't be imported again until the file changes in SharePoint.",
+				"googledrive": "It won't be imported again until the file changes in Google Drive."
 			},
 			"browseFiles": "Open your system file picker to choose a file to upload.",
 			"removeSelectedFile": "Remove this file from the upload queue. Nothing is uploaded until you submit.",

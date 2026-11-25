@@ -11,6 +11,7 @@
 import {
 	getLatestCompletedContextSummary,
 	getProjectNameById,
+	hasProjectAccess,
 	parseSummaryReferences,
 } from "@repo/database";
 import { isContextSummarizationEnabled } from "@repo/utils/feature-flag";
@@ -44,12 +45,7 @@ export default async function OrganizationContextSummaryPage({
 		redirect(backHref);
 	}
 
-	const summary = await getLatestCompletedContextSummary({
-		projectId,
-		userId: session.user.id,
-		organizationId: organization.id,
-	});
-	if (!summary) {
+	if (!(await hasProjectAccess(projectId, session.user.id))) {
 		redirect(backHref);
 	}
 
@@ -59,6 +55,15 @@ export default async function OrganizationContextSummaryPage({
 		organization.id,
 	);
 	if (!projectName) {
+		redirect(backHref);
+	}
+
+	const summary = await getLatestCompletedContextSummary({
+		projectId,
+		userId: session.user.id,
+		organizationId: organization.id,
+	});
+	if (!summary) {
 		redirect(backHref);
 	}
 

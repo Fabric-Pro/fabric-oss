@@ -91,6 +91,9 @@ async function projectReportStanding(projectId: string, user: ReportCaller) {
 	}
 	return {
 		organizationId: access.organizationId,
+		projectAllowsRead:
+			access.source === "owner" ||
+			hasPermission(access.permissions, Permissions.REPORT_READ),
 		projectAllows: hasPermission(
 			access.permissions,
 			Permissions.REPORT_UPDATE,
@@ -113,6 +116,7 @@ export async function canReachProjectReports(
 	const standing = await projectReportStanding(projectId, user);
 	return (
 		standing !== null &&
+		standing.projectAllowsRead &&
 		(!standing.organizationId || standing.orgRole !== null)
 	);
 }
@@ -135,7 +139,7 @@ export async function canCreateProjectReport(
 	user: ReportCaller,
 ): Promise<boolean> {
 	const standing = await projectReportStanding(projectId, user);
-	if (!standing) {
+	if (!standing?.projectAllowsRead) {
 		return false;
 	}
 	if (!standing.organizationId) {

@@ -242,6 +242,8 @@ translation copy together. Run its drift test.
 
 ## Testing and validation
 
+Follow the [statement coverage guidance](fabric/standards/testing/test-writing.md#statement-coverage) for new or changed source code.
+
 Treat a failing test as evidence of a possible production regression. Before
 weakening an assertion or mock, trace the actual value to source and history.
 Update tests only when the intended contract changed; never make the test agree

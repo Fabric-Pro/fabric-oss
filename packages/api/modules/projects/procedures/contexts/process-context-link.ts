@@ -11,14 +11,13 @@
  *     `BAD_REQUEST { code: 'SCRAPE_PROVIDER_NOT_CONFIGURED', settingsPath }`.
  *  3. If PATH_PREFIX is requested but no crawl-capable (Firecrawl or Cloudflare) provider →
  *     `BAD_REQUEST { code: 'CRAWL_PROVIDER_NOT_CONFIGURED', settingsPath }`.
- *  4. Resolution lives in `lib/url-source-provider.ts`, shared with every
- *     follow-up (re-sync, retry, page retry, schedule edit) and the company
- *     context crawls, so they all pick the same scraper.
+ *  4. Project follow-ups (re-sync, retry, page retry, schedule edit) and
+ *     company-context crawls share `lib/url-source-provider.ts`.
  *  5. The chosen `providerName` is stamped onto the parent
  *     `ProjectContext.metadata.scraperProvider` so the drawer + analytics
  *     know which provider ran.
- *  6. The workflow + schedule receive `providerName` alongside the existing
- *     `apiKey` so the activity can dispatch to the right adapter.
+ *  6. The workflow and schedule receive `providerName` to select the adapter.
+ *     The worker resolves the current credential when the omission switch is on.
  *
  * Tenant XOR isolation is unchanged (AGENTS.md).
  */
@@ -148,14 +147,10 @@ export const processContextLinkProcedure = tenantProtectedProcedure
 
 		const scope = input.scope ?? "SINGLE_PAGE";
 
-		// Pre-flight: pick the tenant's scraper (XOR isolation: organization
-		// providers, or the user's own with no organization) and decrypt its
-		// key. We do this BEFORE persisting the parent row so the BAD_REQUEST
-		// notice fires without leaving a dangling EXTRACTING context behind.
-		// The key is reused for both the workflow kickoff (the activity
-		// rebuilds the adapter from providerName + apiKey) and the per-context
-		// Schedule; the row's stored endpoint (Cloudflare's account ID)
-		// travels with them.
+		// Pre-flight the tenant's scraper before persisting the parent row.
+		// The start and schedule share this resolution. They pass the key
+		// only while URL_CRAWL_OMIT_SCRAPER_KEY is off. With the switch on,
+		// the worker resolves the current credential itself.
 		const provider = await resolveUrlSourceProvider({
 			organizationId,
 			userId: user.id,

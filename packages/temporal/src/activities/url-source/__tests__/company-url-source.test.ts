@@ -902,7 +902,9 @@ import {
 import { createUrlSourceSchedule } from "../../../schedules/url-source-schedule";
 import {
 	COMPANY_CONTEXT_TASK_QUEUE,
+	COMPANY_URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
 	PROJECT_EMBEDDING_TASK_QUEUE,
+	URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
 } from "../../../task-queues";
 import { embedSingleContextActivity } from "../../context-embedding";
 import { bulkInitUrlPagesActivity } from "../bulk-init-url-pages-activity";
@@ -1219,8 +1221,16 @@ async function crawl(
 			return { error, workflowId };
 		}
 	};
-	if ((input.owner as ContextOwner | undefined)?.kind === "company") {
-		return worker.runUntil(run);
+	const isCompany =
+		(input.owner as ContextOwner | undefined)?.kind === "company";
+	const scraper = await scraperWorker(
+		isCompany
+			? COMPANY_URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE
+			: URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
+		activities,
+	);
+	if (isCompany) {
+		return scraper.runUntil(() => worker.runUntil(run));
 	}
 	const embeddingWorker = await Worker.create({
 		connection: env.nativeConnection,
@@ -1232,8 +1242,10 @@ async function crawl(
 		taskQueue: PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 		activities,
 	});
-	return worker.runUntil(() =>
-		embeddingWorker.runUntil(() => operationsWorker.runUntil(run)),
+	return scraper.runUntil(() =>
+		worker.runUntil(() =>
+			embeddingWorker.runUntil(() => operationsWorker.runUntil(run)),
+		),
 	);
 }
 
@@ -1331,12 +1343,31 @@ describe("urlSourceCrawlWorkflow with a company owner", () => {
 		]);
 		for (const activity of activities) {
 			expect(activity.taskQueue, activity.name).toBe(
-				COMPANY_CONTEXT_TASK_QUEUE,
+				activity.name.startsWith("firecrawl")
+					? "company-url-source-scraper"
+					: COMPANY_CONTEXT_TASK_QUEUE,
 			);
-			if (!activity.name.startsWith("firecrawl")) {
-				expect(activity.input.owner, activity.name).toEqual(OWNER);
+			expect(activity.input.owner, activity.name).toEqual(OWNER);
+		}
+
+		const history = await env.client.workflow
+			.getHandle(run.workflowId)
+			.fetchHistory();
+		for (const event of history.events ?? []) {
+			const activity = event.activityTaskScheduledEventAttributes;
+			if (
+				activity?.taskQueue?.name ===
+				COMPANY_URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE
+			) {
+				activity.taskQueue.name =
+					URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE;
 			}
 		}
+		await Worker.runReplayHistory(
+			{ workflowBundle },
+			history,
+			run.workflowId,
+		);
 
 		// Pages carry the parent's organization.
 		const crawled = [...h.pages.values()];
@@ -1899,13 +1930,32 @@ describe("the company crawl gate", () => {
 // One crawl at a time, and what a crawl leaves when it ends
 // ---------------------------------------------------------------------------
 
-function companyWorker(): Promise<Worker> {
+function scraperWorker(
+	taskQueue: string,
+	activities: Record<string, unknown>,
+): Promise<Worker> {
 	return Worker.create({
+		connection: env.nativeConnection,
+		taskQueue,
+		activities,
+	});
+}
+
+async function companyWorker() {
+	const scraper = await scraperWorker(
+		COMPANY_URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
+		ACTIVITIES,
+	);
+	const worker = await Worker.create({
 		connection: env.nativeConnection,
 		taskQueue: COMPANY_CONTEXT_TASK_QUEUE,
 		workflowBundle,
 		activities: ACTIVITIES,
 	});
+	return {
+		runUntil: <T>(run: () => Promise<T>) =>
+			scraper.runUntil(() => worker.runUntil(run)),
+	};
 }
 
 function startCrawl(input: Record<string, unknown>, workflowId: string) {
@@ -3175,7 +3225,9 @@ describe("company crawl schedules", () => {
 			expect(activity.taskQueue).toBe(
 				activity.name === "updateParentStatusActivity"
 					? PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE
-					: PROJECT_EMBEDDING_TASK_QUEUE,
+					: activity.name.startsWith("firecrawl")
+						? URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE
+						: PROJECT_EMBEDDING_TASK_QUEUE,
 			);
 		}
 

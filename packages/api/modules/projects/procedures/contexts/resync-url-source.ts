@@ -113,10 +113,9 @@ export const resyncUrlSourceProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Pre-flight the scraper, before anything is written, so a missing
-		// provider leaves the row exactly as it was. The key travels in the
-		// workflow args (the activity sandbox can't reach the credential
-		// store).
+		// Check the tenant's scraper before changing the row. The API passes
+		// the key only while URL_CRAWL_OMIT_SCRAPER_KEY is off. With the switch
+		// on, the worker resolves the current credential itself.
 		const provider = await resolveUrlSourceProvider({
 			organizationId,
 			userId: user.id,

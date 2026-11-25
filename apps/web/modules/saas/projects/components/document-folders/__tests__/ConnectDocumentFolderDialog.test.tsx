@@ -30,6 +30,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	browse: vi.fn(),
+	googleBrowse: vi.fn(),
+	oauthStart: vi.fn(),
+	openPopup: vi.fn(),
 	list: vi.fn(),
 	connect: vi.fn(),
 	toastSuccess: vi.fn(),
@@ -51,14 +54,14 @@ vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 }));
 
 vi.mock("@shared/lib/oauth-popup", () => ({
-	openOAuthPopup: vi.fn(),
+	openOAuthPopup: mocks.openPopup,
 	POPUP_BLOCKED_MESSAGE: "Popup blocked",
 }));
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: { documentFolders: { connect: mocks.connect } },
-		integrations: { oauth: { start: vi.fn() } },
+		integrations: { oauth: { start: mocks.oauthStart } },
 	},
 }));
 
@@ -70,10 +73,14 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					queryOptions: ({
 						input,
 					}: {
-						input: { level: unknown };
+						input: { level: unknown; provider?: string };
 					}) => ({
 						queryKey: ["browse", input],
-						queryFn: () => mocks.browse(input.level),
+						// A Microsoft browse sends no provider, as before.
+						queryFn: () =>
+							input.provider === "googledrive"
+								? mocks.googleBrowse(input.level)
+								: mocks.browse(input.level),
 					}),
 				},
 				list: {
@@ -201,7 +208,10 @@ function client() {
 	return new QueryClient({ defaultOptions: { queries: { retry: false } } });
 }
 
-function renderDialog(onOpenChange = vi.fn()) {
+function renderDialog(
+	onOpenChange = vi.fn(),
+	provider?: "microsoft" | "googledrive",
+) {
 	const queryClient = client();
 	render(
 		<QueryClientProvider client={queryClient}>
@@ -210,6 +220,7 @@ function renderDialog(onOpenChange = vi.fn()) {
 				organizationId="org-1"
 				open
 				onOpenChange={onOpenChange}
+				{...(provider ? { provider } : {})}
 			/>
 		</QueryClientProvider>,
 	);
@@ -235,6 +246,9 @@ function press(element: HTMLElement, key: string) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.browse.mockImplementation(async (level: Level) => browseFor(level));
+	mocks.googleBrowse.mockImplementation(async (level: Level) =>
+		googleBrowseFor(level),
+	);
 	mocks.list.mockResolvedValue({ view: "editor", folders: [] });
 	mocks.connect.mockResolvedValue({
 		folders: [{ folderId: "folder-9", name: "Notes", reconnected: false }],
@@ -672,5 +686,322 @@ describe("ConnectDocumentFolderDialog — after connecting", () => {
 		const heading = await screen.findByRole("heading", { name: "Notes" });
 		const card = within(heading.closest("li") as HTMLElement);
 		expect(card.getByText("Reading folder")).toBeInTheDocument();
+	});
+});
+
+/*
+ * Google Drive (Fizzy #2808, PR2): My Drive and the shared drives, then
+ * folders. Overlap is judged by folder ids, since Drive allows sibling
+ * folders with the same name.
+ */
+
+const MY_DRIVE = "g-root";
+
+function googleFolder(itemId: string, name: string, driveId = MY_DRIVE) {
+	return { driveId, itemId, name, webUrl: null };
+}
+
+const GOOGLE_ROOTS = {
+	level: "roots",
+	provider: "googledrive",
+	myDrive: { driveId: MY_DRIVE, name: "My Drive" },
+	sharedDrives: [
+		{ driveId: "sd-sales", name: "Sales" },
+		{ driveId: "sd-legal", name: "Legal" },
+	],
+};
+
+function googleBrowseFor(level: Level) {
+	if (level.kind === "roots") {
+		return GOOGLE_ROOTS;
+	}
+	if (level.kind !== "folders" || !level.driveId) {
+		throw new Error(`Unexpected Google level ${level.kind}`);
+	}
+	const itemId = level.itemId ?? level.driveId;
+	const children: Record<string, ReturnType<typeof googleFolder>[]> = {
+		[MY_DRIVE]: [
+			googleFolder("g-specs-a", "Specs"),
+			googleFolder("g-specs-b", "Specs"),
+			googleFolder("g-plans", "Plans"),
+		],
+		"g-plans": [googleFolder("g-2026", "2026")],
+		"sd-sales": [googleFolder("g-deals", "Deals", "sd-sales")],
+	};
+	return {
+		level: "folders",
+		driveId: level.driveId,
+		itemId,
+		folders: children[itemId] ?? [],
+		supportedFileCount: 2,
+		truncated: false,
+	};
+}
+
+function googleConnected(overrides: Record<string, unknown> = {}) {
+	return connectedFolder({
+		provider: "googledrive",
+		driveId: MY_DRIVE,
+		ancestorIds: [MY_DRIVE],
+		...overrides,
+	});
+}
+
+function renderGoogle(onOpenChange = vi.fn()) {
+	return renderDialog(onOpenChange, "googledrive");
+}
+
+async function openGooglePlace(name: string) {
+	fireEvent.click(await screen.findByRole("button", { name }));
+}
+
+describe("ConnectDocumentFolderDialog — Google Drive places", () => {
+	it("lists My Drive and the shared drives, opens a folder and connects it with a description", async () => {
+		const { onOpenChange } = renderGoogle();
+		expect(
+			await screen.findByRole("heading", {
+				name: "Connect Google Drive folders",
+			}),
+		).toBeInTheDocument();
+		await openGooglePlace("Shared drives");
+		expect(
+			await screen.findByRole("button", { name: "Sales" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Legal" }),
+		).toBeInTheDocument();
+
+		const path = screen.getByRole("navigation", { name: "Folder path" });
+		fireEvent.click(within(path).getByRole("button", { name: "Places" }));
+		await openGooglePlace("My Drive");
+		press(await treeItem("Plans"), "Enter");
+		fireEvent.click(
+			await screen.findByRole("checkbox", { name: "Use Plans" }),
+		);
+		fireEvent.change(
+			screen.getByLabelText("Description for Plans (optional)"),
+			{ target: { value: " Roadmaps. " } },
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Connect folder" }));
+
+		await waitFor(() =>
+			expect(mocks.connect).toHaveBeenCalledWith({
+				projectId: "project-1",
+				organizationId: "org-1",
+				provider: "googledrive",
+				folders: [
+					{
+						driveId: MY_DRIVE,
+						itemId: "g-plans",
+						description: "Roadmaps.",
+					},
+				],
+			}),
+		);
+		expect(mocks.googleBrowse).toHaveBeenCalledWith({
+			kind: "folders",
+			driveId: MY_DRIVE,
+			itemId: "g-plans",
+		});
+		expect(mocks.browse).not.toHaveBeenCalled();
+		await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+	});
+
+	it("says so when the account belongs to no shared drive", async () => {
+		mocks.googleBrowse.mockImplementation(async (level: Level) =>
+			level.kind === "roots"
+				? { ...GOOGLE_ROOTS, sharedDrives: [] }
+				: googleBrowseFor(level),
+		);
+		renderGoogle();
+		await openGooglePlace("Shared drives");
+		expect(
+			await screen.findByText(
+				"You are not a member of any shared drive.",
+			),
+		).toBeInTheDocument();
+	});
+
+	it("names the export formats and the export limit", async () => {
+		renderGoogle();
+		await screen.findByRole("button", { name: "My Drive" });
+		const disclosure = screen.getByText(/subfolders down to 5 levels/);
+		expect(disclosure).toHaveTextContent(
+			"Google Docs, Sheets and Slides are exported as DOCX, XLSX and PDF",
+		);
+		expect(disclosure).toHaveTextContent("10 MB");
+		expect(disclosure).toHaveTextContent(
+			"whatever their access in Google Drive",
+		);
+	});
+});
+
+describe("ConnectDocumentFolderDialog — Google Drive connection", () => {
+	function googleError(code: string) {
+		return new ORPCError("PRECONDITION_FAILED", {
+			message: "Server text",
+			data: { code },
+		});
+	}
+
+	function popupSucceeds() {
+		mocks.oauthStart.mockResolvedValue({
+			authorizationUrl: "https://accounts.example.com/authorize",
+		});
+		mocks.openPopup.mockReturnValue({ closed: false });
+	}
+
+	function reportOAuthSuccess() {
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				origin: window.location.origin,
+				data: { type: "oauth_success" },
+			}),
+		);
+	}
+
+	it("shows the connect prompt without a Google Drive connection, and connects in a popup", async () => {
+		mocks.googleBrowse
+			.mockRejectedValueOnce(googleError("GOOGLE_DRIVE_NOT_CONNECTED"))
+			.mockImplementation(async (level: Level) => googleBrowseFor(level));
+		popupSucceeds();
+		renderGoogle();
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Connect your Google Drive account to choose folders.",
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Connect Google" }));
+		await waitFor(() =>
+			expect(mocks.oauthStart).toHaveBeenCalledWith(
+				expect.objectContaining({
+					provider: "GOOGLE_DRIVE",
+					organizationId: "org-1",
+				}),
+			),
+		);
+		await waitFor(() => expect(mocks.openPopup).toHaveBeenCalled());
+		reportOAuthSuccess();
+		expect(
+			await screen.findByRole("button", { name: "My Drive" }),
+		).toBeInTheDocument();
+	});
+
+	it("offers Reconnect when the grant lacks folder access", async () => {
+		mocks.googleBrowse.mockRejectedValue(
+			googleError("GOOGLE_DRIVE_RECONNECT_REQUIRED"),
+		);
+		popupSucceeds();
+		renderGoogle();
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Reconnect Google to grant folder access.",
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Reconnect Google" }),
+		);
+		await waitFor(() =>
+			expect(mocks.oauthStart).toHaveBeenCalledWith(
+				expect.objectContaining({ provider: "GOOGLE_DRIVE" }),
+			),
+		);
+	});
+
+	it("offers Retry, not the connect prompt, when Google could not be reached", async () => {
+		mocks.googleBrowse
+			.mockRejectedValueOnce(
+				new ORPCError("BAD_GATEWAY", {
+					message:
+						"Google Drive could not be reached. Try again in a moment.",
+				}),
+			)
+			.mockImplementation(async (level: Level) => googleBrowseFor(level));
+		renderGoogle();
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Google Drive could not be reached.",
+		);
+		expect(
+			screen.queryByRole("button", { name: "Connect Google" }),
+		).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		expect(
+			await screen.findByRole("button", { name: "My Drive" }),
+		).toBeInTheDocument();
+		expect(mocks.oauthStart).not.toHaveBeenCalled();
+	});
+});
+
+describe("ConnectDocumentFolderDialog — Google Drive overlap by id", () => {
+	it("keeps a same-named sibling of a connected folder selectable", async () => {
+		mocks.list.mockResolvedValue({
+			view: "editor",
+			folders: [
+				googleConnected({
+					name: "Specs",
+					drivePath: "/Specs",
+					itemId: "g-specs-a",
+				}),
+			],
+		});
+		renderGoogle();
+		await openGooglePlace("My Drive");
+		const [first, second] = await within(await tree()).findAllByRole(
+			"treeitem",
+			{ name: "Specs" },
+		);
+		await waitFor(() =>
+			expect(first).toHaveAccessibleDescription(/Already connected/),
+		);
+		expect(first).toHaveAttribute("aria-disabled", "true");
+		expect(second).not.toHaveAttribute("aria-disabled");
+		press(second as HTMLElement, " ");
+		expect(second).toHaveAttribute("aria-checked", "true");
+	});
+
+	it("disables a folder that holds a connected one", async () => {
+		mocks.list.mockResolvedValue({
+			view: "editor",
+			folders: [
+				googleConnected({
+					id: "folder-2",
+					name: "2026",
+					drivePath: "/Plans/2026",
+					itemId: "g-2026",
+					ancestorIds: ["g-plans", MY_DRIVE],
+				}),
+			],
+		});
+		renderGoogle();
+		await openGooglePlace("My Drive");
+		const plans = await treeItem("Plans");
+		await waitFor(() =>
+			expect(plans).toHaveAccessibleDescription(
+				/Holds "2026", which is already connected/,
+			),
+		);
+		expect(plans).toHaveAttribute("aria-disabled", "true");
+	});
+
+	it("disables the folders inside a connected folder", async () => {
+		mocks.list.mockResolvedValue({
+			view: "editor",
+			folders: [
+				googleConnected({
+					name: "Plans",
+					drivePath: "/Plans",
+					itemId: "g-plans",
+				}),
+			],
+		});
+		renderGoogle();
+		await openGooglePlace("My Drive");
+		press(await treeItem("Plans"), "Enter");
+		const year = await treeItem("2026");
+		await waitFor(() =>
+			expect(year).toHaveAccessibleDescription(
+				/Inside "Plans", which is already connected/,
+			),
+		);
+		expect(year).toHaveAttribute("aria-disabled", "true");
 	});
 });

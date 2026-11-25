@@ -24,6 +24,11 @@
  */
 
 import { db, hasProjectAccess } from "@repo/database";
+import {
+	GoogleDriveNotConnectedError,
+	GoogleDriveTokenExpiredError,
+	getGoogleDriveAccessToken,
+} from "@repo/integrations/google";
 import { logger } from "@repo/logs";
 import { decryptApiKey } from "@repo/utils";
 import { z } from "zod";
@@ -33,11 +38,6 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import {
-	GoogleDriveNotConnectedError,
-	GoogleDriveTokenExpiredError,
-	getGoogleDriveAccessToken,
-} from "../../../integrations/lib/google-drive-token";
 
 const REQUIRED_SCOPE = "https://www.googleapis.com/auth/drive.file";
 

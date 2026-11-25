@@ -10,11 +10,14 @@
 import { describe, expect, it } from "vitest";
 import {
 	COMPANY_CONTEXT_TASK_QUEUE,
+	COMPANY_URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
+	CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE,
 	CONTEXT_QUALITY_TASK_QUEUE,
 	CONTEXT_SYNC_ACTIVITY_TASK_QUEUE,
 	GLOSSY_EDITION_TASK_QUEUE,
 	ORCHESTRATOR_TASK_QUEUE,
 	PROPOSAL_EXPORT_TASK_QUEUE,
+	URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
 } from "../src/task-queues";
 
 describe("ORCHESTRATOR_TASK_QUEUE", () => {
@@ -52,6 +55,23 @@ describe("COMPANY_CONTEXT_TASK_QUEUE", () => {
 		]) {
 			expect(COMPANY_CONTEXT_TASK_QUEUE).not.toBe(projectQueue);
 		}
+	});
+});
+
+describe("CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE", () => {
+	it("names the activity-only connector sync queue", () => {
+		expect(CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE).toBe("connector-sync");
+	});
+});
+
+describe("URL source scraper activity queues", () => {
+	it("keeps the project and company scraper queue names distinct", () => {
+		expect(URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE).toBe(
+			"url-source-scraper",
+		);
+		expect(COMPANY_URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE).toBe(
+			"company-url-source-scraper",
+		);
 	});
 });
 

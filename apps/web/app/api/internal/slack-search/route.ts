@@ -70,7 +70,10 @@ export async function POST(req: Request) {
 		// personal projects even if the user has membership in both.
 		const project = await db.project.findUnique({
 			where: { id: projectId },
-			select: { organizationId: true },
+			select: {
+				organizationId: true,
+				organization: { select: { deletedAt: true } },
+			},
 		});
 		if (!project) {
 			return NextResponse.json(
@@ -82,6 +85,13 @@ export async function POST(req: Request) {
 		if (projectOrgId !== organizationId) {
 			return NextResponse.json(
 				{ error: "Tenant context mismatch" },
+				{ status: 403 },
+			);
+		}
+
+		if (project.organization?.deletedAt) {
+			return NextResponse.json(
+				{ error: "You do not have access to this project" },
 				{ status: 403 },
 			);
 		}

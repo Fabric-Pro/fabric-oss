@@ -4,6 +4,7 @@
 		"outDir": "dist",
 		"rootDir": "../..",
 		"declaration": true,
+		"incremental": false,
 		"sourceMap": true,
 		"paths": {
 			"@fabricorg/sdk": ["../sdk/src/index.ts"]

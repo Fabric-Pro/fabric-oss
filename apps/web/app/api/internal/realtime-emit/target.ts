@@ -144,12 +144,12 @@ async function isNoOtherProjectsRow(
 	return true;
 }
 
-async function projectExists(projectId: string): Promise<boolean> {
+async function projectCanReceiveEvent(projectId: string): Promise<boolean> {
 	const project = await db.project.findUnique({
 		where: { id: projectId },
-		select: { id: true },
+		select: { organization: { select: { deletedAt: true } } },
 	});
-	return project !== null;
+	return project !== null && !project.organization?.deletedAt;
 }
 
 /**
@@ -171,7 +171,7 @@ export async function checkRelayedTarget(
 	}
 
 	const { projectId } = relayed.data;
-	if (!(await projectExists(projectId))) {
+	if (!(await projectCanReceiveEvent(projectId))) {
 		return null;
 	}
 

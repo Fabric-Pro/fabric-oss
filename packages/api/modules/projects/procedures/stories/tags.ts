@@ -129,8 +129,7 @@ export const removeStoryTagProcedure = tenantProtectedProcedure
 
 		// Project-authoritative creator-or-admin check: the tag's
 		// creator may remove it; otherwise the caller needs effective
-		// STORY_DELETE resolved with ProjectMember-first precedence. Do NOT use
-		// the org-first userHasProjectPermission here.
+		// STORY_DELETE resolved with ProjectMember-first precedence.
 		const isCreator =
 			tag.createdById !== null && tag.createdById === context.user.id;
 		if (!isCreator) {

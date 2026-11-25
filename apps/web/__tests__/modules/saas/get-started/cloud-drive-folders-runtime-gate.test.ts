@@ -6,8 +6,8 @@ import {
 } from "../../../../modules/saas/get-started/lib/get-started-registry";
 
 /**
- * OneDrive and SharePoint document folders (`CLOUD_DRIVE_FOLDERS`, per
- * organization) add a source to the Add Context dialog. The Context tab's
+ * OneDrive, SharePoint and Google Drive document folders
+ * (`CLOUD_DRIVE_FOLDERS`, per organization) add a source to the Add Context dialog. The Context tab's
  * tour names them only while the feature is on; off, its copy is unchanged.
  */
 
@@ -38,12 +38,14 @@ describe("Get Started — cloud drive folders runtime gate", () => {
 	it("keeps the Add Context copy unchanged while the feature is off", () => {
 		const off = addContext(OFF);
 		expect(off?.body).not.toMatch(/OneDrive|SharePoint/);
+		expect(off?.body).not.toMatch(/Google Drive/);
 		expect(off?.body).toContain("Google Docs");
 	});
 
 	it("names OneDrive and SharePoint folders while it is on", () => {
 		const on = addContext(ON);
 		expect(on?.body).toContain("OneDrive and SharePoint folders");
+		expect(on?.body).toContain("Google Drive folders");
 		expect(on?.body).toContain("Google Docs");
 		expect(on).toMatchObject({ id: "context-add", anchor: "context-add" });
 	});

@@ -126,6 +126,13 @@ vi.mock("@repo/database/prisma/queries/lib/refresh-lock", () => ({
 	},
 }));
 
+vi.mock("../../../lib/project-permission-decision", () => ({
+	getProjectPermissionDecision: vi.fn().mockResolvedValue({
+		allowed: true,
+		organizationId: "org_1",
+	}),
+}));
+
 vi.mock("@repo/permissions", () => ({
 	hasPermission: vi.fn().mockReturnValue(true),
 	Permissions: {},

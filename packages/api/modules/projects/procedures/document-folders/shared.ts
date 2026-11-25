@@ -6,6 +6,10 @@ import {
 	resolveOwnWorkflowIntegrationForProvider,
 } from "@repo/database";
 import {
+	type DocumentFolderConnection,
+	documentFolderDriveAdapter,
+} from "@repo/integrations/document-folders";
+import {
 	executeMicrosoftTeamsTool,
 	isMicrosoftNotConnectedError,
 } from "@repo/integrations/microsoft";
@@ -16,12 +20,13 @@ import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import { assertCloudDriveFoldersEnabled } from "../../lib/cloud-drive-folders-feature";
 
 /**
- * OneDrive and SharePoint document folders (Fizzy #2808).
+ * OneDrive, SharePoint and Google Drive document folders (Fizzy #2808).
  *
  * Every procedure loads the project row, refuses an input organization that
  * is not the project's, and answers NOT_FOUND while the feature is off for
  * the project's organization. A folder is browsed and connected with the
- * caller's own Microsoft connection, and is read with it from then on.
+ * caller's own Microsoft or Google Drive connection, and is read with it
+ * from then on.
  */
 
 export const LOG = "[DocumentFolders]";
@@ -29,10 +34,24 @@ export const LOG = "[DocumentFolders]";
 const MICROSOFT_NOT_CONNECTED =
 	"Connect your Microsoft account in Settings → Integrations to choose OneDrive or SharePoint folders.";
 
+const GOOGLE_DRIVE_NOT_CONNECTED =
+	"Connect your Google Drive account in Settings → Integrations to choose Google Drive folders.";
+
+const GOOGLE_DRIVE_RECONNECT_REQUIRED =
+	"Reconnect your Google Drive account in Settings → Integrations to give Fabric read access to your folders.";
+
 export const projectInput = z.object({
 	projectId: z.string(),
 	organizationId: z.string().nullable().optional(),
 });
+
+/**
+ * Which drive a browse or connect reads: Microsoft (OneDrive and SharePoint,
+ * told apart by Graph) or Google Drive. Left out, Microsoft, as before.
+ */
+export const folderSourceInput = z
+	.enum(["microsoft", "googledrive"])
+	.default("microsoft");
 
 /**
  * The project, from its own row, with the organization the feature is on
@@ -143,6 +162,74 @@ export async function readGraph<T>(
 			errorName: error instanceof Error ? error.name : typeof error,
 		});
 		throw graphUnreachable();
+	}
+}
+
+export function googleDriveNotConnected(): ORPCError<string, unknown> {
+	return new ORPCError("PRECONDITION_FAILED", {
+		message: GOOGLE_DRIVE_NOT_CONNECTED,
+		data: { code: "GOOGLE_DRIVE_NOT_CONNECTED" },
+	});
+}
+
+export function googleDriveUnreachable(): ORPCError<string, unknown> {
+	return new ORPCError("BAD_GATEWAY", {
+		message: "Google Drive could not be reached. Try again in a moment.",
+	});
+}
+
+export const googleDrive = () => documentFolderDriveAdapter("googledrive");
+
+/**
+ * The caller's own Google Drive connection, never one shared with the
+ * organization. A grant without `drive.readonly` asks for a reconnect rather
+ * than a connect, so the picker can say which.
+ */
+export async function googleDriveReader(
+	userId: string,
+	organizationId: string,
+): Promise<DocumentFolderConnection> {
+	const resolved = await googleDrive().resolveOwnConnection({
+		userId,
+		organizationId,
+	});
+	switch (resolved.status) {
+		case "connected":
+			return resolved.connection;
+		case "reconnect_required":
+			throw new ORPCError("PRECONDITION_FAILED", {
+				message: GOOGLE_DRIVE_RECONNECT_REQUIRED,
+				data: { code: "GOOGLE_DRIVE_RECONNECT_REQUIRED" },
+			});
+		case "not_connected":
+			throw googleDriveNotConnected();
+	}
+}
+
+/**
+ * One Google Drive read as the caller. A connection that can no longer be
+ * used becomes the connect prompt; any other thrown failure a fixed
+ * try-again, so Google's own error text never reaches the client.
+ */
+export async function readGoogleDrive<T>(
+	what: string,
+	read: () => Promise<T>,
+): Promise<T> {
+	try {
+		return await read();
+	} catch (error) {
+		if (
+			googleDrive().isNotConnectedError(
+				error instanceof Error ? error.message : String(error),
+			)
+		) {
+			throw googleDriveNotConnected();
+		}
+		logger.warn(`${LOG} Google Drive read failed`, {
+			what,
+			errorName: error instanceof Error ? error.name : typeof error,
+		});
+		throw googleDriveUnreachable();
 	}
 }
 

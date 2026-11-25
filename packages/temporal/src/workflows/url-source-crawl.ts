@@ -26,9 +26,7 @@
  *
  * Company website sources (Fizzy #2719) run through this same workflow, told
  * apart by an optional `owner` on the input (`../lib/context-owner`). A
- * missing owner is the project owner: every recorded history and every
- * schedule's arguments carry none, and a project run schedules exactly the
- * commands, with exactly the inputs, it always did. A company run:
+ * missing owner selects project storage. A company run:
  *   - starts on COMPANY_CONTEXT_TASK_QUEUE (`contextOwnerTaskQueue`), as do
  *     its schedules;
  *   - first runs `companyUrlCrawlGateActivity`, before any map or scrape, and
@@ -58,8 +56,10 @@ import {
 } from "../lib/context-owner";
 import { filterInPrefixLinks } from "../lib/in-prefix-links";
 import {
+	COMPANY_URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
 	PROJECT_EMBEDDING_TASK_QUEUE,
 	PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
+	URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE,
 } from "../task-queues";
 import { extractMeaningfulErrorMessage as extractWorkflowErrorMessage } from "./meaningful-error-message";
 
@@ -364,18 +364,15 @@ export interface UrlSourceCrawlWorkflowInput {
 	projectId?: string;
 	userId: string | null;
 	organizationId: string | null;
-	apiKey: string;
+	/** Legacy start argument accepted during rollout. */
+	apiKey?: string;
 	/**
 	 * Multi-provider routing (commit 3 of 3, multi-provider PR). Optional so
 	 * that legacy in-flight workflows (started before this field shipped)
 	 * continue to work — the activities default to Firecrawl when absent.
 	 */
 	providerName?: UrlSourceProviderName;
-	/**
-	 * The chosen provider row's stored endpoint, carried to the scrape
-	 * activity. Optional data only: absent for runs started before it existed
-	 * and for providers without one. Cloudflare keeps its account ID here.
-	 */
+	/** Legacy start argument accepted during rollout. */
 	providerEndpoint?: string;
 	urlRefreshMode?: UrlRefreshMode;
 	parentSourceTitle?: string | null;
@@ -610,9 +607,7 @@ export async function urlSourceCrawlWorkflow(
 		projectId,
 		userId,
 		organizationId,
-		apiKey,
 		providerName,
-		providerEndpoint,
 		urlRefreshMode,
 		parentSourceTitle,
 		mode = "initial",
@@ -620,21 +615,21 @@ export async function urlSourceCrawlWorkflow(
 	} = input;
 
 	// A malformed owner fails the run non-retryably before anything is
-	// scheduled. Only a company owner travels to the activities: a project
-	// run schedules them with exactly the inputs it always did.
+	// scheduled. Project sources use the default owner arm in the activities.
 	const owner = resolveContextOwner(input);
 	const companyOwner = owner.kind === "company" ? owner : undefined;
+	const scraperReference = {
+		contextId,
+		organizationId,
+		...(companyOwner ? { owner: companyOwner } : {}),
+		...(providerName !== undefined ? { providerName } : {}),
+	};
 
-	const {
-		firecrawlScrapeActivity,
-		upsertUrlPageActivity,
-		pruneOrphanUrlPagesActivity,
-		bulkInitUrlPagesActivity,
-	} = proxyActivities<typeof activities>({
-		taskQueue: contextOwnerTaskQueue(
-			input.owner,
-			PROJECT_EMBEDDING_TASK_QUEUE,
-		),
+	const scraperTaskQueue = companyOwner
+		? COMPANY_URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE
+		: URL_SOURCE_SCRAPER_ACTIVITY_TASK_QUEUE;
+
+	const singlePageActivityOptions = {
 		startToCloseTimeout: "1 minute",
 		retry: {
 			initialInterval: "1s",
@@ -642,6 +637,23 @@ export async function urlSourceCrawlWorkflow(
 			backoffCoefficient: 2,
 			maximumAttempts: 3,
 		},
+	} as const;
+
+	const { firecrawlScrapeActivity } = proxyActivities<typeof activities>({
+		...singlePageActivityOptions,
+		taskQueue: scraperTaskQueue,
+	});
+
+	const {
+		upsertUrlPageActivity,
+		pruneOrphanUrlPagesActivity,
+		bulkInitUrlPagesActivity,
+	} = proxyActivities<typeof activities>({
+		...singlePageActivityOptions,
+		taskQueue: contextOwnerTaskQueue(
+			input.owner,
+			PROJECT_EMBEDDING_TASK_QUEUE,
+		),
 	});
 
 	// Per-URL scrape used by the SPLIT path-prefix branch. Same provider, same
@@ -654,10 +666,7 @@ export async function urlSourceCrawlWorkflow(
 		firecrawlScrapeActivity: firecrawlScrapeForCrawlActivity,
 		firecrawlMapActivity,
 	} = proxyActivities<typeof activities>({
-		taskQueue: contextOwnerTaskQueue(
-			input.owner,
-			PROJECT_EMBEDDING_TASK_QUEUE,
-		),
+		taskQueue: scraperTaskQueue,
 		startToCloseTimeout: "5 minutes",
 		retry: {
 			initialInterval: "2s",
@@ -668,10 +677,7 @@ export async function urlSourceCrawlWorkflow(
 	});
 
 	const { firecrawlCrawlActivity } = proxyActivities<typeof activities>({
-		taskQueue: contextOwnerTaskQueue(
-			input.owner,
-			PROJECT_EMBEDDING_TASK_QUEUE,
-		),
+		taskQueue: scraperTaskQueue,
 		// 120 min budget. The map+scrape pipeline runs N URLs through /v1/scrape
 		// at concurrency 1 (Firecrawl-side rate-limit-friendly) with a 5-min
 		// Firecrawl-side timeout per page, plus the 500-page upper bound from
@@ -846,11 +852,7 @@ export async function urlSourceCrawlWorkflow(
 			try {
 				page = await firecrawlScrapeActivity({
 					url: targetUrl,
-					apiKey,
-					...(providerName !== undefined ? { providerName } : {}),
-					...(providerEndpoint !== undefined
-						? { providerEndpoint }
-						: {}),
+					...scraperReference,
 					reportUnsupportedContent: true,
 				});
 				if (page.unsupported) {
@@ -921,9 +923,7 @@ export async function urlSourceCrawlWorkflow(
 		if (scope === "SINGLE_PAGE") {
 			const page = await firecrawlScrapeActivity({
 				url,
-				apiKey,
-				...(providerName !== undefined ? { providerName } : {}),
-				...(providerEndpoint !== undefined ? { providerEndpoint } : {}),
+				...scraperReference,
 				reportUnsupportedContent: true,
 			});
 			if (page.unsupported) {
@@ -1076,8 +1076,7 @@ export async function urlSourceCrawlWorkflow(
 			// pool fix from the legacy crawlSite path.
 			const mapResult = await firecrawlMapActivity({
 				url,
-				apiKey,
-				...(providerName !== undefined ? { providerName } : {}),
+				...scraperReference,
 				...(includePaths.length > 0 ? { includePaths } : {}),
 				limit: maxPages,
 				reportUnsupportedContent: true,
@@ -1223,11 +1222,7 @@ export async function urlSourceCrawlWorkflow(
 				try {
 					const scraped = await firecrawlScrapeForCrawlActivity({
 						url: targetUrl,
-						apiKey,
-						...(providerName !== undefined ? { providerName } : {}),
-						...(providerEndpoint !== undefined
-							? { providerEndpoint }
-							: {}),
+						...scraperReference,
 						...(discoverLinks !== undefined
 							? { discoverLinks }
 							: {}),
@@ -1424,8 +1419,7 @@ export async function urlSourceCrawlWorkflow(
 			// patched branch above.
 			const crawled = await firecrawlCrawlActivity({
 				url,
-				apiKey,
-				...(providerName !== undefined ? { providerName } : {}),
+				...scraperReference,
 				includePaths:
 					includePaths.length > 0 ? includePaths : undefined,
 				limit: maxPages,

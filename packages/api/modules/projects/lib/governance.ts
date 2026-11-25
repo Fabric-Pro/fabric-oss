@@ -7,73 +7,22 @@
  */
 
 import { db, type Prisma } from "@repo/database";
-import {
-	hasPermission,
-	type Permission,
-	resolveOrgPermissions,
-	resolveProjectPermissions,
-} from "@repo/permissions";
+import type { Permission } from "@repo/permissions";
+import { resolveProjectPermissionDecision } from "../../../lib/project-permission-decision";
 
-/**
- * In-handler permission check that follows the exact resolution order of
- * `requireProjectPermission` (packages/api/orpc/middleware/require-permission.ts):
- *
- *   A. Personal-project owner (no org, `project.userId` matches).
- *   B. An **active** ProjectMember row (accepted, non-expired) is
- *      authoritative — an org admin holding a project-level Viewer row
- *      loses the permission on that project. This is intended (§3.4).
- *   C. Fallback to the caller's OrgMember role on the project's host org.
- *
- * Use this when a procedure already carries one permission middleware and a
- * subset of its input needs a stricter permission (e.g. governance fields on
- * `projects.update`). Returns false when the project does not exist.
- */
+/** Additional in-handler permission check that propagates lookup errors. */
 export async function userHasProjectPermissionStrict(
 	projectId: string,
 	userId: string,
 	permission: Permission,
 ): Promise<boolean> {
-	const project = await db.project.findUnique({
-		where: { id: projectId },
-		select: { userId: true, organizationId: true },
-	});
-	if (!project) {
-		return false;
-	}
-
-	if (project.userId === userId && project.organizationId === null) {
-		return true;
-	}
-
-	const member = await db.projectMember.findUnique({
-		where: { projectId_userId: { projectId, userId } },
-		select: { role: true, acceptedAt: true, expiresAt: true },
-	});
-	const memberActive =
-		member !== null &&
-		member.acceptedAt !== null &&
-		(member.expiresAt === null || member.expiresAt > new Date());
-	if (memberActive) {
-		return hasPermission(
-			resolveProjectPermissions(member.role),
+	return (
+		await resolveProjectPermissionDecision({
+			projectId,
+			userId,
 			permission,
-		);
-	}
-
-	if (project.organizationId) {
-		const orgMember = await db.member.findFirst({
-			where: { organizationId: project.organizationId, userId },
-			select: { role: true },
-		});
-		if (orgMember) {
-			return hasPermission(
-				resolveOrgPermissions(orgMember.role),
-				permission,
-			);
-		}
-	}
-
-	return false;
+		})
+	).allowed;
 }
 
 /** Project columns whose change requires PROJECT_GOVERNANCE_MANAGE. */

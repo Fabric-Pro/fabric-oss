@@ -907,3 +907,115 @@ describe("DocumentFolderList — after an action asks for a read", () => {
 		await expectReadShownWithinSeconds();
 	});
 });
+
+describe("DocumentFolderList — Google Drive", () => {
+	function googleFolder(overrides: Record<string, unknown> = {}) {
+		return folder({
+			provider: "googledrive",
+			name: "Specs",
+			drivePath: "/Projects/Specs",
+			siteName: null,
+			libraryName: null,
+			siteId: null,
+			driveId: "g-root",
+			itemId: "g-specs",
+			ancestorIds: ["g-projects", "g-root"],
+			webUrl: "https://drive.example.com/drive/folders/g-specs",
+			...overrides,
+		});
+	}
+
+	async function reconnectFromCard() {
+		const c = await card("Specs");
+		fireEvent.click(c.getByRole("button", { name: "Reconnect" }));
+		const dialog = await screen.findByRole("alertdialog");
+		expect(dialog).toHaveTextContent("Google Drive connection");
+		fireEvent.click(
+			within(dialog).getByRole("button", { name: "Reconnect" }),
+		);
+	}
+
+	beforeEach(() => {
+		mocks.list.mockResolvedValue({
+			view: "editor",
+			folders: [googleFolder()],
+		});
+	});
+
+	it("shows the folder's place as Google Drive with its path", async () => {
+		renderSection();
+		const c = await card("Specs");
+		expect(
+			c.getByText("Google Drive · /Projects/Specs"),
+		).toBeInTheDocument();
+		expect(
+			c.getByRole("link", { name: "Open Specs in Google Drive" }),
+		).toBeInTheDocument();
+	});
+
+	it("connects Google Drive in a popup first when the editor has no connection, then reconnects", async () => {
+		mocks.reconnect
+			.mockRejectedValueOnce(
+				new ORPCError("PRECONDITION_FAILED", {
+					message: "Connect your Google Drive account.",
+					data: { code: "GOOGLE_DRIVE_NOT_CONNECTED" },
+				}),
+			)
+			.mockResolvedValueOnce({
+				folderId: "folder-1",
+				importStarted: true,
+			});
+		mocks.oauthStart.mockResolvedValue({
+			authorizationUrl: "https://accounts.example.com/authorize",
+		});
+		mocks.openPopup.mockReturnValue({ closed: false });
+
+		renderSection();
+		await reconnectFromCard();
+
+		await waitFor(() =>
+			expect(mocks.oauthStart).toHaveBeenCalledWith(
+				expect.objectContaining({
+					provider: "GOOGLE_DRIVE",
+					organizationId: "org-1",
+				}),
+			),
+		);
+		await waitFor(() => expect(mocks.openPopup).toHaveBeenCalled());
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				origin: window.location.origin,
+				data: { type: "oauth_success" },
+			}),
+		);
+		await waitFor(() => expect(mocks.reconnect).toHaveBeenCalledTimes(2));
+		await waitFor(() =>
+			expect(mocks.toastSuccess).toHaveBeenCalledWith(
+				"Specs reconnected. Reading it now.",
+			),
+		);
+	});
+
+	it("shows on the card why a refused reconnect could not open the folder, and keeps Reconnect", async () => {
+		mocks.reconnect.mockRejectedValue(
+			new ORPCError("BAD_REQUEST", {
+				message:
+					"You cannot open this folder in Google Drive. It may have been moved or deleted, or it is no longer shared with you.",
+				data: {
+					code: "GOOGLE_DRIVE_FOLDER_UNREADABLE",
+					driveId: "g-root",
+					itemId: "g-specs",
+				},
+			}),
+		);
+		renderSection();
+		await reconnectFromCard();
+
+		const c = await card("Specs");
+		expect(await c.findByRole("alert")).toHaveTextContent(
+			"You cannot open this folder in Google Drive.",
+		);
+		expect(c.getByRole("button", { name: "Reconnect" })).toBeEnabled();
+		expect(mocks.oauthStart).not.toHaveBeenCalled();
+	});
+});

@@ -1,518 +1,437 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
-	CREDENTIAL_FREE_JOB_NAME_EXPRESSION,
-	credentialFreeCheckName,
-	DELEGATED_CHECK_NAME,
-	evaluateAggregateOutcome,
 	evaluateCredentialFreeOutcome,
-	evaluateReplayEligibility,
-	evaluateTrustedDenial,
-	REPLAY_JOB_CONDITION,
+	REPLAY_ELIGIBILITY_EXPRESSION,
 	REQUIRED_CHECK_NAME,
-	shouldRunReplay,
-	TRUSTED_DENIAL_JOB_CONDITION,
 } from "./replay-eligibility.mjs";
 
 const trustedWorkflow = await readFile(
 	new URL("../../workflows/temporal-replay-validation.yml", import.meta.url),
 	"utf8",
 );
-const credentialFreeWorkflow = await readFile(
+const companion = await readFile(
 	new URL("../../workflows/temporal-replay-pr-check.yml", import.meta.url),
 	"utf8",
 );
 
+function stepScript(name) {
+	const steps = companion.split(/^ {6}- /m);
+	const step = steps.find((step) => step.startsWith(`name: ${name}\n`));
+	const script = step?.split(/^ {8}run: \|\n/m)[1];
+	assert.ok(script, `${name} must have an inline run script`);
+	return script.replace(/^ {10}/gm, "");
+}
+
+test("the companion has one constant replay check and pins replay admission", () => {
+	assert.deepEqual(
+		[...companion.matchAll(/^ {4}name: (.*)$/gm)]
+			.map(([, name]) => name)
+			.filter((name) => name.includes(REQUIRED_CHECK_NAME)),
+		[REQUIRED_CHECK_NAME],
+	);
+	assert.match(
+		companion,
+		/^ {2}replay_check:\n {4}name: replay-validation$/m,
+	);
+	const [, condition] =
+		companion.match(/^ {6}replay_eligible: >-\n\s*\$\{\{([\s\S]*?)\}\}/m) ??
+		[];
+	assert.ok(condition, "replay_eligible must be an expression");
+	assert.equal(
+		condition.replaceAll(/\s+/g, " ").trim(),
+		REPLAY_ELIGIBILITY_EXPRESSION.replaceAll(/\s+/g, " "),
+	);
+});
+
 const basePullRequest = {
-	eventName: "pull_request_target",
+	eventName: "pull_request",
 	repository: "Fabric-Pro/fabric",
 	headRepository: "Fabric-Pro/fabric",
-	pullRequestAuthor: "developer",
-	headRef: "feature/replay-safe-change",
+	pullRequestAuthor: "example-developer",
+	headRef: "feature/example",
 	workflowsChanged: true,
-	initialStatusResult: "success",
-	authorizationResult: "success",
 	changesResult: "success",
-	replayResult: "success",
 };
+const publicPullRequest = {
+	repository: "Fabric-Pro/fabric-oss",
+	headRepository: "Fabric-Pro/fabric-oss",
+};
+const relay = { ...publicPullRequest, pullRequestAuthor: "fabric-relay[bot]" };
 
-function normalizeExpression(expression) {
-	// Promotion routing is evaluated separately against live REST metadata.
-	// Retain the existing exact pin on the original replay authorization.
-	const guarded = expression.match(
-		/^\s*always\(\) && (?:!cancelled\(\) && )?\(needs\.promotion_policy\.result != 'success' \|\| needs\.promotion_policy\.outputs\.reduced != 'true'\) && (?:needs\.[a-z_]+\.result == 'success' && )*\(([\s\S]*)\)\s*$/,
-	);
-	const original = guarded ? guarded[1] : expression;
-	return original.replaceAll(/\s+/g, " ").trim();
-}
-
-function jobBody(workflow, name, nextName) {
-	const end = nextName ? `\n {2}${nextName}:` : "$";
-	const match = workflow.match(
-		new RegExp(`\\n {2}${name}:\\n([\\s\\S]*?)${end}`),
-	);
-	assert.ok(match, `${name} job was not found`);
-	return match[1];
-}
-
-function blockExpression(job, followingKey) {
-	const match = job.match(
-		new RegExp(
-			`\\n {4}(?:if|name): >-\\n([\\s\\S]*?)\\n {4}${followingKey}:`,
-		),
-	);
-	assert.ok(match, `block expression before ${followingKey} was not found`);
-	return match[1]
-		.replace(/^\s*\$\{\{/, "")
-		.replace(/\}\}\s*$/, "")
-		.trim();
-}
-
-// One trusted job detects changed paths AND authorizes; `publish_denial` is
-// the job that follows it in the file.
-const authorizeJob = jobBody(trustedWorkflow, "authorize", "publish_denial");
-const denialJob = jobBody(
-	trustedWorkflow,
-	"publish_denial",
-	"initialize_status",
-);
-const initializeJob = jobBody(trustedWorkflow, "initialize_status", "replay");
-const replayJob = jobBody(trustedWorkflow, "replay", "publish_outcome");
-const publishJob = jobBody(trustedWorkflow, "publish_outcome");
-const credentialChangesJob = jobBody(
-	credentialFreeWorkflow,
-	"changes",
-	"replay_check",
-);
-const credentialCheckJob = jobBody(credentialFreeWorkflow, "replay_check");
-
-test("secret-bearing execution uses only trusted default-branch workflow code", () => {
-	assert.match(trustedWorkflow, /^ {2}pull_request_target:$/m);
-	assert.doesNotMatch(trustedWorkflow, /^ {2}pull_request:$/m);
-	assert.match(trustedWorkflow, /^ {2}workflow_dispatch:$/m);
-	assert.match(trustedWorkflow, /^permissions: \{\}$/m);
-});
-
-test("credential-free producer runs on pull_request only and has no private execution surface", () => {
-	assert.match(credentialFreeWorkflow, /^ {2}pull_request:$/m);
-	assert.doesNotMatch(credentialFreeWorkflow, /^ {2}pull_request_target:$/m);
-	assert.match(credentialFreeWorkflow, /^permissions: \{\}$/m);
-	assert.doesNotMatch(credentialFreeWorkflow, /\$\{\{\s*secrets\./);
-	assert.doesNotMatch(credentialFreeWorkflow, /^ {4}environment:/m);
-	assert.doesNotMatch(
-		credentialFreeWorkflow,
-		/pnpm install|fetch:replay-histories|test:replay/,
-	);
-	assert.doesNotMatch(credentialFreeWorkflow, /actions\/checkout/);
-	assert.doesNotMatch(credentialFreeWorkflow, /statuses: write/);
-	assert.doesNotMatch(
-		credentialFreeWorkflow,
-		/TEMPORAL_(?:ADDRESS|NAMESPACE|CLOUD_API_KEY)/,
-	);
-});
-
-test("dynamic automatic CheckRun name exactly matches tested producer routing", () => {
-	assert.equal(
-		normalizeExpression(blockExpression(credentialCheckJob, "needs")),
-		normalizeExpression(CREDENTIAL_FREE_JOB_NAME_EXPRESSION),
-	);
-	assert.match(credentialCheckJob, /if: >-\n {6}always\(\)/);
-});
-
-test("trusted replay gate exactly matches the tested eligibility policy", () => {
-	assert.equal(
-		normalizeExpression(blockExpression(replayJob, "runs-on")),
-		normalizeExpression(REPLAY_JOB_CONDITION),
-	);
-	assert.match(replayJob, /^ {4}environment: dev$/m);
-});
-
-test("trusted denial gate exactly matches the tested blocking policy", () => {
-	assert.equal(
-		normalizeExpression(blockExpression(denialJob, "runs-on")),
-		normalizeExpression(TRUSTED_DENIAL_JOB_CONDITION),
-	);
-	assert.match(denialJob, /needs: \[authorize, promotion_policy\]/);
-});
-
-test("pending and final replay statuses run only for eligible relevant PRs or manual dispatch", () => {
-	for (const job of [initializeJob, publishJob]) {
-		assert.match(job, /needs\.authorize\.outputs\.workflows == 'true'/);
-		assert.match(
-			job,
-			/needs\.authorize\.outputs\.secret_eligible == 'true'/,
-		);
-	}
-	assert.match(initializeJob, /needs: \[authorize, promotion_policy\]/);
-	assert.match(publishJob, /if: >-\n {6}always\(\)/);
-	assert.equal(
-		[...trustedWorkflow.matchAll(/statuses\/\$PR_HEAD_SHA/g)].length,
-		3,
-	);
-	assert.equal(
-		[...trustedWorkflow.matchAll(/--raw-field context=replay-validation/g)]
-			.length,
-		3,
-	);
-	assert.equal(
-		[...trustedWorkflow.matchAll(/^ {6}statuses: write$/gm)].length,
-		3,
-	);
-});
-
-test("trusted gate executes no PR code before authorization", () => {
-	for (const [name, body] of [
-		["publish_denial", denialJob],
-		["initialize_status", initializeJob],
-	]) {
-		assert.doesNotMatch(
-			body,
-			/actions\/checkout|pnpm install|secrets\.|environment:/,
-		);
-		assert.doesNotMatch(
-			body,
-			/^ {6}uses:/m,
-			`${name} must not execute an action`,
-		);
-	}
-	// The merged gate detects changed paths as well as authorizing, so unlike
-	// the publisher jobs it does run two pinned actions. It still installs
-	// nothing, holds no secret and no environment, and its single checkout
-	// takes the trusted default-branch commit on workflow_dispatch only —
-	// never a PR ref, and never on a pull_request_target event.
-	assert.doesNotMatch(authorizeJob, /pnpm install|secrets\.|environment:/);
-	assert.equal(
-		[...authorizeJob.matchAll(/actions\/checkout/g)].length,
-		1,
-		"the gate must have exactly one checkout",
-	);
-	assert.match(
-		authorizeJob,
-		/if: github\.event_name == 'workflow_dispatch'\n {8}with:\n {10}ref: \$\{\{ github\.sha \}\}/,
-	);
-	assert.doesNotMatch(
-		authorizeJob,
-		/ref: \$\{\{ github\.event\.pull_request\.head/,
-	);
-	assert.doesNotMatch(credentialChangesJob, /actions\/checkout/);
-});
-
-test("trusted gate enforces exact repository, App creator, and relay namespace metadata", () => {
-	assert.match(
-		authorizeJob,
-		/if \[\[ "\$HEAD_REPOSITORY" != "\$REPOSITORY" \]\]; then/,
-	);
-	assert.match(
-		authorizeJob,
-		/"\$REPOSITORY" == "Fabric-Pro\/fabric" \|\|\n {18}"\$REPOSITORY" == "Fabric-Pro\/fabric-dev"/,
-	);
-	assert.match(
-		authorizeJob,
-		/"\$PR_AUTHOR" == "fabric-relay\[bot\]" &&\n {18}"\$HEAD_REF" == relay\/\*/,
-	);
-	assert.match(authorizeJob, /public_pr_outside_relay_namespace/);
-});
-
-test("eligible PR replay checks out only the immutable PR head SHA", () => {
-	assert.match(replayJob, /if: github\.event_name == 'pull_request_target'/);
-	assert.match(
-		replayJob,
-		/ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/,
-	);
-	assert.equal(
+test("replay eligibility and the actual companion policy agree on PR cases", () => {
+	const cases = [
 		[
-			...replayJob.matchAll(
-				/ref: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/g,
-			),
-		].length,
-		1,
-	);
-	assert.equal(
-		[...replayJob.matchAll(/persist-credentials: false/g)].length,
-		2,
-	);
-});
-
-test("required trusted status is posted to the exact validated PR head SHA", () => {
-	assert.match(initializeJob, /--raw-field state=pending/);
-	assert.match(denialJob, /--raw-field state=failure/);
-	assert.match(publishJob, /--raw-field state="\$state"/);
-	assert.doesNotMatch(trustedWorkflow, /^ {4}name: replay-validation$/m);
-	assert.equal(
-		[...trustedWorkflow.matchAll(/\^\[0-9a-f\]\{40\}\$/g)].length,
-		4,
-	);
-});
-
-test("event values enter shell through env rather than expression interpolation", () => {
-	for (const job of [
-		initializeJob,
-		authorizeJob,
-		denialJob,
-		publishJob,
-		credentialCheckJob,
-	]) {
-		const scripts = [
-			...job.matchAll(/run: \|\n([\s\S]*?)(?=\n {6}\S|$)/g),
-		].map(([, script]) => script);
-		for (const script of scripts) {
-			assert.doesNotMatch(script, /\$\{\{/);
-		}
-	}
-	assert.match(trustedWorkflow, /--raw-field description="\$description"/);
-});
-
-test("trusted manual dispatch always runs the real replay", () => {
-	const manual = {
-		...basePullRequest,
-		eventName: "workflow_dispatch",
-		repository: "example/renamed-repository",
-		headRepository: undefined,
-		pullRequestAuthor: undefined,
-		headRef: undefined,
-		workflowsChanged: false,
-	};
-	assert.deepEqual(shouldRunReplay(manual), {
-		run: true,
-		reason: "trusted_manual_dispatch",
-	});
-	assert.deepEqual(evaluateAggregateOutcome(manual), {
-		success: true,
-		reason: "replay_passed",
-	});
-});
-
-test("private same-repository relevant PRs delegate to trusted real replay", () => {
-	for (const repository of ["Fabric-Pro/fabric", "Fabric-Pro/fabric-dev"]) {
-		const input = {
-			...basePullRequest,
-			repository,
-			headRepository: repository,
-		};
-		assert.equal(shouldRunReplay(input).run, true);
-		assert.equal(credentialFreeCheckName(input), DELEGATED_CHECK_NAME);
-		assert.deepEqual(evaluateCredentialFreeOutcome(input), {
-			success: true,
-			reason: "delegated_to_trusted_replay",
-		});
-	}
-});
-
-test("fabric-oss relay eligibility is exact and has exclusive producers", () => {
-	const input = {
-		...basePullRequest,
-		repository: "Fabric-Pro/fabric-oss",
-		headRepository: "Fabric-Pro/fabric-oss",
-		pullRequestAuthor: "fabric-relay[bot]",
-		headRef: "relay/staging-pr-11-2870647a7196",
-	};
-	assert.deepEqual(evaluateReplayEligibility(input), {
-		eligible: true,
-		reason: "authenticated_public_relay_pr",
-	});
-	assert.equal(credentialFreeCheckName(input), DELEGATED_CHECK_NAME);
-	assert.deepEqual(evaluateCredentialFreeOutcome(input), {
-		success: true,
-		reason: "delegated_to_trusted_replay",
-	});
-	assert.equal(shouldRunReplay(input).run, true);
-});
-
-test("ordinary, fork, and Dependabot fabric-oss PRs get a green required credential-free check", () => {
-	for (const pullRequest of [
-		{
-			headRepository: "Fabric-Pro/fabric-oss",
-			pullRequestAuthor: "external-contributor",
-			headRef: "feature/replay-fix",
-		},
-		{
-			headRepository: "external-contributor/fabric-oss",
-			pullRequestAuthor: "external-contributor",
-			headRef: "replay-fix",
-		},
-		{
-			headRepository: "Fabric-Pro/fabric-oss",
-			pullRequestAuthor: "dependabot[bot]",
-			headRef: "dependabot/npm_and_yarn/example-1.0.0",
-		},
-	]) {
-		const input = {
-			...basePullRequest,
-			...pullRequest,
-			repository: "Fabric-Pro/fabric-oss",
-			replayResult: "skipped",
-		};
-		assert.equal(credentialFreeCheckName(input), REQUIRED_CHECK_NAME);
-		assert.deepEqual(evaluateCredentialFreeOutcome(input), {
-			success: true,
-			reason: "public_credential_free_not_applicable",
-		});
-		assert.deepEqual(evaluateTrustedDenial(input), {
-			publish: false,
-			reason: "trusted_denial_not_required",
-		});
-		assert.equal(shouldRunReplay(input).run, false);
-	}
+			{},
+			false,
+			"ops_repository_replay_not_applicable",
+			/::notice::Temporal replay runs only in fabric-dev/,
+		],
+		[
+			{
+				repository: "Fabric-Pro/fabric-dev",
+				headRepository: "Fabric-Pro/fabric-dev",
+			},
+			true,
+			"private_same_repository_pr",
+			/Replay is required/,
+		],
+		[
+			{ ...relay, headRef: "relay/example" },
+			false,
+			"authenticated_public_relay_pr",
+			/ran on the corresponding private staging PR/,
+		],
+		[
+			{ ...relay, headRef: "feature/example" },
+			false,
+			"public_pr_outside_relay_namespace",
+			/::error::Relay App PR is outside/,
+		],
+		[
+			publicPullRequest,
+			false,
+			"public_credential_free_not_applicable",
+			/not applicable/,
+		],
+		[
+			{ ...publicPullRequest, headRepository: "example-org/fork" },
+			false,
+			"public_credential_free_not_applicable",
+			/not applicable/,
+		],
+		[
+			{ ...publicPullRequest, pullRequestAuthor: "dependabot[bot]" },
+			false,
+			"public_credential_free_not_applicable",
+			/not applicable/,
+		],
+		[
+			{ headRepository: "example-org/fork" },
+			false,
+			"replay_not_authorized",
+			/::error::Workflow-relevant private-repository fork/,
+		],
+		[
+			{
+				repository: "Fabric-Pro/fabric-dev",
+				headRepository: "example-org/fork",
+			},
+			false,
+			"replay_not_authorized",
+			/::error::Workflow-relevant private-repository fork/,
+		],
+		[
+			{
+				repository: "example-org/fabric",
+				headRepository: "example-org/fabric",
+			},
+			false,
+			"replay_not_authorized",
+			/::error::/,
+		],
+		[
+			{ workflowsChanged: false },
+			false,
+			"no_workflow_changes",
+			/no relevant files changed/,
+		],
+		[
+			{ workflowsChanged: false, headRepository: "example-org/fork" },
+			false,
+			"no_workflow_changes",
+			/no relevant files changed/,
+		],
+		[
+			{ ...relay, workflowsChanged: false },
+			false,
+			"no_workflow_changes",
+			/no relevant files changed/,
+		],
+		[
+			{ changesResult: "failure" },
+			false,
+			"change_detection_failed",
+			/::error::Credential-free Temporal change detection failed/,
+		],
+		[
+			{ workflowsChanged: undefined },
+			false,
+			"invalid_change_detection_output",
+			/::error::Temporal change detection returned invalid output/,
+		],
+	];
+	const script = stepScript("Report credential-free replay policy");
 	assert.match(
-		credentialCheckJob,
+		script,
 		/No checkout, dependency installation, private history access, secrets, or PR code execution occurred/,
 	);
-});
-
-test("no-change PRs get the stable required credential-free check", () => {
-	const input = { ...basePullRequest, workflowsChanged: false };
-	assert.equal(credentialFreeCheckName(input), REQUIRED_CHECK_NAME);
-	assert.deepEqual(evaluateCredentialFreeOutcome(input), {
-		success: true,
-		reason: "no_workflow_changes",
-	});
-	assert.deepEqual(evaluateTrustedDenial(input), {
-		publish: false,
-		reason: "no_workflow_changes",
-	});
-});
-
-test("trusted failures pair with any PR-controlled required CheckRun", () => {
-	const privateFork = {
-		...basePullRequest,
-		headRepository: "external-contributor/fabric",
-		replayResult: "skipped",
-	};
-	assert.equal(credentialFreeCheckName(privateFork), REQUIRED_CHECK_NAME);
-	assert.deepEqual(evaluateCredentialFreeOutcome(privateFork), {
-		success: false,
-		reason: "replay_not_authorized",
-	});
-	assert.deepEqual(evaluateTrustedDenial(privateFork), {
-		publish: true,
-		reason: "private_replay_not_authorized",
-	});
-
-	const relayNamespaceMistake = {
-		...basePullRequest,
-		repository: "Fabric-Pro/fabric-oss",
-		headRepository: "Fabric-Pro/fabric-oss",
-		pullRequestAuthor: "fabric-relay[bot]",
-		headRef: "feature/not-relay",
-		replayResult: "skipped",
-	};
-	assert.equal(
-		credentialFreeCheckName(relayNamespaceMistake),
-		REQUIRED_CHECK_NAME,
-	);
-	assert.deepEqual(evaluateCredentialFreeOutcome(relayNamespaceMistake), {
-		success: false,
-		reason: "public_pr_outside_relay_namespace",
-	});
-	assert.deepEqual(evaluateAggregateOutcome(relayNamespaceMistake), {
-		success: false,
-		reason: "replay_not_authorized",
-	});
-	assert.deepEqual(evaluateTrustedDenial(relayNamespaceMistake), {
-		publish: true,
-		reason: "public_pr_outside_relay_namespace",
-	});
-	assert.match(denialJob, /--raw-field context=replay-validation/);
-	assert.match(denialJob, /--raw-field state=failure/);
-	assert.match(denialJob, /branch protection requires both to\n {4}# pass/);
-});
-
-test("change-detection failures fail the credential-free required check", () => {
-	for (const [override, reason] of [
-		[{ changesResult: "failure" }, "change_detection_failed"],
-		[{ workflowsChanged: undefined }, "invalid_change_detection_output"],
-	]) {
+	assert.match(script, /manual policy is not automated by this check/);
+	for (const [override, run, reason, message] of cases) {
 		const input = { ...basePullRequest, ...override };
-		assert.equal(credentialFreeCheckName(input), REQUIRED_CHECK_NAME);
-		assert.deepEqual(evaluateCredentialFreeOutcome(input), {
-			success: false,
+		assert.deepEqual(evaluateCredentialFreeOutcome(input), { run, reason });
+		const result = spawnSync("bash", ["-c", script], {
+			encoding: "utf8",
+			env: {
+				...process.env,
+				REPOSITORY: input.repository,
+				HEAD_REPOSITORY: input.headRepository,
+				PR_AUTHOR: input.pullRequestAuthor,
+				HEAD_REF: input.headRef,
+				CHANGES_RESULT: input.changesResult,
+				WORKFLOWS_CHANGED: String(input.workflowsChanged ?? ""),
+				REPLAY_REQUIRED: String(run),
+			},
+		});
+		assert.equal(
+			result.status,
+			message.source.startsWith("::error::") ? 1 : 0,
 			reason,
+		);
+		assert.match(result.stdout, message, reason);
+	}
+	for (const eventName of [
+		"workflow_dispatch",
+		"pull_request_target",
+		"schedule",
+		"push",
+	]) {
+		assert.deepEqual(
+			evaluateCredentialFreeOutcome({ ...basePullRequest, eventName }),
+			{
+				run: false,
+				reason: "unsupported_event",
+			},
+		);
+	}
+});
+
+test("snapshot metadata validation enforces age, UTC timestamp, and producer identity", async (t) => {
+	const cwd = await mkdtemp(join(tmpdir(), "example-replay-metadata-"));
+	t.after(() => rm(cwd, { recursive: true, force: true }));
+	const fixtures = join(cwd, "packages/temporal/__tests__/__fixtures__");
+	await mkdir(fixtures, { recursive: true });
+	const metadata = join(fixtures, "history-snapshot.json");
+	const clock = join(cwd, "clock.cjs");
+	const now = Date.parse("2026-01-02T12:00:00.000Z");
+	await writeFile(clock, `Date.now = () => ${now};\n`);
+	const minute = 60_000;
+	const fresh = {
+		fetchedAt: new Date(now - minute).toISOString(),
+		sourceSha: "a".repeat(40),
+		runId: "123",
+		runAttempt: "2",
+	};
+	const atAge = (minutes) => ({
+		...fresh,
+		fetchedAt: new Date(now - minutes * minute).toISOString(),
+	});
+	const script = stepScript("Validate snapshot metadata");
+	for (const [name, input, expectedError] of [
+		["fresh", fresh],
+		[
+			"UTC offset with no fractions",
+			{ ...fresh, fetchedAt: "2026-01-02T11:59:00+00:00" },
+		],
+		["23h59m", atAge(24 * 60 - 1)],
+		["24h", atAge(24 * 60)],
+		["24h01m", atAge(24 * 60 + 1), /age 24\.02 hours/],
+		[
+			"missing file",
+			undefined,
+			/history-snapshot\.json is missing or invalid JSON/,
+		],
+		[
+			"invalid JSON",
+			"{",
+			/history-snapshot\.json is missing or invalid JSON/,
+		],
+		[
+			"missing fetchedAt",
+			{ ...fresh, fetchedAt: undefined },
+			/fetchedAt is not a valid UTC timestamp/,
+		],
+		[
+			"fetchedAt is not a string",
+			{ ...fresh, fetchedAt: [fresh.fetchedAt] },
+			/fetchedAt is not a valid UTC timestamp/,
+		],
+		[
+			"invalid fetchedAt",
+			{ ...fresh, fetchedAt: "yesterday" },
+			/fetchedAt is not a valid UTC timestamp/,
+		],
+		[
+			"non-UTC time",
+			{ ...fresh, fetchedAt: "2026-01-02T12:00:00.000+02:00" },
+			/fetchedAt is not a valid UTC timestamp/,
+		],
+		[
+			"unknown UTC offset",
+			{ ...fresh, fetchedAt: "2026-01-02T11:59:00-00:00" },
+			/fetchedAt is not a valid UTC timestamp/,
+		],
+		[
+			"normalized midnight",
+			{ ...fresh, fetchedAt: "2026-01-01T24:00:00Z" },
+			/fetchedAt is not a valid UTC timestamp/,
+		],
+		[
+			"invalid calendar month",
+			{ ...fresh, fetchedAt: "2026-13-01T12:00:00.000Z" },
+			/fetchedAt is not a valid UTC timestamp/,
+		],
+		[
+			"invalid calendar date",
+			{ ...fresh, fetchedAt: "2026-02-30T12:00:00.000Z" },
+			/fetchedAt is not a valid UTC timestamp/,
+		],
+		["future within skew", atAge(-5)],
+		["future beyond skew", atAge(-6), /age -0\.10 hours/],
+		[
+			"missing source SHA",
+			{ ...fresh, sourceSha: undefined },
+			/sourceSha is invalid/,
+		],
+		[
+			"non-string sourceSha",
+			{ ...fresh, sourceSha: [fresh.sourceSha] },
+			/sourceSha is invalid/,
+		],
+		[
+			"invalid source SHA",
+			{ ...fresh, sourceSha: "branch" },
+			/sourceSha is invalid/,
+		],
+		[
+			"missing producer run ID",
+			{ ...fresh, runId: undefined },
+			/runId is invalid/,
+		],
+		["non-string runId", { ...fresh, runId: 123 }, /runId is invalid/],
+		[
+			"invalid producer run ID",
+			{ ...fresh, runId: "0" },
+			/runId is invalid/,
+		],
+		[
+			"missing producer run attempt",
+			{ ...fresh, runAttempt: undefined },
+			/runAttempt is invalid/,
+		],
+		[
+			"non-string runAttempt",
+			{ ...fresh, runAttempt: 2 },
+			/runAttempt is invalid/,
+		],
+		[
+			"invalid producer run attempt",
+			{ ...fresh, runAttempt: "0" },
+			/runAttempt is invalid/,
+		],
+		[
+			"source SHA differs from the selected run",
+			{ ...fresh, sourceSha: "b".repeat(40) },
+			/metadata does not match the selected producer run/,
+		],
+		[
+			"run ID differs from the selected run",
+			{ ...fresh, runId: "124" },
+			/metadata does not match the selected producer run/,
+		],
+		[
+			"run attempt differs from the selected attempt",
+			{ ...fresh, runAttempt: "3" },
+			/metadata does not match the selected producer run/,
+		],
+	]) {
+		await t.test(name, async () => {
+			await rm(metadata, { force: true });
+			if (input !== undefined) {
+				await writeFile(
+					metadata,
+					typeof input === "string" ? input : JSON.stringify(input),
+				);
+			}
+			const result = spawnSync("bash", ["-c", script], {
+				cwd,
+				encoding: "utf8",
+				env: {
+					...process.env,
+					NODE_OPTIONS: `--require=${clock}`,
+					GITHUB_SERVER_URL: "https://example.com",
+					GITHUB_REPOSITORY: "example-org/source",
+					SNAPSHOT_RUN_SHA: fresh.sourceSha,
+					SNAPSHOT_RUN_ID: fresh.runId,
+					SNAPSHOT_RUN_ATTEMPT: fresh.runAttempt,
+					SNAPSHOT_PRODUCER_URL:
+						"https://example.com/example-org/source/actions/runs/123",
+				},
+			});
+			const output = result.stdout + result.stderr;
+			if (expectedError) {
+				assert.equal(result.status, 1, output);
+				assert.match(output, expectedError);
+				assert.match(
+					output,
+					/Run "Temporal Replay Validation" manually on staging to refresh the snapshot, then re-run this check/,
+				);
+			} else {
+				assert.equal(result.status, 0, output);
+				assert.match(output, /Snapshot age: -?\d+\.\d+ hours/);
+				assert.ok(output.includes(fresh.sourceSha));
+				assert.match(
+					output,
+					/https:\/\/example\.com\/example-org\/source\/actions\/runs\/123\/attempts\/2/,
+				);
+				assert.match(
+					output,
+					/Artifact producer run: https:\/\/example\.com\/example-org\/source\/actions\/runs\/123\n$/,
+				);
+			}
 		});
 	}
 });
 
-test("trusted change and authorization failures publish exact-head denial", () => {
-	assert.deepEqual(
-		evaluateTrustedDenial({ ...basePullRequest, changesResult: "failure" }),
-		{ publish: true, reason: "trusted_change_detection_failed" },
-	);
-	assert.deepEqual(
-		evaluateTrustedDenial({
-			...basePullRequest,
-			workflowsChanged: undefined,
-		}),
-		{ publish: true, reason: "invalid_change_detection_output" },
-	);
-	assert.deepEqual(
-		evaluateTrustedDenial({
-			...basePullRequest,
-			authorizationResult: "failure",
-		}),
-		{ publish: true, reason: "trusted_authorization_failed" },
-	);
-	assert.deepEqual(
-		evaluateTrustedDenial({
-			...basePullRequest,
-			workflowsChanged: false,
-			authorizationResult: "failure",
-		}),
-		{ publish: false, reason: "no_workflow_changes" },
-	);
-});
-
-test("eligible skipped, failed, or unauthorized real replays stay blocking", () => {
-	for (const replayResult of ["skipped", "failure"]) {
+test("the final replay assertion rejects required skipped, failed, or missing replay", () => {
+	const script = stepScript("Require successful replay when applicable");
+	for (const [required, outcome, expected] of [
+		["true", "skipped", 1],
+		["true", "failure", 1],
+		["true", "cancelled", 1],
+		["true", "", 1],
+		["true", "success", 0],
+		["false", "skipped", 0],
+	]) {
+		const result = spawnSync("bash", ["-c", script], {
+			encoding: "utf8",
+			env: {
+				...process.env,
+				REPLAY_REQUIRED: required,
+				REPLAY_OUTCOME: outcome,
+			},
+		});
 		assert.equal(
-			evaluateAggregateOutcome({ ...basePullRequest, replayResult })
-				.success,
-			false,
+			result.status,
+			expected,
+			`${required}/${outcome}: ${result.stdout}${result.stderr}`,
 		);
+		if (expected === 1) {
+			assert.match(
+				result.stdout,
+				/::error::Required Temporal replay did not succeed/,
+			);
+		}
 	}
-	assert.deepEqual(
-		evaluateAggregateOutcome({
-			...basePullRequest,
-			repository: "Fabric-Pro/fabric-oss",
-			headRepository: "Fabric-Pro/fabric-oss",
-			pullRequestAuthor: "contributor",
-			replayResult: "success",
-		}),
-		{ success: false, reason: "ineligible_replay_executed" },
-	);
 });
 
-test("Temporal credentials and environment exist only in guarded replay", () => {
-	assert.equal(
-		[...replayJob.matchAll(/\$\{\{ secrets\.TEMPORAL_[A-Z_]+ \}\}/g)]
-			.length,
-		6,
-	);
-	assert.equal(
-		[...trustedWorkflow.matchAll(/\$\{\{ secrets\.[A-Z_]+ \}\}/g)].length,
-		6,
-	);
-	assert.equal(
-		[...trustedWorkflow.matchAll(/^ {4}environment: dev$/gm)].length,
-		1,
-	);
-	assert.doesNotMatch(replayJob, /statuses: write/);
-});
-
-test("messages distinguish credential-free and real replay outcomes", () => {
-	assert.match(
-		credentialCheckJob,
-		/Credential-free: private Temporal replay is not applicable/,
-	);
-	assert.match(publishJob, /Real dev-history Temporal replay passed/);
-	assert.match(
-		credentialCheckJob,
-		/manual policy is not automated by this check/,
-	);
-});
-
-test("policy files are workflow-relevant and every action is SHA-pinned", () => {
-	for (const workflow of [trustedWorkflow, credentialFreeWorkflow]) {
+test("policy files are workflow-relevant and actions are SHA-pinned", () => {
+	for (const workflow of [trustedWorkflow, companion]) {
 		assert.match(workflow, /- '\.github\/scripts\/temporal-replay\/\*\*'/);
 		assert.match(
 			workflow,
@@ -532,4 +451,60 @@ test("policy files are workflow-relevant and every action is SHA-pinned", () => 
 			}
 		}
 	}
+});
+
+const snapshotJob = trustedWorkflow.split("\n  snapshot_histories:\n")[1];
+
+function snapshotEncryptStep() {
+	return snapshotJob
+		.split("\n      - ")
+		.find((step) =>
+			step.startsWith("name: Encrypt replay history snapshot\n"),
+		);
+}
+
+test("snapshot encryption uses a private temporary GPG home and cleans it up on exit", () => {
+	const step = snapshotEncryptStep();
+	assert.ok(step);
+	assert.ok(
+		step.includes(
+			'GNUPGHOME=$(mktemp -d "$RUNNER_TEMP/temporal-replay-gnupg.XXXXXX")',
+		),
+	);
+	assert.ok(step.includes('chmod 700 "$GNUPGHOME"'));
+	assert.match(step, /^ {10}export GNUPGHOME$/m);
+	const cleanup = step.match(/^ {10}trap '([^']*)^ {10}' EXIT$/m)?.[1];
+	assert.ok(cleanup);
+	assert.ok(
+		cleanup.includes('gpgconf --homedir "$GNUPGHOME" --kill all || true'),
+	);
+	assert.ok(cleanup.includes('rm -rf -- "$GNUPGHOME"'));
+	assert.ok(cleanup.includes('rm -f -- "$archive"'));
+});
+
+test("snapshot decryption sets up a private GPG home after the key guard and cleans up on exit", () => {
+	const script = stepScript("Decrypt replay history snapshot");
+	const guardEnd = script.indexOf("\nfi\n");
+	const ciphertextStart = script.indexOf("\nciphertext=");
+	assert.ok(guardEnd >= 0 && ciphertextStart > guardEnd);
+	assert.equal(
+		script.slice(guardEnd, ciphertextStart),
+		[
+			"",
+			"fi",
+			"",
+			"# Keep the passphrase in the shell and feed GPG on stdin only.",
+			"export -n REPLAY_SNAPSHOT_KEY",
+			"archive=",
+			'GNUPGHOME=$(mktemp -d "$RUNNER_TEMP/temporal-replay-gnupg.XXXXXX")',
+			"trap '",
+			'  rm -f -- "$archive"',
+			'  gpgconf --homedir "$GNUPGHOME" --kill all || true',
+			'  rm -rf -- "$GNUPGHOME"',
+			"' EXIT",
+			'chmod 700 "$GNUPGHOME"',
+			"export GNUPGHOME",
+			'archive=$(mktemp "$RUNNER_TEMP/temporal-replay-snapshot.XXXXXX")',
+		].join("\n"),
+	);
 });

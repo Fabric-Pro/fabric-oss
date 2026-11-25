@@ -25,12 +25,13 @@
  */
 
 import { ORPCError } from "@orpc/server";
-import { getOrganizationMembership } from "@repo/database";
+import { getOrganizationMembership, type Prisma } from "@repo/database";
 import {
 	hasPermission,
 	Permissions,
 	resolveOrgPermissions,
 } from "@repo/permissions";
+import { getProjectPermissionDecision } from "../../../lib/project-permission-decision";
 import type { OAuthStatePayload } from "./oauth-state";
 import { consumeOAuthStateNonce } from "./oauth-state-store";
 
@@ -104,6 +105,59 @@ async function assertCallerMayUseIntegrationsIn(
 				"Your role in this organization no longer allows connecting integrations. Ask an organization admin, then start the connection again.",
 		});
 	}
+}
+
+/** Bind a project-target flow to its host organization and live project permission. */
+export async function assertOAuthProjectBinding(
+	input: { projectId: string; userId: string; organizationId: string },
+	client?: Prisma.TransactionClient,
+): Promise<string> {
+	const decision = await getProjectPermissionDecision(
+		{
+			projectId: input.projectId,
+			userId: input.userId,
+			permission: Permissions.PROJECT_SETTINGS_EDIT,
+		},
+		client,
+	);
+	if (!decision.allowed || decision.organizationId !== input.organizationId) {
+		throw new ORPCError("FORBIDDEN", {
+			message:
+				"You don't have permission to configure repository integrations for this project",
+		});
+	}
+	return decision.organizationId;
+}
+
+/** Validate and bind the project target before exchanging the provider code. */
+export async function authorizeOAuthProjectTarget(
+	state: OAuthStatePayload,
+	provider: "GitHub" | "GitLab",
+) {
+	const host = `${provider.toLowerCase()}.com`;
+	const { projectId, repositoryOwner, repositoryName } = state;
+	if (!projectId || !repositoryOwner || !repositoryName) {
+		throw new ORPCError("BAD_REQUEST", {
+			message:
+				"Missing project integration fields (projectId, repositoryOwner, or repositoryName)",
+		});
+	}
+	if (
+		state.repositoryUrl &&
+		new URL(state.repositoryUrl).hostname.toLowerCase() !== host
+	) {
+		throw new ORPCError("BAD_REQUEST", {
+			message: `Only ${host} repositories are supported for ${provider} connections`,
+		});
+	}
+	const organizationId = await assertOAuthProjectBinding({
+		projectId,
+		userId: state.userId,
+		// Not a query filter: a verified state carries a non-empty organization
+		// id (oauth-state.ts), and it is compared with the project's organization.
+		organizationId: state.organizationId, // tenant-isolation:allow
+	});
+	return { projectId, repositoryOwner, repositoryName, organizationId };
 }
 
 /**

@@ -621,8 +621,14 @@ describe("platform tool authorization coverage", () => {
 			/await assertAgentMayReachReports\(\s*actor,\s*Permissions\.REPORT_EXECUTE,?\s*\)/,
 		);
 		expect(commands).toContain("await loadGeneratableReport(");
+		expect(commands).toMatch(
+			/await assertAgentMayReachReports\(\s*actor,\s*Permissions\.REPORT_READ,?\s*\)/,
+		);
 		expect(commands).toContain(
-			"await assertAgentMayReachReports(actor, Permissions.REPORT_READ);",
+			"!(await canReachProjectReports(input.projectId, caller))",
+		);
+		expect(commands).toContain(
+			"!(await canReachProjectReports(instance.projectId, caller))",
 		);
 		expect(commands).toContain(
 			"!(await canEditReportInstance(instance, caller))",

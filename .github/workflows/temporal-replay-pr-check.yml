@@ -1,13 +1,16 @@
 name: Temporal Replay Credential-Free Gate
 
-# This pull_request workflow is intentionally incapable of private replay. It
-# contains no replay environment or secret reference. Its optional identity
-# classifier reads protected staging policy with a read-only token; it never
-# checks out contributor code. The automatic check producer installs nothing
-# and executes no PR code. It supplies the stable automatic CheckRun for PRs that do
-# not enter trusted replay. For an eligible workflow-changing PR, its job name
-# changes so the pull_request_target workflow is the sole producer of the
-# required `replay-validation` context.
+# This pull_request workflow supplies the required replay-validation CheckRun.
+# Relevant same-repository PRs in fabric-dev download and decrypt a recent
+# dev snapshot and run Temporal replay on GitHub-hosted runners. The workflow
+# uses no Temporal credential or GitHub environment. Its one secret is the
+# snapshot decryption key. Dependabot PRs that require replay fail at
+# decryption because their runs lack repository Actions secrets.
+# Same-repository PRs in the ops repository pass a metadata-only check.
+# Public relay PRs rely on the check on the corresponding private staging PR.
+#
+# The trusted temporal-replay-validation.yml workflow publishes the separate
+# policy status and refreshes the snapshot.
 
 on:
   pull_request:
@@ -49,6 +52,10 @@ jobs:
       pull-requests: read
     outputs:
       workflows: ${{ steps.filter.outputs.workflows }}
+      replay_eligible: >-
+        ${{ github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            github.repository == 'Fabric-Pro/fabric-dev' }}
     steps:
       # On pull_request, paths-filter reads the changed-file list from the
       # Pulls API. There is deliberately no checkout of contributor code.
@@ -70,26 +77,21 @@ jobs:
               - '.github/workflows/temporal-replay-validation.yml'
 
   replay_check:
-    # jobs.<job_id>.name supports the github and needs contexts. This exact
-    # expression mirrors the trusted metadata gate. Only eligible relevant PRs
-    # receive the distinct name; all others create the stable required check.
-    name: >-
-      ${{ needs.changes.result == 'success' &&
-          needs.changes.outputs.workflows == 'true' &&
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          ((github.repository == 'Fabric-Pro/fabric' ||
-            github.repository == 'Fabric-Pro/fabric-dev') ||
-           (github.repository == 'Fabric-Pro/fabric-oss' &&
-            github.event.pull_request.user.login == 'fabric-relay[bot]' &&
-            startsWith(github.event.pull_request.head.ref, 'relay/'))) &&
-          'replay-validation-unprivileged' || 'replay-validation' }}
+    name: replay-validation
     needs: [changes, promotion_policy]
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (always())
-    # Pure shell against env vars; no contributor code execution, and no
-    # compiled binaries. Private PRs use Namespace amd64; other events keep
-    # the GitHub arm64 label.
-    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd1' || 'ubuntu-24.04-arm' }}
+    # Snapshot decryption and replay use GitHub-hosted runners. Metadata-only checks
+    # keep the standard runner for their repository.
+    runs-on: >-
+      ${{ (needs.changes.result == 'success' && needs.changes.outputs.workflows == 'true' && needs.changes.outputs.replay_eligible == 'true')
+          && 'ubuntu-8core-arm'
+          || (github.repository == 'Fabric-Pro/fabric-dev' && github.event_name == 'pull_request' && 'namespace-profile-amd1' || 'ubuntu-24.04-arm') }}
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
     env:
       REPOSITORY: ${{ github.repository }}
       PR_AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -97,6 +99,7 @@ jobs:
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
       CHANGES_RESULT: ${{ needs.changes.result }}
       WORKFLOWS_CHANGED: ${{ needs.changes.outputs.workflows }}
+      REPLAY_REQUIRED: ${{ needs.changes.result == 'success' && needs.changes.outputs.workflows == 'true' && needs.changes.outputs.replay_eligible == 'true' }}
     steps:
       - name: Report credential-free replay policy
         if: github.event_name == 'pull_request'
@@ -117,31 +120,24 @@ jobs:
             exit 0
           fi
 
-          same_repository=false
-          if [[ "$HEAD_REPOSITORY" == "$REPOSITORY" ]]; then
-            same_repository=true
+          if [[ "$REPLAY_REQUIRED" == "true" ]]; then
+            echo "::notice::Replay is required for this private workflow change."
+            exit 0
           fi
 
-          eligible=false
-          if [[ "$same_repository" == "true" &&
-                ("$REPOSITORY" == "Fabric-Pro/fabric" ||
-                 "$REPOSITORY" == "Fabric-Pro/fabric-dev") ]]; then
-            eligible=true
-          elif [[ "$same_repository" == "true" &&
-                  "$REPOSITORY" == "Fabric-Pro/fabric-oss" &&
-                  "$PR_AUTHOR" == "fabric-relay[bot]" &&
-                  "$HEAD_REF" == relay/* ]]; then
-            eligible=true
-          fi
-
-          if [[ "$eligible" == "true" ]]; then
-            echo "::notice::Credential-free preflight passed; the trusted real-history replay owns the required replay-validation context."
+          if [[ "$REPOSITORY" == "Fabric-Pro/fabric" &&
+                "$HEAD_REPOSITORY" == "$REPOSITORY" ]]; then
+            echo "::notice::Temporal replay runs only in fabric-dev."
             exit 0
           fi
 
           if [[ "$REPOSITORY" == "Fabric-Pro/fabric-oss" ]]; then
-            if [[ "$same_repository" == "true" &&
+            if [[ "$HEAD_REPOSITORY" == "$REPOSITORY" &&
                   "$PR_AUTHOR" == "fabric-relay[bot]" ]]; then
+              if [[ "$HEAD_REF" == relay/* ]]; then
+                echo "::notice::Temporal replay ran on the corresponding private staging PR."
+                exit 0
+              fi
               echo "::error::Relay App PR is outside the required relay/** namespace; private replay refused."
               exit 1
             fi
@@ -153,3 +149,271 @@ jobs:
 
           echo "::error::Workflow-relevant private-repository fork PR requires an authorized same-repository replay."
           exit 1
+
+      - name: Checkout exact pull request head
+        if: env.REPLAY_REQUIRED == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup pnpm
+        if: env.REPLAY_REQUIRED == 'true'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        env:
+          npm_config_audit: "false"
+        with:
+          cache: false
+
+      - name: Setup Node.js
+        if: env.REPLAY_REQUIRED == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          check-latest: true
+          package-manager-cache: false
+
+      - name: Locate pnpm's cache directory
+        if: env.REPLAY_REQUIRED == 'true'
+        id: pnpm-cache
+        run: echo "dir=$(pnpm cache path)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore lockfile verification log
+        if: env.REPLAY_REQUIRED == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm-cache.outputs.dir }}/lockfile-verified.jsonl
+          key: pnpm-lockfile-verified-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-lockfile-verified-v1-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install dependencies
+        if: env.REPLAY_REQUIRED == 'true'
+        run: pnpm install --frozen-lockfile --filter "@repo/temporal..."
+
+      - name: Select replay history snapshot
+        if: env.REPLAY_REQUIRED == 'true'
+        id: snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process";
+          import { appendFileSync } from "node:fs";
+
+          const { REPOSITORY, REPOSITORY_ID, GITHUB_OUTPUT } = process.env;
+          const repositoryId = Number(REPOSITORY_ID);
+          const name = "temporal-replay-history-snapshot";
+          const repo = "repos/" + REPOSITORY + "/";
+          const refresh = ' Run "Temporal Replay Validation" manually on staging, then re-run this check.';
+          const allowedEvents = ["schedule", "push", "workflow_dispatch"];
+          const isId = (value) => Number.isSafeInteger(value) && value > 0;
+          const api = (...args) =>
+            JSON.parse(execFileSync("gh", ["api", ...args], { encoding: "utf8" }));
+
+          let artifacts;
+          try {
+            const pages = api("--paginate", "--slurp", repo + "actions/artifacts?name=" + name + "&per_page=100");
+            artifacts = pages.flatMap((page) => {
+              if (!Array.isArray(page?.artifacts)) throw new Error("Invalid artifact page");
+              return page.artifacts;
+            });
+          } catch {
+            console.error("::error::GitHub artifacts API list or response parse failed." + refresh);
+            process.exit(1);
+          }
+
+          const candidates = artifacts
+            .filter((artifact) => {
+              const run = artifact?.workflow_run;
+              return artifact?.name === name &&
+                artifact.expired === false &&
+                isId(artifact.id) &&
+                Number.isFinite(Date.parse(artifact.created_at)) &&
+                isId(run?.id) &&
+                run.head_branch === "staging" &&
+                run.repository_id === repositoryId &&
+                run.head_repository_id === repositoryId;
+            })
+            .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id);
+
+          for (const artifact of candidates) {
+            const runId = artifact.workflow_run.id;
+            let run;
+            try {
+              run = api(repo + "actions/runs/" + runId);
+            } catch {
+              console.error("::warning::Could not read replay snapshot producer run " + runId + ".");
+              continue;
+            }
+            if (run?.id !== runId ||
+                !isId(run.run_attempt) ||
+                typeof run.head_sha !== "string" ||
+                !/^[0-9a-f]{40}$/.test(run.head_sha) ||
+                run.path !== ".github/workflows/temporal-replay-validation.yml" ||
+                !allowedEvents.includes(run.event) ||
+                run.head_branch !== "staging" ||
+                run.head_repository?.full_name !== REPOSITORY) {
+              continue;
+            }
+
+            let status;
+            try {
+              // Qualify the branch ref because head_branch can also name a tag.
+              const comparison = repo + "compare/" + run.head_sha + "...refs%2Fheads%2Fstaging";
+              status = api(comparison, "--jq", "{status}")?.status;
+            } catch {
+              console.error("::warning::GitHub compare API failed for replay snapshot producer run " + runId + ".");
+              continue;
+            }
+            if (status !== "identical" && status !== "ahead") continue;
+
+            appendFileSync(GITHUB_OUTPUT, [
+              "artifact_id=" + artifact.id,
+              "run_id=" + runId,
+              "run_sha=" + run.head_sha,
+              "run_attempt=" + run.run_attempt,
+              "",
+            ].join("\n"));
+            process.exit(0);
+          }
+
+          console.error("::error::No usable Temporal replay snapshot." + refresh);
+          process.exit(1);
+          NODE
+
+      - name: Download encrypted replay history snapshot
+        if: env.REPLAY_REQUIRED == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.snapshot.outputs.artifact_id }}
+          run-id: ${{ steps.snapshot.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/temporal-replay-snapshot
+
+      - name: Decrypt replay history snapshot
+        if: env.REPLAY_REQUIRED == 'true'
+        env:
+          REPLAY_SNAPSHOT_KEY: ${{ secrets.REPLAY_SNAPSHOT_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [[ -z "${REPLAY_SNAPSHOT_KEY:-}" ]]; then
+            echo "::error::Missing REPLAY_SNAPSHOT_KEY. Dependabot runs cannot read repository Actions secrets."
+            exit 1
+          fi
+
+          # Keep the passphrase in the shell and feed GPG on stdin only.
+          export -n REPLAY_SNAPSHOT_KEY
+          archive=
+          GNUPGHOME=$(mktemp -d "$RUNNER_TEMP/temporal-replay-gnupg.XXXXXX")
+          trap '
+            rm -f -- "$archive"
+            gpgconf --homedir "$GNUPGHOME" --kill all || true
+            rm -rf -- "$GNUPGHOME"
+          ' EXIT
+          chmod 700 "$GNUPGHOME"
+          export GNUPGHOME
+          archive=$(mktemp "$RUNNER_TEMP/temporal-replay-snapshot.XXXXXX")
+          ciphertext="$RUNNER_TEMP/temporal-replay-snapshot/temporal-replay-history-snapshot.tar.gpg"
+          # Authenticate the full archive before extracting any histories.
+          if ! gpg --no-options --batch --yes --pinentry-mode loopback --no-symkey-cache \
+            --passphrase-fd 0 --output "$archive" --decrypt "$ciphertext" \
+            <<< "$REPLAY_SNAPSHOT_KEY"; then
+            echo "::error::Temporal replay snapshot decryption or integrity check failed."
+            exit 1
+          fi
+
+          fixtures_dir=packages/temporal/__tests__/__fixtures__
+          mkdir -p "$fixtures_dir"
+          tar -xf "$archive" -C "$fixtures_dir" -- histories history-snapshot.json
+
+      - name: Validate snapshot metadata
+        if: env.REPLAY_REQUIRED == 'true'
+        env:
+          SNAPSHOT_RUN_SHA: ${{ steps.snapshot.outputs.run_sha }}
+          SNAPSHOT_RUN_ID: ${{ steps.snapshot.outputs.run_id }}
+          SNAPSHOT_RUN_ATTEMPT: ${{ steps.snapshot.outputs.run_attempt }}
+          SNAPSHOT_PRODUCER_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.snapshot.outputs.run_id }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          function fail(reason) {
+            console.error(
+              '::error::' + reason + ' Run "Temporal Replay Validation" manually on staging to refresh the snapshot, then re-run this check.',
+            );
+            process.exit(1);
+          }
+
+          let metadata;
+          try {
+            metadata = JSON.parse(readFileSync(
+              "packages/temporal/__tests__/__fixtures__/history-snapshot.json",
+              "utf8",
+            ));
+          } catch {
+            fail("history-snapshot.json is missing or invalid JSON.");
+          }
+
+          const { fetchedAt, sourceSha, runId, runAttempt } = metadata ?? {};
+          const utcIso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)$/;
+          const invalidTimestamp = "Snapshot fetchedAt is not a valid UTC timestamp.";
+          if (typeof fetchedAt !== "string" || !fetchedAt.match(utcIso)) {
+            fail(invalidTimestamp);
+          }
+
+          const timestamp = new Date(fetchedAt);
+          // Compare through seconds to catch calendar values that Date normalizes.
+          if (!Number.isFinite(timestamp.getTime()) ||
+              timestamp.toISOString().slice(0, 19) !== fetchedAt.slice(0, 19)) {
+            fail(invalidTimestamp);
+          }
+
+          const ageMs = Date.now() - timestamp.getTime();
+          const ageHours = (ageMs / 3_600_000).toFixed(2);
+          if (ageMs > 24 * 3_600_000 || ageMs < -5 * 60_000) {
+            fail('Snapshot age ' + ageHours + ' hours is outside the allowed window (24 hours old, 5 minutes of future clock skew).');
+          }
+
+          if (typeof sourceSha !== "string" || !/^[0-9a-f]{40}$/.test(sourceSha)) {
+            fail("Snapshot sourceSha is invalid.");
+          }
+          if (typeof runId !== "string" || !/^[1-9][0-9]*$/.test(runId)) {
+            fail("Snapshot runId is invalid.");
+          }
+          if (typeof runAttempt !== "string" || !/^[1-9][0-9]*$/.test(runAttempt)) {
+            fail("Snapshot runAttempt is invalid.");
+          }
+
+          if (sourceSha !== process.env.SNAPSHOT_RUN_SHA ||
+              runId !== process.env.SNAPSHOT_RUN_ID ||
+              runAttempt !== process.env.SNAPSHOT_RUN_ATTEMPT) {
+            fail("Snapshot metadata does not match the selected producer run (sourceSha, runId, or runAttempt).");
+          }
+
+          const { GITHUB_SERVER_URL, GITHUB_REPOSITORY } = process.env;
+          const producerUrl = GITHUB_SERVER_URL + '/' + GITHUB_REPOSITORY + '/actions/runs/' + runId + '/attempts/' + runAttempt;
+          console.log('Snapshot age: ' + ageHours + ' hours. Source SHA: ' + sourceSha + '. Producer run: ' + producerUrl);
+          console.log('Artifact producer run: ' + process.env.SNAPSHOT_PRODUCER_URL);
+          NODE
+
+      - name: Run replay validation
+        if: env.REPLAY_REQUIRED == 'true'
+        id: replay
+        env:
+          REPLAY_REQUIRE_FIXTURES: "1"
+        run: pnpm --filter @repo/temporal test:replay
+
+      - name: Require successful replay when applicable
+        if: always()
+        env:
+          REPLAY_OUTCOME: ${{ steps.replay.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$REPLAY_REQUIRED" == "true" && "$REPLAY_OUTCOME" != "success" ]]; then
+            echo "::error::Required Temporal replay did not succeed (outcome: ${REPLAY_OUTCOME:-missing})."
+            exit 1
+          fi

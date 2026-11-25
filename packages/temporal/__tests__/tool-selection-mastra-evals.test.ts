@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createScorer } from "@mastra/core/evals";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -94,6 +95,18 @@ const integrationScorer = createScorer({
 			: 0,
 	);
 
+function averageScore(scores: Array<number | undefined>): number {
+	return (
+		scores.reduce<number>((sum, score) => {
+			assert(
+				typeof score === "number",
+				"Expected a score from each scorer run",
+			);
+			return sum + score;
+		}, 0) / scores.length
+	);
+}
+
 describe("Mastra tool selection evals", () => {
 	it("improves ranking quality over the baseline heuristics", async () => {
 		const cases: RankingCase[] = [
@@ -186,12 +199,8 @@ describe("Mastra tool selection evals", () => {
 			}),
 		);
 
-		const baselineAverage =
-			baselineScores.reduce((sum, score) => sum + score, 0) /
-			baselineScores.length;
-		const optimizedAverage =
-			optimizedScores.reduce((sum, score) => sum + score, 0) /
-			optimizedScores.length;
+		const baselineAverage = averageScore(baselineScores);
+		const optimizedAverage = averageScore(optimizedScores);
 
 		expect(optimizedAverage).toBeGreaterThan(baselineAverage);
 		expect(optimizedAverage).toBe(100);
@@ -260,12 +269,8 @@ describe("Mastra tool selection evals", () => {
 			}),
 		);
 
-		const baselineAverage =
-			baselineScores.reduce((sum, score) => sum + score, 0) /
-			baselineScores.length;
-		const optimizedAverage =
-			optimizedScores.reduce((sum, score) => sum + score, 0) /
-			optimizedScores.length;
+		const baselineAverage = averageScore(baselineScores);
+		const optimizedAverage = averageScore(optimizedScores);
 
 		expect(optimizedAverage).toBeGreaterThan(baselineAverage);
 		expect(optimizedAverage).toBe(100);

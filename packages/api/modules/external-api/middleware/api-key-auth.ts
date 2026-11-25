@@ -85,6 +85,10 @@ const OWNER_PERMISSION_GATES = {
 		scope: "channels:write",
 		holds: canUseOrganizationIntegrations,
 	},
+	"chats:read": {
+		scope: "chats:read",
+		holds: canUseOrganizationAiChat,
+	},
 	"chats:write": {
 		scope: "chats:write",
 		holds: canUseOrganizationAiChat,

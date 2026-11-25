@@ -26,6 +26,7 @@ type Where = {
 const mocks = vi.hoisted(() => {
 	const store = {
 		projects: new Set<string>(),
+		deletedHostProjects: new Set<string>(),
 		documents: [] as Row[],
 		contexts: [] as Row[],
 		contextSyncs: [] as Row[],
@@ -51,7 +52,16 @@ const mocks = vi.hoisted(() => {
 		publish: vi.fn(),
 		store,
 		project: vi.fn(async ({ where }: { where: { id: string } }) =>
-			store.projects.has(where.id) ? { id: where.id } : null,
+			store.projects.has(where.id)
+				? {
+						id: where.id,
+						organization: {
+							deletedAt: store.deletedHostProjects.has(where.id)
+								? new Date()
+								: null,
+						},
+					}
+				: null,
 		),
 		document: rowsMatching(() => store.documents),
 		context: rowsMatching(() => store.contexts),
@@ -174,6 +184,7 @@ beforeEach(() => {
 	vi.stubEnv("AGENT_SERVICE_SECRET", SECRET);
 	const { store } = mocks;
 	store.projects = new Set(["proj-1", "proj-2"]);
+	store.deletedHostProjects.clear();
 	store.documents = [
 		{ id: "doc-1", projectId: "proj-1" },
 		{ id: "doc-2", projectId: "proj-2" },
@@ -364,6 +375,12 @@ describe("target checks", () => {
 		expect(mocks.publish).toHaveBeenCalledTimes(publishedBefore);
 		return response.json();
 	}
+
+	it("refuses to relay a project event for a deleted organization", async () => {
+		mocks.store.deletedHostProjects.add("proj-1");
+		expect((await POST(request(relayedDocumentChange))).status).toBe(404);
+		expect(mocks.publish).not.toHaveBeenCalled();
+	});
 
 	it("refuses an unknown project, a deletion naming a gone row included", async () => {
 		await refused({

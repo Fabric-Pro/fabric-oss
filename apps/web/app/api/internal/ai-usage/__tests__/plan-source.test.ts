@@ -22,6 +22,7 @@ vi.mock("@repo/ai-token", () => ({
 vi.mock("@repo/database", () => ({
 	getModelByCanonicalName: vi.fn(async () => null),
 	getCanonicalNameForProviderModelId: vi.fn(async () => null),
+	isOrganizationLive: async () => true,
 	getProjectAccessContext: vi.fn(async () => ({
 		organizationId: "org-1",
 	})),

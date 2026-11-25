@@ -13,6 +13,14 @@
 			"types": "./src/credential-manager/index.ts",
 			"default": "./src/credential-manager/index.ts"
 		},
+		"./document-folders": {
+			"types": "./src/document-folders/adapter.ts",
+			"default": "./src/document-folders/adapter.ts"
+		},
+		"./google": {
+			"types": "./src/google/token.ts",
+			"default": "./src/google/token.ts"
+		},
 		"./microsoft": {
 			"types": "./src/microsoft/index.ts",
 			"default": "./src/microsoft/index.ts"

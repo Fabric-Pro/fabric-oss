@@ -1,5 +1,23 @@
 # fabric-app
 
+## 1.16.50
+
+### Patch Changes
+
+- bf2b743: Instruction proposal listings now apply a proposer filter whenever one is supplied.
+- bf2b743: Upgrade Mastra to remove an AI SDK dependency affected by uncontrolled response resource consumption.
+- bf2b743: URL source crawls now look up the scraper credential when they run, so scheduled refreshes use the current key.
+- bf2b743: The external agent execution API now returns a 400 validation error, instead of a 500, when the request body is JSON `null` or an image entry is `null`.
+- bf2b743: The weekly URL source schedule cleanup no longer removes its own schedule, so it keeps running every week.
+- bf2b743: Project editors can connect Google Drive folders from My Drive and shared drives as document folders, with Google Docs, Sheets and Slides imported as DOCX, XLSX and PDF and kept in step with the drive like OneDrive folders.
+- bf2b743: Project features now consistently refuse organization members who cannot open the project, and projects that belong to a deleted organization.
+- bf2b743: Keep required password changes in force, reject non-text email on sign-in and sign-up, skip seat updates after a failed invitation acceptance, and scope several background project reads to their organization.
+- bf2b743: An opt-in server setting lets URL crawls start without passing the search provider key to background jobs.
+- bf2b743: Rebuilding the same commit now produces the same collaboration worker archive and the same web app build ID and sitemap dates, the published CLI package no longer includes a TypeScript build-info file, and a scheduled job rebuilds the published npm packages and checks them against the registry.
+- bf2b743: Data connection syncs now check that each connection belongs to the organization running the sync, and load its credentials only in the step that uses them.
+- bf2b743: REST API routes now return 400 instead of 500 for a null JSON body, REST and MCP chat reads require the key owner's current AI chat permission, VS Code organization defaults require a tie to the organization, and one-shot authority grant consumption is hardened.
+- bf2b743: Require an organization and current AI chat permission for VS Code completions.
+
 ## 1.16.49
 
 ### Patch Changes

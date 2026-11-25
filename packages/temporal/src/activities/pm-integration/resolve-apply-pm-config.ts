@@ -65,7 +65,11 @@ export async function resolveApplyPmConfig(
 		},
 	});
 
-	if (!project || !project.projectManagementContainerId) {
+	if (
+		!project ||
+		project.organizationId !== input.organizationId ||
+		!project.projectManagementContainerId
+	) {
 		return { resolved: false, reason: "no-pm-config" };
 	}
 

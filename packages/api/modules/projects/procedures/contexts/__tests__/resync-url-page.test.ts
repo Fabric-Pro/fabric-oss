@@ -14,7 +14,7 @@
  *   - Cross-tenant parent context id → NOT_FOUND.
  *   - Forbidden when caller has no project access.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockHasProjectAccess,
@@ -144,7 +144,10 @@ const pageInput = {
 	projectId: "proj-1",
 };
 
+afterEach(() => vi.unstubAllEnvs());
+
 beforeEach(() => {
+	vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", undefined);
 	vi.clearAllMocks();
 	mockHasProjectAccess.mockResolvedValue(true);
 	mockDecryptApiKey.mockReturnValue("decrypted-fc-key");
@@ -261,29 +264,38 @@ describe("resyncUrlPage — scraper provider", () => {
 		expect(options.args[0]).not.toHaveProperty("providerEndpoint");
 	});
 
-	it("passes the Cloudflare account endpoint along with the provider", async () => {
-		mockGetEnabledOrgProviders.mockResolvedValue([
-			providerRow("cloudflare", { endpoint: "account-123" }),
-		]);
-		const handler = await loadHandler();
+	it.each([undefined, "true"])(
+		"forwards Cloudflare fields to the page retry (switch %s)",
+		async (setting) => {
+			vi.stubEnv("URL_CRAWL_OMIT_SCRAPER_KEY", setting);
+			mockGetEnabledOrgProviders.mockResolvedValue([
+				providerRow("cloudflare", { endpoint: "account-123" }),
+			]);
+			const handler = await loadHandler();
 
-		await handler({
-			input: { ...pageInput, organizationId: "org-1" },
-			context: orgCtx,
-		});
+			await handler({
+				input: { ...pageInput, organizationId: "org-1" },
+				context: orgCtx,
+			});
 
-		expect(mockTemporalWorkflowStart).toHaveBeenCalledWith(
-			"urlSourceCrawlWorkflow",
-			expect.objectContaining({
-				args: [
-					expect.objectContaining({
-						providerName: "cloudflare",
-						providerEndpoint: "account-123",
-					}),
-				],
-			}),
-		);
-	});
+			expect(mockTemporalWorkflowStart.mock.calls[0]?.[0]).toBe(
+				"urlSourceCrawlWorkflow",
+			);
+			const args =
+				mockTemporalWorkflowStart.mock.calls[0]?.[1]?.args?.[0];
+			expect(args).toHaveProperty("providerName", "cloudflare");
+			if (setting === "true") {
+				expect(args).not.toHaveProperty("apiKey");
+				expect(args).not.toHaveProperty("providerEndpoint");
+			} else {
+				expect(args).toHaveProperty("apiKey", "decrypted-fc-key");
+				expect(args).toHaveProperty("providerEndpoint", "account-123");
+			}
+			if (setting === "true") {
+				expect(mockDecryptApiKey).not.toHaveBeenCalled();
+			}
+		},
+	);
 
 	it("reads the user's providers, never the organization's, with no organization", async () => {
 		mockGetEnabledOrgProviders.mockResolvedValue([

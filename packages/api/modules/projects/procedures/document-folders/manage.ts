@@ -34,7 +34,7 @@ export const listDocumentFoldersProcedure = tenantProtectedProcedure
 		tags: TAGS,
 		summary: "List connected document folders",
 		description:
-			"Lists a project's connected OneDrive and SharePoint document folders with their import counts and state. Editors also get each folder's reader, drive identifiers, web address and the files that need attention.",
+			"Lists a project's connected OneDrive, SharePoint and Google Drive document folders with their import counts and state. Editors also get each folder's reader, drive identifiers, web address and the files that need attention.",
 	})
 	.input(projectInput)
 	.handler(async ({ input, context }) => {

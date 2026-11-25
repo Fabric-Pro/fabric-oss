@@ -6839,7 +6839,7 @@ model ProjectTranscriptFolderFile {
 model ProjectDocumentFolder {
   id                  String    @id @default(cuid())
   projectId           String
-  /// onedrive | sharepoint
+  /// onedrive | sharepoint | googledrive
   provider            String
   driveId             String
   itemId              String
@@ -6847,6 +6847,11 @@ model ProjectDocumentFolder {
   webUrl              String?
   /// The folder's path in its drive, refreshed by every read.
   drivePath           String?
+  /// Google Drive only: the ids of the folder's ancestors, refreshed by every
+  /// read. The connect overlap check compares these, since Drive allows
+  /// sibling folders with the same name. Empty = no ancestry recorded, as for
+  /// OneDrive and SharePoint, whose folders are compared by drivePath.
+  ancestorIds         String[]  @default([])
   /// SharePoint only: the site and document library holding the folder.
   siteId              String?
   siteName            String?
@@ -6915,7 +6920,8 @@ model ProjectDocumentFolderFile {
   /// EXCLUDED = its context was removed in Fabric; it returns only on a new
   /// version. A retired file is one with `retiredAt` set, whatever its status.
   status                 String    @default("PENDING")
-  /// Why the file was skipped: UNSUPPORTED | TOO_BIG | CAP_REACHED
+  /// Why the file was skipped: UNSUPPORTED | TOO_BIG | CAP_REACHED |
+  /// NOT_DOWNLOADABLE
   skipCode               String?
   /// Why the last import failed: DOWNLOAD_FAILED | PROCESSING_FAILED
   failureCode            String?

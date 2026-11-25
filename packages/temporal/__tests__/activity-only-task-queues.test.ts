@@ -26,7 +26,7 @@ const WORKFLOWS_DIRECTORY =
 	join("packages", "temporal", "src", "workflows") + sep;
 const WORKER_FILE = join("packages", "temporal", "src", "worker.ts");
 
-const QUEUE = String.raw`(?:"project-operations"|"project-document-generation"|PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE|PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE)`;
+const QUEUE = `(?:"connector-sync"|CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE|"project-operations"|"project-document-generation"|PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE|PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE)`;
 const TARGETS_QUEUE = new RegExp(String.raw`taskQueue\s*:\s*${QUEUE}`);
 const CHILD_START = /\b(?:executeChild|startChild)\s*(?:<[^(]*>)?\(/g;
 

@@ -137,7 +137,12 @@ describe("Project Contexts Reprocess Workflow", () => {
 			expect(result[0].id).toBe("ctx-1");
 			expect(result[1].id).toBe("ctx-2");
 			expect(db.projectContext.findMany).toHaveBeenCalledWith({
-				where: { projectId: "proj-123", type: { not: "INTEGRATION" } },
+				where: {
+					projectId: "proj-123",
+					organizationId: "org-123",
+					project: { organizationId: "org-123" },
+					type: { not: "INTEGRATION" },
+				},
 				select: expect.objectContaining({
 					id: true,
 					type: true,

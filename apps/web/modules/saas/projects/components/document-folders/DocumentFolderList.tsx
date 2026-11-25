@@ -2,8 +2,8 @@
 
 /**
  * The Document folders section of the Context tab (Fizzy #2808): each
- * connected OneDrive or SharePoint folder with its place, description,
- * counts, one state and the next step.
+ * connected OneDrive, SharePoint or Google Drive folder with its place,
+ * description, counts, one state and the next step.
  *
  * Editors also see who the folder is read as, the files that need attention,
  * and the actions: edit the description, sync now, reconnect, confirm held
@@ -59,13 +59,17 @@ import { type ComponentType, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { DocumentFolderFiles } from "./DocumentFolderFiles";
 import {
-	connectMicrosoftAccount,
+	accountFor,
+	connectAccount,
+	connectionName,
 	DESCRIPTION_MAX,
 	type DocumentFolder,
 	type FolderState,
+	errorCode,
 	filesLabel,
 	folderPlace,
 	folderState,
+	googleDriveConnectNeeded,
 	isEditorFolder,
 	isMicrosoftNotConnected,
 	messageOf,
@@ -95,7 +99,7 @@ function problemCopy(
 		case "RECONNECT":
 			return {
 				label: "Reconnect needed",
-				editorNext: `Fabric can no longer read it with ${editorReader ?? "its reader"}'s Microsoft connection. Reconnect to read it with yours.`,
+				editorNext: `Fabric can no longer read it with ${editorReader ?? "its reader"}'s ${connectionName(provider)} connection. Reconnect to read it with yours.`,
 				viewerNext: "A project editor needs to reconnect it.",
 			};
 		case "NO_ACCESS":
@@ -227,12 +231,15 @@ function FolderCard({
 	folder,
 	canEdit,
 	syncStarting,
+	refusal,
 	onEdit,
 	onSyncNow,
 	onConfirm,
 }: {
 	folder: DocumentFolder;
 	canEdit: boolean;
+	/** Why the last reconnect was refused, such as a folder the editor cannot open. */
+	refusal: string | null;
 	/** A Sync now request is on its way; it reads every folder. */
 	syncStarting: boolean;
 	onEdit: (opener: HTMLElement | null) => void;
@@ -418,6 +425,11 @@ function FolderCard({
 				<div className="min-w-0 grow space-y-1">
 					<p className="font-medium">{copy.label}</p>
 					<p className="text-muted-foreground">{copy.next}</p>
+					{editor && refusal && (
+						<p role="alert" className="text-destructive">
+							{refusal}
+						</p>
+					)}
 					{editor && reading && (
 						<p id={syncReasonId} className="text-muted-foreground">
 							A read is running. Sync now is available when it
@@ -576,7 +588,7 @@ function confirmCopy(
 		case "reconnect":
 			return {
 				title: `Reconnect ${folder.name}?`,
-				body: "You become this folder's reader: Fabric reads it with your Microsoft connection from now on, and the files imported from it become yours. Its description stays.",
+				body: `You become this folder's reader: Fabric reads it with your ${connectionName(folder.provider)} connection from now on, and the files imported from it become yours. Its description stays.`,
 				action: "Reconnect",
 				destructive: false,
 			};
@@ -677,7 +689,16 @@ function DocumentFolderSection({
 
 	const scope = { projectId, organizationId };
 
-	// Aborted when the section goes away, so a Microsoft connect flow still
+	// Why a folder's last reconnect was refused, by folder id, shown on its
+	// card until a reconnect succeeds.
+	const [refusals, setRefusals] = useState<Record<string, string>>({});
+	const setRefusal = (folderId: string, message: string | null) =>
+		setRefusals((previous) => {
+			const { [folderId]: _cleared, ...rest } = previous;
+			return message ? { ...rest, [folderId]: message } : rest;
+		});
+
+	// Aborted when the section goes away, so a connect flow still
 	// open in its popup neither retries nor toasts on another screen.
 	const mounted = useRef<AbortController | null>(null);
 	useEffect(() => {
@@ -739,20 +760,35 @@ function DocumentFolderSection({
 				folderId: folder.id,
 			});
 		const failed = `${folder.name} could not be reconnected.`;
+		const account = connectionName(folder.provider);
+		// A Google Drive folder the editor cannot open is said on its card,
+		// where Reconnect stays; any other refusal is a toast.
+		const refuse = (error: unknown) => {
+			if (errorCode(error) === "GOOGLE_DRIVE_FOLDER_UNREADABLE") {
+				setRefusal(folder.id, messageOf(error, failed));
+			} else {
+				toast.error(messageOf(error, failed));
+			}
+		};
 		let result: Awaited<ReturnType<typeof call>>;
 		try {
 			result = await call();
 		} catch (error) {
-			if (!isMicrosoftNotConnected(error)) {
-				toast.error(messageOf(error, failed));
+			const needsConnect =
+				folder.provider === "googledrive"
+					? googleDriveConnectNeeded(error) !== null
+					: isMicrosoftNotConnected(error);
+			if (!needsConnect) {
+				refuse(error);
 				return;
 			}
-			// No Microsoft connection to read it with: connect one the way
+			// No connection to read it with: connect one the way
 			// Settings → Integrations does, then try again.
 			const signal = mounted.current?.signal;
 			let connected: boolean;
 			try {
-				connected = await connectMicrosoftAccount(
+				connected = await connectAccount(
+					accountFor(folder.provider),
 					organizationId,
 					signal,
 				);
@@ -763,7 +799,7 @@ function DocumentFolderSection({
 				toast.error(
 					messageOf(
 						connectError,
-						"Microsoft could not be connected.",
+						`${account} could not be connected.`,
 					),
 				);
 				return;
@@ -773,17 +809,18 @@ function DocumentFolderSection({
 			}
 			if (!connected) {
 				toast.error(
-					"Microsoft was not connected, so the folder was not reconnected.",
+					`${account} was not connected, so the folder was not reconnected.`,
 				);
 				return;
 			}
 			try {
 				result = await call();
 			} catch (retryError) {
-				toast.error(messageOf(retryError, failed));
+				refuse(retryError);
 				return;
 			}
 		}
+		setRefusal(folder.id, null);
 		expectRead();
 		if (result.importStarted) {
 			toast.success(`${folder.name} reconnected. Reading it now.`);
@@ -908,9 +945,9 @@ function DocumentFolderSection({
 					Document folders
 				</h2>
 				<p className="text-muted-foreground text-sm">
-					Supported files in these OneDrive and SharePoint folders are
-					imported as project context and kept in step with the
-					folder.
+					Supported files in these OneDrive, SharePoint and Google
+					Drive folders are imported as project context and kept in
+					step with the folder.
 				</p>
 			</div>
 			<output aria-live="polite" className="sr-only">
@@ -923,6 +960,7 @@ function DocumentFolderSection({
 						folder={folder}
 						canEdit={canEdit}
 						syncStarting={syncStarting}
+						refusal={refusals[folder.id] ?? null}
 						onEdit={(opener) => {
 							editFocus.remember(opener);
 							setEditing(folder);

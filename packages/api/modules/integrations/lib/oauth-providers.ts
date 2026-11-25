@@ -7,6 +7,7 @@
  */
 
 import type { OAuthAppProvider } from "@repo/database/prisma/queries/lib/oauth-app-row";
+import { refreshGoogleAccessToken } from "@repo/integrations/google";
 import { GITHUB_OAUTH_SCOPES } from "@repo/utils/github-oauth-scopes";
 
 /** Every provider with an OAuth app, and so a reserved `<PROVIDER>_OAUTH_APP` row name. */
@@ -406,30 +407,8 @@ const googleDriveProvider: OAuthProviderConfig = {
 			avatarUrl: data.picture,
 		};
 	},
-	refreshAccessToken: async (
-		refreshToken: string,
-		clientId: string,
-		clientSecret: string,
-	): Promise<OAuthTokenResponse> => {
-		const response = await fetch("https://oauth2.googleapis.com/token", {
-			method: "POST",
-			headers: { "Content-Type": "application/x-www-form-urlencoded" },
-			body: new URLSearchParams({
-				client_id: clientId,
-				client_secret: clientSecret,
-				refresh_token: refreshToken,
-				grant_type: "refresh_token",
-			}),
-		});
-
-		if (!response.ok) {
-			throw new Error(
-				`Failed to refresh Google token: ${response.status}`,
-			);
-		}
-
-		return response.json() as Promise<OAuthTokenResponse>;
-	},
+	// The same refresh the document-folder sync uses, from one place.
+	refreshAccessToken: refreshGoogleAccessToken,
 	revokeAccessToken: async (accessToken: string): Promise<void> => {
 		// Google's OAuth 2.0 revocation endpoint. Revoking either the access or
 		// refresh token invalidates the whole grant. 200 = revoked; 400 =

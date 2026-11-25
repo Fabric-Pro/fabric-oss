@@ -258,6 +258,9 @@ export function createPublicV1Routes() {
 		} catch {
 			return c.json(err("Invalid JSON body"), 400);
 		}
+		if (body === null) {
+			return c.json(err("Invalid JSON body"), 400);
+		}
 
 		const name = body.name?.trim();
 		if (!name) {

@@ -20,6 +20,7 @@ const PROJECT_ID = "project-1";
 
 const getProjectAccessContext = vi.fn();
 const isProjectSoftDeleted = vi.fn();
+const isOrganizationLive = vi.fn();
 const incrementOrganizationSearchProviderUsage = vi.fn();
 const organizationFindUnique = vi.fn();
 const projectFindUnique = vi.fn();
@@ -34,6 +35,7 @@ vi.mock("@repo/database", () => ({
 	},
 	getProjectAccessContext: (...args: unknown[]) =>
 		getProjectAccessContext(...args),
+	isOrganizationLive: (id: string) => isOrganizationLive(id),
 	isProjectSoftDeleted: (...args: unknown[]) => isProjectSoftDeleted(...args),
 	incrementOrganizationSearchProviderUsage: (...args: unknown[]) =>
 		incrementOrganizationSearchProviderUsage(...args),
@@ -139,6 +141,7 @@ beforeEach(() => {
 	process.env.AI_TOKEN_SECRET = SECRET;
 	getProjectAccessContext.mockResolvedValue({ organizationId: ORG_ID });
 	isProjectSoftDeleted.mockResolvedValue(false);
+	isOrganizationLive.mockResolvedValue(true);
 	incrementOrganizationSearchProviderUsage.mockResolvedValue({});
 	organizationFindUnique.mockResolvedValue({
 		name: "Example Org Holdings",
@@ -921,4 +924,13 @@ describe("POST /api/internal/web-research-tools — logs", () => {
 		expect(logged).toContain("news.example.net");
 		expect(logged).toContain("firecrawl");
 	});
+});
+
+it("refuses a deleted project organization before spending a research budget", async () => {
+	isOrganizationLive.mockResolvedValueOnce(false);
+	const result = await call(searchBody({ query: "example research" }));
+	expect(result.status).toBe(403);
+	expect(isOrganizationLive).toHaveBeenCalledWith(ORG_ID);
+	expect(checkRateLimit).not.toHaveBeenCalled();
+	expect(getWebResearchSearcher).not.toHaveBeenCalled();
 });

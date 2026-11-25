@@ -341,36 +341,116 @@ describe("connectDocumentFolders", () => {
 			previousUserId: "user-1",
 		});
 	});
+
+	describe("Google Drive folders, compared by ancestor ids", () => {
+		const google = (
+			itemId: string,
+			drivePath: string,
+			ancestorIds: string[],
+		) =>
+			selection(itemId, drivePath, {
+				provider: "googledrive",
+				driveId: "root-1",
+				ancestorIds,
+			});
+		const connectedRow = (
+			itemId: string,
+			drivePath: string,
+			ancestorIds: string[],
+		) => ({
+			id: `folder-${itemId}`,
+			driveId: "root-1",
+			itemId,
+			name: drivePath.split("/").pop() ?? itemId,
+			drivePath,
+			ancestorIds,
+			disconnectedAt: null,
+			userId: "user-1",
+		});
+
+		it("reads each connected folder's ancestor ids inside the lock", async () => {
+			await connect([google("item-a", "/Sales", ["root-1"])]);
+
+			expect(m.folderFindMany.mock.calls[0]?.[0].select).toMatchObject({
+				ancestorIds: true,
+			});
+		});
+
+		it("refuses a folder whose ancestor is connected, whatever its path says", async () => {
+			m.folderFindMany.mockResolvedValue([
+				connectedRow("item-sales", "/Sales", ["root-1"]),
+			]);
+
+			const error = await refusal(
+				connect([
+					google("item-cs", "/Archive/Case studies", [
+						"root-1",
+						"item-sales",
+					]),
+				]),
+			);
+			expect(error.reason).toBe("OVERLAPS_DOCUMENT_FOLDER");
+			expect(error.existingFolderName).toBe("Sales");
+			expect(m.folderUpsert).not.toHaveBeenCalled();
+		});
+
+		it("connects a sibling that shares a connected folder's name, storing its ancestor ids", async () => {
+			m.folderFindMany.mockResolvedValue([
+				connectedRow("item-sales-1", "/Sales", ["root-1"]),
+			]);
+
+			await connect([google("item-sales-2", "/Sales", ["root-1"])]);
+
+			const upsert = m.folderUpsert.mock.calls[0]?.[0];
+			expect(upsert.create).toMatchObject({
+				provider: "googledrive",
+				driveId: "root-1",
+				itemId: "item-sales-2",
+				drivePath: "/Sales",
+				ancestorIds: ["root-1"],
+			});
+			expect(upsert.update).toMatchObject({ ancestorIds: ["root-1"] });
+		});
+
+		it("stores no ancestor ids for a OneDrive or SharePoint folder", async () => {
+			await connect([selection("item-a", "/Sales")]);
+
+			const upsert = m.folderUpsert.mock.calls[0]?.[0];
+			expect(upsert.create).toMatchObject({ ancestorIds: [] });
+			expect(upsert.update).toMatchObject({ ancestorIds: [] });
+		});
+	});
 });
 
 describe("listDocumentFolders", () => {
+	const salesFolder = {
+		id: "folder-1",
+		provider: "sharepoint",
+		driveId: "drive-1",
+		itemId: "item-1",
+		ancestorIds: [],
+		name: "Sales",
+		webUrl: "https://example.com/sales",
+		drivePath: "/Sales",
+		siteId: "site-1",
+		siteName: "Example Sales",
+		libraryName: "Documents",
+		description: "Signed customer case studies",
+		connectedAt: new Date("2026-11-20T10:00:00Z"),
+		readStartedAt: null,
+		lastReadAt: new Date("2026-11-21T10:00:00Z"),
+		lastListingComplete: true,
+		discoveredAt: new Date("2026-11-20T10:05:00Z"),
+		pausedRemovalsCode: "MASS_REMOVAL",
+		heldRemovalCount: 70,
+		problemCode: null,
+		nextReadAfter: null,
+		userId: "user-1",
+		user: { name: "Alex Example" },
+	};
+
 	beforeEach(() => {
-		m.folderFindMany.mockResolvedValue([
-			{
-				id: "folder-1",
-				provider: "sharepoint",
-				driveId: "drive-1",
-				itemId: "item-1",
-				name: "Sales",
-				webUrl: "https://example.com/sales",
-				drivePath: "/Sales",
-				siteId: "site-1",
-				siteName: "Example Sales",
-				libraryName: "Documents",
-				description: "Signed customer case studies",
-				connectedAt: new Date("2026-11-20T10:00:00Z"),
-				readStartedAt: null,
-				lastReadAt: new Date("2026-11-21T10:00:00Z"),
-				lastListingComplete: true,
-				discoveredAt: new Date("2026-11-20T10:05:00Z"),
-				pausedRemovalsCode: "MASS_REMOVAL",
-				heldRemovalCount: 70,
-				problemCode: null,
-				nextReadAfter: null,
-				userId: "user-1",
-				user: { name: "Alex Example" },
-			},
-		]);
+		m.folderFindMany.mockResolvedValue([salesFolder]);
 		const group = (status: string, n: number) => ({
 			folderId: "folder-1",
 			status,
@@ -447,6 +527,7 @@ describe("listDocumentFolders", () => {
 			"userId",
 			"driveId",
 			"itemId",
+			"ancestorIds",
 			"siteId",
 			"webUrl",
 			"attention",
@@ -462,6 +543,46 @@ describe("listDocumentFolders", () => {
 		expect(m.folderFindMany.mock.calls[0]?.[0].select).not.toHaveProperty(
 			"user",
 		);
+		expect(m.folderFindMany.mock.calls[0]?.[0].select).not.toHaveProperty(
+			"ancestorIds",
+		);
+	});
+
+	it("gives editors a Google folder's item and ancestor ids, and a OneDrive or SharePoint folder none", async () => {
+		const [sharepoint] = await listDocumentFolders({
+			projectId: "project-1",
+			view: "editor",
+		});
+		m.folderFindMany.mockResolvedValue([
+			{
+				...salesFolder,
+				id: "folder-g",
+				provider: "googledrive",
+				driveId: "root-g",
+				itemId: "gfolder-1",
+				ancestorIds: ["gclients", "root-g"],
+				siteId: null,
+				siteName: null,
+				libraryName: null,
+			},
+		]);
+
+		const [google] = await listDocumentFolders({
+			projectId: "project-1",
+			view: "editor",
+		});
+
+		expect(sharepoint).toMatchObject({ itemId: "item-1", ancestorIds: [] });
+		expect(google).toMatchObject({
+			provider: "googledrive",
+			driveId: "root-g",
+			itemId: "gfolder-1",
+			ancestorIds: ["gclients", "root-g"],
+		});
+		expect(m.folderFindMany.mock.calls[1]?.[0].select).toMatchObject({
+			itemId: true,
+			ancestorIds: true,
+		});
 	});
 
 	it("names each folder's own files needing attention, however many another folder has", async () => {
@@ -833,6 +954,36 @@ describe("reconcileDocumentFolderListing", () => {
 		expect(m.folderUpdate.mock.calls[0]?.[0].data).not.toHaveProperty(
 			"discoveredAt",
 		);
+	});
+
+	it("stores a Google folder's ancestor ids with its path on every read", async () => {
+		m.queryRaw.mockResolvedValue([lockedFolder()]);
+
+		await reconcile({
+			root: {
+				name: "Briefs",
+				webUrl: null,
+				drivePath: "/Clients/Briefs",
+				ancestorIds: ["gclients", "root-g"],
+			},
+			complete: false,
+			pausedRemovalsCode: "PARTIAL_READ",
+		});
+
+		expect(m.folderUpdate.mock.calls[0]?.[0].data).toMatchObject({
+			drivePath: "/Clients/Briefs",
+			ancestorIds: ["gclients", "root-g"],
+		});
+	});
+
+	it("keeps the stored ancestor ids when the read gave none", async () => {
+		m.queryRaw.mockResolvedValue([lockedFolder()]);
+
+		await reconcile();
+
+		const data = m.folderUpdate.mock.calls[0]?.[0].data;
+		expect(data).toMatchObject({ drivePath: "/Sales" });
+		expect(data).not.toHaveProperty("ancestorIds");
 	});
 
 	it("on a truncated listing keeps a held mass removal and its count", async () => {
@@ -1521,6 +1672,24 @@ describe("import claims and outcomes", () => {
 		});
 	});
 
+	it("records a file the drive would not hand over as skipped not downloadable", async () => {
+		m.fileFindFirst.mockResolvedValue({ importedVersion: null });
+
+		expect(
+			await recordDocumentFolderFileOutcome({
+				fileId: "file-1",
+				contextId: null,
+				outcome: "SKIPPED",
+				skipCode: "NOT_DOWNLOADABLE",
+			}),
+		).toBe("SKIPPED");
+		expect(fileUpdates()[0]?.data).toEqual({
+			status: "SKIPPED",
+			skipCode: "NOT_DOWNLOADABLE",
+			failureCode: null,
+		});
+	});
+
 	it("records a failure with its code", async () => {
 		m.fileFindFirst.mockResolvedValue({ importedVersion: "v1" });
 		m.contextFindUnique.mockResolvedValue({ id: "context-1" });
@@ -1927,6 +2096,79 @@ describe("foldersOverlap", () => {
 	it("cannot tell without both paths", () => {
 		expect(foldersOverlap(at("d", null), at("d", "/Sales"))).toBe(false);
 	});
+
+	describe("by ancestor ids, when both folders record them", () => {
+		const google = (
+			driveId: string,
+			itemId: string,
+			drivePath: string,
+			ancestorIds: string[],
+		) => ({ driveId, itemId, drivePath, ancestorIds });
+
+		it("finds a folder whose ancestors include the other, whatever the paths say", () => {
+			const sales = google("root", "sales", "/Sales", ["root"]);
+			const cases = google("root", "cases", "/Archive/Case studies", [
+				"root",
+				"sales",
+			]);
+			expect(foldersOverlap(sales, cases)).toBe(true);
+			expect(foldersOverlap(cases, sales)).toBe(true);
+		});
+
+		it("finds the same folder", () => {
+			expect(
+				foldersOverlap(
+					google("root", "sales", "/Sales", ["root"]),
+					google("root", "sales", "/Sales", ["root"]),
+				),
+			).toBe(true);
+		});
+
+		it("keeps two siblings with the same name path apart", () => {
+			expect(
+				foldersOverlap(
+					google("root", "sales-1", "/Sales", ["root"]),
+					google("root", "sales-2", "/Sales", ["root"]),
+				),
+			).toBe(false);
+		});
+
+		it("never overlaps folders on different drives", () => {
+			expect(
+				foldersOverlap(
+					google("root-1", "sales", "/Sales", ["root-1"]),
+					google("root-2", "cases", "/Sales/Case studies", [
+						"root-2",
+						"sales",
+					]),
+				),
+			).toBe(false);
+		});
+
+		it("falls back to paths when either folder records no ancestors", () => {
+			const microsoft = (drivePath: string) => ({
+				driveId: "d",
+				itemId: drivePath,
+				drivePath,
+				ancestorIds: [],
+			});
+			expect(
+				foldersOverlap(
+					microsoft("/Sales"),
+					microsoft("/Sales/Case studies"),
+				),
+			).toBe(true);
+			expect(
+				foldersOverlap(microsoft("/Sales"), microsoft("/Sales 2")),
+			).toBe(false);
+			expect(
+				foldersOverlap(
+					microsoft("/Sales"),
+					google("d", "sales-2", "/Sales", ["root"]),
+				),
+			).toBe(true);
+		});
+	});
 });
 
 describe("planDocumentFolderReconcile", () => {
@@ -2078,6 +2320,59 @@ describe("planDocumentFolderReconcile", () => {
 			const result = plan(rows, [listed("a", { ...v2, size: 100 })]);
 
 			expect(apply(rows, result)[0]).toMatchObject({
+				status: "PENDING",
+				skipCode: null,
+			});
+		});
+	});
+
+	describe("files the drive will not hand over", () => {
+		const locked = { notDownloadable: true as const };
+
+		it("skips a new one as not downloadable, outside the import window", () => {
+			const result = plan([], [listed("a", locked), listed("b")]);
+
+			expect(
+				result.inserts.map((i) => [
+					i.driveItemId,
+					i.status,
+					i.skipCode,
+				]),
+			).toEqual([
+				["a", "SKIPPED", "NOT_DOWNLOADABLE"],
+				["b", "PENDING", null],
+			]);
+		});
+
+		it("keeps it skipped until a new version is listed", () => {
+			let rows = [
+				row("a", {
+					status: "SKIPPED",
+					skipCode: "NOT_DOWNLOADABLE",
+					contextId: null,
+					importedVersion: null,
+				}),
+			];
+
+			// Same version, even listed as downloadable now: not looked at.
+			rows = apply(rows, plan(rows, [listed("a")]));
+			expect(rows[0]).toMatchObject({
+				status: "SKIPPED",
+				skipCode: "NOT_DOWNLOADABLE",
+			});
+
+			// A new version still locked stays skipped.
+			const v2 = { contentVersion: "md5:a-v2" };
+			rows = apply(rows, plan(rows, [listed("a", { ...v2, ...locked })]));
+			expect(rows[0]).toMatchObject({
+				status: "SKIPPED",
+				skipCode: "NOT_DOWNLOADABLE",
+			});
+
+			// A new version the drive hands over is imported.
+			const v3 = { contentVersion: "md5:a-v3" };
+			rows = apply(rows, plan(rows, [listed("a", v3)]));
+			expect(rows[0]).toMatchObject({
 				status: "PENDING",
 				skipCode: null,
 			});

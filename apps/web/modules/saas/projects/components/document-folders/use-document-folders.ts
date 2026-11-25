@@ -1,11 +1,12 @@
 "use client";
 
 /**
- * A project's OneDrive and SharePoint document folders (Fizzy #2808): the
- * list, read again while a folder is busy, and what each folder's card says.
+ * A project's OneDrive, SharePoint and Google Drive document folders (Fizzy
+ * #2808): the list, read again while a folder is busy, and what each folder's
+ * card says.
  *
  * Every state and reason is worked out from the fixed codes the list returns,
- * never from Graph's own error text.
+ * never from Graph's or Google's own error text.
  */
 
 import { ORPCError } from "@orpc/client";
@@ -28,7 +29,10 @@ export type EditorDocumentFolder = Extract<
 	{ view: "editor" }
 >["folders"][number];
 
-type DocumentFolderProviderId = "onedrive" | "sharepoint";
+type DocumentFolderProviderId = "onedrive" | "sharepoint" | "googledrive";
+
+/** Which drives a picker browses: Microsoft's, or Google Drive. */
+export type DocumentFolderSource = "microsoft" | "googledrive";
 
 export function isEditorFolder(
 	folder: DocumentFolder,
@@ -74,18 +78,35 @@ export function messageOf(error: unknown, fallback: string): string {
 	return error instanceof Error && error.message ? error.message : fallback;
 }
 
-export function providerName(provider: string): "OneDrive" | "SharePoint" {
-	return provider === "sharepoint" ? "SharePoint" : "OneDrive";
+export function providerName(
+	provider: string,
+): "OneDrive" | "SharePoint" | "Google Drive" {
+	switch (provider) {
+		case "sharepoint":
+			return "SharePoint";
+		case "googledrive":
+			return "Google Drive";
+		default:
+			return "OneDrive";
+	}
 }
 
-/** Where a folder lives: OneDrive, or the SharePoint site and library. */
+/** The account a folder is read with: Microsoft, or Google Drive. */
+export function connectionName(provider: string): "Microsoft" | "Google Drive" {
+	return provider === "googledrive" ? "Google Drive" : "Microsoft";
+}
+
+/**
+ * Where a folder lives: OneDrive, Google Drive, or the SharePoint site and
+ * library.
+ */
 export function folderPlace(folder: {
 	provider: string;
 	siteName: string | null;
 	libraryName: string | null;
 }): string {
 	if (folder.provider !== "sharepoint") {
-		return "OneDrive";
+		return providerName(folder.provider);
 	}
 	return ["SharePoint", folder.siteName, folder.libraryName]
 		.filter((part): part is string => Boolean(part))
@@ -212,6 +233,7 @@ export function folderRelation(
 const CONTEXT_PROVIDERS: Record<string, DocumentFolderProviderId> = {
 	"onedrive-documents": "onedrive",
 	"sharepoint-documents": "sharepoint",
+	"googledrive-documents": "googledrive",
 };
 
 /** The drive a context was imported from, or null for any other context. */
@@ -285,29 +307,59 @@ export function useDocumentFolders({
 	};
 }
 
+/** The fixed code a procedure's refusal carries, if any. */
+export function errorCode(error: unknown): string | undefined {
+	return error instanceof ORPCError
+		? (error.data as { code?: string } | undefined)?.code
+		: undefined;
+}
+
 /** The connect prompt a procedure answers when the caller has no Microsoft connection. */
 export function isMicrosoftNotConnected(error: unknown): boolean {
-	return (
-		error instanceof ORPCError &&
-		(error.data as { code?: string } | undefined)?.code ===
-			"MICROSOFT_NOT_CONNECTED"
-	);
+	return errorCode(error) === "MICROSOFT_NOT_CONNECTED";
 }
 
 /**
- * Runs the Microsoft connect flow Settings → Integrations uses, in a popup.
- * Resolves once the popup reports success or is closed, so the caller can
- * try again and let the server say whether a connection now exists; false
- * when the popup reported a failure. Once `signal` aborts, as when the
- * calling screen goes away, it stops listening and resolves false; the
- * caller checks the signal before acting on the answer.
+ * What a Google Drive refusal asks of the caller: to connect Google Drive
+ * (no connection, or one that expired or was revoked), or to reconnect it to
+ * grant folder access. Null for any other refusal.
  */
-export async function connectMicrosoftAccount(
+export function googleDriveConnectNeeded(
+	error: unknown,
+): "connect" | "reconnect" | null {
+	switch (errorCode(error)) {
+		case "GOOGLE_DRIVE_NOT_CONNECTED":
+			return "connect";
+		case "GOOGLE_DRIVE_RECONNECT_REQUIRED":
+			return "reconnect";
+		default:
+			return null;
+	}
+}
+
+/** The connect flows a document folder can be read with. */
+type DocumentFolderAccount = "MICROSOFT_GRAPH" | "GOOGLE_DRIVE";
+
+/** The connect flow that reads a folder of this provider. */
+export function accountFor(provider: string): DocumentFolderAccount {
+	return provider === "googledrive" ? "GOOGLE_DRIVE" : "MICROSOFT_GRAPH";
+}
+
+/**
+ * Runs the Microsoft or Google Drive connect flow Settings → Integrations
+ * uses, in a popup. Resolves once the popup reports success or is closed, so
+ * the caller can try again and let the server say whether a connection now
+ * exists; false when the popup reported a failure. Once `signal` aborts, as
+ * when the calling screen goes away, it stops listening and resolves false;
+ * the caller checks the signal before acting on the answer.
+ */
+export async function connectAccount(
+	account: DocumentFolderAccount,
 	organizationId: string | null,
 	signal?: AbortSignal,
 ): Promise<boolean> {
 	const { authorizationUrl } = await orpcClient.integrations.oauth.start({
-		provider: "MICROSOFT_GRAPH",
+		provider: account,
 		redirectUri: `${window.location.origin}/api/integrations/oauth/callback`,
 		// Relative on purpose: the callback page rejects absolute URLs.
 		returnUrl:
@@ -321,7 +373,7 @@ export async function connectMicrosoftAccount(
 	}
 	const popup = openOAuthPopup({
 		url: authorizationUrl,
-		name: "microsoft_graph-oauth",
+		name: `${account.toLowerCase()}-oauth`,
 	});
 	if (!popup) {
 		throw new Error(POPUP_BLOCKED_MESSAGE);

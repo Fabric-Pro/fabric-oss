@@ -1,5 +1,11 @@
 import { ORPCError } from "@orpc/server";
 import { classifyDocumentFolderFile } from "@repo/database";
+import {
+	browseGoogleDriveFolder,
+	browseGoogleDrivePlaces,
+	DOCUMENT_FOLDER_BROWSE_MAX_ITEMS,
+	type DocumentFolderConnection,
+} from "@repo/integrations/document-folders";
 import type {
 	DriveFolderItem,
 	SharePointDriveList,
@@ -16,11 +22,14 @@ import {
 } from "../../../../orpc/procedures";
 import {
 	callGraph,
+	folderSourceInput,
 	type GraphCaller,
+	googleDriveReader,
 	graphCaller,
 	LOG,
 	loadEnabledProject,
 	projectInput,
+	readGoogleDrive,
 	readGraph,
 } from "./shared";
 
@@ -43,8 +52,15 @@ interface DocumentFolderBrowseFolder {
 	driveId: string;
 	itemId: string;
 	name: string;
-	childCount: number;
+	/** Absent for Google Drive, which does not count a folder's children. */
+	childCount?: number;
 	webUrl: string | null;
+}
+
+/** A Google Drive place: My Drive by its root folder's id, or a shared drive. */
+interface DocumentFolderBrowsePlace {
+	driveId: string;
+	name: string;
 }
 
 /**
@@ -55,6 +71,7 @@ interface DocumentFolderBrowseFolder {
 type DocumentFolderBrowseResult =
 	| {
 			level: "roots";
+			provider: "microsoft";
 			oneDrive: { status: "available" };
 			sharePoint:
 				| {
@@ -77,6 +94,13 @@ type DocumentFolderBrowseResult =
 			libraries: DocumentFolderBrowseLibrary[];
 	  }
 	| { level: "drives"; siteId: string; status: "unavailable" }
+	| {
+			level: "roots";
+			provider: "googledrive";
+			myDrive: DocumentFolderBrowsePlace;
+			/** Empty when the person belongs to no shared drive. */
+			sharedDrives: DocumentFolderBrowsePlace[];
+	  }
 	| {
 			level: "folders";
 			/** Null for My OneDrive's root. */
@@ -113,6 +137,7 @@ async function browseRoots(
 	}
 	return {
 		level: "roots",
+		provider: "microsoft",
 		oneDrive: { status: "available" },
 		sharePoint:
 			followed === null
@@ -123,6 +148,76 @@ async function browseRoots(
 							status: "available",
 							followedSites: followed.sites.map(toSite),
 						},
+	};
+}
+
+/** Files directly at a level that the upload vocabulary would import. */
+function supportedFileCount(
+	items: Array<{
+		isFolder: boolean;
+		name: string;
+		mimeType: string | null;
+		size: number | null;
+	}>,
+): number {
+	return items.filter(
+		(item) =>
+			!item.isFolder &&
+			classifyDocumentFolderFile(item).status === "PENDING",
+	).length;
+}
+
+/**
+ * One level of the Google Drive picker: My Drive and the shared drives, or
+ * a folder's folders. A level opens at its place's root, whose id is the
+ * place's, unless a folder inside it is named.
+ */
+async function browseGoogleDrive(
+	reader: DocumentFolderConnection,
+	level: z.infer<typeof levelInput>,
+): Promise<DocumentFolderBrowseResult> {
+	if (level.kind === "roots") {
+		const places = await readGoogleDrive("places", () =>
+			browseGoogleDrivePlaces(reader),
+		);
+		return {
+			level: "roots",
+			provider: "googledrive",
+			myDrive: { driveId: places.myDrive.id, name: places.myDrive.name },
+			sharedDrives: places.sharedDrives.map((drive) => ({
+				driveId: drive.id,
+				name: drive.name,
+			})),
+		};
+	}
+	if (level.kind !== "folders" || !level.driveId) {
+		throw new ORPCError("BAD_REQUEST", {
+			message:
+				"Google Drive folders are opened from My Drive or a shared drive.",
+		});
+	}
+	const driveId = level.driveId;
+	const folderId = level.itemId ?? driveId;
+	const listing = await readGoogleDrive("folder", () =>
+		browseGoogleDriveFolder(reader, {
+			folderId,
+			maxItems: DOCUMENT_FOLDER_BROWSE_MAX_ITEMS,
+		}),
+	);
+	return {
+		level: "folders",
+		driveId,
+		itemId: folderId,
+		folders: listing.items
+			.filter((item) => item.isFolder)
+			.map((item) => ({
+				driveId,
+				itemId: item.id,
+				name: item.name,
+				webUrl: item.webUrl,
+			})),
+		supportedFileCount: supportedFileCount(listing.items),
+		truncated: listing.truncated,
 	};
 }
 
@@ -148,11 +243,16 @@ export const browseDocumentFoldersProcedure = tenantProtectedProcedure
 		method: "POST",
 		path: "/projects/{projectId}/document-folders/browse",
 		tags: ["Projects", "Document Folders"],
-		summary: "Browse OneDrive and SharePoint folders",
+		summary: "Browse OneDrive, SharePoint and Google Drive folders",
 		description:
-			"One level of the document-folder picker, read with the caller's Microsoft connection: the top level (My OneDrive and followed SharePoint sites), a SharePoint site search, a site's document libraries, or the folders inside a folder with how many files at that level would be imported.",
+			"One level of the document-folder picker, read with the caller's own connection. For Microsoft (the default): the top level (My OneDrive and followed SharePoint sites), a SharePoint site search, a site's document libraries, or the folders inside a folder. For Google Drive: My Drive and the caller's shared drives, or the folders inside a folder. A folder level also says how many files at that level would be imported.",
 	})
-	.input(projectInput.extend({ level: levelInput }))
+	.input(
+		projectInput.extend({
+			provider: folderSourceInput,
+			level: levelInput,
+		}),
+	)
 	.handler(
 		async ({ input, context }): Promise<DocumentFolderBrowseResult> => {
 			const project = await loadEnabledProject(input.projectId);
@@ -162,6 +262,15 @@ export const browseDocumentFoldersProcedure = tenantProtectedProcedure
 				throw new ORPCError("BAD_REQUEST", {
 					message: "A folder is opened together with its drive.",
 				});
+			}
+			if (input.provider === "googledrive") {
+				return browseGoogleDrive(
+					await googleDriveReader(
+						context.user.id,
+						project.organizationId,
+					),
+					level,
+				);
 			}
 			const caller = await graphCaller(
 				context.user.id,
@@ -222,7 +331,7 @@ export const browseDocumentFoldersProcedure = tenantProtectedProcedure
 					}>(caller, "list_drive_children", {
 						driveId: level.driveId,
 						itemId,
-						maxItems: 1000,
+						maxItems: DOCUMENT_FOLDER_BROWSE_MAX_ITEMS,
 					});
 					return {
 						level: "folders",
@@ -237,15 +346,14 @@ export const browseDocumentFoldersProcedure = tenantProtectedProcedure
 								childCount: item.childCount ?? 0,
 								webUrl: item.webUrl,
 							})),
-						supportedFileCount: listing.items.filter(
-							(item) =>
-								!item.isFolder &&
-								classifyDocumentFolderFile({
-									name: item.name,
-									mimeType: null,
-									size: item.size,
-								}).status === "PENDING",
-						).length,
+						supportedFileCount: supportedFileCount(
+							listing.items.map((item) => ({
+								isFolder: item.isFolder,
+								name: item.name,
+								mimeType: null,
+								size: item.size,
+							})),
+						),
 						truncated: listing.truncated,
 					};
 				}

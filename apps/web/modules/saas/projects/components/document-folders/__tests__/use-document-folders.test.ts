@@ -249,6 +249,12 @@ describe("folderPlace", () => {
 			),
 		).toBe("SharePoint · Documents");
 	});
+
+	it("names Google Drive", () => {
+		expect(folderPlace(folder({ provider: "googledrive" }))).toBe(
+			"Google Drive",
+		);
+	});
 });
 
 describe("documentFolderProvenance", () => {
@@ -259,6 +265,9 @@ describe("documentFolderProvenance", () => {
 		expect(
 			documentFolderProvenance({ provider: "sharepoint-documents" }),
 		).toBe("sharepoint");
+		expect(
+			documentFolderProvenance({ provider: "googledrive-documents" }),
+		).toBe("googledrive");
 	});
 
 	it("leaves every other context alone", () => {

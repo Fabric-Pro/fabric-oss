@@ -30,6 +30,7 @@ vi.mock("@repo/ai-token", () => ({
 }));
 
 const getProjectAccessContext = vi.fn();
+const isOrganizationLive = vi.fn();
 const projectContextCount = vi.fn();
 const projectContextFindMany = vi.fn();
 vi.mock("@repo/database", () => ({
@@ -39,6 +40,7 @@ vi.mock("@repo/database", () => ({
 			findMany: (args: unknown) => projectContextFindMany(args),
 		},
 	},
+	isOrganizationLive: (id: string) => isOrganizationLive(id),
 	getProjectAccessContext: (projectId: string, userId: string) =>
 		getProjectAccessContext(projectId, userId),
 }));
@@ -74,6 +76,7 @@ describe("POST /api/internal/slack-tools", () => {
 			claims: { sub: USER_ID, org: ORG_ID },
 		});
 		getProjectAccessContext.mockResolvedValue({ organizationId: ORG_ID });
+		isOrganizationLive.mockResolvedValue(true);
 		projectContextCount.mockResolvedValue(1);
 		executeSlackTool.mockResolvedValue({ ok: true });
 	});
@@ -100,6 +103,17 @@ describe("POST /api/internal/slack-tools", () => {
 		// The channel-authorization query runs only after access and the
 		// tenant-XOR check pass — no speculative work for a denied caller.
 		expect(projectContextCount).not.toHaveBeenCalled();
+	});
+
+	it("403s a deleted project organization before accessing provider data", async () => {
+		isOrganizationLive.mockResolvedValue(false);
+		const { POST } = await import(
+			"../../../app/api/internal/slack-tools/route"
+		);
+		const response = await callRoute(POST, body);
+		expect(response.status).toBe(403);
+		expect(isOrganizationLive).toHaveBeenCalledWith(ORG_ID);
+		expect(executeSlackTool).not.toHaveBeenCalled();
 	});
 
 	it("403s a valid token whose org does not match the project's org (tenant mismatch)", async () => {

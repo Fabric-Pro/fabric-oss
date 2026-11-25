@@ -15,8 +15,7 @@
  *       same scheduled         : no-op
  *       ONCE ↔ LIVE            : no-op
  *   - `deleteUrlSourceSchedule` swallows "not found".
- *   - Switching INTO scheduled without `apiKey` throws
- *     `MissingFirecrawlKeyError`.
+ *   - Schedules can carry a source reference without credential fields.
  */
 
 import type { ScheduleClient } from "@temporalio/client";
@@ -27,7 +26,6 @@ import {
 	createUrlSourceSchedule,
 	cronForRefreshMode,
 	deleteUrlSourceSchedule,
-	MissingFirecrawlKeyError,
 	parseContextIdFromScheduleId,
 	updateUrlSourceSchedule,
 } from "../../src/schedules/url-source-schedule";
@@ -253,14 +251,23 @@ describe("createUrlSourceSchedule", () => {
 		]);
 	});
 
-	it("throws MissingFirecrawlKeyError when apiKey is empty", async () => {
-		const { client } = makeFakeClient();
-		await expect(
-			createUrlSourceSchedule(
-				{ ...baseArgs, apiKey: "", refreshMode: "DAILY" },
-				client,
-			),
-		).rejects.toBeInstanceOf(MissingFirecrawlKeyError);
+	it("omits credential fields when the key is absent", async () => {
+		const { client, create } = makeFakeClient();
+		const { apiKey: _legacy, ...args } = baseArgs;
+		await createUrlSourceSchedule(
+			{
+				...args,
+				providerEndpoint: "example-account",
+				refreshMode: "DAILY",
+			},
+			client,
+		);
+		expect(create.mock.calls[0][0].action.args[0]).not.toHaveProperty(
+			"apiKey",
+		);
+		expect(create.mock.calls[0][0].action.args[0]).not.toHaveProperty(
+			"providerEndpoint",
+		);
 	});
 
 	it("throws when called with a non-scheduled refreshMode", async () => {
@@ -437,26 +444,20 @@ describe("updateUrlSourceSchedule — transitions", () => {
 		expect(handleDelete).not.toHaveBeenCalled();
 	});
 
-	it("switching INTO scheduled without apiKey throws MissingFirecrawlKeyError", async () => {
-		const { client } = makeFakeClient();
-		await expect(
-			updateUrlSourceSchedule(
-				{
-					contextId: "ctx-1",
-					oldRefreshMode: "ONCE",
-					newRefreshMode: "DAILY",
-					url: "https://example.com",
-					scope: "SINGLE_PAGE",
-					maxPages: 1,
-					projectId: "proj-1",
-					userId: "u-1",
-					organizationId: null,
-					// apiKey omitted
-				},
+	it.each(["ONCE", "WEEKLY"] as const)(
+		"schedules from %s without a key",
+		async (oldRefreshMode) => {
+			const { client, create } = makeFakeClient();
+			const { apiKey: _legacy, ...args } = baseArgs;
+			await updateUrlSourceSchedule(
+				{ ...args, oldRefreshMode, newRefreshMode: "DAILY" },
 				client,
-			),
-		).rejects.toBeInstanceOf(MissingFirecrawlKeyError);
-	});
+			);
+			expect(create.mock.calls[0][0].action.args[0]).not.toHaveProperty(
+				"apiKey",
+			);
+		},
+	);
 });
 
 describe("deleteUrlSourceSchedule", () => {

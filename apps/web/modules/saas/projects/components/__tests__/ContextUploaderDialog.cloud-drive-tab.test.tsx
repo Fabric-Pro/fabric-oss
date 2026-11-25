@@ -110,10 +110,12 @@ vi.mock("../document-folders/ConnectDocumentFolderDialog", () => ({
 	ConnectDocumentFolderDialog: (props: {
 		projectId: string;
 		organizationId: string | null;
+		provider?: string;
 		onConnected?: () => void;
 	}) => (
 		<div data-testid="document-folder-picker">
-			{props.projectId}/{props.organizationId}
+			{props.projectId}/{props.organizationId}/
+			{props.provider ?? "microsoft"}
 			<button type="button" onClick={() => props.onConnected?.()}>
 				Finish connecting
 			</button>
@@ -155,6 +157,9 @@ describe("ContextUploaderDialog — OneDrive / SharePoint entry", () => {
 		expect(
 			screen.queryByRole("tab", { name: /OneDrive/ }),
 		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("tab", { name: "Google Drive folders" }),
+		).not.toBeInTheDocument();
 	});
 
 	it("is hidden in the project wizard", () => {
@@ -187,6 +192,53 @@ describe("ContextUploaderDialog — OneDrive / SharePoint entry", () => {
 				name: "Finish connecting",
 				// The stand-in renders under the open dialog; the real picker
 				// is a dialog of its own on top of it.
+				hidden: true,
+			}),
+		);
+		expect(onOpenChange).toHaveBeenCalledWith(false);
+	});
+});
+
+describe("ContextUploaderDialog — Google Drive folders entry", () => {
+	it("sits beside OneDrive / SharePoint while the feature is on", () => {
+		mocks.flags.add("CLOUD_DRIVE_FOLDERS");
+		renderDialog();
+		expect(
+			screen.getByRole("tab", { name: "OneDrive / SharePoint" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("tab", { name: "Google Drive folders" }),
+		).toBeInTheDocument();
+	});
+
+	it("is hidden in the project wizard", () => {
+		mocks.flags.add("CLOUD_DRIVE_FOLDERS");
+		renderDialog("wizard");
+		expect(
+			screen.queryByRole("tab", { name: "Google Drive folders" }),
+		).not.toBeInTheDocument();
+	});
+
+	it("opens the folder picker in Google Drive mode, and closes the dialog once folders are connected", async () => {
+		mocks.flags.add("CLOUD_DRIVE_FOLDERS");
+		const { onOpenChange } = renderDialog();
+
+		await userEvent.click(
+			screen.getByRole("tab", { name: "Google Drive folders" }),
+		);
+		expect(
+			screen.getByText(/separate from picking single Google Docs/),
+		).toBeInTheDocument();
+		await userEvent.click(
+			screen.getByRole("button", { name: "Choose Google Drive folders" }),
+		);
+		expect(screen.getByTestId("document-folder-picker")).toHaveTextContent(
+			"proj-1/org-1/googledrive",
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Finish connecting",
 				hidden: true,
 			}),
 		);

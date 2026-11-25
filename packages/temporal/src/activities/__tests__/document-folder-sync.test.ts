@@ -1,6 +1,6 @@
 /**
- * Reading, confirming, deleting and importing OneDrive and SharePoint
- * document folders (Fizzy #2808).
+ * Reading, confirming, deleting and importing OneDrive, SharePoint and
+ * Google Drive document folders (Fizzy #2808).
  *
  * What these pin: a folder is read only with its reader's own connection,
  * while the feature is on, the reader may still add context and the project's
@@ -39,6 +39,11 @@ const mocks = vi.hoisted(() => ({
 	deleteProjectContext: vi.fn(),
 	uploadFile: vi.fn(),
 	deleteFile: vi.fn(),
+	googleHasScope: vi.fn(),
+	googleDetails: vi.fn(),
+	googleTree: vi.fn(),
+	googleLookup: vi.fn(),
+	googleDownload: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -76,6 +81,7 @@ vi.mock("@repo/database", () => ({
 		UNSUPPORTED: "UNSUPPORTED",
 		TOO_BIG: "TOO_BIG",
 		CAP_REACHED: "CAP_REACHED",
+		NOT_DOWNLOADABLE: "NOT_DOWNLOADABLE",
 	},
 	db: {
 		project: { findUnique: mocks.projectFindUnique },
@@ -114,6 +120,24 @@ vi.mock("@repo/integrations/microsoft", async () => ({
 	executeMicrosoftTeamsTool: mocks.executeTool,
 	isMicrosoftNotConnectedError: (message: string) =>
 		message.includes("Microsoft not connected"),
+}));
+
+// Google Drive's reads and the stored grant, below the real Google adapter.
+vi.mock("@repo/integrations/google", async () => ({
+	...(await vi.importActual<
+		typeof import("../../../../integrations/src/google/connection-errors")
+	>("../../../../integrations/src/google/connection-errors")),
+	getGoogleDriveAccessToken: vi.fn(async () => "token"),
+	hasGoogleDriveReadonlyScope: mocks.googleHasScope,
+}));
+
+vi.mock("../../../../integrations/src/google/drive-folder", () => ({
+	getGoogleDriveItemDetails: mocks.googleDetails,
+	listGoogleDriveFolderTree: mocks.googleTree,
+	lookupGoogleDriveItemsInFolder: mocks.googleLookup,
+	downloadGoogleDriveFile: mocks.googleDownload,
+	listGoogleDriveFolderChildren: vi.fn(),
+	listGoogleDrivePlaces: vi.fn(),
 }));
 
 vi.mock("@repo/rag", () => ({
@@ -232,6 +256,7 @@ beforeEach(() => {
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.canCreate.mockResolvedValue(true);
 	mocks.ownConnection.mockResolvedValue({ id: "connection-1" });
+	mocks.googleHasScope.mockResolvedValue(true);
 	mocks.finishRead.mockResolvedValue(undefined);
 	mocks.reconcile.mockResolvedValue({
 		status: "applied",
@@ -1348,5 +1373,354 @@ describe("recording an import's outcome", () => {
 			outcome: "FAILED",
 			failureCode: "DOWNLOAD_FAILED",
 		});
+	});
+});
+
+describe("Google Drive folders", () => {
+	const GOOGLE_FOLDER = {
+		...FOLDER,
+		id: "folder-g",
+		provider: "googledrive",
+		driveId: "root-g",
+		itemId: "gfolder-1",
+		name: "Briefs",
+		drivePath: "/Clients/Briefs",
+	};
+
+	const GOOGLE_ROOT = {
+		status: "ok",
+		item: {
+			id: "gfolder-1",
+			name: "Briefs",
+			driveId: "root-g",
+			driveType: null,
+			provider: "googledrive",
+			isFolder: true,
+			webUrl: "https://example.com/briefs",
+			parentPath: "/Clients",
+			drivePath: "/Clients/Briefs",
+			ancestorIds: ["gclients", "root-g"],
+		},
+	};
+
+	const GOOGLE_FILE = {
+		id: "gfile-1",
+		name: "Brief.docx",
+		relativePath: "Brief.docx",
+		size: null,
+		mimeType:
+			"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		quickXorHash: null,
+		lastModified: "2026-11-02T00:00:00.000Z",
+		contentVersion: "version:7",
+	};
+
+	const readGoogle = () =>
+		readDocumentFolder({ folderId: "folder-g", passId: "pass-1" });
+
+	beforeEach(() => {
+		mocks.startRead.mockResolvedValue(GOOGLE_FOLDER);
+		mocks.folderFindUnique.mockResolvedValue({
+			...GOOGLE_FOLDER,
+			disconnectedAt: null,
+		});
+		mocks.googleDetails.mockResolvedValue(GOOGLE_ROOT);
+		mocks.googleTree.mockResolvedValue({
+			status: "complete",
+			files: [GOOGLE_FILE],
+		});
+	});
+
+	it("lists through the Google adapter and records the root's path and ancestor ids", async () => {
+		mocks.googleTree.mockResolvedValue({
+			status: "complete",
+			files: [
+				GOOGLE_FILE,
+				{
+					...GOOGLE_FILE,
+					id: "gfile-2",
+					name: "Locked.pdf",
+					relativePath: "Locked.pdf",
+					size: 10,
+					mimeType: "application/pdf",
+					contentVersion: "md5:abc",
+					notDownloadable: true,
+				},
+			],
+		});
+
+		await expect(readGoogle()).resolves.toMatchObject({ complete: true });
+		expect(mocks.ownConnection).toHaveBeenCalledWith(
+			"GOOGLE_DRIVE",
+			"user-1",
+			"org-1",
+		);
+		expect(mocks.executeTool).not.toHaveBeenCalled();
+		expect(mocks.reconcile).toHaveBeenCalledWith({
+			folderId: "folder-g",
+			passId: "pass-1",
+			readerEpoch: 3,
+			root: {
+				name: "Briefs",
+				webUrl: "https://example.com/briefs",
+				drivePath: "/Clients/Briefs",
+				ancestorIds: ["gclients", "root-g"],
+			},
+			files: [
+				{
+					driveItemId: "gfile-1",
+					name: "Brief.docx",
+					relativePath: "Brief.docx",
+					size: null,
+					mimeType:
+						"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+					lastModified: "2026-11-02T00:00:00.000Z",
+					contentVersion: "version:7",
+				},
+				{
+					driveItemId: "gfile-2",
+					name: "Locked.pdf",
+					relativePath: "Locked.pdf",
+					size: 10,
+					mimeType: "application/pdf",
+					lastModified: "2026-11-02T00:00:00.000Z",
+					contentVersion: "md5:abc",
+					notDownloadable: true,
+				},
+			],
+			complete: true,
+		});
+	});
+
+	it("gives a reader whose grant lacks drive.readonly the reconnect problem, and lists nothing", async () => {
+		mocks.googleHasScope.mockResolvedValue(false);
+
+		await expect(readGoogle()).resolves.toMatchObject({ complete: false });
+		expect(mocks.googleDetails).not.toHaveBeenCalled();
+		expect(mocks.googleTree).not.toHaveBeenCalled();
+		expect(mocks.reconcile).not.toHaveBeenCalled();
+		expect(mocks.finishRead).toHaveBeenCalledWith(
+			expect.objectContaining({ problemCode: "RECONNECT" }),
+		);
+	});
+
+	it("gives an expired Google session the reconnect problem, and lists nothing", async () => {
+		mocks.googleDetails.mockRejectedValue(
+			new Error("Google session expired"),
+		);
+
+		await expect(readGoogle()).resolves.toMatchObject({ complete: false });
+		expect(mocks.reconcile).not.toHaveBeenCalled();
+		expect(mocks.finishRead).toHaveBeenCalledWith(
+			expect.objectContaining({ problemCode: "RECONNECT" }),
+		);
+	});
+
+	it("waits out a throttled root read and removes nothing", async () => {
+		mocks.googleDetails.mockResolvedValue({
+			status: "failed",
+			httpStatus: 429,
+			retryAfterSeconds: 3600,
+		});
+		const before = Date.now();
+
+		const result = await readGoogle();
+
+		expect(
+			new Date(result.nextReadAfter ?? 0).getTime(),
+		).toBeGreaterThanOrEqual(before + 3600 * 1000);
+		expect(mocks.reconcile).not.toHaveBeenCalled();
+		expect(mocks.finishRead).toHaveBeenCalledWith(
+			expect.objectContaining({ problemCode: undefined }),
+		);
+	});
+
+	it("records a root 404 as a gone folder", async () => {
+		mocks.googleDetails.mockResolvedValue({
+			status: "failed",
+			httpStatus: 404,
+			retryAfterSeconds: null,
+		});
+
+		await readGoogle();
+
+		expect(mocks.reconcile).not.toHaveBeenCalled();
+		expect(mocks.finishRead).toHaveBeenCalledWith(
+			expect.objectContaining({ problemCode: "FOLDER_GONE" }),
+		);
+	});
+
+	it("records an incomplete Drive search as a partial read, with removals paused", async () => {
+		mocks.googleTree.mockResolvedValue({
+			status: "truncated",
+			reason: "incomplete",
+			files: [GOOGLE_FILE],
+		});
+
+		await expect(readGoogle()).resolves.toMatchObject({
+			complete: false,
+			candidates: [],
+		});
+		expect(mocks.reconcile).toHaveBeenCalledWith(
+			expect.objectContaining({
+				complete: false,
+				pausedRemovalsCode: "PARTIAL_READ",
+			}),
+		);
+	});
+
+	it("leaves a candidate whose Google lookup did not answer", async () => {
+		mocks.googleLookup.mockResolvedValue({
+			items: [
+				{
+					itemId: "gfile-1",
+					state: "unknown",
+					httpStatus: 403,
+					retryAfterSeconds: null,
+				},
+			],
+		});
+
+		await expect(
+			confirmDocumentFolderCandidates({
+				folderId: "folder-g",
+				candidates: [{ fileId: "file-g", driveItemId: "gfile-1" }],
+			}),
+		).resolves.toEqual({ status: "skipped" });
+		expect(mocks.googleLookup).toHaveBeenCalledWith(expect.anything(), {
+			folderItemId: "gfolder-1",
+			itemIds: ["gfile-1"],
+			onProgress: expect.any(Function),
+		});
+		expect(mocks.tombstone).not.toHaveBeenCalled();
+	});
+
+	describe("importing", () => {
+		const googleImport = (overrides: Record<string, unknown> = {}) =>
+			importFile({
+				driveItemId: "gfile-1",
+				name: "Brief.docx",
+				latestVersion: "version:7",
+				folder: {
+					id: "folder-g",
+					provider: "googledrive",
+					driveId: "root-g",
+					userId: "user-1",
+					organizationId: "org-1",
+					disconnectedAt: null,
+				},
+				...overrides,
+			});
+
+		beforeEach(() => {
+			mocks.claim.mockResolvedValue(true);
+			mocks.createContext.mockResolvedValue({
+				status: "created",
+				contextId: "ctx-g",
+			});
+			mocks.fileFindUnique.mockResolvedValue({ storageKey: null });
+			mocks.deleteFile.mockResolvedValue(undefined);
+		});
+
+		it("skips a file Google will not hand over as not downloadable, storing nothing", async () => {
+			mocks.getFile.mockResolvedValue(googleImport());
+			mocks.googleDownload.mockResolvedValue({
+				status: "not_downloadable",
+				name: "Brief.docx",
+			});
+
+			await expect(
+				importDocumentFolderFile({ fileId: "file-1" }),
+			).resolves.toEqual({ outcome: "done" });
+			expect(mocks.uploadFile).not.toHaveBeenCalled();
+			expect(mocks.createContext).not.toHaveBeenCalled();
+			expect(mocks.recordOutcome).toHaveBeenCalledWith({
+				fileId: "file-1",
+				contextId: null,
+				outcome: "SKIPPED",
+				skipCode: "NOT_DOWNLOADABLE",
+			});
+		});
+
+		it("stores a native Google Doc's DOCX export as the context", async () => {
+			mocks.getFile.mockResolvedValue(googleImport());
+			mocks.googleDownload.mockResolvedValue({
+				status: "ok",
+				name: "Brief.docx",
+				size: 2048,
+				mimeType:
+					"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+				bytes: Buffer.from("docx"),
+			});
+
+			await expect(
+				importDocumentFolderFile({ fileId: "file-1" }),
+			).resolves.toMatchObject({
+				outcome: "process",
+				contextId: "ctx-g",
+			});
+			expect(mocks.googleDownload).toHaveBeenCalledWith(
+				expect.anything(),
+				{ itemId: "gfile-1", maxBytes: 20 * 1024 * 1024 },
+			);
+			const [key, , options] = mocks.uploadFile.mock.calls[0];
+			expect(key).toMatch(
+				/^org-1\/projects\/project-1\/document-folders\/file-1\/[0-9a-f]{32}\.docx$/,
+			);
+			expect(options).toMatchObject({
+				contentType:
+					"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+			});
+			expect(mocks.createContext).toHaveBeenCalledWith(
+				expect.objectContaining({
+					originalFilename: "Brief.docx",
+					mimeType:
+						"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+					fileSize: 2048,
+				}),
+			);
+		});
+	});
+
+	it("reads a OneDrive and a Google folder of one project each through its own drive", async () => {
+		mocks.startRead.mockImplementation(
+			async (input: { folderId: string }) =>
+				input.folderId === "folder-g" ? GOOGLE_FOLDER : FOLDER,
+		);
+		graph({
+			get_drive_item: ROOT,
+			list_drive_tree: { status: "complete", files: [TREE_FILE] },
+		});
+
+		await readDocumentFolder({ folderId: "folder-1", passId: "pass-1" });
+		await readDocumentFolder({ folderId: "folder-g", passId: "pass-1" });
+
+		expect(mocks.ownConnection.mock.calls.map((call) => call[0])).toEqual([
+			"MICROSOFT_GRAPH",
+			"GOOGLE_DRIVE",
+		]);
+		expect(mocks.executeTool).toHaveBeenCalledWith(
+			"list_drive_tree",
+			{ driveId: "drive-1", itemId: "item-1" },
+			"user-1",
+			"org-1",
+			"connection-1",
+			expect.objectContaining({ onProgress: expect.any(Function) }),
+		);
+		expect(mocks.googleTree).toHaveBeenCalledTimes(1);
+		expect(mocks.googleTree).toHaveBeenCalledWith(expect.anything(), {
+			itemId: "gfolder-1",
+			onProgress: expect.any(Function),
+		});
+		const reconciled = mocks.reconcile.mock.calls.map((call) => ({
+			folderId: call[0].folderId,
+			files: call[0].files.map(
+				(file: { driveItemId: string }) => file.driveItemId,
+			),
+		}));
+		expect(reconciled).toEqual([
+			{ folderId: "folder-1", files: ["drive-item-1"] },
+			{ folderId: "folder-g", files: ["gfile-1"] },
+		]);
 	});
 });

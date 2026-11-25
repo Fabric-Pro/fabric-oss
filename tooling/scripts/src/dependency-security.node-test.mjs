@@ -40,10 +40,7 @@ import "./dependency-upgrades.node-test.mjs";
 import "./agent-cli-security.node-test.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
-const proxyConsumers = [
-	["express", "4.21.2"],
-	["express", "5.2.1"],
-];
+const proxyConsumers = [["express", "5.2.1"]];
 const sourceMapConsumers = [
 	["@tailwindcss/node", "4.1.16"],
 	["css-tree", "3.2.1"],

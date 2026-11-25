@@ -42,6 +42,10 @@ const mocks = vi.hoisted(() => {
 		signalWithStart: vi.fn(),
 		audit: vi.fn(),
 		hasProjectPermission: vi.fn(),
+		googleResolve: vi.fn(),
+		googleDetails: vi.fn(),
+		googlePlaces: vi.fn(),
+		googleFolder: vi.fn(),
 	};
 });
 
@@ -84,6 +88,25 @@ vi.mock("@repo/integrations/microsoft", async () => ({
 	executeMicrosoftTeamsTool: mocks.executeTool,
 	isMicrosoftNotConnectedError: (message: string) =>
 		message.includes("Microsoft not connected"),
+}));
+
+// The Google Drive adapter, by what crosses its boundary: the caller's own
+// connection, an item's details, and the picker's reads.
+vi.mock("@repo/integrations/document-folders", () => ({
+	documentFolderDriveAdapter: (provider: string) => {
+		if (provider !== "googledrive") {
+			throw new Error(`unexpected adapter ${provider}`);
+		}
+		return {
+			resolveOwnConnection: mocks.googleResolve,
+			getItemDetails: mocks.googleDetails,
+			isNotConnectedError: (message: string) =>
+				message.includes("Google Drive not connected"),
+		};
+	},
+	browseGoogleDrivePlaces: mocks.googlePlaces,
+	browseGoogleDriveFolder: mocks.googleFolder,
+	DOCUMENT_FOLDER_BROWSE_MAX_ITEMS: 1000,
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -1238,6 +1261,7 @@ describe("browse", () => {
 
 		expect(await call(browse, { level: { kind: "roots" } })).toEqual({
 			level: "roots",
+			provider: "microsoft",
 			oneDrive: { status: "available" },
 			sharePoint: {
 				status: "available",
@@ -1264,6 +1288,7 @@ describe("browse", () => {
 
 		expect(await call(browse, { level: { kind: "roots" } })).toEqual({
 			level: "roots",
+			provider: "microsoft",
 			oneDrive: { status: "available" },
 			sharePoint: { status: "unavailable" },
 		});
@@ -1274,6 +1299,7 @@ describe("browse", () => {
 
 		expect(await call(browse, { level: { kind: "roots" } })).toEqual({
 			level: "roots",
+			provider: "microsoft",
 			oneDrive: { status: "available" },
 			sharePoint: { status: "error" },
 		});
@@ -1469,5 +1495,630 @@ describe("browse", () => {
 		expect(parse({ kind: "sites", search: "  " })).toBe(false);
 		expect(parse({ kind: "drives" })).toBe(false);
 		expect(parse({ kind: "shared" })).toBe(false);
+	});
+});
+
+describe("Google Drive", () => {
+	const READER = {
+		userId: "user-1",
+		organizationId: "org-1",
+		connectionId: "gconn-1",
+	};
+
+	function googleItem(overrides: Record<string, unknown> = {}) {
+		return {
+			status: "ok",
+			item: {
+				id: "g-plans",
+				name: "Plans",
+				driveId: "my-root",
+				driveType: null,
+				provider: "googledrive",
+				isFolder: true,
+				webUrl: "https://drive.google.com/drive/folders/g-plans",
+				parentPath: "/Work",
+				drivePath: "/Work/Plans",
+				ancestorIds: ["g-work", "my-root"],
+				...overrides,
+			},
+		};
+	}
+
+	function entry(overrides: Record<string, unknown>) {
+		return {
+			id: "x",
+			name: "x",
+			isFolder: false,
+			size: 10,
+			mimeType: null,
+			webUrl: null,
+			...overrides,
+		};
+	}
+
+	beforeEach(() => {
+		mocks.googleResolve.mockResolvedValue({
+			status: "connected",
+			connection: READER,
+		});
+		mocks.googleDetails.mockResolvedValue(googleItem());
+		mocks.connectFolders.mockResolvedValue([
+			{
+				folderId: "f-2",
+				driveId: "my-root",
+				itemId: "g-plans",
+				name: "Plans",
+				reconnected: false,
+				previousUserId: null,
+				readerEpoch: 0,
+			},
+		]);
+	});
+
+	describe("browse", () => {
+		it("offers My Drive and the caller's shared drives, read with their own Google connection", async () => {
+			mocks.googlePlaces.mockResolvedValue({
+				myDrive: { id: "my-root", name: "My Drive" },
+				sharedDrives: [
+					{ id: "sd-1", name: "Design" },
+					{ id: "sd-2", name: "Legal" },
+				],
+			});
+
+			expect(
+				await call(browse, {
+					provider: "googledrive",
+					level: { kind: "roots" },
+				}),
+			).toEqual({
+				level: "roots",
+				provider: "googledrive",
+				myDrive: { driveId: "my-root", name: "My Drive" },
+				sharedDrives: [
+					{ driveId: "sd-1", name: "Design" },
+					{ driveId: "sd-2", name: "Legal" },
+				],
+			});
+			expect(mocks.googleResolve).toHaveBeenCalledWith({
+				userId: "user-1",
+				organizationId: "org-1",
+			});
+			expect(mocks.googlePlaces).toHaveBeenCalledWith(READER);
+			expect(mocks.ownConnection).not.toHaveBeenCalled();
+			expect(mocks.executeTool).not.toHaveBeenCalled();
+		});
+
+		it("answers a caller without a Google Drive connection with its own connect prompt", async () => {
+			mocks.googleResolve.mockResolvedValue({ status: "not_connected" });
+
+			await expect(
+				call(browse, {
+					provider: "googledrive",
+					level: { kind: "roots" },
+				}),
+			).rejects.toMatchObject({
+				code: "PRECONDITION_FAILED",
+				data: { code: "GOOGLE_DRIVE_NOT_CONNECTED" },
+			});
+			expect(mocks.googlePlaces).not.toHaveBeenCalled();
+		});
+
+		it("asks for a reconnect when the grant cannot read folders", async () => {
+			mocks.googleResolve.mockResolvedValue({
+				status: "reconnect_required",
+			});
+
+			await expect(
+				call(browse, {
+					provider: "googledrive",
+					level: { kind: "folders", driveId: "my-root" },
+				}),
+			).rejects.toMatchObject({
+				code: "PRECONDITION_FAILED",
+				data: { code: "GOOGLE_DRIVE_RECONNECT_REQUIRED" },
+			});
+			expect(mocks.googleFolder).not.toHaveBeenCalled();
+		});
+
+		it("lists a folder's folders, without child counts, with what this level would import", async () => {
+			mocks.googleFolder.mockResolvedValue({
+				items: [
+					entry({
+						id: "g-a",
+						name: "Plans",
+						isFolder: true,
+						size: null,
+						webUrl: "https://drive.google.com/drive/folders/g-a",
+					}),
+					// Drive allows a sibling of the same name.
+					entry({
+						id: "g-b",
+						name: "Plans",
+						isFolder: true,
+						size: null,
+						webUrl: "https://drive.google.com/drive/folders/g-b",
+					}),
+					entry({ id: "f-1", name: "Brief.pdf" }),
+					// A Google Doc, typed as its export.
+					entry({
+						id: "f-2",
+						name: "Roadmap.docx",
+						size: null,
+						mimeType:
+							"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+					}),
+					entry({
+						id: "f-3",
+						name: "Photo.png",
+						size: 15 * 1024 * 1024,
+					}),
+				],
+				truncated: false,
+			});
+
+			expect(
+				await call(browse, {
+					provider: "googledrive",
+					level: {
+						kind: "folders",
+						driveId: "my-root",
+						itemId: "g-work",
+					},
+				}),
+			).toEqual({
+				level: "folders",
+				driveId: "my-root",
+				itemId: "g-work",
+				folders: [
+					{
+						driveId: "my-root",
+						itemId: "g-a",
+						name: "Plans",
+						webUrl: "https://drive.google.com/drive/folders/g-a",
+					},
+					{
+						driveId: "my-root",
+						itemId: "g-b",
+						name: "Plans",
+						webUrl: "https://drive.google.com/drive/folders/g-b",
+					},
+				],
+				supportedFileCount: 2,
+				truncated: false,
+			});
+			expect(mocks.googleFolder).toHaveBeenCalledWith(READER, {
+				folderId: "g-work",
+				maxItems: 1000,
+			});
+		});
+
+		it("opens a shared drive at its root", async () => {
+			mocks.googleFolder.mockResolvedValue({
+				items: [],
+				truncated: true,
+			});
+
+			expect(
+				await call(browse, {
+					provider: "googledrive",
+					level: { kind: "folders", driveId: "sd-1" },
+				}),
+			).toMatchObject({
+				driveId: "sd-1",
+				itemId: "sd-1",
+				truncated: true,
+			});
+			expect(mocks.googleFolder).toHaveBeenCalledWith(READER, {
+				folderId: "sd-1",
+				maxItems: 1000,
+			});
+		});
+
+		it("answers a revoked connection with the connect prompt, and any other failure without Google's words", async () => {
+			mocks.googleFolder.mockRejectedValue(
+				new Error("Google Drive not connected."),
+			);
+			await expect(
+				call(browse, {
+					provider: "googledrive",
+					level: { kind: "folders", driveId: "my-root" },
+				}),
+			).rejects.toMatchObject({
+				code: "PRECONDITION_FAILED",
+				data: { code: "GOOGLE_DRIVE_NOT_CONNECTED" },
+			});
+
+			mocks.googleFolder.mockRejectedValue(
+				new Error(
+					"Google Drive API error while listing the folder: 500",
+				),
+			);
+			const failed = call(browse, {
+				provider: "googledrive",
+				level: { kind: "folders", driveId: "my-root" },
+			});
+			await expect(failed).rejects.toMatchObject({ code: "BAD_GATEWAY" });
+			await expect(failed).rejects.not.toThrow(/API error/);
+		});
+
+		it("refuses a Google folder level without its drive, and the SharePoint levels", async () => {
+			for (const level of [
+				{ kind: "folders" },
+				{ kind: "folders", itemId: "g-a" },
+				{ kind: "sites", search: "market" },
+				{ kind: "drives", siteId: "site-1" },
+			]) {
+				await expect(
+					call(browse, { provider: "googledrive", level }),
+				).rejects.toMatchObject({ code: "BAD_REQUEST" });
+			}
+			expect(mocks.googleFolder).not.toHaveBeenCalled();
+		});
+
+		it("accepts only the known providers", () => {
+			const parse = (provider: unknown) =>
+				browse.schema?.safeParse({
+					projectId: "project-1",
+					provider,
+					level: { kind: "roots" },
+				}).success;
+			expect(parse("googledrive")).toBe(true);
+			expect(parse("microsoft")).toBe(true);
+			expect(parse(undefined)).toBe(true);
+			expect(parse("dropbox")).toBe(false);
+		});
+	});
+
+	describe("connect", () => {
+		it("connects a folder as Google describes it, with its ancestor ids, audits it and wakes the sync", async () => {
+			const result = await call(connect, {
+				provider: "googledrive",
+				folders: [
+					{
+						driveId: "my-root",
+						itemId: "g-plans",
+						description: "Quarterly roadmaps",
+					},
+				],
+			});
+
+			expect(result).toEqual({
+				folders: [
+					{ folderId: "f-2", name: "Plans", reconnected: false },
+				],
+				importStarted: true,
+			});
+			expect(mocks.googleDetails).toHaveBeenCalledWith(READER, {
+				driveId: "my-root",
+				itemId: "g-plans",
+			});
+			expect(mocks.connectFolders).toHaveBeenCalledWith({
+				projectId: "project-1",
+				userId: "user-1",
+				organizationId: "org-1",
+				folders: [
+					{
+						provider: "googledrive",
+						driveId: "my-root",
+						itemId: "g-plans",
+						name: "Plans",
+						webUrl: "https://drive.google.com/drive/folders/g-plans",
+						drivePath: "/Work/Plans",
+						ancestorIds: ["g-work", "my-root"],
+						siteId: null,
+						siteName: null,
+						libraryName: null,
+						description: "Quarterly roadmaps",
+					},
+				],
+				transcriptFolderPaths: [],
+			});
+			expect(auditRows("project.document_folder.connected")).toEqual([
+				expect.objectContaining({
+					organizationId: "org-1",
+					projectId: "project-1",
+					resource: {
+						type: "project_document_folder",
+						id: "f-2",
+						name: "Plans",
+					},
+					metadata: { provider: "googledrive", hasDescription: true },
+				}),
+			]);
+			expect(mocks.signalWithStart).toHaveBeenCalledWith(
+				"documentFolderSyncWorkflow",
+				expect.objectContaining({
+					args: [{ projectId: "project-1", organizationId: "org-1" }],
+				}),
+			);
+		});
+
+		it("needs no Microsoft connection, and reads no transcript folders from Graph", async () => {
+			mocks.ownConnection.mockResolvedValue(null);
+			mocks.transcriptFindMany.mockResolvedValue([
+				{ driveId: "drive-1", itemId: "t-1" },
+			]);
+
+			await call(connect, {
+				provider: "googledrive",
+				folders: [{ driveId: "my-root", itemId: "g-plans" }],
+			});
+
+			expect(mocks.connectFolders).toHaveBeenCalledTimes(1);
+			expect(mocks.ownConnection).not.toHaveBeenCalled();
+			expect(mocks.executeTool).not.toHaveBeenCalled();
+			expect(mocks.transcriptFindMany).not.toHaveBeenCalled();
+		});
+
+		it("passes same-named sibling folders by their own ids", async () => {
+			mocks.googleDetails.mockImplementation(
+				async (_reader: unknown, { itemId }: { itemId: string }) =>
+					googleItem({ id: itemId }),
+			);
+
+			await call(connect, {
+				provider: "googledrive",
+				folders: [
+					{ driveId: "my-root", itemId: "g-a" },
+					{ driveId: "my-root", itemId: "g-b" },
+				],
+			});
+
+			expect(mocks.connectFolders.mock.calls[0][0].folders).toEqual([
+				expect.objectContaining({
+					itemId: "g-a",
+					drivePath: "/Work/Plans",
+					ancestorIds: ["g-work", "my-root"],
+				}),
+				expect.objectContaining({
+					itemId: "g-b",
+					drivePath: "/Work/Plans",
+					ancestorIds: ["g-work", "my-root"],
+				}),
+			]);
+		});
+
+		it("refuses a folder that overlaps a connected one, naming it", async () => {
+			mocks.connectFolders.mockRejectedValue(
+				new mocks.FolderConnectRefusedError(
+					"OVERLAPS_DOCUMENT_FOLDER",
+					"Plans",
+					"Work",
+				),
+			);
+
+			const refused = call(connect, {
+				provider: "googledrive",
+				folders: [{ driveId: "my-root", itemId: "g-plans" }],
+			});
+
+			await expect(refused).rejects.toMatchObject({
+				code: "CONFLICT",
+				data: {
+					code: "OVERLAPS_DOCUMENT_FOLDER",
+					existingFolderName: "Work",
+				},
+			});
+			await expect(refused).rejects.toThrow(/"Work"/);
+			expect(mocks.audit).not.toHaveBeenCalled();
+			expect(mocks.signalWithStart).not.toHaveBeenCalled();
+		});
+
+		it("names a drive's root after its place", async () => {
+			mocks.googleDetails.mockResolvedValue(
+				googleItem({
+					id: "sd-1",
+					name: "Drive",
+					driveId: "sd-1",
+					parentPath: null,
+					drivePath: null,
+					ancestorIds: [],
+				}),
+			);
+			mocks.googlePlaces.mockResolvedValue({
+				myDrive: { id: "my-root", name: "My Drive" },
+				sharedDrives: [{ id: "sd-1", name: "Design" }],
+			});
+
+			await call(connect, {
+				provider: "googledrive",
+				folders: [{ driveId: "sd-1", itemId: "sd-1" }],
+			});
+
+			expect(mocks.connectFolders.mock.calls[0][0].folders).toEqual([
+				expect.objectContaining({
+					driveId: "sd-1",
+					itemId: "sd-1",
+					name: "Design",
+					drivePath: "/",
+					ancestorIds: [],
+				}),
+			]);
+		});
+
+		it("refuses a folder the caller cannot open, and a file", async () => {
+			mocks.googleDetails.mockResolvedValue({
+				status: "failed",
+				httpStatus: 404,
+				retryAfterSeconds: null,
+			});
+			await expect(
+				call(connect, {
+					provider: "googledrive",
+					folders: [{ driveId: "my-root", itemId: "g-plans" }],
+				}),
+			).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+				data: {
+					code: "GOOGLE_DRIVE_FOLDER_UNREADABLE",
+					driveId: "my-root",
+					itemId: "g-plans",
+				},
+			});
+
+			mocks.googleDetails.mockResolvedValue(
+				googleItem({ isFolder: false }),
+			);
+			await expect(
+				call(connect, {
+					provider: "googledrive",
+					folders: [{ driveId: "my-root", itemId: "g-plans" }],
+				}),
+			).rejects.toMatchObject({ code: "BAD_REQUEST" });
+			expect(mocks.connectFolders).not.toHaveBeenCalled();
+		});
+
+		it("answers throttling with try-again and a revoked connection with the connect prompt", async () => {
+			mocks.googleDetails.mockResolvedValue({
+				status: "failed",
+				httpStatus: 429,
+				retryAfterSeconds: 30,
+			});
+			await expect(
+				call(connect, {
+					provider: "googledrive",
+					folders: [{ driveId: "my-root", itemId: "g-plans" }],
+				}),
+			).rejects.toMatchObject({ code: "BAD_GATEWAY" });
+
+			mocks.googleDetails.mockRejectedValue(
+				new Error("Google Drive not connected."),
+			);
+			await expect(
+				call(connect, {
+					provider: "googledrive",
+					folders: [{ driveId: "my-root", itemId: "g-plans" }],
+				}),
+			).rejects.toMatchObject({
+				code: "PRECONDITION_FAILED",
+				data: { code: "GOOGLE_DRIVE_NOT_CONNECTED" },
+			});
+			expect(mocks.connectFolders).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("reconnect", () => {
+		beforeEach(() => {
+			mocks.folderFindFirst.mockResolvedValue({
+				provider: "googledrive",
+				driveId: "owner-root",
+				itemId: "g-plans",
+				siteId: null,
+				siteName: null,
+				drivePath: "/Work/Plans",
+				ancestorIds: ["g-work", "owner-root"],
+			});
+			mocks.connectFolders.mockResolvedValue([
+				{
+					folderId: "f-2",
+					driveId: "owner-root",
+					itemId: "g-plans",
+					name: "Plans",
+					reconnected: true,
+					previousUserId: "user-0",
+					readerEpoch: 5,
+				},
+			]);
+		});
+
+		it("makes a second editor who can open the folder its reader, keeping its stored ids, path and ancestry", async () => {
+			// Read as the second editor: their own root, and no parents they
+			// can see.
+			mocks.googleDetails.mockResolvedValue(
+				googleItem({
+					driveId: "user-1-root",
+					parentPath: null,
+					drivePath: null,
+					ancestorIds: undefined,
+				}),
+			);
+
+			expect(await call(reconnect, { folderId: "f-2" })).toEqual({
+				folderId: "f-2",
+				importStarted: true,
+			});
+			expect(mocks.googleDetails).toHaveBeenCalledWith(READER, {
+				driveId: "owner-root",
+				itemId: "g-plans",
+			});
+			const params = mocks.connectFolders.mock.calls[0][0];
+			expect(params).toMatchObject({ userId: "user-1" });
+			expect(params.folders).toEqual([
+				expect.objectContaining({
+					provider: "googledrive",
+					driveId: "owner-root",
+					itemId: "g-plans",
+					name: "Plans",
+					drivePath: "/Work/Plans",
+					ancestorIds: ["g-work", "owner-root"],
+				}),
+			]);
+			expect(params.folders[0]).not.toHaveProperty("description");
+			expect(mocks.googlePlaces).not.toHaveBeenCalled();
+			expect(auditRows("project.document_folder.reconnected")).toEqual([
+				expect.objectContaining({
+					metadata: {
+						provider: "googledrive",
+						previousReaderId: "user-0",
+						readerId: "user-1",
+					},
+				}),
+			]);
+			expect(mocks.ownConnection).not.toHaveBeenCalled();
+			expect(mocks.executeTool).not.toHaveBeenCalled();
+		});
+
+		it("stores the path and ancestry the new reader reads up to the root", async () => {
+			mocks.googleDetails.mockResolvedValue(
+				googleItem({
+					driveId: "owner-root",
+					parentPath: "/Archive",
+					drivePath: "/Archive/Plans",
+					ancestorIds: ["g-archive", "owner-root"],
+				}),
+			);
+
+			await call(reconnect, { folderId: "f-2" });
+
+			expect(
+				mocks.connectFolders.mock.calls[0][0].folders[0],
+			).toMatchObject({
+				drivePath: "/Archive/Plans",
+				ancestorIds: ["g-archive", "owner-root"],
+			});
+		});
+
+		it("refuses an editor who cannot open the folder, before the reader changes", async () => {
+			mocks.googleDetails.mockResolvedValue({
+				status: "failed",
+				httpStatus: 404,
+				retryAfterSeconds: null,
+			});
+
+			const refused = call(reconnect, { folderId: "f-2" });
+
+			await expect(refused).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+				data: { code: "GOOGLE_DRIVE_FOLDER_UNREADABLE" },
+			});
+			await expect(refused).rejects.toThrow(
+				/cannot open this folder in Google Drive/,
+			);
+			expect(mocks.connectFolders).not.toHaveBeenCalled();
+			expect(mocks.audit).not.toHaveBeenCalled();
+			expect(mocks.signalWithStart).not.toHaveBeenCalled();
+		});
+
+		it("answers an editor without a Google Drive connection with its connect prompt", async () => {
+			mocks.googleResolve.mockResolvedValue({ status: "not_connected" });
+
+			await expect(
+				call(reconnect, { folderId: "f-2" }),
+			).rejects.toMatchObject({
+				code: "PRECONDITION_FAILED",
+				data: { code: "GOOGLE_DRIVE_NOT_CONNECTED" },
+			});
+			expect(mocks.connectFolders).not.toHaveBeenCalled();
+		});
 	});
 });

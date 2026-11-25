@@ -2187,7 +2187,7 @@ export async function listInstructionProposals(
 				projectId,
 				organizationId,
 				proposalStatus: { not: null },
-				...(options.proposerUserId
+				...(options.proposerUserId !== undefined
 					? { userId: options.proposerUserId }
 					: {}),
 			},

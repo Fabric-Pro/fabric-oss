@@ -87,6 +87,14 @@ export function registerChatRoutes(
 		if ("error" in ctx) {
 			return c.json({ error: { message: ctx.error } }, ctx.status);
 		}
+		const permissionRefusal = await requireV1OwnerPermission(
+			c,
+			ctx,
+			"chats:read",
+		);
+		if (permissionRefusal) {
+			return permissionRefusal;
+		}
 
 		const limit = Math.min(Number(c.req.query("limit") ?? 20), 100);
 		const offset = Number(c.req.query("offset") ?? 0);
@@ -116,6 +124,14 @@ export function registerChatRoutes(
 		);
 		if ("error" in ctx) {
 			return c.json({ error: { message: ctx.error } }, ctx.status);
+		}
+		const permissionRefusal = await requireV1OwnerPermission(
+			c,
+			ctx,
+			"chats:read",
+		);
+		if (permissionRefusal) {
+			return permissionRefusal;
 		}
 
 		const chat = await getAiChatByIdForTenant({
@@ -158,6 +174,9 @@ export function registerChatRoutes(
 			body = await c.req.json();
 		} catch {
 			body = {};
+		}
+		if (body === null) {
+			return c.json(badRequest("Invalid JSON body"), 400);
 		}
 
 		const title = body.title?.trim();
@@ -216,6 +235,9 @@ export function registerChatRoutes(
 		try {
 			body = await c.req.json();
 		} catch {
+			return c.json(badRequest("Invalid JSON body"), 400);
+		}
+		if (body === null) {
 			return c.json(badRequest("Invalid JSON body"), 400);
 		}
 
@@ -320,6 +342,9 @@ export function registerChatRoutes(
 		try {
 			body = await c.req.json();
 		} catch {
+			return c.json(badRequest("Invalid JSON body"), 400);
+		}
+		if (body === null) {
 			return c.json(badRequest("Invalid JSON body"), 400);
 		}
 

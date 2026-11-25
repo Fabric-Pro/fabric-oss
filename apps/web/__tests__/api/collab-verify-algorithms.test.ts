@@ -19,15 +19,18 @@ const SECRET = "test-collab-jwt-secret-for-collab-verify";
 const DOCUMENT_ID = "doc-1";
 const VERIFY_URL = "https://example.test/api/collab/verify";
 
-const { mockGetDocumentById, mockHasAccess, mockCanEdit } = vi.hoisted(() => ({
-	mockGetDocumentById: vi.fn(),
-	mockHasAccess: vi.fn(),
-	mockCanEdit: vi.fn(),
-}));
+const { mockGetDocumentById, mockAccess, mockCanEdit, isOrganizationLive } =
+	vi.hoisted(() => ({
+		mockGetDocumentById: vi.fn(),
+		mockAccess: vi.fn(),
+		isOrganizationLive: vi.fn(),
+		mockCanEdit: vi.fn(),
+	}));
 
 vi.mock("@repo/database", () => ({
 	getDocumentById: mockGetDocumentById,
-	hasProjectAccess: mockHasAccess,
+	getProjectAccessContext: mockAccess,
+	isOrganizationLive,
 	canEditProject: mockCanEdit,
 }));
 
@@ -44,7 +47,8 @@ describe("POST /api/collab/verify", () => {
 			id: DOCUMENT_ID,
 			projectId: "project-1",
 		});
-		mockHasAccess.mockResolvedValue(true);
+		mockAccess.mockResolvedValue({ organizationId: "example-org" });
+		isOrganizationLive.mockResolvedValue(true);
 		mockCanEdit.mockResolvedValue(true);
 	});
 
@@ -68,6 +72,17 @@ describe("POST /api/collab/verify", () => {
 			userId: "user-1",
 			canEdit: true,
 		});
+	});
+
+	it("refuses a deleted project organization before granting collaboration access", async () => {
+		isOrganizationLive.mockResolvedValue(false);
+		const token = await signLiveToken(
+			{ userId: "user-1", documentId: DOCUMENT_ID },
+			{ secret: SECRET, expirationTime: "1h" },
+		);
+		expect((await callRoute(token)).status).toBe(403);
+		expect(isOrganizationLive).toHaveBeenCalledWith("example-org");
+		expect(mockCanEdit).not.toHaveBeenCalled();
 	});
 
 	it("500s when COLLAB_JWT_SECRET is not configured", async () => {

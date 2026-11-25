@@ -5,7 +5,10 @@
  */
 import { resolve } from "node:path";
 import { Context } from "@temporalio/activity";
-import { ApplicationFailure } from "@temporalio/common";
+import {
+	ApplicationFailure,
+	defaultPayloadConverter,
+} from "@temporalio/common";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import {
 	bundleWorkflowCode,
@@ -46,25 +49,29 @@ describe("project operation activity isolation", () => {
 		{
 			workflowType: "urlSourceCrawlWorkflow",
 			activity: "firecrawlScrapeActivity",
-			queue: "project-embeddings",
+			queue: "url-source-scraper",
 			input: {
 				...tenant,
 				contextId: "example-context",
 				url: "https://example.com/source",
 				scope: "SINGLE_PAGE",
 				maxPages: 1,
+				apiKey: "fc-test-not-a-real-key",
+				providerEndpoint: "example-legacy-endpoint",
 			},
 		},
 		{
 			workflowType: "urlSourceCrawlWorkflow",
 			activity: "firecrawlMapActivity",
-			queue: "project-embeddings",
+			queue: "url-source-scraper",
 			input: {
 				...tenant,
 				contextId: "example-context",
 				url: "https://example.com/source",
 				scope: "PATH_PREFIX",
 				maxPages: 1,
+				apiKey: "fc-test-not-a-real-key",
+				providerEndpoint: "example-legacy-endpoint",
 			},
 		},
 		{
@@ -229,6 +236,22 @@ describe("project operation activity isolation", () => {
 					)?.activityTaskScheduledEventAttributes;
 					expect(scheduled?.activityType?.name).toBe(activity);
 					expect(scheduled?.taskQueue?.name).toBe(queue);
+					if (queue === "url-source-scraper") {
+						const payload = scheduled?.input?.payloads?.[0];
+						if (!payload) {
+							throw new Error("Missing scraper input");
+						}
+						const scraperInput =
+							defaultPayloadConverter.fromPayload(payload);
+						expect(scraperInput).toMatchObject({
+							contextId: "example-context",
+							organizationId: tenant.organizationId,
+						});
+						expect(scraperInput).not.toHaveProperty("apiKey");
+						expect(scraperInput).not.toHaveProperty(
+							"providerEndpoint",
+						);
+					}
 					// This reproduces the old command attribute while keeping the
 					// actual SDK's event IDs, payloads and command order intact.
 					if (!scheduled?.taskQueue) {

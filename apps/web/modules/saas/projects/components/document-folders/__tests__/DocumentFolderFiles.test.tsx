@@ -153,3 +153,31 @@ describe("DocumentFolderFiles", () => {
 		).toBeInTheDocument();
 	});
 });
+
+describe("DocumentFolderFiles — Google Drive", () => {
+	it("says a file its owner keeps from download was not imported", () => {
+		render(
+			<DocumentFolderFiles
+				provider="googledrive"
+				attention={[
+					{
+						id: "locked",
+						name: "Pricing.xlsx",
+						relativePath: "Deals/Pricing.xlsx",
+						status: "SKIPPED",
+						skipCode: "NOT_DOWNLOADABLE",
+						failureCode: null,
+					},
+				]}
+				counts={{ ...counts, skipped: 1 }}
+			/>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: /Files that need attention/ }),
+		);
+		expect(screen.getByText("Deals/Pricing.xlsx")).toBeInTheDocument();
+		expect(
+			screen.getByText("Its owner does not allow downloading it."),
+		).toBeInTheDocument();
+	});
+});

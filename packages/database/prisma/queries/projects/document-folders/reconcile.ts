@@ -70,9 +70,10 @@ function metadataObject(value: Prisma.JsonValue | null): Prisma.JsonObject {
  * Applies nothing when the folder was reconnected since the read started, and
  * counts nothing again for a pass it already applied; either way it returns
  * the current candidates so a retried activity can go on. The folder's name,
- * path and web address are refreshed from the root item. A truncated listing
- * records why removals are paused; a complete one clears that, except a held
- * mass removal, which only tombstoning or a confirmation settles.
+ * path, ancestor ids and web address are refreshed from the root item. A
+ * truncated listing records why removals are paused; a complete one clears
+ * that, except a held mass removal, which only tombstoning or a confirmation
+ * settles.
  */
 export async function reconcileDocumentFolderListing(
 	params: {
@@ -81,7 +82,17 @@ export async function reconcileDocumentFolderListing(
 		passId: string;
 		/** The epoch `startDocumentFolderRead` returned. */
 		readerEpoch: number;
-		root: { name: string; webUrl: string | null; drivePath: string | null };
+		root: {
+			name: string;
+			webUrl: string | null;
+			drivePath: string | null;
+			/**
+			 * The ids of the folders above the root, up to its drive's root,
+			 * where they decide overlap (Google Drive). Absent when the read
+			 * could not tell, which leaves the stored ids as they are.
+			 */
+			ancestorIds?: string[];
+		};
 		files: DocumentFolderListedFile[];
 		now?: Date;
 	} & (
@@ -251,6 +262,11 @@ export async function reconcileDocumentFolderListing(
 				name: params.root.name,
 				webUrl: params.root.webUrl,
 				drivePath: params.root.drivePath,
+				// Only a read that reached the drive's root replaces them: one
+				// cut short keeps the last known ancestry.
+				...(params.root.ancestorIds
+					? { ancestorIds: params.root.ancestorIds }
+					: {}),
 				lastPassId: params.passId,
 				lastReadAt: now,
 				lastListingComplete: params.complete,

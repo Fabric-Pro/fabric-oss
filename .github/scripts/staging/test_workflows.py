@@ -892,39 +892,645 @@ esac
         self.assertNotIn('environment', contract)
         self.assertNotIn('secrets.', str(contract))
 
-    def test_cancelled_initialized_replay_publishes_terminal_failure(self):
+    def test_temporal_snapshot_admission_and_trusted_policy_routing(self):
         data = workflow('temporal-replay-validation.yml')
-        job = data['jobs']['publish_outcome']
-        condition = job['if'].replace('&&', ' and ').replace('||', ' or ').replace('!cancelled()', 'not cancelled()')
-        needs = SimpleNamespace(
-            promotion_policy=SimpleNamespace(result='success', outputs=SimpleNamespace(reduced='false')),
-            authorize=SimpleNamespace(result='success', outputs=SimpleNamespace(workflows='true', secret_eligible='true')),
-            initialize_status=SimpleNamespace(result='success'), replay=SimpleNamespace(result='cancelled'))
-        context = {'needs': needs, 'github': SimpleNamespace(event_name='pull_request_target'),
-                   'always': lambda: True, 'cancelled': lambda: True}
-        self.assertTrue(eval(condition, {'__builtins__': {}}, context), 'initialized pending status must reach cancellation cleanup')
-        needs.promotion_policy.outputs.reduced = 'true'
-        self.assertFalse(eval(condition, {'__builtins__': {}}, context), 'authenticated reduction must never initialize or publish replay statuses')
-        for name in ['publish_outcome', 'publish_denial']:
-            self.assertNotIn('!cancelled()', data['jobs'][name]['if'], 'terminal status writers retain baseline always cleanup')
-        with tempfile.TemporaryDirectory(prefix='example-replay-cleanup-') as directory:
-            path = pathlib.Path(directory); trace = path / 'trace'; gh = path / 'gh'
-            gh.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >>"$TRACE_PATH"\n')
-            gh.chmod(0o755)
-            sha = 'a' * 40
-            env = {**os.environ, 'PATH': str(path) + os.pathsep + os.environ['PATH'],
-                   'TRACE_PATH': str(trace), 'INITIAL_STATUS_RESULT': 'success', 'GATE_RESULT': 'success',
-                   'SECRET_ELIGIBLE': 'true', 'REPLAY_RESULT': 'cancelled', 'EVENT_NAME': 'pull_request_target',
-                   'PR_HEAD_SHA': sha, 'REPOSITORY': 'example/source', 'RUN_URL': 'https://example.com/run',
-                   'GH_TOKEN': ''}
-            result = subprocess.run(['bash', '-c', job['steps'][0]['run']], env=env, text=True, capture_output=True)
-            self.assertNotEqual(result.returncode, 0, 'cancelled replay remains a blocking verdict')
-            args = trace.read_text().splitlines()
-            self.assertIn('state=failure', args)
-            self.assertIn('repos/example/source/statuses/' + sha, args)
-            self.assertIn('context=replay-validation', args)
+        self.assertEqual(data['on']['schedule'], [{'cron': '23 3,15 * * *'}])
+        self.assertEqual(data['on']['push'], {
+            'branches': ['staging'],
+            'paths': ['packages/temporal/scripts/fetch-replay-histories.ts',
+                      'packages/temporal/scripts/replay-fixtures.ts',
+                      'packages/temporal/scripts/replay-history.ts',
+                      '.github/workflows/temporal-replay-validation.yml'],
+        })
+        jobs = data['jobs']
+        github = {'repository': 'Fabric-Pro/fabric-dev', 'ref': 'refs/heads/staging',
+                  'event_name': 'push', 'event': {'repository': {'private': True}}}
+        variables = {'STAGING_RELEASE_ENABLED': 'true'}
 
-    def test_reduced_promotion_routes_all_duplicate_jobs_without_pending_replay(self):
+        def admitted_jobs(event, **overrides):
+            needs = {}
+            # Model a successful gate in job dependency order.
+            for name, job in jobs.items():
+                self.assertTrue(set(job.get('needs', [])) <= needs.keys(), name)
+                admitted = gha_eval(job['if'], {**github, 'event_name': event, **overrides}, needs, variables)
+                needs[name] = {
+                    'result': 'success' if admitted else 'skipped',
+                    'outputs': {'workflows': 'true', 'secret_eligible': 'true'} if admitted else {},
+                }
+            return {name for name, result in needs.items() if result['result'] == 'success'}
+
+        for event in ['schedule', 'push', 'workflow_dispatch']:
+            with self.subTest(event=event):
+                self.assertEqual(admitted_jobs(event), {'snapshot_histories'})
+                self.assertEqual(admitted_jobs(event, ref='refs/heads/master'), set())
+                self.assertEqual(admitted_jobs(event, repository='Fabric-Pro/fabric'), set())
+        self.assertEqual(admitted_jobs('pull_request_target'), {'authorize', 'publish_allowance'})
+
+        guard = jobs['snapshot_histories']['if']
+        for override in [
+            {'event_name': 'pull_request'},
+            {'event_name': 'pull_request_target'},
+            {'repository': 'Fabric-Pro/fabric-oss'},
+            {'event': {'repository': {'private': False}}},
+            {'event': {}},
+            {'ref': 'refs/heads/master'},
+            {'ref': 'refs/tags/staging'},
+        ]:
+            with self.subTest(override=override):
+                self.assertFalse(gha_eval(guard, {**github, **override}))
+
+    def test_temporal_snapshot_limits_checkout_permissions_and_caches(self):
+        jobs = workflow('temporal-replay-validation.yml')['jobs']
+        snapshot = jobs['snapshot_histories']
+        replay = workflow('temporal-replay-pr-check.yml')['jobs']['replay_check']
+        self.assertEqual(snapshot['environment'], 'dev')
+        self.assertEqual(snapshot['permissions'], {'contents': 'read'})
+        self.assertEqual(gha_eval(snapshot['runs-on'], {'repository': 'Fabric-Pro/fabric-dev'}),
+                         'ubuntu-8core-arm')
+        self.assertEqual(snapshot['timeout-minutes'], replay['timeout-minutes'])
+        steps = snapshot['steps']
+        checkouts = [step for step in steps if step.get('uses', '').startswith('actions/checkout@')]
+        self.assertEqual(len(checkouts), 1)
+        self.assertEqual(checkouts[0]['with'], {
+            'ref': '${{ github.sha }}', 'fetch-depth': '1', 'persist-credentials': 'false',
+        })
+        shared = ['Setup pnpm', 'Setup Node.js', "Locate pnpm's cache directory",
+                  'Restore lockfile verification log', 'Install dependencies']
+        by_name = {step['name']: step for step in replay['steps']}
+        for producer in steps[1:6]:
+            self.assertIn(producer['name'], shared)
+            consumer = {key: value for key, value in by_name[producer['name']].items() if key != 'if'}
+            if producer['name'] == 'Setup pnpm':
+                self.assertEqual(consumer.pop('with'), {'cache': 'false'})
+            if producer['name'] == 'Setup Node.js':
+                consumer['with'] = consumer['with'].copy()
+                self.assertEqual(consumer['with'].pop('package-manager-cache', None), 'false')
+            self.assertEqual(producer, consumer)
+        self.assertEqual([step['name'] for step in steps[6:8]],
+                         ['Verify Temporal secrets', 'Fetch replay fixtures from dev'])
+        self.assertNotIn('cache', steps[2]['with'])
+        for job in [snapshot, replay]:
+            caches = [step for step in job['steps'] if step.get('uses', '').startswith('actions/cache')]
+            self.assertEqual(len(caches), 1)
+            restore, = caches
+            self.assertTrue(restore['uses'].startswith('actions/cache/restore@'))
+            self.assertEqual(restore['with']['path'], '${{ steps.pnpm-cache.outputs.dir }}/lockfile-verified.jsonl')
+
+        verify, encrypt, upload = steps[-3:]
+        self.assertEqual(verify['name'], 'Verify histories and write snapshot metadata')
+        self.assertEqual(encrypt['name'], 'Encrypt replay history snapshot')
+        self.assertEqual(upload.get('uses'), 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a')
+        self.assertEqual(upload['with'], {
+            'name': 'temporal-replay-history-snapshot',
+            'path': '${{ runner.temp }}/temporal-replay-history-snapshot.tar.gpg',
+            'retention-days': '2',
+            'if-no-files-found': 'error',
+            'compression-level': '0',
+        })
+        self.assertEqual(sum('actions/upload-artifact@' in step.get('uses', '') for step in steps), 1)
+        selection = by_name['Select replay history snapshot']
+        self.assertEqual(selection['id'], 'snapshot')
+        self.assertEqual(selection['env'], {
+            'GH_TOKEN': '${{ github.token }}', 'REPOSITORY_ID': '${{ github.repository_id }}',
+        })
+        download = by_name['Download encrypted replay history snapshot']
+        self.assertEqual(download.get('uses'), 'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c')
+        self.assertEqual(download['with'], {
+            'artifact-ids': '${{ steps.snapshot.outputs.artifact_id }}',
+            'run-id': '${{ steps.snapshot.outputs.run_id }}',
+            'github-token': '${{ github.token }}',
+            'path': '${{ runner.temp }}/temporal-replay-snapshot',
+        })
+        self.assertEqual(by_name['Validate snapshot metadata']['env'], {
+            'SNAPSHOT_RUN_SHA': '${{ steps.snapshot.outputs.run_sha }}',
+            'SNAPSHOT_RUN_ID': '${{ steps.snapshot.outputs.run_id }}',
+            'SNAPSHOT_RUN_ATTEMPT': '${{ steps.snapshot.outputs.run_attempt }}',
+            'SNAPSHOT_PRODUCER_URL': '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.snapshot.outputs.run_id }}',
+        })
+        decrypted = by_name['Decrypt replay history snapshot']
+        for step in (encrypt, decrypted):
+            script = step['run']
+            self.assertEqual(step['env'], {'REPLAY_SNAPSHOT_KEY': '${{ secrets.REPLAY_SNAPSHOT_KEY }}'})
+            self.assertIn('export -n REPLAY_SNAPSHOT_KEY', script)
+            self.assertIn('--passphrase-fd 0', script)
+            self.assertNotRegex(script, r'--passphrase(?:\s|=)')
+            # The only shell expansions of the key are the empty check and
+            # the here-string that feeds GPG on stdin.
+            self.assertEqual(re.findall(r'\$\{?REPLAY_SNAPSHOT_KEY[^"\s]*', script),
+                             ['${REPLAY_SNAPSHOT_KEY:-}', '$REPLAY_SNAPSHOT_KEY'])
+            self.assertIn('<<< "$REPLAY_SNAPSHOT_KEY"', script)
+
+    def test_temporal_snapshot_selection_requires_trusted_artifact_and_run(self):
+        replay = workflow('temporal-replay-pr-check.yml')['jobs']['replay_check']
+        selector = next(step['run'] for step in replay['steps'] if step.get('id') == 'snapshot')
+        repository = 'example-org/source'
+        repo_endpoint = f'repos/{repository}/'
+        endpoint = repo_endpoint + 'actions/'
+        name = 'temporal-replay-history-snapshot'
+        listing = 'api --paginate --slurp ' + endpoint + 'artifacts?name=' + name + '&per_page=100'
+        refresh = 'Run "Temporal Replay Validation" manually on staging, then re-run this check.'
+        recent = {
+            'id': 12, 'name': name, 'expired': False, 'created_at': '2026-01-03T00:00:00Z',
+            'workflow_run': {'id': 102, 'repository_id': 456, 'head_repository_id': 456, 'head_branch': 'staging'},
+        }
+        older = {
+            **recent, 'id': 11, 'created_at': '2026-01-02T00:00:00Z',
+            'workflow_run': {**recent['workflow_run'], 'id': 101},
+        }
+        run = {
+            'id': 102, 'path': '.github/workflows/temporal-replay-validation.yml',
+            'event': 'push', 'head_branch': 'staging', 'head_repository': {'full_name': repository},
+            'head_sha': 'b' * 40, 'run_attempt': 2,
+        }
+        older_run = {**run, 'id': 101, 'head_sha': 'a' * 40, 'run_attempt': 1}
+        compare_ref = '...refs%2Fheads%2Fstaging'
+
+        def compare_response(sha, status='ahead'):
+            ahead = 2 if status in ('ahead', 'diverged') else 0
+            behind = 1 if status in ('behind', 'diverged') else 0
+            return {'status': status, 'ahead_by': ahead, 'behind_by': behind, 'total_commits': ahead,
+                    'base_commit': {'sha': sha}, 'merge_base_commit': {'sha': sha if not behind else 'c' * 40}}
+
+        recent_output = f'artifact_id=12\nrun_id=102\nrun_sha={run["head_sha"]}\nrun_attempt=2\n'
+        older_output = f'artifact_id=11\nrun_id=101\nrun_sha={older_run["head_sha"]}\nrun_attempt=1\n'
+        with tempfile.TemporaryDirectory(prefix='example-replay-api-') as directory:
+            root = pathlib.Path(directory)
+            gh, response, output = root / 'gh', root / 'responses.json', root / 'output'
+            gh.write_text(
+                '#!/usr/bin/env python3\n'
+                'import json, os, sys\n'
+                'from pathlib import Path\n'
+                'responses = json.loads(Path(os.environ["API_RESPONSES"]).read_text())\n'
+                'key = " ".join(sys.argv[1:])\n'
+                'if key not in responses:\n'
+                '    sys.exit(1)\n'
+                'value = responses[key]\n'
+                'print(value if isinstance(value, str) else json.dumps(value))\n'
+            )
+            gh.chmod(0o755)
+            env = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'],
+                   'API_RESPONSES': str(response), 'GITHUB_OUTPUT': str(output),
+                   'REPOSITORY': repository, 'REPOSITORY_ID': '456', 'GH_TOKEN': ''}
+
+            def invoke(responses):
+                output.unlink(missing_ok=True)
+                response.write_text(json.dumps(responses))
+                return subprocess.run(['bash', '-c', selector], env=env, cwd=root,
+                                      capture_output=True, text=True, timeout=10)
+
+            def select(pages, runs, comparisons=None, **extra):
+                if comparisons is None:
+                    comparisons = {item['head_sha']: compare_response(item['head_sha'])
+                                   for item in (run, older_run)}
+                    comparisons['stage'] = compare_response(run['head_sha'])
+                return invoke({
+                    listing: [{'total_count': sum(map(len, pages)), 'artifacts': page} for page in pages],
+                    **{'api ' + endpoint + 'runs/' + str(key): value for key, value in runs.items()},
+                    **{f'api {repo_endpoint}compare/{sha}{ref} --jq {{status}}': value
+                       for sha, value in comparisons.items() for ref in (compare_ref, '...staging')},
+                    **extra,
+                })
+
+            def assert_unusable(result):
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertFalse(output.exists())
+                self.assertIn('No usable Temporal replay snapshot', result.stderr)
+                self.assertIn(refresh, result.stderr)
+
+            for event in ['push', 'schedule', 'workflow_dispatch']:
+                with self.subTest(event=event):
+                    result = select([[older], [recent]], {101: older_run, 102: {**run, 'event': event}})
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text(), recent_output)
+            same_time = {**older, 'created_at': recent['created_at']}
+            result = select([[same_time, recent]], {101: older_run, 102: run})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_text(), recent_output)
+            result = select([[None, older]], {101: older_run})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_text(), older_output)
+            for field, changes in [
+                ('name', {'name': 'other-snapshot'}),
+                ('expired', {'expired': True}),
+                ('missing expiry flag', {'expired': None}),
+                ('invalid artifact ID', {'id': 0}),
+                ('non-numeric artifact ID', {'id': '12'}),
+                ('invalid creation time', {'created_at': 'invalid'}),
+                ('invalid run ID', {'workflow_run': {**recent['workflow_run'], 'id': 0}}),
+                *[(key, {'workflow_run': {**recent['workflow_run'], key: value}}) for key, value in [
+                    ('head_branch', 'feature/example'), ('repository_id', 789), ('head_repository_id', 789),
+                ]],
+            ]:
+                with self.subTest(artifact=field):
+                    result = select([[{**recent, **changes}, older]],
+                                    {0: {**run, 'id': 0}, 101: older_run, 102: run})
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text(), older_output)
+            for field, value in [
+                ('path', '.github/workflows/example.yml'),
+                ('event', 'pull_request'),
+                ('head_branch', 'feature/example'),
+                ('head_repository', {'full_name': 'example-org/fork'}),
+                ('id', 103),
+                ('run_attempt', 0),
+                ('head_sha', 'stage'),
+                ('head_sha', [run['head_sha']]),
+            ]:
+                with self.subTest(run=field):
+                    result = select([[recent], [older]], {101: older_run, 102: {**run, field: value}})
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text(), older_output)
+            result = select([[recent, older]], {101: older_run})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_text(), older_output)
+            for pages, runs in [([[]], {}), ([[recent]], {102: {**run, 'event': 'pull_request'}})]:
+                assert_unusable(select(pages, runs))
+
+            for status in ['identical', 'ahead']:
+                with self.subTest(staging_contains=status):
+                    result = select([[recent]], {102: run}, {run['head_sha']: compare_response(run['head_sha'], status)})
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text(), recent_output)
+            for status in ['behind', 'diverged', 'unknown']:
+                with self.subTest(staging_excludes=status):
+                    comparisons = {run['head_sha']: compare_response(run['head_sha'], status)}
+                    assert_unusable(select([[recent]], {102: run}, comparisons))
+
+            # A tag run and a branch run can both report head_branch=staging.
+            # The unqualified ref can identify the tag, whose SHA is off branch.
+            tag_run = {**run, 'event': 'workflow_dispatch', 'head_sha': 'd' * 40}
+            comparisons = {
+                tag_run['head_sha']: compare_response(tag_run['head_sha'], 'diverged'),
+                older_run['head_sha']: compare_response(older_run['head_sha']),
+            }
+            ambiguous = f'api {repo_endpoint}compare/{tag_run["head_sha"]}...staging --jq {{status}}'
+            result = select([[recent, older]], {102: tag_run, 101: older_run}, comparisons,
+                            **{ambiguous: compare_response(tag_run['head_sha'], 'identical')})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_text(), older_output)
+
+            compare_failed = select([[recent]], {102: run}, {})
+            assert_unusable(compare_failed)
+            self.assertIn('GitHub compare API failed', compare_failed.stderr)
+            fallback = select([[recent, older]], {102: run, 101: older_run},
+                              {older_run['head_sha']: compare_response(older_run['head_sha'])})
+            self.assertEqual(fallback.returncode, 0, fallback.stderr)
+            self.assertEqual(output.read_text(), older_output)
+
+            for label, responses in [
+                ('list API failure', {}),
+                ('invalid JSON', {listing: '{'}),
+                ('non-list response', {listing: {'artifacts': []}}),
+                ('invalid artifact page', {listing: [{'artifacts': None}]}),
+            ]:
+                with self.subTest(listing=label):
+                    result = invoke(responses)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertFalse(output.exists())
+                    self.assertIn('GitHub artifacts API list or response parse failed', result.stderr)
+                    self.assertIn(refresh, result.stderr)
+                    self.assertNotIn('SyntaxError', result.stderr)
+                    self.assertNotIn('TypeError', result.stderr)
+
+    def test_temporal_snapshot_gpg_round_trip_and_integrity(self):
+        snapshot = workflow('temporal-replay-validation.yml')['jobs']['snapshot_histories']
+        replay = workflow('temporal-replay-pr-check.yml')['jobs']['replay_check']
+        encrypt = next(step['run'] for step in snapshot['steps'] if step['name'] == 'Encrypt replay history snapshot')
+        decrypt = next(step['run'] for step in replay['steps'] if step['name'] == 'Decrypt replay history snapshot')
+        fixture_path = pathlib.Path('packages/temporal/__tests__/__fixtures__')
+        history = pathlib.Path('histories/ExampleWorkflow/example.json')
+        metadata = pathlib.Path('history-snapshot.json')
+        fixture_content = {history: '{"workflowId":"example","history":{}}',
+                           metadata: '{"fetchedAt":"2026-01-03T00:00:00.000Z"}'}
+        passphrase = 'example snapshot test passphrase'
+        with tempfile.TemporaryDirectory(prefix='example-replay-gpg-') as directory:
+            root = pathlib.Path(directory)
+            home = root / 'home'
+            home.mkdir()
+            gnupg = root / 'gnupg'
+            gnupg.mkdir(mode=0o700)
+            incoming = root / 'temporal-replay-snapshot'
+            incoming.mkdir()
+            fixtures = root / fixture_path
+            for name, content in fixture_content.items():
+                path = fixtures / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+            env = {**os.environ, 'RUNNER_TEMP': str(root), 'HOME': str(home), 'LC_ALL': 'C'}
+            env.pop('GNUPGHOME', None)
+
+            def run(script, cwd, key):
+                result = subprocess.run(['bash', '-c', script], cwd=cwd,
+                                        env={**env, 'REPLAY_SNAPSHOT_KEY': key},
+                                        capture_output=True, text=True, timeout=15)
+                self.assertFalse(list(root.glob('temporal-replay-snapshot.*')), 'plaintext tar must be removed')
+                self.assertFalse(list(root.glob('temporal-replay-gnupg.*')), 'temporary GPG home must be removed')
+                self.assertNotIn(passphrase, result.stdout + result.stderr)
+                return result
+
+            missing = run(encrypt, root, '')
+            self.assertEqual(missing.returncode, 1, missing.stderr)
+            self.assertIn('Missing REPLAY_SNAPSHOT_KEY', missing.stdout)
+            result = run(encrypt, root, passphrase)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            encrypted = root / 'temporal-replay-history-snapshot.tar.gpg'
+            inspect = subprocess.run(
+                ['gpg', '--no-options', '--batch', '--pinentry-mode', 'loopback', '--no-symkey-cache',
+                 '--passphrase-fd', '0', '--list-packets', str(encrypted)],
+                input=passphrase + '\n', env={**env, 'GNUPGHOME': str(gnupg)},
+                capture_output=True, text=True, timeout=15)
+            self.assertEqual(inspect.returncode, 0, inspect.stderr)
+            self.assertRegex(inspect.stdout, r'symkey enc packet: version 4, cipher 9,')
+            self.assertIn('mdc_method: 2', inspect.stdout)
+            ciphertext = incoming / encrypted.name
+            data = encrypted.read_bytes()
+            for label, key, blob, ok in [
+                ('round trip', passphrase, data, True),
+                ('empty passphrase', '', data, False),
+                ('wrong passphrase', 'another example passphrase', data, False),
+                ('tampered ciphertext', passphrase, data[:-1] + bytes([data[-1] ^ 1]), False),
+            ]:
+                with self.subTest(case=label):
+                    cwd = root / label
+                    cwd.mkdir()
+                    ciphertext.write_bytes(blob)
+                    result = run(decrypt, cwd, key)
+                    if ok:
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        for name, content in fixture_content.items():
+                            self.assertEqual((cwd / fixture_path / name).read_text(), content)
+                    else:
+                        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                        self.assertIn('Missing REPLAY_SNAPSHOT_KEY' if not key else 'decryption or integrity check failed',
+                                      result.stdout)
+                        self.assertFalse((cwd / fixture_path).exists(), 'failed decryption must not extract files')
+
+    def test_temporal_snapshot_rejects_empty_histories_before_writing_metadata(self):
+        snapshot = workflow('temporal-replay-validation.yml')['jobs']['snapshot_histories']
+        script = next(step['run'] for step in snapshot['steps']
+                      if step['name'] == 'Verify histories and write snapshot metadata')
+        with tempfile.TemporaryDirectory(prefix='example-replay-snapshot-') as directory:
+            fixtures = pathlib.Path(directory) / 'packages/temporal/__tests__/__fixtures__'
+            histories = fixtures / 'histories'
+            metadata = fixtures / 'history-snapshot.json'
+            sha = 'a' * 40
+            env = {**os.environ, 'GITHUB_SHA': sha, 'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '2'}
+            histories.mkdir(parents=True)
+            (histories / '.gitignore').touch()
+            (histories / 'example.json').touch()
+            workflow_type = histories / 'ExampleWorkflow'
+            workflow_type.mkdir()
+            (workflow_type / 'example.txt').touch()
+            (workflow_type / 'directory.json').mkdir()
+            (workflow_type / 'directory.json' / 'too-deep.json').touch()
+            result = subprocess.run(['bash', '-e', '-c', script], cwd=directory, env=env,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('No Temporal history fixtures were fetched', result.stdout)
+            self.assertFalse(metadata.exists())
+
+            (workflow_type / 'example.json').write_text('{"workflowId":"example","history":{}}')
+            result = subprocess.run(['bash', '-e', '-c', script], cwd=directory, env=env,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            payload = json.loads(metadata.read_text())
+            self.assertRegex(payload.pop('fetchedAt'), r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$')
+            self.assertEqual(payload, {'sourceSha': sha, 'runId': '123', 'runAttempt': '2'})
+
+    def test_temporal_trusted_checkout_and_credentials_boundary(self):
+        trusted = workflow('temporal-replay-validation.yml')
+        self.assertEqual(set(trusted['on']), {'pull_request_target', 'workflow_dispatch', 'schedule', 'push'})
+        self.assertEqual(trusted['permissions'], {})
+        jobs = trusted['jobs']
+        for key, job in jobs.items():
+            with self.subTest(job=key):
+                if key != 'snapshot_histories':
+                    self.assertNotIn('environment', job)
+                    self.assertNotIn('secrets.', json.dumps(job))
+                for step in job.get('steps', []):
+                    uses = step.get('uses', '')
+                    if 'actions/checkout' in uses:
+                        ref = step.get('with', {}).get('ref', '')
+                        self.assertNotIn('github.event.pull_request', ref)
+                        self.assertNotIn('github.event.workflow_run', ref)
+                        self.assertEqual(key, 'snapshot_histories')
+                    if uses.startswith(('actions/cache/restore@', 'actions/cache@')):
+                        self.assertEqual(step['with']['path'],
+                                         '${{ steps.pnpm-cache.outputs.dir }}/lockfile-verified.jsonl')
+                        self.assertNotIn('history-snapshot', json.dumps(step['with']))
+                    self.assertNotIn('${{', step.get('run', ''))
+        self.assertEqual(jobs['promotion_policy']['uses'], './.github/workflows/private-promotion-policy.yml')
+        classifier = workflow('private-promotion-policy.yml')['jobs']['classify']
+        self.assertEqual(classifier['steps'][0]['with']['ref'], 'staging')
+        self.assertEqual(classifier['steps'][0]['with']['persist-credentials'], 'false')
+        self.assertEqual([step['uses'].split('@')[0] for step in jobs['authorize']['steps'] if 'uses' in step],
+                         ['dorny/paths-filter'])
+        for key in ['publish_denial', 'publish_allowance']:
+            self.assertEqual(jobs[key]['permissions'], {'statuses': 'write'})
+            self.assertNotEqual(jobs[key]['name'], 'replay-validation')
+            self.assertTrue(all('run' in step and 'uses' not in step for step in jobs[key]['steps']))
+            self.assertEqual(jobs[key]['needs'], ['authorize', 'promotion_policy'])
+        self.assertEqual(len(re.findall(r'\^\[0-9a-f\]\{40\}\$', json.dumps(trusted))), 3)
+        self.assertNotIn('state=pending', json.dumps(trusted))
+
+    def test_temporal_trusted_authorize_preserves_repository_and_relay_policy(self):
+        trusted_jobs = workflow('temporal-replay-validation.yml')['jobs']
+        companion_jobs = workflow('temporal-replay-pr-check.yml')['jobs']
+        gate, trusted_filter = trusted_jobs['authorize']['steps']
+        companion_filter, = companion_jobs['changes']['steps']
+        filters = trusted_filter['with']['filters']
+        self.assertEqual(yaml.safe_load(filters), yaml.safe_load(companion_filter['with']['filters']))
+        self.assertIn('packages/temporal/src/**', yaml.safe_load(filters)['workflows'])
+        snapshot = trusted_jobs['snapshot_histories']
+        self.assertEqual(len(re.findall(r'\$\{\{ secrets\.TEMPORAL_[A-Z_]+ \}\}', json.dumps(snapshot))), 6)
+        for repo, head_repo, author, ref, eligible, reason in [
+            ('Fabric-Pro/fabric-dev', 'Fabric-Pro/fabric-dev', 'example-dev', 'feature/example', True, 'private_same_repository_pr'),
+            ('Fabric-Pro/fabric', 'Fabric-Pro/fabric', 'example-dev', 'feature/example', True, 'private_same_repository_pr'),
+            ('Fabric-Pro/fabric-dev', 'example-org/fork', 'example-dev', 'feature/example', False, 'untrusted_head_repository'),
+            ('Fabric-Pro/fabric-oss', 'Fabric-Pro/fabric-oss', 'fabric-relay[bot]', 'relay/example', True, 'authenticated_public_relay_pr'),
+            ('Fabric-Pro/fabric-oss', 'Fabric-Pro/fabric-oss', 'fabric-relay[bot]', 'feature/example', False, 'public_pr_outside_relay_namespace'),
+            ('Fabric-Pro/fabric-oss', 'Fabric-Pro/fabric-oss', 'example-dev', 'relay/example', False, 'public_credential_free_not_applicable'),
+            ('Fabric-Pro/fabric-oss', 'example-org/fork', 'fabric-relay[bot]', 'relay/example', False, 'untrusted_head_repository'),
+            ('example-org/source', 'example-org/source', 'example-dev', 'feature/example', False, 'repository_not_allowlisted'),
+        ]:
+            with self.subTest(repo=repo, head_repo=head_repo, author=author, ref=ref), tempfile.TemporaryDirectory() as directory:
+                output = pathlib.Path(directory) / 'output'
+                env = {**os.environ, 'REPOSITORY': repo, 'HEAD_REPOSITORY': head_repo, 'PR_AUTHOR': author,
+                       'HEAD_REF': ref, 'GITHUB_OUTPUT': str(output)}
+                for sha in ['invalid', 'a' * 40]:
+                    result = subprocess.run(['bash', '-c', gate['run']], env={**env, 'PR_HEAD_SHA': sha},
+                                            text=True, capture_output=True, timeout=10)
+                    if sha == 'invalid':
+                        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                        self.assertIn('Invalid pull request head SHA', result.stdout)
+                        self.assertFalse(output.exists())
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertEqual(output.read_text().splitlines(),
+                                         [f'secret_eligible={str(eligible).lower()}', f'reason={reason}'])
+
+    def test_temporal_trusted_status_routing_is_exclusive_and_clears_prior_denial(self):
+        jobs = workflow('temporal-replay-validation.yml')['jobs']
+        denial = jobs['publish_denial']['if']
+        allowance = jobs['publish_allowance']['if']
+        self.assertTrue(allowance.startswith('always() && !cancelled() && '))
+        self.assertNotIn('!cancelled()', denial)
+        cases = [
+            ('Fabric-Pro/fabric-dev', 'true', 'true', '', True),
+            ('Fabric-Pro/fabric', 'true', 'true', '', True),
+            ('Fabric-Pro/fabric-dev', 'true', 'false', 'untrusted_head_repository', False),
+            ('Fabric-Pro/fabric', 'true', '', 'untrusted_head_repository', False),
+            ('Fabric-Pro/fabric-dev', 'false', 'false', 'untrusted_head_repository', True),
+            ('Fabric-Pro/fabric-oss', 'true', 'true', 'authenticated_public_relay_pr', True),
+            ('Fabric-Pro/fabric-oss', 'true', 'false', 'public_pr_outside_relay_namespace', False),
+            ('Fabric-Pro/fabric-oss', 'false', 'false', 'public_pr_outside_relay_namespace', True),
+            ('Fabric-Pro/fabric-oss', 'true', 'false', 'public_credential_free_not_applicable', True),
+            ('Fabric-Pro/fabric-oss', 'true', 'false', 'untrusted_head_repository', True),
+            ('example-org/fabric', 'true', 'false', 'repository_not_allowlisted', True),
+            ('example-org/fabric', 'true', 'false', 'public_pr_outside_relay_namespace', True),
+        ]
+        for repo, workflows, eligible, reason, allowed in cases:
+            github = {'repository': repo, 'event_name': 'pull_request_target'}
+            authorize = {'result': 'success', 'outputs': {
+                'workflows': workflows, 'secret_eligible': eligible, 'reason': reason}}
+            normal = {'result': 'skipped', 'outputs': {}}
+            reduced = {'result': 'success', 'outputs': {'reduced': 'true'}}
+            needs = {'authorize': authorize, 'promotion_policy': normal}
+            with self.subTest(repo=repo, workflows=workflows, eligible=eligible, reason=reason):
+                self.assertEqual(gha_eval(allowance, github, needs), allowed)
+                self.assertEqual(gha_eval(denial, github, needs), not allowed)
+                self.assertFalse(gha_eval(allowance, github, {**needs, 'promotion_policy': reduced}))
+                self.assertFalse(gha_eval(denial, github, {**needs, 'promotion_policy': reduced}))
+                for result, reduced_output in [('failure', 'true'), ('success', 'false')]:
+                    full_policy = {**needs, 'promotion_policy': {
+                        'result': result, 'outputs': {'reduced': reduced_output}}}
+                    self.assertEqual(gha_eval(allowance, github, full_policy), allowed)
+                    self.assertEqual(gha_eval(denial, github, full_policy), not allowed)
+                for event in ['pull_request', 'workflow_dispatch', 'schedule', 'push']:
+                    self.assertFalse(gha_eval(allowance, {**github, 'event_name': event}, needs))
+                self.assertFalse(gha_eval(allowance, github, needs, status={'cancelled': lambda: True}))
+                for result in ['failure', 'cancelled', 'skipped']:
+                    rejected = {**needs, 'authorize': {**authorize, 'result': result}}
+                    self.assertTrue(gha_eval(denial, github, rejected))
+                    self.assertFalse(gha_eval(allowance, github, rejected))
+                invalid = {**needs, 'authorize': {**authorize, 'outputs': {**authorize['outputs'], 'workflows': ''}}}
+                self.assertTrue(gha_eval(denial, github, invalid))
+                self.assertFalse(gha_eval(allowance, github, invalid))
+                cancelled = {**needs, 'authorize': {'result': 'cancelled', 'outputs': {}}}
+                self.assertTrue(gha_eval(denial, github, cancelled, status={'cancelled': lambda: True}))
+
+    def test_temporal_trusted_publishers_validate_exact_sha_and_post_terminal_status(self):
+        jobs = workflow('temporal-replay-validation.yml')['jobs']
+        with tempfile.TemporaryDirectory(prefix='example-replay-status-') as directory:
+            path = pathlib.Path(directory)
+            trace, gh = path / 'trace', path / 'gh'
+            gh.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >"$TRACE_PATH"\n')
+            gh.chmod(0o755)
+            env = {**os.environ, 'PATH': str(path) + os.pathsep + os.environ['PATH'],
+                   'TRACE_PATH': str(trace), 'GATE_RESULT': 'cancelled', 'WORKFLOWS_CHANGED': '',
+                   'SECRET_ELIGIBLE': '', 'AUTHORIZATION_REASON': '', 'REPOSITORY': 'example-org/source',
+                   'RUN_URL': 'https://example.com/example-org/source/actions/runs/123',
+                   'GH_TOKEN': ''}
+            sha = 'a' * 40
+            for key, state, code in [('publish_denial', 'failure', 1), ('publish_allowance', 'success', 0)]:
+                job = jobs[key]
+                step, = job['steps']
+                self.assertEqual({**job.get('env', {}), **step.get('env', {})}['PR_HEAD_SHA'],
+                                 '${{ github.event.pull_request.head.sha }}')
+                for head, valid in [(sha, True), ('a' * 39, False), ('A' * 40, False), ('feature/example', False)]:
+                    with self.subTest(job=key, valid=valid):
+                        trace.unlink(missing_ok=True)
+                        result = subprocess.run(['bash', '-c', step['run']], env={**env, 'PR_HEAD_SHA': head},
+                                                text=True, capture_output=True, timeout=10)
+                        if not valid:
+                            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                            self.assertIn('Invalid pull request head SHA', result.stdout)
+                            self.assertFalse(trace.exists())
+                            continue
+                        self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                        args = trace.read_text().splitlines()
+                        self.assertIn('state=' + state, args)
+                        self.assertIn('repos/example-org/source/statuses/' + sha, args)
+                        self.assertIn('context=replay-validation', args)
+                        self.assertIn('target_url=' + env['RUN_URL'], args)
+                        if key == 'publish_allowance':
+                            self.assertTrue(any('Trusted policy allows this PR' in arg and
+                                                'replay-validation check' in arg for arg in args))
+
+    def test_temporal_companion_only_replays_eligible_prs_on_github_runners(self):
+        data = workflow('temporal-replay-pr-check.yml')
+        self.assertEqual(data.get('name'), 'Temporal Replay Credential-Free Gate')
+        self.assertEqual(set(data['on']), {'pull_request'})
+        self.assertEqual(data['permissions'], {})
+        jobs = data['jobs']
+        self.assertEqual([key for key, job in jobs.items() if job.get('name') == 'replay-validation'],
+                         ['replay_check'])
+        self.assertNotIn('actions/checkout', json.dumps(jobs['changes']))
+        replay = jobs['replay_check']
+        for key, job in jobs.items():
+            with self.subTest(job=key):
+                self.assertNotIn('environment', job)
+                self.assertNotIn('TEMPORAL_', json.dumps(job))
+                self.assertTrue(set(job.get('permissions', {}).items()) <=
+                                {('actions', 'read'), ('contents', 'read'), ('pull-requests', 'read')})
+                for step in job.get('steps', []):
+                    if step.get('uses', '').startswith('actions/cache'):
+                        self.assertTrue(step['uses'].startswith('actions/cache/restore@'))
+                    self.assertNotIn('${{', step.get('run', ''))
+        self.assertEqual(replay['permissions'], {'actions': 'read', 'contents': 'read', 'pull-requests': 'read'})
+        decrypt = next(step for step in replay['steps'] if step.get('name') == 'Decrypt replay history snapshot')
+        self.assertEqual(decrypt['env'], {'REPLAY_SNAPSHOT_KEY': '${{ secrets.REPLAY_SNAPSHOT_KEY }}'})
+        for job in jobs.values():
+            outside_decrypt = {**job, 'steps': [step for step in job.get('steps', []) if step is not decrypt]}
+            self.assertNotIn('secrets.', json.dumps(outside_decrypt))
+        self.assertEqual(len(re.findall(r'\$\{\{\s*secrets\.', json.dumps(data))), 1)
+        policy, *private_steps, final = replay['steps']
+        self.assertEqual(policy['if'], "github.event_name == 'pull_request'")
+        self.assertEqual([step['name'] for step in private_steps], [
+            'Checkout exact pull request head', 'Setup pnpm', 'Setup Node.js', "Locate pnpm's cache directory",
+            'Restore lockfile verification log', 'Install dependencies', 'Select replay history snapshot',
+            'Download encrypted replay history snapshot', 'Decrypt replay history snapshot',
+            'Validate snapshot metadata', 'Run replay validation',
+        ])
+        checkout = private_steps[0]
+        self.assertTrue(checkout['uses'].startswith('actions/checkout@'))
+        self.assertEqual(checkout['with'], {
+            'ref': '${{ github.event.pull_request.head.sha }}', 'fetch-depth': '1', 'persist-credentials': 'false',
+        })
+        run_replay = private_steps[-1]
+        self.assertEqual(run_replay['id'], 'replay')
+        self.assertEqual(run_replay['env'], {'REPLAY_REQUIRE_FIXTURES': '1'})
+        self.assertEqual(run_replay['run'], 'pnpm --filter @repo/temporal test:replay')
+        self.assertNotIn('continue-on-error', replay)
+        self.assertNotIn('continue-on-error', final)
+        self.assertEqual(final.get('if'), 'always()')
+        self.assertEqual(final['env'], {'REPLAY_OUTCOME': '${{ steps.replay.outcome }}'})
+        for event, repo, same_repo, changes_result, workflows, required, runner in [
+            ('pull_request', 'Fabric-Pro/fabric-dev', True, 'success', 'true', True, 'ubuntu-8core-arm'),
+            ('pull_request', 'Fabric-Pro/fabric', True, 'success', 'true', False, 'ubuntu-24.04-arm'),
+            ('pull_request', 'Fabric-Pro/fabric', False, 'success', 'true', False, 'ubuntu-24.04-arm'),
+            ('pull_request', 'Fabric-Pro/fabric-dev', True, 'success', 'false', False, 'namespace-profile-amd1'),
+            ('pull_request', 'Fabric-Pro/fabric-dev', False, 'success', 'true', False, 'namespace-profile-amd1'),
+            ('pull_request', 'Fabric-Pro/fabric-dev', True, 'failure', 'true', False, 'namespace-profile-amd1'),
+            ('pull_request', 'Fabric-Pro/fabric-dev', True, 'success', '', False, 'namespace-profile-amd1'),
+            ('pull_request', 'Fabric-Pro/fabric-oss', True, 'success', 'true', False, 'ubuntu-24.04-arm'),
+            ('pull_request', 'Fabric-Pro/fabric-oss', False, 'success', 'true', False, 'ubuntu-24.04-arm'),
+            ('pull_request', 'example-org/fabric', True, 'success', 'true', False, 'ubuntu-24.04-arm'),
+            ('pull_request_target', 'Fabric-Pro/fabric-dev', True, 'success', 'true', False, 'ubuntu-24.04-arm'),
+        ]:
+            github = {'event_name': event, 'repository': repo, 'event': {'pull_request': {'head': {
+                'repo': {'full_name': repo if same_repo else 'example-org/fork'}}}}}
+            with self.subTest(event=event, repo=repo, same_repo=same_repo, changes_result=changes_result, workflows=workflows):
+                eligible = gha_eval(jobs['changes']['outputs']['replay_eligible'], github)
+                needs = {'changes': {'result': changes_result, 'outputs': {
+                    'workflows': workflows, 'replay_eligible': str(eligible).lower()}}}
+                self.assertEqual(gha_eval(replay['runs-on'], github, needs), runner)
+                required_env = gha_eval(replay['env']['REPLAY_REQUIRED'], github, needs)
+                self.assertEqual(required_env, required)
+                for step in private_steps:
+                    self.assertEqual(step.get('if'), "env.REPLAY_REQUIRED == 'true'", step['name'])
+
+    def test_reduced_promotion_routes_all_duplicate_jobs_without_replay_statuses(self):
         names = ['type-check', 'unit-tests', 'code-quality', 'security', 'db-integration',
                  'migration-safety', 'knip', 'docker-build-check',
                  'temporal-replay-validation', 'temporal-replay-pr-check']
@@ -935,14 +1541,15 @@ esac
             self.assertIn("github.repository == 'Fabric-Pro/fabric-dev'", policy['if'])
             self.assertIn("vars.STAGING_RELEASE_ENABLED == 'true'", policy['if'])
             for key, job in data['jobs'].items():
-                if key == 'promotion_policy':
+                # Only PR validation jobs participate in promotion reduction.
+                if key == 'promotion_policy' or (name, key) == ('temporal-replay-validation', 'snapshot_histories'):
                     continue
                 with self.subTest(workflow=name, job=key):
                     self.assertIn('promotion_policy', job['needs'])
                     condition = job['if']
                     marker = "(needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && "
                     self.assertIn(marker, condition)
-                    expression = condition.replace('&&', ' and ').replace('||', ' or ').replace('!cancelled()', 'not cancelled()')
+                    expression = re.sub(r'!(?!=)', ' not ', condition).replace('&&', ' and ').replace('||', ' or ')
                     expression = __import__('re').sub(r'needs\.([a-zA-Z0-9_-]+)', lambda m: 'needs.' + m[1].replace('-', '_'), expression)
                     expression = ' '.join(expression.split())
                     suffix = expression.split("(needs.promotion_policy.result != 'success' or needs.promotion_policy.outputs.reduced != 'true') and ", 1)[1]
@@ -952,7 +1559,8 @@ esac
                     needs = SimpleNamespace(**{dependency.replace('-', '_'): SimpleNamespace(result='success', outputs=outputs)
                         for dependency in job['needs'] if dependency != 'promotion_policy'})
                     context = {
-                        'github': SimpleNamespace(event_name='pull_request', repository='Fabric-Pro/fabric-dev'),
+                        'github': SimpleNamespace(event_name='pull_request_target' if name == 'temporal-replay-validation'
+                                                  else 'pull_request', repository='Fabric-Pro/fabric-dev'),
                         'needs': needs, 'always': lambda: True, 'cancelled': lambda: False,
                         'success': lambda: True, 'failure': lambda: False, 'true': True, 'false': False,
                     }
@@ -1004,7 +1612,7 @@ def _ns(value):
     return value
 
 
-def gha_eval(expression, github, needs=None, variables=None):
+def gha_eval(expression, github, needs=None, variables=None, status=None):
     """Evaluates the subset of GitHub expression syntax these jobs use."""
     import re
     e = expression.strip()
@@ -1019,7 +1627,7 @@ def gha_eval(expression, github, needs=None, variables=None):
         'always': lambda: True, 'cancelled': lambda: False, 'success': lambda: True, 'failure': lambda: False,
         'contains': lambda haystack, needle: isinstance(haystack, (list, tuple)) and needle in haystack,
         'startsWith': lambda value, prefix: isinstance(value, str) and value.startswith(prefix),
-        'true': True, 'false': False, 'null': NULL,
+        'true': True, 'false': False, 'null': NULL, **(status or {}),
     }
     return eval(e, {'__builtins__': {}}, context)
 
@@ -1099,8 +1707,7 @@ class RelayNotifierContracts(unittest.TestCase):
 
 class PullRequestContracts(unittest.TestCase):
     def test_pr_metadata_steps_keep_their_credentials_boundary(self):
-        for name, key in [('dco.yml', 'check'), ('changeset-check.yml', 'check'),
-                          ('temporal-replay-pr-check.yml', 'replay_check')]:
+        for name, key in [('dco.yml', 'check'), ('changeset-check.yml', 'check')]:
             with self.subTest(workflow=name):
                 job = workflow(name)['jobs'][key]
                 for step in job['steps']:

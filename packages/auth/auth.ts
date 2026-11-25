@@ -918,6 +918,9 @@ export const authOptions = {
 			}
 
 			if (ctx.path.startsWith("/organization/accept-invitation")) {
+				if (ctx.context.returned instanceof Error) {
+					return;
+				}
 				try {
 					const { invitationId } = ctx.body;
 
@@ -951,7 +954,10 @@ export const authOptions = {
 					| null
 					| undefined;
 
-				if (session?.user?.mustChangePassword) {
+				if (
+					session?.user?.mustChangePassword &&
+					!(ctx.context.returned instanceof Error)
+				) {
 					try {
 						await db.user.update({
 							where: { id: session.user.id },
@@ -1189,6 +1195,27 @@ export const authOptions = {
 				});
 			}
 
+			const turnstileProtectedPaths = [
+				"/sign-up/email",
+				"/sign-in/email",
+				"/sign-in/magic-link",
+				"/request-password-reset",
+			];
+			const needsTurnstile = turnstileProtectedPaths.some(
+				(path) => ctx.path === path,
+			);
+			const submittedEmail = ctx.body?.email as unknown;
+			// Before hooks can see the body before endpoint validation.
+			if (
+				needsTurnstile &&
+				submittedEmail != null &&
+				typeof submittedEmail !== "string"
+			) {
+				throw new APIError("BAD_REQUEST", {
+					message: "Email must be a string",
+				});
+			}
+
 			// Silent-notify on duplicate-email signup attempts. Lookup runs
 			// here (not in onAPIError, where Better Auth passes the auth init
 			// context with no path/body) so we can read the submitted email
@@ -1267,14 +1294,7 @@ export const authOptions = {
 			}
 
 			// Turnstile CAPTCHA verification for protected auth endpoints
-			const turnstileProtectedPaths = [
-				"/sign-up/email",
-				"/sign-in/email",
-				"/sign-in/magic-link",
-				"/request-password-reset",
-			];
-
-			if (turnstileProtectedPaths.some((p) => ctx.path === p)) {
+			if (needsTurnstile) {
 				// Exempt only the in-app SetPassword flow: an authenticated
 				// caller requesting a reset email for their *own* address.
 				// A logged-in user requesting a reset for someone else's
@@ -1458,6 +1478,7 @@ export const authOptions = {
 			mustChangePassword: {
 				type: "boolean",
 				required: false,
+				input: false,
 			},
 			// High-contrast theme choice (Fizzy #1444). Read with the session so
 			// the server layout can paint the right palette before any script

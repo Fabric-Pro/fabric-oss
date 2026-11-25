@@ -10,6 +10,7 @@
  * works on a drive's root only, not on a folder inside it.
  */
 
+import { readCapped, retryAfterSeconds } from "../drive-shared";
 import { MICROSOFT_DOWNLOAD_TIMEOUT_MS } from "./config/limits";
 import { microsoftFetch } from "./request";
 import type { GraphFetch } from "./stream-transcript";
@@ -228,27 +229,16 @@ export async function downloadDriveItem(params: {
 	}
 
 	// Counted while reading: the size Graph reported is not a promise.
-	const chunks: Uint8Array[] = [];
-	let received = 0;
-	const reader = download.body.getReader();
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) {
-			break;
-		}
-		received += value.byteLength;
-		if (received > maxBytes) {
-			await reader.cancel();
-			return { status: "too_large", name: item.name, size: received };
-		}
-		chunks.push(value);
+	const read = await readCapped(download, maxBytes);
+	if (!read.ok) {
+		return { status: "too_large", name: item.name, size: read.size };
 	}
 	return {
 		status: "ok",
 		name: item.name,
-		size: received,
+		size: read.size,
 		mimeType: item.file?.mimeType ?? null,
-		bytes: Buffer.concat(chunks),
+		bytes: read.bytes,
 	};
 }
 
@@ -263,7 +253,7 @@ export async function downloadDriveItem(params: {
 /** How many folders below the connected folder are read. */
 export const DRIVE_TREE_MAX_DEPTH = 5;
 /** How many items a folder tree read looks at before it stops. */
-const DRIVE_TREE_MAX_ITEMS = DEFAULT_MAX_ITEMS;
+export const DRIVE_TREE_MAX_ITEMS = DEFAULT_MAX_ITEMS;
 
 export type DriveProvider = "onedrive" | "sharepoint";
 
@@ -344,16 +334,6 @@ interface GraphTreeItem {
 	lastModifiedDateTime?: string;
 	folder?: unknown;
 	file?: { mimeType?: string; hashes?: { quickXorHash?: string } };
-}
-
-/**
- * Graph's own wait after a throttled request, in seconds. The request helper
- * retries a 429 itself, so one that reaches here has outlasted its retries.
- */
-function retryAfterSeconds(response: Response): number | null {
-	const header = response.headers.get("Retry-After");
-	const seconds = header === null ? Number.NaN : Number(header);
-	return Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds) : null;
 }
 
 function itemUrl(graphBaseUrl: string, driveId: string, itemId: string) {

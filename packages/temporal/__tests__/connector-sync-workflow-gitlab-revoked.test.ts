@@ -21,8 +21,16 @@ vi.mock("@repo/database", () => ({
 	setAiUsageRecorder: vi.fn(),
 	createDocumentChunks: vi.fn(),
 	db: {},
+	isOrganizationMember: vi.fn().mockResolvedValue(true),
 	getConnectionWithCredentials: vi.fn(),
-	getDataConnectionSyncMetadata: vi.fn(),
+	getDataConnectionSyncMetadata: vi.fn(async () => ({
+		id: "conn-1",
+		provider: "GITLAB",
+		name: "GitLab",
+		status: "SYNCING",
+		config: { projects: ["a/b", "c/d"] },
+		lastSyncAt: null,
+	})),
 	getSyncedResourceByExternalId: vi.fn(),
 	updateWorkspaceDocument: vi.fn(),
 	updateDataConnection: vi.fn(),
@@ -61,6 +69,7 @@ import {
 	fetchResourceDocuments,
 	testConnection,
 } from "../src/activities/connector-sync";
+import { CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE } from "../src/task-queues";
 import type { ConnectorSyncOutput } from "../src/workflows/connector-sync/types";
 
 const WORKFLOWS_PATH = resolve(__dirname, "..", "src", "workflows");
@@ -144,21 +153,28 @@ it("ends in ERROR, without garbage collection, when GitLab answers 401 during fe
 		workflowBundle,
 		activities: mocks,
 	});
-	const output = (await worker.runUntil(
-		env.client.workflow.execute("connectorSyncWorkflow", {
-			args: [
-				{
-					syncJobId: "job-1",
-					connectorId: "conn-1",
-					provider: "GITLAB",
-					syncType: "gc",
-					userId: "user-1",
-					organizationId: "org-1",
-				},
-			],
-			taskQueue,
-			workflowId: `${taskQueue}-wf`,
-		}),
+	const connectorWorker = await Worker.create({
+		connection: env.nativeConnection,
+		taskQueue: CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE,
+		activities: mocks,
+	});
+	const output = (await worker.runUntil(() =>
+		connectorWorker.runUntil(() =>
+			env.client.workflow.execute("connectorSyncWorkflow", {
+				args: [
+					{
+						syncJobId: "job-1",
+						connectorId: "conn-1",
+						provider: "GITLAB",
+						syncType: "gc",
+						userId: "user-1",
+						organizationId: "org-1",
+					},
+				],
+				taskQueue,
+				workflowId: `${taskQueue}-wf`,
+			}),
+		),
 	)) as ConnectorSyncOutput;
 
 	expect(output.success).toBe(false);
@@ -221,21 +237,28 @@ it("records GitLab's reason when one project refuses access, and carries on", as
 		workflowBundle,
 		activities: mocks,
 	});
-	const output = (await worker.runUntil(
-		env.client.workflow.execute("connectorSyncWorkflow", {
-			args: [
-				{
-					syncJobId: "job-2",
-					connectorId: "conn-1",
-					provider: "GITLAB",
-					syncType: "full",
-					userId: "user-1",
-					organizationId: "org-1",
-				},
-			],
-			taskQueue,
-			workflowId: `${taskQueue}-wf`,
-		}),
+	const connectorWorker = await Worker.create({
+		connection: env.nativeConnection,
+		taskQueue: CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE,
+		activities: mocks,
+	});
+	const output = (await worker.runUntil(() =>
+		connectorWorker.runUntil(() =>
+			env.client.workflow.execute("connectorSyncWorkflow", {
+				args: [
+					{
+						syncJobId: "job-2",
+						connectorId: "conn-1",
+						provider: "GITLAB",
+						syncType: "full",
+						userId: "user-1",
+						organizationId: "org-1",
+					},
+				],
+				taskQueue,
+				workflowId: `${taskQueue}-wf`,
+			}),
+		),
 	)) as ConnectorSyncOutput;
 
 	expect(output.success).toBe(true);

@@ -61,6 +61,11 @@ export interface DocumentFolderSelection {
 	webUrl?: string | null;
 	/** The folder's path in its drive, such as `/Sales`; `/` for the root. */
 	drivePath: string | null;
+	/**
+	 * Google Drive only: the ids of the folder's ancestors, which the overlap
+	 * check compares instead of paths. Left out for OneDrive and SharePoint.
+	 */
+	ancestorIds?: string[];
 	siteId?: string | null;
 	siteName?: string | null;
 	libraryName?: string | null;
@@ -88,7 +93,8 @@ export const sameItem = (
  * transcript folder, or holds or lies in a connected transcript or document
  * folder of the same drive, or when the project would pass the folder limit.
  * Transcript folders store no path, so the caller passes theirs from Graph;
- * document folders use the path every read refreshes.
+ * document folders use the path every read refreshes, and Google Drive
+ * folders their stored ancestor ids.
  *
  * Reconnecting makes the person the reader: of the folder, of its file rows
  * and of every context those rows hold, so deleting the previous reader's
@@ -130,6 +136,7 @@ export async function connectDocumentFolders(params: {
 				itemId: true,
 				name: true,
 				drivePath: true,
+				ancestorIds: true,
 				disconnectedAt: true,
 				userId: true,
 			},
@@ -204,6 +211,7 @@ export async function connectDocumentFolders(params: {
 				name: folder.name,
 				webUrl: folder.webUrl ?? null,
 				drivePath: folder.drivePath,
+				ancestorIds: folder.ancestorIds ?? [],
 				siteId: folder.siteId ?? null,
 				siteName: folder.siteName ?? null,
 				libraryName: folder.libraryName ?? null,

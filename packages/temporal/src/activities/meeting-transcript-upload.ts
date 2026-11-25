@@ -138,8 +138,17 @@ export async function ingestUploadedTranscript(
 ): Promise<IngestUploadedTranscriptOutput> {
 	const { contextId, projectId, userId, organizationId } = input;
 
+	const project = await db.project.findUnique({
+		where: { id: projectId },
+		select: { organizationId: true },
+	});
+	if (!project || (project.organizationId ?? undefined) !== organizationId) {
+		return { outcome: "rejected" };
+	}
+
+	const scope = { projectId, organizationId: organizationId ?? null };
 	const context = await db.projectContext.findFirst({
-		where: { id: contextId, projectId, type: "MEETING_TRANSCRIPT" },
+		where: { id: contextId, ...scope, type: "MEETING_TRANSCRIPT" },
 		select: {
 			s3Path: true,
 			s3Bucket: true,
@@ -154,7 +163,7 @@ export async function ingestUploadedTranscript(
 	}
 	if (context.extractionStatus === "COMPLETED") {
 		const stored = await db.projectMeetingTranscript.findFirst({
-			where: { projectId, contextId },
+			where: { ...scope, contextId },
 			select: { id: true },
 		});
 		return { outcome: "ingested", transcriptRecordId: stored?.id };
@@ -162,15 +171,7 @@ export async function ingestUploadedTranscript(
 
 	// The job can wait in a queue. It acts for this person now, not for who
 	// they were when they pressed the button.
-	const project = await db.project.findUnique({
-		where: { id: projectId },
-		select: { organizationId: true },
-	});
-	if (
-		!project ||
-		(project.organizationId ?? undefined) !== organizationId ||
-		!(await canCreateProjectContexts(projectId, userId))
-	) {
+	if (!(await canCreateProjectContexts(projectId, userId))) {
 		return await rejectUpload(contextId, NO_LONGER_ALLOWED);
 	}
 
@@ -328,8 +329,17 @@ export async function startUploadedTranscriptPipelines(input: {
 }): Promise<void> {
 	const { contextId, projectId, userId, organizationId } = input;
 
+	const project = await db.project.findUnique({
+		where: { id: projectId },
+		select: { organizationId: true },
+	});
+	if (!project || (project.organizationId ?? undefined) !== organizationId) {
+		return;
+	}
+
+	const scope = { projectId, organizationId: organizationId ?? null };
 	const transcript = await db.projectMeetingTranscript.findFirst({
-		where: { id: input.transcriptRecordId, projectId, contextId },
+		where: { id: input.transcriptRecordId, ...scope, contextId },
 		select: {
 			id: true,
 			linkedMeetingId: true,
@@ -340,7 +350,7 @@ export async function startUploadedTranscriptPipelines(input: {
 		},
 	});
 	const context = await db.projectContext.findFirst({
-		where: { id: contextId, projectId },
+		where: { id: contextId, ...scope },
 		select: { content: true, metadata: true },
 	});
 	// Removed while it waited, which is the user's call, not a failure.

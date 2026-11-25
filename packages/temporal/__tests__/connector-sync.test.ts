@@ -27,6 +27,7 @@ vi.mock("@repo/database", () => ({
 	setAiUsageRecorder: vi.fn(),
 	createDocumentChunks: vi.fn(),
 	db: {
+		dataConnection: { findFirst: vi.fn() },
 		workspaceDocument: {
 			findFirst: vi.fn().mockResolvedValue(null),
 			deleteMany: vi.fn(),
@@ -36,7 +37,7 @@ vi.mock("@repo/database", () => ({
 			deleteMany: vi.fn(),
 		},
 	},
-	getConnectionWithCredentials: vi.fn(),
+	isOrganizationMember: vi.fn().mockResolvedValue(true),
 	getDataConnectionSyncMetadata: vi.fn(),
 	getSyncedResourceByExternalId: vi.fn(),
 	getSyncedResources: vi.fn(),
@@ -82,6 +83,7 @@ vi.mock("@repo/rag", () => ({
 
 vi.mock("@repo/utils", () => ({
 	decryptApiKey: vi.fn((value: string) => value),
+	isEncryptedApiKey: vi.fn(() => false),
 }));
 
 // GitLab activities read the acting person's connection from the connection
@@ -101,7 +103,6 @@ import {
 import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 import {
 	db,
-	getConnectionWithCredentials,
 	getDataConnectionSyncMetadata,
 	getSyncedResourceByExternalId,
 	updateWorkspaceDocument,
@@ -118,11 +119,58 @@ import {
 	ensureApplicationFailure,
 } from "@temporalio/common";
 import {
-	discoverResources,
-	fetchResourceDocuments,
+	discoverResources as discoverSyncResources,
+	fetchResourceDocuments as fetchSyncDocuments,
 	generateEmbeddings,
-	loadConnectorConfig,
 } from "../src/activities/connector-sync";
+
+// Keep provider behavior expectations while putting each fixture on its database row.
+function connectionFixture(input: Parameters<typeof discoverSyncResources>[0]) {
+	const config = input.providerConfig ?? {};
+	if (input.provider === "GITLAB") {
+		vi.mocked(getDataConnectionSyncMetadata).mockResolvedValueOnce({
+			id: input.connectorId,
+			provider: "GITLAB",
+			name: "Example GitLab connection",
+			status: "SYNCING",
+			config: config as never,
+			lastSyncAt: null,
+		});
+	} else {
+		vi.mocked(db.dataConnection.findFirst).mockResolvedValueOnce({
+			provider: input.provider,
+			config,
+			accessToken: null,
+			refreshToken: null,
+			credentials: input.credentials ?? null,
+			credentialId: null,
+			credential: null,
+		} as never);
+	}
+	return {
+		connectorId: input.connectorId,
+		provider: input.provider,
+		userId: input.userId ?? "example-user",
+		organizationId: input.organizationId ?? "example-org",
+	};
+}
+
+function discoverResources(input: Parameters<typeof discoverSyncResources>[0]) {
+	return discoverSyncResources(connectionFixture(input));
+}
+
+function fetchResourceDocuments(
+	input: Parameters<typeof fetchSyncDocuments>[0],
+) {
+	const { resource, cursor, batchSize, syncType } = input;
+	return fetchSyncDocuments({
+		...connectionFixture(input),
+		resource,
+		cursor,
+		batchSize,
+		syncType,
+	});
+}
 
 describe("connector sync GitHub provider", () => {
 	beforeEach(() => {
@@ -258,54 +306,6 @@ describe("connector sync GitHub provider", () => {
 			}),
 		);
 		expect(result.newCursor?.lastSyncedAt).toBe("2026-04-03T14:00:00Z");
-	});
-});
-
-describe("connector sync credential loading", () => {
-	beforeEach(() => {
-		vi.clearAllMocks();
-	});
-
-	it("merges reusable credential payload into connector config", async () => {
-		vi.mocked(getDataConnectionSyncMetadata).mockResolvedValueOnce({
-			id: "conn-1",
-			provider: "CLICKUP",
-			name: "ClickUp Search",
-			status: "CONNECTED",
-			config: { teamId: "123" },
-			lastSyncAt: null,
-		} as any);
-		vi.mocked(getConnectionWithCredentials).mockResolvedValueOnce({
-			id: "conn-1",
-			provider: "CLICKUP",
-			name: "ClickUp Search",
-			status: "CONNECTED",
-			accessToken: null,
-			refreshToken: null,
-			tokenExpiresAt: null,
-			credentials: null,
-			credentialId: "cred-1",
-			credential: {
-				id: "cred-1",
-				name: "ClickUp PAT",
-				credentialType: "apiKey",
-				encryptedPayload: '{"apiKey":"pk_test"}',
-			},
-			config: {
-				teamId: "123",
-			},
-			lastSyncAt: null,
-			userId: "user-1",
-			organizationId: null,
-		} as any);
-
-		const result = await loadConnectorConfig({
-			connectorId: "conn-1",
-			userId: "user-1",
-		});
-
-		expect(result?.credentials.apiKey).toBe("pk_test");
-		expect(result?.providerConfig.teamId).toBe("123");
 	});
 });
 

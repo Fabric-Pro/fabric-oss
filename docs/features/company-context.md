@@ -69,7 +69,7 @@ Every Qdrant collection has a fixed vector size (1536), the project ones include
 
 Company sources reuse the project context workflows (file processing, embedding, deletion, URL crawl) with a company owner in the workflow input. Activities pick the company row store and skip project-only side effects (Job Hub rows, notifications, import-as-document). Project-owner runs schedule exactly the same activity commands as before; replay against recorded project histories confirms it.
 
-Company workflows and their crawl schedules run on the `company-context` task queue, which only workers carrying this change poll. A scheduled company crawl first checks the gate and exits without calling the crawler when it is off.
+Company workflow and crawl schedule starts use the `company-context` task queue. The gate, storage, indexing and status activities also run there. Scrape, map and crawl calls use `company-url-source-scraper`, with its own activity slots. A scheduled crawl checks the gate before dispatching a scraper call and exits when company context is off.
 
 A website becomes ready only when its crawl finishes: the crawl's last step marks the source embedded, so none of a first crawl's pages is retrieved before then. The crawl scrapes one page at a time, and a 200-page site takes about three hours. During a website's first crawl, the list shows how many of the pages found so far are done (`crawlProgress` on `list`). The total can grow, because pages found by following links are added as they are scraped. A later crawl shows only the page count, because the site's pages keep their earlier state until each is scraped again; a website has finished a crawl once `extractedAt` is set, which a failed crawl never clears. While a website is not ready, its row says it is used once the crawl finishes. A crawl writes its pages, not its source, so the list keeps polling past its five-minute cap, every 15 seconds, while a crawl holds the source's slot and keeps fetching pages. A crawl stamps `lastFetchedAt` on every page it fetches; a page whose scrape hangs costs about fifteen minutes with nothing written, so a crawl that has fetched nothing for 90 minutes (a workflow that is gone without releasing its slot) is no longer followed. Such a slot is released by cancelling the crawl.
 
@@ -86,7 +86,7 @@ The feature is behind one org-scopable flag, `COMPANY_CONTEXT` (`FABRIC_FEATURE_
 **Deploy order:**
 
 1. The migration and RLS run before any pod rolls; nothing reads the new tables while the flag is off.
-2. Roll out the web deployment and the Temporal worker, and wait until the rollout has **fully completed**: a poller shows on the `company-context` queue, and no pre-change worker still polls `project-documents`.
+2. Roll out the web deployment and the Temporal worker, and wait until the rollout has **fully completed**: pollers show on the `company-context` and `company-url-source-scraper` queues, and no pre-change worker still polls `project-documents`.
 3. Only then enable `COMPANY_CONTEXT` for an organization through the admin organization override (`admin.featureFlags.setForOrg`), not the global environment variable, so the web tier and the worker read the same value.
 
 A Proposal generated on a pre-change worker during a mixed rollout simply lacks the vendor block; that worker knows nothing of company context, so nothing leaks. Rollback: turn the flag off first, then roll back the worker; queued company jobs wait on their queue and drain once a current worker returns.

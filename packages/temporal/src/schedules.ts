@@ -136,7 +136,7 @@ const SCHEDULED_REPORT_WORKFLOW_NAME = "scheduledReportDispatcherWorkflow";
 // Every 15 minutes (UTC); the dispatcher honors each instance's nextRunAt.
 const SCHEDULED_REPORT_CRON_SCHEDULE = "*/15 * * * *";
 
-const URL_SOURCE_RECONCILE_SCHEDULE_ID = "url-source-schedule-reconcile";
+export const URL_SOURCE_RECONCILE_SCHEDULE_ID = "url-source-schedule-reconcile";
 const URL_SOURCE_RECONCILE_WORKFLOW_NAME =
 	"reconcileUrlSourceSchedulesWorkflow";
 // Every Sunday at 00:30 UTC — runs 30 minutes after the per-context

@@ -1,14 +1,15 @@
 import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
+import { getProjectPermissionDecision } from "@repo/api/lib/project-permission-decision";
 import {
 	findConfidentialTranscriptContextIds,
 	getContextById,
-	getProjectAccessContext,
 	readProjectContextBodyPage,
 } from "@repo/database";
 import {
 	resolveContextTitle,
 	resolveContextUnavailableReason,
 } from "@repo/database/src/project-context-presentation";
+import { Permissions } from "@repo/permissions";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -51,11 +52,12 @@ export async function POST(req: Request) {
 		const userId = payload.claims.sub;
 		const organizationId = payload.claims.org;
 
-		// Verify user has access AND tenant context matches (XOR isolation).
-		// One query resolves both the access decision and the project's
-		// organizationId, instead of a second round trip for the same row.
-		const accessContext = await getProjectAccessContext(projectId, userId);
-		if (!accessContext) {
+		const decision = await getProjectPermissionDecision({
+			projectId,
+			userId,
+			permission: Permissions.CONTEXT_READ,
+		});
+		if (!decision.allowed) {
 			return NextResponse.json(
 				{ error: "You do not have access to this project" },
 				{ status: 403 },
@@ -65,7 +67,7 @@ export async function POST(req: Request) {
 		// Enforce tenant XOR isolation: the project's organizationId must match
 		// the token's org context. Prevents org A token from querying org B or
 		// personal projects even if the user has membership in both.
-		const projectOrgId = accessContext.organizationId ?? undefined;
+		const projectOrgId = decision.organizationId ?? undefined;
 		if (projectOrgId !== organizationId) {
 			return NextResponse.json(
 				{ error: "Tenant context mismatch" },
@@ -100,7 +102,7 @@ export async function POST(req: Request) {
 				: fallback;
 		const page = await readProjectContextBodyPage(
 			ctx,
-			{ userId, organizationId: accessContext.organizationId },
+			{ userId, organizationId: decision.organizationId },
 			{
 				offset: Math.min(
 					2_147_483_646,

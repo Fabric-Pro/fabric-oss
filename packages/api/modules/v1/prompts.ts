@@ -146,6 +146,9 @@ export function registerPromptRoutes(
 		} catch {
 			return c.json(badRequest("Invalid JSON body"), 400);
 		}
+		if (body === null) {
+			return c.json(badRequest("Invalid JSON body"), 400);
+		}
 
 		const key = body.key?.trim();
 		const name = body.name?.trim();
@@ -235,6 +238,9 @@ export function registerPromptRoutes(
 		try {
 			body = await c.req.json();
 		} catch {
+			return c.json(badRequest("Invalid JSON body"), 400);
+		}
+		if (body === null) {
 			return c.json(badRequest("Invalid JSON body"), 400);
 		}
 

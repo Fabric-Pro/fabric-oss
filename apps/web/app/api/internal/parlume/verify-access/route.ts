@@ -1,7 +1,11 @@
 import { finalizeParlumeSession } from "@repo/api/modules/projects/lib/parlume-finalization";
 import { requestParlumeLeave } from "@repo/api/modules/projects/lib/parlume-leave";
 import { parlumeLog } from "@repo/api/modules/projects/lib/parlume-log";
-import { db, hasProjectAccess } from "@repo/database";
+import {
+	db,
+	getProjectAccessContext,
+	isOrganizationLive,
+} from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { isParlumeServiceRequestAuthorized } from "../lib";
@@ -92,11 +96,14 @@ export async function POST(request: NextRequest) {
 		}
 		return NextResponse.json({ accepted: true, captureStopped: true });
 	}
-	const hasAccess = await hasProjectAccess(
+	const access = await getProjectAccessContext(
 		session.projectId,
 		session.userId,
-		session.organizationId,
 	);
+	const hasAccess =
+		access !== null &&
+		(!access.organizationId ||
+			(await isOrganizationLive(access.organizationId)));
 	if (hasAccess && !session.captureStoppedAt) {
 		return NextResponse.json({ accepted: true, captureStopped: false });
 	}

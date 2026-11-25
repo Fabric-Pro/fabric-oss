@@ -16,10 +16,6 @@ import {
 	updateEpisodeQdrantReference,
 	updateOrchestratorMemoryPreferences,
 } from "../prisma/queries/orchestrator-memory";
-import {
-	consolidateLearnedPatterns,
-	getUserMemoryEffectiveness,
-} from "../prisma/queries/orchestrator-memory-evaluation";
 import { disposableTarget } from "../scripts/prisma-disposable.mjs";
 import {
 	createOrganizationContext,
@@ -164,26 +160,6 @@ describe.skipIf(!enabled)("Advisor memory query paths under RLS", () => {
 			).toMatchObject({
 				responseStyle: "concise",
 				preferences: { learnedPatterns: ["Use examples"] },
-			});
-			await updateOrchestratorMemoryPreferences(userId, orgIds[0], {
-				preferences: {
-					learnedPatterns: ["Use examples", "Use examples"],
-				},
-			});
-			expect(await consolidateLearnedPatterns(userId, orgIds[0])).toEqual(
-				{
-					originalCount: 2,
-					consolidatedCount: 1,
-				},
-			);
-			expect(
-				await getUserMemoryEffectiveness(userId, orgIds[0]),
-			).toMatchObject({
-				metrics: {
-					preferencesSet: true,
-					learnedPatternsCount: 1,
-					episodeCount: 0,
-				},
 			});
 			await removeLearnedPattern(userId, orgIds[0], "Use examples");
 			expect(

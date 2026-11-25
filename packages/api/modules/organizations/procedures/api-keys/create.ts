@@ -150,7 +150,7 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  * | `instructions:write`   | `INSTRUCTION_READ`          | yes     |
  * | `instructions:publish` | `INSTRUCTION_CREATE`        | no      |
  * | `memory:write`         | `CONTEXT_CREATE` (live)     | yes     |
- * | `chats:read`           | none — own threads only     | yes     |
+ * | `chats:read`           | `AI_CHAT` (live, own threads) | yes     |
  * | `audit_log:read`       | `ORG_AUDIT_LOG_READ`        | no      |
  * | `audit_log:export`     | `ORG_AUDIT_LOG_EXPORT`      | no      |
  * | `system_health:read`   | none — any authenticated    | yes     |
@@ -217,10 +217,13 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  *   - `agents:stream` is read-only on its own (`GET /executions/:id/stream`).
  *     It also appears on the execute route, but only to reject a streaming
  *     request early — that route already demands `agents:execute`.
- *   - `chats:read`, `system_health:read` and `status_updates:read` map to no
- *     permission because their handlers gate on authentication alone and return
- *     either the caller's own rows (chats are filtered by `userId`) or
- *     tenant-scoped/global status. Nothing there sits above the viewer role.
+ *   - `chats:read` can be minted by a viewer, but REST chat reads and the MCP
+ *     chat list require the creator's current `AI_CHAT` permission in the
+ *     organization. A viewer-minted key is refused for REST reads while its
+ *     creator lacks that permission. Both surfaces limit results to the
+ *     creator's own threads.
+ *   - `system_health:read` and `status_updates:read` return tenant-scoped or
+ *     global status and do not require a role above viewer.
  *
  * This is a CREATION-TIME check against the role the caller holds right now;
  * scopes still survive a later demotion. Privileged consumers therefore make

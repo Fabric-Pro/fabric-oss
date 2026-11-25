@@ -40,6 +40,7 @@ import { cn } from "@ui/lib";
 import {
 	CloudIcon,
 	FileIcon,
+	FolderSyncIcon,
 	LinkIcon,
 	LoaderIcon,
 	SettingsIcon,
@@ -153,9 +154,21 @@ const allTabs = [
 	{ id: "confluence", label: "Confluence", icon: ConfluenceIcon },
 	{ id: "google-docs", label: "Google Docs", icon: GoogleDriveIcon },
 	{ id: "cloud-drive", label: "OneDrive / SharePoint", icon: CloudIcon },
+	// Folders kept in step, not the Google Docs tab's single-document picks.
+	{
+		id: "google-drive-folders",
+		label: "Google Drive folders",
+		icon: FolderSyncIcon,
+	},
 ] as const;
 
 type TabId = (typeof allTabs)[number]["id"];
+
+/** The document-folder tabs, offered only where cloud drive folders are on. */
+const CLOUD_DRIVE_TABS: ReadonlySet<TabId> = new Set([
+	"cloud-drive",
+	"google-drive-folders",
+]);
 
 export function ContextUploaderDialog({
 	projectId,
@@ -167,8 +180,8 @@ export function ContextUploaderDialog({
 	const t = useTranslations("tooltips.contextSources");
 	const queryClient = useQueryClient();
 
-	// OneDrive and SharePoint document folders (Fizzy #2808), per
-	// organization. Not offered in the project wizard: a draft project has no
+	// OneDrive, SharePoint and Google Drive document folders (Fizzy #2808),
+	// per organization. Not offered in the project wizard: a draft project has no
 	// Context tab yet to follow the folders' reads on.
 	const cloudDriveFolders =
 		useFeatureFlag("CLOUD_DRIVE_FOLDERS") && surface === "post-creation";
@@ -184,7 +197,7 @@ export function ContextUploaderDialog({
 						isMonitoringFeatureEnabled(
 							"feature-google-docs-context",
 						)) &&
-					(tab.id !== "cloud-drive" || cloudDriveFolders),
+					(!CLOUD_DRIVE_TABS.has(tab.id) || cloudDriveFolders),
 			),
 		[cloudDriveFolders],
 	);
@@ -193,6 +206,8 @@ export function ContextUploaderDialog({
 	const [googleDocsDialogOpen, setGoogleDocsDialogOpen] = useState(false);
 	const [cloudDrivePickerOpen, setCloudDrivePickerOpen] = useState(false);
 	const cloudDriveTrigger = useRef<HTMLButtonElement>(null);
+	const [googleDrivePickerOpen, setGoogleDrivePickerOpen] = useState(false);
+	const googleDriveTrigger = useRef<HTMLButtonElement>(null);
 
 	// "Tag as Document" — project-only. Applies to every queued file (per
 	// spec §7.1 — multi-file is "drop a batch", not a per-file editor), and
@@ -830,6 +845,44 @@ export function ContextUploaderDialog({
 						</div>
 					)}
 
+					{/* Google Drive folders tab — the folder picker in Google mode */}
+					{activeTab === "google-drive-folders" &&
+						cloudDriveFolders && (
+							<div
+								className="flex flex-col items-center justify-center py-8 motion-safe:animate-stagger"
+								role="tabpanel"
+								id="context-tabpanel-google-drive-folders"
+								aria-labelledby="context-tab-google-drive-folders"
+							>
+								<div className="mb-4 rounded-lg border border-border bg-card p-4 text-foreground">
+									<GoogleDriveIcon className="size-8" />
+								</div>
+								<h3 className="mb-2 font-medium text-foreground">
+									Google Drive folders
+								</h3>
+								<p className="mb-6 max-w-sm text-center text-muted-foreground text-sm">
+									Connect folders from My Drive or a shared
+									drive. Their files are imported as project
+									context and kept in step with each folder.
+									This is separate from picking single Google
+									Docs.
+								</p>
+								<Button
+									ref={googleDriveTrigger}
+									onClick={() =>
+										setGoogleDrivePickerOpen(true)
+									}
+									className="gap-2"
+								>
+									<FolderSyncIcon
+										aria-hidden="true"
+										className="size-4"
+									/>
+									Choose Google Drive folders
+								</Button>
+							</div>
+						)}
+
 					{/* Notion tab */}
 					{activeTab === "notion" && (
 						<div
@@ -1133,6 +1186,19 @@ export function ContextUploaderDialog({
 					open
 					onOpenChange={setCloudDrivePickerOpen}
 					returnFocusTo={cloudDriveTrigger}
+					onConnected={() => onOpenChange(false)}
+				/>
+			)}
+
+			{/* Google Drive folder picker, mounted only while open. */}
+			{cloudDriveFolders && googleDrivePickerOpen && (
+				<ConnectDocumentFolderDialog
+					projectId={projectId}
+					organizationId={organizationId ?? null}
+					provider="googledrive"
+					open
+					onOpenChange={setGoogleDrivePickerOpen}
+					returnFocusTo={googleDriveTrigger}
 					onConnected={() => onOpenChange(false)}
 				/>
 			)}

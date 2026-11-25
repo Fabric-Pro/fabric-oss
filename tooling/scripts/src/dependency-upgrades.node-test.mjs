@@ -277,11 +277,11 @@ test("both mounted endpoints retain the 8 MiB byte guard before SDK parsing", as
 });
 
 for (const [alias, version] of [
-	["@ai-sdk/provider-utils-v5", "3.0.36"],
-	["@ai-sdk/provider-utils-v6", "4.0.51"],
+	["@ai-sdk/provider-utils-v6", "4.0.66"],
+	["@ai-sdk/provider-utils-v7", "5.0.81"],
 ]) {
 	test(`Mastra ${alias} retains JSON/SSE validation and bounded response handlers on its fixed API major`, async () => {
-		for (const mastra of installedConsumers("@mastra/core", "1.0.4")) {
+		for (const mastra of installedConsumers("@mastra/core", "1.85.0")) {
 			const dependency = installedDependency(mastra.require, alias);
 			assert.equal(dependency.manifest.name, "@ai-sdk/provider-utils");
 			assert.equal(dependency.manifest.version, version);
@@ -291,17 +291,16 @@ for (const [alias, version] of [
 					`npm:@ai-sdk/provider-utils@${version[0]}.`,
 				),
 			);
-			for (const utils of [
-				mastra.require(alias),
-				await import(
-					pathToFileURL(
-						join(
-							dirname(dependency.path),
-							dependency.manifest.module,
-						),
-					).href
-				),
-			]) {
+			const entrypoints = dependency.manifest.exports["."];
+			const esm = await import(
+				pathToFileURL(
+					join(dirname(dependency.path), entrypoints.import),
+				).href
+			);
+			const implementations = entrypoints.require
+				? [mastra.require(alias), esm]
+				: [esm];
+			for (const utils of implementations) {
 				const { z } = dependency.require("zod");
 				const schema = z.object({ value: z.number() });
 				assert.deepEqual(
@@ -448,24 +447,52 @@ for (const [alias, version] of [
 	});
 }
 
-test("legacy UI utilities retain provider-utils 2 without importing the affected response handlers", () => {
-	for (const parent of installedConsumers("@ai-sdk/ui-utils", "1.2.11")) {
-		assert.equal(
-			installedDependency(parent.require, "@ai-sdk/provider-utils")
-				.manifest.version,
-			"2.2.8",
+function verifyMastraProviderUtilsLockfile(lockfile) {
+	for (const { key, version } of entriesNamed(
+		lockfile,
+		"packages",
+		"@ai-sdk/provider-utils",
+	)) {
+		assert.ok(
+			isStableOutside(
+				version,
+				"<3.0.28 || >=4.0.0 <4.0.33 || >=5.0.0 <5.0.1",
+			),
+			`Affected or unreviewed provider-utils: ${key}`,
 		);
-		for (const file of ["./dist/index.js", "./dist/index.mjs"]) {
-			const source = readFileSync(parent.require.resolve(file), "utf8");
-			assert.equal(
-				source.match(
-					/createJsonResponseHandler|createJsonErrorResponseHandler|createStatusCodeErrorResponseHandler/,
-				)?.[0],
-				undefined,
-				`${file}: re-evaluate the vulnerable v2 response-handler path`,
-			);
-		}
 	}
+	for (const { key, version } of entriesNamed(
+		lockfile,
+		"packages",
+		"@ai-sdk/ui-utils",
+	)) {
+		assert.notEqual(version, "1.2.11", `Retired UI utilities: ${key}`);
+	}
+}
+
+test("the lockfile excludes GHSA-866g-f22w-33x8 and the retired Mastra UI utilities", () => {
+	const lockfile = readLockfile();
+	verifyMastraProviderUtilsLockfile(lockfile);
+	for (const version of [
+		"2.2.8",
+		"3.0.27",
+		"4.0.32",
+		"5.0.0",
+		"4.0.0-beta.10",
+		"5.0.0-beta.0",
+	]) {
+		const key = `@ai-sdk/provider-utils@${version}`;
+		const bad = addPackage(mutableCopy(lockfile), key);
+		assert.throws(
+			() => verifyMastraProviderUtilsLockfile(validateLockfile(bad)),
+			{ message: `Affected or unreviewed provider-utils: ${key}` },
+		);
+	}
+	const bad = addPackage(mutableCopy(lockfile), "@ai-sdk/ui-utils@1.2.11");
+	assert.throws(
+		() => verifyMastraProviderUtilsLockfile(validateLockfile(bad)),
+		{ message: "Retired UI utilities: @ai-sdk/ui-utils@1.2.11" },
+	);
 });
 
 test("supported Azure parents use fixed Identity and MSAL while the Teams parent stays separately reviewed", () => {

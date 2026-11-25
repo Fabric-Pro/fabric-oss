@@ -135,6 +135,9 @@ export function registerProjectRoutes(
 		} catch {
 			return c.json(badRequest("Invalid JSON body"), 400);
 		}
+		if (body === null) {
+			return c.json(badRequest("Invalid JSON body"), 400);
+		}
 
 		const name = body.name?.trim();
 		if (!name) {
@@ -230,6 +233,9 @@ export function registerProjectRoutes(
 		try {
 			body = await c.req.json();
 		} catch {
+			return c.json(badRequest("Invalid JSON body"), 400);
+		}
+		if (body === null) {
 			return c.json(badRequest("Invalid JSON body"), 400);
 		}
 

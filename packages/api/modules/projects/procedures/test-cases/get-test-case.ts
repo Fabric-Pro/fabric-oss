@@ -1,11 +1,11 @@
 import { ORPCError } from "@orpc/client";
 import { getTestCase } from "@repo/database";
 import { z } from "zod";
-import { userHasProjectPermission } from "../../../../lib/project-permissions";
 import {
 	Permissions,
 	requireProjectPermission,
 	tenantProtectedProcedure,
+	userHasProjectPermission,
 } from "../../../../orpc/procedures";
 import { assertTestCasesFeatureEnabled } from "../../lib/test-cases-feature";
 
@@ -41,11 +41,11 @@ export const getTestCaseProcedure = tenantProtectedProcedure
 
 		// Surface whether the caller may edit so the UI hides write controls it
 		// would reject (parity with get-story's canEdit).
-		const canEdit = await userHasProjectPermission(
-			input.projectId,
-			context.user.id,
-			Permissions.TEST_CASE_UPDATE,
-		);
+		const canEdit = await userHasProjectPermission({
+			projectId: input.projectId,
+			userId: context.user.id,
+			permission: Permissions.TEST_CASE_UPDATE,
+		});
 
 		return { testCase, canEdit };
 	});

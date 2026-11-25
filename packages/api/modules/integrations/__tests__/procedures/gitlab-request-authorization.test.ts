@@ -207,9 +207,6 @@ vi.mock("../../../../lib/effective-project-permissions", async () => {
 		},
 	};
 });
-vi.mock("../../../../lib/project-permissions", () => ({
-	userHasProjectPermission: vi.fn(),
-}));
 vi.mock("../../../../lib/redis-client", () => ({ getRedisClient: () => null }));
 vi.mock("../../../../lib/mcp-registry-cache", () => ({
 	invalidateSystemServersCache: vi.fn(),
@@ -307,8 +304,7 @@ async function call(
 ): Promise<any> {
 	const def = (procedure as Definition)["~orpc"];
 	// The tag `requirePermission` / `requireInputOrgPermission` put on the
-	// middleware they return (the middlewares are functions, which
-	// `getPermissionFromMiddleware` does not look at).
+	// middleware they return (the middlewares are functions).
 	const permissionMiddlewares = def.middlewares.filter(
 		(mw) =>
 			typeof mw === "function" &&

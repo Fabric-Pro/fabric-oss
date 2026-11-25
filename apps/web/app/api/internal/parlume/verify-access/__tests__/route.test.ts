@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	findFirst: vi.fn(),
 	updateMany: vi.fn(),
-	hasProjectAccess: vi.fn(),
+	getProjectAccessContext: vi.fn(),
+	isOrganizationLive: vi.fn(),
 	requestLeave: vi.fn(),
 	finalize: vi.fn(),
 }));
@@ -16,7 +17,9 @@ vi.mock("@repo/database", () => ({
 			updateMany: (...args: unknown[]) => mocks.updateMany(...args),
 		},
 	},
-	hasProjectAccess: (...args: unknown[]) => mocks.hasProjectAccess(...args),
+	isOrganizationLive: mocks.isOrganizationLive,
+	getProjectAccessContext: (...args: unknown[]) =>
+		mocks.getProjectAccessContext(...args),
 }));
 
 vi.mock("@repo/api/modules/projects/lib/parlume-finalization", () => ({
@@ -70,7 +73,10 @@ beforeEach(() => {
 	process.env.AGENT_SERVICE_SECRET = "service-secret";
 	mocks.findFirst.mockResolvedValue(session);
 	mocks.updateMany.mockResolvedValue({ count: 1 });
-	mocks.hasProjectAccess.mockResolvedValue(true);
+	mocks.getProjectAccessContext.mockResolvedValue({
+		organizationId: "org-1",
+	});
+	mocks.isOrganizationLive.mockResolvedValue(true);
 	mocks.requestLeave.mockResolvedValue({ kind: "LEAVE_REQUESTED" });
 	mocks.finalize.mockResolvedValue(undefined);
 });
@@ -86,8 +92,27 @@ describe("Parlume active access verification", () => {
 		expect(mocks.requestLeave).not.toHaveBeenCalled();
 	});
 
+	it("stops capture when the project's hosting organization is deleted", async () => {
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: "example-host",
+		});
+		mocks.isOrganizationLive.mockResolvedValue(false);
+		const response = await POST(request());
+		expect(await response.json()).toEqual({
+			accepted: true,
+			captureStopped: true,
+		});
+		expect(mocks.isOrganizationLive).toHaveBeenCalledWith("example-host");
+		expect(mocks.requestLeave).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reason: "ACCESS_REVOKED",
+				captureStopped: true,
+			}),
+		);
+	});
+
 	it("stops capture and requests provider leave after the inviter loses project access", async () => {
-		mocks.hasProjectAccess.mockResolvedValue(false);
+		mocks.getProjectAccessContext.mockResolvedValue(null);
 
 		const response = await POST(request());
 
@@ -95,10 +120,9 @@ describe("Parlume active access verification", () => {
 			accepted: true,
 			captureStopped: true,
 		});
-		expect(mocks.hasProjectAccess).toHaveBeenCalledWith(
+		expect(mocks.getProjectAccessContext).toHaveBeenCalledWith(
 			"project-1",
 			"user-1",
-			"org-1",
 		);
 		expect(mocks.requestLeave).toHaveBeenCalledWith({
 			session: {
@@ -138,7 +162,7 @@ describe("Parlume active access verification", () => {
 			accepted: true,
 			captureStopped: true,
 		});
-		expect(mocks.hasProjectAccess).not.toHaveBeenCalled();
+		expect(mocks.getProjectAccessContext).not.toHaveBeenCalled();
 		expect(mocks.requestLeave).not.toHaveBeenCalled();
 		expect(mocks.finalize).not.toHaveBeenCalled();
 	});
@@ -220,7 +244,7 @@ describe("Parlume active access verification", () => {
 	});
 
 	it("asks the bridge to retry when the provider leave fails", async () => {
-		mocks.hasProjectAccess.mockResolvedValue(false);
+		mocks.getProjectAccessContext.mockResolvedValue(null);
 		mocks.requestLeave.mockRejectedValue(new Error("provider outage"));
 
 		const response = await POST(request());

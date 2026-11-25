@@ -10,6 +10,7 @@
  * from growing too large.
  */
 
+import { TimeoutType } from "@temporalio/common";
 import {
 	ActivityFailure,
 	ApplicationFailure,
@@ -21,9 +22,15 @@ import {
 	proxyActivities,
 	setHandler,
 	sleep,
+	TimeoutFailure,
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as connectorActivities from "../../activities/connector-sync";
+import { CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE } from "../../task-queues";
+import {
+	CONNECTOR_SYNC_PROVIDER_RETURNED_CREDENTIAL,
+	CONNECTOR_SYNC_STOP_FAILURE_TYPES,
+} from "./connection-failures";
 
 import {
 	type ConnectorSyncInput,
@@ -52,7 +59,7 @@ export const statusQuery = defineQuery<ConnectorSyncState["status"]>("status");
 // Activity Proxies
 // =============================================================================
 
-const activities = proxyActivities<typeof connectorActivities>({
+const activityOptions = {
 	startToCloseTimeout: "5 minutes",
 	heartbeatTimeout: "30 seconds",
 	retry: {
@@ -61,10 +68,28 @@ const activities = proxyActivities<typeof connectorActivities>({
 		maximumInterval: "60s",
 		maximumAttempts: 3,
 	},
-});
+} as const;
+const activities = proxyActivities<typeof connectorActivities>(activityOptions);
 
-// Long-running activities (fetching large datasets)
-const longActivities = proxyActivities<typeof connectorActivities>({
+const connectorQueue = {
+	taskQueue: CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE,
+	scheduleToStartTimeout: "10 minutes",
+} as const;
+
+const connectorConfigActivities = proxyActivities<
+	Pick<
+		typeof connectorActivities,
+		"loadConnectorConfig" | "testConnection" | "discoverResources"
+	>
+>({ ...activityOptions, ...connectorQueue });
+
+const connectorFetchActivities = proxyActivities<
+	Pick<
+		typeof connectorActivities,
+		"fetchResourceDocuments" | "garbageCollect"
+	>
+>({
+	...connectorQueue,
 	startToCloseTimeout: "30 minutes",
 	heartbeatTimeout: "60 seconds",
 	retry: {
@@ -163,25 +188,16 @@ export async function connectorSyncWorkflow(
 		}
 
 		// Load connector config from database
-		const connectorConfig = await activities.loadConnectorConfig({
-			connectorId: input.connectorId,
-			userId: input.userId,
-			organizationId: input.organizationId,
-		});
+		const connectorConfig =
+			await connectorConfigActivities.loadConnectorConfig({
+				connectorId: input.connectorId,
+				userId: input.userId,
+				organizationId: input.organizationId,
+			});
 
 		if (!connectorConfig) {
 			throw new Error(`Connector ${input.connectorId} not found`);
 		}
-
-		// What is handed to the provider activities. For GitLab, nothing: its
-		// activities resolve the acting person's live connection themselves.
-		// Decided here, not only inside `loadConnectorConfig`, because a run
-		// that loaded its config before GitLab connections stopped holding
-		// tokens replays that recorded result — legacy token included — and
-		// would otherwise copy it into every later activity input. Activity
-		// inputs are not compared on replay, so this needs no patch gate.
-		const providerCredentials: typeof connectorConfig.credentials =
-			input.provider === "GITLAB" ? {} : connectorConfig.credentials;
 
 		// Test connection
 		updateProgress("authenticating", "Testing connection...");
@@ -189,13 +205,11 @@ export async function connectorSyncWorkflow(
 		// `userId` / `organizationId`: the person who started the sync. GitLab
 		// activities act with that person's own GitLab connection, resolved
 		// inside the activity — no GitLab token is in this workflow's history.
-		const isConnected = await activities.testConnection({
+		const isConnected = await connectorConfigActivities.testConnection({
 			connectorId: input.connectorId,
 			provider: input.provider,
-			credentials: providerCredentials,
 			userId: input.userId,
 			organizationId: input.organizationId,
-			providerConfig: connectorConfig.providerConfig,
 		});
 
 		if (!isConnected) {
@@ -211,11 +225,9 @@ export async function connectorSyncWorkflow(
 			return buildOutput(state, false, "Cancelled");
 		}
 
-		const resources = await activities.discoverResources({
+		const resources = await connectorConfigActivities.discoverResources({
 			connectorId: input.connectorId,
 			provider: input.provider,
-			providerConfig: connectorConfig.providerConfig,
-			credentials: providerCredentials,
 			userId: input.userId,
 			organizationId: input.organizationId,
 		});
@@ -253,20 +265,17 @@ export async function connectorSyncWorkflow(
 
 			try {
 				// Fetch documents from resource
-				const fetchResult = await longActivities.fetchResourceDocuments(
-					{
+				const fetchResult =
+					await connectorFetchActivities.fetchResourceDocuments({
 						connectorId: input.connectorId,
 						provider: input.provider,
 						resource,
-						credentials: providerCredentials,
-						providerConfig: connectorConfig.providerConfig,
 						syncType: state.syncType,
 						cursor: state.cursor,
 						batchSize: config.batchSize,
 						userId: input.userId,
 						organizationId: input.organizationId,
-					},
-				);
+					});
 
 				// Process documents in batches
 				for (const batch of batchArray(
@@ -366,7 +375,7 @@ export async function connectorSyncWorkflow(
 				}
 			} catch (error) {
 				const errorMsg =
-					gitlabActivityFailureMessage(input.provider, error) ??
+					connectorActivityFailureMessage(input.provider, error) ??
 					(error instanceof Error ? error.message : "Unknown error");
 
 				state.errors.push({
@@ -380,10 +389,12 @@ export async function connectorSyncWorkflow(
 					error: errorMsg,
 				});
 
-				// A GitLab sync whose acting person has no usable connection,
-				// or whose address is refused, fails every resource the same
-				// way: stop instead of recording a partial success.
-				if (!config.continueOnError || gitlabSyncStopFailure(error)) {
+				// Connection-wide refusals and an unavailable activity queue
+				// cannot be fixed by proceeding to the next resource.
+				if (
+					!config.continueOnError ||
+					connectorSyncStopFailure(error)
+				) {
 					throw error;
 				}
 			}
@@ -395,10 +406,9 @@ export async function connectorSyncWorkflow(
 		if (state.syncType === "gc" && !isCancelled()) {
 			updateProgress("cleanup", "Running garbage collection...", 85);
 
-			const gcResult = await longActivities.garbageCollect({
+			const gcResult = await connectorFetchActivities.garbageCollect({
 				connectorId: input.connectorId,
 				provider: input.provider,
-				credentials: providerCredentials,
 				userId: input.userId,
 				organizationId: input.organizationId,
 			});
@@ -471,11 +481,9 @@ export async function connectorSyncWorkflow(
 
 		return buildOutput(state, true, undefined, nextSyncAt);
 	} catch (error) {
-		// A GitLab activity failure is reported with its own message (what
-		// the person has to do, or what GitLab answered), not the generic
-		// "Activity task failed".
+		// Show a connection-wide refusal or GitLab's provider failure message.
 		const errorMessage =
-			gitlabActivityFailureMessage(input.provider, error) ??
+			connectorActivityFailureMessage(input.provider, error) ??
 			(error instanceof Error ? error.message : "Unknown error");
 
 		log.error("Connector sync failed", {
@@ -626,38 +634,45 @@ export async function connectorScheduledSyncWorkflow(input: {
 // Helper Functions
 // =============================================================================
 
-/**
- * The activity's `ApplicationFailure` when `error` is a GitLab sync failure
- * that must stop the sync (`GITLAB_SYNC_STOP_FAILURE_TYPES`), else null.
- */
-function gitlabSyncStopFailure(error: unknown): ApplicationFailure | null {
-	if (
-		error instanceof ActivityFailure &&
-		error.cause instanceof ApplicationFailure &&
-		typeof error.cause.type === "string" &&
-		GITLAB_SYNC_STOP_FAILURE_TYPES.includes(error.cause.type)
-	) {
-		return error.cause;
+/** Connection-wide failures should stop the resource loop. */
+function connectorSyncStopFailure(error: unknown): boolean {
+	if (!(error instanceof ActivityFailure)) {
+		return false;
 	}
-	return null;
+	const cause = error.cause;
+	if (cause instanceof TimeoutFailure) {
+		return cause.timeoutType === TimeoutType.SCHEDULE_TO_START;
+	}
+	return (
+		cause instanceof ApplicationFailure &&
+		typeof cause.type === "string" &&
+		(CONNECTOR_SYNC_STOP_FAILURE_TYPES.includes(cause.type) ||
+			GITLAB_SYNC_STOP_FAILURE_TYPES.includes(cause.type))
+	);
 }
 
-/**
- * For a GitLab sync, the message of the error an activity raised (a stop
- * failure's instruction, or e.g. GitLab's status on the `/user` check);
- * null for other providers and for failures not raised by an activity.
- */
-function gitlabActivityFailureMessage(
+function connectorActivityFailureMessage(
 	provider: string,
 	error: unknown,
 ): string | null {
+	if (!(error instanceof ActivityFailure)) {
+		return null;
+	}
+	const cause = error.cause;
 	if (
-		provider === "GITLAB" &&
-		error instanceof ActivityFailure &&
-		error.cause instanceof Error &&
-		error.cause.message
+		cause instanceof TimeoutFailure &&
+		cause.timeoutType === TimeoutType.SCHEDULE_TO_START
 	) {
-		return error.cause.message;
+		return "Connector sync activity did not start before the task queue timeout.";
+	}
+	if (
+		cause instanceof Error &&
+		(provider === "GITLAB" ||
+			(cause instanceof ApplicationFailure &&
+				cause.type === CONNECTOR_SYNC_PROVIDER_RETURNED_CREDENTIAL) ||
+			connectorSyncStopFailure(error))
+	) {
+		return cause.message;
 	}
 	return null;
 }

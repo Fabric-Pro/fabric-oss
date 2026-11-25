@@ -30,6 +30,11 @@ import {
 	seedSteps,
 	updateContextExtractionStatus,
 } from "@repo/database";
+import {
+	GoogleDriveNotConnectedError,
+	GoogleDriveTokenExpiredError,
+	getGoogleDriveAccessToken,
+} from "@repo/integrations/google";
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
 import { z } from "zod";
@@ -44,11 +49,6 @@ import {
 	exportGoogleDocText,
 	GoogleDriveExportAuthError,
 } from "../../../integrations/lib/google-drive-rest";
-import {
-	GoogleDriveNotConnectedError,
-	GoogleDriveTokenExpiredError,
-	getGoogleDriveAccessToken,
-} from "../../../integrations/lib/google-drive-token";
 import {
 	deleteUploadedContextText,
 	uploadContextText,

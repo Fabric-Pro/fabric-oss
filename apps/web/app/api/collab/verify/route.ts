@@ -8,7 +8,8 @@
 import {
 	canEditProject,
 	getDocumentById,
-	hasProjectAccess,
+	getProjectAccessContext,
+	isOrganizationLive,
 } from "@repo/database";
 import { jwtVerify } from "jose";
 import { z } from "zod";
@@ -132,11 +133,15 @@ export async function POST(req: Request) {
 			}
 
 			// Verify project access
-			const hasAccess = await hasProjectAccess(
+			const access = await getProjectAccessContext(
 				document.projectId,
 				userId,
 			);
-			if (!hasAccess) {
+			if (
+				!access ||
+				(access.organizationId &&
+					!(await isOrganizationLive(access.organizationId)))
+			) {
 				return Response.json({ error: "Forbidden" }, { status: 403 });
 			}
 

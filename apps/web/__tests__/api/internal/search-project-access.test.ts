@@ -90,7 +90,10 @@ describe.each([
 			claims: { sub: USER_ID, org: ORG_ID },
 		});
 		hasProjectAccess.mockResolvedValue(true);
-		projectFindUnique.mockResolvedValue({ organizationId: ORG_ID });
+		projectFindUnique.mockResolvedValue({
+			organizationId: ORG_ID,
+			organization: { deletedAt: null },
+		});
 		activityMock.mockResolvedValue({ messages: [], totalCount: 0 });
 	});
 
@@ -117,6 +120,16 @@ describe.each([
 		expect(await response.json()).toEqual({
 			error: "Tenant context mismatch",
 		});
+		expect(activityMock).not.toHaveBeenCalled();
+	});
+
+	it("403s a deleted project organization before the search activity", async () => {
+		projectFindUnique.mockResolvedValue({
+			organizationId: ORG_ID,
+			organization: { deletedAt: new Date() },
+		});
+		const { POST } = await routeModule();
+		expect((await callRoute(POST, url, body)).status).toBe(403);
 		expect(activityMock).not.toHaveBeenCalled();
 	});
 

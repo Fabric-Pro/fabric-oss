@@ -7,7 +7,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const m = vi.hoisted(() => ({
 	flag: vi.fn(),
 	membership: vi.fn(),
-	projectPermission: vi.fn(),
 	list: vi.fn(),
 	instance: vi.fn(),
 	admit: vi.fn(),
@@ -77,9 +76,6 @@ vi.mock("@repo/integrations/gitlab", () => ({
 vi.mock("../report-board-access", () => ({
 	boardIsListedForConfig: async () => false,
 }));
-vi.mock("../../../../orpc/procedures", () => ({
-	userHasProjectPermission: m.projectPermission,
-}));
 vi.mock("../../../../lib/effective-project-permissions", () => ({
 	resolveEffectiveProjectPermissions: m.projectAccess,
 }));
@@ -142,7 +138,6 @@ beforeEach(() => {
 	m.membership.mockResolvedValue({ role: "member" });
 	m.findUser.mockResolvedValue({ role: "user" });
 	m.platformAdmin.mockResolvedValue(false);
-	m.projectPermission.mockResolvedValue(true);
 	m.instance.mockResolvedValue(report());
 	m.admit.mockImplementation(async (value) => ({
 		...value,
@@ -359,7 +354,7 @@ describe("listProjectReportsForAgent", () => {
 	});
 
 	it("refuses a project the caller may not read", async () => {
-		m.projectPermission.mockResolvedValue(false);
+		m.projectAccess.mockResolvedValue(null);
 
 		await expect(
 			listProjectReportsForAgent(actor, { projectId: "project-1" }),
@@ -487,11 +482,10 @@ describe("getReportContentForAgent", () => {
 				totalChars: 15,
 			},
 		});
-		expect(m.projectPermission).toHaveBeenCalledWith({
-			userId: "example-owner",
-			projectId: "project-1",
-			permission: "report:read",
-		});
+		expect(m.projectAccess).toHaveBeenCalledWith(
+			"project-1",
+			"example-owner",
+		);
 	});
 
 	it("returns the tasks as the next run takes them, with the report's edits and instructions", async () => {
@@ -613,7 +607,7 @@ describe("getReportContentForAgent", () => {
 		],
 		[
 			"the caller may not read the report's project",
-			() => m.projectPermission.mockResolvedValue(false),
+			() => m.projectAccess.mockResolvedValue(null),
 		],
 	])("refuses as not found when %s", async (_case, arrange) => {
 		m.instance.mockResolvedValue(iteratedReport());
@@ -911,7 +905,7 @@ describe("listReportTemplatesForAgent", () => {
 	});
 
 	it("refuses a project the caller may not read", async () => {
-		m.projectPermission.mockResolvedValue(false);
+		m.projectAccess.mockResolvedValue(null);
 
 		await expect(
 			listReportTemplatesForAgent(actor, { projectId: "project-1" }),
@@ -947,10 +941,10 @@ describe("createProjectReportForAgent", () => {
 		// An organization admin on a project in the organization may add reports.
 		m.membership.mockResolvedValue({ role: "admin" });
 		m.projectAccess.mockResolvedValue({
-			source: "organization",
+			source: "org",
 			organizationId: "example-org",
 			organizationDeleted: false,
-			permissions: [],
+			permissions: resolveOrgPermissions("admin"),
 		});
 		m.template.mockResolvedValue(template);
 		m.createReport.mockImplementation(async ({ creation }) => ({
@@ -1335,5 +1329,110 @@ describe("createProjectReportForAgent", () => {
 			createProjectReportForAgent(actor, input, reachable),
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
 		expect(m.createReport).not.toHaveBeenCalled();
+	});
+});
+
+describe("report commands use report reach for a project without a membership row", () => {
+	const projectId = "example-report-project";
+	const target = { projectId };
+	const commands = [
+		[
+			"list project reports",
+			() => listProjectReportsForAgent(actor, target),
+		],
+		[
+			"list organization templates",
+			() => listReportTemplatesForAgent(actor, target),
+		],
+		[
+			"create project report",
+			() =>
+				createProjectReportForAgent(
+					actor,
+					{ ...target, templateId: "example-template" },
+					reachable,
+				),
+		],
+		[
+			"read loaded report content",
+			() =>
+				getReportContentForAgent(
+					actor,
+					{ instanceId: "report-1" },
+					reachable,
+				),
+		],
+	] as const;
+
+	describe.each(commands)("%s", (_, run) => {
+		it("refuses report read when the effective project role lacks it", async () => {
+			m.membership.mockResolvedValue({ role: "admin" });
+			m.projectAccess.mockResolvedValue({
+				source: "project-member",
+				organizationId: actor.organizationId,
+				permissions: [],
+			});
+			m.instance.mockResolvedValue(report({ projectId }));
+			await expect(run()).rejects.toMatchObject({
+				code: expect.stringMatching(/NOT_FOUND|FORBIDDEN/),
+			});
+			expect(m.list).not.toHaveBeenCalled();
+			expect(m.templates).not.toHaveBeenCalled();
+			expect(m.template).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			["owner", false, true],
+			["admin", false, true],
+			["member", false, false],
+			["viewer", false, false],
+			["admin", true, false],
+			["member", false, true, true],
+		])(
+			"evaluates organization role %s (deleted: %s, allowed: %s, platform admin: %s)",
+			async (
+				role,
+				organizationDeleted,
+				allowed,
+				platformAdmin = false,
+			) => {
+				if (platformAdmin) {
+					m.findUser.mockResolvedValue({ role: "admin" });
+					m.platformAdmin.mockResolvedValue(true);
+				}
+				m.membership.mockResolvedValue({ role });
+				m.hasProjectAccess.mockResolvedValue(false);
+				m.projectAccess.mockResolvedValue({
+					permissions: resolveOrgPermissions(role),
+					source: "org",
+					organizationId: actor.organizationId,
+					isVisible: false,
+					organizationDeleted,
+				});
+				m.list.mockResolvedValue({ instances: [], total: 0 });
+				m.templates.mockResolvedValue({ templates: [], total: 0 });
+				m.template.mockResolvedValue({
+					id: "example-template",
+					name: "Example",
+					definition: {},
+					connections: {},
+					parameters: {},
+				});
+				m.createReport.mockResolvedValue(report({ projectId }));
+				m.instance.mockResolvedValue(report({ projectId }));
+
+				if (allowed) {
+					await expect(run()).resolves.toBeDefined();
+				} else {
+					await expect(run()).rejects.toMatchObject({
+						code: expect.stringMatching(/NOT_FOUND|FORBIDDEN/),
+					});
+					expect(m.list).not.toHaveBeenCalled();
+					expect(m.templates).not.toHaveBeenCalled();
+					expect(m.createReport).not.toHaveBeenCalled();
+					expect(m.artifact).not.toHaveBeenCalled();
+				}
+			},
+		);
 	});
 });

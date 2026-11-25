@@ -60,6 +60,17 @@ function configuredApiBase(raw: string, origin: string): string {
 	return base.endsWith("/api/v4") ? base : `${base}/api/v4`;
 }
 
+export function assertGitLabSyncActor(
+	userId?: string,
+): asserts userId is string {
+	if (!present(userId)) {
+		throw ApplicationFailure.nonRetryable(
+			"A GitLab sync runs with the GitLab account of the person who starts it, and this run has none. Start the sync again from the connection page.",
+			GITLAB_SYNC_CONNECTION_REQUIRED,
+		);
+	}
+}
+
 /**
  * Resolve the acting person's GitLab connection for one sync activity.
  *
@@ -77,12 +88,7 @@ export async function resolveGitLabSyncCredential(
 	actor: GitLabSyncActor,
 	configuredBaseUrls: readonly unknown[],
 ): Promise<GitLabSyncCredential> {
-	if (!present(actor.userId)) {
-		throw ApplicationFailure.nonRetryable(
-			"A GitLab sync runs with the GitLab account of the person who starts it, and this run has none. Start the sync again from the connection page.",
-			GITLAB_SYNC_CONNECTION_REQUIRED,
-		);
-	}
+	assertGitLabSyncActor(actor.userId);
 
 	// Check every configured address first: a refused one stops the sync
 	// before the connection is even read.

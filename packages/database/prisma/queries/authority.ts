@@ -662,52 +662,22 @@ export async function createAuthorityGrant(input: CreateAuthorityGrantInput) {
 }
 
 /**
- * Approve a specific grant within a session.
- */
-export async function approveAuthorityGrant(
-	grantId: string,
-	approvedBy: string,
-) {
-	return db.authorityGrant.update({
-		where: { id: grantId },
-		data: {
-			status: "APPROVED",
-			approvedBy,
-			approvedAt: new Date(),
-		},
-	});
-}
-
-/**
- * Deny a specific grant.
- */
-export async function denyAuthorityGrant(
-	grantId: string,
-	deniedBy: string,
-	reason?: string,
-) {
-	return db.authorityGrant.update({
-		where: { id: grantId },
-		data: {
-			status: "DENIED",
-			approvedBy: deniedBy,
-			deniedAt: new Date(),
-			denialReason: reason,
-		},
-	});
-}
-
-/**
- * Consume a one-shot REQUEST grant atomically (marks it as used only if still APPROVED).
+ * Consume an unexpired, approved one-shot REQUEST grant atomically.
  */
 export async function consumeRequestGrant(
 	grantId: string,
 ): Promise<{ consumed: boolean; count: number }> {
+	const now = new Date();
 	const result = await db.authorityGrant.updateMany({
-		where: { id: grantId, status: "APPROVED" },
+		where: {
+			id: grantId,
+			kind: "REQUEST",
+			status: "APPROVED",
+			expiresAt: { gt: now },
+		},
 		data: {
 			status: "CONSUMED",
-			consumedAt: new Date(),
+			consumedAt: now,
 		},
 	});
 	return { consumed: result.count === 1, count: result.count };

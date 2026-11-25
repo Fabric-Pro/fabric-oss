@@ -19,6 +19,8 @@ import {
 	type WorkflowBundleWithSourceMap,
 } from "@temporalio/worker";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE } from "../src/task-queues";
+import { CONNECTOR_SYNC_CONNECTION_NOT_AUTHORIZED } from "../src/workflows/connector-sync/connection-failures";
 import {
 	type ConnectorSyncOutput,
 	GITLAB_SYNC_CONNECTION_REQUIRED,
@@ -47,7 +49,7 @@ function activities(
 	provider: string,
 	overrides: Record<string, Activity> = {},
 ) {
-	const mocks: Record<string, ReturnType<typeof vi.fn>> = {
+	const mocks: Record<string, ReturnType<typeof vi.fn<Activity>>> = {
 		updateSyncJobActivity: vi.fn(async () => {}),
 		loadConnectorConfig: vi.fn(async () => ({
 			id: "conn-1",
@@ -89,11 +91,19 @@ function activities(
 	return mocks;
 }
 
+function connectorActivityWorker(mocks: Record<string, Activity>) {
+	return Worker.create({
+		connection: env.nativeConnection,
+		taskQueue: CONNECTOR_SYNC_ACTIVITY_TASK_QUEUE,
+		activities: mocks,
+	});
+}
+
 let seq = 0;
 
 async function runSync(
 	provider: string,
-	mocks: Record<string, ReturnType<typeof vi.fn>>,
+	mocks: Record<string, ReturnType<typeof vi.fn<Activity>>>,
 	syncType: "full" | "incremental" | "gc" = "full",
 ): Promise<ConnectorSyncOutput> {
 	const taskQueue = `connector-sync-gitlab-${seq++}`;
@@ -103,21 +113,24 @@ async function runSync(
 		workflowBundle,
 		activities: mocks,
 	});
-	return worker.runUntil(
-		env.client.workflow.execute("connectorSyncWorkflow", {
-			args: [
-				{
-					syncJobId: "job-1",
-					connectorId: "conn-1",
-					provider,
-					syncType,
-					userId: "user-1",
-					organizationId: "org-1",
-				},
-			],
-			taskQueue,
-			workflowId: `${taskQueue}-wf`,
-		}),
+	const connectorWorker = await connectorActivityWorker(mocks);
+	return worker.runUntil(() =>
+		connectorWorker.runUntil(() =>
+			env.client.workflow.execute("connectorSyncWorkflow", {
+				args: [
+					{
+						syncJobId: "job-1",
+						connectorId: "conn-1",
+						provider,
+						syncType,
+						userId: "user-1",
+						organizationId: "org-1",
+					},
+				],
+				taskQueue,
+				workflowId: `${taskQueue}-wf`,
+			}),
+		),
 	) as Promise<ConnectorSyncOutput>;
 }
 
@@ -159,8 +172,8 @@ describe("connectorSyncWorkflow — a legacy token in a loaded config", () => {
 		expect(output.success).toBe(true);
 		for (const name of CREDENTIAL_ACTIVITIES) {
 			expect(mocks[name]).toHaveBeenCalled();
-			for (const [input] of mocks[name]!.mock.calls) {
-				expect(input.credentials).toEqual({});
+			for (const [input] of mocks[name]?.mock.calls ?? []) {
+				expect(input).not.toHaveProperty("credentials");
 				const serialized = JSON.stringify(input);
 				for (const secret of Object.values(LEGACY_CREDENTIALS)) {
 					expect(serialized).not.toContain(secret);
@@ -169,16 +182,19 @@ describe("connectorSyncWorkflow — a legacy token in a loaded config", () => {
 		}
 	});
 
-	it("is still handed to other providers' activities", async () => {
+	it("is omitted from other providers' activity inputs", async () => {
 		const mocks = activities("GITHUB", {
 			loadConnectorConfig: legacyConfig("GITHUB"),
 		});
 
-		await runSync("GITHUB", mocks, "gc");
+		expect(await runSync("GITHUB", mocks, "gc")).toMatchObject({
+			success: true,
+		});
 
 		for (const name of CREDENTIAL_ACTIVITIES) {
-			for (const [input] of mocks[name]!.mock.calls) {
-				expect(input.credentials).toEqual(LEGACY_CREDENTIALS);
+			expect(mocks[name]).toHaveBeenCalled();
+			for (const [input] of mocks[name]?.mock.calls ?? []) {
+				expect(input).not.toHaveProperty("credentials");
 			}
 		}
 	});
@@ -196,7 +212,7 @@ describe("connectorSyncWorkflow — GitLab", () => {
 			"discoverResources",
 			"fetchResourceDocuments",
 		]) {
-			for (const [input] of mocks[name]!.mock.calls) {
+			for (const [input] of mocks[name]?.mock.calls ?? []) {
 				expect(input).toMatchObject({
 					userId: "user-1",
 					organizationId: "org-1",
@@ -296,6 +312,29 @@ describe("connectorSyncWorkflow — other providers keep continueOnError", () =>
 	});
 });
 
+it("stops a non-GitLab run when a provider activity loses organization access", async () => {
+	const message =
+		"The connector sync cannot access this data connection in its organization.";
+	const mocks = activities("NOTION", {
+		fetchResourceDocuments: async () => {
+			throw ApplicationFailure.nonRetryable(
+				message,
+				CONNECTOR_SYNC_CONNECTION_NOT_AUTHORIZED,
+			);
+		},
+	});
+
+	expect(await runSync("NOTION", mocks, "gc")).toMatchObject({
+		success: false,
+		error: message,
+	});
+	expect(mocks.fetchResourceDocuments).toHaveBeenCalledTimes(1);
+	expect(mocks.garbageCollect).not.toHaveBeenCalled();
+	expect(mocks.updateSyncJobActivity).toHaveBeenLastCalledWith(
+		expect.objectContaining({ status: "FAILED" }),
+	);
+});
+
 describe("connectorScheduledSyncWorkflow", () => {
 	const scheduledInput = (provider: string) => ({
 		connectorId: "conn-1",
@@ -350,19 +389,24 @@ describe("connectorScheduledSyncWorkflow", () => {
 			workflowBundle,
 			activities: mocks,
 		});
+		const connectorWorker = await connectorActivityWorker(mocks);
 
-		await worker.runUntil(async () => {
-			const handle = await env.client.workflow.start(
-				"connectorScheduledSyncWorkflow",
-				{
-					args: [scheduledInput("GITHUB")],
-					taskQueue,
-					workflowId: `${taskQueue}-wf`,
-				},
-			);
-			await env.sleep("90 minutes");
-			await handle.terminate("test done");
-		});
+		await worker.runUntil(() =>
+			connectorWorker.runUntil(async () => {
+				const handle = await env.client.workflow.start(
+					"connectorScheduledSyncWorkflow",
+					{
+						args: [scheduledInput("GITHUB")],
+						taskQueue,
+						workflowId: `${taskQueue}-wf`,
+					},
+				);
+				await vi.waitFor(() =>
+					expect(mocks.fetchResourceDocuments).toHaveBeenCalled(),
+				);
+				await handle.terminate("test done");
+			}),
+		);
 
 		expect(mocks.loadConnectorConfig).toHaveBeenCalled();
 		expect(mocks.fetchResourceDocuments).toHaveBeenCalled();

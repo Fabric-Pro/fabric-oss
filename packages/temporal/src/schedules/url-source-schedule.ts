@@ -9,10 +9,9 @@
  * `ProjectContext.urlScheduleId` column).
  *
  * Workflow start: each fire starts `urlSourceCrawlWorkflow` by string name
- * with `mode: 'scheduled'`. The schedule's `apiKey` argument must be the
- * decrypted Firecrawl key — the activity sandbox can't reach the credential
- * store at fire-time. Callers MUST resolve the key before invoking
- * `createUrlSourceSchedule` / `updateUrlSourceSchedule`.
+ * with `mode: 'scheduled'`. Crawl activities resolve the current scraper
+ * credential from the source reference. Optional credential arguments support
+ * callers and workers deployed before reference-based resolution.
  *
  * Idempotency:
  *   - `createUrlSourceSchedule` is NOT idempotent — callers must call
@@ -207,12 +206,7 @@ export function parseContextIdFromScheduleId(
 	return suffix.length > 0 ? suffix : null;
 }
 
-/**
- * Typed error for the "create/update needs a Firecrawl key but caller passed
- * nothing" path. Surfaces from `updateUrlSourceSchedule` when switching
- * INTO a scheduled mode without a resolved key — the API procedure has to
- * decrypt and pass it in.
- */
+/** Legacy export for callers that still import this error. */
 export class MissingFirecrawlKeyError extends Error {
 	constructor(
 		message = "Firecrawl API key is required to schedule a URL source",
@@ -247,7 +241,7 @@ interface ScheduledUrlCrawlArgs {
 	projectId?: string;
 	userId: string | null;
 	organizationId: string | null;
-	apiKey: string;
+	apiKey?: string;
 	providerName?: UrlSourceProviderName;
 	providerEndpoint?: string;
 	urlRefreshMode: UrlRefreshMode;
@@ -266,7 +260,7 @@ export interface CreateUrlSourceScheduleArgs {
 	projectId?: string;
 	userId: string | null;
 	organizationId: string | null;
-	apiKey: string;
+	apiKey?: string;
 	/**
 	 * Optional. Defaults to Firecrawl when absent — the activity falls back
 	 * the same way, so schedules created before this field shipped continue
@@ -294,7 +288,7 @@ export interface CreateUrlSourceScheduleResult {
 /**
  * Create a Temporal Schedule for a URL context source. Caller MUST have
  * already verified `refreshMode` is one of DAILY/WEEKLY/MONTHLY — passing
- * ONCE/LIVE throws `MissingFirecrawlKeyError`-adjacent error so this never
+ * ONCE/LIVE throws an error so this does not
  * silently no-ops.
  *
  * The schedule starts `urlSourceCrawlWorkflow` with `mode: 'scheduled'`.
@@ -311,9 +305,6 @@ export async function createUrlSourceSchedule(
 		throw new Error(
 			`createUrlSourceSchedule called with non-scheduled mode "${args.refreshMode}"`,
 		);
-	}
-	if (!args.apiKey) {
-		throw new MissingFirecrawlKeyError();
 	}
 
 	// A company owner must agree with the args' organization; a project
@@ -336,11 +327,11 @@ export async function createUrlSourceSchedule(
 		...(args.projectId !== undefined ? { projectId: args.projectId } : {}),
 		userId: args.userId,
 		organizationId: args.organizationId,
-		apiKey: args.apiKey,
+		...(args.apiKey ? { apiKey: args.apiKey } : {}),
 		...(args.providerName !== undefined
 			? { providerName: args.providerName }
 			: {}),
-		...(args.providerEndpoint !== undefined
+		...(args.apiKey && args.providerEndpoint !== undefined
 			? { providerEndpoint: args.providerEndpoint }
 			: {}),
 		urlRefreshMode: args.refreshMode,
@@ -429,9 +420,7 @@ export interface UpdateUrlSourceScheduleResult {
  *   scheduled  → scheduled  (same mode): no-op.
  *   ONCE       ↔ LIVE       : no-op (no schedule on either side).
  *
- * Switching INTO a scheduled mode REQUIRES `apiKey`; throws
- * `MissingFirecrawlKeyError` if not supplied. The caller (API procedure)
- * decrypts the key via `getSearchProviderConfig` + `decryptApiKey`.
+ * The recreated schedule can use the source reference alone.
  */
 export async function updateUrlSourceSchedule(
 	args: UpdateUrlSourceScheduleArgs,
@@ -452,11 +441,6 @@ export async function updateUrlSourceSchedule(
 		return { scheduleId: null, action: "deleted" };
 	}
 
-	// Cases 3 + 4 need an apiKey. Reject loudly otherwise.
-	if (!args.apiKey) {
-		throw new MissingFirecrawlKeyError();
-	}
-
 	// Case 3: un-scheduled → scheduled (create).
 	if (!oldScheduled && newScheduled && args.newRefreshMode != null) {
 		const result = await createUrlSourceSchedule(
@@ -468,11 +452,11 @@ export async function updateUrlSourceSchedule(
 				projectId: args.projectId,
 				userId: args.userId,
 				organizationId: args.organizationId,
-				apiKey: args.apiKey,
+				...(args.apiKey ? { apiKey: args.apiKey } : {}),
 				...(args.providerName !== undefined
 					? { providerName: args.providerName }
 					: {}),
-				...(args.providerEndpoint !== undefined
+				...(args.apiKey && args.providerEndpoint !== undefined
 					? { providerEndpoint: args.providerEndpoint }
 					: {}),
 				refreshMode: args.newRefreshMode,
@@ -505,11 +489,11 @@ export async function updateUrlSourceSchedule(
 			projectId: args.projectId,
 			userId: args.userId,
 			organizationId: args.organizationId,
-			apiKey: args.apiKey,
+			...(args.apiKey ? { apiKey: args.apiKey } : {}),
 			...(args.providerName !== undefined
 				? { providerName: args.providerName }
 				: {}),
-			...(args.providerEndpoint !== undefined
+			...(args.apiKey && args.providerEndpoint !== undefined
 				? { providerEndpoint: args.providerEndpoint }
 				: {}),
 			// Guarded above (`newScheduled` true and we returned early for null).
